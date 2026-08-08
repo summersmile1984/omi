@@ -272,3 +272,6 @@ htmlcov/
 
 # pnpm store
 .pnpm-store/
+
+# Local dev env (contains dev-only secrets)
+dev/.env.dev

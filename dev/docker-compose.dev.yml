@@ -1,0 +1,53 @@
+version: "3.9"
+
+# Omi cloud-neutral local dev stack:
+#   - Firebase emulator suite (Firestore 8080 + Auth 9099 + Storage 9199)
+#   - PostgreSQL 17 for the firestore-pg shim (production target)
+#   - Redis for the backend's queue/cache needs
+
+services:
+  firebase-emulators:
+    build:
+      context: .
+      dockerfile: emulators.Dockerfile
+    image: "omi-emulators:local"
+    container_name: omi-emulators
+    working_dir: /srv/firebase
+    command: ["firebase", "emulators:start", "--only", "firestore,auth,storage", "--project", "demo-omi-local"]
+    ports:
+      - "8080:8080"
+      - "9099:9099"
+      - "9199:9199"
+    volumes:
+      - ./firebase.json:/srv/firebase/firebase.json:ro
+      - emulator-data:/root/.cache/firebase
+
+  postgres:
+    image: "postgres:16-alpine"
+    container_name: omi-postgres
+    environment:
+      POSTGRES_USER: omi
+      POSTGRES_PASSWORD: omi-dev-password
+      POSTGRES_DB: omi
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omi"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: "redis:7-alpine"
+    container_name: omi-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  emulator-data:
+  postgres-data:
+  redis-data:
