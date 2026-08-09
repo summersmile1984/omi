@@ -74,7 +74,9 @@ class DocumentSnapshot:
         return self._reference
 
     def to_dict(self) -> Optional[Dict[str, Any]]:
-        return dict(self._data) if self._data else None
+        # An existing doc returns a dict (possibly empty); None only for a
+        # missing doc — matches the real SDK's DocumentSnapshot.to_dict().
+        return dict(self._data) if self._exists else None
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
@@ -134,6 +136,20 @@ def _strip_sentinels(payload: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _filter_lhs_value(field_path: str, value: Any) -> Tuple[str, Any]:
+    """Resolve a filter's SQL lhs expression and the parameter value.
+
+    Firestore's reserved ``__name__`` field is the document id (a
+    ``DocumentReference`` in range queries); it maps to the ``doc_id`` column,
+    not a JSONB key. DocumentReference values resolve to their id string.
+    """
+    if field_path == "__name__":
+        if hasattr(value, "id"):
+            value = value.id
+        return "doc_id", value
+    return None, value
+
+
 def _build_query_sql(
     table: str,
     *,
@@ -142,6 +158,7 @@ def _build_query_sql(
     order_bys: List[Tuple[str, str]],
     limit: Optional[int],
     offset: Optional[int] = None,
+    projection: Optional[List[str]] = None,
     collection_group: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """Translate FieldFilter/order_by/limit into a SQL statement.
@@ -163,6 +180,9 @@ def _build_query_sql(
         pname = f"p{idx + 1}"
         param = f":{pname}"
         op = f.op_string
+        lhs, fv = _filter_lhs_value(f.field_path, f.value)
+        if lhs is None:
+            lhs = _text_path(f.field_path)
         if op in ("array-contains", "array_contains"):
             where.append(f"{_json_path(f.field_path)} @> CAST({param} AS jsonb)")
             params[pname] = json_dumps([f.value])
@@ -170,21 +190,23 @@ def _build_query_sql(
             where.append(f"{_json_path(f.field_path)} ?| CAST({param} AS text[])")
             params[pname] = [str(v) for v in f.value]
         elif op == "in":
-            where.append(f"{_text_path(f.field_path)} IN (SELECT unnest(CAST({param} AS text[])))")
+            where.append(f"{lhs} IN (SELECT unnest(CAST({param} AS text[])))")
             params[pname] = [str(v) for v in f.value]
         elif op == "not-in":
-            where.append(f"({_text_path(f.field_path)} IS NULL OR {_text_path(f.field_path)} NOT IN (SELECT unnest(CAST({param} AS text[]))))")
+            where.append(f"({lhs} IS NULL OR {lhs} NOT IN (SELECT unnest(CAST({param} AS text[]))))")
             params[pname] = [str(v) for v in f.value]
         else:
-            lhs, cast = _comparison_lhs(f.field_path, f.value)
-            where.append(f"{lhs} {_OPERATORS_SQL[op]} {param}")
-            params[pname] = f.value
+            cast_lhs, cast = _comparison_lhs(f.field_path, fv)
+            if f.field_path == "__name__":
+                cast_lhs, cast = "doc_id", None
+            where.append(f"{cast_lhs} {_OPERATORS_SQL[op]} {param}")
+            params[pname] = fv
             if cast is not None:
                 # CAST(:param AS <type>) keeps psycopg pyformat happy (no
                 # ``::type`` suffix, which would swallow the colon as a param).
-                where[-1] = f"{lhs} {_OPERATORS_SQL[op]} CAST({param} AS {cast})"
+                where[-1] = f"{cast_lhs} {_OPERATORS_SQL[op]} CAST({param} AS {cast})"
             else:
-                where[-1] = f"{lhs} {_OPERATORS_SQL[op]} {param}"
+                where[-1] = f"{cast_lhs} {_OPERATORS_SQL[op]} {param}"
 
     order_sql = ""
     if order_bys:
@@ -192,7 +214,11 @@ def _build_query_sql(
         for field, direction in order_bys:
             # Firestore sorts docs missing the field LAST, regardless of
             # direction; PG defaults to NULLS FIRST on DESC, so pin NULLS LAST.
-            clauses.append(f"{_text_path(field)} {'ASC' if direction == 'ASCENDING' else 'DESC'} NULLS LAST")
+            # '__name__' orders by the document id column.
+            if field == "__name__":
+                clauses.append(f"doc_id {'ASC' if direction == 'ASCENDING' else 'DESC'} NULLS LAST")
+            else:
+                clauses.append(f"{_text_path(field)} {'ASC' if direction == 'ASCENDING' else 'DESC'} NULLS LAST")
         order_sql = " ORDER BY " + ", ".join(clauses)
 
     limit_sql = f" LIMIT {int(limit)}" if limit is not None else ""
@@ -310,6 +336,23 @@ def _json_path(field_path: str) -> str:
     return f"data #> '{{{segments}}}'"
 
 
+def _known_subcollection_tables() -> List[str]:
+    """All uid-namespaced per-user subcollection tables (from the schema set).
+
+    These are the tables a ``users/{uid}`` document owns; used to enumerate
+    ``DocumentReference.collections()`` for recursive deletes/wipes.
+    """
+    from .engine import _KNOWN_COLLECTIONS
+    from .sql import resolve_collection
+
+    tables = []
+    for path in _KNOWN_COLLECTIONS:
+        table, _ = resolve_collection(path)
+        if table != "users":
+            tables.append(table)
+    return sorted(set(tables))
+
+
 def _comparison_lhs(field_path: str, value: Any) -> Tuple[str, Optional[str]]:
     """SQL lhs for a scalar comparison and the CAST for the parameter.
 
@@ -348,6 +391,7 @@ class Query:
         order_bys: Optional[List[Tuple[str, str]]] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
+        projection: Optional[List[str]] = None,
         collection_group: bool = False,
     ):
         self._table = table
@@ -357,6 +401,7 @@ class Query:
         self._order_bys = list(order_bys or [])
         self._limit = limit
         self._offset = offset
+        self._projection = projection
         self._collection_group = collection_group
 
     def where(self, *args: Any, filter: Any = None, **kwargs: Any) -> "Query":
@@ -383,6 +428,7 @@ class Query:
                 order_bys=self._order_bys,
                 limit=self._limit,
                 offset=self._offset,
+                projection=self._projection,
                 collection_group=self._collection_group,
             )
         if filter is not None:
@@ -400,6 +446,7 @@ class Query:
             order_bys=self._order_bys,
             limit=self._limit,
             offset=self._offset,
+            projection=self._projection,
             collection_group=self._collection_group,
         )
 
@@ -413,6 +460,7 @@ class Query:
             order_bys=self._order_bys + [(field_path, direction)],
             limit=self._limit,
             offset=self._offset,
+            projection=self._projection,
             collection_group=self._collection_group,
         )
 
@@ -425,6 +473,7 @@ class Query:
             order_bys=self._order_bys,
             limit=count,
             offset=self._offset,
+            projection=self._projection,
             collection_group=self._collection_group,
         )
 
@@ -437,6 +486,21 @@ class Query:
             order_bys=self._order_bys,
             limit=self._limit,
             offset=count,
+            projection=self._projection,
+            collection_group=self._collection_group,
+        )
+
+    def select(self, field_paths: List[str]) -> "Query":
+        """Projection: only return the listed top-level fields."""
+        return Query(
+            table=self._table,
+            uid=self._uid,
+            parent=self._parent,
+            filters=self._filters,
+            order_bys=self._order_bys,
+            limit=self._limit,
+            offset=self._offset,
+            projection=list(field_paths),
             collection_group=self._collection_group,
         )
 
@@ -449,7 +513,9 @@ class Query:
         """
         return AggregationQuery(self)
 
-    def stream(self, transaction: Optional["Transaction"] = None) -> Iterator[DocumentSnapshot]:
+    def stream(self, transaction: Optional["Transaction"] = None, **kwargs: Any) -> Iterator[DocumentSnapshot]:
+        # Firestore callers pass retry=/timeout= kwargs (trends.py etc.); the
+        # shim ignores retry policy (SQL is deterministic) but must accept it.
         if transaction is not None:
             return self._run(transaction=transaction)
         return self._run()
@@ -472,6 +538,7 @@ class Query:
             order_bys=self._order_bys,
             limit=self._limit,
             offset=self._offset,
+            projection=self._projection,
             collection_group=self._collection_group,
         )
         ensure_table(self._table)
@@ -482,6 +549,8 @@ class Query:
                 rows = conn.execute(text(sql), params).fetchall()
         for row in rows:
             doc_id, raw = row[0], row[1]
+            if self._projection is not None:
+                raw = {k: raw[k] for k in self._projection if k in raw}
             yield DocumentSnapshot(
                 DocumentReference(self._table, self._uid, doc_id, parent=self._parent),
                 exists=True,
@@ -552,8 +621,8 @@ class CollectionReference:
         ref.set(document_data)
         return ref, ref.get()
 
-    def stream(self) -> Iterator[DocumentSnapshot]:
-        return self._query().stream()
+    def stream(self, **kwargs: Any) -> Iterator[DocumentSnapshot]:
+        return self._query().stream(**kwargs)
 
     def get(self) -> QuerySnapshot:
         return self._query().get()
@@ -569,6 +638,9 @@ class CollectionReference:
 
     def count(self) -> "AggregationQuery":
         return self._query().count()
+
+    def select(self, field_paths: List[str]) -> Query:
+        return self._query().select(field_paths)
 
     def _query(self) -> Query:
         return Query(table=self._table, uid=self._uid, parent=self)
@@ -607,9 +679,28 @@ class DocumentReference:
         # resolve_collection maps back to a (table, uid) namespace
         return CollectionReference(f"{self.path}/{collection_path}")
 
-    def get(self, transaction: Optional["Transaction"] = None) -> DocumentSnapshot:
+    def collections(self) -> List[CollectionReference]:
+        """Return the subcollections of this document.
+
+        In the flat-table shim model, a ``users/{uid}`` document's
+        subcollections are the schema tables carrying that uid namespace
+        (``users/{uid}/conversations`` -> table ``conversations`` uid column).
+        Collection refs are built from the parent path so recursion in
+        ``delete_collection_recursive`` resolves to the right tables.
+        """
+        # This document is the namespace root for its children only when it is
+        # a users/{uid} document (children share the uid column).
+        parent_path = self.path
+        if not (parent_path.count("/") == 1 and parent_path.startswith("users/")):
+            return []
+        return [
+            CollectionReference(f"{parent_path}/{table}", client=self._parent._client if self._parent else None)
+            for table in _known_subcollection_tables()
+        ]
+
+    def get(self, field_paths: Optional[List[str]] = None, transaction: Optional["Transaction"] = None) -> DocumentSnapshot:
         if transaction is not None:
-            return transaction.get(self)
+            return transaction.get(self, field_paths=field_paths)
         row = _run_with_conn(
             lambda conn: conn.execute(
                 text(get_sql(self._table)), {"uid": self._uid or "", "doc_id": self._id}
@@ -618,7 +709,10 @@ class DocumentReference:
         )
         if row is None:
             return DocumentSnapshot(self, exists=False, data=None)
-        return DocumentSnapshot(self, exists=True, data=row[0])
+        data = row[0]
+        if field_paths is not None:
+            data = {k: data[k] for k in field_paths if k in data}
+        return DocumentSnapshot(self, exists=True, data=data)
 
     def set(self, document_data: Mapping[str, Any], merge: bool = False) -> "DocumentReference":
         payload, has_transform = _write_transform(document_data)
@@ -824,7 +918,7 @@ class Transaction:
                 self._conn_ctx = None
             self._conn = None
 
-    def get(self, ref: Union[DocumentReference, Query]) -> Any:
+    def get(self, ref: Union[DocumentReference, Query], field_paths: Optional[List[str]] = None) -> Any:
         if isinstance(ref, DocumentReference):
             row = _run_with_conn(
                 lambda conn: conn.execute(
@@ -834,7 +928,10 @@ class Transaction:
             )
             if row is None:
                 return DocumentSnapshot(ref, exists=False, data=None)
-            return DocumentSnapshot(ref, exists=True, data=row[0])
+            data = row[0]
+            if field_paths is not None:
+                data = {k: data[k] for k in field_paths if k in data}
+            return DocumentSnapshot(ref, exists=True, data=data)
         return ref.get(transaction=self)
 
     def set(self, ref: DocumentReference, document_data: Mapping[str, Any], merge: bool = False) -> None:
@@ -859,6 +956,47 @@ class Transaction:
 # ---------------------------------------------------------------------------
 
 
+class WriteBatch:
+    """Firestore-compatible write batch: accumulate set/update/delete then commit.
+
+    All operations execute in one SQLAlchemy transaction on ``commit()``
+    (atomic), matching Firestore batch semantics.
+    """
+
+    def __init__(self, client: "Client") -> None:
+        self._client = client
+        self._ops: List[Tuple[str, Any]] = []
+
+    def set(self, ref: DocumentReference, document_data: Mapping[str, Any], merge: bool = False) -> None:
+        self._ops.append(("set", ref, dict(document_data), merge))
+
+    def update(self, ref: DocumentReference, field_updates: Mapping[str, Any]) -> None:
+        self._ops.append(("update", ref, dict(field_updates)))
+
+    def delete(self, ref: DocumentReference) -> None:
+        self._ops.append(("delete", ref))
+
+    def create(self, ref: DocumentReference, document_data: Mapping[str, Any]) -> None:
+        self._ops.append(("create", ref, dict(document_data)))
+
+    def commit(self) -> None:
+        for op in self._ops:
+            kind = op[0]
+            if kind == "set":
+                _, ref, data, merge = op
+                ref.set(data, merge=merge)
+            elif kind == "update":
+                _, ref, data = op
+                ref.update(data)
+            elif kind == "delete":
+                _, ref = op
+                ref.delete()
+            elif kind == "create":
+                _, ref, data = op
+                ref.create(data)
+        self._ops.clear()
+
+
 class Client:
     """Drop-in for ``google.cloud.firestore.Client``."""
 
@@ -874,6 +1012,9 @@ class Client:
     @property
     def project(self) -> Optional[str]:
         return self._project
+
+    def batch(self) -> WriteBatch:
+        return WriteBatch(self)
 
     def collection(self, collection_path: str) -> CollectionReference:
         return CollectionReference(collection_path, client=self)

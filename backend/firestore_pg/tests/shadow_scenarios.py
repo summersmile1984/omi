@@ -250,6 +250,40 @@ def scenario_array_contains(db: Any) -> Any:
     return {"composite": _snaps(composite.stream()), "array_contains": _snaps(ac.stream())}
 
 
+def scenario_doc_get_projection(db: Any) -> Any:
+    """DocumentReference.get(['field']) projection (users settings)."""
+    ref = db.collection("shadow_proj").document("d1")
+    ref.set({"language": "en", "other": 1, "nested": {"a": 1}})
+    proj = ref.get(["language", "missing"])
+    return {"exists": proj.exists, "data": _norm(proj.to_dict())}
+
+
+def scenario_doc_id_range(db: Any) -> Any:
+    """Range filter on the reserved __name__ (doc id) field (monthly llm_usage)."""
+    coll = db.collection("shadow_idrange")
+    for d in ["2024-01-01", "2024-01-15", "2024-02-01", "2024-03-01"]:
+        coll.document(d).set({"n": 1})
+    start = coll.document("2024-01-01")
+    end = coll.document("2024-02-01")
+    from google.cloud.firestore_v1 import FieldFilter as SDKFieldFilter
+
+    q = (
+        coll.where(filter=SDKFieldFilter("__name__", ">=", start))
+        .where(filter=SDKFieldFilter("__name__", "<", end))
+    )
+    return [d.id for d in q.stream()]
+
+
+def scenario_select_projection(db: Any) -> Any:
+    """CollectionReference.select([...]) projection (action_item_ids)."""
+    coll = db.collection("shadow_sel")
+    coll.document("s1").set({"a": 1, "b": 2})
+    coll.document("s2").set({"a": 3, "b": 4})
+    docs = [d.to_dict() for d in coll.select(["a"]).stream()]
+    docs.sort(key=lambda d: d.get("a", 0))
+    return docs
+
+
 SCENARIOS: Dict[str, Scenario] = {
     "set_get": scenario_set_get,
     "set_merge": scenario_set_merge,
@@ -270,4 +304,7 @@ SCENARIOS: Dict[str, Scenario] = {
     "offset": scenario_offset,
     "count": scenario_count,
     "array_contains": scenario_array_contains,
+    "doc_get_projection": scenario_doc_get_projection,
+    "doc_id_range": scenario_doc_id_range,
+    "select_projection": scenario_select_projection,
 }

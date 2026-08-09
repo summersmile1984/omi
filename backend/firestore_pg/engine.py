@@ -57,27 +57,7 @@ def ensure_tables(engine: Optional[Engine] = None) -> None:
     from database.firestore_index_registry import INDEX_REQUIREMENTS
 
     engine = engine or get_engine()
-    known_paths = {
-        # top-level collections observed in database/*
-        "users": "",
-        "conversations": "",
-        "memories": "",
-        "action_items": "",
-        "goals": "",
-        "workstreams": "",
-        "tasks": "",
-        "chat_sessions": "",
-        "messages": "",
-        "staged_tasks": "",
-        "fcm_tokens": "",
-        "fair_use_state": "",
-        "llm_usage": "",
-        "screen_activity": "",
-        "folders": "",
-        "files": "",
-        "events": "",
-        "notifications": "",
-    }
+    known_paths = dict(_KNOWN_COLLECTIONS)
     # Collection groups declared by firestore_index_registry that are not in the
     # observed set above still need their tables for compound serving queries
     # (memory maintenance, review queue, outbox, candidates, ...).
@@ -88,6 +68,32 @@ def ensure_tables(engine: Optional[Engine] = None) -> None:
             table, _ = resolve_collection(path)
             conn.execute(text(build_ddl(table)))
     logger.info("firestore_pg: schema ensured (%d tables)", len(known_paths))
+
+
+# Top-level / per-user collections observed in database/*. The uid-namespaced
+# ones (users/{uid}/<coll>) are subcollection tables of the users/{uid} doc and
+# are enumerated by DocumentReference.collections().
+_KNOWN_COLLECTIONS: dict = {
+    # top-level collections observed in database/*
+    "users": "",
+    "conversations": "",
+    "memories": "",
+    "action_items": "",
+    "goals": "",
+    "workstreams": "",
+    "tasks": "",
+    "chat_sessions": "",
+    "messages": "",
+    "staged_tasks": "",
+    "fcm_tokens": "",
+    "fair_use_state": "",
+    "llm_usage": "",
+    "screen_activity": "",
+    "folders": "",
+    "files": "",
+    "events": "",
+    "notifications": "",
+}
 
 
 _created_tables: set = set()
