@@ -20,8 +20,8 @@
 
 | 服务 | 可替代的托管 API | 中文表现 | 结论 |
 |---|---|---|---|
-| **parakeet/STT** | Modulate velma-2(生产默认,支持 zh)、Deepgram 自托管 | velma-2 支持中文 | **可用 API 替代** → 本地无需自托管 parakeet |
-| **diarizer** | 无直接云 API(Deepgram diarization 附带);自托管可选 pyannote | 中文一般 | 保留自托管(见 §三 中文更优)或改用 Deepgram 附带 |
+| **parakeet/STT** | Modulate velma-2(生产默认,支持 zh)、Deepgram 自托管 | velma-2 支持中文 | **可用 API 替代**;或自托管 **OpenMOSS 0.9B**(中文+说话人分离,推荐,见 §三) |
+| **diarizer** | 无直接云 API(Deepgram diarization 附带);自托管可选 pyannote | 中文一般 | **OpenMOSS 自带说话人分离**(多说话人 SOTA),可并掉独立 diarizer |
 | **vad** | pyannote 极轻(<1GB),无必要换 API | 语言无关 | 保留自托管,CPU 也能跑 |
 | **nllb-translation** | **已弃用**:生产 translation 走 Gemini(2.5-flash-lite),NLLB 是 fallback(见 translation_benchmark.mdx) | Gemini 中文优 | **GPU 可退役**,NLLB 只是备选 |
 
@@ -32,8 +32,9 @@
 ### STT(替代 parakeet,中文)
 | 模型 | 参数 | 显存 | 中文 | 备注 |
 |---|---|---|---|---|
-| **SenseVoice-Small** (FunASR) | ~300M | <1GB | ★★★★★ 中英日+粤语 | GPU 169x 实时,CPU 17x |
-| **Paraformer-Large** (FunASR) | 220M | 1-2GB | ★★★★★ 纯中文+时间戳+热词 | 最佳性价比 |
+| **OpenMOSS 0.9B 自托管(L4)** | 0.9B | 1 张 L4(月处理 5,000-7,000h) | ★★★★★ 中文+说话人分离+时间戳+声学事件 | **推荐(自托管)**,多说话人 SOTA;详见 omi-subscription-margin.md |
+| **SenseVoice-Small** (FunASR) | ~300M | <1GB | ★★★★★ 中英日+粤语 | GPU 169x 实时,CPU 17x;端侧免费层候选 |
+| **Paraformer-Large** (FunASR) | 220M | 1-2GB | ★★★★★ 纯中文+时间戳+热词 | 最佳性价比,中文 CER 10.18% |
 | **Fun-ASR-Nano** (LLM-ASR) | Qwen3-0.6B 解码 | 需 GPU | ★★★★★ 中英日+7方言+26口音 | 旗舰,长尾/难例最好 |
 | parakeet-tdt-0.6b-v3 | 600M | 2-2.5GB | ❌ 无中文 | 现状,应替换 |
 
@@ -50,6 +51,7 @@
 
 | 服务 | 需要显存 | 最低可用 GPU | 更稳妥 |
 |---|---|---|---|
+| **OpenMOSS 0.9B** (自托管推荐) | 1 张 L4(月 5,000-7,000h) | **T4 16GB** | L4 24GB |
 | parakeet (STT) | ~2GB | **GTX 1050 Ti / GTX 1660 4GB** | RTX 3060 12GB |
 | diarizer (pyannote) | ~4GB | **RTX 2060 6GB** | RTX 3060 12GB |
 | vad | <1GB | 任何 NVIDIA(或 CPU) | 集成进 diarizer 卡 |
@@ -66,15 +68,17 @@
 ## 五、建议路径(本地/自托管)
 
 1. **翻译**: nllb-translation GPU 服务**退役** → 生产已走 Gemini(中文优)。省 1 卡。
-2. **STT**: parakeet → 本地用 **FunASR SenseVoice-Small / Paraformer**(中文)或直接 Deepgram API。省 1 卡 + 中文能力大幅提升。
-3. **diarizer**: pyannote → 保留或用 **3D-Speaker/CAM++**(中文优)。
-4. **vad**: 并入 diarizer 卡或 CPU。
-5. **最低硬件**: 单块 **RTX 2060 6GB**(保守)或 **GTX 1660 4GB**(中文替换后)即可覆盖剩余自托管 GPU 需求。
+2. **STT(自托管)**: parakeet → **OpenMOSS 0.9B**(中文+说话人分离,多说话人 SOTA,1 张 L4 月处理 5,000-7,000h;详见 omi-subscription-margin.md 路径 A)。省 1 卡 + 中文能力大幅提升 + **说话人分离并入**(可并掉独立 diarizer)。
+3. **STT(外包备选)**: 小米 MiMo-V2.5-ASR(OpenAI 兼容可入 llm_gateway,中文第一梯队)或 Deepgram/Modulate。
+4. **diarizer**: OpenMOSS 自带说话人分离;纯 diarizer 场景保留 pyannote 或用 3D-Speaker/CAM++(中文优)。
+5. **vad**: 并入 diarizer 卡或 CPU。
+6. **最低硬件**: 单块 **L4(自托管 OpenMOSS 推荐)**;轻量自托管(不含 OpenMOSS)**RTX 2060 6GB**(保守)或 **GTX 1660 4GB**(中文替换后)即可。
 
 ## 六、验证状态
 
 - 模型清单/显存: 已从代码确认(parakeet NeMo、pyannote、nllb CTranslate2)+ 最新 HF 数据核对。
 - **NLLB 基准已有仓库文档**: `translation_benchmark.mdx` 实测(L4 24GB INT8):600M ~2GB/1.3B ~3GB/3.3B ~5GB;中文 chrF++ 56→59→63% vs Google 100% → **NLLB 中文明显弱**;文档明确建议中文要专用模型(MADLAD-400-3B 等)。
+- **STT 调研已有仓库文档**: `omi-subscription-margin.md`(2026-08)完整 ASR 供应商调研,推荐自托管 **OpenMOSS 0.9B**(中文+说话人分离+时间戳+声学事件,多说话人 SOTA,1 张 L4 月处理 5,000-7,000h)与外包小米 MiMo-V2.5-ASR;端侧 SenseVoice-Small(234M)替代 whisper.cpp tiny。
 - **STT serving 默认**: `modulate-velma-2, parakeet`(transcription.mdx 权威);Modulate 支持 `zh`;Deepgram 自托管需显式启用,非默认。
 - parakeet 中文支持: **确认不支持**(25 欧洲语言)。
 - 注意: pyannote.audio 4.0.3 有 VRAM 回归 bug(长音频 >9.5GB),若升级需锁 3.3.2。
