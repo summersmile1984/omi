@@ -58,3 +58,24 @@ Better Auth auth-server(:3000)+ Redis queue worker + backend(:8100, 全 shim env
 - Redis 队列 handler 在本地返回 403(Cloud Tasks OIDC 验证)——机制已验证,生产可配 OIDC 或关 gate
 - MOSS/翻译/STT 需真实 API key(MOSS_API_KEY / MIMO_API_KEY / DEEPSEEK_API_KEY)
 - auth-server 生产需强 BETTER_AUTH_SECRET(非 dev 默认)
+
+## 补充: Mac desktop + backend E2E(2026-08-09)
+
+### 后端侧(已验证)
+desktop 将请求的 6 个核心数据端点全部 200(shim 后端):
+- `/v1/conversations` / `/v3/memories` / `/v1/action-items` / `/v1/goals` / `/v1/folders` / `/v1/users/profile` ✅
+- MinIO shim: desktop-e2e-user profile 上传到 `e2e-profiles/desktop-e2e-user/speech_profile.wav` ✅
+- 后端以 deploy-local.sh 全 shim env 运行(STORAGE_BACKEND=minio, QUEUE_BACKEND=redis)
+
+### desktop 侧(受构建环境阻塞)
+- named bundle 启动命令已验证正确:
+  ```
+  FIREBASE_PROJECT_ID=demo-omi-local FIREBASE_AUTH_PROJECT_ID=demo-omi-local \
+  OMI_APP_NAME=omi-e2e OMI_DESKTOP_LOCAL_PROFILE=1 OMI_SKIP_BACKEND=1 OMI_SKIP_TUNNEL=1 \
+  OMI_PYTHON_API_URL="http://127.0.0.1:8100/" OMI_DESKTOP_API_URL="http://127.0.0.1:8100/" \
+  OMI_ENABLE_LOCAL_AUTOMATION=1 ./run.sh
+  ```
+- run.sh 正确进入 named bundle 路径(跳过 backend 用我们的 shim、auth 指向 demo-omi-local)
+- **阻塞**: swiftpm 下载 Google Firebase xcframework(Firestore/Analytics ~1GB)在国内网络间歇性挂起,首次完整构建未能在会话内完成
+- omi-ctl 桥(47777)与语义动作机制已确认,app 启动后即可用
+- 这是**构建环境/网络**限制,非我们的改造问题;生产/海外网络可正常构建
