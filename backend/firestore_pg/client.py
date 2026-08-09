@@ -157,13 +157,13 @@ def _build_query_sql(
             where.append(f"data->'{f.field_path}' @> CAST({param} AS jsonb)")
             params[pname] = json_dumps([f.value])
         elif f.op_string == "array-contains-any":
-            where.append(f"data->'{f.field_path}' ?| {param}::text[]")
+            where.append(f"data->'{f.field_path}' ?| CAST({param} AS text[])")
             params[pname] = [str(v) for v in f.value]
         elif f.op_string == "in":
-            where.append(f"data->>'{f.field_path}' IN (SELECT unnest({param}::text[]))")
+            where.append(f"data->>'{f.field_path}' IN (SELECT unnest(CAST({param} AS text[])))")
             params[pname] = [str(v) for v in f.value]
         elif f.op_string == "not-in":
-            where.append(f"(data->>'{f.field_path}' IS NULL OR data->>'{f.field_path}' NOT IN (SELECT unnest({param}::text[])))")
+            where.append(f"(data->>'{f.field_path}' IS NULL OR data->>'{f.field_path}' NOT IN (SELECT unnest(CAST({param} AS text[]))))")
             params[pname] = [str(v) for v in f.value]
         else:
             lhs, cast = _comparison_lhs(f.field_path, f.value)
@@ -180,7 +180,9 @@ def _build_query_sql(
     if order_bys:
         clauses = []
         for field, direction in order_bys:
-            clauses.append(f"data->>'{field}' {'ASC' if direction == 'ASCENDING' else 'DESC'}")
+            # Firestore sorts docs missing the field LAST, regardless of
+            # direction; PG defaults to NULLS FIRST on DESC, so pin NULLS LAST.
+            clauses.append(f"data->>'{field}' {'ASC' if direction == 'ASCENDING' else 'DESC'} NULLS LAST")
         order_sql = " ORDER BY " + ", ".join(clauses)
 
     limit_sql = f" LIMIT {int(limit)}" if limit is not None else ""
@@ -196,6 +198,60 @@ def _is_conflict_error(exc: Exception) -> bool:
     """True for PG serialization failures / deadlocks (retryable)."""
     msg = str(exc).lower()
     return "serializ" in msg or "deadlock" in msg
+
+
+def _split_path(key: str) -> List[str]:
+    """Split a Firestore dotted field path ('a.b.c') into segments."""
+    return key.split(".") if key else [key]
+
+
+def _get_path(doc: Dict[str, Any], key: str) -> Any:
+    cur: Any = doc
+    for seg in _split_path(key):
+        if not isinstance(cur, dict) or seg not in cur:
+            return None
+        cur = cur[seg]
+    return cur
+
+
+def _set_path(doc: Dict[str, Any], key: str, value: Any) -> None:
+    """Set a dotted path, creating intermediate dicts. Replaces array elements
+    positionally (Firestore index-in-array semantics)."""
+    segs = _split_path(key)
+    cur = doc
+    for seg in segs[:-1]:
+        if isinstance(cur, list):
+            cur = cur[int(seg)]
+        nxt = cur.get(seg)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[seg] = nxt
+        cur = nxt
+    last = segs[-1]
+    if isinstance(cur, list):
+        cur[int(last)] = value
+    else:
+        cur[last] = value
+
+
+def _del_path(doc: Dict[str, Any], key: str) -> None:
+    """Delete a dotted path; an emptied intermediate map stays as {} (matches
+    Firestore, which keeps the now-empty parent object)."""
+    segs = _split_path(key)
+    cur: Any = doc
+    for seg in segs[:-1]:
+        if not isinstance(cur, dict) or seg not in cur:
+            return
+        cur = cur[seg]
+    last = segs[-1]
+    if isinstance(cur, dict) and last in cur:
+        del cur[last]
+    elif isinstance(cur, list) and last.isdigit() and int(last) < len(cur):
+        del cur[int(last)]
+
+
+def _has_dotted_key(payload: Mapping[str, Any]) -> bool:
+    return any("." in str(k) for k in payload.keys())
 
 
 def _run_with_conn(fn: Callable[[Any], Any], table: Optional[str] = None) -> Any:
@@ -465,7 +521,11 @@ class DocumentReference:
             if row is None:
                 raise ValueError(f"Document {self.path} does not exist")
             merged = dict(row[0] or {})
-            merged.update(payload)
+            if _has_dotted_key(payload):
+                for k, v in payload.items():
+                    _set_path(merged, k, v)
+            else:
+                merged.update(payload)
             conn.execute(
                 text(upsert_sql(self._table)),
                 {"uid": self._uid or "", "doc_id": self._id, "data": json_dumps(merged)},
@@ -477,19 +537,23 @@ class DocumentReference:
     @staticmethod
     def _apply_transforms(current: Dict[str, Any], payload: Dict[str, Any]) -> None:
         for key, value in payload.items():
+            dotted = "." in str(key)
             if isinstance(value, Increment):
-                current[key] = int(current.get(key, 0)) + int(value.value)
+                cur = _get_path(current, key) if dotted else current.get(key)
+                _set_path(current, key, int(cur or 0) + int(value.value))
             elif isinstance(value, ArrayUnion):
-                arr = list(current.get(key) or [])
+                cur = _get_path(current, key) if dotted else current.get(key)
+                arr = list(cur or [])
                 for item in value.value:
                     if item not in arr:
                         arr.append(item)
-                current[key] = arr
+                _set_path(current, key, arr)
             elif isinstance(value, ArrayRemove):
-                arr = list(current.get(key) or [])
-                current[key] = [i for i in arr if i not in value.value]
+                cur = _get_path(current, key) if dotted else current.get(key)
+                arr = list(cur or [])
+                _set_path(current, key, [i for i in arr if i not in value.value])
             elif isinstance(value, type(DELETE_FIELD)) or _is_real_delete_field(value):
-                current.pop(key, None)
+                _del_path(current, key)
 
     def _read_current(self, conn: Any) -> Dict[str, Any]:
         row = conn.execute(
@@ -524,7 +588,11 @@ class DocumentReference:
 
         def _do(conn: Any) -> None:
             current = self._read_current(conn)
-            current.update(plain)
+            if _has_dotted_key(plain):
+                for k, v in plain.items():
+                    _set_path(current, k, v)
+            else:
+                current.update(plain)
             self._apply_transforms(current, payload)
             self._write_current(conn, current)
 
