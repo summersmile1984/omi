@@ -150,3 +150,27 @@ OpenMOSS 0.9B 输出 (vLLM/SGLang, OpenAI 兼容):
 3. 记忆事实带 `speaker_identity_claim` + `speaker_confirmed=True`(而非 uncertain)。
 4. 新说话人经自动建档后,第二次会话能匹配上同一 person。
 5. 回归: 识别失败时 fallback 到 `SPEAKER_N` 标签,不影响转录。
+
+## 六、MOSS 官方 API 实测(2026-08-09, api.mosi.cn)
+
+平台: https://platform.mosi.cn(API base: https://api.mosi.cn)。已用真实 API key 端到端验证:
+
+### 可用模型(语音识别类)
+- `moss-transcribe`: 普通转写,`POST /v1/audio/transcriptions` → `{text}`
+- `moss-transcribe-diarize`: 多说话人转写,`diarize=true` → `segments[]` 含 `start/end/text/speaker(S01)`
+
+### 实测结果
+| 测试 | 结果 |
+|---|---|
+| 文件上传 `/v1/files` (purpose=transcription) | ✅ 512MB 上限,音视频容器(MOV/MP4/MPG/WebM)均可 |
+| `moss-transcribe` 中文音频 | ✅ 准确:"大家好，我们今天讨论项目进度。" |
+| `moss-transcribe-diarize` (diarize=true) | ✅ 返回 `segments[].speaker` = `S01/S02` 匿名标签 |
+| 鉴权 | ✅ `Authorization: Bearer <key>` |
+| 流式 | ✅ `stream=true` SSE(`transcript.segment.done` 带 speaker) |
+| 异步 | ✅ `async=true` + 任务查询 |
+
+### 关键结论(与自托管一致)
+- **MOSS 官方 API = 转写 + 分离(diarization)**,输出 `S01/S02` 匿名标签
+- **无识别(identification)**:不能匹配到已知人名,与自托管 0.9B 能力一致
+- **对 Omi 的价值**:可直接作为无 GPU 时的中文转写+分离 API;识别仍需本地 wespeaker(CPU)匹配
+- 定价: 官方称曾限时免费,**正式价格未公布**(跟踪项)
