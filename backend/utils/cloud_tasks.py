@@ -198,6 +198,13 @@ def enqueue_sync_job(payload: Dict[str, Any]) -> None:
     hours. The lane label is still carried on the payload for metering and
     reporting; it no longer selects the queue.
     """
+    from utils.cloud_tasks_redis import queue_enabled
+
+    if queue_enabled():
+        from utils.cloud_tasks_redis import enqueue_sync_job as _redis_enqueue
+
+        _redis_enqueue(payload)
+        return
     _enqueue_named_task(os.getenv('SYNC_TASKS_QUEUE', ''), _handler_url(), str(payload['job_id']), payload)
 
 
@@ -214,6 +221,13 @@ def enqueue_audio_merge_job(payload: Dict[str, Any]) -> None:
     and isn't swallowed by the named-task tombstone. 'amc-' cannot collide with
     per-part names (audio_file ids are UUIDv4).
     """
+    from utils.cloud_tasks_redis import queue_enabled
+
+    if queue_enabled():
+        from utils.cloud_tasks_redis import enqueue_audio_merge_job as _redis_enqueue
+
+        _redis_enqueue(payload)
+        return
     if payload.get('schema_version') == 2:
         task_id = f"amc-{payload['conversation_id']}-{payload['fingerprint']}"
     else:
@@ -233,6 +247,13 @@ def enqueue_account_deletion_wipe(wipe_job_id: str) -> None:
     Firebase uid; the OIDC handler resolves the uid only after looking up this
     opaque job identifier.
     """
+    from utils.cloud_tasks_redis import queue_enabled
+
+    if queue_enabled():
+        from utils.cloud_tasks_redis import enqueue_account_deletion_wipe as _redis_enqueue
+
+        _redis_enqueue(wipe_job_id)
+        return
     if not wipe_job_id:
         raise ValueError('wipe_job_id must be non-empty')
     job_hash = hashlib.sha256(wipe_job_id.encode('utf-8')).hexdigest()[:32]
@@ -265,6 +286,13 @@ def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> No
     uid nor any conversation/BYOK material so Cloud Tasks diagnostics cannot
     expose user content or credentials.
     """
+    from utils.cloud_tasks_redis import queue_enabled
+
+    if queue_enabled():
+        from utils.cloud_tasks_redis import enqueue_listen_finalization_job as _redis_enqueue
+
+        _redis_enqueue(job_id, dispatch_generation)
+        return
     _enqueue_named_task(
         os.getenv('LISTEN_FINALIZATION_TASKS_QUEUE', ''),
         _listen_finalization_handler_url(),
