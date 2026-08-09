@@ -47,6 +47,9 @@ export const auth = betterAuth({
         jwks: {
           keyPairConfig: { alg: "ES256" },
         },
+        // Long-lived JWT for the desktop app session (default Better Auth is
+        // 15m). Override with AUTH_JWT_EXPIRATION (e.g. "24h").
+        expirationTime: process.env.AUTH_JWT_EXPIRATION || "24h",
       },
     }),
   ],
