@@ -50,6 +50,7 @@ class STTService(str, Enum):
     deepgram = "deepgram"
     modulate = "modulate"
     parakeet = "parakeet"
+    sensevoice = "sensevoice"
 
     @staticmethod
     def get_model_name(value: 'STTService') -> Optional[str]:
@@ -59,6 +60,8 @@ class STTService(str, Enum):
             return 'modulate_streaming'
         if value == STTService.parakeet:
             return 'parakeet_streaming'
+        if value == STTService.sensevoice:
+            return 'sensevoice_streaming'
 
 
 class ParakeetConnectionError(RuntimeError):
@@ -332,6 +335,8 @@ def get_stt_service_for_language(
         parakeet_fallback_reason: Optional[str] = None
         for model in _models_with_preferred_service(models, preferred_service=preferred_service):
             model = model.strip()
+            if model == 'sensevoice' and _sensevoice_available():
+                return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
             if (
                 model.startswith('dg-')
                 and provider_is_enabled(deepgram_provider_for_runtime(is_dg_self_hosted), surface)
@@ -486,6 +491,15 @@ def _deepgram_is_available() -> bool:
     runtime that has no account key of its own.
     """
     return _managed_deepgram_client() is not None or bool(get_byok_key('deepgram'))
+
+
+def _sensevoice_available() -> bool:
+    """True when a local SenseVoice model directory is configured."""
+    from utils.sensevoice.socket import SENSEVOICE_MODEL_DIR
+
+    return bool(SENSEVOICE_MODEL_DIR) and os.path.exists(
+        os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx")
+    )
 
 
 async def process_audio_dg(
