@@ -330,6 +330,11 @@ def _comparison_lhs(field_path: str, value: Any) -> Tuple[str, Optional[str]]:
 
 
 class Query:
+    # Firestore SDK class constants used by business code as
+    # ``firestore.Query.ASCENDING / DESCENDING`` (12+ database/* modules).
+    ASCENDING = "ASCENDING"
+    DESCENDING = "DESCENDING"
+
     def __init__(
         self,
         *,
@@ -792,10 +797,14 @@ class Client:
 def transactional(func: Callable[..., Any]) -> Callable[..., Any]:
     """Drop-in for ``@firestore.transactional``.
 
-    Runs ``func`` inside a PG transaction (REPEATABLE READ), retrying on
-    serialization conflicts up to 3 attempts. The thread-local transaction
-    connection is installed so transaction.get/set/update inside the body use
-    the same connection.
+    Two transaction kinds are accepted, matching the real SDK:
+    - a firestore_pg ``Transaction`` -> run on a PG REPEATABLE READ connection
+      (thread-local tx conn installed so body reads/writes share it), retrying
+      serialization conflicts.
+    - any duck-typed object exposing the SDK lifecycle hooks
+      (``_begin`` / ``_commit`` / ``_rollback`` / ``_max_attempts`` /
+      ``_read_only``) — e.g. test fakes injected via DI — handled exactly like
+      the real ``_Transactional`` (no PG connection involved).
     """
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -803,11 +812,14 @@ def transactional(func: Callable[..., Any]) -> Callable[..., Any]:
         tx = kwargs.get("transaction")
         if tx is None:
             for arg in args:
-                if isinstance(arg, Transaction):
+                if isinstance(arg, Transaction) or _is_duck_transaction(arg):
                     tx = arg
                     break
         if tx is None:
             raise TypeError("transactional() requires a Transaction argument")
+
+        if not isinstance(tx, Transaction):
+            return _run_duck_transaction(tx, func, args, kwargs)
 
         engine = get_engine()
         attempts = kwargs.pop("_retries", 3) or 3
@@ -832,6 +844,39 @@ def transactional(func: Callable[..., Any]) -> Callable[..., Any]:
         raise last_exc  # pragma: no cover
 
     return wrapper
+
+
+def _is_duck_transaction(arg: Any) -> bool:
+    """True if arg exposes the SDK transaction lifecycle hooks (test fakes)."""
+    return bool(
+        arg is not None
+        and not isinstance(arg, Transaction)
+        and all(hasattr(arg, name) for name in ("_begin", "_commit", "_rollback", "_max_attempts"))
+    )
+
+
+def _run_duck_transaction(tx: Any, func: Callable[..., Any], args: tuple, kwargs: dict) -> Any:
+    """Run ``func`` against a duck-typed transaction, mirroring the real SDK's
+    ``_Transactional.__call__``: begin, run (retrying Aborted), commit, and
+    rollback on any error. No PG connection is used — the fake owns its state.
+    """
+    from google.api_core.exceptions import Aborted as _Aborted
+
+    try:
+        last_exc: Optional[Exception] = None
+        for attempt in range(tx._max_attempts):
+            if attempt == 0 or last_exc is not None:
+                tx._begin(retry_id=getattr(tx, "_id", None))
+            try:
+                result = func(*args, **kwargs)
+                tx._commit()
+                return result
+            except _Aborted as exc:
+                last_exc = exc
+        raise ValueError(f"transaction failed after {tx._max_attempts} attempts") from last_exc
+    except BaseException:
+        tx._rollback()
+        raise
 
 
 # module-level alias for ``from google.cloud import firestore`` style usage
