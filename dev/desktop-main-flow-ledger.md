@@ -42,3 +42,22 @@
 ## 结论
 
 **desktop 主要操作主流程全部验证通过**(登录/仪表盘/会话/记忆/任务/设置),数据完整走 BetterAuth → shim 后端 → PostgreSQL/MinIO/Redis。chat 发送流验证通过,回复端受 LLM 配置限制(需真实 key 或 stub)。
+
+### chat 回复修复(2026-08-09, DeepSeek Anthropic 协议)
+**问题**: 桌面 chat 无回复。根因: pi-mono agent 用 Anthropic claude 协议
+(desktop_chat.py _MODEL_ROUTES: omi-sonnet 等),后端无 Anthropic key →
+"Upstream provider error"。
+
+**修复**: DeepSeek 官方支持 Anthropic API 格式,claude 模型名自动映射到
+deepseek-v4-flash。只需设 env(零代码改动):
+```
+ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+ANTHROPIC_API_KEY=sk-...
+```
+
+**验证**:
+- `POST /v2/chat/completions` (model: omi-sonnet) → 200
+  `{"choices":[{"message":{"role":"assistant","content":"Hi! 👋"}}]}`
+- desktop ask_main_chat "Reply with the single word pineapple"
+  → UI 快照: `user: ...pineapple` / `assistant: pineapple`
+- app 日志: `chat_agent_query_completed duration_ms=4345`(无 error)
