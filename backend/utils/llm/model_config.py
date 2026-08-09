@@ -107,6 +107,22 @@ _PINNED_FEATURES: Dict[str, Tuple[str, str]] = {
     'fair_use': (os.getenv('FAIR_USE_CLASSIFIER_MODEL', 'gpt-5.6-luna').strip() or 'gpt-5.6-luna', 'openai'),
 }
 
+# Translation provider is env-configurable (self-hosted deployments may use a
+# domestic OpenAI-compatible LLM instead of Gemini). TRANSLATION_PROVIDER picks
+# the provider; TRANSLATION_MODEL overrides the default model for it.
+_TRANSLATION_PROVIDER = os.getenv('TRANSLATION_PROVIDER', 'gemini').strip().lower()
+_TRANSLATION_MODEL = os.getenv('TRANSLATION_MODEL', '').strip()
+if _TRANSLATION_PROVIDER in ('mimo', 'xiaomi'):
+    _PINNED_FEATURES['translation'] = (
+        _TRANSLATION_MODEL or 'mimo-v2.5',
+        'mimo',
+    )
+elif _TRANSLATION_PROVIDER in ('deepseek', 'ds'):
+    _PINNED_FEATURES['translation'] = (
+        _TRANSLATION_MODEL or 'deepseek-chat',
+        'deepseek',
+    )
+
 # Resolve active profile once at startup.
 _active_profile_name = os.environ.get('MODEL_QOS', 'premium').strip().lower()
 if _active_profile_name not in MODEL_QOS_PROFILES:
