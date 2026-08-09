@@ -36,7 +36,15 @@ from . import (
     _normalize_transform,
     _coerce_value_for_read,
 )
-from .engine import _clear_tx_conn, _get_tx_conn, _set_tx_conn, ensure_table, ensure_tables, get_engine
+from .engine import (
+    _clear_tx_conn,
+    _get_tx_conn,
+    _set_tx_conn,
+    ensure_composite_indexes,
+    ensure_table,
+    ensure_tables,
+    get_engine,
+)
 from .sql import delete_sql, get_sql, json_dumps, list_sql, merge_sql, resolve_collection, upsert_sql
 
 logger = logging.getLogger(__name__)
@@ -154,16 +162,16 @@ def _build_query_sql(
         pname = f"p{idx + 1}"
         param = f":{pname}"
         if f.op_string in ("array-contains",):
-            where.append(f"data->'{f.field_path}' @> CAST({param} AS jsonb)")
+            where.append(f"{_json_path(f.field_path)} @> CAST({param} AS jsonb)")
             params[pname] = json_dumps([f.value])
         elif f.op_string == "array-contains-any":
-            where.append(f"data->'{f.field_path}' ?| CAST({param} AS text[])")
+            where.append(f"{_json_path(f.field_path)} ?| CAST({param} AS text[])")
             params[pname] = [str(v) for v in f.value]
         elif f.op_string == "in":
-            where.append(f"data->>'{f.field_path}' IN (SELECT unnest(CAST({param} AS text[])))")
+            where.append(f"{_text_path(f.field_path)} IN (SELECT unnest(CAST({param} AS text[])))")
             params[pname] = [str(v) for v in f.value]
         elif f.op_string == "not-in":
-            where.append(f"(data->>'{f.field_path}' IS NULL OR data->>'{f.field_path}' NOT IN (SELECT unnest(CAST({param} AS text[]))))")
+            where.append(f"({_text_path(f.field_path)} IS NULL OR {_text_path(f.field_path)} NOT IN (SELECT unnest(CAST({param} AS text[]))))")
             params[pname] = [str(v) for v in f.value]
         else:
             lhs, cast = _comparison_lhs(f.field_path, f.value)
@@ -182,7 +190,7 @@ def _build_query_sql(
         for field, direction in order_bys:
             # Firestore sorts docs missing the field LAST, regardless of
             # direction; PG defaults to NULLS FIRST on DESC, so pin NULLS LAST.
-            clauses.append(f"data->>'{field}' {'ASC' if direction == 'ASCENDING' else 'DESC'} NULLS LAST")
+            clauses.append(f"{_text_path(field)} {'ASC' if direction == 'ASCENDING' else 'DESC'} NULLS LAST")
         order_sql = " ORDER BY " + ", ".join(clauses)
 
     limit_sql = f" LIMIT {int(limit)}" if limit is not None else ""
@@ -278,6 +286,27 @@ _OPERATORS_SQL = {
 }
 
 
+def _text_path(field_path: str) -> str:
+    """SQL text expression for a JSONB value at a (possibly dotted) path.
+
+    Firestore field paths are dot-separated (``subject.kind``); in JSONB that
+    is nested access ``data #>> '{subject,kind}'``, NOT a literal key
+    ``data->>'subject.kind'``. Single-segment paths keep the ``->>`` form.
+    """
+    if "." not in field_path:
+        return f"data->>'{field_path}'"
+    segments = ",".join(field_path.split("."))
+    return f"data #>> '{{{segments}}}'"
+
+
+def _json_path(field_path: str) -> str:
+    """SQL jsonb (non-text) expression for a path, for array/containment ops."""
+    if "." not in field_path:
+        return f"data->'{field_path}'"
+    segments = ",".join(field_path.split("."))
+    return f"data #> '{{{segments}}}'"
+
+
 def _comparison_lhs(field_path: str, value: Any) -> Tuple[str, Optional[str]]:
     """SQL lhs for a scalar comparison and the CAST for the parameter.
 
@@ -287,12 +316,12 @@ def _comparison_lhs(field_path: str, value: Any) -> Tuple[str, Optional[str]]:
     timestamps in one timezone, so cast to the native type when known.
     """
     if isinstance(value, datetime):
-        return f"CAST(data->>'{field_path}' AS timestamptz)", "timestamptz"
+        return f"CAST({_text_path(field_path)} AS timestamptz)", "timestamptz"
     if isinstance(value, bool):
-        return f"CAST(data->>'{field_path}' AS boolean)", "boolean"
+        return f"CAST({_text_path(field_path)} AS boolean)", "boolean"
     if isinstance(value, (int, float)):
-        return f"CAST(data->>'{field_path}' AS double precision)", "double precision"
-    return f"data->>'{field_path}'", None
+        return f"CAST({_text_path(field_path)} AS double precision)", "double precision"
+    return _text_path(field_path), None
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +768,7 @@ class Client:
         if kwargs.pop("_ensure_schema", True):
             try:
                 ensure_tables()
+                ensure_composite_indexes()
             except Exception as exc:  # pragma: no cover - schema failure is fatal in dev
                 logger.warning("firestore_pg: schema ensure failed (continuing): %s", exc)
 

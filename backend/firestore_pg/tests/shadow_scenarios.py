@@ -175,6 +175,41 @@ def scenario_server_timestamp(db: Any) -> Any:
     return {"is_time": is_time, "keys": sorted(data.keys())}
 
 
+def scenario_dotted_path_query(db: Any) -> Any:
+    """Registry-style dotted field paths (subject.kind, promotion.required)."""
+    refs = [
+        (db.collection("shadow_dotted").document("a"), {"subject": {"kind": "email", "id": "e1"}, "promotion": {"required": True}}),
+        (db.collection("shadow_dotted").document("b"), {"subject": {"kind": "sms", "id": "s1"}, "promotion": {"required": False}}),
+        (db.collection("shadow_dotted").document("c"), {"subject": {"kind": "email", "id": "e2"}, "promotion": {"required": True}}),
+    ]
+    for ref, data in refs:
+        ref.set(data)
+    eq = db.collection("shadow_dotted").where("subject.kind", "==", "email")
+    eq_bool = db.collection("shadow_dotted").where("promotion.required", "==", True)
+    # combined dotted + flat multi-field (registry compound-query shape)
+    both = db.collection("shadow_dotted").where("subject.kind", "==", "email").where("promotion.required", "==", True)
+    return {
+        "eq": _snaps(eq.stream()),
+        "eq_bool": _snaps(eq_bool.stream()),
+        "both": _snaps(both.stream()),
+    }
+
+
+def scenario_order_by_dotted(db: Any) -> Any:
+    """order_by on a nested field path (registry specs sort on nested fields)."""
+    stamps = [
+        datetime(2024, 1, 1, tzinfo=timezone.utc),
+        datetime(2023, 6, 15, tzinfo=timezone.utc),
+        datetime(2025, 3, 10, tzinfo=timezone.utc),
+    ]
+    for i, ts in enumerate(stamps):
+        db.collection("shadow_dotted_order").document(f"o{i}").set(
+            {"subject": {"created": ts}, "rank": i}
+        )
+    q = db.collection("shadow_dotted_order").order_by("subject.created", direction="DESCENDING")
+    return _snaps(q.stream())
+
+
 SCENARIOS: Dict[str, Scenario] = {
     "set_get": scenario_set_get,
     "set_merge": scenario_set_merge,
@@ -190,4 +225,6 @@ SCENARIOS: Dict[str, Scenario] = {
     "nested_collection": scenario_nested_collection,
     "transaction_count": scenario_transaction_count,
     "server_timestamp": scenario_server_timestamp,
+    "dotted_path_query": scenario_dotted_path_query,
+    "order_by_dotted": scenario_order_by_dotted,
 }
