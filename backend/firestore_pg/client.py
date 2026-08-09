@@ -609,16 +609,22 @@ class DocumentReference:
         return self
 
     def create(self, document_data: Mapping[str, Any]) -> "DocumentReference":
-        """create() = set() in our shim (Firestore create fails if exists; emulate)."""
+        """create() fails if the document exists (Firestore semantics)."""
         payload, _ = _write_transform(document_data)
         payload = _strip_sentinels(payload)
-        _run_with_conn(
-            lambda conn: conn.execute(
+
+        def _do(conn: Any) -> None:
+            row = conn.execute(
+                text(get_sql(self._table)), {"uid": self._uid or "", "doc_id": self._id}
+            ).fetchone()
+            if row is not None:
+                raise _api_exceptions.AlreadyExists(f"Document {self.path} already exists")
+            conn.execute(
                 text(upsert_sql(self._table)),
                 {"uid": self._uid or "", "doc_id": self._id, "data": json_dumps(payload)},
-            ),
-            table=self._table,
-        )
+            )
+
+        _run_with_conn(_do, table=self._table)
         return self
 
 
