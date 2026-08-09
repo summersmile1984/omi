@@ -76,20 +76,29 @@ def should_enable_speaker_identification(*, use_custom_stt: bool, **_) -> bool:
 - `utils/memory_ingestion/adapters/production_like_model.py` prompt 上下文
 - `utils/memory_ingestion/models.py` `speaker_identity_claim` 消费
 
-### 阶段 4: OpenMOSS 整合(自托管,替换双服务)
+### 阶段 4: OpenMOSS 整合(自托管,替换 STT+分离)
 
 **现状**: parakeet(无中文)+ diarizer(pyannote)两个 GPU 服务;识别靠 wespeaker embedding 单独走。
 
-**方案**: OpenMOSS 0.9B 一个模型出 STT + 说话人分离 + 识别 + 时间戳 + 声学事件(见 omi-gpu-services-survey.md)。
-- 替换 parakeet STT + diarizer 分离
-- 识别复用 OpenMOSS 的 speaker embedding
-- 长期: 4 GPU 服务 → 1 个 OpenMOSS(L4)
+**重要澄清**: MOSS-Transcribe-Diarize 0.9B 是**端到端转写+说话人分离(diarization)**模型——输出 `[S01]/[S02]` **匿名相对标签**,**没有识别(identification)能力**。其 Whisper-Medium 风格 audio encoder 的内部 embedding 不对外暴露为 speaker embedding,也无 voiceprint/enrollment 机制。
+
+**方案**:
+- 用 OpenMOSS 替换 parakeet STT + diarizer 分离(4 GPU 服务 → 1)
+- **识别仍需独立通道**: OpenMOSS 输出的 `[S01]` 标签 → 从音频片段提取 speaker embedding(现有 wespeaker/pyannote)→ 与 people 列表匹配 → person_id(阶段 1-3 的识别链路保留,只换掉上游的分离/转写)
+- 长期架构: **OpenMOSS(转写+分离)+ 独立 embedding 识别**(或未来模型若支持 enrollment 再合并)
+
+```
+OpenMOSS 0.9B (转写+分离 [S01]/[S02])
+   │
+   ├─ 文本+时间戳 → 转录
+   └─ speaker 音频片段 → wespeaker embedding → 与 people 匹配 → person_id (识别,独立通道)
+```
 
 ## 三、关键技术决策
 
 | 决策点 | 选项 | 推荐 | 理由 |
 |---|---|---|---|
-| 识别模型 | wespeaker(现状) / ECAPA-TDNN / OpenMOSS | 阶段1-3 保留 wespeaker,阶段4 换 OpenMOSS | 最小改动先跑通,OpenMOSS 一次到位 |
+| 识别模型 | wespeaker(现状) / ECAPA-TDNN / OpenMOSS | 保留 wespeaker/ECAPA(OpenMOSS 无识别能力) | OpenMOSS 只做分离,识别需独立 embedding 匹配 |
 | 自动建档触发 | 用户确认 / 自动 | 用户确认(风险低) | 误建 person 污染 people 列表 |
 | speaker_map 存哪 | conversation doc / segments / 独立集合 | conversation doc 内嵌 | 与 transcript 同生命周期,读取简单 |
 | memory 注入 | prompt / 结构化字段 | 结构化字段(speaker_profiles) | prompt 已有,结构化更稳 |

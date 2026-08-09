@@ -20,8 +20,9 @@
 
 | 服务 | 可替代的托管 API | 中文表现 | 结论 |
 |---|---|---|---|
-| **parakeet/STT** | Modulate velma-2(生产默认,支持 zh)、Deepgram 自托管 | velma-2 支持中文 | **可用 API 替代**;或自托管 **OpenMOSS 0.9B**(中文+说话人分离,推荐,见 §三) |
-| **diarizer** | 无直接云 API(Deepgram diarization 附带);自托管可选 pyannote | 中文一般 | **OpenMOSS 自带说话人分离**(多说话人 SOTA),可并掉独立 diarizer |
+| **parakeet/STT** | Modulate velma-2(生产默认,支持 zh)、Deepgram 自托管 | velma-2 支持中文 | **可用 API 替代**;或自托管 **OpenMOSS 0.9B**(中文+说话人**分离**,见 §三) |
+| **diarizer(分离)** | OpenMOSS 0.9B 自带说话人分离(多说话人 SOTA);Deepgram diarization 附带 | 中文好 | **OpenMOSS 可替代独立 diarizer** |
+| **identification(识别)** | 无直接云 API;需 embedding 匹配(现有 wespeaker/pyannote)| 见 speaker-identification-survey | **OpenMOSS 无识别能力**,识别仍需独立 embedding 匹配(见 omi-speaker-identification-survey.md) |
 | **vad** | pyannote 极轻(<1GB),无必要换 API | 语言无关 | 保留自托管,CPU 也能跑 |
 | **nllb-translation** | **已弃用**:生产 translation 走 Gemini(2.5-flash-lite),NLLB 是 fallback(见 translation_benchmark.mdx) | Gemini 中文优 | **GPU 可退役**,NLLB 只是备选 |
 
@@ -32,9 +33,9 @@
 ### STT(替代 parakeet,中文)
 | 模型 | 参数 | 显存 | 中文 | 备注 |
 |---|---|---|---|---|
-| **OpenMOSS 0.9B 自托管(L4)** | 0.9B | 1 张 L4(月处理 5,000-7,000h) | ★★★★★ 中文+说话人分离+时间戳+声学事件 | **推荐(自托管)**,多说话人 SOTA;详见 omi-subscription-margin.md |
+| **OpenMOSS 0.9B 自托管(L4)** | 0.9B | 1 张 L4(月处理 5,000-7,000h) | ★★★★★ 中文转写+说话人**分离**+时间戳+声学事件 | **仅分离(diarization),无识别(identification)**;输出 `[S01]/[S02]` 匿名标签;见 omi-subscription-margin.md + omi-speaker-identification-survey.md |
 | **SenseVoice-Small** (FunASR) | ~300M | <1GB | ★★★★★ 中英日+粤语 | GPU 169x 实时,CPU 17x;端侧免费层候选 |
-| **Paraformer-Large** (FunASR) | 220M | 1-2GB | ★★★★★ 纯中文+时间戳+热词 | 最佳性价比,中文 CER 10.18% |
+| **Paraformer-Large** (FunASR) | 220M | 1-2GB | ★★★★★ 纯中文+时间戳+热词 | 最佳性价比,中文 CER 10.18%;配 CAM++ 可分离 |
 | **Fun-ASR-Nano** (LLM-ASR) | Qwen3-0.6B 解码 | 需 GPU | ★★★★★ 中英日+7方言+26口音 | 旗舰,长尾/难例最好 |
 | parakeet-tdt-0.6b-v3 | 600M | 2-2.5GB | ❌ 无中文 | 现状,应替换 |
 

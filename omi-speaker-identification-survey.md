@@ -43,7 +43,7 @@ speaker/person 归属对 memory 的价值链路:
 | 方案 | 说明 | 模型 |
 |---|---|---|
 | **A. 放宽门控** | identification 对所有非 custom-STT 用户开启(embedding 匹配成本低) | 现有 pyannote wespeaker + people embedding |
-| **B. OpenMOSS 整合** | OpenMOSS 0.9B 自带说话人分离+识别+时间戳,替换 parakeet+diarizer 双服务(见 omi-gpu-services-survey.md) | OpenMOSS 0.9B |
+| **B. OpenMOSS 整合** | OpenMOSS 0.9B 自带说话人**分离**+时间戳(替换 parakeet+diarizer);**注意:OpenMOSS 无识别能力**,识别仍需独立 embedding 匹配通道(见 omi-gpu-services-survey.md) | OpenMOSS 0.9B(分离)+ wespeaker(识别) |
 | **C. 自动建档** | 识别到未知说话人 → 自动创建 person + 收集 speech sample(需用户确认) | ECAPA-TDNN / pyannote embedding |
 | **D. 记忆回流** | conversation 的 person_id 显式传入 memory 提取;`speaker_identity_claim` 强制要求 | 现有 v3 管线打通 |
 
