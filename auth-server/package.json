@@ -1,0 +1,17 @@
+{
+  "name": "omi-auth-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "better-auth": "^1.4.0",
+    "drizzle-orm": "^0.45.2",
+    "express": "^4.21.0",
+    "kysely": "^0.29.4",
+    "pg": "^8.13.0"
+  }
+}
