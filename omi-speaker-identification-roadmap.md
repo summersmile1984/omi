@@ -99,10 +99,43 @@ OpenMOSS 0.9B (转写+分离 [S01]/[S02])
 | 决策点 | 选项 | 推荐 | 理由 |
 |---|---|---|---|
 | 识别模型 | wespeaker(现状) / ECAPA-TDNN / OpenMOSS | 保留 wespeaker/ECAPA(OpenMOSS 无识别能力) | OpenMOSS 只做分离,识别需独立 embedding 匹配 |
+| **识别算力** | CPU / GPU | **CPU 即可** | wespeaker-voxceleb-resnet34-LM ~25MB(ResNet34,256 维),CPU 实时轻松;diarizer 服务已 `cuda if available else cpu` 双支持 |
 | 自动建档触发 | 用户确认 / 自动 | 用户确认(风险低) | 误建 person 污染 people 列表 |
 | speaker_map 存哪 | conversation doc / segments / 独立集合 | conversation doc 内嵌 | 与 transcript 同生命周期,读取简单 |
 | memory 注入 | prompt / 结构化字段 | 结构化字段(speaker_profiles) | prompt 已有,结构化更稳 |
 | 门控 | 移除 / 保留账号级 | 移除(技术能力) | 识别成本低,不应用账号状态挡 |
+
+## 四、算力评估:声纹识别 CPU 够用,GPU 只留给分离
+
+| 环节 | 计算量 | CPU 可行? | 说明 |
+|---|---|---|---|
+| **声纹 embedding**(wespeaker-resnet34-LM) | 单片段 <几十 ms(CPU) | ✅ | ~25MB 模型(ResNet34,256 维),实时率 >100x |
+| **余弦匹配**(256 维 vs people 列表) | 微秒级 | ✅ | 纯向量点积 |
+| **说话人分离 diarization**(pyannote/OpenMOSS) | 重(长音频聚类) | ⚠️ 慢 | **需要 GPU**(OpenMOSS L4 / pyannote GPU) |
+| **OpenMOSS 转写** | 重 | ❌ | 需 GPU(见 omi-gpu-services-survey.md) |
+
+**结论**:
+- **识别(embedding+匹配) = CPU 任务**,可与 GPU 服务解耦,独立部署(普通机器即可)。
+- **GPU 只留给 OpenMOSS(转写+分离)**——两者解耦,识别不绑定 GPU 服务。
+- 现有 diarizer 服务已 `cuda if available else cpu` 双支持,embedding 端点天然可 CPU 跑。
+
+## 五、OpenMOSS 输出衔接(识别如何接)
+
+```
+OpenMOSS 0.9B 输出 (vLLM/SGLang, OpenAI 兼容):
+  [0.11][S01] text [1.03]
+  [1.11][S02] text [2.42]
+
+衔接步骤:
+  1. 解析 [Sxx] 标签 + [start]/[end] 时间戳 → speaker 分段
+  2. 每段从音频切出片段(_extract_speaker_clip_wav 已有)
+  3. 片段 → wespeaker embedding(CPU)
+  4. embedding 与 people 列表余弦匹配 → person_id
+  5. person_id 回填 transcript segment + speaker_map
+  6. memory 提取消费 speaker_profiles
+```
+
+- 衔接点: OpenMOSS 输出的时间戳 + `[Sxx]` 标签 与现有 `_extract_speaker_clip_wav`(sync/pipeline.py:833)天然匹配——**不需要改切片逻辑**,只把上游 STT 换成 OpenMOSS、把识别通道接到 embedding(CPU)即可。
 
 ## 四、依赖与模型
 
