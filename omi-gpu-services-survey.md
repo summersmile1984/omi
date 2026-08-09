@@ -1,6 +1,6 @@
 # GPU 服务调研结论:API 替代 + 中文更优模型 + 最低 GPU 型号
 
-关联文档: `omi-architecture-analysis.md`(GPU 管线)、`omi-cloud-neutral-postgres-migration.md`(GPU 部署面 §1.3/§2.6)、`omi-deployment-resources.md`(服务器资源 §三)。
+关联文档: `omi-architecture-analysis.md`(GPU 管线)、`omi-cloud-neutral-postgres-migration.md`(GPU 部署面 §1.3/§2.6)、`omi-deployment-resources.md`(服务器资源 §三)、`docs/doc/developer/backend/transcription.mdx`(STT serving 策略)、`docs/doc/developer/backend/translation_benchmark.mdx`(NLLB 中文基准)。
 本文件把"已有调研"补到模型级:确认 4 个 GPU 服务能否用 API 替代、中文更优模型、仅跑起来的最低 GPU。
 
 ## 一、现状:4 个自托管 GPU 服务(确认)
@@ -16,12 +16,14 @@
 
 ## 二、API 替代方案矩阵
 
+> 修正: 生产 STT serving 默认是 **`modulate-velma-2, parakeet`**(transcription.mdx 权威);Deepgram 需自托管显式启用(`DEEPGRAM_SELF_HOSTED_ENABLED=true`),**不是** api.deepgram.com 兜底。Modulate velma-2 支持 `zh`。
+
 | 服务 | 可替代的托管 API | 中文表现 | 结论 |
 |---|---|---|---|
-| **parakeet/STT** | Deepgram(生产已配,优先)、Modulate(已配)、Soniox(移动端默认) | Deepgram nova-3 支持中文 | **可用 API 完全替代**,已配 Deepgram → 本地无需自托管 parakeet |
+| **parakeet/STT** | Modulate velma-2(生产默认,支持 zh)、Deepgram 自托管 | velma-2 支持中文 | **可用 API 替代** → 本地无需自托管 parakeet |
 | **diarizer** | 无直接云 API(Deepgram diarization 附带);自托管可选 pyannote | 中文一般 | 保留自托管(见 §三 中文更优)或改用 Deepgram 附带 |
 | **vad** | pyannote 极轻(<1GB),无必要换 API | 语言无关 | 保留自托管,CPU 也能跑 |
-| **nllb-translation** | **已弃用**:生产 translation 走 Gemini(2.5-flash-lite),NLLB 是 fallback | Gemini 中文优 | **GPU 可退役**,NLLB 只是备选 |
+| **nllb-translation** | **已弃用**:生产 translation 走 Gemini(2.5-flash-lite),NLLB 是 fallback(见 translation_benchmark.mdx) | Gemini 中文优 | **GPU 可退役**,NLLB 只是备选 |
 
 **结论**:4 个 GPU 服务里,**nllb 和 parakeet 可被 API 替代**(翻译走 Gemini、STT 走 Deepgram/Modulate),实际"必须自托管 GPU"的只剩 **diarizer + vad**。diarizer 还可用 Deepgram 的 speaker diarization 能力合并掉 → 理论上**自托管 GPU 服务可全部退役**。
 
@@ -44,14 +46,16 @@
 
 ## 四、仅跑起来的最低 GPU 型号
 
-基于各模型显存需求(全部 INT8/FP16 推理,非训练):
+基于各模型显存需求(全部 INT8/FP16 推理,非训练)。NLLB 的 GPU 内存数据来自仓库内 `translation_benchmark.mdx`(L4 24GB 实测):
 
 | 服务 | 需要显存 | 最低可用 GPU | 更稳妥 |
 |---|---|---|---|
 | parakeet (STT) | ~2GB | **GTX 1050 Ti / GTX 1660 4GB** | RTX 3060 12GB |
 | diarizer (pyannote) | ~4GB | **RTX 2060 6GB** | RTX 3060 12GB |
 | vad | <1GB | 任何 NVIDIA(或 CPU) | 集成进 diarizer 卡 |
-| nllb | ~2GB | GTX 1050 Ti 4GB | T4 16GB |
+| nllb 600M (benchmark) | ~2GB | GTX 1050 Ti 4GB | T4/L4 |
+| nllb 1.3B (benchmark) | ~3GB | GTX 1660 6GB | T4/L4 |
+| nllb 3.3B (benchmark) | ~5GB | RTX 2060 6GB | L4 24GB |
 | **四合一(推荐)** | ≤6GB 峰值 | **RTX 2060 6GB 或 RTX 3060 12GB** | T4/L4 |
 
 **结论(最低 GPU)**:
@@ -70,6 +74,7 @@
 ## 六、验证状态
 
 - 模型清单/显存: 已从代码确认(parakeet NeMo、pyannote、nllb CTranslate2)+ 最新 HF 数据核对。
-- parakeet 中文支持: **确认不支持**(25 欧洲语言)。Deepgram nova-3 / FunASR 支持中文。
-- nllb 中文: NLLB-200 支持 200+ 语言含中文,但生产已弃用(走 Gemini)。
+- **NLLB 基准已有仓库文档**: `translation_benchmark.mdx` 实测(L4 24GB INT8):600M ~2GB/1.3B ~3GB/3.3B ~5GB;中文 chrF++ 56→59→63% vs Google 100% → **NLLB 中文明显弱**;文档明确建议中文要专用模型(MADLAD-400-3B 等)。
+- **STT serving 默认**: `modulate-velma-2, parakeet`(transcription.mdx 权威);Modulate 支持 `zh`;Deepgram 自托管需显式启用,非默认。
+- parakeet 中文支持: **确认不支持**(25 欧洲语言)。
 - 注意: pyannote.audio 4.0.3 有 VRAM 回归 bug(长音频 >9.5GB),若升级需锁 3.3.2。
