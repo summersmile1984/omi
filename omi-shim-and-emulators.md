@@ -338,3 +338,46 @@ Phase 2(1-1.5 月):生产切换 + 周边替换
 - 本文是 `omi-cloud-neutral-postgres-migration.md` 的**演进**:原方案按"88 模块逐域重写"评估 4-6 人月;本文改为 SDK 兼容层(shim)方案,**业务代码 0 改动**,核心成本收敛到单个包
 - emulator 方案替代了原"自建 OIDC 才能本地开发"的假设——**本地开发不需要 OIDC**,Auth emulator 零代码接入
 - 生产认证替换(OIDC)、推送、队列等周边方案沿用原文档,与 shim 并行推进
+
+## 9. 实现状态回填(2026-08-09)
+
+`backend/firestore_pg/` 已实现并落地(`feature/cloud-neutral-shim` b6911dcba3),本节记录实际实现与验证证据,作为对 §2-§5 设计的实现确认。
+
+### 9.1 已实现的机制
+
+| 设计点 | 实现 | 验证 |
+|---|---|---|
+| import 零改动 | `compat.py`: `types.ModuleType` facade,启动时硬赋值 `sys.modules['google.cloud.firestore']`/`'google.cloud.firestore_v1'`,保存 `_real/_real_v1/_real_base_query` 转发未知属性(`from ...base_query import BaseCompositeFilter`、`LastUpdateOption` 等) | 88 模块全量 import 无错误 |
+| 注入点 | `database/_client.py` + `database/__init__.py`:存在 `FIRESTORE_PG_DSN` 时提前安装 shim,`get_firestore_client()` 返回 shim Client | 3.11 venv + emulators 启动成功 |
+| 集合→表 | `resolve_collection`: `users`→表 `users`(uid=''),`users/{uid}/<coll>`→表 `<coll>` + uid 列,嵌套级联(表名 `_` 拼接) | 嵌套 `users/{uid}/conversations` 读写通过 |
+| 建表 | `ensure_table` 运行时自动建表(进程缓存),schema 18 表 | 启动日志确认 |
+| 查询翻译 | `_build_query_sql`: 10 个操作符 → JSONB `->>`/`@>`/`?|`,named 参数(`:pN`);字符串 API `where('f','==',v)` 兼容;typed CAST(`CAST(:p AS timestamptz/boolean/double precision)`)解决 text vs 类型比较 | 启动期 `reconcile_after_at`/`wipe_status` 查询干净执行 |
+| 事务 | `@firestore.transactional` + Transaction 同连接语义;真 SDK `_Transactional` 桥(`_begin/_commit/_rollback/_clean_up` 等);冲突抛 `Aborted`;`transaction=` 参数桥接 `get/stream` | 真实业务 wipe 事务函数、冒烟 count=3 通过 |
+| 字段操作 | Increment/ArrayUnion/ArrayRemove/DELETE_FIELD(sentinel 保留后删),`set(merge=True)+transforms` 合并,ISO-8601→datetime 读回转换 | `record_user_platform` 去重、byok set/clear 通过 |
+
+### 9.2 踩坑记录(后续维护者必读)
+
+1. **psycopg pyformat 陷阱**: `:data::jsonb` 会把 `:jsonb` 当参数名 → 一律写 `CAST(:data AS jsonb)`
+2. **SQLAlchemy 2.0**: `engine.connect()` 上下文结束不提交(静默回滚)→ 非事务路径必须 `engine.begin()`;参数必须 named dict
+3. **merge 方向**: `EXCLUDED.data || {table}.data` 是旧的赢(Firestore 语义是新字段覆盖)→ 必须 `{table}.data || EXCLUDED.data`
+4. **facade 必须是真模块**: `types.ModuleType` 子类 + 复制 `__spec__/__loader__/__file__`,否则 importlib 报 `(unknown location)`
+5. **子模块属性**: `BaseCompositeFilter` 在 `firestore_v1.base_query` 子模块、`LastUpdateOption` 在 `firestore_v1` 包级——facade 的 `__getattr__` 转发链要含 `_real_v1` 和 `_real_base_query`
+6. **`update` 对不存在文档抛 `ValueError`**(对齐真 SDK NotFound):业务必须先建文档(onboarding 流程)再 update
+
+### 9.3 验证证据(真机执行)
+
+```
+uvicorn main:app (3.11 venv + FIRESTORE_PG_DSN + 三 emulator) → /health 200,启动无错误
+GET  /v1/users/onboarding                       → 200 (读 PG)
+PATCH /v1/users/onboarding                      → 200 (创建 users 文档,PG 落库)
+POST /v1/users/store-recording-permission       → 200 (update 路径,PG 确认 perm=true)
+POST /v1/users/private-cloud-sync               → 200 (PG 确认 pcs=true)
+GET  /v1/users/store-recording-permission       → 200 读回 true
+嵌套 users/{uid}/conversations set/get/where    → 通过
+```
+
+### 9.4 未完成项
+
+- 影子对拍器(§5)未实现——当前以服务器端真实端点 + 冒烟测试作为验证基准
+- `firestore_index_registry` 复合索引翻译未做(shim 按单字段 JSONB 查询,暂无复合索引需求)
+- 文档 `README`(安装/运行/迁移说明)未落地,优先在迁移路线文档中补齐
