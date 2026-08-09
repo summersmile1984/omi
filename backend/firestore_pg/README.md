@@ -90,13 +90,21 @@ it, and start the backend.
 
 ## Verification
 
-- **Shadow diff** — `firestore_pg/tests/shadow_diff.py` runs the same 14
-  scenario sequence against the real SDK (emulator) and the shim (PG) and diffs
-  normalized JSON. Needs the emulator (for `--mode real`) and Postgres (for
-  `--mode shim`); see the header comment for the exact commands.
+- **Shadow diff (regression lane)** — `dev/shadow-diff.sh` (or `make dev-shadow-diff`)
+  runs the same scenario sequence against the real SDK (emulator) and the shim
+  (PG) and diffs normalized JSON; exits 1 on mismatch. 16 scenarios cover CRUD,
+  merge, update, delete, `==`/comparison/`in` queries, order+limit, dotted-path
+  compound queries, dotted order_by, ArrayUnion/Remove, Increment,
+  DELETE_FIELD, nested collections, transactional counters, and
+  SERVER_TIMESTAMP. Requires the dev stack (`dev/dev-up.sh --no-backend`).
+  Current result: **16/16 match**.
 - **Transaction semantics** — `firestore_pg/tests/test_transaction_semantics.py`
   (integration; skipped without `FIRESTORE_PG_DSN`): commit visibility, conflict
   retry without lost updates, create/update guards, rollback atomicity.
+- **Composite indexes** — `firestore_pg/tests/test_composite_indexes.py`
+  (integration; skipped without `FIRESTORE_PG_DSN`): registry tables exist,
+  composite indexes created from `firestore_index_registry`, dotted-path
+  expressions use nested `#>>`, index creation idempotent.
 
 ## Migration
 
