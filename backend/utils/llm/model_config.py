@@ -123,6 +123,21 @@ elif _TRANSLATION_PROVIDER in ('deepseek', 'ds'):
         'deepseek',
     )
 
+# Chat provider is env-configurable too (CHAT_PROVIDER + CHAT_MODEL), so a
+# self-hosted deployment can route desktop chat through a domestic
+# OpenAI-compatible model instead of OpenAI/Anthropic. Applies to every
+# chat_* feature.
+_CHAT_PROVIDER = os.getenv('CHAT_PROVIDER', '').strip().lower()
+_CHAT_MODEL = os.getenv('CHAT_MODEL', '').strip()
+if _CHAT_PROVIDER in ('deepseek', 'ds'):
+    _chat_model = _CHAT_MODEL or 'deepseek-v4-flash'
+    for _feature in ('chat_responses', 'chat_extraction', 'chat_graph'):
+        _PINNED_FEATURES[_feature] = (_chat_model, 'deepseek')
+elif _CHAT_PROVIDER in ('mimo', 'xiaomi'):
+    _chat_model = _CHAT_MODEL or 'mimo-v2.5'
+    for _feature in ('chat_responses', 'chat_extraction', 'chat_graph'):
+        _PINNED_FEATURES[_feature] = (_chat_model, 'mimo')
+
 # Resolve active profile once at startup.
 _active_profile_name = os.environ.get('MODEL_QOS', 'premium').strip().lower()
 if _active_profile_name not in MODEL_QOS_PROFILES:
