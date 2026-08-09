@@ -79,3 +79,28 @@ desktop 将请求的 6 个核心数据端点全部 200(shim 后端):
 - **阻塞**: swiftpm 下载 Google Firebase xcframework(Firestore/Analytics ~1GB)在国内网络间歇性挂起,首次完整构建未能在会话内完成
 - omi-ctl 桥(47777)与语义动作机制已确认,app 启动后即可用
 - 这是**构建环境/网络**限制,非我们的改造问题;生产/海外网络可正常构建
+
+### Desktop E2E 完整验证(2026-08-09, 追加)
+**成功!** Mac desktop app 完整跑通连 shim 后端:
+
+1. **构建**: named bundle `omi-e2e` 构建成功(Swift 1682 文件编译 + app bundle)。修复 `pkg-config` 缺失(exit 127)→ `brew install pkg-config`
+2. **启动**: `FIREBASE_AUTH_EMULATOR_HOST=localhost:9099` + local auth env 是关键:
+   ```
+   OMI_LOCAL_AUTH_USER/EMAIL/PASSWORD/DISPLAY_NAME + FIREBASE_AUTH_EMULATOR_HOST
+   ```
+   → app 通过 emulator REST 登录 → **signedIn: True, appState: main, onboarded: True**
+3. **桥**: automation bridge :47777,`omi-ctl` 导航(dashboard/conversations)+ 语义动作(refresh_all_data)工作
+4. **数据流(核心证据)**: app 日志 `CrispManager: fetching http://127.0.0.1:8100/v1/crisp/unread` → `poll returned 0 messages` — desktop → shim 后端完整往返
+5. 后端以全 shim env 运行(STORAGE_BACKEND=minio, QUEUE_BACKEND=redis, firestore_pg)
+
+**启动 desktop E2E 的命令**:
+```bash
+cd desktop/macos
+FIREBASE_PROJECT_ID=demo-omi-local FIREBASE_AUTH_PROJECT_ID=demo-omi-local \
+FIREBASE_API_KEY=fake-api-key FIREBASE_AUTH_EMULATOR_HOST=localhost:9099 \
+OMI_LOCAL_AUTH_USER=<uid> OMI_LOCAL_AUTH_EMAIL=<email> OMI_LOCAL_AUTH_PASSWORD=<pw> \
+OMI_LOCAL_AUTH_DISPLAY_NAME="Desktop E2E" \
+OMI_APP_NAME=omi-e2e OMI_DESKTOP_LOCAL_PROFILE=1 OMI_SKIP_BACKEND=1 OMI_SKIP_TUNNEL=1 \
+OMI_PYTHON_API_URL="http://127.0.0.1:8100/" OMI_DESKTOP_API_URL="http://127.0.0.1:8100/" \
+OMI_ENABLE_LOCAL_AUTOMATION=1 ./run.sh
+```
