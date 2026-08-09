@@ -84,7 +84,10 @@ _OPERATORS = {
     "in": "IN",
     "not-in": "NOT IN",
     "array-contains": "@>",  # JSONB containment: data->key @> '[value]'
+    # underscore variant used by database/apps.py and friends
+    "array_contains": "@>",
     "array-contains-any": "?|",  # data->key ?| ARRAY[...]
+    "array_contains_any": "?|",
 }
 
 
@@ -108,6 +111,23 @@ class FieldFilter:
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"FieldFilter({self.field_path!r}, {self.op_string!r}, {self.value!r})"
+
+
+class BaseCompositeFilter:
+    """Firestore-compatible AND/OR composite filter.
+
+    Mirrors ``google.cloud.firestore_v1.base_query.BaseCompositeFilter``
+    (``.filters`` / ``.operator``) so business code that builds
+    ``BaseCompositeFilter('AND', [FieldFilter(...), ...])`` works unchanged.
+    Only ``AND`` is supported by the shim's SQL translation; ``OR`` raises.
+    """
+
+    AND = "AND"
+    OR = "OR"
+
+    def __init__(self, operator: str, filters: Sequence[FieldFilter]) -> None:
+        self.operator = operator
+        self.filters = list(filters)
 
 
 def _ensure_filter(filter_like: Any) -> FieldFilter:

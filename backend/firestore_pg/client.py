@@ -141,6 +141,7 @@ def _build_query_sql(
     filters: List[FieldFilter],
     order_bys: List[Tuple[str, str]],
     limit: Optional[int],
+    offset: Optional[int] = None,
     collection_group: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """Translate FieldFilter/order_by/limit into a SQL statement.
@@ -161,28 +162,29 @@ def _build_query_sql(
     for idx, f in enumerate(filters):
         pname = f"p{idx + 1}"
         param = f":{pname}"
-        if f.op_string in ("array-contains",):
+        op = f.op_string
+        if op in ("array-contains", "array_contains"):
             where.append(f"{_json_path(f.field_path)} @> CAST({param} AS jsonb)")
             params[pname] = json_dumps([f.value])
-        elif f.op_string == "array-contains-any":
+        elif op in ("array-contains-any", "array_contains_any"):
             where.append(f"{_json_path(f.field_path)} ?| CAST({param} AS text[])")
             params[pname] = [str(v) for v in f.value]
-        elif f.op_string == "in":
+        elif op == "in":
             where.append(f"{_text_path(f.field_path)} IN (SELECT unnest(CAST({param} AS text[])))")
             params[pname] = [str(v) for v in f.value]
-        elif f.op_string == "not-in":
+        elif op == "not-in":
             where.append(f"({_text_path(f.field_path)} IS NULL OR {_text_path(f.field_path)} NOT IN (SELECT unnest(CAST({param} AS text[]))))")
             params[pname] = [str(v) for v in f.value]
         else:
             lhs, cast = _comparison_lhs(f.field_path, f.value)
-            where.append(f"{lhs} {_OPERATORS_SQL[f.op_string]} {param}")
+            where.append(f"{lhs} {_OPERATORS_SQL[op]} {param}")
             params[pname] = f.value
             if cast is not None:
                 # CAST(:param AS <type>) keeps psycopg pyformat happy (no
                 # ``::type`` suffix, which would swallow the colon as a param).
-                where[-1] = f"{lhs} {_OPERATORS_SQL[f.op_string]} CAST({param} AS {cast})"
+                where[-1] = f"{lhs} {_OPERATORS_SQL[op]} CAST({param} AS {cast})"
             else:
-                where[-1] = f"{lhs} {_OPERATORS_SQL[f.op_string]} {param}"
+                where[-1] = f"{lhs} {_OPERATORS_SQL[op]} {param}"
 
     order_sql = ""
     if order_bys:
@@ -194,11 +196,12 @@ def _build_query_sql(
         order_sql = " ORDER BY " + ", ".join(clauses)
 
     limit_sql = f" LIMIT {int(limit)}" if limit is not None else ""
+    offset_sql = f" OFFSET {int(offset)}" if offset is not None else ""
 
     sql = f"SELECT doc_id, data FROM {table}"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += order_sql + limit_sql
+    sql += order_sql + limit_sql + offset_sql
     return sql, params
 
 
@@ -344,6 +347,7 @@ class Query:
         filters: Optional[List[FieldFilter]] = None,
         order_bys: Optional[List[Tuple[str, str]]] = None,
         limit: Optional[int] = None,
+        offset: Optional[int] = None,
         collection_group: bool = False,
     ):
         self._table = table
@@ -352,9 +356,35 @@ class Query:
         self._filters = list(filters or [])
         self._order_bys = list(order_bys or [])
         self._limit = limit
+        self._offset = offset
         self._collection_group = collection_group
 
     def where(self, *args: Any, filter: Any = None, **kwargs: Any) -> "Query":
+        from . import BaseCompositeFilter
+
+        # Accept both the shim's BaseCompositeFilter and the real SDK's
+        # (bound by modules imported before compat.install) — both expose
+        # .operator / .filters.
+        is_composite = isinstance(filter, BaseCompositeFilter) or (
+            filter is not None
+            and hasattr(filter, "filters")
+            and hasattr(filter, "operator")
+            and "omposite" in type(filter).__name__
+        )
+        if is_composite:
+            if filter.operator != BaseCompositeFilter.AND:
+                raise ValueError(f"shim supports only AND composite filters, got {filter.operator!r}")
+            extra = [_ensure_filter(f) for f in filter.filters]
+            return Query(
+                table=self._table,
+                uid=self._uid,
+                parent=self._parent,
+                filters=self._filters + extra,
+                order_bys=self._order_bys,
+                limit=self._limit,
+                offset=self._offset,
+                collection_group=self._collection_group,
+            )
         if filter is not None:
             f = _ensure_filter(filter)
         elif len(args) == 3:
@@ -369,6 +399,7 @@ class Query:
             filters=self._filters + [f],
             order_bys=self._order_bys,
             limit=self._limit,
+            offset=self._offset,
             collection_group=self._collection_group,
         )
 
@@ -381,6 +412,7 @@ class Query:
             filters=self._filters,
             order_bys=self._order_bys + [(field_path, direction)],
             limit=self._limit,
+            offset=self._offset,
             collection_group=self._collection_group,
         )
 
@@ -392,8 +424,30 @@ class Query:
             filters=self._filters,
             order_bys=self._order_bys,
             limit=count,
+            offset=self._offset,
             collection_group=self._collection_group,
         )
+
+    def offset(self, count: int) -> "Query":
+        return Query(
+            table=self._table,
+            uid=self._uid,
+            parent=self._parent,
+            filters=self._filters,
+            order_bys=self._order_bys,
+            limit=self._limit,
+            offset=count,
+            collection_group=self._collection_group,
+        )
+
+    def count(self) -> "AggregationQuery":
+        """Return an aggregation query whose ``.get()`` yields the row count.
+
+        Mirrors Firestore's ``Query.count()`` -> ``AggregationQuery`` shape:
+        ``count_query.get()`` returns a list with a single result carrying
+        ``.value`` (the integer count).
+        """
+        return AggregationQuery(self)
 
     def stream(self, transaction: Optional["Transaction"] = None) -> Iterator[DocumentSnapshot]:
         if transaction is not None:
@@ -417,6 +471,7 @@ class Query:
             filters=self._filters,
             order_bys=self._order_bys,
             limit=self._limit,
+            offset=self._offset,
             collection_group=self._collection_group,
         )
         ensure_table(self._table)
@@ -432,6 +487,42 @@ class Query:
                 exists=True,
                 data=raw,
             )
+
+
+class _AggregationResult:
+    """A single Firestore aggregation result with a numeric ``.value``."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+
+class AggregationQuery:
+    """``Query.count()`` result: ``.get()`` returns ``[_AggregationResult]``."""
+
+    def __init__(self, query: "Query") -> None:
+        self._query = query
+
+    def get(self) -> List[_AggregationResult]:
+        # Reuse the query's filter translation; ORDER BY / LIMIT / OFFSET are
+        # ignored for a count (Firestore aggregation semantics).
+        sql, params = _build_query_sql(
+            self._query._table,
+            uid=self._query._uid,
+            filters=self._query._filters,
+            order_bys=[],
+            limit=None,
+            offset=None,
+            collection_group=self._query._collection_group,
+        )
+        count_sql = f"SELECT count(*) FROM ({sql}) AS _agg"
+        ensure_table(self._query._table)
+        tx_conn = _get_tx_conn()
+        if tx_conn is not None:
+            total = tx_conn.execute(text(count_sql), params).fetchone()[0]
+        else:
+            with get_engine().begin() as conn:
+                total = conn.execute(text(count_sql), params).fetchone()[0]
+        return [[_AggregationResult(int(total))]]
 
 
 class CollectionReference:
@@ -475,6 +566,9 @@ class CollectionReference:
 
     def limit(self, count: int) -> Query:
         return self._query().limit(count)
+
+    def count(self) -> "AggregationQuery":
+        return self._query().count()
 
     def _query(self) -> Query:
         return Query(table=self._table, uid=self._uid, parent=self)

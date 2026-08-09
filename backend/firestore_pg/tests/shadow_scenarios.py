@@ -210,6 +210,46 @@ def scenario_order_by_dotted(db: Any) -> Any:
     return _snaps(q.stream())
 
 
+def scenario_offset(db: Any) -> Any:
+    """limit().offset() pagination (conversations/memories list queries)."""
+    for i in range(5):
+        db.collection("shadow_offset").document(f"p{i}").set({"n": i, "name": f"item-{i}"})
+    # offset without order: real SDK default order is by doc_id; shim sorts by doc_id too
+    page = list(db.collection("shadow_offset").order_by("n").offset(2).limit(2).stream())
+    return _snaps(page)
+
+
+def scenario_count(db: Any) -> Any:
+    """Query.count() -> [[result.value]] (conversations count)."""
+    for i in range(4):
+        db.collection("shadow_count").document(f"c{i}").set({"kind": "x"})
+    for i in range(2):
+        db.collection("shadow_count").document(f"d{i}").set({"kind": "y"})
+    total = db.collection("shadow_count").count().get()
+    filtered = db.collection("shadow_count").where("kind", "==", "y").count().get()
+    return {"total": total[0][0].value, "kind_y": filtered[0][0].value}
+
+
+def scenario_array_contains(db: Any) -> Any:
+    """array_contains underscore variant + composite AND filter (apps/personas)."""
+    from google.cloud.firestore_v1.base_query import BaseCompositeFilter
+    from google.cloud.firestore_v1 import FieldFilter as SDKFieldFilter
+
+    db.collection("shadow_ac").document("a").set({"capabilities": ["persona", "audio"], "approved": True, "private": False})
+    db.collection("shadow_ac").document("b").set({"capabilities": ["audio"], "approved": True, "private": False})
+    db.collection("shadow_ac").document("c").set({"capabilities": ["persona"], "approved": False, "private": False})
+    # composite AND: approved==True AND private==False
+    composite = db.collection("shadow_ac").where(
+        filter=BaseCompositeFilter(
+            "AND",
+            [SDKFieldFilter("approved", "==", True), SDKFieldFilter("private", "==", False)],
+        )
+    )
+    # array_contains underscore
+    ac = db.collection("shadow_ac").where(filter=SDKFieldFilter("capabilities", "array_contains", "persona"))
+    return {"composite": _snaps(composite.stream()), "array_contains": _snaps(ac.stream())}
+
+
 SCENARIOS: Dict[str, Scenario] = {
     "set_get": scenario_set_get,
     "set_merge": scenario_set_merge,
@@ -227,4 +267,7 @@ SCENARIOS: Dict[str, Scenario] = {
     "server_timestamp": scenario_server_timestamp,
     "dotted_path_query": scenario_dotted_path_query,
     "order_by_dotted": scenario_order_by_dotted,
+    "offset": scenario_offset,
+    "count": scenario_count,
+    "array_contains": scenario_array_contains,
 }
