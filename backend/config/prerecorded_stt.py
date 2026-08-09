@@ -43,6 +43,7 @@ class PrerecordedSTTService:
     DEEPGRAM = 'deepgram'
     MODULATE = 'modulate'
     PARAKEET = 'parakeet'
+    MOSS = 'moss'
 
 
 class PrerecordedSTTConfigurationError(RuntimeError):
