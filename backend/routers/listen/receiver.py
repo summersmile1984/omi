@@ -127,6 +127,15 @@ class ListenReceiver:
         except Exception as error:
             logger.warning('Listen parity capture failed method=%s type=%s', method, type(error).__name__)
 
+    def _serving_provider(self) -> str:
+        """Resolve the provider actually serving this session, read at use time.
+
+        ``_create_stt_socket`` can fall back from Parakeet to Modulate, so a
+        value snapshotted before the socket exists attributes a Modulate
+        failure to Parakeet (#11306).
+        """
+        return getattr(self.host.stt_service, 'value', self.host.stt_service)
+
     def initialize_decoders(self) -> None:
         request = self.host.request
         if self.host.is_multi_channel:
@@ -222,7 +231,6 @@ class ListenReceiver:
 
     async def initialize_stt(self) -> bool:
         request = self.host.request
-        provider = getattr(self.host.stt_service, 'value', self.host.stt_service)
         if self.host.use_custom_stt:
             return True
         try:
@@ -242,7 +250,7 @@ class ListenReceiver:
                         await terminate_live_stt_session(
                             request.websocket,
                             self.host.state,
-                            failure=live_stt_upstream_failure(provider),
+                            failure=live_stt_upstream_failure(self._serving_provider()),
                             reason='initialization_failed',
                             platform=self.host.client_device_context.platform,
                         )
@@ -277,7 +285,7 @@ class ListenReceiver:
                 await terminate_live_stt_session(
                     request.websocket,
                     self.host.state,
-                    failure=live_stt_upstream_failure(provider),
+                    failure=live_stt_upstream_failure(self._serving_provider()),
                     reason='initialization_failed',
                     platform=self.host.client_device_context.platform,
                 )
@@ -286,20 +294,20 @@ class ListenReceiver:
             self.stt_socket = (
                 GatedSTTSocket(raw, gate=self.vad_gate, passthrough_audio=passthrough) if self.vad_gate else raw
             )
-            self.host.spawn(self._monitor_stt_death(provider), name='stt_death_monitor')
+            self.host.spawn(self._monitor_stt_death(), name='stt_death_monitor')
             return True
         except Exception as error:
             await self._drain_stt_sockets()
             await terminate_live_stt_session(
                 request.websocket,
                 self.host.state,
-                failure=live_stt_initialization_failure(error, provider),
+                failure=live_stt_initialization_failure(error, self._serving_provider()),
                 reason='initialization_failed',
                 platform=self.host.client_device_context.platform,
             )
             return False
 
-    async def _monitor_stt_death(self, provider: str) -> None:
+    async def _monitor_stt_death(self) -> None:
         """Terminate the client session promptly when the provider STT socket dies.
 
         The receive loop only observes provider death while flushing a client
@@ -315,7 +323,7 @@ class ListenReceiver:
                 await terminate_live_stt_session(
                     self.host.request.websocket,
                     self.host.state,
-                    failure=live_stt_upstream_failure(provider),
+                    failure=live_stt_upstream_failure(self._serving_provider()),
                     reason='connection_lost',
                     platform=self.host.client_device_context.platform,
                 )
@@ -394,7 +402,7 @@ class ListenReceiver:
             self.host.state,
             stt_socket=self.stt_socket,
             buffer=buffer,
-            provider=getattr(self.host.stt_service, 'value', self.host.stt_service),
+            provider=self._serving_provider(),
             platform=self.host.client_device_context.platform,
         )
         if sent:
@@ -438,7 +446,7 @@ class ListenReceiver:
                     self.host.state,
                     stt_socket=self.stt_sockets_multi[channel_index],
                     audio=pcm,
-                    provider=getattr(self.host.stt_service, 'value', self.host.stt_service),
+                    provider=self._serving_provider(),
                     platform=self.host.client_device_context.platform,
                 )
                 if sent:
