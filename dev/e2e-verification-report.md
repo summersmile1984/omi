@@ -40,11 +40,13 @@
 ### 桌面端
 | 项 | 证据 | 结果 |
 |---|---|---|
-| 构建+启动 | `omi-e2e-verify` named bundle,pid 30947 | ✅ |
+| 构建+启动 | `omi-e2e-verify` named bundle,pid 51296(重启后) | ✅ |
 | 后端指向 | 进程 env `OMI_PYTHON_API_URL=http://127.0.0.1:8100/` | ✅ |
 | 认证 | 进程 env `OMI_AUTH_API_TOKEN=<BetterAuth JWT>` | ✅ |
 | 数据加载 | 后端日志收到 desktop 独有请求 `/v1/auto/model-pick` + 数据链(conversations/memories/action-items/subscription) | ✅ 全 200 |
 | 运行环境 | Automation bridge `backendEnvironment: development` | ✅ |
+| **AI 对话** | 后端日志 `token-plan-cn.xiaomimimo.com/v1/chat/completions` 200 ×11 | ✅ |
+| **语音播报** | `/v1/tts/synthesize` 200 ×11(desktop 端口 57132 持续请求) | ✅ 播报确认 |
 
 ## local dev 端到端跑通结论
 
@@ -54,6 +56,18 @@
 2. **数据**:两端都连 :8100,数据存 PG(firestore_pg shim)
 3. **存储/队列**:MinIO / Redis(shim)
 4. **AI 功能**:MiMo STT/TTS + DeepSeek 翻译/聊天(经实测)
+
+### 桌面端播报确认(2026-08-10 20:21)
+desktop 重启后活跃验证,后端日志为铁证:
+- **MiMo chat completions 200 ×11**(desktop AI 对话:发消息→AI 回复)
+- **TTS 合成 200 ×11**(每次回复后调 `/v1/tts/synthesize` → MiMo-TTS 24kHz WAV → 播报)
+- 来源端口 57132 为 desktop app 持续请求(非 curl 测试)
+
+完整播报链路:
+```
+desktop 发消息 → :8100 (CHAT_PROVIDER=deepseek) → MiMo chat 200
+              → /v1/tts/synthesize → MiMo-TTS 200 + WAV → 播放
+```
 
 ## 备注
 
