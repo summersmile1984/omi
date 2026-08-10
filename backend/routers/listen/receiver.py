@@ -190,6 +190,13 @@ class ListenReceiver:
                 sample_rate=sample_rate,
                 transcript_callback=callback,
             )
+        if self.host.stt_service == STTService.mimo:
+            from utils.mimo_pipeline.socket import MimoSttSocket
+
+            return MimoSttSocket(
+                sample_rate=sample_rate,
+                transcript_callback=callback,
+            )
         raise RuntimeError(f'Unsupported serving STT provider {self.host.stt_service!r}')
 
     async def _drain_stt_sockets(self) -> None:

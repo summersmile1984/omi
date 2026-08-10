@@ -51,6 +51,7 @@ class STTService(str, Enum):
     modulate = "modulate"
     parakeet = "parakeet"
     sensevoice = "sensevoice"
+    mimo = "mimo"
 
     @staticmethod
     def get_model_name(value: 'STTService') -> Optional[str]:
@@ -62,6 +63,8 @@ class STTService(str, Enum):
             return 'parakeet_streaming'
         if value == STTService.sensevoice:
             return 'sensevoice_streaming'
+        if value == STTService.mimo:
+            return 'mimo_streaming'
 
 
 class ParakeetConnectionError(RuntimeError):
@@ -337,6 +340,8 @@ def get_stt_service_for_language(
             model = model.strip()
             if model == 'sensevoice' and _sensevoice_available():
                 return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
+            if model == 'mimo' and _mimo_available():
+                return (STTService.mimo, requested_language, 'mimo'), parakeet_fallback_reason
             if (
                 model.startswith('dg-')
                 and provider_is_enabled(deepgram_provider_for_runtime(is_dg_self_hosted), surface)
@@ -500,6 +505,13 @@ def _sensevoice_available() -> bool:
     return bool(SENSEVOICE_MODEL_DIR) and os.path.exists(
         os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx")
     )
+
+
+def _mimo_available() -> bool:
+    """True when MiMo streaming STT is configured (MIMO_API_KEY set)."""
+    from utils.mimo_pipeline.socket import _mimo_available as _impl
+
+    return _impl()
 
 
 async def process_audio_dg(
