@@ -57,6 +57,8 @@
 
 ## 备注
 
-- **TTS 503**: desktop 调 `/v1/tts/synthesize` 返回 503——因该后端未设 `TTS_PROVIDER=mimo`/`ELEVENLABS_API_KEY`。移动端/desktop 均未配置 TTS provider 时预期。
+- **TTS 已打通(2026-08-10)**: desktop 用的 `/v1/tts/synthesize`(desktop_tts_updates.py)已接 MiMo-TTS。
+  实测:`POST /v1/tts/synthesize` → 200 + 24kHz WAV(冰糖音色),后端日志确认打到
+  `token-plan-cn.xiaomimimo.com`(MiMo TokenPlan)。desktop 语音播报可用。
 - **两个后端实例**: :8100(BetterAuth 面,desktop+mobile 用)、:8104(Firebase emulator 面,早期验证用,已不活跃)。
 - 移动端 Google/Apple OAuth 仍不可用;dev 主登录路径 = BetterAuth 按钮。

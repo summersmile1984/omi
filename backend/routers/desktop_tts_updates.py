@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from html import escape
 import hmac
@@ -13,8 +14,11 @@ from database import redis_db
 from database._client import get_firestore_client
 from utils.byok import get_byok_key
 from utils.executors import critical_executor, db_executor, run_blocking
+from utils.log_sanitizer import sanitize
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_trial_paywalled
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -67,6 +71,22 @@ class PromoteReleaseRequest(BaseModel):
 
 def _is_allowed_openai_voice(voice_id: str) -> bool:
     return voice_id in _OPENAI_VOICES
+
+
+def mimo_tts_enabled() -> bool:
+    """True when the desktop TTS endpoint should use self-hosted MiMo-TTS."""
+    return (
+        os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo"
+        and bool(os.getenv("MIMO_API_KEY"))
+    )
+
+
+async def _mimo_tts_synthesize(text: str) -> bytes:
+    """Synthesize via MiMo-TTS (self-hosted). Raises MimoTTSAPIError on failure."""
+    from utils.mimo_pipeline.tts import MimoTTSClient, MimoTTSAPIError
+
+    client = MimoTTSClient()
+    return await run_blocking(critical_executor, client.synthesize, text)
 
 
 def _release_channel(release: ReleaseInfo) -> str:
@@ -181,6 +201,16 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
         raise HTTPException(status_code=400, detail="text is required")
     if len(text) > _MAX_TTS_CHARS:
         raise HTTPException(status_code=400, detail="text is too long")
+
+    # Cloud-neutral override: MiMo-TTS (self-hosted) when TTS_PROVIDER=mimo.
+    if mimo_tts_enabled():
+        try:
+            audio = await _mimo_tts_synthesize(text)
+        except Exception as exc:
+            logger.error("tts_synthesize: MiMo TTS failed uid=%s: %s", uid, sanitize(str(exc)))
+            raise HTTPException(status_code=502, detail="TTS upstream unavailable")
+        return Response(content=audio, media_type="audio/wav")
+
     voice_id = request.voice_id.strip()
     if not _is_allowed_openai_voice(voice_id):
         raise HTTPException(status_code=400, detail="voice_id is not supported")
