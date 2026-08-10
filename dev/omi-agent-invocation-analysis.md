@@ -74,3 +74,29 @@ runProcess(executable: cliPath, arguments: [
 - `desktop/macos/Desktop/Sources/MemoryExportConnectionDetector.swift` — 本机配置探测
 - `backend/agent-proxy/main.py` — 移动端 → VM agent
 - `app/lib/services/agent_chat_service.dart` — 移动端 agent chat(WSS 到 agent-proxy)
+
+## 四、codex / claude code 的 project + conversation 概念(2026-08-10 补充)
+
+### Claude Code(本机已装 2.1.202)
+- **project 目录**: `~/.claude/projects/-Users-<path>-<project>/`(每个项目一个目录)
+- **conversation 文件**: 每个目录下 `*.jsonl`(文件名为会话 UUID)
+- **jsonl 结构**: `summary`(会话摘要)+ `message`(user/assistant 消息)
+- **恢复**: `claude --resume <UUID>` 或 `-c`(继续最近)
+- **选择能力**: 可解析所有 project 目录 + 每个 conversation 的 summary,列出"哪个项目里有什么对话"
+
+### Codex(本机已装 0.145.0)
+- **session 存储**: `~/.codex/sessions/YYYY/MM/DD/*.jsonl`
+- **session_meta**: 含 `cwd`(工作目录)+ `id`(UUID)+ `originator`
+- **project 配置**: `~/.codex/config.toml` 的 `[projects."<path>"]`(per-project 权限/模型)
+- **恢复**: `codex exec resume <SESSION_ID>`(按 UUID 或 thread 名)
+- **选择能力**: 可扫描 sessions + config.toml projects,列出 project → session
+
+### 能否用语音选择 project + conversation 对话操作?
+
+**能,机制已具备**:
+1. **枚举**: 读 `~/.claude/projects/*/` + `~/.codex/sessions/**/*.jsonl` + config.toml projects → 得到 project 列表
+2. **选择**: 语音说"在 memweft 项目的那个对话里...",LLM 解析 → 匹配 project 路径 + conversation(UUID/summary)
+3. **对话操作**: `claude --resume <UUID> -p "<prompt>"` 或 `codex exec resume <SESSION_ID> "<prompt>"`(非交互发送消息)
+4. **接 Omi**: 语音 → STT → LLM 解析意图 → 调用上述 CLI → 结果回传 TTS
+
+**唯一要注意**: claude 的 conversation 按"目录路径"归属 project,codex 按 cwd 归属——语音选择需要把"项目名"映射到路径(可用 config.toml projects 或项目名匹配)。

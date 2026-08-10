@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="MemWeft is an AI memory wearable that helps your most meaningful moments stay findable." />
+  <title>MemWeft — Your life, within reach</title>
+  <style>
+    :root {
+      --ink: #0b0d0e;
+      --panel: #121617;
+      --paper: #f4f1e8;
+      --mist: #b9c0bc;
+      --dim: #78827d;
+      --thread: #b6ed80;
+      --thread-soft: rgba(182, 237, 128, .12);
+      --line: rgba(244, 241, 232, .13);
+      --serif: Georgia, 'Times New Roman', serif;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--paper);
+      background: var(--ink);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    .shell { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
+
+    .site-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 26px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      letter-spacing: -.04em;
+      font-weight: 650;
+      font-size: 1.16rem;
+    }
+    .brand-mark {
+      width: 21px;
+      height: 21px;
+      display: grid;
+      place-items: center;
+      color: var(--thread);
+    }
+    .brand-mark::before, .brand-mark::after {
+      content: "";
+      grid-area: 1 / 1;
+      width: 17px;
+      height: 5px;
+      border: 1.5px solid currentColor;
+      border-radius: 50%;
+      transform: rotate(42deg);
+    }
+    .brand-mark::after { transform: rotate(-42deg); }
+    .header-note {
+      font-size: .7rem;
+      font-weight: 700;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      color: var(--mist);
+    }
+
+    .hero { position: relative; padding: clamp(70px, 11vw, 142px) 0 70px; overflow: hidden; }
+    .hero::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      top: 34px;
+      right: -140px;
+      width: min(58vw, 720px);
+      aspect-ratio: 1;
+      border: 1px solid rgba(182, 237, 128, .17);
+      border-radius: 50%;
+      box-shadow: 0 0 0 74px rgba(182, 237, 128, .028), 0 0 0 148px rgba(182, 237, 128, .018);
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.12fr) minmax(320px, .88fr);
+      align-items: center;
+      gap: clamp(38px, 7vw, 105px);
+    }
+    .eyebrow, .card-number, .feature-kicker {
+      margin: 0;
+      color: var(--thread);
+      font-size: .69rem;
+      font-weight: 750;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 760px;
+      margin: 20px 0 25px;
+      font-family: var(--serif);
+      font-size: clamp(3.65rem, 7.2vw, 6.65rem);
+      font-weight: 400;
+      letter-spacing: -.075em;
+      line-height: .89;
+    }
+    h1 em { font-style: italic; color: var(--thread); }
+    .hero-copy {
+      max-width: 480px;
+      color: var(--mist);
+      font-size: clamp(1rem, 1.4vw, 1.12rem);
+      line-height: 1.65;
+    }
+    .hero-actions { display: flex; align-items: center; gap: 25px; margin-top: 34px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      gap: 13px;
+      padding: 14px 19px;
+      border: 1px solid var(--thread);
+      color: var(--ink);
+      background: var(--thread);
+      font-size: .8rem;
+      font-weight: 750;
+      letter-spacing: .02em;
+      transition: transform .2s ease, background .2s ease, box-shadow .2s ease;
+    }
+    .button::after { content: "↗"; font-size: 1.05rem; line-height: .7; }
+    .button:hover { transform: translateY(-3px); background: #cdf5a9; box-shadow: 5px 5px 0 rgba(244,241,232,.26); }
+    .button:focus-visible, .text-link:focus-visible { outline: 2px solid var(--paper); outline-offset: 4px; }
+    .availability { color: var(--dim); font-size: .76rem; line-height: 1.35; }
+
+    .memory-object {
+      position: relative;
+      width: min(100%, 410px);
+      margin-left: auto;
+      aspect-ratio: .85;
+      display: grid;
+      place-items: center;
+    }
+    .memory-object::before {
+      content: "";
+      position: absolute;
+      inset: 5% 3%;
+      background-image: linear-gradient(rgba(244,241,232,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(244,241,232,.05) 1px, transparent 1px);
+      background-size: 34px 34px;
+      mask-image: radial-gradient(circle, black 26%, transparent 70%);
+    }
+    .weave {
+      position: relative;
+      width: 196px;
+      aspect-ratio: 1;
+      border: 1px solid rgba(244,241,232,.32);
+      border-radius: 50%;
+      box-shadow: 0 0 0 23px rgba(244,241,232,.035), 0 0 0 24px rgba(182,237,128,.19), 0 0 0 57px rgba(182,237,128,.025);
+      animation: float 7s ease-in-out infinite;
+    }
+    .weave span { position: absolute; inset: 25px; border: 1px solid var(--thread); border-radius: 50%; }
+    .weave span:nth-child(1) { transform: rotate(0deg) scaleX(.35); }
+    .weave span:nth-child(2) { transform: rotate(45deg) scaleX(.35); }
+    .weave span:nth-child(3) { transform: rotate(90deg) scaleX(.35); }
+    .weave span:nth-child(4) { transform: rotate(135deg) scaleX(.35); }
+    .weave::before, .weave::after { content: ""; position: absolute; border-radius: 50%; background: var(--thread); }
+    .weave::before { width: 8px; height: 8px; top: 27px; left: 41px; box-shadow: 106px 0 0 var(--thread), 53px 125px 0 var(--thread); }
+    .weave::after { inset: 68px; border: 1px solid var(--paper); background: var(--ink); }
+    .object-label {
+      position: absolute;
+      bottom: 5%;
+      left: 0;
+      padding: 11px 13px;
+      border-left: 1px solid var(--thread);
+      color: var(--mist);
+      background: rgba(11,13,14,.82);
+      font-size: .68rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .object-label b { display: block; margin-bottom: 3px; color: var(--paper); font-size: .75rem; letter-spacing: .01em; text-transform: none; }
+    @keyframes float { 50% { transform: translateY(-12px) rotate(4deg); } }
+
+    .proof { padding: 24px 0 68px; }
+    .proof-row { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 20px; align-items: center; padding: 21px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .proof-item { color: var(--mist); font-size: .78rem; line-height: 1.45; }
+    .proof-item b { display: block; margin-bottom: 3px; color: var(--paper); font-size: .86rem; }
+    .proof-divider { width: 1px; height: 30px; background: var(--line); }
+
+    .features { padding: clamp(70px, 9vw, 118px) 0 116px; border-top: 1px solid var(--line); }
+    .section-head { display: grid; grid-template-columns: 1fr minmax(220px, .52fr); gap: 28px; align-items: end; margin-bottom: 46px; }
+    h2 { max-width: 650px; margin: 12px 0 0; font-family: var(--serif); font-size: clamp(2.45rem, 4.4vw, 4.3rem); font-weight: 400; letter-spacing: -.065em; line-height: .96; }
+    .section-intro { margin: 0; color: var(--mist); font-size: .95rem; line-height: 1.6; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+    .card { min-height: 300px; padding: 25px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--ink); transition: background .25s ease, transform .25s ease; }
+    .card:hover { background: var(--panel); transform: translateY(-5px); }
+    .card-number { color: var(--dim); }
+    .card-icon { display: grid; place-items: center; width: 48px; height: 48px; margin: 48px 0 27px; border: 1px solid rgba(182,237,128,.58); color: var(--thread); font-family: var(--serif); font-size: 1.5rem; }
+    .card:nth-child(2) .card-icon { border-radius: 50%; font-size: 1.1rem; }
+    .card:nth-child(3) .card-icon { transform: rotate(45deg); }
+    .card:nth-child(3) .card-icon span { transform: rotate(-45deg); }
+    h3 { margin: 0 0 10px; font-family: var(--serif); font-size: 1.75rem; font-weight: 400; letter-spacing: -.04em; }
+    .card p { max-width: 280px; margin: 0; color: var(--mist); font-size: .87rem; line-height: 1.6; }
+
+    .closing { padding: 95px 0; background: var(--paper); color: var(--ink); }
+    .closing-inner { display: flex; flex-wrap: wrap; gap: 28px; align-items: end; justify-content: space-between; }
+    .closing h2 { max-width: 690px; margin: 0; font-size: clamp(2.7rem, 5.7vw, 5.4rem); }
+    .closing h2 em { color: #446d25; }
+    .closing .button { flex: none; background: var(--ink); border-color: var(--ink); color: var(--paper); }
+    .closing .button:hover { background: #2e3533; box-shadow: 5px 5px 0 #b2b1aa; }
+
+    footer { padding: 31px 0; color: var(--dim); font-size: .72rem; }
+    .footer-inner { display: flex; gap: 18px; align-items: center; justify-content: space-between; }
+    .footer-links { display: flex; gap: 18px; }
+    .text-link { transition: color .2s ease; }
+    .text-link:hover { color: var(--thread); }
+
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 34px, 1180px); }
+      .header-note { display: none; }
+      .hero { padding-top: 64px; }
+      .hero-grid, .section-head { grid-template-columns: 1fr; }
+      .hero-grid { gap: 35px; }
+      .memory-object { width: min(100%, 340px); margin: 5px auto 0; }
+      .proof-row { grid-template-columns: 1fr; gap: 14px; }
+      .proof-divider { display: none; }
+      .cards { grid-template-columns: 1fr; }
+      .card { min-height: 245px; }
+      .card-icon { margin-top: 30px; }
+      .closing { padding: 72px 0; }
+      .footer-inner { align-items: flex-start; flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="shell site-header">
+    <a class="brand" href="#top" aria-label="MemWeft home"><span class="brand-mark" aria-hidden="true"></span>MemWeft</a>
+    <span class="header-note">Personal memory, reimagined</span>
+  </header>
+
+  <main id="top">
+    <section class="hero shell" aria-labelledby="hero-title">
+      <div class="hero-grid">
+        <div>
+          <p class="eyebrow">The memory wearable</p>
+          <h1 id="hero-title">Keep the moments that <em>make you.</em></h1>
+          <p class="hero-copy">MemWeft quietly catches the context of your life, then gives it back when it matters — private, searchable, and entirely yours.</p>
+          <div class="hero-actions">
+            <a class="button" href="#waitlist">Join the waitlist</a>
+            <span class="availability">Limited early access<br />opens this autumn</span>
+          </div>
+        </div>
+        <div class="memory-object" aria-label="Abstract illustration of the MemWeft wearable">
+          <div class="weave" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+          <div class="object-label"><b>MemWeft One</b>Designed to disappear</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="proof shell" aria-label="Product principles">
+      <div class="proof-row">
+        <div class="proof-item"><b>Your life stays yours</b>On-device intelligence by design.</div>
+        <div class="proof-divider" aria-hidden="true"></div>
+        <div class="proof-item"><b>A thought, not a feed</b>No notifications. No scrolling.</div>
+        <div class="proof-divider" aria-hidden="true"></div>
+        <div class="proof-item"><b>Made for your real world</b>Wear it. Forget it. Recall more.</div>
+      </div>
+    </section>
+
+    <section class="features shell" id="features" aria-labelledby="features-title">
+      <div class="section-head">
+        <div>
+          <p class="feature-kicker">Memory has a new shape</p>
+          <h2 id="features-title">A softer way to be more present.</h2>
+        </div>
+        <p class="section-intro">A small intelligence that works in the background, leaving the foreground to you.</p>
+      </div>
+      <div class="cards">
+        <article class="card">
+          <p class="card-number">01 / Catch</p>
+          <div class="card-icon" aria-hidden="true">⌁</div>
+          <h3>Gather context</h3>
+          <p>MemWeft recognizes the people, places, and ideas moving through your day — without pulling you out of it.</p>
+        </article>
+        <article class="card">
+          <p class="card-number">02 / Connect</p>
+          <div class="card-icon" aria-hidden="true">✦</div>
+          <h3>Find the thread</h3>
+          <p>Ask naturally. Your memories surface as connected moments, not another endless archive to sort through.</p>
+        </article>
+        <article class="card">
+          <p class="card-number">03 / Remember</p>
+          <div class="card-icon" aria-hidden="true"><span>↗</span></div>
+          <h3>Move with clarity</h3>
+          <p>Recall what you promised, where you left off, and the detail that changes everything — right when you need it.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="closing" id="waitlist" aria-labelledby="closing-title">
+      <div class="shell closing-inner">
+        <h2 id="closing-title">There is more of your life worth <em>keeping.</em></h2>
+        <a class="button" href="mailto:hello@memweft.example?subject=MemWeft%20waitlist">Reserve early access</a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell footer-inner">
+      <span>© 2026 MemWeft. Made to remember gently.</span>
+      <nav class="footer-links" aria-label="Footer navigation">
+        <a class="text-link" href="#features">How it works</a>
+        <a class="text-link" href="mailto:hello@memweft.example">Contact</a>
+      </nav>
+      <span>Built with Codex AI</span>
+    </div>
+  </footer>
+</body>
+</html>
