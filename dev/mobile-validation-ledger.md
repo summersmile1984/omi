@@ -34,6 +34,21 @@ flutter run --flavor dev --dart-define=OMI_API_BASE_URL=http://10.0.2.2:8104/ -d
 | **Auth emulator 映射** | `Mapping Auth Emulator host "127.0.0.1" to "10.0.2.2"` | ✅ |
 | **认证** | emulator token → 后端 :8104 | ✅ 200 |
 | **数据链路** | `/v1/conversations`、`/v3/memories`、`/v1/action-items` | ✅ 全 200 |
+| **UI 登录**(BetterAuth) | app 点 Better Auth 按钮 → auth-server /auth-issue → 后端 :8100 | ✅ 登录后数据加载全 200 |
+
+## BetterAuth UI 登录(2026-08-10 新增)
+
+dev flavor 登录页新增 **Better Auth (self-hosted)** 按钮(`betterAuthSignInButton`),绕过
+Firebase Google OAuth,直接连自托管 auth-server:
+
+- `AuthenticationProvider.onBetterAuthSignIn`: 调 `auth-server /auth-issue`(uid 自动生成)
+  → 解析 JWT → 存 `SharedPreferencesUtil.authToken`/`uid` → 标记 `_betterAuthSession` → onSignIn
+- `isSignedIn()` 识别 BetterAuth 会话;登出时重置
+- 按钮: `app/lib/pages/onboarding/auth.dart`(Apple 与 Google 之间)
+- 测试: `parseBetterAuthToken` 纯函数 + 4 单测
+
+**验证**: app 点 Better Auth 按钮 → 后端 :8100 收到登录链
+(`/v1/conversations`、`/v3/memories`、`/v1/action-items`、`/v1/users/me/subscription`、jwks)全 200。
 
 ## 遇到的问题与解决
 
@@ -45,6 +60,5 @@ flutter run --flavor dev --dart-define=OMI_API_BASE_URL=http://10.0.2.2:8104/ -d
 
 ## 遗留
 
-- app 本体未在 UI 上完成登录(Google/Apple OAuth 在 emulator 不可用);数据链路已用 emulator
-  token 验证 200。完整 UI 登录流需真实 Firebase 或手机号登录接入
-- app 的 WebSocket 录音链路(到 pusher)未验证(未登录)
+- app 的 WebSocket 录音链路(到 pusher)未验证(登录后界面停留在 onboarding 下一步)
+- Google/Apple OAuth 仍不可用(emulator 无 Google 账号);BetterAuth 登录为 dev 主路径

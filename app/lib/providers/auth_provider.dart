@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:omi/backend/http/api/apps.dart' as apps_api;
@@ -35,6 +37,14 @@ Future<ProviderLinkResult?> completeProviderLinkAndMigrate({
   return result;
 }
 
+/// Parses the JWT from a Better Auth /auth-issue response body. Returns null
+/// when the body is malformed or the token is missing/empty.
+String? parseBetterAuthToken(Map<String, dynamic> body) {
+  final token = body['token'];
+  if (token is String && token.isNotEmpty) return token;
+  return null;
+}
+
 class AuthenticationProvider extends BaseProvider {
   FirebaseAuth get _auth => FirebaseAuth.instance;
 
@@ -43,6 +53,7 @@ class AuthenticationProvider extends BaseProvider {
   bool _loading = false;
   bool _requiresReauthentication = false;
   int _sessionExpirationGeneration = 0;
+  bool _betterAuthSession = false;
   StreamSubscription<User?>? _authStateSubscription;
   StreamSubscription<User?>? _idTokenSubscription;
   StreamSubscription<AuthSessionExpiredEvent>? _sessionExpiredSubscription;
@@ -109,6 +120,7 @@ class AuthenticationProvider extends BaseProvider {
         _sessionExpirationGeneration++;
         user = null;
         authToken = null;
+        _betterAuthSession = false;
         final rootContext = globalNavigatorKey.currentContext;
         if (rootContext != null && rootContext.mounted) {
           clearAllUserState(rootContext);
@@ -119,6 +131,7 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   bool isSignedIn() {
+    if (_betterAuthSession && authToken != null && authToken!.isNotEmpty) return true;
     return !_requiresReauthentication && _auth.currentUser != null && !_auth.currentUser!.isAnonymous;
   }
 
@@ -135,6 +148,55 @@ class AuthenticationProvider extends BaseProvider {
   void setLoading(bool value) {
     _loading = value;
     notifyListeners();
+  }
+
+  /// Dev-only Better Auth sign-in for the cloud-neutral fork. Bypasses
+  /// Firebase Auth entirely: calls the self-hosted auth-server /auth-issue,
+  /// stores the returned JWT as the API auth token, and marks this session as
+  /// an authenticated Better Auth session so the rest of the app treats it
+  /// like a signed-in user (backend verifies the JWT via AUTH_PROVIDER=better_auth).
+  Future<void> onBetterAuthSignIn(Function() onSignIn) async {
+    if (loading) return;
+    setLoadingState(true);
+    try {
+      const baseUrl = String.fromEnvironment(
+        'OMI_AUTH_SERVER_URL',
+        defaultValue: 'http://10.0.2.2:3000',
+      );
+      final response = await http.post(
+        Uri.parse('$baseUrl/auth-issue'),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({'uid': 'mobile-better-auth-${DateTime.now().millisecondsSinceEpoch}'}),
+      );
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final token = parseBetterAuthToken(body);
+        if (token != null) {
+          SharedPreferencesUtil().authToken = token;
+          SharedPreferencesUtil().tokenExpirationTime =
+              DateTime.now().millisecondsSinceEpoch + (24 * 60 * 60 * 1000);
+          SharedPreferencesUtil().uid = 'mobile-better-auth';
+          authToken = token;
+          _betterAuthSession = true;
+          _requiresReauthentication = false;
+          PlatformManager.instance.analytics.identify();
+          notifyListeners();
+          onSignIn();
+          setLoadingState(false);
+          return;
+        }
+      }
+      AppSnackbar.showSnackbarError(
+        globalNavigatorKey.currentContext?.l10n.authFailedToSignInWithGoogle ??
+            'Failed to sign in with Better Auth, please try again.',
+      );
+    } catch (e) {
+      Logger.debug('Better Auth sign in error: $e');
+      AppSnackbar.showSnackbarError(
+        globalNavigatorKey.currentContext?.l10n.authenticationFailed ?? 'Authentication failed. Please try again.',
+      );
+    }
+    setLoadingState(false);
   }
 
   Future<void> onGoogleSignIn(Function() onSignIn) async {
