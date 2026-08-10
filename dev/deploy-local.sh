@@ -118,12 +118,52 @@ export STORAGE_EMULATOR_HOST=localhost:9199
 export FIREBASE_PROJECT_ID=demo-omi-local
 export OMI_ENV_STAGE=offline
 export RATE_LIMIT_SHADOW_MODE=true
+# Better Auth (auth-server) — JWT issuance + JWKS verification
+export AUTH_PROVIDER="${AUTH_PROVIDER:-better_auth}"
+export AUTH_JWKS_URL="http://127.0.0.1:${AUTH_PORT}/api/auth/jwks"
 # Cloud-neutral shims
 export STORAGE_BACKEND=minio
 export MINIO_ENDPOINT="http://127.0.0.1:9000"
+# MinIO buckets (storage.py reads BUCKET_*; storage_minio auto-creates them)
+export BUCKET_SPEECH_PROFILES="${BUCKET_SPEECH_PROFILES:-omi-speech-profiles}"
+export BUCKET_POSTPROCESSING="${BUCKET_POSTPROCESSING:-omi-postprocessing}"
+export BUCKET_MEMORIES_RECORDINGS="${BUCKET_MEMORIES_RECORDINGS:-omi-memories-recordings}"
+export BUCKET_PRIVATE_CLOUD_SYNC="${BUCKET_PRIVATE_CLOUD_SYNC:-omi-private-cloud-sync}"
+export BUCKET_TEMPORAL_SYNC_LOCAL="${BUCKET_TEMPORAL_SYNC_LOCAL:-omi-temporal-sync-local}"
+export BUCKET_PLUGINS_LOGOS="${BUCKET_PLUGINS_LOGOS:-omi-plugins-logos}"
+export BUCKET_APP_THUMBNAILS="${BUCKET_APP_THUMBNAILS:-omi-app-thumbnails}"
+export BUCKET_CHAT_FILES="${BUCKET_CHAT_FILES:-omi-chat-files}"
+export BUCKET_DESKTOP_UPDATES="${BUCKET_DESKTOP_UPDATES:-omi-desktop-updates}"
 export QUEUE_BACKEND=redis
 export REDIS_DB_HOST=127.0.0.1
 export REDIS_DB_PORT=6379
+# Live STT provider. Default: local CPU SenseVoice (off-cloud). To use
+# MiMo-V2.5-ASR instead, set STT_SERVICE_MODELS=mimo + MIMO_API_KEY.
+export SENSEVOICE_MODEL_DIR="${SENSEVOICE_MODEL_DIR:-/tmp/sherpa/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17}"
+export STT_SERVICE_MODELS="${STT_SERVICE_MODELS:-sensevoice}"
+# Pre-recorded batch STT provider (opt-in override, else upstream policy).
+#   STT_PRERECORDED_MODEL=moss + MOSS_API_KEY  → OpenMOSS (ASR)
+#   STT_PRERECORDED_MODEL=parakeet|modulate-velma-2 → upstream GPU/hosted
+if [[ -n "${STT_PRERECORDED_MODEL:-}" ]]; then
+  export STT_PRERECORDED_MODEL
+fi
+if [[ -n "${MIMO_API_KEY:-}" ]]; then
+  export MIMO_API_KEY
+fi
+if [[ -n "${MOSS_API_KEY:-}" ]]; then
+  export MOSS_API_KEY
+fi
+# TTS provider: default ElevenLabs (needs ELEVENLABS_API_KEY). Set
+# TTS_PROVIDER=mimo to use MiMo-V2.5-TTS (needs MIMO_API_KEY + MIMO_USE_TOKENPLAN).
+if [[ -n "${TTS_PROVIDER:-}" ]]; then
+  export TTS_PROVIDER
+fi
+if [[ -n "${MIMO_USE_TOKENPLAN:-}" ]]; then
+  export MIMO_USE_TOKENPLAN
+fi
+if [[ -n "${MIMO_TTS_VOICE:-}" ]]; then
+  export MIMO_TTS_VOICE
+fi
 # Translation provider (default gemini; set TRANSLATION_PROVIDER=mimo|deepseek)
 if [[ -n "${TRANSLATION_PROVIDER:-}" ]]; then
   export TRANSLATION_PROVIDER
