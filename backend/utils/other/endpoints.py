@@ -129,11 +129,13 @@ def verify_token(token: str) -> str:
         try:
             decoded_token = cast(Any, _shim_verify(token))
             return decoded_token['uid']
-        except _ShimInvalid:
-            raise
+        except _ShimInvalid as _exc:
+            # Convert to the firebase_admin InvalidIdTokenError so the caller's
+            # `except InvalidIdTokenError` turns it into a clean 401.
+            raise InvalidIdTokenError(str(_exc)) from _exc
         except Exception as exc:  # pragma: no cover - unexpected shim failure
             logger.error('auth_shim verify failed type=%s', type(exc).__name__)
-            raise
+            raise InvalidIdTokenError(f"auth_shim verify failed: {exc}") from exc
 
     # Verify Firebase token
     try:
