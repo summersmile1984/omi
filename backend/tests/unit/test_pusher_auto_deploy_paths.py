@@ -18,6 +18,7 @@ def test_pusher_auto_deploy_tracks_its_shared_lifecycle_and_observability_import
     assert paths == {
         'backend/config/**',
         'backend/database/**',
+        'backend/firestore_pg/**',
         'backend/models/**',
         'backend/routers/**',
         'backend/services/**',
