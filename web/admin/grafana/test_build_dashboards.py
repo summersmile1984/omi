@@ -254,10 +254,8 @@ class ExactRevenueTests(unittest.TestCase):
         chart only the exact-attribution fields."""
         for uid, field in [("omi-tv-macos", "desktopExact"), ("omi-tv-mobile", "mobileExact")]:
             dash = load(uid)
-            panel = next(p for p in dash["panels"]
-                         if build_dashboards.base_title(p).startswith("Revenue / day"))
-            selectors = [c["selector"] for c in panel["targets"][0]["columns"]
-                         if c.get("type") != "timestamp"]
+            panel = next(p for p in dash["panels"] if build_dashboards.base_title(p).startswith("Revenue / day"))
+            selectors = [c["selector"] for c in panel["targets"][0]["columns"] if c.get("type") != "timestamp"]
             self.assertEqual(selectors, [field], uid)
             var = next(v for v in dash["templating"]["list"] if v["name"] == "d_prev")
             url = var["query"]["infinityQuery"]["url"]
