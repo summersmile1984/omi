@@ -58245,7 +58245,7 @@
     },
     "/v2/tts/synthesize": {
       "post": {
-        "description": "Proxy a TTS request to ElevenLabs. Per-user rate limited.",
+        "description": "Proxy a TTS request to the configured provider. Per-user rate limited.",
         "operationId": "tts_synthesize_v2_tts_synthesize_post",
         "parameters": [
           {
