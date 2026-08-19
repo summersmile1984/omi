@@ -669,9 +669,9 @@ def _sensevoice_available() -> bool:
 
 def _mimo_available() -> bool:
     """True when MiMo streaming STT is configured (MIMO_API_KEY set)."""
-    from utils.mimo_pipeline.socket import _mimo_available as _impl
+    from utils.mimo_pipeline.socket import mimo_available
 
-    return _impl()
+    return mimo_available()
 
 
 async def process_audio_dg(

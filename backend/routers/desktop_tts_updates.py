@@ -79,8 +79,8 @@ def mimo_tts_enabled() -> bool:
 
 
 async def _mimo_tts_synthesize(text: str) -> bytes:
-    """Synthesize via MiMo-TTS (self-hosted). Raises MimoTTSAPIError on failure."""
-    from utils.mimo_pipeline.tts import MimoTTSClient, MimoTTSAPIError
+    """Synthesize via MiMo-TTS (self-hosted)."""
+    from utils.mimo_pipeline.tts import MimoTTSClient
 
     client = MimoTTSClient()
     return await run_blocking(critical_executor, client.synthesize, text)

@@ -25,7 +25,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 import httpx
 import redis
@@ -137,7 +137,7 @@ def _worker(queue_name: str) -> None:
     logger.info("worker %s -> %s (blocking on %s)", queue_name, handler_url, queue_key)
     r = _r()
     while True:
-        raw = r.blpop(queue_key, timeout=1)
+        raw = cast(Any, r).blpop([queue_key], timeout=1)
         if raw is None:
             continue
         try:

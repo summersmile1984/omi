@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, _guess_format
-from utils.mimo_pipeline.socket import MimoSttSocket, _mimo_available, _pcm16_to_wav
+from utils.mimo_pipeline.socket import MimoSttSocket, _pcm16_to_wav, mimo_available
 from utils.stt.streaming import STTService, get_stt_service_for_language
 
 
@@ -20,9 +20,9 @@ def test_mimo_service_value_registered():
 
 def test_enabled_only_with_key(monkeypatch):
     monkeypatch.delenv('MIMO_API_KEY', raising=False)
-    assert _mimo_available() is False
+    assert mimo_available() is False
     monkeypatch.setenv('MIMO_API_KEY', 'key')
-    assert _mimo_available() is True
+    assert mimo_available() is True
 
 
 def test_select_routes_to_mimo_when_configured(monkeypatch):

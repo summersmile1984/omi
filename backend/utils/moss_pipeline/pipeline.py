@@ -22,7 +22,7 @@ import io
 import logging
 import wave
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 
@@ -162,7 +162,7 @@ class MossSpeakerPipeline:
             import tempfile
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-                tmp.write(wav_bytes)
+                tmp.write(cast(bytes, wav_bytes))
                 tmp.flush()
                 file_id = self._client.upload_file(tmp.name)
                 try:
@@ -189,7 +189,7 @@ class MossSpeakerPipeline:
             if file_path:
                 clip = _wav_slice_from_file(file_path, best_seg.start, best_seg.end)
             else:
-                clip = _wav_slice(wav_bytes, best_seg.start, best_seg.end)
+                clip = _wav_slice(cast(bytes, wav_bytes), best_seg.start, best_seg.end)
             if not clip:
                 continue
             try:

@@ -111,6 +111,8 @@ async def tts_synthesize(
             headers={"Content-Length": str(len(audio))},
         )
 
+    assert api_key is not None
+
     if not _is_valid_voice_id(req.voice_id):
         raise HTTPException(status_code=400, detail="invalid voice_id")
 

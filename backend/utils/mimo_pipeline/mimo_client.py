@@ -25,7 +25,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -71,12 +71,6 @@ def _resolve_base_url() -> str:
     if os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in ("1", "true", "yes"):
         return MIMO_TOKENPLAN_BASE
     return MIMO_API_BASE
-
-
-def _headers() -> Dict[str, str]:
-    if not MIMO_API_KEY:
-        raise MimoAPIError("MIMO_API_KEY environment variable not set")
-    return {"Authorization": f"Bearer {MIMO_API_KEY}"}
 
 
 def _raise_for_error(resp: httpx.Response) -> None:

@@ -19,14 +19,13 @@ import tempfile
 import wave
 from typing import Any, Callable, Optional
 
-import httpx
-
+from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient
 from utils.stt.socket import STTSocket
 
 logger = logging.getLogger(__name__)
 
 
-def _mimo_available() -> bool:
+def mimo_available() -> bool:
     """True when MiMo streaming STT is configured (key set)."""
     return bool(os.getenv("MIMO_API_KEY"))
 
@@ -75,8 +74,6 @@ class MimoSttSocket(STTSocket):
             return
         self._finished = True
         try:
-            from .mimo_client import MimoClient, MimoAPIError
-
             audio = _pcm16_to_wav(bytes(self._pcm), self._sample_rate, self._channels)
             client = self._client or MimoClient()
             transcription = client.transcribe_audio(audio, audio_format="wav")

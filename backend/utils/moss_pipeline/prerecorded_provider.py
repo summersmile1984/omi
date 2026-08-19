@@ -38,8 +38,6 @@ class MossPrerecordedProvider(PrerecordedSTTProvider):
         self._client = MossClient()
 
     def _transcribe(self, audio_source: str, *, is_url: bool, diarize: bool) -> List[Dict[str, Any]]:
-        from .moss_client import MossClient
-
         # MOSS takes a public URL or an uploaded file id; there is no inline
         # base64. For bytes we upload a temp file; for URLs we pass through.
         if is_url:

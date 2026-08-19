@@ -86,7 +86,7 @@ def _fetch_jwks() -> Dict[str, Any]:
         _jwks_fetched_at = now
         _jwks_source_url = url
         logger.info("auth_shim: JWKS cached (%d keys)", len(data["keys"]))
-        return _jwks
+        return data
 
 
 def verify_id_token(token: str, **_: Any) -> Dict[str, Any]:

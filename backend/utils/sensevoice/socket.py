@@ -20,6 +20,7 @@ selection branch in the streaming provider.
 from __future__ import annotations
 
 import array
+import importlib
 import logging
 import os
 import threading
@@ -52,7 +53,7 @@ def get_sensevoice_recognizer() -> Any:
     if _recognizer is None:
         with _recognizer_lock:
             if _recognizer is None:
-                import sherpa_onnx
+                sherpa_onnx = importlib.import_module("sherpa_onnx")
 
                 model = os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx")
                 tokens = os.path.join(SENSEVOICE_MODEL_DIR, "tokens.txt")

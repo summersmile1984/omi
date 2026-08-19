@@ -56,12 +56,6 @@ class MossTranscription:
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
-def _headers() -> Dict[str, str]:
-    if not MOSS_API_KEY:
-        raise MossAPIError("MOSS_API_KEY environment variable not set")
-    return {"Authorization": f"Bearer {MOSS_API_KEY}"}
-
-
 def _raise_for_error(resp: httpx.Response) -> None:
     if resp.is_success:
         return
