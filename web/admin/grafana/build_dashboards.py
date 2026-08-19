@@ -54,6 +54,16 @@ DESKTOP_ONLY_TITLES = {
     "Floating bar notification CTR",
     "Crash-free rate (today)",
     "Crash-free rate",
+}
+
+# Account-level metrics: computed over every Firestore user (or every device a
+# user owns) with no platform dimension — they live on the All board only.
+# "Notifications enabled" counts all user docs and defaults missing fields to
+# enabled, so scoping it to a platform would silently lie.
+ACCOUNT_LEVEL_TITLES = {
+    "Daily notifications sent",
+    "Notifications sent — last 168 hours",
+    "Weekly notification reach",
     "Notifications enabled",
 }
 
@@ -250,6 +260,7 @@ def finish(dash, uid: str, title: str) -> dict:
     dash["title"] = title
     dash["links"] = LINKS
     dash["timezone"] = "America/New_York"
+    dash["refresh"] = "1h"  # Nik: auto-refresh at most hourly
     dash.pop("id", None)
     dash.pop("version", None)
     return dash
@@ -271,7 +282,8 @@ def build_platform_board(base, scope: str) -> dict:
     # platform either — those panels live on the All-platforms board only.
     drop_panels(
         dash,
-        {
+        ACCOUNT_LEVEL_TITLES
+        | {
             "Users → 1M goal",
             "ARR",
             "Active subscriptions",
@@ -282,9 +294,6 @@ def build_platform_board(base, scope: str) -> dict:
             "MRR over time",
             "New subscriptions / month",
             "Message ratings",
-            "Daily notifications sent",
-            "Notifications sent — last 168 hours",
-            "Weekly notification reach",
             "Infra cost by service — last 30 days",
         },
     )

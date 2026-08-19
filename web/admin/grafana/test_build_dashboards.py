@@ -80,18 +80,25 @@ class NycTimeContractTests(unittest.TestCase):
         for uid in BOARDS:
             self.assertEqual(load(uid)["timezone"], "America/New_York", uid)
 
+    def test_auto_refresh_is_hourly(self) -> None:
+        """Layout edits live in Grafana's DB; aggressive auto-refresh churns
+        panels and the boards must not refresh more than once an hour."""
+        for uid in BOARDS:
+            self.assertEqual(load(uid)["refresh"], "1h", uid)
+
     def test_no_bare_date_columns_survive(self) -> None:
         for uid in BOARDS:
             for panel, target, col in timestamp_columns(load(uid)):
                 fmt = col.get("timestampFormat")
-                self.assertNotIn(fmt, BARE_DAY_FORMATS,
-                                 f"{uid} / {panel['title']}: bare day format {fmt}")
+                self.assertNotIn(fmt, BARE_DAY_FORMATS, f"{uid} / {panel['title']}: bare day format {fmt}")
                 if fmt == RFC3339:
                     query = urllib.parse.urlparse(target["url"]).query
                     tz_fields = urllib.parse.parse_qs(query).get("_tzdates", [""])[0]
-                    self.assertIn(col["selector"], tz_fields.split(","),
-                                  f"{uid} / {panel['title']}: {col['selector']} "
-                                  "not routed through _tzdates")
+                    self.assertIn(
+                        col["selector"],
+                        tz_fields.split(","),
+                        f"{uid} / {panel['title']}: {col['selector']} " "not routed through _tzdates",
+                    )
 
     def test_hourly_columns_stay_utc_parsed(self) -> None:
         hourly = [
@@ -115,8 +122,7 @@ class PlatformScopeTests(unittest.TestCase):
                 if not touches_platform_route(url):
                     continue
                 expected = "macos" if where in exceptions else scope
-                self.assertEqual(platform_of(url), expected,
-                                 f"{uid} / {where}: expected platform={expected} in {url}")
+                self.assertEqual(platform_of(url), expected, f"{uid} / {where}: expected platform={expected} in {url}")
 
     def test_switcher_links_on_every_board(self) -> None:
         for uid in BOARDS:
@@ -131,10 +137,7 @@ class PlatformScopeTests(unittest.TestCase):
 class MirrorTests(unittest.TestCase):
     @staticmethod
     def normalized_titles(dash) -> set[str]:
-        return {
-            re.sub(r"desktop|mobile|macOS|Mobile", "×", build_dashboards.base_title(p))
-            for p in dash["panels"]
-        }
+        return {re.sub(r"desktop|mobile|macOS|Mobile", "×", build_dashboards.base_title(p)) for p in dash["panels"]}
 
     @staticmethod
     def normalize(title: str) -> str:
@@ -155,8 +158,7 @@ class MirrorTests(unittest.TestCase):
         for m_panel, mob_panel in zip(macos["panels"], mobile["panels"]):
             m_norm = self.normalize(m_panel["title"])
             self.assertEqual(m_norm, self.normalize(mob_panel["title"]))
-            self.assertEqual(m_panel["gridPos"], mob_panel["gridPos"],
-                             f"layout diverges at {m_panel['title']}")
+            self.assertEqual(m_panel["gridPos"], mob_panel["gridPos"], f"layout diverges at {m_panel['title']}")
             if m_norm in placeholder_norms:
                 self.assertEqual(mob_panel["type"], "text", m_panel["title"])
             else:
@@ -172,8 +174,7 @@ class MirrorTests(unittest.TestCase):
 
     def test_mobile_equivalents_query_the_mobile_scope(self) -> None:
         mobile = load("omi-tv-mobile")
-        for title in ["Mobile: iOS vs Android (today)", "Mobile: by app version (today)",
-                      "Mobile active today"]:
+        for title in ["Mobile: iOS vs Android (today)", "Mobile: by app version (today)", "Mobile active today"]:
             panel = build_dashboards.panel_by_title(mobile, title)
             self.assertIn("macos-versions?platform=mobile", panel["targets"][0]["url"], title)
 
@@ -183,9 +184,11 @@ class MirrorTests(unittest.TestCase):
         for uid in ["omi-tv-macos", "omi-tv-mobile"]:
             dash = load(uid)
             for title in ["Daily new users", "Cumulative users"]:
-                panel = next(p for p in dash["panels"]
-                             if build_dashboards.base_title(p).startswith(title.split(" (")[0])
-                             and p["type"] == "timeseries")
+                panel = next(
+                    p
+                    for p in dash["panels"]
+                    if build_dashboards.base_title(p).startswith(title.split(" (")[0]) and p["type"] == "timeseries"
+                )
                 target = panel["targets"][0]
                 self.assertIn("viral-metrics", target["url"], f"{uid}/{title}")
                 self.assertEqual(target["root_selector"], "userGrowth", f"{uid}/{title}")
@@ -195,8 +198,11 @@ class MirrorTests(unittest.TestCase):
             for panel in load(uid)["panels"]:
                 for target in panel.get("targets", []):
                     for col in target.get("columns", []):
-                        self.assertNotIn(foreign, col.get("selector", "").lower(),
-                                         f"{uid} leaks {foreign} series in {panel['title']}")
+                        self.assertNotIn(
+                            foreign,
+                            col.get("selector", "").lower(),
+                            f"{uid} leaks {foreign} series in {panel['title']}",
+                        )
 
     def test_platform_tickers_use_alltime_users(self) -> None:
         for uid, label in [("omi-tv-macos", "macOS"), ("omi-tv-mobile", "Mobile")]:
@@ -210,10 +216,7 @@ class ApplyScopeTests(unittest.TestCase):
     def test_apply_publishes_exactly_the_three_boards(self) -> None:
         import apply_omi_tv_dashboard as apply_mod
 
-        found = {
-            json.loads(path.read_text(encoding="utf-8"))["uid"]
-            for path in (HERE / "dashboards").glob("*.json")
-        }
+        found = {json.loads(path.read_text(encoding="utf-8"))["uid"] for path in (HERE / "dashboards").glob("*.json")}
         self.assertEqual(found, set(BOARDS))
         self.assertEqual(apply_mod.ALLOWED_UIDS, set(BOARDS))
 
@@ -228,6 +231,22 @@ class ApplyScopeTests(unittest.TestCase):
             apply_mod.load_dashboard(Path(handle.name))
 
 
+class AccountLevelLeakTests(unittest.TestCase):
+    def test_account_level_metrics_stay_off_platform_boards(self) -> None:
+        """Account-level metrics (all-Firestore-user populations, per-account
+        pushes) have no platform dimension; showing them on a platform board
+        silently mislabels cross-platform data. Regression: the desktop
+        notifications_enabled gauge leaked onto the macOS board."""
+        account_level = build_dashboards.ACCOUNT_LEVEL_TITLES
+        self.assertIn("Notifications enabled", account_level)
+        for uid in ["omi-tv-macos", "omi-tv-mobile"]:
+            titles = {build_dashboards.base_title(p) for p in load(uid)["panels"]}
+            leaked = titles & account_level
+            self.assertFalse(leaked, f"{uid} leaks account-level panels: {leaked}")
+        all_titles = {build_dashboards.base_title(p) for p in load("omi-tv")["panels"]}
+        self.assertTrue(account_level <= all_titles, "All board must keep the account-level panels")
+
+
 class BuilderIdempotencyTests(unittest.TestCase):
     def test_rebuild_is_idempotent(self) -> None:
         base = load("omi-tv")
@@ -235,15 +254,14 @@ class BuilderIdempotencyTests(unittest.TestCase):
         build_dashboards.apply_tzdates(rebuilt)
         build_dashboards.apply_platform(rebuilt, "all")
         build_dashboards.retarget_var(
-            rebuilt, "d_act",
+            rebuilt,
+            "d_act",
             path=build_dashboards.set_url_param(build_dashboards.VIRAL_PATH, "platform", "macos"),
         )
         build_dashboards.finish(rebuilt, "omi-tv", "Omi TV")
         self.assertEqual(base, rebuilt)
-        self.assertEqual(build_dashboards.build_platform_board(rebuilt, "macos"),
-                         load("omi-tv-macos"))
-        self.assertEqual(build_dashboards.build_platform_board(rebuilt, "mobile"),
-                         load("omi-tv-mobile"))
+        self.assertEqual(build_dashboards.build_platform_board(rebuilt, "macos"), load("omi-tv-macos"))
+        self.assertEqual(build_dashboards.build_platform_board(rebuilt, "mobile"), load("omi-tv-mobile"))
 
 
 if __name__ == "__main__":
