@@ -128,6 +128,18 @@ def test_firestore_client_pins_service_account_json_over_host_project_adc(monkey
     client.assert_called_once_with(credentials=credentials, project="based-hardware")
 
 
+def test_cloud_neutral_customer_client_reuses_postgres_authority(monkeypatch) -> None:
+    pg_client = MagicMock(name="postgres-firestore-client")
+    entitlement_lookup = MagicMock(side_effect=AssertionError("must not inspect Firestore credentials in PG mode"))
+    monkeypatch.setenv("FIRESTORE_PG_DSN", "postgresql+psycopg://omi:secret@localhost:5434/omi")
+    monkeypatch.setattr(firestore_client, "_customer_firestore_client", None)
+    monkeypatch.setattr(firestore_client, "get_firestore_client", MagicMock(return_value=pg_client))
+    monkeypatch.setattr(firestore_client, "customer_entitlement_service_account", entitlement_lookup)
+
+    assert firestore_client.get_customer_firestore_client() is pg_client
+    entitlement_lookup.assert_not_called()
+
+
 def test_valid_subscription_without_provision_does_not_write_free() -> None:
     from database import users as users_db
     from models.users import PlanType

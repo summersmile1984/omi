@@ -19,8 +19,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-import asyncpg  # noqa: F401  (kept for async callers; sync path uses psycopg)
-
 logger = logging.getLogger(__name__)
 
 # (table, uid) resolved from a Firestore path like "users/uid/conversations/..."

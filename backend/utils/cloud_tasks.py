@@ -11,10 +11,11 @@ staged audio must not start an inline worker after an enqueue exception: a
 lost create-task acknowledgement can mean the deterministic named task exists.
 """
 
+import hashlib
 import json
 import logging
-import hashlib
 import os
+import secrets
 import uuid
 from typing import Any, Dict, Literal, NamedTuple, Optional
 
@@ -24,6 +25,7 @@ from google.auth.transport import requests as google_auth_requests
 from google.cloud import tasks_v2
 from google.oauth2 import id_token
 from google.protobuf import duration_pb2
+from utils import cloud_tasks_redis
 
 logger = logging.getLogger(__name__)
 
@@ -198,12 +200,8 @@ def enqueue_sync_job(payload: Dict[str, Any]) -> None:
     hours. The lane label is still carried on the payload for metering and
     reporting; it no longer selects the queue.
     """
-    from utils.cloud_tasks_redis import queue_enabled
-
-    if queue_enabled():
-        from utils.cloud_tasks_redis import enqueue_sync_job as _redis_enqueue
-
-        _redis_enqueue(payload)
+    if cloud_tasks_redis.queue_enabled():
+        cloud_tasks_redis.enqueue_sync_job(payload)
         return
     _enqueue_named_task(os.getenv('SYNC_TASKS_QUEUE', ''), _handler_url(), str(payload['job_id']), payload)
 
@@ -221,12 +219,8 @@ def enqueue_audio_merge_job(payload: Dict[str, Any]) -> None:
     and isn't swallowed by the named-task tombstone. 'amc-' cannot collide with
     per-part names (audio_file ids are UUIDv4).
     """
-    from utils.cloud_tasks_redis import queue_enabled
-
-    if queue_enabled():
-        from utils.cloud_tasks_redis import enqueue_audio_merge_job as _redis_enqueue
-
-        _redis_enqueue(payload)
+    if cloud_tasks_redis.queue_enabled():
+        cloud_tasks_redis.enqueue_audio_merge_job(payload)
         return
     if payload.get('schema_version') == 2:
         task_id = f"amc-{payload['conversation_id']}-{payload['fingerprint']}"
@@ -247,12 +241,8 @@ def enqueue_account_deletion_wipe(wipe_job_id: str) -> None:
     Firebase uid; the OIDC handler resolves the uid only after looking up this
     opaque job identifier.
     """
-    from utils.cloud_tasks_redis import queue_enabled
-
-    if queue_enabled():
-        from utils.cloud_tasks_redis import enqueue_account_deletion_wipe as _redis_enqueue
-
-        _redis_enqueue(wipe_job_id)
+    if cloud_tasks_redis.queue_enabled():
+        cloud_tasks_redis.enqueue_account_deletion_wipe(wipe_job_id)
         return
     if not wipe_job_id:
         raise ValueError('wipe_job_id must be non-empty')
@@ -286,12 +276,8 @@ def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> No
     uid nor any conversation/BYOK material so Cloud Tasks diagnostics cannot
     expose user content or credentials.
     """
-    from utils.cloud_tasks_redis import queue_enabled
-
-    if queue_enabled():
-        from utils.cloud_tasks_redis import enqueue_listen_finalization_job as _redis_enqueue
-
-        _redis_enqueue(job_id, dispatch_generation)
+    if cloud_tasks_redis.queue_enabled():
+        cloud_tasks_redis.enqueue_listen_finalization_job(job_id, dispatch_generation)
         return
     _enqueue_named_task(
         os.getenv('LISTEN_FINALIZATION_TASKS_QUEUE', ''),
@@ -335,8 +321,18 @@ def _verify_cloud_tasks_oidc(request: Request, *, audience: str, invoker_sa: str
         return 0
 
 
+def _verify_redis_worker(request: Request) -> int:
+    expected = os.getenv('QUEUE_REDIS_WORKER_SECRET', '')
+    presented = request.headers.get('x-omi-queue-secret', '')
+    if not expected or not secrets.compare_digest(presented, expected):
+        raise HTTPException(status_code=403, detail='Invalid Redis worker secret')
+    return 0
+
+
 def verify_cloud_tasks_oidc(request: Request) -> int:
     """FastAPI dependency for sync and merge task routes."""
+    if cloud_tasks_redis.queue_enabled():
+        return _verify_redis_worker(request)
     return _verify_cloud_tasks_oidc(request, audience=_oidc_audience(), invoker_sa=_invoker_sa())
 
 
@@ -347,6 +343,10 @@ def verify_account_deletion_cloud_tasks_oidc(request: Request) -> AccountDeletio
     audience. Verify that former audience only during the queue drain window;
     the route rejects it for new job-ID payloads before any lookup or mutation.
     """
+    if cloud_tasks_redis.queue_enabled():
+        retry_count = _verify_redis_worker(request)
+        return AccountDeletionTaskAuthentication(retry_count=retry_count, audience='account_deletion')
+
     deletion_audience = _account_deletion_oidc_audience()
     try:
         retry_count = _verify_cloud_tasks_oidc(
@@ -371,6 +371,8 @@ def verify_account_deletion_cloud_tasks_oidc(request: Request) -> AccountDeletio
 
 def verify_listen_finalization_cloud_tasks_oidc(request: Request) -> int:
     """FastAPI dependency for the isolated listen finalization task route."""
+    if cloud_tasks_redis.queue_enabled():
+        return _verify_redis_worker(request)
     return _verify_cloud_tasks_oidc(
         request,
         audience=_listen_finalization_audience(),

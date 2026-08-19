@@ -16,6 +16,7 @@ attrs==24.1.0
 audioread==3.0.1
 av==12.0.0
 backoff==2.2.1
+boto3==1.43.74
 blinker==1.8.2
 CacheControl==0.14.0
 cachetools==5.5.0
@@ -165,6 +166,7 @@ pyright==1.1.403
 pynndescent==0.5.13
 PyOgg @ git+https://github.com/TeamPyOgg/PyOgg@6871a4f234e8a3a346c4874a12509bfa02c4c63a ; sys_platform == "linux"
 pyparsing==3.1.2
+psycopg[binary]==3.3.4
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 pytest-asyncio==1.4.0

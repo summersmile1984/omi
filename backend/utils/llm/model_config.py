@@ -8,7 +8,7 @@ continue to use ``clients.get_llm(feature)``.
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Tuple, Union
+from typing import Dict, Mapping, Optional, Tuple, Union
 
 from utils.llm.gateway_client import is_auto_lane_id
 
@@ -112,37 +112,6 @@ _PINNED_FEATURES: Dict[str, Tuple[str, str]] = {
     'fair_use': (os.getenv('FAIR_USE_CLASSIFIER_MODEL', 'gpt-5.6-luna').strip() or 'gpt-5.6-luna', 'openai'),
 }
 
-# Translation provider is env-configurable (self-hosted deployments may use a
-# domestic OpenAI-compatible LLM instead of Gemini). TRANSLATION_PROVIDER picks
-# the provider; TRANSLATION_MODEL overrides the default model for it.
-_TRANSLATION_PROVIDER = os.getenv('TRANSLATION_PROVIDER', 'gemini').strip().lower()
-_TRANSLATION_MODEL = os.getenv('TRANSLATION_MODEL', '').strip()
-if _TRANSLATION_PROVIDER in ('mimo', 'xiaomi'):
-    _PINNED_FEATURES['translation'] = (
-        _TRANSLATION_MODEL or 'mimo-v2.5',
-        'mimo',
-    )
-elif _TRANSLATION_PROVIDER in ('deepseek', 'ds'):
-    _PINNED_FEATURES['translation'] = (
-        _TRANSLATION_MODEL or 'deepseek-chat',
-        'deepseek',
-    )
-
-# Chat provider is env-configurable too (CHAT_PROVIDER + CHAT_MODEL), so a
-# self-hosted deployment can route desktop chat through a domestic
-# OpenAI-compatible model instead of OpenAI/Anthropic. Applies to every
-# chat_* feature.
-_CHAT_PROVIDER = os.getenv('CHAT_PROVIDER', '').strip().lower()
-_CHAT_MODEL = os.getenv('CHAT_MODEL', '').strip()
-if _CHAT_PROVIDER in ('deepseek', 'ds'):
-    _chat_model = _CHAT_MODEL or 'deepseek-v4-flash'
-    for _feature in ('chat_responses', 'chat_extraction', 'chat_graph'):
-        _PINNED_FEATURES[_feature] = (_chat_model, 'deepseek')
-elif _CHAT_PROVIDER in ('mimo', 'xiaomi'):
-    _chat_model = _CHAT_MODEL or 'mimo-v2.5'
-    for _feature in ('chat_responses', 'chat_extraction', 'chat_graph'):
-        _PINNED_FEATURES[_feature] = (_chat_model, 'mimo')
-
 # Resolve active profile once at startup.
 _active_profile_name = os.environ.get('MODEL_QOS', 'premium').strip().lower()
 if _active_profile_name not in MODEL_QOS_PROFILES:
@@ -202,13 +171,38 @@ DEFAULT_CONFIG = _DEFAULT_CONFIG
 # lane. Keep empty until a ticket explicitly wires and verifies shadow/live
 # traffic; existing direct LLM routing never consults this map.
 _AUTO_LANE_FEATURES: Dict[str, str] = {}
+_CHAT_FEATURES = {'chat_responses', 'chat_extraction', 'chat_graph'}
+
+
+def _cloud_neutral_route(feature: str, env: Optional[Mapping[str, str]] = None) -> Optional[Tuple[str, str]]:
+    """Resolve explicitly configured self-hosted LLM routes at the call boundary."""
+
+    values = os.environ if env is None else env
+    if feature == 'translation':
+        provider = values.get('TRANSLATION_PROVIDER', '').strip().lower()
+        model = values.get('TRANSLATION_MODEL', '').strip()
+        if provider in ('mimo', 'xiaomi'):
+            return model or 'mimo-v2.5', 'mimo'
+        if provider in ('deepseek', 'ds'):
+            return model or 'deepseek-chat', 'deepseek'
+    elif feature in _CHAT_FEATURES:
+        provider = values.get('CHAT_PROVIDER', '').strip().lower()
+        model = values.get('CHAT_MODEL', '').strip()
+        if provider in ('mimo', 'xiaomi'):
+            return model or 'mimo-v2.5', 'mimo'
+        if provider in ('deepseek', 'ds'):
+            return model or 'deepseek-v4-flash', 'deepseek'
+    return None
 
 
 def _get_model_config(feature: str) -> Tuple[str, str]:
     """Get the (model, provider) tuple for a feature. Internal — used by get_llm/get_model/get_provider.
 
-    Resolution order: pinned > active profile > fallback.
+    Resolution order: explicit self-hosted route > pinned > active profile > fallback.
     """
+    cloud_neutral_route = _cloud_neutral_route(feature)
+    if cloud_neutral_route is not None:
+        return cloud_neutral_route
     if feature in _PINNED_FEATURES:
         return _PINNED_FEATURES[feature]
     return _active_profile.get(feature, _DEFAULT_CONFIG)

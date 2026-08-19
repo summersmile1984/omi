@@ -28,6 +28,9 @@ google-api-python-client==2.139.0
 # Cache & rate limiting
 redis==5.0.8
 
+# PostgreSQL Firestore compatibility
+psycopg[binary]==3.3.4
+
 # HTTP
 requests~=2.33.0
 

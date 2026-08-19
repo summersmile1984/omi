@@ -15,8 +15,10 @@ from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEve
 from deepgram.clients.live.v1 import LiveOptions
 
 from config.stt_provider_policy import (
+    MIMO_PROVIDER,
     MODULATE_PROVIDER,
     PARAKEET_PROVIDER,
+    SENSEVOICE_PROVIDER,
     STTServingSurface,
     deepgram_provider_for_runtime,
     default_models_for_surface,
@@ -498,9 +500,9 @@ def get_stt_service_for_language(
         parakeet_fallback_reason: Optional[str] = None
         for model in _models_with_preferred_service(models, preferred_service=preferred_service):
             model = model.strip()
-            if model == 'sensevoice' and _sensevoice_available():
+            if model == 'sensevoice' and provider_is_enabled(SENSEVOICE_PROVIDER, surface) and _sensevoice_available():
                 return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
-            if model == 'mimo' and _mimo_available():
+            if model == 'mimo' and provider_is_enabled(MIMO_PROVIDER, surface) and _mimo_available():
                 return (STTService.mimo, requested_language, 'mimo'), parakeet_fallback_reason
             if (
                 model.startswith('dg-')

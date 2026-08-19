@@ -20,13 +20,8 @@ import boto3
 
 logger = logging.getLogger(__name__)
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-MINIO_SECURE = os.getenv("MINIO_SECURE", "0") == "1"
-MINIO_REGION = os.getenv("MINIO_REGION", "us-east-1")
-
 _client: Any = None
+_client_config: Optional[tuple[str, str, str, str, bool]] = None
 _lock = threading.Lock()
 
 
@@ -105,14 +100,15 @@ class _MinioBucket:
 class _MinioClient:
     """GCS-style client: ``bucket(name)`` over the MinIO S3 endpoint."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: tuple[str, str, str, str, bool]) -> None:
+        endpoint, access_key, secret_key, region, secure = config
         self._s3 = boto3.client(
             "s3",
-            endpoint_url=MINIO_ENDPOINT,
-            aws_access_key_id=MINIO_ACCESS_KEY,
-            aws_secret_access_key=MINIO_SECRET_KEY,
-            region_name=MINIO_REGION,
-            use_ssl=MINIO_SECURE,
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region,
+            use_ssl=secure,
         )
 
     def bucket(self, name: str) -> _MinioBucket:
@@ -130,11 +126,23 @@ class _MinioClient:
                 logger.warning("MinIO bucket %s create failed: %s", name, exc)
 
 
+def _get_minio_config() -> tuple[str, str, str, str, bool]:
+    return (
+        os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000"),
+        os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+        os.getenv("MINIO_SECRET_KEY", "minioadmin"),
+        os.getenv("MINIO_REGION", "us-east-1"),
+        os.getenv("MINIO_SECURE", "0").strip().lower() in {"1", "true", "yes"},
+    )
+
+
 def get_minio_client() -> Any:
-    """Return the process-wide MinIO client (GCS-style surface)."""
-    global _client
-    if _client is None:
+    """Return a cached MinIO client for the current runtime configuration."""
+    global _client, _client_config
+    config = _get_minio_config()
+    if _client is None or _client_config != config:
         with _lock:
-            if _client is None:
-                _client = _MinioClient()
+            if _client is None or _client_config != config:
+                _client = _MinioClient(config)
+                _client_config = config
     return _client

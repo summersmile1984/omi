@@ -612,6 +612,18 @@ wheels = [
 ]
 
 [[packages]]
+name = "psycopg"
+version = "3.3.4"
+sdist = { url = "https://files.pythonhosted.org/packages/db/2f/cb91e5502ec9de1de6f1b76cfbf69531932725361168bb06963620c77e2e/psycopg-3.3.4.tar.gz", upload-time = 2026-05-01T23:31:55Z, size = 165799, hashes = { sha256 = "e21207764952cff81b6b8bdacad9a3939f2793367fdac2987b3aac36a651b5bc" } }
+wheels = [{ url = "https://files.pythonhosted.org/packages/5c/e0/7b3dee031daae7743609ce3c746565d4a3ed7c2c186479eb48e34e838c64/psycopg-3.3.4-py3-none-any.whl", upload-time = 2026-05-01T23:20:50Z, size = 213001, hashes = { sha256 = "b6bbc25ccf05c8fad3b061d9db2ef0909a555171b84b07f29458a447253d679a" } }]
+
+[[packages]]
+name = "psycopg-binary"
+version = "3.3.4"
+marker = "implementation_name != 'pypy'"
+wheels = [{ url = "https://files.pythonhosted.org/packages/72/9b/023433e2b20f970de1e22d29132a95281277646da0b2e2879dd4ee94b8c1/psycopg_binary-3.3.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", upload-time = 2026-05-01T23:26:56Z, size = 5172428, hashes = { sha256 = "ab8cca8ef8fb1ccf5b048ae5bd78ba55b9e4b5d472e3ce5ca39ff4d2a9c249e4" } }]
+
+[[packages]]
 name = "pyasn1"
 version = "0.6.3"
 sdist = { url = "https://files.pythonhosted.org/packages/5c/5f/6583902b6f79b399c9c40674ac384fd9cd77805f9e6205075f828ef11fb2/pyasn1-0.6.3.tar.gz", upload-time = 2026-03-17T01:06:53Z, size = 148685, hashes = { sha256 = "697a8ecd6d98891189184ca1fa05d1bb00e2f84b5977c481452050549c8a72cf" } }

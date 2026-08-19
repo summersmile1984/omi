@@ -8,7 +8,7 @@ Without the env var this file is a no-op (production path unchanged).
 
 import os
 
-if os.environ.get("FIRESTORE_PG_DSN"):
-    from firestore_pg.compat import install as _install_pg_shim
+from firestore_pg.compat import install as install_postgres_firestore_shim
 
-    _install_pg_shim()
+if os.environ.get("FIRESTORE_PG_DSN"):
+    install_postgres_firestore_shim()

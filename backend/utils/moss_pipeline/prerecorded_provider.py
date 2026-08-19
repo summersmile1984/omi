@@ -15,7 +15,6 @@ touch-points are:
 from __future__ import annotations
 
 import logging
-import os
 import tempfile
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -102,8 +101,3 @@ class MossPrerecordedProvider(PrerecordedSTTProvider):
         if return_language:
             return words, language or "en"
         return words
-
-
-def moss_prerecorded_enabled() -> bool:
-    """True when MOSS is the configured pre-recorded STT provider."""
-    return bool(os.getenv("MOSS_API_KEY")) and os.getenv("STT_PRERECORDED_MODEL", "").strip().lower() == "moss"

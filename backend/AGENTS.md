@@ -97,7 +97,7 @@ backend/
 ## Service Map
 
 ```
-Shared: Firestore, Redis
+Shared: Firestore (or `FIRESTORE_PG_DSN` PostgreSQL shim), Redis
 
 backend (main.py)
   ├── ws ──► pusher (pusher/)
@@ -129,6 +129,7 @@ Helm charts: `backend/charts/{backend-listen,backend-secrets,deepgram-self-hoste
 Serving STT provider/surface policy and canonical model order are owned exclusively by `config/stt_provider_policy.py`; deployment values are validated against it.
 
 - **backend** (`main.py`) — REST API. Streams audio to pusher via WebSocket (`utils/pusher.py`). Calls diarizer for speaker embeddings (`utils/stt/speaker_embedding.py`). Calls vad for voice activity detection and speaker identification (`utils/stt/vad.py`, `utils/stt/speech_profile.py`). Live STT prefers Deepgram (`DEEPGRAM_API_KEY`), falling back to Modulate then Parakeet; self-hosted Deepgram replaces the hosted endpoint when `DEEPGRAM_SELF_HOSTED_*` is set (`utils/stt/streaming.py`). Calls NLLB translation when `HOSTED_TRANSLATION_API_URL` is set and NLLB is selected (`utils/translation.py`).
+- **cloud-neutral local runtime** — `FIRESTORE_PG_DSN` routes both customer and compute data through `firestore_pg`; `STORAGE_BACKEND=minio` selects the GCS-compatible MinIO adapter; `QUEUE_BACKEND=redis` selects the Redis worker authenticated by `QUEUE_REDIS_WORKER_SECRET`; `AUTH_PROVIDER=better_auth` verifies asymmetric JWTs from `AUTH_JWKS_URL`. Mutable provider configuration is read at call boundaries.
 - **hosted MCP OAuth** (`routers/mcp_sse.py`) — Provider-neutral OAuth for `/v1/mcp/sse`. Configure public or confidential clients with `MCP_OAUTH_CLIENTS_JSON`; allowlist the exact connector callback URI from the provider. The temporary `MCP_OAUTH_CHATGPT_*` envs still define the legacy confidential ChatGPT test client, and `MCP_OAUTH_PUBLIC_*` can expose a no-secret PKCE public client. Also set `MCP_AUTHORIZATION_SERVER_URL`, optional `MCP_RESOURCE_URL`, and token TTL env vars.
 - **llm-gateway** (`llm_gateway/main.py`) — Internal FastAPI service for Omi-managed LLM auto lanes. Called by backend with service auth for `omi:auto:*` chat-completions routes; not exposed to clients. Public shared-conversation chat uses only the dedicated `omi:auto:public-shared-conversation-chat` lane and returns unavailable on every gateway fault.
 - **pusher** (`pusher/main.py`) — Receives audio via binary WebSocket protocol. Calls diarizer and the configured Parakeet/Modulate STT provider for speaker sample extraction (`utils/speaker_identification.py` → `utils/speaker_sample.py`).
@@ -164,13 +165,15 @@ Runtime-selected providers must keep model-token parsing and required environmen
 
 ## Database
 
-**Firestore** (primary store): use `get_firestore_client()` from `database._client` at call time, and add optional keyword-only `firestore_client` parameters on converted database helpers so tests can inject fake clients. `db` remains a legacy lazy compatibility proxy only; do not use it in new code. Never construct Firestore clients at import time. Collection group queries need explicit indexes (will 500 with no useful error). Segments are encrypted at rest — direct Firestore reads return opaque blobs. Feature gating via user fields: e.g., translation requires `users/{uid}.language` non-empty — silently disabled if missing.
+**Firestore** (primary store; PostgreSQL-compatible local shim): use `get_firestore_client()` from `database._client` at call time, and add optional keyword-only `firestore_client` parameters on converted database helpers so tests can inject fake clients. `FIRESTORE_PG_DSN` selects the `firestore_pg` facade for the whole runtime, including customer entitlement/quota reads; never split one process between PostgreSQL and Firestore. `db` remains a legacy lazy compatibility proxy only; do not use it in new code. Never construct clients at import time. Collection group queries need explicit indexes (will 500 with no useful error). Segments are encrypted at rest — direct Firestore reads return opaque blobs. Feature gating via user fields: e.g., translation requires `users/{uid}.language` non-empty — silently disabled if missing.
 
 **Redis** (cache/rate-limiting/locks): `from database import redis_db` — **fail-open** (all errors caught and logged, requests proceed). Rate limiting via Lua scripts. `try_acquire_listen_lock(uid)` prevents duplicate WS connections.
 
 ## Auth
 
 HTTP endpoints: `uid: str = Depends(get_current_user_uid)` from `utils.other.endpoints`.
+
+`AUTH_PROVIDER=better_auth` is the self-hosted path. JWT verification accepts only asymmetric ES256/RS256/EdDSA keys from `AUTH_JWKS_URL`; the optional auth-server `/auth-issue` development bridge must stay disabled unless protected by `AUTH_DEV_ISSUER_SECRET`.
 
 WebSocket endpoints: use `WebSocketException(code=1008)`, **not** `HTTPException` — HTTPException exits ASGI without handshake, causing LB 5xx.
 

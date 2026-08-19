@@ -1,10 +1,12 @@
 import logging
+import os
 from threading import Lock
 from typing import Any
 
-import os
 from google.api_core.exceptions import InvalidArgument
 from google.cloud import firestore
+from firestore_pg.client import Client as PostgresFirestoreClient
+from firestore_pg.compat import install as install_postgres_firestore_shim
 
 from database.document_ids import document_id_from_seed
 from database.google_credentials import (
@@ -92,11 +94,8 @@ def _build_firestore_client() -> Any:
     # Cloud-neutral shim mode: FIRESTORE_PG_DSN points at PostgreSQL, and
     # firestore_pg serves the same SDK surface (see firestore_pg/README).
     if os.environ.get("FIRESTORE_PG_DSN"):
-        from firestore_pg.compat import install as _install_pg_shim
-        from firestore_pg.client import Client as _PgClient
-
-        _install_pg_shim()
-        return _PgClient(project=os.environ.get("FIREBASE_PROJECT_ID"))
+        install_postgres_firestore_shim()
+        return PostgresFirestoreClient(project=os.environ.get("FIREBASE_PROJECT_ID"))
     # Production safety: only override project/database when pointed at a local
     # Firestore emulator. Without FIRESTORE_EMULATOR_HOST set (i.e. real Firestore),
     # never let bare GOOGLE_CLOUD_PROJECT (often the GKE compute project) repoint
@@ -137,6 +136,12 @@ def _build_customer_firestore_client() -> Any:
     Compute-local state (``agentVm``, GCE) keeps using ``get_firestore_client()``
     so development Cloud Run ADC can stay on ``based-hardware-dev``.
     """
+    # A cloud-neutral runtime has one PostgreSQL authority. It must not split
+    # subscription/quota reads back to Firestore merely because an entitlement
+    # service-account file is also present in the environment.
+    if os.environ.get("FIRESTORE_PG_DSN"):
+        return get_firestore_client()
+
     if os.environ.get("FIRESTORE_EMULATOR_HOST"):
         return _build_firestore_client()
 

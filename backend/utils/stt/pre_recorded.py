@@ -23,6 +23,7 @@ from config.prerecorded_stt import (
 )
 from config.stt_provider_policy import (
     MODULATE_PROVIDER,
+    MOSS_PROVIDER,
     PARAKEET_PROVIDER,
     STTServingSurface,
     default_models_for_surface,
@@ -92,6 +93,8 @@ def get_prerecorded_service(language: Optional[str] = 'en') -> Tuple[str, Option
     def select(models: Sequence[str]) -> Optional[Tuple[str, Optional[str], str]]:
         for m in models:
             m = m.strip()
+            if m == 'moss' and provider_is_enabled(MOSS_PROVIDER, STTServingSurface.PRERECORDED):
+                return PrerecordedSTTService.MOSS, base_lang, 'moss-transcribe-diarize'
             if m == 'modulate-velma-2' and provider_is_enabled(MODULATE_PROVIDER, STTServingSurface.PRERECORDED):
                 if base_lang in {'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'ja', 'ko', 'zh'}:
                     return PrerecordedSTTService.MODULATE, base_lang, 'velma-2'
@@ -1057,16 +1060,12 @@ class ParakeetPrerecordedProvider(PrerecordedSTTProvider):
 
 def get_prerecorded_provider(language: Optional[str] = 'en') -> PrerecordedSTTProvider:
     """Construct exactly the language-aware provider selected for telemetry."""
-    # MOSS override: opt-in via STT_PRERECORDED_MODEL=moss + MOSS_API_KEY.
-    # Kept fully isolated in utils.moss_pipeline so the upstream policy
-    # machinery (modulate/parakeet) is untouched.
-    from utils.moss_pipeline.prerecorded_provider import moss_prerecorded_enabled
-
-    if moss_prerecorded_enabled():
+    service, _provider_language, model = get_prerecorded_service(language)
+    if service == PrerecordedSTTService.MOSS:
+        require_provider_environment(PrerecordedSTTService.MOSS)
         from utils.moss_pipeline.prerecorded_provider import MossPrerecordedProvider
 
         return MossPrerecordedProvider()
-    service, _provider_language, model = get_prerecorded_service(language)
     if service == PrerecordedSTTService.MODULATE:
         return ModulatePrerecordedProvider()
     if service == PrerecordedSTTService.PARAKEET:
