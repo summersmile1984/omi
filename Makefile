@@ -38,7 +38,7 @@ CHAT_FIRST_E2E_ACTION ?= prepare
 CHAT_FIRST_E2E_CASE ?= enabled
 CHAT_FIRST_E2E_SECONDS ?= 86400
 
-.PHONY: setup setup-main setup-hooks setup-backend preflight runtime-image-source-closure runtime-image-smoke dev-check dev-up dev-status dev-summary dev-reset dev-down dev-logs dev dev-desktop dev-init dev-verify list-memory-scenarios seed-memory-scenario reset-memory-scenario desktop-run-local chat-first-e2e-fixture run-canonical-promotion run-canonical-maintenance
+.PHONY: setup setup-main setup-hooks setup-backend preflight runtime-image-source-closure runtime-image-smoke dev-check dev-up dev-status dev-summary dev-reset dev-down dev-logs dev-shadow-diff dev dev-desktop dev-init dev-verify list-memory-scenarios seed-memory-scenario reset-memory-scenario desktop-run-local chat-first-e2e-fixture run-canonical-promotion run-canonical-maintenance
 
 # Baseline setup is deliberately limited to prerequisites that the default
 # pre-push gate may require; app and desktop runtime environments stay opt-in.
@@ -97,6 +97,9 @@ dev-down:
 
 dev-logs:
 	$(BASH) scripts/dev-harness/dev-logs.sh
+
+dev-shadow-diff:
+	$(BASH) dev/shadow-diff.sh
 
 list-memory-scenarios:
 	$(PYTHON_RUNNER) scripts/dev-harness/list-memory-scenarios.py

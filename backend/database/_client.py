@@ -89,6 +89,14 @@ _customer_firestore_client_lock = Lock()
 
 
 def _build_firestore_client() -> Any:
+    # Cloud-neutral shim mode: FIRESTORE_PG_DSN points at PostgreSQL, and
+    # firestore_pg serves the same SDK surface (see firestore_pg/README).
+    if os.environ.get("FIRESTORE_PG_DSN"):
+        from firestore_pg.compat import install as _install_pg_shim
+        from firestore_pg.client import Client as _PgClient
+
+        _install_pg_shim()
+        return _PgClient(project=os.environ.get("FIREBASE_PROJECT_ID"))
     # Production safety: only override project/database when pointed at a local
     # Firestore emulator. Without FIRESTORE_EMULATOR_HOST set (i.e. real Firestore),
     # never let bare GOOGLE_CLOUD_PROJECT (often the GKE compute project) repoint

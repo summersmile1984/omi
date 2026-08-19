@@ -275,3 +275,12 @@ htmlcov/
 
 # pnpm store
 .pnpm-store/
+
+# Local dev env (contains dev-only secrets)
+dev/.env.dev
+
+# Local agent/tooling state (LoopX goals, editor configs, pilots) — not product code
+.codex/
+.loopx/
+.opencode/
+.pilot/

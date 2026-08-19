@@ -1,0 +1,123 @@
+"""MiMo-V2.5-TTS synthesis client for the cloud-neutral Omi fork.
+
+MiMo-V2.5-TTS is an OpenAI-compatible chat completions endpoint (NOT
+``/v1/audio/speech``): the text goes in the ``assistant`` message and the
+audio comes back base64-encoded in ``choices.message.audio.data``.
+
+Request shape (official quick-start):
+  model   = "mimo-v2.5-tts"
+  messages = [{role: user, content: ""}, {role: assistant, content: <text>}]
+  audio   = {format: "wav"|"pcm16", voice: "冰糖"|"茉莉"|"苏打"|"白桦"|...}
+
+Returns a WAV (24kHz mono) by default. Voice cloning / voice design use the
+``mimo-v2.5-tts-voiceclone`` / ``mimo-v2.5-tts-voicedesign`` models.
+"""
+
+from __future__ import annotations
+
+import base64
+import logging
+import os
+from typing import Any, Dict, Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+# Same endpoint family as the ASR client. MIMO_USE_TOKENPLAN switches to the
+# China TokenPlan base (tp- keys), which is what self-hosted CN deploys use.
+MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com")
+MIMO_TOKENPLAN_BASE = os.getenv("MIMO_TOKENPLAN_BASE", "https://token-plan-cn.xiaomimimo.com")
+MIMO_API_KEY = os.getenv("MIMO_API_KEY", "")
+MIMO_TTS_MODEL = os.getenv("MIMO_TTS_MODEL", "mimo-v2.5-tts")
+MIMO_TTS_VOICE = os.getenv("MIMO_TTS_VOICE", "冰糖")
+MIMO_TTS_FORMAT = os.getenv("MIMO_TTS_FORMAT", "wav")
+DEFAULT_TIMEOUT = float(os.getenv("MIMO_TIMEOUT_SECONDS", "120"))
+
+
+class MimoTTSAPIError(RuntimeError):
+    """Raised for MiMo TTS API failures (auth, validation, transport)."""
+
+
+def _resolve_base_url() -> str:
+    if os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in ("1", "true", "yes"):
+        return MIMO_TOKENPLAN_BASE
+    return MIMO_API_BASE
+
+
+class MimoTTSClient:
+    """Thin client for MiMo-V2.5-TTS via OpenAI-compatible chat completions."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        voice: Optional[str] = None,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
+        self._api_key = api_key or MIMO_API_KEY
+        self._base_url = (base_url or _resolve_base_url()).rstrip("/")
+        self._model = model or MIMO_TTS_MODEL
+        self._voice = voice or MIMO_TTS_VOICE
+        self._timeout = timeout
+
+    def _endpoint(self) -> str:
+        return f"{self._base_url}/v1/chat/completions"
+
+    def synthesize(
+        self,
+        text: str,
+        *,
+        voice: Optional[str] = None,
+        audio_format: Optional[str] = None,
+        style_instruction: Optional[str] = None,
+    ) -> bytes:
+        """Synthesize speech for ``text``. Returns raw audio bytes (WAV).
+
+        ``style_instruction`` (optional) is a natural-language style prompt
+        passed as the user message (e.g. "用轻快上扬的语调，语速稍快").
+        """
+        if not text.strip():
+            raise MimoTTSAPIError("empty TTS text")
+        if not self._api_key:
+            raise MimoTTSAPIError("MIMO_API_KEY environment variable not set")
+
+        fmt = audio_format or MIMO_TTS_FORMAT
+        voice_id = voice or self._voice
+        messages: list[Dict[str, Any]] = []
+        if style_instruction:
+            messages.append({"role": "user", "content": style_instruction})
+        else:
+            messages.append({"role": "user", "content": ""})
+        messages.append({"role": "assistant", "content": text})
+
+        payload: Dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "audio": {"format": fmt, "voice": voice_id},
+        }
+        resp = httpx.post(
+            self._endpoint(),
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=self._timeout,
+        )
+        if not resp.is_success:
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text)
+            except Exception:  # pragma: no cover - defensive
+                detail = resp.text
+            raise MimoTTSAPIError(f"MiMo TTS API {resp.status_code}: {detail}")
+
+        data = resp.json()
+        try:
+            audio_b64 = data["choices"][0]["message"]["audio"]["data"]
+        except (KeyError, IndexError, TypeError):
+            raise MimoTTSAPIError(f"unexpected MiMo TTS response shape: {str(data)[:300]}")
+        if not audio_b64:
+            raise MimoTTSAPIError("MiMo TTS returned empty audio")
+        return base64.b64decode(audio_b64)

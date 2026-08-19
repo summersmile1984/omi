@@ -1057,6 +1057,15 @@ class ParakeetPrerecordedProvider(PrerecordedSTTProvider):
 
 def get_prerecorded_provider(language: Optional[str] = 'en') -> PrerecordedSTTProvider:
     """Construct exactly the language-aware provider selected for telemetry."""
+    # MOSS override: opt-in via STT_PRERECORDED_MODEL=moss + MOSS_API_KEY.
+    # Kept fully isolated in utils.moss_pipeline so the upstream policy
+    # machinery (modulate/parakeet) is untouched.
+    from utils.moss_pipeline.prerecorded_provider import moss_prerecorded_enabled
+
+    if moss_prerecorded_enabled():
+        from utils.moss_pipeline.prerecorded_provider import MossPrerecordedProvider
+
+        return MossPrerecordedProvider()
     service, _provider_language, model = get_prerecorded_service(language)
     if service == PrerecordedSTTService.MODULATE:
         return ModulatePrerecordedProvider()
