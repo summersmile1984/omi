@@ -49,18 +49,28 @@ PLATFORM_ROUTES = ("viral-metrics", "dau-trends", "retention/posthog", "k-factor
 # panel-for-panel identical without mislabeling desktop data as mobile.
 # (Floating bar is a macOS-only feature; mobile sends no crash telemetry.)
 DESKTOP_ONLY_TITLES = {
-    "Floating bar sessions per user", "Floating bar queries",
-    "Floating bar notification CTR", "Crash-free rate (today)",
-    "Crash-free rate", "Notifications enabled",
+    "Floating bar sessions per user",
+    "Floating bar queries",
+    "Floating bar notification CTR",
+    "Crash-free rate (today)",
+    "Crash-free rate",
+    "Notifications enabled",
 }
 
 LINKS = [
-    {"title": title, "type": "link", "url": f"/grafana/d/{uid}/", "icon": "dashboard",
-     "asDropdown": False, "includeVars": False, "keepTime": False, "targetBlank": False,
-     "tags": [], "tooltip": ""}
-    for title, uid in [("All platforms", "omi-tv"),
-                       ("macOS", "omi-tv-macos"),
-                       ("Mobile", "omi-tv-mobile")]
+    {
+        "title": title,
+        "type": "link",
+        "url": f"/grafana/d/{uid}/",
+        "icon": "dashboard",
+        "asDropdown": False,
+        "includeVars": False,
+        "keepTime": False,
+        "targetBlank": False,
+        "tags": [],
+        "tooltip": "",
+    }
+    for title, uid in [("All platforms", "omi-tv"), ("macOS", "omi-tv-macos"), ("Mobile", "omi-tv-mobile")]
 ]
 
 
@@ -158,10 +168,7 @@ def platform_series(panel, path: str, root: str, field: str, series_name: str) -
 
 def keep_series(panel, keep: set[str]) -> None:
     target = panel["targets"][0]
-    target["columns"] = [
-        c for c in target.get("columns", [])
-        if c.get("type") == "timestamp" or c.get("text") in keep
-    ]
+    target["columns"] = [c for c in target.get("columns", []) if c.get("type") == "timestamp" or c.get("text") in keep]
 
 
 def prune_vars_and_titles(dash) -> None:
@@ -217,8 +224,8 @@ def placeholder_panels(dash, titles: set[str]) -> None:
             "options": {
                 "mode": "markdown",
                 "content": "**Desktop-only surface — no mobile equivalent.**\n\n"
-                           "This feature exists only in the macOS app; see the "
-                           "[macOS board](/grafana/d/omi-tv-macos/).",
+                "This feature exists only in the macOS app; see the "
+                "[macOS board](/grafana/d/omi-tv-macos/).",
             },
             "targets": [],
         }
@@ -262,14 +269,25 @@ def build_platform_board(base, scope: str) -> dict:
     # Mentor "Omi says" pushes are account-level Firestore messages delivered
     # to every device a user has, so notification volume cannot be split by
     # platform either — those panels live on the All-platforms board only.
-    drop_panels(dash, {
-        "Users → 1M goal", "ARR", "Active subscriptions", "Trialing",
-        "Trials in pipeline", "Conversations", "MRR by product", "MRR over time",
-        "New subscriptions / month", "Message ratings",
-        "Daily notifications sent", "Notifications sent — last 168 hours",
-        "Weekly notification reach",
-        "Infra cost by service — last 30 days",
-    })
+    drop_panels(
+        dash,
+        {
+            "Users → 1M goal",
+            "ARR",
+            "Active subscriptions",
+            "Trialing",
+            "Trials in pipeline",
+            "Conversations",
+            "MRR by product",
+            "MRR over time",
+            "New subscriptions / month",
+            "Message ratings",
+            "Daily notifications sent",
+            "Notifications sent — last 168 hours",
+            "Weekly notification reach",
+            "Infra cost by service — last 30 days",
+        },
+    )
     if scope == "mobile":
         placeholder_panels(dash, DESKTOP_ONLY_TITLES)
 
@@ -277,14 +295,16 @@ def build_platform_board(base, scope: str) -> dict:
     ticker["title"] = f"{label} users (all-time)"
     ticker["gridPos"]["h"] = 6
     set_stat_query(
-        ticker, set_url_param(VIRAL_PATH, "platform", scope),
-        "summary", "allTimeUsers", f"{label} users",
+        ticker,
+        set_url_param(VIRAL_PATH, "platform", scope),
+        "summary",
+        "allTimeUsers",
+        f"{label} users",
     )
 
     mrr = panel_by_title(dash, "MRR")
     mrr["title"] = f"MRR ({label})"
-    set_stat_query(mrr, PROFIT_PATH, "summary",
-                   "mrrDesktop" if scope == "macos" else "mrrMobile", "MRR")
+    set_stat_query(mrr, PROFIT_PATH, "summary", "mrrDesktop" if scope == "macos" else "mrrMobile", "MRR")
 
     # Signups / daily-new / cumulative all use viral-metrics userGrowth —
     # the same person-deduped PostHog population as the all-time ticker, so
@@ -292,8 +312,7 @@ def build_platform_board(base, scope: str) -> dict:
     viral_scoped = set_url_param(VIRAL_PATH, "platform", scope)
     signups = panel_by_title(dash, "Signups — last 7 days")
     signups["title"] = f"{label} signups — last 7 days"
-    set_compare(signups["targets"][0], "url",
-                path=viral_scoped, root="userGrowth", fields="users")
+    set_compare(signups["targets"][0], "url", path=viral_scoped, root="userGrowth", fields="users")
 
     daily = panel_by_title(dash, "Daily new users")
     user_growth_series(daily, scope, "users", "New users")
@@ -323,7 +342,8 @@ def build_platform_board(base, scope: str) -> dict:
         panel_by_title(dash, "Activation rate (macOS)")["title"] = "Activation rate"
         chart = panel_by_title(dash, "Activation (signup → activated, macOS)")
         chart["title"] = "Activation (signup → activated)" + (
-            "  ·  " + chart["title"].split("  ·  ")[1] if "  ·  " in chart["title"] else "")
+            "  ·  " + chart["title"].split("  ·  ")[1] if "  ·  " in chart["title"] else ""
+        )
     if scope == "mobile":
         # Real mobile equivalents of the macOS-titled panels.
         versions_mobile = "/api/omi/stats/macos-versions?platform=mobile"
@@ -355,8 +375,10 @@ def build_platform_board(base, scope: str) -> dict:
             {"selector": "activated", "text": "Activated", "type": "number"},
             {"selector": "rate", "text": "Rate", "type": "number"},
         ]
-        chart["description"] = ("First-seen mobile users creating a Memory within 7 days "
-                                "(PostHog telemetry; mobile does not emit Sign In Completed).")
+        chart["description"] = (
+            "First-seen mobile users creating a Memory within 7 days "
+            "(PostHog telemetry; mobile does not emit Sign In Completed)."
+        )
 
     prune_vars_and_titles(dash)
     reflow(dash)
@@ -378,8 +400,7 @@ def main() -> None:
     BASE_PATH.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
     for dash, name in [(macos, "omi-tv-macos.json"), (mobile, "omi-tv-mobile.json")]:
         (DASH_DIR / name).write_text(json.dumps(dash, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote {name}: {len(dash['panels'])} panels, "
-              f"{len(dash['templating']['list'])} vars")
+        print(f"wrote {name}: {len(dash['panels'])} panels, " f"{len(dash['templating']['list'])} vars")
     print(f"updated omi-tv.json: {len(base['panels'])} panels (NYC tz + _tzdates + platform=all + links)")
 
 
