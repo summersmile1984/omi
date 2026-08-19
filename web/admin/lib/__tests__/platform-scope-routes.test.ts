@@ -10,16 +10,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const captured: string[] = [];
 
-vi.mock("@/lib/auth", () => ({ verifyAdmin: vi.fn(async () => ({ uid: "test" })) }));
+vi.mock("@/lib/auth", () => ({
+  verifyAdmin: vi.fn(async () => ({ uid: "test" })),
+}));
 vi.mock("@/lib/payload-cache", () => ({
   getPayload: vi.fn(async () => null),
   setPayload: vi.fn(async () => undefined),
 }));
 vi.mock("@/lib/posthog", () => ({
-  posthogResults: vi.fn(async (_h: string, _p: string, _k: string, query: string) => {
-    captured.push(query);
-    return [];
-  }),
+  posthogResults: vi.fn(
+    async (_h: string, _p: string, _k: string, query: string) => {
+      captured.push(query);
+      return [];
+    },
+  ),
 }));
 
 const MACOS_FILTER = "$os_name = 'macOS'";
@@ -29,7 +33,10 @@ function request(url: string) {
   return { nextUrl: new URL(`http://localhost${url}`) } as any;
 }
 
-async function capture(loadRoute: () => Promise<{ GET: (r: any) => Promise<any> }>, url: string) {
+async function capture(
+  loadRoute: () => Promise<{ GET: (r: any) => Promise<any> }>,
+  url: string,
+) {
   captured.length = 0;
   vi.resetModules(); // defeat each route's module-level response cache
   const { GET } = await loadRoute();
@@ -60,19 +67,41 @@ beforeEach(() => {
 });
 
 const ROUTES: [string, () => Promise<any>, string][] = [
-  ["dau-trends", () => import("@/app/api/omi/stats/dau-trends/route"), "/api/omi/stats/dau-trends?days=30"],
-  ["viral-metrics", () => import("@/app/api/omi/stats/viral-metrics/route"), "/api/omi/stats/viral-metrics?days=30"],
-  ["retention", () => import("@/app/api/omi/stats/retention/posthog/route"), "/api/omi/stats/retention/posthog?days=14&intervals=10"],
-  ["k-factor", () => import("@/app/api/omi/stats/k-factor/posthog/route"), "/api/omi/stats/k-factor/posthog?days=30"],
+  [
+    "dau-trends",
+    () => import("@/app/api/omi/stats/dau-trends/route"),
+    "/api/omi/stats/dau-trends?days=30",
+  ],
+  [
+    "viral-metrics",
+    () => import("@/app/api/omi/stats/viral-metrics/route"),
+    "/api/omi/stats/viral-metrics?days=30",
+  ],
+  [
+    "retention",
+    () => import("@/app/api/omi/stats/retention/posthog/route"),
+    "/api/omi/stats/retention/posthog?days=14&intervals=10",
+  ],
+  [
+    "k-factor",
+    () => import("@/app/api/omi/stats/k-factor/posthog/route"),
+    "/api/omi/stats/k-factor/posthog?days=30",
+  ],
 ];
 
 describe.each(ROUTES)("%s route", (_name, loadRoute, baseUrl) => {
   it("scopes every query to macOS for platform=macos", async () => {
-    expectScoped(await capture(loadRoute, `${baseUrl}&platform=macos`), "macos");
+    expectScoped(
+      await capture(loadRoute, `${baseUrl}&platform=macos`),
+      "macos",
+    );
   });
 
   it("scopes every query to the mobile OS list for platform=mobile", async () => {
-    expectScoped(await capture(loadRoute, `${baseUrl}&platform=mobile`), "mobile");
+    expectScoped(
+      await capture(loadRoute, `${baseUrl}&platform=mobile`),
+      "mobile",
+    );
   });
 
   it("applies no OS constraint for platform=all", async () => {
