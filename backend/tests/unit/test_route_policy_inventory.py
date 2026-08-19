@@ -494,12 +494,14 @@ def test_system_routes_are_reported_as_excluded_not_application_routes():
 
 
 def test_problem_detail_limiter_keeps_header_and_reports_hidden_count():
-    problem = textwrap.dedent("""\
+    problem = textwrap.dedent(
+        """\
         missing manifest entries:
           - one
           - two
           - three
-        """).strip()
+        """
+    ).strip()
 
     assert inventory.limit_problem_details(problem, max_lines=3).endswith('  ... 1 more not shown')
 

@@ -841,7 +841,8 @@ def remove_conversation_summary_app_id(app_id: str) -> bool:
 # Lua script: atomic increment + TTL in a single round-trip.
 # Returns [current_count, ttl_remaining].  Sets TTL on first hit
 # and self-heals any key that lost its TTL (prevents permanent buckets).
-_RATE_LIMIT_LUA = r.register_script("""
+_RATE_LIMIT_LUA = r.register_script(
+    """
 local key = KEYS[1]
 local window = tonumber(ARGV[1])
 local current = redis.call('INCR', key)
@@ -854,13 +855,15 @@ if ttl < 0 then
     ttl = window
 end
 return {current, ttl}
-""")
+"""
+)
 
 # Proactive LLM calls need a reversible reservation: provider/schema failures
 # must not consume a user's successful-completion allowance. Unlike the legacy
 # increment-first limiter, a rejected reservation does not inflate the counter,
 # so releasing one admitted request remains exact under concurrency.
-_RATE_LIMIT_RESERVE_LUA = r.register_script("""
+_RATE_LIMIT_RESERVE_LUA = r.register_script(
+    """
 local key = KEYS[1]
 local window = tonumber(ARGV[1])
 local limit = tonumber(ARGV[2])
@@ -879,7 +882,8 @@ if current == 1 or ttl < 0 then
     ttl = window
 end
 return {1, current, ttl}
-""")
+"""
+)
 
 _RATE_LIMIT_RELEASE_LUA_SOURCE = """
 local key = KEYS[1]
@@ -945,7 +949,8 @@ def release_rate_limit(key: str, policy: str) -> None:
 # Burst uses a sorted set keyed by timestamp-ms for sliding-window accuracy,
 # trimmed on every call (O(log n)). Daily char counter auto-expires at midnight
 # UTC (caller passes seconds_until_midnight_utc as the TTL).
-_TTS_RATE_LIMIT_LUA = r.register_script("""
+_TTS_RATE_LIMIT_LUA = r.register_script(
+    """
 local burst_key = KEYS[1]
 local daily_key = KEYS[2]
 local now_ms = tonumber(ARGV[1])
@@ -973,7 +978,8 @@ if new_daily == char_count then
     redis.call('EXPIRE', daily_key, daily_ttl)
 end
 return {0, 0}
-""")
+"""
+)
 
 
 def _seconds_until_midnight_utc() -> int:
