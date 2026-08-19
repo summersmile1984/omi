@@ -1,3 +1,4 @@
+import importlib
 import logging
 import os
 from threading import Lock
@@ -5,8 +6,6 @@ from typing import Any
 
 from google.api_core.exceptions import InvalidArgument
 from google.cloud import firestore
-from firestore_pg.client import Client as PostgresFirestoreClient
-from firestore_pg.compat import install as install_postgres_firestore_shim
 
 from database.document_ids import document_id_from_seed
 from database.google_credentials import (
@@ -94,8 +93,9 @@ def _build_firestore_client() -> Any:
     # Cloud-neutral shim mode: FIRESTORE_PG_DSN points at PostgreSQL, and
     # firestore_pg serves the same SDK surface (see firestore_pg/README).
     if os.environ.get("FIRESTORE_PG_DSN"):
-        install_postgres_firestore_shim()
-        return PostgresFirestoreClient(project=os.environ.get("FIREBASE_PROJECT_ID"))
+        importlib.import_module("firestore_pg.compat").install()
+        client_type = importlib.import_module("firestore_pg.client").Client
+        return client_type(project=os.environ.get("FIREBASE_PROJECT_ID"))
     # Production safety: only override project/database when pointed at a local
     # Firestore emulator. Without FIRESTORE_EMULATOR_HOST set (i.e. real Firestore),
     # never let bare GOOGLE_CLOUD_PROJECT (often the GKE compute project) repoint
