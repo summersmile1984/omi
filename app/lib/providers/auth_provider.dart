@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
@@ -37,11 +38,14 @@ Future<ProviderLinkResult?> completeProviderLinkAndMigrate({
   return result;
 }
 
-/// Parses the JWT from a Better Auth /auth-issue response body. Returns null
-/// when the body is malformed or the token is missing/empty.
-String? parseBetterAuthToken(Map<String, dynamic> body) {
+typedef BetterAuthDevCredential = ({String token, String uid});
+
+/// Parses the credential from a Better Auth /auth-issue response body.
+/// Returns null when the body is malformed or either identity field is empty.
+BetterAuthDevCredential? parseBetterAuthDevCredential(Map<String, dynamic> body) {
   final token = body['token'];
-  if (token is String && token.isNotEmpty) return token;
+  final uid = body['uid'];
+  if (token is String && token.isNotEmpty && uid is String && uid.isNotEmpty) return (token: token, uid: uid);
   return null;
 }
 
@@ -61,6 +65,11 @@ class AuthenticationProvider extends BaseProvider {
   bool get loading => _loading;
   bool get requiresReauthentication => _requiresReauthentication;
   int get sessionExpirationGeneration => _sessionExpirationGeneration;
+  bool get betterAuthDevSignInEnabled {
+    const serverUrl = String.fromEnvironment('OMI_AUTH_SERVER_URL');
+    const issuerSecret = String.fromEnvironment('OMI_AUTH_DEV_ISSUER_SECRET');
+    return !kReleaseMode && serverUrl.isNotEmpty && issuerSecret.isNotEmpty;
+  }
 
   AuthenticationProvider({bool initializeListeners = true}) {
     if (initializeListeners) _initializeAuthListeners();
@@ -156,23 +165,25 @@ class AuthenticationProvider extends BaseProvider {
   /// an authenticated Better Auth session so the rest of the app treats it
   /// like a signed-in user (backend verifies the JWT via AUTH_PROVIDER=better_auth).
   Future<void> onBetterAuthSignIn(Function() onSignIn) async {
-    if (loading) return;
+    if (loading || !betterAuthDevSignInEnabled) return;
     setLoadingState(true);
     try {
-      const baseUrl = String.fromEnvironment('OMI_AUTH_SERVER_URL', defaultValue: 'http://10.0.2.2:3000');
+      const baseUrl = String.fromEnvironment('OMI_AUTH_SERVER_URL');
+      const issuerSecret = String.fromEnvironment('OMI_AUTH_DEV_ISSUER_SECRET');
+      const devUid = String.fromEnvironment('OMI_AUTH_DEV_UID', defaultValue: 'mobile-better-auth');
       final response = await http.post(
         Uri.parse('$baseUrl/auth-issue'),
-        headers: const {'Content-Type': 'application/json'},
-        body: jsonEncode({'uid': 'mobile-better-auth-${DateTime.now().millisecondsSinceEpoch}'}),
+        headers: const {'Content-Type': 'application/json', 'Authorization': 'Bearer $issuerSecret'},
+        body: jsonEncode({'uid': devUid}),
       );
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
-        final token = parseBetterAuthToken(body);
-        if (token != null) {
-          SharedPreferencesUtil().authToken = token;
+        final credential = parseBetterAuthDevCredential(body);
+        if (credential != null) {
+          SharedPreferencesUtil().authToken = credential.token;
           SharedPreferencesUtil().tokenExpirationTime = DateTime.now().millisecondsSinceEpoch + (24 * 60 * 60 * 1000);
-          SharedPreferencesUtil().uid = 'mobile-better-auth';
-          authToken = token;
+          SharedPreferencesUtil().uid = credential.uid;
+          authToken = credential.token;
           _betterAuthSession = true;
           _requiresReauthentication = false;
           PlatformManager.instance.analytics.identify();
@@ -183,8 +194,7 @@ class AuthenticationProvider extends BaseProvider {
         }
       }
       AppSnackbar.showSnackbarError(
-        globalNavigatorKey.currentContext?.l10n.authFailedToSignInWithGoogle ??
-            'Failed to sign in with Better Auth, please try again.',
+        globalNavigatorKey.currentContext?.l10n.authenticationFailed ?? 'Authentication failed. Please try again.',
       );
     } catch (e) {
       Logger.debug('Better Auth sign in error: $e');

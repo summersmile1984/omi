@@ -2304,15 +2304,15 @@ class AuthService {
   // MARK: - Get ID Token (for API calls)
 
   func getIdToken(forceRefresh: Bool = false) async throws -> String {
-    // Self-hosted / cloud-neutral deployment: an externally issued JWT
-    // (e.g. Better Auth) injected via OMI_AUTH_API_TOKEN replaces the
-    // Firebase idToken for every API request. This lets the app talk to a
-    // backend that verifies a non-Firebase identity. Empty value falls back
-    // to the normal Firebase token path.
-    if let injected = getenv("OMI_AUTH_API_TOKEN").flatMap({ String(validatingCString: $0) }),
-      !injected.isEmpty {
-      return injected
-    }
+    #if DEBUG
+      // Local cloud-neutral harness only. Release artifacts never honor a
+      // process-environment bearer token, including stable and Beta bundles.
+      if let injected = getenv("OMI_AUTH_API_TOKEN").flatMap({ String(validatingCString: $0) }),
+        !injected.isEmpty
+      {
+        return injected
+      }
+    #endif
     let attempt = currentSessionAttempt()
     // Get the expected user ID (the currently signed-in user)
     let expectedUserId = UserDefaults.standard.string(forKey: .authUserId)
