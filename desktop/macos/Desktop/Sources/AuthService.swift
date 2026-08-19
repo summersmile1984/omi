@@ -2304,6 +2304,15 @@ class AuthService {
   // MARK: - Get ID Token (for API calls)
 
   func getIdToken(forceRefresh: Bool = false) async throws -> String {
+    #if DEBUG
+      // Local cloud-neutral harness only. Release artifacts never honor a
+      // process-environment bearer token, including stable and Beta bundles.
+      if let injected = getenv("OMI_AUTH_API_TOKEN").flatMap({ String(validatingCString: $0) }),
+        !injected.isEmpty
+      {
+        return injected
+      }
+    #endif
     let attempt = currentSessionAttempt()
     // Get the expected user ID (the currently signed-in user)
     let expectedUserId = UserDefaults.standard.string(forKey: .authUserId)
@@ -2550,8 +2559,7 @@ class AuthService {
     // screenAnalysisEnabled: Don't removeObject here — SettingsSyncManager overwrites
     // it from the server within ~200ms of sign-in. Instead, onboarding force-starts
     // monitoring regardless of this setting.
-    // transcriptionEnabled: removeObject works since nothing writes it back.
-    UserDefaults.standard.removeObject(forKey: "transcriptionEnabled")
+    UserDefaults.standard.removeObject(forKey: AssistantSettings.audioRecordingModeDefaultsKey)
 
     if acceptedAccountDeletion {
       UserDefaults.standard.removeObject(forKey: .acceptedAccountDeletionOwnerId)

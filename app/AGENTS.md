@@ -26,8 +26,9 @@ This handles: pub get, build_runner, gen-l10n, and flavor configuration.
 
 ### Firebase Config
 Never run `flutterfire configure` — it overwrites prod credentials. Config files:
-- Dev: `ios/Config/Dev/`, `android/app/src/dev/`, `lib/firebase_options_dev.dart`
-- Prod: `ios/Config/Prod/`, `android/app/src/prod/`, `lib/firebase_options_prod.dart`
+- Dev: `android/app/src/dev/`
+- Prod: `android/app/src/prod/`
+- Local emulator: `lib/firebase_options_local.dart`
 
 ## Native Bridge
 
@@ -117,6 +118,7 @@ PR CI runs `flutter test` and an analyzer ratchet (`app/scripts/analyze_ratchet.
 - Google Sign In (`google_sign_in` package)
 - Apple Sign In (`sign_in_with_apple` package, includes PKCE via nonce+sha256)
 - Firebase Auth as the identity layer
+- Local Better Auth bridge only in non-release builds, and only when both `OMI_AUTH_SERVER_URL` and `OMI_AUTH_DEV_ISSUER_SECRET` are provided as compile-time defines; the bridge UID returned by the server is the stored owner identity
 
 ### Request Headers
 All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash, X-App-Version, plus Bearer token.
@@ -124,7 +126,6 @@ All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash
 ### API Base URLs
 - Dev: configured in `.dev.env` → `Env.apiBaseUrl`
 - Prod: configured in `.prod.env` → `Env.apiBaseUrl`
-- Agent proxy WS: derived from apiBaseUrl (api.omi.me → agent.omi.me)
 
 ## Codegen Rules
 

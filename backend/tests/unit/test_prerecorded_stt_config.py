@@ -45,3 +45,11 @@ def test_whitespace_only_provider_binding_is_missing():
             PrerecordedSTTService.MODULATE,
             {'MODULATE_API_KEY': '   '},
         )
+
+
+def test_explicit_moss_route_requires_only_its_api_key():
+    assert required_env_for_model_config('moss') == ('MOSS_API_KEY',)
+    with pytest.raises(PrerecordedSTTConfigurationError) as exc_info:
+        require_provider_environment(PrerecordedSTTService.MOSS, {})
+    assert exc_info.value.provider == PrerecordedSTTService.MOSS
+    assert exc_info.value.missing_env == 'MOSS_API_KEY'

@@ -137,7 +137,7 @@ struct OMIApp: App {
           log("OmiApp: Main window content appeared (mode: \(Self.launchMode.rawValue))")
         }
     }
-    .windowStyle(.hiddenTitleBar)  // fullSizeContentView: the glass runs under the title bar.
+    .windowStyle(.hiddenTitleBar)  // fullSizeContentView: the top bar occupies the title-bar band.
     .defaultSize(width: defaultWindowSize.width, height: defaultWindowSize.height)
     .commands {
       CommandGroup(after: .textFormatting) {
@@ -339,10 +339,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
       }
     }
 
-    // Proactive notifications are now OFF by default for everyone. Run the one-time
-    // migration before any assistant can fire, so existing users are flipped to Off
-    // once (they can re-enable in Settings).
-    NotificationService.migrateToOffByDefaultIfNeeded()
+    // Proactive notifications are back ON by default at Balanced (focus/insight
+    // categories only). Run the one-time migration before any assistant can fire;
+    // turning notifications off again in Settings sticks.
+    NotificationService.migrateToBalancedDefaultIfNeeded()
 
     // Force macOS to use the correct app icon (bypasses icon cache).
     // Apply squircle mask with proper margins because NSApp.applicationIconImage
@@ -375,6 +375,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     // Initialize NotificationService early to set up UNUserNotificationCenterDelegate
     // This ensures notifications display properly when app is in foreground
     _ = NotificationService.shared
+    // Observe meeting completions app-wide so the action-item banner also fires
+    // while the main window is closed or backgrounded.
+    MeetingActionItemBannerService.shared.activate()
+    NotificationSettingsSyncCoordinator.shared.start()
     // Notification registration repair is deliberately user-triggered from
     // Settings. Launch must not restart usernoted/NotificationCenter or alter
     // notification registration as a passive side effect.
@@ -518,6 +522,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     // Route completed background-agent results into live voice sessions.
     AgentCompletionVoiceDelivery.shared.start()
 
+    Task { await ContextWorkstreamReconciler.shared.start() }
+
     scheduleAppLifecycleMaintenance()
 
     // Identify user if already signed in
@@ -556,13 +562,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     migrateAppName()
 
     updateOnboardingLifecyclePolicy(reason: "launch")
+    // `queue: nil` + explicit hop, never `queue: .main`: synchronous main-queue delivery makes
+    // every background `UserDefaults.set` wait on the main thread, which deadlocked the app when
+    // an auth commit held the session fence while posting and the main thread wanted that fence
+    // (frozen sign-in screen, #11374).
     userDefaultsObserver = NotificationCenter.default.addObserver(
       forName: UserDefaults.didChangeNotification,
       object: nil,
-      queue: .main
+      queue: nil
     ) { [weak self] _ in
-      MainActor.assumeIsolated {
-        self?.updateOnboardingLifecyclePolicy(reason: "user_defaults_changed")
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          self?.updateOnboardingLifecyclePolicy(reason: "user_defaults_changed")
+        }
       }
     }
 
@@ -914,7 +926,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     let audioRecordingView = makeToggleItemView(
       title: "Audio Recording",
       iconName: "mic.fill",
-      isOn: !paywalled && AssistantSettings.shared.transcriptionEnabled,
+      isOn: !paywalled && AssistantSettings.shared.audioRecordingMode != .off,
       action: #selector(audioRecordingToggled(_:))
     )
     audioRecordingItem.view = audioRecordingView
@@ -1086,7 +1098,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
       openMainAppWindow()
       return .summon
     }
-    let action = ShellSummon.toggleAction(for: ShellSummon.shellWindow())
+    let action = ShellSummon.toggleAction(for: ShellSummon.shellWindow(), presentation: ShellSummon.presentation())
     switch action {
     case .summon:
       openMainAppWindow()
@@ -1221,7 +1233,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     screenCaptureSwitch?.state =
       (!paywalled && ProactiveAssistantsPlugin.shared.isMonitoring) ? .on : .off
     audioRecordingSwitch?.state =
-      (!paywalled && AssistantSettings.shared.transcriptionEnabled) ? .on : .off
+      (!paywalled && AssistantSettings.shared.audioRecordingMode != .off) ? .on : .off
   }
 
   func menuDidClose(_ menu: NSMenu) {
@@ -1253,8 +1265,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-    // The Dock icon is the guaranteed way back to a shell you put away with Escape or ⌘W — the
-    // reason `LSUIElement` stays false. Route it through the same summon as the hotkey.
+    // The Dock icon is the guaranteed way back to a shell that puts itself away whenever you click
+    // off it — the reason `LSUIElement` stays false. Route it through the same summon as the hotkey.
     DesktopAutomationWindowPresentation.revealForUser()
     guard MainActor.assumeIsolated({ ShellSummon.summon() }) else { return true }
     sender.activate(ignoringOtherApps: true)
@@ -1334,6 +1346,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
 
     // Stop recurring task scheduler
     RecurringTaskScheduler.shared.stop()
+    Task { await ContextWorkstreamReconciler.shared.stop() }
 
     // Finalize the active Rewind MP4 chunk while the app is still alive.
     // AVAssetWriter files are not readable until finishWriting writes the trailer.

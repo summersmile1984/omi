@@ -104,6 +104,43 @@ class _AuthComponentState extends State<AuthComponent> {
                       const SizedBox(height: 16),
                     ],
 
+                    if (provider.betterAuthDevSignInEnabled) ...[
+                      // Explicitly configured debug-only path for local self-hosting.
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          key: const Key('betterAuthSignInButton'),
+                          onPressed: () {
+                            HapticFeedback.mediumImpact();
+                            provider.onBetterAuthSignIn(widget.onSignIn);
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.black,
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white24),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const FaIcon(FontAwesomeIcons.server, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                context.l10n.continueButton,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  fontFamily: 'Manrope',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
                     // Google sign in button
                     SizedBox(
                       width: double.infinity,

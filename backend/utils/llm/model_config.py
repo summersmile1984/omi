@@ -8,7 +8,7 @@ continue to use ``clients.get_llm(feature)``.
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Tuple, Union
+from typing import Dict, Mapping, Optional, Tuple, Union
 
 from utils.llm.gateway_client import is_auto_lane_id
 
@@ -61,11 +61,14 @@ _TWO_TIER_MODEL_PROFILE: Dict[str, Tuple[str, str]] = {
     'daily_summary': ('gpt-5.6-luna', 'openai'),
     'external_structure': ('gpt-5.6-luna', 'openai'),
     'memories': ('gpt-5.6-luna', 'openai'),
+    'x_memory_extraction_flex': ('gpt-5.6-luna', 'openai'),
     'learnings': ('gpt-5.6-luna', 'openai'),
     'memory_conflict': ('gpt-5.6-luna', 'openai'),
+    'memory_conflict_flex': ('gpt-5.6-luna', 'openai'),
     'knowledge_graph': ('gpt-5.6-luna', 'openai'),
     'memory_l1': ('gpt-5.6-luna', 'openai'),
     'memory_l2': ('gpt-5.6-luna', 'openai'),
+    'memory_l2_flex': ('gpt-5.6-luna', 'openai'),
     'chat_responses': ('gpt-5.6-luna', 'openai'),
     'chat_extraction': ('gpt-5.6-luna', 'openai'),
     'chat_graph': ('gpt-5.6-luna', 'openai'),
@@ -73,6 +76,7 @@ _TWO_TIER_MODEL_PROFILE: Dict[str, Tuple[str, str]] = {
     'goals_advice': ('gpt-5.6-luna', 'openai'),
     'notifications': ('gpt-5.6-luna', 'openai'),
     'proactive_notification': ('gpt-5.6-luna', 'openai'),
+    'desktop_proactive_reasoning': ('gpt-5.6-luna', 'openai'),
     'what_matters_now': ('gpt-5.6-luna', 'openai'),
     'openglass': ('gpt-5.6-luna', 'openai'),
     'app_generator': ('gpt-5.6-luna', 'openai'),
@@ -86,6 +90,7 @@ _TWO_TIER_MODEL_PROFILE: Dict[str, Tuple[str, str]] = {
     'memory_category': ('gpt-5-nano', 'openai'),
     'smart_glasses': ('gpt-5-nano', 'openai'),
     'persona_chat': ('gpt-5-nano', 'openai'),
+    'desktop_proactive_extraction': ('gpt-5-nano', 'openai'),
     # Non-OpenAI routes remain intentionally unchanged.
     'session_titles': ('gemini-2.5-flash-lite', 'gemini'),
     'followup': ('gemini-2.5-flash-lite', 'gemini'),
@@ -139,7 +144,9 @@ _OPENROUTER_TEMPERATURES: Dict[str, float] = {
 #   prompt_cache_key             — prefix-cache request routing. Supported by the gpt-4o,
 #                                  gpt-4o, gpt-5.x and o-series families.
 #   prompt_cache_retention='24h' — extended (24h) cache retention. Supported by the
-#                                  gpt-5.x and o-series families.
+#                                  gpt-5.x and o-series families, except gpt-5.6, which
+#                                  uses the explicit prompt_cache_options contract instead
+#                                  (see supports_cache_retention).
 _CACHE_KEY_MODEL_PREFIXES = ('gpt-5', 'gpt-4o', 'o1', 'o3', 'o4')
 _CACHE_RETENTION_MODEL_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 
@@ -147,6 +154,8 @@ _CACHE_RETENTION_MODEL_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 _STRUCTURED_OUTPUT_FEATURES = {
     'chat_extraction',
     'proactive_notification',
+    'desktop_proactive_extraction',
+    'desktop_proactive_reasoning',
     'conv_app_select',
     'external_structure',
     'trends',
@@ -162,13 +171,38 @@ DEFAULT_CONFIG = _DEFAULT_CONFIG
 # lane. Keep empty until a ticket explicitly wires and verifies shadow/live
 # traffic; existing direct LLM routing never consults this map.
 _AUTO_LANE_FEATURES: Dict[str, str] = {}
+_CHAT_FEATURES = {'chat_responses', 'chat_extraction', 'chat_graph'}
+
+
+def _cloud_neutral_route(feature: str, env: Optional[Mapping[str, str]] = None) -> Optional[Tuple[str, str]]:
+    """Resolve explicitly configured self-hosted LLM routes at the call boundary."""
+
+    values = os.environ if env is None else env
+    if feature == 'translation':
+        provider = values.get('TRANSLATION_PROVIDER', '').strip().lower()
+        model = values.get('TRANSLATION_MODEL', '').strip()
+        if provider in ('mimo', 'xiaomi'):
+            return model or 'mimo-v2.5', 'mimo'
+        if provider in ('deepseek', 'ds'):
+            return model or 'deepseek-chat', 'deepseek'
+    elif feature in _CHAT_FEATURES:
+        provider = values.get('CHAT_PROVIDER', '').strip().lower()
+        model = values.get('CHAT_MODEL', '').strip()
+        if provider in ('mimo', 'xiaomi'):
+            return model or 'mimo-v2.5', 'mimo'
+        if provider in ('deepseek', 'ds'):
+            return model or 'deepseek-v4-flash', 'deepseek'
+    return None
 
 
 def _get_model_config(feature: str) -> Tuple[str, str]:
     """Get the (model, provider) tuple for a feature. Internal — used by get_llm/get_model/get_provider.
 
-    Resolution order: pinned > active profile > fallback.
+    Resolution order: explicit self-hosted route > pinned > active profile > fallback.
     """
+    cloud_neutral_route = _cloud_neutral_route(feature)
+    if cloud_neutral_route is not None:
+        return cloud_neutral_route
     if feature in _PINNED_FEATURES:
         return _PINNED_FEATURES[feature]
     return _active_profile.get(feature, _DEFAULT_CONFIG)
@@ -252,7 +286,10 @@ def supports_prompt_cache(model: str) -> bool:
 
 def supports_cache_retention(model: str) -> bool:
     """Whether a model supports 24h OpenAI prompt-cache retention (prompt_cache_retention='24h')."""
-    return bool(model) and model.startswith(_CACHE_RETENTION_MODEL_PREFIXES)
+    # GPT-5.6 uses the explicit cache contract (prompt_cache_options + a
+    # breakpoint) rather than the legacy prompt_cache_retention field. Sending
+    # both contracts in the same request is rejected by the provider.
+    return bool(model) and not model.startswith('gpt-5.6') and model.startswith(_CACHE_RETENTION_MODEL_PREFIXES)
 
 
 def is_structured_output_feature(feature: str) -> bool:

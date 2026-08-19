@@ -7,6 +7,7 @@
 !.env.prod.template
 !.env.offline.template
 !.envrc.example
+.personal_configs/
 *__pycache__/
 *venv/
 libraries/
@@ -26,6 +27,7 @@ yarn.lock
 .coordination/
 
 # General
+/.pr-body.md
 .idea/
 .next/
 .worktrees/
@@ -125,6 +127,7 @@ src/recordings
 # Apps
 /app/lib/firebase_options.dart
 /app/lib/firebase_options_*.dart
+!/app/lib/firebase_options_local.dart
 /app/firebase.json
 
 # Solidworks models
@@ -272,3 +275,12 @@ htmlcov/
 
 # pnpm store
 .pnpm-store/
+
+# Local dev env (contains dev-only secrets)
+dev/.env.dev
+
+# Local agent/tooling state (LoopX goals, editor configs, pilots) — not product code
+.codex/
+.loopx/
+.opencode/
+.pilot/

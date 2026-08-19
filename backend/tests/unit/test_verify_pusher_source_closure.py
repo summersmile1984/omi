@@ -33,6 +33,7 @@ def test_source_closure_includes_all_dockerfile_copy_dirs() -> None:
         [
             "backend/config/",
             "backend/database/",
+            "backend/firestore_pg/",
             "backend/models/",
             "backend/routers/",
             "backend/services/",

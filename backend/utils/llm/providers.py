@@ -50,9 +50,27 @@ OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
         default_headers={"X-Title": "Omi Chat"},
         prefix_google_models=True,
     ),
+    # Xiaomi MiMo (OpenAI-compatible)
+    'mimo': OpenAICompatibleProviderConfig(
+        name='mimo',
+        api_key_env='MIMO_API_KEY',
+        base_url="https://token-plan-cn.xiaomimimo.com/v1",
+    ),
+    # DeepSeek (OpenAI-compatible)
+    'deepseek': OpenAICompatibleProviderConfig(
+        name='deepseek',
+        api_key_env='DEEPSEEK_API_KEY',
+        base_url="https://api.deepseek.com/v1",
+    ),
 }
 
 _llm_cache: Dict[tuple, Any] = {}
+
+
+def get_openai_api_key() -> str:
+    """Return the platform OpenAI credential at the provider boundary."""
+
+    return os.environ.get(OPENAI_COMPATIBLE_PROVIDERS['openai'].api_key_env, '').strip()
 
 
 def _cache_key(provider: str, model_name: str, streaming: bool, options: Dict[str, Any]) -> tuple:

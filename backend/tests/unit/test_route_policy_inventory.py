@@ -117,7 +117,7 @@ def test_beta_promotion_token_is_registered_for_only_the_two_beta_admission_rout
         if 'beta_promotion_token' in route.get('policy', {}).get('auth', {}).get('mechanisms', [])
     ]
     assert [(route.get('method'), route.get('path')) for route in routes] == [
-        ('POST', '/v2/desktop/beta/promote-qualified'),
+        ('POST', '/v2/desktop/beta/promote-candidate'),
         ('POST', '/v2/desktop/beta/candidates/reserve'),
     ]
 
@@ -494,12 +494,14 @@ def test_system_routes_are_reported_as_excluded_not_application_routes():
 
 
 def test_problem_detail_limiter_keeps_header_and_reports_hidden_count():
-    problem = textwrap.dedent("""\
+    problem = textwrap.dedent(
+        """\
         missing manifest entries:
           - one
           - two
           - three
-        """).strip()
+        """
+    ).strip()
 
     assert inventory.limit_problem_details(problem, max_lines=3).endswith('  ... 1 more not shown')
 

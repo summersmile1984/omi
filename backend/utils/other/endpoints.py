@@ -122,6 +122,21 @@ def verify_token(token: str) -> str:
             logger.warning('ADMIN_KEY auth used to impersonate uid=%s', impersonated_uid)
             return impersonated_uid
 
+    # Verify token. Better Auth shim path when opted in, otherwise Firebase.
+    if os.getenv('AUTH_PROVIDER', '').strip().lower() == 'better_auth':
+        from utils.auth_shim import InvalidIdTokenError as _ShimInvalid, verify_id_token as _shim_verify
+
+        try:
+            decoded_token = cast(Any, _shim_verify(token))
+            return decoded_token['uid']
+        except _ShimInvalid as _exc:
+            # Convert to the firebase_admin InvalidIdTokenError so the caller's
+            # `except InvalidIdTokenError` turns it into a clean 401.
+            raise InvalidIdTokenError(str(_exc)) from _exc
+        except Exception as exc:  # pragma: no cover - unexpected shim failure
+            logger.error('auth_shim verify failed type=%s', type(exc).__name__)
+            raise InvalidIdTokenError(f"auth_shim verify failed: {exc}") from exc
+
     # Verify Firebase token
     try:
         decoded_token = cast(Any, auth.verify_id_token(token))  # type: ignore[reportUnknownMemberType]  # firebase_admin auth untyped

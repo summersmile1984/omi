@@ -167,13 +167,16 @@
                 <data
                     android:host="h.omi.me"
                     android:scheme="https"
-                    android:pathPattern="/tasks/.*" />
+                    android:path="/wrapped" />
             </intent-filter>
-            <intent-filter>
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="omi" />
+                <data
+                    android:host="h.omi.me"
+                    android:scheme="https"
+                    android:pathPattern="/tasks/.*" />
             </intent-filter>
         </activity>
 

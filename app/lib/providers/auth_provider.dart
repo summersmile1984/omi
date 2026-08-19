@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:omi/backend/http/api/apps.dart' as apps_api;
@@ -35,6 +38,17 @@ Future<ProviderLinkResult?> completeProviderLinkAndMigrate({
   return result;
 }
 
+typedef BetterAuthDevCredential = ({String token, String uid});
+
+/// Parses the credential from a Better Auth /auth-issue response body.
+/// Returns null when the body is malformed or either identity field is empty.
+BetterAuthDevCredential? parseBetterAuthDevCredential(Map<String, dynamic> body) {
+  final token = body['token'];
+  final uid = body['uid'];
+  if (token is String && token.isNotEmpty && uid is String && uid.isNotEmpty) return (token: token, uid: uid);
+  return null;
+}
+
 class AuthenticationProvider extends BaseProvider {
   FirebaseAuth get _auth => FirebaseAuth.instance;
 
@@ -43,6 +57,7 @@ class AuthenticationProvider extends BaseProvider {
   bool _loading = false;
   bool _requiresReauthentication = false;
   int _sessionExpirationGeneration = 0;
+  bool _betterAuthSession = false;
   StreamSubscription<User?>? _authStateSubscription;
   StreamSubscription<User?>? _idTokenSubscription;
   StreamSubscription<AuthSessionExpiredEvent>? _sessionExpiredSubscription;
@@ -50,6 +65,11 @@ class AuthenticationProvider extends BaseProvider {
   bool get loading => _loading;
   bool get requiresReauthentication => _requiresReauthentication;
   int get sessionExpirationGeneration => _sessionExpirationGeneration;
+  bool get betterAuthDevSignInEnabled {
+    const serverUrl = String.fromEnvironment('OMI_AUTH_SERVER_URL');
+    const issuerSecret = String.fromEnvironment('OMI_AUTH_DEV_ISSUER_SECRET');
+    return !kReleaseMode && serverUrl.isNotEmpty && issuerSecret.isNotEmpty;
+  }
 
   AuthenticationProvider({bool initializeListeners = true}) {
     if (initializeListeners) _initializeAuthListeners();
@@ -109,6 +129,7 @@ class AuthenticationProvider extends BaseProvider {
         _sessionExpirationGeneration++;
         user = null;
         authToken = null;
+        _betterAuthSession = false;
         final rootContext = globalNavigatorKey.currentContext;
         if (rootContext != null && rootContext.mounted) {
           clearAllUserState(rootContext);
@@ -119,6 +140,7 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   bool isSignedIn() {
+    if (_betterAuthSession && authToken != null && authToken!.isNotEmpty) return true;
     return !_requiresReauthentication && _auth.currentUser != null && !_auth.currentUser!.isAnonymous;
   }
 
@@ -135,6 +157,52 @@ class AuthenticationProvider extends BaseProvider {
   void setLoading(bool value) {
     _loading = value;
     notifyListeners();
+  }
+
+  /// Dev-only Better Auth sign-in for the cloud-neutral fork. Bypasses
+  /// Firebase Auth entirely: calls the self-hosted auth-server /auth-issue,
+  /// stores the returned JWT as the API auth token, and marks this session as
+  /// an authenticated Better Auth session so the rest of the app treats it
+  /// like a signed-in user (backend verifies the JWT via AUTH_PROVIDER=better_auth).
+  Future<void> onBetterAuthSignIn(Function() onSignIn) async {
+    if (loading || !betterAuthDevSignInEnabled) return;
+    setLoadingState(true);
+    try {
+      const baseUrl = String.fromEnvironment('OMI_AUTH_SERVER_URL');
+      const issuerSecret = String.fromEnvironment('OMI_AUTH_DEV_ISSUER_SECRET');
+      const devUid = String.fromEnvironment('OMI_AUTH_DEV_UID', defaultValue: 'mobile-better-auth');
+      final response = await http.post(
+        Uri.parse('$baseUrl/auth-issue'),
+        headers: const {'Content-Type': 'application/json', 'Authorization': 'Bearer $issuerSecret'},
+        body: jsonEncode({'uid': devUid}),
+      );
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final credential = parseBetterAuthDevCredential(body);
+        if (credential != null) {
+          SharedPreferencesUtil().authToken = credential.token;
+          SharedPreferencesUtil().tokenExpirationTime = DateTime.now().millisecondsSinceEpoch + (24 * 60 * 60 * 1000);
+          SharedPreferencesUtil().uid = credential.uid;
+          authToken = credential.token;
+          _betterAuthSession = true;
+          _requiresReauthentication = false;
+          PlatformManager.instance.analytics.identify();
+          notifyListeners();
+          onSignIn();
+          setLoadingState(false);
+          return;
+        }
+      }
+      AppSnackbar.showSnackbarError(
+        globalNavigatorKey.currentContext?.l10n.authenticationFailed ?? 'Authentication failed. Please try again.',
+      );
+    } catch (e) {
+      Logger.debug('Better Auth sign in error: $e');
+      AppSnackbar.showSnackbarError(
+        globalNavigatorKey.currentContext?.l10n.authenticationFailed ?? 'Authentication failed. Please try again.',
+      );
+    }
+    setLoadingState(false);
   }
 
   Future<void> onGoogleSignIn(Function() onSignIn) async {

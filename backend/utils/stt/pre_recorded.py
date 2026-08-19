@@ -4,6 +4,7 @@ import wave as _wave
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from io import BytesIO
+from math import ceil
 from threading import RLock
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
@@ -22,6 +23,7 @@ from config.prerecorded_stt import (
 )
 from config.stt_provider_policy import (
     MODULATE_PROVIDER,
+    MOSS_PROVIDER,
     PARAKEET_PROVIDER,
     STTServingSurface,
     default_models_for_surface,
@@ -37,6 +39,7 @@ from utils.stt.speaker_embedding import SPEAKER_MATCH_THRESHOLD, compare_embeddi
 
 _DG_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 _MODULATE_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
+_MAX_PRE_RECORDED_SEGMENT_DURATION_SECONDS = 30.0
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,8 @@ def get_prerecorded_service(language: Optional[str] = 'en') -> Tuple[str, Option
     def select(models: Sequence[str]) -> Optional[Tuple[str, Optional[str], str]]:
         for m in models:
             m = m.strip()
+            if m == 'moss' and provider_is_enabled(MOSS_PROVIDER, STTServingSurface.PRERECORDED):
+                return PrerecordedSTTService.MOSS, base_lang, 'moss-transcribe-diarize'
             if m == 'modulate-velma-2' and provider_is_enabled(MODULATE_PROVIDER, STTServingSurface.PRERECORDED):
                 if base_lang in {'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'ja', 'ko', 'zh'}:
                     return PrerecordedSTTService.MODULATE, base_lang, 'velma-2'
@@ -1056,6 +1061,11 @@ class ParakeetPrerecordedProvider(PrerecordedSTTProvider):
 def get_prerecorded_provider(language: Optional[str] = 'en') -> PrerecordedSTTProvider:
     """Construct exactly the language-aware provider selected for telemetry."""
     service, _provider_language, model = get_prerecorded_service(language)
+    if service == PrerecordedSTTService.MOSS:
+        require_provider_environment(PrerecordedSTTService.MOSS)
+        from utils.moss_pipeline.prerecorded_provider import MossPrerecordedProvider
+
+        return MossPrerecordedProvider()
     if service == PrerecordedSTTService.MODULATE:
         return ModulatePrerecordedProvider()
     if service == PrerecordedSTTService.PARAKEET:
@@ -1183,21 +1193,56 @@ def _retrieve_user_speaker_id(words: List[Dict[str, Any]], skip_n_seconds: int) 
 def _merge_segments(
     words: List[Dict[str, Any]], skip_n_seconds: int, user_speaker_id: Optional[str]
 ) -> List[Dict[str, Any]]:
+    def split_long_entry(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
+        start = float(entry['start'])
+        end = float(entry['end'])
+        duration = end - start
+        if duration <= _MAX_PRE_RECORDED_SEGMENT_DURATION_SECONDS:
+            return [entry]
+
+        text_words = str(entry['text']).split()
+        if not text_words:
+            return [entry]
+
+        chunk_count = min(ceil(duration / _MAX_PRE_RECORDED_SEGMENT_DURATION_SECONDS), len(text_words))
+        chunk_duration = duration / chunk_count
+        words_per_chunk, remainder = divmod(len(text_words), chunk_count)
+        chunks: List[Dict[str, Any]] = []
+        text_offset = 0
+        for index in range(chunk_count):
+            chunk_word_count = words_per_chunk + (1 if index < remainder else 0)
+            next_text_offset = text_offset + chunk_word_count
+            chunk = dict(entry)
+            chunk['start'] = start + index * chunk_duration
+            chunk['end'] = end if index == chunk_count - 1 else start + (index + 1) * chunk_duration
+            chunk['text'] = ' '.join(text_words[text_offset:next_text_offset])
+            chunks.append(chunk)
+            text_offset = next_text_offset
+        return chunks
+
     segments: List[Dict[str, Any]] = []
     for word in words:
         if word['start'] < skip_n_seconds:
             continue
-        word['is_user'] = word['speaker'] == user_speaker_id if word['speaker'] else False
+        for entry in split_long_entry(word):
+            entry['is_user'] = entry['speaker'] == user_speaker_id if entry['speaker'] else False
 
-        same_prev_speaker = word['speaker'] == segments[-1]['speaker'] if segments else False
-        seconds_from_prev = word['start'] - segments[-1]['end'] if segments else 0
+            same_prev_speaker = entry['speaker'] == segments[-1]['speaker'] if segments else False
+            seconds_from_prev = entry['start'] - segments[-1]['end'] if segments else 0
 
-        # TODO: consider having a max segment size too
-        if segments and same_prev_speaker and seconds_from_prev < 30:
-            segments[-1]['end'] = word['end']
-            segments[-1]['text'] += ' ' + word['text']
-        else:
-            segments.append(word)
+            within_max_duration = (
+                entry['end'] - segments[-1]['start'] < _MAX_PRE_RECORDED_SEGMENT_DURATION_SECONDS if segments else False
+            )
+            if (
+                segments
+                and same_prev_speaker
+                and seconds_from_prev < _MAX_PRE_RECORDED_SEGMENT_DURATION_SECONDS
+                and within_max_duration
+            ):
+                segments[-1]['end'] = entry['end']
+                segments[-1]['text'] += ' ' + entry['text']
+            else:
+                segments.append(entry)
     return segments
 
 

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from database import redis_db
-from models.tts import TtsSynthesizeRequest
+from models.tts import DEFAULT_VOICE_ID, TtsSynthesizeRequest
 from utils.http_client import get_tts_client, get_tts_semaphore
 from utils.log_sanitizer import sanitize
 from utils.other import endpoints as auth
@@ -49,6 +49,11 @@ def _is_valid_voice_id(voice_id: str) -> bool:
     return 1 <= len(voice_id) <= 128 and voice_id.isalnum()
 
 
+def _is_mimo_enabled() -> bool:
+    """MiMo-TTS is the active provider when TTS_PROVIDER=mimo and a key is set."""
+    return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and bool(os.getenv("MIMO_API_KEY"))
+
+
 @router.post(
     '/v2/tts/synthesize',
     tags=['tts'],
@@ -66,16 +71,51 @@ async def tts_synthesize(
         cast(Callable[..., str], _auth_module.with_rate_limit(auth.get_current_user_uid, "tts:synthesize"))
     ),
 ):
-    """Proxy a TTS request to ElevenLabs. Per-user rate limited."""
+    """Proxy a TTS request to the configured provider. Per-user rate limited."""
     api_key = os.getenv('ELEVENLABS_API_KEY')
-    if not api_key:
-        logger.error("tts_synthesize: ELEVENLABS_API_KEY not configured")
+    mimo_enabled = _is_mimo_enabled()
+    if not api_key and not mimo_enabled:
+        logger.error("tts_synthesize: no TTS provider configured (ELEVENLABS_API_KEY or MIMO_API_KEY)")
         raise HTTPException(status_code=503, detail="TTS service not configured")
+
+    text = req.text.strip()
+
+    if mimo_enabled:
+        # MiMo-TTS: one-shot chat-completions request returning audio bytes.
+        # The client request's voice_id is the ElevenLabs one (Sloane); for
+        # MiMo we use the MiMo voice (default 冰糖, MIMO_TTS_VOICE) unless the
+        # caller explicitly sent a MiMo voice name in voice_id.
+        from utils.mimo_pipeline.tts import MimoTTSClient, MimoTTSAPIError
+
+        requested_voice = req.voice_id.strip() if _is_valid_voice_id(req.voice_id) else None
+        if requested_voice in (DEFAULT_VOICE_ID,):
+            requested_voice = None  # caller left the ElevenLabs default; use MiMo default
+        try:
+            client = MimoTTSClient()
+            audio = await run_blocking(
+                critical_executor,
+                client.synthesize,
+                text,
+                voice=requested_voice,
+            )
+        except MimoTTSAPIError as exc:
+            logger.warning(f"tts_synthesize: MiMo TTS failed uid={uid}: {sanitize(str(exc))}")
+            raise HTTPException(status_code=502, detail="TTS upstream unavailable")
+
+        async def mimo_stream():
+            yield audio
+
+        return StreamingResponse(
+            mimo_stream(),
+            media_type="audio/wav",
+            headers={"Content-Length": str(len(audio))},
+        )
+
+    assert api_key is not None
 
     if not _is_valid_voice_id(req.voice_id):
         raise HTTPException(status_code=400, detail="invalid voice_id")
 
-    text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
 
