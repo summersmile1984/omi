@@ -19,6 +19,58 @@ final class ProactiveLaneClientTests: XCTestCase {
     XCTAssertEqual(parsed.content, "{\"decision\":\"silence\"}")
   }
 
+  func testSelfHostedCompletionUsesProviderNeutralToolCapability() async throws {
+    ProactiveLaneURLStub.reset()
+    let client = ProactiveLaneClient(
+      session: makeStubSession(),
+      baseURL: { "https://legacy-proactive.test" },
+      capabilityBaseURL: { "https://operator-backend.test" },
+      deploymentProfile: { .selfHosted },
+      authorization: { "Bearer test" })
+    let arguments = #"{"decision":"silence"}"#
+    ProactiveLaneURLStub.enqueue(
+      statusCode: 200,
+      body: try JSONSerialization.data(withJSONObject: [
+        "status": "ok",
+        "capability": "proactive_tools",
+        "outcome": "tool_calls",
+        "message": [
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            [
+              "id": "call-1",
+              "type": "function",
+              "function": ["name": "emit_structured_output", "arguments": arguments],
+            ]
+          ],
+        ],
+        "route": [
+          "feature": "desktop_proactive_reasoning",
+          "primary": ["provider": "generic", "model": "operator-model"],
+          "fallbacks": [],
+        ],
+      ]))
+
+    let result = try await client.complete(
+      operation: "proactive_reasoning",
+      prompt: "decide",
+      jsonSchema: [
+        "type": "object",
+        "properties": ["decision": ["type": "string"]],
+        "required": ["decision"],
+        "additionalProperties": false,
+      ])
+
+    XCTAssertEqual(ProactiveLaneURLStub.requestedPaths, ["/v1/model-capabilities/tool-completions"])
+    XCTAssertEqual(result.content, arguments)
+    XCTAssertEqual(result.providerModel, "generic:operator-model")
+    let body = try XCTUnwrap(ProactiveLaneURLStub.requestedBodies.first)
+    XCTAssertNil(body["operation"], "the self-hosted path must not use the legacy proactive gateway")
+    let choice = try XCTUnwrap(body["tool_choice"] as? [String: Any])
+    XCTAssertEqual((choice["function"] as? [String: Any])?["name"] as? String, "emit_structured_output")
+  }
+
   func testTelemetryProviderModelIsBounded() {
     XCTAssertEqual(ContextProactivityTelemetry.boundedProviderModel("gpt-5.6-luna"), "gpt-5.6-luna")
     XCTAssertEqual(ContextProactivityTelemetry.boundedProviderModel("attacker-controlled-model"), "other")
@@ -499,6 +551,8 @@ private final class ProactiveLaneURLStub: URLProtocol, @unchecked Sendable {
   private nonisolated(unsafe) static var responses: [StubResponse] = []
   private nonisolated(unsafe) static var served = 0
   private nonisolated(unsafe) static var operations: [String] = []
+  private nonisolated(unsafe) static var paths: [String] = []
+  private nonisolated(unsafe) static var bodies: [[String: Any]] = []
   /// How many requests must be in flight before any of them is answered, if the caller asked for
   /// that. Nil is the ordinary case: answer each request as it arrives.
   private nonisolated(unsafe) static var holdThreshold: Int?
@@ -517,11 +571,25 @@ private final class ProactiveLaneURLStub: URLProtocol, @unchecked Sendable {
     return operations
   }
 
+  static var requestedPaths: [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return paths
+  }
+
+  static var requestedBodies: [[String: Any]] {
+    lock.lock()
+    defer { lock.unlock() }
+    return bodies
+  }
+
   static func reset() {
     lock.lock()
     responses = []
     served = 0
     operations = []
+    paths = []
+    bodies = []
     holdThreshold = nil
     holdReached = nil
     held = []
@@ -565,8 +633,11 @@ private final class ProactiveLaneURLStub: URLProtocol, @unchecked Sendable {
       return
     }
     let operation = Self.operation(from: request)
+    let body = Self.body(from: request)
     Self.lock.lock()
     Self.operations.append(operation)
+    Self.paths.append(url.path)
+    if let body { Self.bodies.append(body) }
     let stub = Self.responses.isEmpty ? nil : Self.responses.removeFirst()
     Self.served += 1
     let deliver = { self.deliver(stub, for: url) }
@@ -601,11 +672,15 @@ private final class ProactiveLaneURLStub: URLProtocol, @unchecked Sendable {
   override func stopLoading() {}
 
   private static func operation(from request: URLRequest) -> String {
-    guard let data = bodyData(from: request),
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    guard let object = body(from: request),
       let operation = object["operation"] as? String
     else { return "" }
     return operation
+  }
+
+  private static func body(from request: URLRequest) -> [String: Any]? {
+    guard let data = bodyData(from: request) else { return nil }
+    return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
   }
 
   private static func bodyData(from request: URLRequest) -> Data? {

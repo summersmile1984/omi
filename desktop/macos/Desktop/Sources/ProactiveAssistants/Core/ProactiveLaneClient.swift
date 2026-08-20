@@ -123,11 +123,14 @@ struct ProactiveLaneFailureClassification: Equatable, Sendable {
 actor ProactiveLaneClient {
   static let shared = ProactiveLaneClient()
   static var backendBaseURL: String { DesktopBackendEnvironment.rustBackendURL() }
+  static var modelCapabilityBaseURL: String { DesktopBackendEnvironment.pythonBaseURL() }
   static let defaultQuotaCooldownSeconds = 10 * 60
   static let minQuotaCooldownSeconds = 60
   static let maxQuotaCooldownSeconds = 60 * 60
   private let session: URLSession
   private let baseURL: () -> String
+  private let capabilityBaseURL: () -> String
+  private let deploymentProfile: () -> DesktopDeploymentProfile
   private let authorization: () async throws -> String
   private let now: @Sendable () -> Date
   private var quotaCooldownUntil: [String: Date] = [:]
@@ -138,11 +141,17 @@ actor ProactiveLaneClient {
   init(
     session: URLSession = .shared,
     baseURL: @escaping () -> String = { ProactiveLaneClient.backendBaseURL },
+    capabilityBaseURL: @escaping () -> String = { ProactiveLaneClient.modelCapabilityBaseURL },
+    deploymentProfile: @escaping () -> DesktopDeploymentProfile = {
+      DesktopBackendEnvironment.deploymentProfile
+    },
     authorization: (() async throws -> String)? = nil,
     now: @escaping @Sendable () -> Date = { Date() }
   ) {
     self.session = session
     self.baseURL = baseURL
+    self.capabilityBaseURL = capabilityBaseURL
+    self.deploymentProfile = deploymentProfile
     self.now = now
     self.authorization =
       authorization ?? {
@@ -179,18 +188,30 @@ actor ProactiveLaneClient {
         "image_url": ["url": "data:image/jpeg;base64,\(imageData.base64EncodedString())"],
       ])
     }
-    var body: [String: Any] = [
-      "operation": operation,
-      "messages": [["role": "user", "content": content]],
-      "response_format": [
-        "type": "json_schema",
-        "json_schema": ["name": "desktop_proactivity", "strict": true, "schema": jsonSchema],
-      ],
-      "max_completion_tokens": maxCompletionTokens,
-    ]
-    if let cacheKey { body["cache_key"] = cacheKey }
-    let root = baseURL().hasSuffix("/") ? baseURL() : baseURL() + "/"
-    guard let url = URL(string: root + "v1/desktop/proactivity/completions") else {
+    let usesCapability = deploymentProfile() == .selfHosted
+    var body: [String: Any]
+    if usesCapability {
+      body = Self.providerNeutralToolBody(
+        messages: content, jsonSchema: jsonSchema, maxOutputTokens: maxCompletionTokens)
+    } else {
+      body = [
+        "operation": operation,
+        "messages": [["role": "user", "content": content]],
+        "response_format": [
+          "type": "json_schema",
+          "json_schema": ["name": "desktop_proactivity", "strict": true, "schema": jsonSchema],
+        ],
+        "max_completion_tokens": maxCompletionTokens,
+      ]
+      if let cacheKey { body["cache_key"] = cacheKey }
+    }
+    let selectedBaseURL = usesCapability ? capabilityBaseURL() : baseURL()
+    let root = selectedBaseURL.hasSuffix("/") ? selectedBaseURL : selectedBaseURL + "/"
+    let path =
+      usesCapability
+      ? "v1/model-capabilities/tool-completions"
+      : "v1/desktop/proactivity/completions"
+    guard let url = URL(string: root + path) else {
       throw ProactiveLaneClientError.invalidResponse
     }
     var request = URLRequest(url: url)
@@ -230,7 +251,57 @@ actor ProactiveLaneClient {
       }
       throw ProactiveLaneClientError.http(status: http.statusCode, retryAfterSeconds: retryAfter)
     }
-    return try Self.parseEnvelope(data)
+    return usesCapability
+      ? try Self.parseProviderNeutralEnvelope(data, operation: operation)
+      : try Self.parseEnvelope(data)
+  }
+
+  static func providerNeutralToolBody(
+    messages: [[String: Any]], jsonSchema: [String: Any], maxOutputTokens: Int
+  ) -> [String: Any] {
+    let toolName = "emit_structured_output"
+    return [
+      "messages": [["role": "user", "content": messages]],
+      "tools": [
+        [
+          "type": "function",
+          "function": [
+            "name": toolName,
+            "description": "Return the required structured result.",
+            "parameters": jsonSchema,
+          ],
+        ]
+      ],
+      "tool_choice": ["type": "function", "function": ["name": toolName]],
+      "max_output_tokens": maxOutputTokens,
+    ]
+  }
+
+  static func parseProviderNeutralEnvelope(_ data: Data, operation: String) throws -> ProactiveLaneResult {
+    guard
+      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      root["status"] as? String == "ok",
+      root["capability"] as? String == "proactive_tools",
+      root["outcome"] as? String == "tool_calls",
+      let message = root["message"] as? [String: Any],
+      let calls = message["tool_calls"] as? [[String: Any]], calls.count == 1,
+      let function = calls[0]["function"] as? [String: Any],
+      function["name"] as? String == "emit_structured_output",
+      let arguments = function["arguments"] as? String,
+      let route = root["route"] as? [String: Any],
+      let primary = route["primary"] as? [String: Any],
+      let provider = primary["provider"] as? String,
+      let model = primary["model"] as? String,
+      (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) is [String: Any]
+    else { throw ProactiveLaneClientError.invalidResponse }
+    return ProactiveLaneResult(
+      operation: operation,
+      lane: "provider-neutral:model-capability",
+      providerModel: "\(provider):\(model)",
+      usage: ProactiveLaneUsage(cachedTokens: 0, cacheWriteTokens: 0),
+      cacheWrite: false,
+      fallbackClass: "none",
+      content: arguments)
   }
 
   private func clearCooldownsIfOwnerChanged(_ owner: String?) {

@@ -1888,13 +1888,13 @@ class ChatToolExecutor {
       // each search result resolves deterministically against its own table
       // instead of the old staged-first/action-fallback guessing that returned an
       // unrelated task when action_item and staged_task rowids collided.
-      let queryEmbedding = try await EmbeddingService.shared.embed(
+      let queryEmbedding = try await EmbeddingService.shared.embedProjected(
         text: query, taskType: "RETRIEVAL_QUERY")
       guard isExpectedOwnerCurrent(expectedOwnerID) else { return authorizedOwnerChangedResult() }
 
       // Search the in-memory index (action_items + staged_tasks share this index)
       let vectorResults = await EmbeddingService.shared.searchSimilar(
-        query: queryEmbedding, topK: 15)
+        projectedQuery: queryEmbedding, topK: 15)
       guard isExpectedOwnerCurrent(expectedOwnerID) else { return authorizedOwnerChangedResult() }
 
       var lines: [String] = []

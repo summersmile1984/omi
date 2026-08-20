@@ -10,7 +10,6 @@ import Foundation
 actor OCREmbeddingService {
   static let shared = OCREmbeddingService()
 
-  private let embeddingDimension = EmbeddingService.embeddingDimension
   private let minTextLength = 20
 
   // MARK: - Batch Embedding Buffer
@@ -43,6 +42,7 @@ actor OCREmbeddingService {
   private var recentHashes: Set<String> = []
   private let maxRecentHashes = 5000
   private var isBackfillRunning = false
+  private var observedProjectionGeneration: UInt64 = 0
   /// Ceiling on the deferred buffer. The old code dropped a gated batch outright, which lost
   /// data; re-queueing it fixes that but reinstates an unbounded buffer for a user whose backend
   /// is gating every call — the buffer grows for as long as the gating lasts. Oldest deferred
@@ -58,8 +58,10 @@ actor OCREmbeddingService {
   /// Injectable dependencies for the flush path. Production wires these to the
   /// live Gemini embedder and the Rewind database; tests inject a gated embedder
   /// so the owner-reset re-entrancy window can be driven deterministically.
-  typealias BatchEmbedder = @Sendable (_ texts: [String], _ taskType: String?) async throws -> [[Float]]
-  typealias EmbeddingWriter = @Sendable (_ screenshotId: Int64, _ embedding: Data) async throws -> Void
+  typealias BatchEmbedder =
+    @Sendable (_ texts: [String], _ taskType: String?) async throws -> ProjectedEmbeddingBatch
+  typealias EmbeddingWriter =
+    @Sendable (_ screenshotId: Int64, _ embedding: Data, _ projectionKey: String?) async throws -> Bool
   typealias FlushSleeper = @Sendable (_ nanoseconds: UInt64) async throws -> Void
   private let batchEmbedder: BatchEmbedder
   private let embeddingWriter: EmbeddingWriter
@@ -69,10 +71,16 @@ actor OCREmbeddingService {
 
   private init() {
     self.batchEmbedder = { texts, taskType in
-      try await EmbeddingService.shared.embedBatch(texts: texts, taskType: taskType)
+      try await EmbeddingService.shared.embedBatchProjected(
+        texts: texts, taskType: taskType, purpose: .rewind)
     }
-    self.embeddingWriter = { screenshotId, embedding in
+    self.embeddingWriter = { screenshotId, embedding, projectionKey in
+      if let projectionKey {
+        return try await RewindDatabase.shared.updateScreenshotEmbeddingIfProjectionMatches(
+          id: screenshotId, embedding: embedding, projectionKey: projectionKey)
+      }
       try await RewindDatabase.shared.updateScreenshotEmbedding(id: screenshotId, embedding: embedding)
+      return true
     }
     self.flushSleeper = { nanoseconds in
       try await Task.sleep(nanoseconds: nanoseconds)
@@ -298,7 +306,13 @@ actor OCREmbeddingService {
 
       let texts = chunk.map { $0.formattedText }
       do {
-        let embeddings = try await batchEmbedder(texts, "RETRIEVAL_DOCUMENT")
+        let result = try await batchEmbedder(texts, "RETRIEVAL_DOCUMENT")
+        let embeddings = result.vectors
+        let projectionGeneration = await EmbeddingService.shared.rewindProjectionGeneration
+        if projectionGeneration != observedProjectionGeneration {
+          recentHashes.removeAll()
+          observedProjectionGeneration = projectionGeneration
+        }
 
         // The embed call above suspended; if the owner retargeted while it was
         // in flight, these rowids belong to the previous owner's database.
@@ -324,8 +338,12 @@ actor OCREmbeddingService {
           let allIds = usesLosslessCompaction ? [item.id] : (duplicateGroups[item.contentHash] ?? [item.id])
           for screenshotId in allIds {
             let authorization = LocalMutationAuthorization { ownerSnapshot.isCurrent() }
-            try await authorization.withCommitLease {
-              try await self.embeddingWriter(screenshotId, data)
+            let written = try await authorization.withCommitLease {
+              try await self.embeddingWriter(screenshotId, data, result.projectionKey)
+            }
+            guard written else {
+              log("OCREmbeddingService: Discarded stale embedding after projection changed")
+              return
             }
             guard generation == ownerGeneration, ownerSnapshot.isCurrent() else {
               log("OCREmbeddingService: Owner changed during writes — dropping stale batch")
@@ -448,9 +466,10 @@ actor OCREmbeddingService {
         let texts = itemsToProcess.map {
           Self.formatForEmbedding(ocrText: $0.ocrText, appName: $0.appName, windowTitle: $0.windowTitle)
         }
-        let embeddings: [[Float]]
+        let result: ProjectedEmbeddingBatch
         do {
-          embeddings = try await EmbeddingService.shared.embedBatch(texts: texts, taskType: "RETRIEVAL_DOCUMENT")
+          result = try await EmbeddingService.shared.embedBatchProjected(
+            texts: texts, taskType: "RETRIEVAL_DOCUMENT", purpose: .rewind)
           guard ownerSnapshot.isCurrent() else { return }
         } catch let error as EmbeddingService.EmbeddingError where error.isExpectedBackendState {
           log(
@@ -466,20 +485,27 @@ actor OCREmbeddingService {
           break
         }
 
-        guard embeddings.count == itemsToProcess.count else {
+        guard result.vectors.count == itemsToProcess.count else {
           log(
-            "OCREmbeddingService: Backfill embedding count mismatch (requested=\(itemsToProcess.count), received=\(embeddings.count)); will retry on next launch"
+            "OCREmbeddingService: Backfill embedding count mismatch (requested=\(itemsToProcess.count), received=\(result.vectors.count)); will retry on next launch"
           )
           hitError = true
           break
         }
 
-        for (i, embedding) in embeddings.enumerated() where i < itemsToProcess.count {
+        for (i, embedding) in result.vectors.enumerated() where i < itemsToProcess.count {
           let item = itemsToProcess[i]
           let data = await EmbeddingService.shared.floatsToData(embedding)
           try await authorization.withCommitLease {
-            try await RewindDatabase.shared.updateScreenshotEmbedding(
-              id: item.id, embedding: data)
+            if let projectionKey = result.projectionKey {
+              guard
+                try await RewindDatabase.shared.updateScreenshotEmbeddingIfProjectionMatches(
+                  id: item.id, embedding: data, projectionKey: projectionKey)
+              else { throw EmbeddingService.EmbeddingError.invalidResponse }
+            } else {
+              try await RewindDatabase.shared.updateScreenshotEmbedding(
+                id: item.id, embedding: data)
+            }
           }
         }
 
@@ -562,7 +588,8 @@ actor OCREmbeddingService {
     guard ownerSnapshot.isCurrent() else { throw LocalMutationAuthorizationError.revoked }
 
     // Embed the query with RETRIEVAL_QUERY task type for asymmetric search
-    let queryEmbedding = try await EmbeddingService.shared.embed(text: query, taskType: "RETRIEVAL_QUERY")
+    let queryEmbedding = try await EmbeddingService.shared.embedProjected(
+      text: query, taskType: "RETRIEVAL_QUERY", purpose: .rewind)
     guard ownerSnapshot.isCurrent() else { throw LocalMutationAuthorizationError.revoked }
 
     let batchSize = 5000
@@ -571,6 +598,12 @@ actor OCREmbeddingService {
     var topResults: [(screenshotId: Int64, similarity: Float)] = []
 
     while scanned < maxScannedEmbeddings {
+      if let projectionKey = queryEmbedding.projectionKey {
+        guard
+          try await RewindDatabase.shared.embeddingProjectionMatches(
+            surface: .rewind, projectionKey: projectionKey)
+        else { return [] }
+      }
       let batch = try await RewindDatabase.shared.readEmbeddingBatch(
         startDate: startDate,
         endDate: endDate,
@@ -584,8 +617,10 @@ actor OCREmbeddingService {
       scanned += batch.count
 
       for (screenshotId, embeddingData) in batch {
-        guard let storedEmbedding = dataToFloats(embeddingData) else { continue }
-        let sim = cosineSimilarity(queryEmbedding, storedEmbedding)
+        guard let storedEmbedding = dataToFloats(embeddingData, dimension: queryEmbedding.vector.count) else {
+          continue
+        }
+        let sim = cosineSimilarity(queryEmbedding.vector, storedEmbedding)
         topResults.append((screenshotId: screenshotId, similarity: sim))
       }
 
@@ -600,6 +635,12 @@ actor OCREmbeddingService {
 
     // Final sort and trim
     guard ownerSnapshot.isCurrent() else { throw LocalMutationAuthorizationError.revoked }
+    if let projectionKey = queryEmbedding.projectionKey {
+      guard
+        try await RewindDatabase.shared.embeddingProjectionMatches(
+          surface: .rewind, projectionKey: projectionKey)
+      else { return [] }
+    }
     topResults.sort { $0.similarity > $1.similarity }
     return Array(topResults.prefix(topK))
   }
@@ -616,8 +657,8 @@ actor OCREmbeddingService {
   }
 
   /// Convert Data (BLOB) back to [Float]
-  private func dataToFloats(_ data: Data) -> [Float]? {
-    guard data.count == embeddingDimension * MemoryLayout<Float>.size else { return nil }
+  private func dataToFloats(_ data: Data, dimension: Int) -> [Float]? {
+    guard data.count == dimension * MemoryLayout<Float>.size else { return nil }
     return data.withUnsafeBytes { raw in
       Array(raw.bindMemory(to: Float.self))
     }

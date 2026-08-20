@@ -17,11 +17,117 @@ struct TaskEmbeddingKey: Hashable, Sendable {
   let id: Int64
 }
 
+enum EmbeddingPurpose: String, Sendable {
+  case ocr
+  case task
+  case rewind
+
+  var projectionNamespace: String { self == .task ? "ns4" : "ns3" }
+  var projectionSurface: RewindDatabase.EmbeddingProjectionSurface {
+    self == .task ? .task : .rewind
+  }
+}
+
+enum EmbeddingProjectionResponseError: Error {
+  case stale
+}
+
+/// Serializes projection activation in response-arrival order while comparing
+/// the request generation. A failed newer response never advances committed
+/// state, while an older response can reuse (but never reactivate) the exact
+/// projection that a newer response already committed.
+actor EmbeddingProjectionResponseCoordinator {
+  private struct CommittedState {
+    let generation: UInt64
+    let projectionKey: String
+  }
+
+  private var nextGenerations: [RewindDatabase.EmbeddingProjectionSurface: UInt64] = [:]
+  private var committedStates: [RewindDatabase.EmbeddingProjectionSurface: CommittedState] = [:]
+  private var locked = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func issue(for surface: RewindDatabase.EmbeddingProjectionSurface) -> UInt64 {
+    let generation = (nextGenerations[surface] ?? 0) &+ 1
+    nextGenerations[surface] = generation
+    return generation
+  }
+
+  func apply(
+    surface: RewindDatabase.EmbeddingProjectionSurface,
+    generation: UInt64,
+    projectionKey: String,
+    markerMatches: @Sendable () async throws -> Bool,
+    activate: @Sendable () async throws -> Bool
+  ) async throws -> Bool {
+    await acquire()
+    defer { release() }
+    if let committed = committedStates[surface], generation < committed.generation {
+      guard projectionKey == committed.projectionKey, try await markerMatches() else {
+        throw EmbeddingProjectionResponseError.stale
+      }
+      return false
+    }
+    let invalidated = try await activate()
+    committedStates[surface] = CommittedState(generation: generation, projectionKey: projectionKey)
+    return invalidated
+  }
+
+  private func acquire() async {
+    if !locked {
+      locked = true
+      return
+    }
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+    }
+  }
+
+  private func release() {
+    if waiters.isEmpty {
+      locked = false
+    } else {
+      waiters.removeFirst().resume()
+    }
+  }
+}
+
+struct EmbeddingProjection: Equatable, Sendable {
+  let provider: String
+  let model: String
+  let dimension: Int
+  let schemaVersion: Int
+  let namespaceVersion: String
+  let logicalNamespace: String
+
+  var key: String {
+    [provider, model, String(dimension), String(schemaVersion), namespaceVersion, logicalNamespace]
+      .joined(separator: "|")
+  }
+}
+
+/// Vectors plus the durable projection lease that produced them. Managed-cloud
+/// legacy calls have no lease; self-hosted capability calls always carry one.
+struct ProjectedEmbeddingBatch: Sendable {
+  let vectors: [[Float]]
+  let projection: EmbeddingProjection?
+
+  var projectionKey: String? { projection?.key }
+}
+
+struct ProjectedEmbedding: Sendable {
+  let vector: [Float]
+  let projection: EmbeddingProjection?
+
+  var projectionKey: String? { projection?.key }
+}
+
 /// Actor-based service for embeddings using Gemini (3072-dim)
 actor EmbeddingService {
   static let shared = EmbeddingService()
 
-  /// Gemini embedding-001 outputs 3072 dimensions by default
+  /// Managed-cloud legacy dimension. Self-hosted vectors use the backend's
+  /// projection dimension and never rely on this value.
   static let embeddingDimension = 3072
   static var modelName: String { ModelQoS.Gemini.embedding }
 
@@ -30,6 +136,9 @@ actor EmbeddingService {
   /// other (see TaskEmbeddingSource).
   private var index: [TaskEmbeddingKey: [Float]] = [:]
   private var isIndexLoaded = false
+  private var activeTaskDimension = embeddingDimension
+  private let projectionResponseCoordinator = EmbeddingProjectionResponseCoordinator()
+  private(set) var rewindProjectionGeneration: UInt64 = 0
 
   /// Cap in-memory embeddings to limit memory (~12KB each, 5000 = ~60MB max)
   private let maxIndexSize = 5000
@@ -57,7 +166,7 @@ actor EmbeddingService {
     )
   }
 
-  /// Get Firebase auth header for proxy requests
+  /// Get the configured identity provider's auth header for backend requests.
   private func authHeader() async throws -> String {
     let authService = await MainActor.run { AuthService.shared }
     return try await authService.getAuthHeader()
@@ -71,9 +180,24 @@ actor EmbeddingService {
   /// - Parameters:
   ///   - text: Text to embed
   ///   - taskType: Optional Gemini task type (e.g. "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY")
-  func embed(text: String, taskType: String? = nil) async throws -> [Float] {
-    guard DesktopBackendEnvironment.deploymentProfile != .selfHosted else {
-      throw EmbeddingError.capabilityUnavailable
+  func embed(
+    text: String,
+    taskType: String? = nil,
+    purpose: EmbeddingPurpose = .task
+  ) async throws -> [Float] {
+    try await embedProjected(text: text, taskType: taskType, purpose: purpose).vector
+  }
+
+  func embedProjected(
+    text: String,
+    taskType: String? = nil,
+    purpose: EmbeddingPurpose = .task
+  ) async throws -> ProjectedEmbedding {
+    if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+      let result = try await embedCapabilityBatch(
+        texts: [text], mode: taskType == "RETRIEVAL_QUERY" ? "query" : "document", purpose: purpose)
+      guard let vector = result.vectors.first else { throw EmbeddingError.invalidResponse }
+      return ProjectedEmbedding(vector: vector, projection: result.projection)
     }
     guard !Self.proxyBaseURL.isEmpty else {
       throw EmbeddingError.missingAPIKey
@@ -117,16 +241,43 @@ actor EmbeddingService {
     }
 
     let floats = values.map { Float($0) }
-    return normalize(floats)
+    return ProjectedEmbedding(vector: normalize(floats), projection: nil)
   }
 
   /// Batch embed multiple texts using Gemini (3072-dim, up to 100 per call)
   /// - Parameters:
   ///   - texts: Texts to embed
   ///   - taskType: Optional Gemini task type (e.g. "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY")
-  func embedBatch(texts: [String], taskType: String? = nil) async throws -> [[Float]] {
-    guard DesktopBackendEnvironment.deploymentProfile != .selfHosted else {
-      throw EmbeddingError.capabilityUnavailable
+  func embedBatch(
+    texts: [String],
+    taskType: String? = nil,
+    purpose: EmbeddingPurpose = .task
+  ) async throws -> [[Float]] {
+    try await embedBatchProjected(texts: texts, taskType: taskType, purpose: purpose).vectors
+  }
+
+  func embedBatchProjected(
+    texts: [String],
+    taskType: String? = nil,
+    purpose: EmbeddingPurpose = .task
+  ) async throws -> ProjectedEmbeddingBatch {
+    if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+      guard !texts.isEmpty else { return ProjectedEmbeddingBatch(vectors: [], projection: nil) }
+      var result: [[Float]] = []
+      var projection: EmbeddingProjection?
+      for start in stride(from: 0, to: texts.count, by: 32) {
+        let end = min(start + 32, texts.count)
+        let chunk = try await embedCapabilityBatch(
+          texts: Array(texts[start..<end]),
+          mode: taskType == "RETRIEVAL_QUERY" ? "query" : "document",
+          purpose: purpose)
+        if let projection, projection != chunk.projection {
+          throw EmbeddingError.invalidResponse
+        }
+        projection = chunk.projection
+        result.append(contentsOf: chunk.vectors)
+      }
+      return ProjectedEmbeddingBatch(vectors: result, projection: projection)
     }
     guard !Self.proxyBaseURL.isEmpty else {
       throw EmbeddingError.missingAPIKey
@@ -181,12 +332,116 @@ actor EmbeddingService {
     guard embeddings.count == texts.count else {
       throw EmbeddingError.invalidResponse
     }
-    return try embeddings.map { embedding in
+    let vectors = try embeddings.map { embedding in
       guard let values = embedding["values"] as? [Double] else {
         throw EmbeddingError.invalidResponse
       }
       return normalize(values.map { Float($0) })
     }
+    return ProjectedEmbeddingBatch(vectors: vectors, projection: nil)
+  }
+
+  private func embedCapabilityBatch(
+    texts: [String], mode: String, purpose: EmbeddingPurpose
+  ) async throws -> ProjectedEmbeddingBatch {
+    guard (1...32).contains(texts.count) else { throw EmbeddingError.invalidResponse }
+    let responseGeneration = await projectionResponseCoordinator.issue(for: purpose.projectionSurface)
+    let base = DesktopBackendEnvironment.pythonBaseURL()
+    guard let url = URL(string: "v1/model-capabilities/embeddings", relativeTo: URL(string: base))?.absoluteURL
+    else { throw EmbeddingError.missingAPIKey }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue(try await authHeader(), forHTTPHeaderField: "Authorization")
+    request.timeoutInterval = 30
+    request.httpBody = try JSONSerialization.data(withJSONObject: [
+      "purpose": purpose.rawValue,
+      "mode": mode,
+      "input": texts,
+      "projection_namespace": purpose.projectionNamespace,
+    ])
+    let (data, response) = try await URLSession.shared.data(for: request)
+    if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+      throw EmbeddingError.serverError(
+        statusCode: httpResponse.statusCode,
+        body: String(data: data.prefix(200), encoding: .utf8) ?? "<non-utf8>")
+    }
+    let decoded = try Self.decodeCapabilityResponse(
+      data: data,
+      inputCount: texts.count,
+      expectedLogicalNamespace: purpose.projectionNamespace)
+    try await RewindDatabase.shared.initialize()
+    let projectionKey = decoded.projection.key
+    let projectionSurface = purpose.projectionSurface
+    let projectionDimension = decoded.projection.dimension
+    let invalidated = try await projectionResponseCoordinator.apply(
+      surface: projectionSurface,
+      generation: responseGeneration,
+      projectionKey: projectionKey,
+      markerMatches: {
+        try await RewindDatabase.shared.embeddingProjectionMatches(
+          surface: projectionSurface, projectionKey: projectionKey)
+      },
+      activate: {
+        try await RewindDatabase.shared.activateEmbeddingProjection(
+          surface: projectionSurface,
+          projectionKey: projectionKey,
+          dimension: projectionDimension)
+      })
+    if purpose == .task {
+      activeTaskDimension = decoded.projection.dimension
+      if invalidated {
+        index.removeAll(keepingCapacity: true)
+        isIndexLoaded = false
+      }
+    } else if invalidated {
+      rewindProjectionGeneration &+= 1
+    }
+    return ProjectedEmbeddingBatch(vectors: decoded.vectors, projection: decoded.projection)
+  }
+
+  static func decodeCapabilityResponse(
+    data: Data,
+    inputCount: Int,
+    expectedLogicalNamespace: String
+  ) throws -> (vectors: [[Float]], projection: EmbeddingProjection) {
+    guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+      envelope["status"] as? String == "ok",
+      envelope["capability"] as? String == "embedding",
+      let rawProjection = envelope["projection"] as? [String: Any],
+      let provider = rawProjection["provider"] as? String,
+      let model = rawProjection["model"] as? String,
+      let dimension = rawProjection["dimension"] as? Int, dimension > 0,
+      let schemaVersion = rawProjection["schema_version"] as? Int,
+      let namespaceVersion = rawProjection["namespace_version"] as? String,
+      let logicalNamespace = rawProjection["logical_namespace"] as? String,
+      logicalNamespace == expectedLogicalNamespace,
+      let rows = envelope["data"] as? [[String: Any]]
+    else { throw EmbeddingError.invalidResponse }
+    let projection = EmbeddingProjection(
+      provider: provider,
+      model: model,
+      dimension: dimension,
+      schemaVersion: schemaVersion,
+      namespaceVersion: namespaceVersion,
+      logicalNamespace: logicalNamespace)
+    var vectors = [[Float]?](repeating: nil, count: inputCount)
+    for row in rows {
+      guard let index = row["index"] as? Int, vectors.indices.contains(index), vectors[index] == nil,
+        let values = row["embedding"] as? [Double], values.count == dimension,
+        values.allSatisfy({ $0.isFinite })
+      else { throw EmbeddingError.invalidResponse }
+      let converted = values.map(Float.init)
+      guard converted.allSatisfy({ $0.isFinite }), converted.contains(where: { $0 != 0 }) else {
+        throw EmbeddingError.invalidResponse
+      }
+      guard let normalized = normalizedFiniteVector(converted) else {
+        throw EmbeddingError.invalidResponse
+      }
+      vectors[index] = normalized
+    }
+    guard vectors.allSatisfy({ $0 != nil }) else { throw EmbeddingError.invalidResponse }
+    return (vectors.compactMap { $0 }, projection)
   }
 
   // MARK: - In-Memory Index
@@ -194,6 +449,12 @@ actor EmbeddingService {
   /// Load embeddings from SQLite into memory (action_items + staged_tasks, capped)
   func loadIndex() async {
     do {
+      if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+        try await RewindDatabase.shared.initialize()
+        activeTaskDimension =
+          try await RewindDatabase.shared.embeddingProjectionDimension(surface: .task)
+          ?? Self.embeddingDimension
+      }
       let rows = try await ActionItemStorage.shared.getAllEmbeddings()
       index.removeAll(keepingCapacity: true)
       // Only keep the most recent embeddings (suffix = highest IDs = newest)
@@ -264,6 +525,40 @@ actor EmbeddingService {
     return Array(results.prefix(topK))
   }
 
+  /// Projection-leased search for self-hosted query vectors. The marker check
+  /// occurs on this actor immediately before the non-suspending in-memory scan;
+  /// projection activation also clears this actor's index.
+  func searchSimilar(projectedQuery: ProjectedEmbedding, topK: Int = 10) async
+    -> [(source: TaskEmbeddingSource, id: Int64, similarity: Float)]
+  {
+    if let projectionKey = projectedQuery.projectionKey {
+      guard
+        (try? await RewindDatabase.shared.embeddingProjectionMatches(
+          surface: .task, projectionKey: projectionKey)) == true
+      else { return [] }
+    }
+    return searchSimilar(query: projectedQuery.vector, topK: topK)
+  }
+
+  /// Store and index a newly embedded staged task through one projection-aware
+  /// service boundary. The second marker check closes the actor re-entrancy
+  /// window between the SQLite CAS and the in-memory index update.
+  func persistStagedEmbedding(id: Int64, result: ProjectedEmbedding) async throws -> Bool {
+    let data = floatsToData(result.vector)
+    if let projectionKey = result.projectionKey {
+      guard
+        try await StagedTaskStorage.shared.updateEmbeddingIfProjectionMatches(
+          id: id, embedding: data, projectionKey: projectionKey),
+        try await RewindDatabase.shared.embeddingProjectionMatches(
+          surface: .task, projectionKey: projectionKey)
+      else { return false }
+    } else {
+      try await StagedTaskStorage.shared.updateEmbedding(id: id, embedding: data)
+    }
+    addToIndex(source: .staged, id: id, embedding: result.vector)
+    return true
+  }
+
   /// Whether the index has been loaded
   var indexLoaded: Bool { isIndexLoaded }
 
@@ -289,19 +584,30 @@ actor EmbeddingService {
         if items.isEmpty { break }
 
         let texts = items.map { $0.description }
-        let embeddings = try await embedBatch(texts: texts)
+        let result = try await embedBatchProjected(texts: texts)
+        let embeddings = result.vectors
 
         for (i, embedding) in embeddings.enumerated() where i < items.count {
           guard RuntimeOwnerIdentity.isAuthorizationCurrent(authorizationSnapshot) else { return }
           let item = items[i]
           let data = floatsToData(embedding)
-          try await ActionItemStorage.shared.updateEmbedding(
-            id: item.id,
-            embedding: data,
-            authorization: LocalMutationAuthorization {
-              RuntimeOwnerIdentity.isAuthorizationCurrent(authorizationSnapshot)
-            }
-          )
+          let authorization = LocalMutationAuthorization {
+            RuntimeOwnerIdentity.isAuthorizationCurrent(authorizationSnapshot)
+          }
+          if let projectionKey = result.projectionKey {
+            guard
+              try await ActionItemStorage.shared.updateEmbeddingIfProjectionMatches(
+                id: item.id,
+                embedding: data,
+                projectionKey: projectionKey,
+                authorization: authorization),
+              try await RewindDatabase.shared.embeddingProjectionMatches(
+                surface: .task, projectionKey: projectionKey)
+            else { continue }
+          } else {
+            try await ActionItemStorage.shared.updateEmbedding(
+              id: item.id, embedding: data, authorization: authorization)
+          }
           guard RuntimeOwnerIdentity.isAuthorizationCurrent(authorizationSnapshot) else { return }
           addToIndex(source: .actionItem, id: item.id, embedding: embedding)
         }
@@ -320,12 +626,22 @@ actor EmbeddingService {
         if items.isEmpty { break }
 
         let texts = items.map { $0.description }
-        let embeddings = try await embedBatch(texts: texts)
+        let result = try await embedBatchProjected(texts: texts)
+        let embeddings = result.vectors
 
         for (i, embedding) in embeddings.enumerated() where i < items.count {
           let item = items[i]
           let data = floatsToData(embedding)
-          try await StagedTaskStorage.shared.updateEmbedding(id: item.id, embedding: data)
+          if let projectionKey = result.projectionKey {
+            guard
+              try await StagedTaskStorage.shared.updateEmbeddingIfProjectionMatches(
+                id: item.id, embedding: data, projectionKey: projectionKey),
+              try await RewindDatabase.shared.embeddingProjectionMatches(
+                surface: .task, projectionKey: projectionKey)
+            else { continue }
+          } else {
+            try await StagedTaskStorage.shared.updateEmbedding(id: item.id, embedding: data)
+          }
           addToIndex(source: .staged, id: item.id, embedding: embedding)
         }
 
@@ -360,14 +676,27 @@ actor EmbeddingService {
 
   /// Normalize a vector to unit length
   private func normalize(_ vector: [Float]) -> [Float] {
-    var norm: Float = 0
-    vDSP_svesq(vector, 1, &norm, vDSP_Length(vector.count))
-    norm = sqrt(norm)
-    guard norm > 0 else { return vector }
-    var result = [Float](repeating: 0, count: vector.count)
-    var divisor = norm
-    vDSP_vsdiv(vector, 1, &divisor, &result, 1, vDSP_Length(vector.count))
-    return result
+    Self.normalizedFiniteVector(vector) ?? vector
+  }
+
+  /// Stable L2 normalization for capability vectors. Scaling before squaring
+  /// prevents finite Float inputs near `Float.greatestFiniteMagnitude` from
+  /// overflowing their norm to infinity and collapsing into an all-zero vector.
+  private static func normalizedFiniteVector(_ vector: [Float]) -> [Float]? {
+    guard !vector.isEmpty, vector.allSatisfy({ $0.isFinite }) else { return nil }
+    let scale = vector.reduce(0.0) { max($0, abs(Double($1))) }
+    guard scale.isFinite, scale > 0 else { return nil }
+    let scaledSquareSum = vector.reduce(0.0) { partial, value in
+      let scaled = Double(value) / scale
+      return partial + scaled * scaled
+    }
+    let norm = scale * sqrt(scaledSquareSum)
+    guard norm.isFinite, norm > 0 else { return nil }
+    let normalized = vector.map { Float(Double($0) / norm) }
+    guard normalized.allSatisfy({ $0.isFinite }), normalized.contains(where: { $0 != 0 }) else {
+      return nil
+    }
+    return normalized
   }
 
   /// Convert [Float] to Data (for SQLite BLOB storage)
@@ -377,12 +706,12 @@ actor EmbeddingService {
     }
   }
 
-  /// Convert Data (BLOB) back to [Float] (expects 3072-dim Gemini embeddings)
+  /// Convert Data (BLOB) back to the active durable projection dimension.
   func dataToFloats(_ data: Data) -> [Float]? {
     let floatSize = MemoryLayout<Float>.size
     let floatCount = data.count / floatSize
 
-    guard floatCount == Self.embeddingDimension else {
+    guard floatCount == activeTaskDimension else {
       return nil
     }
 

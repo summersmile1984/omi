@@ -117,10 +117,11 @@ final class OCREmbeddingServiceFlushTimerTests: XCTestCase {
   ) -> OCREmbeddingService {
     OCREmbeddingService(
       batchEmbedderForTesting: { texts, _ in
-        try await embedder.embed(texts: texts)
+        ProjectedEmbeddingBatch(vectors: try await embedder.embed(texts: texts), projection: nil)
       },
-      embeddingWriterForTesting: { screenshotID, _ in
+      embeddingWriterForTesting: { screenshotID, _, _ in
         await writes.record(screenshotID)
+        return true
       },
       flushSleeperForTesting: { _ in
         try await sleeper.sleep()

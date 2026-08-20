@@ -11,13 +11,7 @@ extension RealtimeHubController {
   /// client-direct with the user's key. Otherwise, if signed in → mint a server-side
   /// ephemeral token and connect with it.
   func ensureWarm() {
-    guard
-      DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
-        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
-    else {
-      log("RealtimeHub: unavailable for self_hosted; using configured backend voice capabilities")
-      return
-    }
+    let selfHosted = DesktopBackendEnvironment.deploymentProfile == .selfHosted
     #if DEBUG
       // The local-profile action owns an already-installed hermetic transport.
       // Re-entering normal warm-up here would replace it and mint a real provider
@@ -39,9 +33,12 @@ extension RealtimeHubController {
       log("RealtimeHub: general warm skipped while barge-in replacement owns session startup")
       return
     }
-    let provider = effectiveProvider
+    // In self-hosted builds the authenticated backend relay is the sole model
+    // and wire-dialect authority. This placeholder is never used for transport;
+    // mintRelayAndConnect selects the adapter from returned `wire_protocol`.
+    let provider: RealtimeHubProvider = selfHosted ? (sessionProvider ?? .openai) : effectiveProvider
     let ownerScope = currentOwnerScope
-    if session != nil, sessionProvider == provider,
+    if session != nil, selfHosted || sessionProvider == provider,
       RealtimeHubOwnerFence.canReuseWarmSession(
         sessionOwner: sessionOwnerScope,
         currentOwnerID: RuntimeOwnerIdentity.currentOwnerId())
@@ -67,7 +64,13 @@ extension RealtimeHubController {
       return
     }
 
-    if let key = APIKeyService.byokKey(provider.byokProvider) {
+    if selfHosted {
+      guard AuthService.shared.isSignedIn, case .authenticated = ownerScope else {
+        log("RealtimeHub: backend relay requires an authenticated owner")
+        return
+      }
+      mintRelayAndConnect(ownerScope: ownerScope)
+    } else if let key = APIKeyService.byokKey(provider.byokProvider) {
       let fingerprint = APIKeyService.byokFingerprint(key)
       guard
         CredentialHealthManager.shared.canUseBYOK(
@@ -98,6 +101,41 @@ extension RealtimeHubController {
       mintAndConnect(provider: provider, ownerScope: ownerScope)
     } else {
       log("RealtimeHub: no BYOK key and not signed in — hub unavailable (cascade).")
+    }
+  }
+
+  func mintRelayAndConnect(ownerScope: RealtimeHubOwnerScope) {
+    guard case .authenticated(let ownerID) = ownerScope,
+      isOwnerScopeCurrent(ownerScope),
+      let mintGeneration = beginMint(ownerScope: ownerScope)
+    else { return }
+    log("RealtimeHub: resolving authenticated backend relay session")
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let relay = try await APIClient.shared.mintRealtimeRelay(expectedOwnerID: ownerID)
+        let provider: RealtimeHubProvider = relay.wireProtocol == .openAI ? .openai : .gemini
+        guard
+          self.acceptMintCompletionOrRewarm(
+            generation: mintGeneration,
+            ownerScope: ownerScope)
+        else { return }
+        _ = self.releaseMint(generation: mintGeneration, ownerScope: ownerScope)
+        guard self.session == nil else { return }
+        self.startSession(
+          provider: provider,
+          auth: .ephemeral("backend-relay"),
+          ownerScope: ownerScope,
+          relay: relay)
+      } catch {
+        guard
+          self.acceptMintCompletionOrRewarm(
+            generation: mintGeneration,
+            ownerScope: ownerScope)
+        else { return }
+        _ = self.releaseMint(generation: mintGeneration, ownerScope: ownerScope)
+        log("RealtimeHub: backend relay unavailable (\(type(of: error)))")
+      }
     }
   }
 
@@ -381,7 +419,8 @@ extension RealtimeHubController {
   func startSession(
     provider: RealtimeHubProvider,
     auth: HubAuth,
-    ownerScope: RealtimeHubOwnerScope
+    ownerScope: RealtimeHubOwnerScope,
+    relay: RealtimeRelaySession? = nil
   ) {
     guard !sessionReplacementGate.isPending else {
       log("RealtimeHub: physical session start rejected until previous transport acknowledges close")
@@ -417,6 +456,7 @@ extension RealtimeHubController {
     let s = RealtimeHubSession(
       provider: provider,
       auth: auth,
+      relay: relay,
       instructions: instructions,
       availableDirectedProviders: registeredDirectedProviderIDs,
       contextPlanID: topLevelContext.planID,
@@ -1170,6 +1210,10 @@ extension RealtimeHubController {
       ensureWarm()
       return
     }
+    if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+      remintRelayReplacementSessionForBargeIn(ownerScope: ownerScope, ownerID: ownerID)
+      return
+    }
     guard let mintGeneration = beginMint(ownerScope: ownerScope) else {
       log(
         "RealtimeHub[\(provider.displayName)]: barge-in replacement queued behind existing token mint"
@@ -1305,6 +1349,50 @@ extension RealtimeHubController {
     }
   }
 
+  private func remintRelayReplacementSessionForBargeIn(
+    ownerScope: RealtimeHubOwnerScope,
+    ownerID: String
+  ) {
+    guard let mintGeneration = beginMint(ownerScope: ownerScope) else { return }
+    let replacementGeneration = bargeInReplacementGeneration
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let relay = try await APIClient.shared.mintRealtimeRelay(expectedOwnerID: ownerID)
+        let relayProvider: RealtimeHubProvider = relay.wireProtocol == .openAI ? .openai : .gemini
+        if self.redriveReplacementMintIfStale(
+          replacementGeneration: replacementGeneration,
+          mintGeneration: mintGeneration,
+          ownerScope: ownerScope)
+        {
+          return
+        }
+        guard self.replacementAudioBuffer != nil, self.session == nil,
+          self.releaseMint(generation: mintGeneration, ownerScope: ownerScope)
+        else { return }
+        self.pendingBargeInProvider = relayProvider
+        self.pendingBargeInAuth = .ephemeral("backend-relay")
+        self.startReplacementSessionForBargeIn(
+          provider: relayProvider,
+          auth: .ephemeral("backend-relay"),
+          ownerScope: ownerScope,
+          relay: relay)
+      } catch {
+        if self.redriveReplacementMintIfStale(
+          replacementGeneration: replacementGeneration,
+          mintGeneration: mintGeneration,
+          ownerScope: ownerScope)
+        {
+          return
+        }
+        guard self.releaseMint(generation: mintGeneration, ownerScope: ownerScope) else { return }
+        self.failBargeInReplacement(
+          provider: self.pendingBargeInProvider ?? .openai,
+          reason: "backend relay unavailable")
+      }
+    }
+  }
+
   /// A completed mint belongs to the replacement generation that started it.
   /// Stale success and failure callbacks may only release the mint slot and
   /// redrive the newest generation; they must not mutate that generation's state.
@@ -1334,7 +1422,8 @@ extension RealtimeHubController {
   func startReplacementSessionForBargeIn(
     provider: RealtimeHubProvider,
     auth: HubAuth,
-    ownerScope: RealtimeHubOwnerScope
+    ownerScope: RealtimeHubOwnerScope,
+    relay: RealtimeRelaySession? = nil
   ) {
     Task { @MainActor [weak self] in
       guard let self else { return }
@@ -1349,7 +1438,7 @@ extension RealtimeHubController {
         self.ensureWarm()
         return
       }
-      self.startSession(provider: provider, auth: auth, ownerScope: ownerScope)
+      self.startSession(provider: provider, auth: auth, ownerScope: ownerScope, relay: relay)
     }
   }
 

@@ -209,11 +209,13 @@ do not hand-edit those paths to match a specific machine.
 - iOS apps use native Sign-In, Desktop uses backend OAuth + custom token
 - Session death is owned by `AuthSessionCoordinator` (`INV-AUTH-1`); use `invalidateSession` for expired/revoked Firebase creds, not nuclear `signOut()`.
 - Self-hosted bundles may sign `OMI_SHARE_BASE_URL`,
-  `OMI_REALTIME_MODEL_PROVIDER` (`openai` or `gemini`, backend relay only),
   `OMI_MCP_CHATGPT_OAUTH_CLIENT_ID`, and
   `OMI_MCP_CLAUDE_OAUTH_CLIENT_ID`. Missing public MCP client IDs disable those
   OAuth setup paths; they never select an Omi registration from the backend
   hostname. Missing share config stays on the configured self-hosted backend.
+- Self-hosted realtime selects its frame adapter only from the authenticated
+  backend relay's returned `wire_protocol`; no client-side provider setting is
+  model or dialect authority.
 - Self-hosted model calls use configured backend capability routes. Missing
   realtime or embedding/tool-loop capabilities fail closed before vendor
   network; BYOK keys, inherited vendor credentials, Auto/Gemini defaults,

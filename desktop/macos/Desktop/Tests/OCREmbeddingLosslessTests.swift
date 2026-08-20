@@ -8,7 +8,9 @@ final class OCREmbeddingLosslessTests: XCTestCase {
     let spy = LosslessEmbeddingSpy()
     let service = makeService(now: now, spy: spy) { texts, _ in
       await spy.recordTexts(texts)
-      return texts.map { _ in [Float](repeating: 0, count: EmbeddingService.embeddingDimension) }
+      return ProjectedEmbeddingBatch(
+        vectors: texts.map { _ in [Float](repeating: 0, count: EmbeddingService.embeddingDimension) },
+        projection: nil)
     }
     let ownerSnapshot = try XCTUnwrap(RewindCaptureOwnerSnapshot.capture())
 
@@ -70,7 +72,10 @@ final class OCREmbeddingLosslessTests: XCTestCase {
   ) -> OCREmbeddingService {
     OCREmbeddingService(
       batchEmbedderForTesting: embedder,
-      embeddingWriterForTesting: { id, _ in await spy.recordID(id) },
+      embeddingWriterForTesting: { id, _, _ in
+        await spy.recordID(id)
+        return true
+      },
       losslessSyncEnabledForTesting: { true },
       nowForTesting: { now })
   }

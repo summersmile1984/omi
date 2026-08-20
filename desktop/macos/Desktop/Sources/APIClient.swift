@@ -1,6 +1,20 @@
 import Foundation
 import OmiWAL
 
+enum RealtimeRelayWireProtocol: String, Equatable, Sendable, Decodable {
+  case openAI = "openai_realtime_v1"
+  case gemini = "gemini_live_v1"
+}
+
+struct RealtimeRelaySession: Equatable, Sendable {
+  let websocketURL: URL
+  let protocolName: String
+  let providerID: String
+  let wireProtocol: RealtimeRelayWireProtocol
+  let model: String
+  let authorization: String
+}
+
 actor APIClient {
   static let shared = APIClient()
   // Primary data backend URL — Python backend is the single source of truth for all data CRUD.
@@ -223,6 +237,91 @@ actor APIClient {
       log("APIClient: realtime token mint failed for \(provider): \(error.localizedDescription)")
       throw CredentialHealthError.backendTransient(statusCode: nil, message: error.localizedDescription)
     }
+  }
+
+  /// Resolve the provider-neutral realtime relay selected by the self-hosted
+  /// backend. The client sends no provider credential and connects only to the
+  /// backend URL returned by the authenticated relay contract.
+  func mintRealtimeRelay(expectedOwnerID: String) async throws -> RealtimeRelaySession {
+    struct Resp: Decodable {
+      let provider: String
+      let providerID: String
+      let wireProtocol: RealtimeRelayWireProtocol
+      let model: String
+      let transport: String
+      let `protocol`: String
+      let websocketURL: String
+
+      enum CodingKeys: String, CodingKey {
+        case provider
+        case providerID = "provider_id"
+        case wireProtocol = "wire_protocol"
+        case model
+        case transport
+        case `protocol`
+        case websocketURL = "websocket_url"
+      }
+    }
+    let normalized = baseURL.hasSuffix("/") ? baseURL : baseURL + "/"
+    guard let url = URL(string: normalized + "v2/realtime/session") else {
+      throw APIError.invalidResponse
+    }
+    let authPolicy = RequestAuthPolicy.ownerBound(expectedOwnerID)
+    try validateExpectedOwner(authPolicy)
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.allHTTPHeaderFields = try await buildHeaders(
+      requireAuth: true, includeBYOK: false, expectedAuthOwnerId: expectedOwnerID)
+    request.httpBody = try JSONEncoder().encode(["provider": "relay"])
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let (data, response) = try await performAuthenticatedData(for: request, authPolicy: authPolicy)
+    guard (200...299).contains(response.statusCode) else {
+      throw APIError.httpError(statusCode: response.statusCode)
+    }
+    let payload = try decoder.decode(Resp.self, from: data)
+    guard payload.provider == "relay", payload.transport == "websocket_relay",
+      payload.protocol == "omi.realtime.v1"
+    else { throw APIError.invalidResponse }
+    let websocketURL = try Self.resolvedRealtimeRelayURL(
+      payload.websocketURL,
+      backendBaseURL: normalized,
+      requireTLS: DesktopBackendEnvironment.deploymentProfile == .selfHosted)
+    let headers = try await buildHeaders(
+      requireAuth: true, includeBYOK: false, expectedAuthOwnerId: expectedOwnerID)
+    guard
+      let authorization = headers.first(where: { $0.key.caseInsensitiveCompare("Authorization") == .orderedSame })?
+        .value,
+      authorization.hasPrefix("Bearer ")
+    else { throw APIError.invalidResponse }
+    return RealtimeRelaySession(
+      websocketURL: websocketURL,
+      protocolName: payload.protocol,
+      providerID: payload.providerID,
+      wireProtocol: payload.wireProtocol,
+      model: payload.model,
+      authorization: authorization)
+  }
+
+  static func resolvedRealtimeRelayURL(
+    _ value: String,
+    backendBaseURL: String,
+    requireTLS: Bool
+  ) throws -> URL {
+    guard let backend = URL(string: backendBaseURL),
+      let candidate = URL(string: value, relativeTo: backend)?.absoluteURL,
+      candidate.host?.lowercased() == backend.host?.lowercased(),
+      candidate.port == backend.port,
+      candidate.user == nil,
+      candidate.password == nil,
+      candidate.fragment == nil
+    else { throw APIError.invalidResponse }
+    var components = URLComponents(url: candidate, resolvingAgainstBaseURL: true)
+    if components?.scheme == "https" { components?.scheme = "wss" }
+    if components?.scheme == "http" { components?.scheme = "ws" }
+    guard let relay = components?.url,
+      relay.scheme == "wss" || (!requireTLS && relay.scheme == "ws")
+    else { throw APIError.invalidResponse }
+    return relay
   }
 
   private func performRealtimeMintRequest(
@@ -1051,15 +1150,20 @@ extension APIClient {
   /// Completes a goal (marks as inactive with completed_at)
   func completeGoal(id: String) async throws -> Goal {
     struct CompleteGoalRequest: Encodable {
-      let is_active: Bool
-      let completed_at: String
+      let isActive: Bool
+      let completedAt: String
+
+      enum CodingKeys: String, CodingKey {
+        case isActive = "is_active"
+        case completedAt = "completed_at"
+      }
     }
 
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let body = CompleteGoalRequest(
-      is_active: false,
-      completed_at: formatter.string(from: Date())
+      isActive: false,
+      completedAt: formatter.string(from: Date())
     )
 
     let url = URL(string: baseURL + "v1/goals/\(id)")!
