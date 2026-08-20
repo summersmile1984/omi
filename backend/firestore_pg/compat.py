@@ -29,6 +29,7 @@ from .client import (
     CollectionReference,
     DocumentReference,
     DocumentSnapshot,
+    LastUpdateOption,
     Query,
     QuerySnapshot,
     Transaction,
@@ -51,6 +52,7 @@ class _FirestoreModule(types.ModuleType):
     CollectionReference = CollectionReference
     DocumentReference = DocumentReference
     DocumentSnapshot = DocumentSnapshot
+    LastUpdateOption = LastUpdateOption
     Query = Query
     QuerySnapshot = QuerySnapshot
     Transaction = Transaction

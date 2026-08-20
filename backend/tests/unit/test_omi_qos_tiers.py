@@ -273,6 +273,10 @@ class TestModelQosProfiles:
             'desktop_proactive_reasoning',
         }
         nano_features = {
+            # Dedicated public chat is a gateway-only endpoint, but its provider
+            # route is in the same manifest so self-host deployments cannot
+            # retain the checked-in OpenAI default.
+            'public_shared_conversation_chat',
             'conv_app_select',
             'conv_folder',
             'conv_discard',

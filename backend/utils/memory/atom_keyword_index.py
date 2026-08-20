@@ -33,6 +33,7 @@ from utils.memory.memory_system import (
 logger = logging.getLogger(__name__)
 
 ATOM_KEYWORD_COLLECTION_ENV = "MEMORY_TYPESENSE_COLLECTION"
+ATOM_KEYWORD_PROVIDER_ENV = "MEMORY_KEYWORD_INDEX_PROVIDER"
 MEMORIES_COLLECTION = "canonical_memory_atoms"
 _DEFAULT_CATEGORY = "interesting"
 _REQUIRED_SCHEMA_FIELDS = {
@@ -85,6 +86,34 @@ def memories_collection_name() -> str:
     return os.getenv(ATOM_KEYWORD_COLLECTION_ENV, MEMORIES_COLLECTION).strip() or MEMORIES_COLLECTION
 
 
+def atom_keyword_index_provider() -> str:
+    """Resolve the deployment-wide keyword projection provider."""
+    provider = os.getenv(ATOM_KEYWORD_PROVIDER_ENV, "typesense").strip().lower() or "typesense"
+    if provider not in {"typesense", "disabled"}:
+        raise RuntimeError(f"unsupported memory keyword index provider {provider!r}")
+    return provider
+
+
+def _typesense_projection_ready(*, raise_on_failure: bool = False) -> bool:
+    """Return whether provider calls are permitted for the current deployment.
+
+    ``disabled`` is an authoritative declaration that this projection does not
+    exist, so no Typesense client may be constructed. A selected but
+    unconfigured provider is different: strict mutation paths must fail closed,
+    while best-effort search/upsert paths retain their existing empty/False
+    result contract without attempting a network call.
+    """
+    if atom_keyword_index_provider() == "disabled":
+        return False
+    if typesense_configured():
+        return True
+    error = RuntimeError("Typesense keyword index is selected but TYPESENSE_HOST/TYPESENSE_API_KEY are missing")
+    if raise_on_failure:
+        raise error
+    logger.warning("Typesense keyword index is selected but not configured")
+    return False
+
+
 @dataclass(frozen=True)
 class AtomKeywordRebuildReport:
     uid: str
@@ -114,7 +143,7 @@ def user_allows_atom_keyword_index(uid: str, *, db_client: Any = None) -> bool:
     Indexing remains opt-out for E2EE accounts, matching the conversation
     Typesense policy.  There is no UID entitlement/cohort branch.
     """
-    if not uid.strip():
+    if not uid.strip() or not _typesense_projection_ready():
         return False
     client = db_client if db_client is not None else default_db_client
     user_doc: Any = client.document(f"users/{uid}").get()
@@ -181,6 +210,8 @@ def merge_memory_search_ids(keyword_ids: List[str], vector_ids: List[str]) -> Li
 
 def ensure_memories_collection() -> None:
     """Create the canonical atom Typesense collection when missing (idempotent)."""
+    if not _typesense_projection_ready(raise_on_failure=True):
+        return
     collection_name = memories_collection_name()
     try:
         schema = _payload_or_empty(_typesense_client().collections[collection_name].retrieve())
@@ -223,7 +254,11 @@ def upsert_atom_keyword_doc(item: MemoryItem, *, db_client: Any = None) -> bool:
     except Exception:
         logger.warning("upsert_atom_keyword_doc blocked by canonical state uid=%s", item.uid)
         return False
-    if not user_allows_atom_keyword_index(item.uid, db_client=db_client):
+    try:
+        if not user_allows_atom_keyword_index(item.uid, db_client=db_client):
+            return False
+    except RuntimeError as exc:
+        logger.warning("upsert_atom_keyword_doc blocked by provider selection uid=%s: %s", item.uid, exc)
         return False
     if not is_indexable_long_term_atom(item):
         return False
@@ -252,6 +287,12 @@ def delete_atom_keyword_doc(uid: str, memory_id: str, *, db_client: Any = None) 
     if not uid or not memory_id:
         return False
     try:
+        if not _typesense_projection_ready():
+            return atom_keyword_index_provider() == "disabled"
+    except RuntimeError as exc:
+        logger.warning("delete_atom_keyword_doc blocked by provider selection uid=%s: %s", uid, exc)
+        return False
+    try:
         _typesense_client().collections[memories_collection_name()].documents.delete(
             {"filter_by": _provider_identity_delete_filter(uid, memory_id)}
         )
@@ -276,6 +317,13 @@ def purge_user_atom_keyword_index(
     uid: str, *, db_client: Any = None, force: bool = False, raise_on_failure: bool = False
 ) -> int:
     """Delete all keyword docs for a canonical user. Returns deleted count when available."""
+    if atom_keyword_index_provider() == "disabled":
+        # Explicitly disabled means no keyword projection can exist in this
+        # deployment; zero is an authoritative absence, not a provider error.
+        return 0
+    if not _typesense_projection_ready(raise_on_failure=raise_on_failure):
+        logger.warning("purge_user_atom_keyword_index skipped uid=%s: Typesense is not configured", uid)
+        return 0
     if not force and not user_allows_atom_keyword_index(uid, db_client=db_client):
         return 0
     try:
@@ -317,11 +365,11 @@ def keyword_search_memory_ids(
 
     Fail-open: any search error returns [] so callers can fall back to vector-only results.
     """
-    if not user_allows_atom_keyword_index(uid, db_client=db_client):
-        return []
-    if not (query or "").strip():
-        return []
     try:
+        if not user_allows_atom_keyword_index(uid, db_client=db_client):
+            return []
+        if not (query or "").strip():
+            return []
         filter_by = (
             f"userId:={_typesense_filter_literal(uid)} && layer:={MemoryLayer.long_term.value} "
             f"&& status:={MemoryItemStatus.active.value} && schema_version:=1"
@@ -361,8 +409,8 @@ def rebuild_atom_keyword_index(uid: str, *, db_client: Any = None) -> AtomKeywor
         ensure_canonical_apply_control_state(uid, db_client=client)
     except Exception:
         return AtomKeywordRebuildReport(uid=uid, failure_reason="canonical_state_unavailable")
-    is_indexable_user = user_allows_atom_keyword_index(uid, db_client=client)
     try:
+        is_indexable_user = user_allows_atom_keyword_index(uid, db_client=client)
         # Purge first and fail closed. A rebuild is also the repair path for
         # rows that became restricted, lost source authority, or whose account
         # policy was changed after their content reached Typesense.

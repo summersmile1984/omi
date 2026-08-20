@@ -1,8 +1,8 @@
 """Unit tests for name/email/phone on the MCP user profile (routers/mcp.py).
 
 `/v1/mcp/profile` now augments the cached AI profile with the user's contact
-identity (name/email from Firebase Auth, phone from Auth or the phone_numbers
-subcollection). Contact lookup must be best-effort: a Firebase/Firestore failure
+identity (name/email from the selected identity provider, phone from identity or
+the phone_numbers subcollection). Contact lookup must be best-effort: an identity/Firestore failure
 must NOT break the profile response.
 
 Heavy deps are stubbed following the proven pattern in test_mcp_data_endpoints.py.
@@ -148,7 +148,7 @@ def _firebase_user(display_name=None, email=None, phone_number=None):
 
 class TestProfileContact:
     @patch('routers.mcp.phone_calls_db')
-    @patch('routers.mcp.firebase_auth')
+    @patch('routers.mcp.identity')
     @patch('routers.mcp.users_db')
     def test_includes_name_email_phone_from_auth(self, mock_users, mock_auth, mock_phone):
         mock_users.get_ai_user_profile.return_value = {'profile_text': 'builds AI', 'data_sources_used': 3}
@@ -162,7 +162,7 @@ class TestProfileContact:
         mock_phone.get_phone_numbers.assert_not_called()
 
     @patch('routers.mcp.phone_calls_db')
-    @patch('routers.mcp.firebase_auth')
+    @patch('routers.mcp.identity')
     @patch('routers.mcp.users_db')
     def test_phone_falls_back_to_subcollection(self, mock_users, mock_auth, mock_phone):
         mock_users.get_ai_user_profile.return_value = {}
@@ -173,7 +173,7 @@ class TestProfileContact:
         assert result.phone_number == '+15559998888'
 
     @patch('routers.mcp.phone_calls_db')
-    @patch('routers.mcp.firebase_auth')
+    @patch('routers.mcp.identity')
     @patch('routers.mcp.users_db')
     def test_phone_fallback_prefers_primary(self, mock_users, mock_auth, mock_phone):
         mock_users.get_ai_user_profile.return_value = {}
@@ -186,7 +186,7 @@ class TestProfileContact:
         assert result.phone_number == '+15551111111'
 
     @patch('routers.mcp.phone_calls_db')
-    @patch('routers.mcp.firebase_auth')
+    @patch('routers.mcp.identity')
     @patch('routers.mcp.users_db')
     def test_contact_failure_does_not_break_profile(self, mock_users, mock_auth, mock_phone):
         mock_users.get_ai_user_profile.return_value = {'profile_text': 'still here'}
@@ -200,7 +200,7 @@ class TestProfileContact:
         assert result.phone_number is None
 
     @patch('routers.mcp.phone_calls_db')
-    @patch('routers.mcp.firebase_auth')
+    @patch('routers.mcp.identity')
     @patch('routers.mcp.users_db')
     def test_empty_strings_become_none(self, mock_users, mock_auth, mock_phone):
         mock_users.get_ai_user_profile.return_value = {}

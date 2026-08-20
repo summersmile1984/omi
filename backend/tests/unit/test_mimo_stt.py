@@ -1,4 +1,4 @@
-"""Unit tests for the MiMo-V2.5-ASR live (streaming) STT provider.
+"""Unit tests for the MiMo-V2.5-ASR pre-recorded STT provider.
 
 Hermetic: never touches the real MiMo API. Covers provider selection,
 PCM→WAV wrapping, socket lifecycle, and error handling.
@@ -10,12 +10,15 @@ import pytest
 
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, _guess_format
 from utils.mimo_pipeline.socket import MimoSttSocket, _pcm16_to_wav, mimo_available
-from utils.stt.streaming import STTService, get_stt_service_for_language
+from config.prerecorded_stt import PrerecordedSTTService
+from config.stt_provider_policy import MIMO_PROVIDER, STTServingSurface, provider_is_enabled
+from utils.stt.pre_recorded import get_prerecorded_service
+from utils.stt.streaming import get_stt_service_for_language
 
 
-def test_mimo_service_value_registered():
-    assert STTService.mimo == 'mimo'
-    assert STTService.get_model_name(STTService.mimo) == 'mimo_streaming'
+def test_mimo_is_batch_only():
+    assert provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PRERECORDED)
+    assert not provider_is_enabled(MIMO_PROVIDER, STTServingSurface.STREAMING)
 
 
 def test_enabled_only_with_key(monkeypatch):
@@ -25,29 +28,21 @@ def test_enabled_only_with_key(monkeypatch):
     assert mimo_available() is True
 
 
-def test_select_routes_to_mimo_when_configured(monkeypatch):
+def test_prerecorded_select_routes_to_mimo_when_configured(monkeypatch):
+    monkeypatch.setenv('STT_PRERECORDED_MODEL', 'mimo')
+    service, language, model = get_prerecorded_service('zh-CN')
+    assert service == PrerecordedSTTService.MIMO
+    assert language == 'zh'
+    assert model == 'mimo-v2.5-asr'
+
+
+def test_streaming_selection_rejects_batch_only_mimo(monkeypatch):
     import utils.stt.streaming as streaming
 
     monkeypatch.setenv('MIMO_API_KEY', 'key')
-    monkeypatch.delenv('SENSEVOICE_MODEL_DIR', raising=False)
-    # stt_service_models is read at import time; patch the module-level list.
     monkeypatch.setattr(streaming, 'stt_service_models', ['mimo'])
-    result = get_stt_service_for_language('zh-CN')
-    assert result is not None
-    service, _lang, model = result
-    assert service == STTService.mimo
-    assert model == 'mimo'
-
-
-def test_select_ignores_mimo_without_key(monkeypatch):
-    import utils.stt.streaming as streaming
-
-    monkeypatch.delenv('MIMO_API_KEY', raising=False)
-    monkeypatch.delenv('SENSEVOICE_MODEL_DIR', raising=False)
-    monkeypatch.setattr(streaming, 'stt_service_models', ['mimo'])
-    result = get_stt_service_for_language('zh-CN')
-    # mimo without key must not be selected; falls to default policy
-    assert result is None or result[0] != STTService.mimo
+    service, _language, _model = get_stt_service_for_language('zh-CN')
+    assert service is None or service.value != 'mimo'
 
 
 def test_pcm16_to_wav_produces_valid_container():
@@ -74,15 +69,22 @@ def test_socket_accumulates_and_calls_callback_on_finish(monkeypatch):
                 segments=[MimoSegment(0.0, 1.0, '你好世界', 'SPEAKER_00')],
             )
 
-    def callback(text, duration):
-        captured['text'] = text
-        captured['duration'] = duration
+    def callback(segments):
+        captured['segments'] = segments
 
     sock = MimoSttSocket(sample_rate=16000, transcript_callback=callback, client=_FakeClient())
     assert sock.send(b'\x00\x00' * 8000) is True
     sock.finish()
-    assert captured['text'] == '你好世界'
-    assert captured['duration'] == pytest.approx(0.5)
+    assert captured['segments'] == [
+        {
+            'speaker': 'SPEAKER_00',
+            'start': 0.0,
+            'end': pytest.approx(0.5),
+            'text': '你好世界',
+            'is_user': False,
+            'person_id': None,
+        }
+    ]
     assert captured['fmt'] == 'wav'
     assert captured['audio'][:4] == b'RIFF'
     assert sock.is_connection_dead is False

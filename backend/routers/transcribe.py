@@ -13,7 +13,6 @@ from typing import Any, Dict, Optional, cast
 
 from fastapi import APIRouter, Depends, WebSocketException
 from fastapi.websockets import WebSocket, WebSocketDisconnect
-from firebase_admin.auth import InvalidIdTokenError
 
 from routers.listen.contracts import CustomSttMode, ListenRequest
 from routers.listen.runtime import run_listen_session
@@ -22,6 +21,7 @@ from utils.client_device import (
     resolve_client_device_from_websocket_auth_message,
 )
 from utils.other import endpoints as auth
+from utils.other.endpoints import InvalidIdTokenError
 from utils.executors import db_executor, run_blocking
 
 logger = logging.getLogger(__name__)

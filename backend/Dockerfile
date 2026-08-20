@@ -74,6 +74,7 @@ COPY backend/ .
 # relative `syncing/<uid>/` directory under the working dir at runtime.
 RUN groupadd --system --gid 10001 omi && \
     useradd --system --uid 10001 --gid omi --no-create-home omi && \
+    mkdir -p /app/syncing && \
     chown -R omi:omi /app
 USER omi
 

@@ -55,6 +55,7 @@ from utils.stt.streaming import (
     process_audio_dg,
     process_audio_modulate,
     process_audio_parakeet,
+    process_audio_sensevoice,
 )
 from utils.stt.vad_gate import GatedSTTSocket, VADStreamingGate, VAD_GATE_MODE, is_gate_enabled
 from utils.transcribe_decisions import (
@@ -202,6 +203,8 @@ class ListenReceiver:
 
     async def _create_stt_socket(self, callback: Any, sample_rate: int, modulate_callback: Any = None) -> Any:
         keywords = self.host.vocabulary[:100] if self.host.vocabulary else []
+        if self.host.stt_service == STTService.sensevoice:
+            return await process_audio_sensevoice(callback, sample_rate)
         if self.host.stt_service == STTService.parakeet:
             socket, actual_service = await connect_stt_socket_with_fallback(
                 primary_service=STTService.parakeet,
@@ -314,20 +317,6 @@ class ListenReceiver:
             elif actual_service == STTService.parakeet:
                 self.host.stt_model = 'parakeet'
             return socket
-        if self.host.stt_service == STTService.sensevoice:
-            from utils.sensevoice.socket import SenseVoiceSocket
-
-            return SenseVoiceSocket(
-                sample_rate=sample_rate,
-                transcript_callback=callback,
-            )
-        if self.host.stt_service == STTService.mimo:
-            from utils.mimo_pipeline.socket import MimoSttSocket
-
-            return MimoSttSocket(
-                sample_rate=sample_rate,
-                transcript_callback=callback,
-            )
         raise RuntimeError(f'Unsupported serving STT provider {self.host.stt_service!r}')
 
     async def _drain_stt_sockets(self) -> None:

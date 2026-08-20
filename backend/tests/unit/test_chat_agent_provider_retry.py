@@ -254,6 +254,19 @@ async def test_transient_provider_failure_is_retried_and_the_turn_survives(agent
     assert recorded.call_args.kwargs['reason'] == 'timeout'
 
 
+async def test_anthropic_agent_resolves_its_model_at_the_request_boundary(agentic_mod, monkeypatch):
+    monkeypatch.setattr(agentic_mod, 'get_model', lambda feature: 'route-selected-model')
+    go, calls, _full_response = _run(
+        agentic_mod,
+        [FakeStream(response=_final(), events=[_text_delta('answer')])],
+    )
+
+    result, _recorded = await go()
+
+    assert result is None
+    assert calls[0]['model'] == 'route-selected-model'
+
+
 async def test_no_retry_once_text_has_reached_the_user(agentic_mod):
     """Streamed tokens cannot be un-sent, so the partial answer is kept instead of duplicated.
 
@@ -467,7 +480,7 @@ def test_gateway_tool_conversion_drops_anthropic_server_tools(agentic_mod):
     ]
 
 
-async def test_gateway_mode_selects_openai_agent_runner(agentic_mod):
+async def test_openai_compatible_route_selects_openai_agent_runner(agentic_mod):
     callback_data = {}
     seen = {}
 
@@ -490,7 +503,7 @@ async def test_gateway_mode_selects_openai_agent_runner(agentic_mod):
     async def anthropic_runner(*_args):
         raise AssertionError('gateway mode selected the Anthropic runner')
 
-    with patch.object(agentic_mod, 'should_route_chat_agent_through_gateway', return_value=True), patch.object(
+    with patch.object(agentic_mod, 'get_provider', return_value='generic'), patch.object(
         agentic_mod, 'run_blocking', new=fake_run_blocking
     ), patch.object(agentic_mod, '_convert_tools', return_value=([], {})), patch.object(
         agentic_mod, '_messages_to_anthropic', return_value=[{'role': 'user', 'content': 'hello'}]
@@ -519,7 +532,7 @@ async def test_gateway_mode_selects_openai_agent_runner(agentic_mod):
     assert [schema['function']['name'] for schema in seen['schemas']] == ['perplexity_web_search_tool']
 
 
-async def test_anthropic_byok_keeps_agentic_chat_on_direct_runner(agentic_mod):
+async def test_anthropic_route_keeps_agentic_chat_on_anthropic_runner(agentic_mod):
     callback_data = {}
     seen = {'direct': False}
 
@@ -542,11 +555,9 @@ async def test_anthropic_byok_keeps_agentic_chat_on_direct_runner(agentic_mod):
     async def gateway_runner(*_args):
         raise AssertionError('Anthropic BYOK must not select the gateway runner')
 
-    with patch.object(agentic_mod, 'should_route_chat_agent_through_gateway', return_value=True), patch.object(
-        agentic_mod, 'get_byok_key', return_value='sk-ant-test'
-    ), patch.object(agentic_mod, 'run_blocking', new=fake_run_blocking), patch.object(
-        agentic_mod, '_convert_tools', return_value=([], {})
-    ), patch.object(
+    with patch.object(agentic_mod, 'get_provider', return_value='anthropic'), patch.object(
+        agentic_mod, 'run_blocking', new=fake_run_blocking
+    ), patch.object(agentic_mod, '_convert_tools', return_value=([], {})), patch.object(
         agentic_mod, '_messages_to_anthropic', return_value=[{'role': 'user', 'content': 'hello'}]
     ), patch.object(
         agentic_mod, '_inject_current_datetime', side_effect=lambda messages, _block: messages

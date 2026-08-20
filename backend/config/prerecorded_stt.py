@@ -14,9 +14,11 @@ from enum import Enum
 
 from config.stt_provider_policy import (
     DEEPGRAM_SELF_HOSTED_PROVIDER,
+    MIMO_PROVIDER,
     MODULATE_PROVIDER,
     MOSS_PROVIDER,
     PARAKEET_PROVIDER,
+    SENSEVOICE_PROVIDER,
     STTServingSurface,
     default_models_for_surface,
     provider_for_model_token as policy_provider_for_model_token,
@@ -44,6 +46,8 @@ class PrerecordedSTTService:
     DEEPGRAM = 'deepgram'
     MODULATE = 'modulate'
     PARAKEET = 'parakeet'
+    SENSEVOICE = 'sensevoice'
+    MIMO = 'mimo'
     MOSS = 'moss'
 
 
@@ -85,9 +89,13 @@ PROVIDER_ENVIRONMENT_CONTRACTS: Mapping[str, ProviderEnvironmentContract] = {
         required_env=('HOSTED_PARAKEET_API_URL',),
         required_when_model_source_is_opaque=True,
     ),
+    PrerecordedSTTService.SENSEVOICE: ProviderEnvironmentContract(required_env=('SENSEVOICE_MODEL_DIR',)),
+    PrerecordedSTTService.MIMO: ProviderEnvironmentContract(
+        required_env=('MIMO_API_KEY', 'MIMO_API_BASE'),
+    ),
     # MOSS is selected only by an explicit literal token in the cloud-neutral
     # runtime. Do not make an opaque upstream deployment require its credential.
-    PrerecordedSTTService.MOSS: ProviderEnvironmentContract(required_env=('MOSS_API_KEY',)),
+    PrerecordedSTTService.MOSS: ProviderEnvironmentContract(required_env=('MOSS_API_KEY', 'MOSS_API_BASE')),
 }
 
 
@@ -111,6 +119,10 @@ def provider_for_model_token(model: str) -> str | None:
         return PrerecordedSTTService.MODULATE
     if provider == PARAKEET_PROVIDER:
         return PrerecordedSTTService.PARAKEET
+    if provider == SENSEVOICE_PROVIDER:
+        return PrerecordedSTTService.SENSEVOICE
+    if provider == MIMO_PROVIDER:
+        return PrerecordedSTTService.MIMO
     if provider == MOSS_PROVIDER:
         return PrerecordedSTTService.MOSS
     if provider == DEEPGRAM_SELF_HOSTED_PROVIDER:
@@ -129,9 +141,16 @@ def providers_for_model_config(raw: str) -> tuple[str, ...]:
             and provider not in providers
         ):
             providers.append(provider)
-    # MOSS accepts the complete language surface and its adapter has no managed
-    # provider fallback. Its explicit route therefore owns its whole env contract.
-    if PrerecordedSTTService.MOSS in providers:
+    # Explicit batch-only adapters own their route and never silently fall back
+    # to a managed provider omitted from the deployment's model list.
+    if any(
+        provider in providers
+        for provider in (
+            PrerecordedSTTService.MOSS,
+            PrerecordedSTTService.SENSEVOICE,
+            PrerecordedSTTService.MIMO,
+        )
+    ):
         return tuple(providers)
     # Retired/unknown tokens and unsupported languages fall through to the
     # non-Deepgram defaults. Include both because language capability decides

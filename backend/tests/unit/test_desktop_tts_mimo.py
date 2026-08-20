@@ -7,8 +7,9 @@ desktop `/v1/tts/synthesize` endpoint uses MiMo-TTS when configured.
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 
-from routers.desktop_tts_updates import mimo_tts_enabled
+from routers.desktop_tts_updates import TtsSynthesizeRequest, mimo_tts_enabled
 
 
 def test_mimo_enabled_only_when_provider_and_key_set(monkeypatch):
@@ -69,6 +70,64 @@ def test_mimo_synthesize_raises_on_client_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match='boom'):
         asyncio_run(mod._mimo_tts_synthesize('你好'))
+
+
+@pytest.mark.asyncio
+async def test_mimo_cannot_bypass_desktop_subscription_gate(monkeypatch):
+    import routers.desktop_tts_updates as mod
+
+    called = False
+
+    async def fake_run_blocking(_executor, fn, *args, **kwargs):
+        if fn is mod.is_desktop_trial_paywalled:
+            return True
+        return fn(*args, **kwargs)
+
+    async def fake_synthesize(_text):
+        nonlocal called
+        called = True
+        return b'audio'
+
+    monkeypatch.setenv('TTS_PROVIDER', 'mimo')
+    monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setattr(mod, 'run_blocking', fake_run_blocking)
+    monkeypatch.setattr(mod, '_mimo_tts_synthesize', fake_synthesize)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello', voice_id='alloy'), uid='user-1')
+
+    assert exc_info.value.status_code == 403
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_mimo_cannot_bypass_desktop_tts_rate_limit(monkeypatch):
+    import routers.desktop_tts_updates as mod
+
+    called = False
+
+    async def fake_run_blocking(_executor, fn, *args, **kwargs):
+        if fn is mod.is_desktop_trial_paywalled:
+            return False
+        if fn is mod.redis_db.check_tts_rate_limit:
+            return 1, 60
+        return fn(*args, **kwargs)
+
+    async def fake_synthesize(_text):
+        nonlocal called
+        called = True
+        return b'audio'
+
+    monkeypatch.setenv('TTS_PROVIDER', 'mimo')
+    monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setattr(mod, 'run_blocking', fake_run_blocking)
+    monkeypatch.setattr(mod, '_mimo_tts_synthesize', fake_synthesize)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello', voice_id='alloy'), uid='user-1')
+
+    assert exc_info.value.status_code == 429
+    assert called is False
 
 
 def asyncio_run(coro):

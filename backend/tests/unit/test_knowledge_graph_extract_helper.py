@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from utils.llm import knowledge_graph as kg
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.llm.knowledge_graph import ExtractedEdge, ExtractedNode, KnowledgeGraphExtraction
 
 
@@ -109,3 +110,37 @@ def test_extract_kg_from_text_uses_knowledge_graph_feature(monkeypatch):
     assert extraction is not None
     assert seen['feature'] == 'knowledge_graph'
     assert [node.label for node in extraction.nodes] == ['Coffee']
+
+
+def test_extract_kg_from_text_raises_typed_unavailable_on_provider_failure(monkeypatch):
+    client = MagicMock()
+    client.invoke.side_effect = TimeoutError('provider timed out')
+    monkeypatch.setattr(kg, 'get_llm', lambda _feature: client)
+    monkeypatch.setattr(kg, 'track_usage', lambda *args, **kwargs: nullcontext())
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        kg.extract_kg_from_text('uid-1', 'User likes coffee')
+
+    assert error.value.as_dict() == {
+        'code': 'model_capability_unavailable',
+        'capability': 'memory_kg',
+        'reason': 'TimeoutError',
+        'retryable': True,
+    }
+
+
+def test_rebuild_does_not_report_provider_failure_as_an_empty_graph(monkeypatch):
+    client = MagicMock()
+    client.invoke.side_effect = TimeoutError('provider timed out')
+    monkeypatch.setattr(kg, 'get_llm', lambda _feature: client)
+    monkeypatch.setattr(kg, 'track_usage', lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(kg.kg_db, 'delete_knowledge_graph', MagicMock())
+    monkeypatch.setattr(kg.kg_db, 'get_knowledge_nodes', MagicMock(return_value=[]))
+    returned_graph = MagicMock(return_value={'nodes': [], 'edges': []})
+    monkeypatch.setattr(kg.kg_db, 'get_knowledge_graph', returned_graph)
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        kg.rebuild_knowledge_graph('uid-1', [{'id': 'memory-1', 'content': 'User likes coffee'}])
+
+    assert error.value.route.capability == 'memory_kg'
+    returned_graph.assert_not_called()

@@ -11,6 +11,10 @@ load_backend_env()  # No-op if no env files exist (production); stage + local ov
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from utils.identity import identity_provider, validate_identity_configuration
+
+validate_identity_configuration()
+
 import firebase_admin
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
@@ -87,6 +91,7 @@ from routers import (
     task_recommendations,
     conversation_finalization,
     public_shared_conversation_chat,
+    identity_browser,
 )
 
 from utils.other.timeout import TimeoutMiddleware
@@ -111,21 +116,26 @@ log_langsmith_status()
 # Validate Stripe price IDs so misconfigured plans fail loud
 validate_stripe_price_ids()
 
-_auth_emulator_host = os.environ.get("FIREBASE_AUTH_EMULATOR_HOST", "").strip()
-_firebase_admin_options = firebase_admin_options()
-if _auth_emulator_host:
-    for _adc_key in ("GOOGLE_APPLICATION_CREDENTIALS", "SERVICE_ACCOUNT_JSON", "FIREBASE_AUTH_CREDENTIALS_PATH"):
-        os.environ.pop(_adc_key, None)
-    _firebase_project_id = (
-        os.environ.get("FIREBASE_AUTH_PROJECT_ID") or os.environ.get("FIREBASE_PROJECT_ID") or "demo-omi-local"
-    )
-    firebase_admin.initialize_app(options={"projectId": _firebase_project_id})  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
-elif os.environ.get("SERVICE_ACCOUNT_JSON"):
-    service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
-    credentials = firebase_admin.credentials.Certificate(service_account_info)
-    firebase_admin.initialize_app(credentials, options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
-else:
-    firebase_admin.initialize_app(options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
+_push_provider = os.getenv('PUSH_PROVIDER', 'firebase').strip().lower()
+if _push_provider not in {'firebase', 'disabled'}:
+    raise RuntimeError(f'unsupported PUSH_PROVIDER={_push_provider!r}')
+_firebase_admin_required = identity_provider() == 'firebase' or _push_provider == 'firebase'
+if _firebase_admin_required:
+    _auth_emulator_host = os.environ.get("FIREBASE_AUTH_EMULATOR_HOST", "").strip()
+    _firebase_admin_options = firebase_admin_options()
+    if _auth_emulator_host:
+        for _adc_key in ("GOOGLE_APPLICATION_CREDENTIALS", "SERVICE_ACCOUNT_JSON", "FIREBASE_AUTH_CREDENTIALS_PATH"):
+            os.environ.pop(_adc_key, None)
+        _firebase_project_id = (
+            os.environ.get("FIREBASE_AUTH_PROJECT_ID") or os.environ.get("FIREBASE_PROJECT_ID") or "demo-omi-local"
+        )
+        firebase_admin.initialize_app(options={"projectId": _firebase_project_id})  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
+    elif os.environ.get("SERVICE_ACCOUNT_JSON"):
+        service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
+        credentials = firebase_admin.credentials.Certificate(service_account_info)
+        firebase_admin.initialize_app(credentials, options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
+    else:
+        firebase_admin.initialize_app(options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
 
 app = FastAPI()
 
@@ -184,6 +194,7 @@ app.include_router(calendar_meetings.router)
 app.include_router(google_calendar.router)
 app.include_router(calendar_onboarding.router)
 app.include_router(oauth.router)  # Added oauth router (for Omi Apps)
+app.include_router(identity_browser.router)
 app.include_router(auth.router)  # Added auth router (for the main Omi App, this is the core auth router)
 
 

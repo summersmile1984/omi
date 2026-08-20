@@ -3,6 +3,8 @@ import os
 import sys
 import types
 
+import pytest
+
 from models.memory_search_gateway import SearchMode
 
 
@@ -71,8 +73,14 @@ def _load_vector_db_with_stubs():
     return module
 
 
-def test_query_memory_vector_candidates_uses_ns2_strict_default_filter_and_parses_hits(monkeypatch):
-    vector_db = _load_vector_db_with_stubs()
+@pytest.fixture(scope="module")
+def vector_db_module():
+    """Load the synthetic production module in setup, outside timed test calls."""
+    return _load_vector_db_with_stubs()
+
+
+def test_query_memory_vector_candidates_uses_ns2_strict_default_filter_and_parses_hits(monkeypatch, vector_db_module):
+    vector_db = vector_db_module
     fake_index = _FakeIndex()
     monkeypatch.setattr(vector_db, "index", fake_index)
     monkeypatch.setattr(vector_db, "embeddings", _FakeEmbeddings())
@@ -88,8 +96,10 @@ def test_query_memory_vector_candidates_uses_ns2_strict_default_filter_and_parse
     assert {"restricted_sensitivity": {"$eq": False}} in fake_index.queries[0]["filter"]["$and"]
 
 
-def test_query_memory_vector_candidates_requires_explicit_archive_mode_for_archive_filter(monkeypatch):
-    vector_db = _load_vector_db_with_stubs()
+def test_query_memory_vector_candidates_requires_explicit_archive_mode_for_archive_filter(
+    monkeypatch, vector_db_module
+):
+    vector_db = vector_db_module
     fake_index = _FakeIndex()
     monkeypatch.setattr(vector_db, "index", fake_index)
     monkeypatch.setattr(vector_db, "embeddings", _FakeEmbeddings())

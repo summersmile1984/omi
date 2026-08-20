@@ -62,9 +62,9 @@ from utils.retrieval.safety import (
 )
 from utils.observability.fallback import record_fallback
 from utils.llm.byok_errors import handle_llm_error_async
-from utils.llm.clients import anthropic_client, ANTHROPIC_AGENT_MODEL, get_llm, num_tokens_from_string
+from utils.llm.clients import anthropic_client, get_llm, get_model, num_tokens_from_string
+from utils.llm.model_config import get_provider
 from utils.llm.usage_tracker import reset_usage_context, set_usage_context
-from utils.byok import get_byok_key
 from utils.llm.chat import _get_agentic_qa_prompt, get_current_datetime_block, get_user_timezone
 from utils.executors import run_blocking, db_executor
 from database.redis_db import get_cached_user_geolocation
@@ -74,14 +74,6 @@ from utils.conversations.location import async_get_google_maps_city
 from utils.other.endpoints import timeit
 from utils.observability.langsmith import is_langsmith_enabled
 import logging
-
-try:
-    from utils.llm.gateway_client import should_route_chat_agent_through_gateway
-except ImportError:
-
-    def should_route_chat_agent_through_gateway() -> bool:
-        return False
-
 
 # Import langsmith traceable if available
 try:
@@ -650,6 +642,10 @@ async def _run_anthropic_agent_stream(
     Returns ``None`` when the loop finished on its own terms, or a short failure reason when it
     gave up on the provider.
     """
+    # Resolve at the request boundary so deployment route changes never leave a
+    # module-import-time Anthropic model pinned behind the shared manifest.
+    agent_model = get_model('chat_agent')
+
     # System prompt with cache_control for Anthropic prompt caching
     # TTL=1h: Anthropic changed default from 1h→5m on 2026-03-06; interactive chat
     # sessions have gaps >5min between turns, so the 5-min default kills cache hit rate.
@@ -671,7 +667,7 @@ async def _run_anthropic_agent_stream(
 
             try:
                 async with anthropic_client.messages.stream(
-                    model=ANTHROPIC_AGENT_MODEL,
+                    model=agent_model,
                     system=system_blocks,
                     messages=messages,
                     tools=tool_schemas,
@@ -746,7 +742,7 @@ async def _run_anthropic_agent_stream(
                     await asyncio.sleep(AGENT_STREAM_PROVIDER_RETRY_BACKOFF_SECONDS)
                     continue
 
-                await handle_llm_error_async(e, 'anthropic', feature='chat_agent', model=ANTHROPIC_AGENT_MODEL)
+                await handle_llm_error_async(e, 'anthropic', feature='chat_agent', model=agent_model)
                 # ``put_data`` alone reaches the live stream but not the persisted answer, so the
                 # router would overwrite this apology with its own canned error.
                 await _put_answer_text(callback, full_response, "\n\nSorry, I encountered an error. Please try again.")
@@ -1212,7 +1208,7 @@ async def execute_agentic_chat_stream(
 
     # Setup and post-setup TTFT use separate clocks so multi-second prompt/tool
     # loading cannot silently consume the first-stream-event window.
-    gateway_feature_mode = False
+    openai_compatible_agent_mode = False
     try:
         # Resolve the user's timezone once and reuse it for both the system prompt and the
         # injected datetime block, avoiding a duplicate notification_db lookup per request.
@@ -1224,8 +1220,10 @@ async def execute_agentic_chat_stream(
         if setup_remaining <= 0:
             raise asyncio.TimeoutError()
         async with asyncio.timeout(setup_remaining):
-            # BYOK Anthropic and CHAT_AGENT_ROUTE=direct stay off the managed OpenAI lane.
-            gateway_feature_mode = should_route_chat_agent_through_gateway() and not bool(get_byok_key('anthropic'))
+            # Provider choice and transport choice are independent. Anthropic can
+            # use the gateway's Messages surface; any OpenAI-compatible provider
+            # uses the same tool loop in direct and gateway modes.
+            openai_compatible_agent_mode = get_provider('chat_agent') != 'anthropic'
             tz = tz or await run_blocking(db_executor, get_user_timezone, uid)
             city = await get_mobile_city(uid, platform) if current_datetime_block is None else None
             system_prompt = await run_blocking(
@@ -1294,7 +1292,7 @@ async def execute_agentic_chat_stream(
             # Tool names are prefixed with app_id; extract the human-readable app name from description
             app_names.add(t.name)
         app_tool_names = ", ".join(sorted(app_names))
-        if gateway_feature_mode:
+        if openai_compatible_agent_mode:
             system_prompt += f"""
 
 <available_app_tools>
@@ -1326,7 +1324,7 @@ You have fetch_url_tool available. When the user shares any URL (starting with h
     # Build the canonical tool schemas once. Direct mode keeps Anthropic's shape;
     # managed mode converts function tools to the OpenAI-compatible shape below.
     tool_schemas, tool_registry = _convert_tools(core_tools, app_tools)
-    if gateway_feature_mode:
+    if openai_compatible_agent_mode:
         # Anthropic's native web_search server tool is not understood by the
         # OpenAI-compatible gateway. Expose the existing Perplexity-backed
         # function tool in the managed lane and register the same object for
@@ -1382,7 +1380,7 @@ You have fetch_url_tool available. When the user shares any URL (starting with h
     # Start the provider-specific agent task. Direct mode retains the native Anthropic
     # Messages contract for BYOK/specialist callers; managed feature mode uses the gateway's
     # OpenAI-compatible chat-completions contract.
-    agent_runner = _run_openai_agent_stream if gateway_feature_mode else _run_anthropic_agent_stream
+    agent_runner = _run_openai_agent_stream if openai_compatible_agent_mode else _run_anthropic_agent_stream
     task = asyncio.create_task(
         agent_runner(
             system_prompt,

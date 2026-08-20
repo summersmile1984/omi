@@ -14,72 +14,92 @@
 //   BETTER_AUTH_URL     public base URL of this service
 //   AUTH_DEV_ISSUER_SECRET  enables the local-only /auth-issue bridge
 import crypto from "node:crypto";
-import { betterAuth } from "better-auth";
-import { jwt } from "better-auth/plugins";
 import express from "express";
-import pg from "pg";
-
-const PORT = process.env.PORT || 3000;
-const DATABASE_URL =
-  process.env.DATABASE_URL ||
-  "postgresql://omi:omi-dev-password@localhost:5434/omi";
-const SECRET =
-  process.env.BETTER_AUTH_SECRET ||
-  "dev-only-better-auth-secret-change-me-32bytes-min";
-const BASE_URL = process.env.BETTER_AUTH_URL || `http://127.0.0.1:${PORT}`;
-const DEV_ISSUER_SECRET = process.env.AUTH_DEV_ISSUER_SECRET || "";
-
-const { Pool } = pg;
-
-export const auth = betterAuth({
-  secret: SECRET,
-  baseURL: BASE_URL,
-  trustHost: true,
-  // Better Auth's built-in Kysely adapter accepts a pg.Pool directly (docs:
-  // https://better-auth.com/docs/adapters/postgresql). It auto-migrates the
-  // schema (user/session/etc. tables) on first start.
-  database: new Pool({ connectionString: DATABASE_URL }),
-  emailAndPassword: {
-    enabled: true,
-  },
-  plugins: [
-    jwt({
-      jwt: {
-        // ES256 asymmetric signing so the Python shim can verify with the
-        // public key from /api/auth/jwks (no shared secret in the backend).
-        jwks: {
-          keyPairConfig: { alg: "ES256" },
-        },
-        // Long-lived JWT for the desktop app session (default Better Auth is
-        // 15m). Override with AUTH_JWT_EXPIRATION (e.g. "24h").
-        expirationTime: process.env.AUTH_JWT_EXPIRATION || "24h",
-      },
-    }),
-  ],
-});
+import {
+  auth,
+  BASE_URL,
+  DEV_ISSUER_SECRET,
+  INTERNAL_ADMIN_SECRET,
+  pool,
+  PORT,
+} from "./auth.js";
+import { betterAuthBridge } from "./http.js";
 
 const app = express();
 app.use(express.json());
 
-// Bridge express req/res -> Web Request (Better Auth handler takes a single
-// Request with an absolute URL).
-app.all("/api/auth/*", async (req, res) => {
-  const url = new URL(req.originalUrl, BASE_URL).toString();
-  const headers = new Headers();
-  for (const [k, v] of Object.entries(req.headers)) {
-    if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+function internalAuthorized(req) {
+  if (!INTERNAL_ADMIN_SECRET) return false;
+  const authorization = req.get("authorization") || "";
+  const presented = authorization.startsWith("Bearer ")
+    ? authorization.slice(7)
+    : "";
+  const presentedBuffer = Buffer.from(presented);
+  const expectedBuffer = Buffer.from(INTERNAL_ADMIN_SECRET);
+  return (
+    presentedBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(presentedBuffer, expectedBuffer)
+  );
+}
+
+async function identityResiduals(uid) {
+  const result = await pool.query(
+    `SELECT
+       (SELECT count(*)::int FROM "user" WHERE id = $1) AS users,
+       (SELECT count(*)::int FROM "session" WHERE "userId" = $1) AS sessions,
+       (SELECT count(*)::int FROM "account" WHERE "userId" = $1) AS accounts`,
+    [uid],
+  );
+  return result.rows[0];
+}
+
+app.get("/internal/users/:uid", async (req, res) => {
+  if (!internalAuthorized(req))
+    return res.status(401).json({ error: "unauthorized" });
+  try {
+    const context = await auth.$context;
+    const user = await context.internalAdapter.findUserById(req.params.uid);
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    return res.json({ user });
+  } catch (err) {
+    return res.status(503).json({ error: "identity_store_unavailable" });
   }
-  let body = null;
-  if (["POST", "PUT", "PATCH"].includes(req.method) && req.body !== undefined) {
-    body = JSON.stringify(req.body);
-    headers.set("Content-Type", "application/json");
-  }
-  const request = new Request(url, { method: req.method, headers, body });
-  const response = await auth.handler(request);
-  res.status(response.status);
-  response.headers.forEach((v, k) => res.setHeader(k, v));
-  res.send(await response.text());
 });
+
+app.delete("/internal/users/:uid", async (req, res) => {
+  if (!internalAuthorized(req))
+    return res.status(401).json({ error: "unauthorized" });
+  try {
+    const context = await auth.$context;
+    const user = await context.internalAdapter.findUserById(req.params.uid);
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    await context.internalAdapter.deleteUser(req.params.uid);
+    const residuals = await identityResiduals(req.params.uid);
+    if (Object.values(residuals).some((count) => count !== 0))
+      return res.status(503).json({ error: "identity_deletion_incomplete" });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(503).json({ error: "identity_store_unavailable" });
+  }
+});
+
+app.get("/internal/users/:uid/residuals", async (req, res) => {
+  if (!internalAuthorized(req))
+    return res.status(401).json({ error: "unauthorized" });
+  try {
+    // Better Auth's PostgreSQL adapter owns these three UID-bearing tables.
+    // Query them directly so account-deletion reconciliation proves session
+    // and linked-account cascade instead of inferring it from a missing user.
+    return res.json(await identityResiduals(req.params.uid));
+  } catch (_err) {
+    return res.status(503).json({ error: "identity_store_unavailable" });
+  }
+});
+
+// Express 4 does not automatically translate a rejected async handler into an
+// HTTP response.  Keep the identity boundary fail-closed and explicitly
+// retryable when Better Auth or PostgreSQL is unavailable.
+app.all("/api/auth/*", betterAuthBridge(auth.handler, BASE_URL));
 
 // Local development bridge for clients that cannot complete an OAuth flow.
 // It is absent unless explicitly enabled and requires a separate bearer secret;
@@ -87,15 +107,19 @@ app.all("/api/auth/*", async (req, res) => {
 if (DEV_ISSUER_SECRET) {
   app.post("/auth-issue", async (req, res) => {
     const authorization = req.get("authorization") || "";
-    const presented = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+    const presented = authorization.startsWith("Bearer ")
+      ? authorization.slice(7)
+      : "";
     const presentedBuffer = Buffer.from(presented);
     const expectedBuffer = Buffer.from(DEV_ISSUER_SECRET);
     const authorized =
-      presentedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(presentedBuffer, expectedBuffer);
+      presentedBuffer.length === expectedBuffer.length &&
+      crypto.timingSafeEqual(presentedBuffer, expectedBuffer);
     if (!authorized) return res.status(401).json({ error: "unauthorized" });
 
     const uid = req.body?.uid;
-    if (typeof uid !== "string" || !uid.trim()) return res.status(400).json({ error: "uid required" });
+    if (typeof uid !== "string" || !uid.trim())
+      return res.status(400).json({ error: "uid required" });
     try {
       const result = await auth.api.signJWT({
         body: { payload: { uid, sub: uid } },
@@ -110,7 +134,17 @@ if (DEV_ISSUER_SECRET) {
 
 // Health check
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
+app.get("/ready", async (_req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({ status: "ready" });
+  } catch (_err) {
+    res.status(503).json({ status: "unavailable" });
+  }
+});
 
 app.listen(PORT, () => {
-  console.log(`omi-auth-server listening on :${PORT} (JWKS at ${BASE_URL}/api/auth/jwks)`);
+  console.log(
+    `omi-auth-server listening on :${PORT} (JWKS at ${BASE_URL}/api/auth/jwks)`,
+  );
 });

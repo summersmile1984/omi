@@ -22,6 +22,7 @@ model_config_features:
     - backend/llm_gateway/gateway/config_loader.py:_generated_feature_route_items
   request_shapes:
     plain_chat:
+      - public_shared_conversation_chat
       - conv_action_items
       - conv_app_result
       - conv_discard
@@ -89,10 +90,11 @@ surfaces:
     test_guardrail_coverage: backend/tests/unit/test_desktop_proactivity.py and backend/tests/unit/test_llm_gateway_coverage_guardrails.py
   - surface: public_shared_conversation_chat
     code_path: backend/routers/public_shared_conversation_chat.py:public_shared_conversation_chat
-    current_provider_model: gateway-only openai/gpt-5-nano
+    current_provider_model: gateway-only deployment manifest route; checked-in cloud default is openai/gpt-5-nano
     request_shape: non-streaming plain chat with server-resolved shared transcript, at most eight user/assistant history entries, and no tools or retrieval
     gateway_lane_capability_needed: dedicated non-streaming no-tools omi:auto:public-shared-conversation-chat lane
     migration_status: gateway_only_trusted_frontend_bff
+    deployment_route_contract: dedicated lane provider/model follows OMI_LLM_ROUTE_PUBLIC_SHARED_CONVERSATION_CHAT_* or the deployment-wide route
     test_guardrail_coverage: backend/tests/unit/test_public_shared_conversation_chat.py and web/frontend/src/__tests__/shared-conversation-chat-contract.test.mjs
   - surface: langchain_feature_routing
     code_path: backend/utils/llm/clients.py:get_llm

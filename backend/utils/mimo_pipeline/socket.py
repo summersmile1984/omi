@@ -17,7 +17,7 @@ import logging
 import os
 import tempfile
 import wave
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient
 from utils.stt.socket import STTSocket
@@ -49,7 +49,7 @@ class MimoSttSocket(STTSocket):
         self,
         sample_rate: int = 16000,
         channels: int = 1,
-        transcript_callback: Optional[Callable[[str, float], None]] = None,
+        transcript_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
         client: Any = None,
     ) -> None:
         self._sample_rate = sample_rate
@@ -79,8 +79,19 @@ class MimoSttSocket(STTSocket):
             transcription = client.transcribe_audio(audio, audio_format="wav")
             text = (transcription.text or "").strip()
             duration = len(self._pcm) / (2 * self._sample_rate)
-            if self._callback:
-                self._callback(text, duration)
+            if self._callback and text:
+                self._callback(
+                    [
+                        {
+                            'speaker': 'SPEAKER_00',
+                            'start': 0.0,
+                            'end': duration,
+                            'text': text,
+                            'is_user': False,
+                            'person_id': None,
+                        }
+                    ]
+                )
             logger.info("MiMo STT transcript: %r (%.1fs)", text, duration)
         except MimoAPIError as exc:
             logger.error("MiMo STT finish failed: %s", exc)

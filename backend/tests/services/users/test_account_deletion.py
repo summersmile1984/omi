@@ -1370,6 +1370,16 @@ def test_purge_derived_user_data_isolates_backends_and_reloads_conversation_ids(
         'purge_canonical_derived_user_data',
         MagicMock(return_value={'vector_ids': ['canonical-1', 'canonical-2']}),
     )
+    monkeypatch.setattr(
+        account_deletion.vector_db,
+        'delete_all_user_vectors',
+        lambda uid: calls.append(('vector_reconciliation', uid)) or 4,
+    )
+    monkeypatch.setattr(
+        account_deletion,
+        'delete_all_user_owned_objects',
+        lambda uid: calls.append(('object_reconciliation', uid)) or 5,
+    )
 
     result = account_deletion.purge_derived_user_data('uid1')
 
@@ -1385,11 +1395,13 @@ def test_purge_derived_user_data_isolates_backends_and_reloads_conversation_ids(
         ('get_screen', 'uid1'),
         ('delete_screen_vectors', 'uid1', ['s1']),
         ('recordings', 'uid1'),
+        ('vector_reconciliation', 'uid1'),
+        ('object_reconciliation', 'uid1'),
     ]
     assert result == {
         'required_failures': [],
         'best_effort_failures': [],
-        'vectors_deleted': 8,
+        'vectors_deleted': 12,
         'recordings_deleted': 3,
     }
 
@@ -1412,6 +1424,16 @@ def test_purge_derived_user_data_continues_after_each_failure(monkeypatch):
     monkeypatch.setattr(
         account_deletion, 'purge_canonical_derived_user_data', MagicMock(side_effect=Exception('canonical down'))
     )
+    monkeypatch.setattr(
+        account_deletion.vector_db,
+        'delete_all_user_vectors',
+        MagicMock(side_effect=Exception('vector residual')),
+    )
+    monkeypatch.setattr(
+        account_deletion,
+        'delete_all_user_owned_objects',
+        MagicMock(side_effect=Exception('object residual')),
+    )
 
     result = account_deletion.purge_derived_user_data('uid1')
 
@@ -1429,6 +1451,8 @@ def test_purge_derived_user_data_continues_after_each_failure(monkeypatch):
         'memory_vectors',
         'conversation_recordings',
         'canonical_derived_data',
+        'vector_reconciliation',
+        'object_reconciliation',
     ]
     assert result['best_effort_failures'] == []
 
@@ -1446,6 +1470,7 @@ def test_purge_derived_user_data_fails_required_vectors_when_index_missing(monke
     monkeypatch.setattr(account_deletion, 'delete_screen_activity_vectors', MagicMock())
     monkeypatch.setattr(account_deletion, 'delete_all_conversation_recordings', MagicMock())
     monkeypatch.setattr(account_deletion, 'purge_canonical_derived_user_data', MagicMock())
+    monkeypatch.setattr(account_deletion, 'delete_all_user_owned_objects', MagicMock(return_value=0))
 
     result = account_deletion.purge_derived_user_data('uid1')
 

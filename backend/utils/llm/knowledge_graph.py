@@ -17,6 +17,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from .clients import get_llm
+from .capabilities import ModelCapabilityUnavailableError
 from .usage_tracker import track_usage, Features
 from database import knowledge_graph as kg_db
 
@@ -162,9 +163,11 @@ def extract_kg_from_text(
             if strict_parse:
                 return None
             return KnowledgeGraphExtraction(nodes=[], edges=[])
-    except Exception:
+    except ModelCapabilityUnavailableError:
+        raise
+    except Exception as error:
         logging.exception(f"Error extracting knowledge graph from memory_id: {usage_memory_id}")
-        return None
+        raise ModelCapabilityUnavailableError('memory_kg', type(error).__name__) from error
 
 
 def _normalized_label(label: str) -> str:
@@ -367,7 +370,7 @@ def rebuild_knowledge_graph(
                 extraction: KnowledgeGraphExtraction = parser.parse(cast(str, cast(Any, response).content))
             except Exception as e:
                 logger.error(f"KG extraction parse failed for memory {memory_id}: {type(e).__name__}")
-                extraction = KnowledgeGraphExtraction(nodes=[], edges=[])
+                raise ModelCapabilityUnavailableError('memory_kg', 'invalid_model_response') from e
 
             created_nodes: List[Any] = []
             created_edges: List[Any] = []
@@ -418,9 +421,11 @@ def rebuild_knowledge_graph(
 
             return {'nodes': created_nodes, 'edges': created_edges}
 
-        except Exception:
+        except ModelCapabilityUnavailableError:
+            raise
+        except Exception as error:
             logging.exception(f"Error extracting knowledge graph from memory_id: {memory_id}")
-            return {'nodes': [], 'edges': []}
+            raise ModelCapabilityUnavailableError('memory_kg', type(error).__name__) from error
 
     all_nodes: List[Any] = []
     all_edges: List[Any] = []
@@ -435,12 +440,20 @@ def rebuild_knowledge_graph(
         except Exception:
             _KG_REBUILD_SEM.release()
             raise
+    failures: List[BaseException] = []
     for future in as_completed(futures):
         try:
             result = cast(Dict[str, Any], future.result())
             all_nodes.extend(result.get('nodes', []))
             all_edges.extend(result.get('edges', []))
-        except Exception:
+        except BaseException as error:
             logging.exception("Error in concurrent memory extraction")
+            failures.append(error)
+
+    if failures:
+        failure = failures[0]
+        if isinstance(failure, ModelCapabilityUnavailableError):
+            raise failure
+        raise ModelCapabilityUnavailableError('memory_kg', type(failure).__name__) from failure
 
     return kg_db.get_knowledge_graph(uid, db_client=db_client)

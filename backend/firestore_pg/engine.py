@@ -67,6 +67,20 @@ def ensure_tables(engine: Optional[Engine] = None) -> None:
         for path in known_paths:
             table, _ = resolve_collection(path)
             conn.execute(text(build_ddl(table)))
+        # Upgrade every table created on demand by an older shim revision,
+        # including collections introduced by upstream business code that are
+        # not yet in either static registry. Account deletion discovers these
+        # tables from their schema, so leaving one on the three-column legacy
+        # shape would make user data invisible to the wipe.
+        legacy_tables = conn.execute(
+            text(
+                "SELECT table_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND column_name IN ('uid', 'doc_id', 'data') "
+                "GROUP BY table_name HAVING count(DISTINCT column_name) = 3"
+            )
+        ).fetchall()
+        for (table,) in legacy_tables:
+            conn.execute(text(build_ddl(table)))
     logger.info("firestore_pg: schema ensured (%d tables)", len(known_paths))
 
 
@@ -155,7 +169,7 @@ def ensure_composite_indexes(engine: Optional[Any] = None) -> int:
     are created — unknown groups are skipped (a later table use can still be
     served by expression scans).
     """
-    from .sql import build_ddl, resolve_collection
+    from .sql import resolve_collection
     from database.firestore_index_registry import INDEX_REQUIREMENTS
 
     engine = engine or get_engine()

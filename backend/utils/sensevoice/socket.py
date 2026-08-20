@@ -1,135 +1,197 @@
-"""Local SenseVoice-Small streaming socket (CPU, no API, no GPU).
+"""Incremental local SenseVoice STT for the live-listen boundary.
 
-Implements the upstream ``STTSocket`` contract so the live listen path can
-use SenseVoice-Small entirely on the local machine:
-  - ``send()`` accumulates mono PCM16 frames
-  - ``finish()`` runs SenseVoice (sherpa-onnx, CPU) over the accumulated
-    audio and emits the transcript via the provided callback
-  - ``finalize()`` / ``is_connection_dead`` / ``death_reason`` satisfy the
-    socket contract
-
-Why not MOSS for live: MOSS is batch/offline (even its SSE returns streamed
-*text* for a whole uploaded file). Live audio needs incremental local
-inference — SenseVoice-Small on CPU is the documented path (see
-omi-subscription-margin.md: 234M, CPU 17.2x realtime, Chinese CER 7.81%).
-
-All code lives in utils/sensevoice/; the only upstream touch is the socket
-selection branch in the streaming provider.
+SenseVoice itself is an offline recognizer. This adapter turns it into a
+bounded-latency serving surface by decoding independent PCM windows while audio
+is still arriving and force-flushing at VAD/final session boundaries. All
+inference runs in the shared sync executor; the WebSocket event loop never runs
+the CPU decoder directly.
 """
 
 from __future__ import annotations
 
 import array
+import asyncio
 import importlib
 import logging
 import os
 import threading
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from utils.async_tasks import create_named_task
+from utils.executors import run_blocking, sync_executor
 from utils.stt.socket import STTSocket
 
 logger = logging.getLogger(__name__)
 
-# Env config
 SENSEVOICE_MODEL_DIR = os.getenv(
-    "SENSEVOICE_MODEL_DIR",
-    "/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+    'SENSEVOICE_MODEL_DIR',
+    '/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17',
 )
-SENSEVOICE_THREADS = int(os.getenv("SENSEVOICE_NUM_THREADS", "4"))
-SENSEVOICE_USE_ITN = os.getenv("SENSEVOICE_USE_ITN", "1") == "1"
-
-
-# ---------------------------------------------------------------------------
-# Lazy singleton recognizer (CPU)
-# ---------------------------------------------------------------------------
+SENSEVOICE_THREADS = int(os.getenv('SENSEVOICE_NUM_THREADS', '4'))
+SENSEVOICE_USE_ITN = os.getenv('SENSEVOICE_USE_ITN', '1') == '1'
+SENSEVOICE_STREAM_WINDOW_SECONDS = float(os.getenv('SENSEVOICE_STREAM_WINDOW_SECONDS', '5.0'))
+SENSEVOICE_STREAM_POLL_SECONDS = float(os.getenv('SENSEVOICE_STREAM_POLL_SECONDS', '0.1'))
 
 _recognizer: Any = None
 _recognizer_lock = threading.Lock()
+_decode_lock = threading.Lock()
+
+
+def sensevoice_model_is_ready(model_dir: Optional[str] = None) -> bool:
+    """Return whether both files required by the runtime are mounted."""
+    root = model_dir or os.getenv('SENSEVOICE_MODEL_DIR') or SENSEVOICE_MODEL_DIR
+    return os.path.isfile(os.path.join(root, 'model.int8.onnx')) and os.path.isfile(os.path.join(root, 'tokens.txt'))
 
 
 def get_sensevoice_recognizer() -> Any:
-    """Return the process-wide sherpa-onnx SenseVoice recognizer (CPU)."""
+    """Return the process-wide sherpa-onnx recognizer, initialized lazily."""
     global _recognizer
     if _recognizer is None:
         with _recognizer_lock:
             if _recognizer is None:
-                sherpa_onnx = importlib.import_module("sherpa_onnx")
-
-                model = os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx")
-                tokens = os.path.join(SENSEVOICE_MODEL_DIR, "tokens.txt")
-                if not (os.path.exists(model) and os.path.exists(tokens)):
+                if not sensevoice_model_is_ready():
                     raise RuntimeError(
-                        f"SenseVoice model not found at {SENSEVOICE_MODEL_DIR} " "(set SENSEVOICE_MODEL_DIR)"
+                        f'SenseVoice model not found at {os.getenv("SENSEVOICE_MODEL_DIR") or SENSEVOICE_MODEL_DIR} '
+                        '(model.int8.onnx and tokens.txt are required)'
                     )
+                sherpa_onnx = importlib.import_module('sherpa_onnx')
+                model_dir = os.getenv('SENSEVOICE_MODEL_DIR') or SENSEVOICE_MODEL_DIR
                 _recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-                    model=model,
-                    tokens=tokens,
+                    model=os.path.join(model_dir, 'model.int8.onnx'),
+                    tokens=os.path.join(model_dir, 'tokens.txt'),
                     num_threads=SENSEVOICE_THREADS,
                     use_itn=SENSEVOICE_USE_ITN,
                 )
-                logger.info("SenseVoice recognizer loaded (CPU, threads=%d)", SENSEVOICE_THREADS)
+                logger.info('SenseVoice recognizer loaded (CPU, threads=%d)', SENSEVOICE_THREADS)
     return _recognizer
 
 
 def _pcm16_to_samples(pcm: bytes) -> List[int]:
-    return list(array.array("h", pcm))
+    aligned = pcm[: len(pcm) - (len(pcm) % 2)]
+    return list(array.array('h', aligned))
 
 
-# ---------------------------------------------------------------------------
-# Socket
-# ---------------------------------------------------------------------------
+def _decode_pcm(recognizer: Any, sample_rate: int, pcm: bytes) -> str:
+    """Decode one window under the recognizer's process-wide concurrency gate."""
+    with _decode_lock:
+        stream = recognizer.create_stream()
+        stream.accept_waveform(sample_rate, _pcm16_to_samples(pcm))
+        recognizer.decode_stream(stream)
+        return str(stream.result.text).strip()
 
 
 class SenseVoiceSocket(STTSocket):
-    """Accumulate PCM16 audio; transcribe with SenseVoice on finish().
-
-    ``transcript_callback`` is called with the final transcript text (and the
-    audio duration in seconds) when the stream ends.
-    """
+    """Decode bounded PCM windows and emit transcript segments incrementally."""
 
     def __init__(
         self,
         sample_rate: int = 16000,
-        transcript_callback: Optional[Callable[[str, float], None]] = None,
+        transcript_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
         recognizer: Any = None,
+        window_seconds: float = SENSEVOICE_STREAM_WINDOW_SECONDS,
+        poll_seconds: float = SENSEVOICE_STREAM_POLL_SECONDS,
     ) -> None:
+        if sample_rate <= 0 or window_seconds <= 0 or poll_seconds <= 0:
+            raise ValueError('SenseVoice streaming timing and sample rate must be positive')
         self._sample_rate = sample_rate
         self._callback = transcript_callback
         self._recognizer = recognizer
+        self._window_bytes = max(2, int(sample_rate * 2 * window_seconds))
+        self._poll_seconds = poll_seconds
         self._pcm = bytearray()
-        self._finished = False
+        self._lock = threading.Lock()
+        self._emitted_seconds = 0.0
+        self._flush_requested = False
+        self._closed = False
         self._dead = False
         self._death_reason: Optional[str] = None
+        self._pump_task: Optional[asyncio.Task[None]] = None
 
-    # -- STTSocket contract -------------------------------------------------
+    def start(self) -> None:
+        if self._pump_task is None:
+            self._pump_task = create_named_task(self._pump(), name='sensevoice_stt_pump')
+
     def send(self, data: bytes) -> bool:
-        if self._finished or self._dead:
+        if self._closed or self._dead:
             return False
-        self._pcm.extend(data)
+        if not data:
+            return True
+        with self._lock:
+            self._pcm.extend(data)
         return True
 
-    def finish(self) -> None:
-        """End of audio: run SenseVoice over the accumulated PCM."""
-        if self._finished:
-            return
-        self._finished = True
-        try:
-            recognizer = self._recognizer or get_sensevoice_recognizer()
-            stream = recognizer.create_stream()
-            stream.accept_waveform(self._sample_rate, _pcm16_to_samples(bytes(self._pcm)))
-            recognizer.decode_stream(stream)
-            text = stream.result.text.strip()
-            duration = len(self._pcm) / (2 * self._sample_rate)
-            if self._callback:
-                self._callback(text, duration)
-            logger.info("SenseVoice transcript: %r (%.1fs)", text, duration)
-        except Exception as exc:  # pragma: no cover - local inference failure
-            logger.error("SenseVoice finish failed: %s", exc)
-            self._dead = True
-            self._death_reason = f"sensevoice_decode:{type(exc).__name__}"
-
     def finalize(self) -> None:
-        self._pcm.clear()
+        """Request an asynchronous VAD-boundary flush without blocking the loop."""
+        if not self._closed and not self._dead:
+            self._flush_requested = True
+
+    def finish(self) -> None:
+        self._closed = True
+        self._flush_requested = True
+
+    async def drain_and_close(self) -> None:
+        self.finish()
+        pump, self._pump_task = self._pump_task, None
+        if pump is not None:
+            try:
+                await pump
+            except asyncio.CancelledError:
+                pass
+        else:
+            await self._flush(force=True)
+
+    async def _pump(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._poll_seconds)
+                closing = self._closed
+                force = closing or self._flush_requested
+                self._flush_requested = False
+                await self._flush(force=force)
+                if closing:
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._dead = True
+            self._death_reason = f'sensevoice_decode:{type(error).__name__}'
+            logger.error('SenseVoice streaming pump failed type=%s', type(error).__name__)
+
+    async def _flush(self, *, force: bool) -> None:
+        while True:
+            with self._lock:
+                available = len(self._pcm) - (len(self._pcm) % 2)
+                if available < self._window_bytes and not (force and available > 0):
+                    return
+                take = available if force else self._window_bytes
+                pcm = bytes(self._pcm[:take])
+                del self._pcm[:take]
+                start = self._emitted_seconds
+                duration = take / (2 * self._sample_rate)
+                self._emitted_seconds += duration
+
+            recognizer = self._recognizer or await run_blocking(sync_executor, get_sensevoice_recognizer)
+            self._recognizer = recognizer
+            text = await run_blocking(
+                sync_executor,
+                lambda: _decode_pcm(recognizer, self._sample_rate, pcm),
+            )
+            if self._callback and text:
+                self._callback(
+                    [
+                        {
+                            'speaker': 'SPEAKER_00',
+                            'start': start,
+                            'end': start + duration,
+                            'text': text,
+                            'is_user': False,
+                            'person_id': None,
+                        }
+                    ]
+                )
+            logger.info('SenseVoice transcript window emitted chars=%d duration=%.1fs', len(text), duration)
+            if force:
+                return
 
     @property
     def is_connection_dead(self) -> bool:

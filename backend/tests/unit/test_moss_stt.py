@@ -35,6 +35,7 @@ def test_moss_provider_constructs_through_the_production_selector(monkeypatch) -
 
     monkeypatch.setenv('STT_PRERECORDED_MODEL', 'moss')
     monkeypatch.setenv('MOSS_API_KEY', 'test-key')
+    monkeypatch.setenv('MOSS_API_BASE', 'https://speech.operator.example')
     monkeypatch.setattr(prerecorded_provider, 'MossPrerecordedProvider', FakeMossProvider)
 
     assert isinstance(pre_recorded.get_prerecorded_provider('zh'), FakeMossProvider)

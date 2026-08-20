@@ -1,22 +1,21 @@
 from typing import Any, Dict, Optional, cast
 
-from firebase_admin import auth
-
 from database._client import db
 from database.redis_db import cache_user_name
+from utils import identity
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 def _firebase_get_user(uid: str) -> Any:
-    """Wrap firebase_admin.auth.get_user at the SDK boundary.
+    """Compatibility seam for provider-neutral identity lookup.
 
     firebase_admin.auth ships incomplete type stubs; its UserRecord fields
     surface as partially-unknown. Sealing the call here lets callers treat the
     result as Any and read fields without propagating Unknown.
     """
-    return auth.get_user(uid)  # type: ignore[reportUnknownMemberType]  # firebase_admin.auth stub gap
+    return identity.get_user(uid)
 
 
 def get_user_from_uid(uid: str) -> Optional[Dict[str, Any]]:

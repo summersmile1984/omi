@@ -3,7 +3,6 @@ from typing import List, Optional
 
 from fastapi import Depends, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
-from firebase_admin import auth
 
 import database.mcp_api_key as mcp_api_key_db
 import database.dev_api_key as dev_api_key_db
@@ -60,11 +59,13 @@ async def get_current_user_id(
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         id_token = credentials.credentials
-        decoded_token = await run_blocking(critical_executor, auth.verify_id_token, id_token)
+        uid = await run_blocking(critical_executor, auth_endpoints.verify_token, id_token)
     except Exception as e:
-        logger.error(f"Error verifying Firebase ID token: {e}")
+        if isinstance(e, auth_endpoints.CertificateFetchError):
+            logger.error('Identity provider unavailable: %s', type(e).__name__)
+            raise HTTPException(status_code=503, detail="Identity provider unavailable")
+        logger.error('Error verifying identity token: %s', type(e).__name__)
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
-    uid = decoded_token["uid"]
     await _enforce_account_deletion_access(uid)
     await _enforce_cutover_access(uid, request)
     return uid

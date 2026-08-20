@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.apps import _clamp_review_score, fetch_app_chat_tools_from_manifest
+from utils import identity
 from utils.executors import (
     critical_executor,
     db_executor,
@@ -138,7 +139,13 @@ from models.app import (
     AppReview,
     AppCatalogItem,
 )
-from utils.other.storage import upload_app_logo, delete_app_logo, upload_app_thumbnail, get_app_thumbnail_url
+from utils.other.storage import (
+    delete_app_logo,
+    get_app_thumbnail_url,
+    is_app_logo_url,
+    upload_app_logo,
+    upload_app_thumbnail,
+)
 from utils.social import (
     get_twitter_profile,
     verify_latest_tweet,
@@ -950,11 +957,7 @@ async def update_persona(
 
     # Image
     if file:
-        if (
-            'image' in persona
-            and len(persona['image']) > 0
-            and persona['image'].startswith('https://storage.googleapis.com/')
-        ):
+        if 'image' in persona and len(persona['image']) > 0 and is_app_logo_url(persona['image']):
             await run_blocking(storage_executor, delete_app_logo, persona['image'])
         os.makedirs('_temp/apps', exist_ok=True)
         file_path = f"_temp/apps/{file.filename}"
@@ -1069,7 +1072,7 @@ def update_app(
     if app['uid'] != uid:
         raise HTTPException(status_code=403, detail='You are not authorized to perform this action')
     if file:
-        if 'image' in app and len(app['image']) > 0 and app['image'].startswith('https://storage.googleapis.com/'):
+        if 'image' in app and len(app['image']) > 0 and is_app_logo_url(app['image']):
             delete_app_logo(app['image'])
         os.makedirs('_temp/apps', exist_ok=True)
         file_path = f"_temp/apps/{file.filename}"
@@ -1738,9 +1741,9 @@ async def migrate_app_owner(
 
     try:
         source_claims = await run_blocking(
-            critical_executor, auth.auth.verify_id_token, source_token, check_revoked=True
+            critical_executor, identity.verify_id_token, source_token, check_revoked=True
         )
-        source_user = await run_blocking(critical_executor, auth.get_user, old_id)
+        source_user = await run_blocking(critical_executor, identity.get_user, old_id)
     except Exception:
         # Invalid/revoked tokens, missing/deleted users, and Admin lookup failures
         # are deliberately indistinguishable to callers. Neither may mutate state.
@@ -1748,7 +1751,11 @@ async def migrate_app_owner(
 
     source_uid = source_claims.get('uid')
     firebase_claims = source_claims.get('firebase')
-    source_provider = firebase_claims.get('sign_in_provider') if isinstance(firebase_claims, dict) else None
+    source_provider = (
+        firebase_claims.get('sign_in_provider')
+        if isinstance(firebase_claims, dict)
+        else source_claims.get('sign_in_provider')
+    )
     if source_uid != old_id or source_provider != 'anonymous' or source_user.disabled or source_user.provider_data:
         raise HTTPException(status_code=403, detail='Source identity is not eligible for migration')
 
@@ -2032,8 +2039,7 @@ async def mcp_oauth_callback(code: str, state: str):
     tool_count = len(tools)
     tool_names = ', '.join(escape(t.name) for t in tools)
 
-    return HTMLResponse(
-        f"""
+    return HTMLResponse(f"""
     <html>
     <head><meta name="viewport" content="width=device-width,initial-scale=1">
     <style>
@@ -2050,8 +2056,7 @@ async def mcp_oauth_callback(code: str, state: str):
         <p>{tool_names}</p>
         <p style="margin-top:24px;color:#666;">You can close this window and return to the app.</p>
     </div></body></html>
-    """
-    )
+    """)
 
 
 @router.post('/v1/apps/{app_id}/mcp/refresh', tags=['v1'], response_model=McpRefreshToolsResponse)

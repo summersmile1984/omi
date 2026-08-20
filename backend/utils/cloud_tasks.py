@@ -105,6 +105,14 @@ def validate_account_deletion_dispatch_configuration() -> None:
     if not is_account_deletion_dispatch_enabled():
         raise RuntimeError('production requires ACCOUNT_DELETION_DISPATCH_MODE=cloud_tasks')
 
+    if cloud_tasks_redis.queue_enabled():
+        if not cloud_tasks_redis.queue_dispatch_configured('account-deletion'):
+            raise RuntimeError(
+                'production Redis account-deletion dispatch requires ACCOUNT_DELETION_HANDLER_URL and '
+                'QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET'
+            )
+        return
+
     required_env = (
         'SYNC_TASKS_PROJECT',
         'SYNC_TASKS_LOCATION',
@@ -125,6 +133,8 @@ def is_listen_finalization_dispatch_enabled() -> bool:
 
 def is_listen_finalization_dispatch_configured() -> bool:
     """Whether the durable finalizer can be admitted without an inline fallback."""
+    if cloud_tasks_redis.queue_enabled():
+        return is_listen_finalization_dispatch_enabled() and cloud_tasks_redis.queue_dispatch_configured('finalization')
     return is_listen_finalization_dispatch_enabled() and all(
         (
             os.getenv('SYNC_TASKS_PROJECT', ''),
@@ -321,18 +331,26 @@ def _verify_cloud_tasks_oidc(request: Request, *, audience: str, invoker_sa: str
         return 0
 
 
-def _verify_redis_worker(request: Request) -> int:
-    expected = os.getenv('QUEUE_REDIS_WORKER_SECRET', '')
+def _verify_redis_worker(request: Request, *, allowed_queues: frozenset[str]) -> int:
+    queue_name = request.headers.get('x-omi-queue-name', '')
+    if queue_name not in allowed_queues:
+        raise HTTPException(status_code=403, detail='Redis worker queue is not authorized for this route')
+    expected = cloud_tasks_redis.worker_secret(queue_name)
     presented = request.headers.get('x-omi-queue-secret', '')
     if not expected or not secrets.compare_digest(presented, expected):
         raise HTTPException(status_code=403, detail='Invalid Redis worker secret')
-    return 0
+    try:
+        return max(0, int(request.headers.get('x-cloudtasks-taskretrycount', '0')))
+    except ValueError:
+        return 0
 
 
 def verify_cloud_tasks_oidc(request: Request) -> int:
     """FastAPI dependency for sync and merge task routes."""
     if cloud_tasks_redis.queue_enabled():
-        return _verify_redis_worker(request)
+        path = request.url.path.rstrip('/')
+        allowed_queues = frozenset({'audio-merge'}) if path.endswith('/audio-merge-jobs/run') else frozenset({'sync'})
+        return _verify_redis_worker(request, allowed_queues=allowed_queues)
     return _verify_cloud_tasks_oidc(request, audience=_oidc_audience(), invoker_sa=_invoker_sa())
 
 
@@ -344,7 +362,7 @@ def verify_account_deletion_cloud_tasks_oidc(request: Request) -> AccountDeletio
     the route rejects it for new job-ID payloads before any lookup or mutation.
     """
     if cloud_tasks_redis.queue_enabled():
-        retry_count = _verify_redis_worker(request)
+        retry_count = _verify_redis_worker(request, allowed_queues=frozenset({'account-deletion'}))
         return AccountDeletionTaskAuthentication(retry_count=retry_count, audience='account_deletion')
 
     deletion_audience = _account_deletion_oidc_audience()
@@ -372,7 +390,7 @@ def verify_account_deletion_cloud_tasks_oidc(request: Request) -> AccountDeletio
 def verify_listen_finalization_cloud_tasks_oidc(request: Request) -> int:
     """FastAPI dependency for the isolated listen finalization task route."""
     if cloud_tasks_redis.queue_enabled():
-        return _verify_redis_worker(request)
+        return _verify_redis_worker(request, allowed_queues=frozenset({'finalization'}))
     return _verify_cloud_tasks_oidc(
         request,
         audience=_listen_finalization_audience(),

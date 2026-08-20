@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import pytest
 
 from llm_gateway.gateway.config_loader import ConfigValidationError
 from llm_gateway.gateway.schemas import LaneConfig
 from llm_gateway.main import app
 from llm_gateway.routers import health
 from utils.llm.model_config import get_all_configured_features
+
+
+@pytest.fixture(autouse=True)
+def _clear_gateway_config_cache():
+    health.get_gateway_config.cache_clear()
+    yield
+    health.get_gateway_config.cache_clear()
 
 
 def test_ready_requires_service_auth(monkeypatch):
@@ -20,6 +28,8 @@ def test_ready_requires_service_auth(monkeypatch):
 
 def test_ready_validates_gateway_config(monkeypatch):
     monkeypatch.setenv('LLM_GATEWAY_SERVICE_TOKEN', 'shared-secret')
+    monkeypatch.setenv('OPENAI_API_KEY', 'openai-test-key')
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'anthropic-test-key')
 
     response = TestClient(app).get('/ready', headers=auth_headers())
 
@@ -28,23 +38,35 @@ def test_ready_validates_gateway_config(monkeypatch):
     assert 'omi:auto:chat-structured' in response.json()['lanes']
     assert len(response.json()['lanes']) >= len(get_all_configured_features())
     assert response.json()['route_artifact_count'] >= len(get_all_configured_features()) + 2
-    assert response.json()['managed_messages_provider'] == 'none'
+    assert response.json()['managed_messages_provider'] == 'anthropic'
     assert response.json()['managed_chat_provider'] == 'openai'
 
 
-def test_ready_does_not_require_anthropic_key_after_chat_agent_migration(monkeypatch):
+def test_ready_accepts_a_global_generic_route_without_managed_vendor_keys(monkeypatch):
     monkeypatch.setenv('LLM_GATEWAY_SERVICE_TOKEN', 'shared-secret')
+    monkeypatch.setenv('OMI_LLM_DEFAULT_PROVIDER', 'generic')
+    monkeypatch.setenv('OMI_LLM_DEFAULT_MODEL', 'local-model')
+    monkeypatch.setenv('GENERIC_OPENAI_BASE_URL', 'http://llm.internal:11434/v1')
+    monkeypatch.setenv('GENERIC_OPENAI_API_KEY', 'generic-test-key')
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
 
     response = TestClient(app).get('/ready', headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()['managed_messages_provider'] == 'none'
-    assert response.json()['managed_chat_provider'] == 'openai'
+    assert response.json()['managed_chat_provider'] == 'none'
+
+    config = health.get_gateway_config()
+    for lane_id in ('omi:auto:public-shared-conversation-chat', 'omi:auto:chat-structured'):
+        route = config.route_artifacts[config.lanes[lane_id].active_route]
+        assert route.primary.provider == 'generic'
+        assert route.primary.model == 'local-model'
 
 
 def test_ready_fails_closed_when_managed_openai_key_is_missing(monkeypatch):
     monkeypatch.setenv('LLM_GATEWAY_SERVICE_TOKEN', 'shared-secret')
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'anthropic-test-key')
     monkeypatch.delenv('OPENAI_API_KEY', raising=False)
 
     response = TestClient(app).get('/ready', headers=auth_headers())

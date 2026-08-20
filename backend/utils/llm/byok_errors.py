@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from typing import Optional
 
 try:
@@ -137,6 +138,9 @@ def _release_byok_llm_error_lock(uid: str, provider: str, reason: str) -> None:
 
 
 def _send_byok_llm_error_notification(uid: str, provider: str, reason: str) -> None:
+    if os.getenv('PUSH_PROVIDER', 'firebase').strip().lower() != 'firebase':
+        logger.info('BYOK notification skipped because PUSH_PROVIDER=disabled')
+        return
     if notification_db is None or messaging is None:
         logger.error(
             'BYOK LLM notification dependencies unavailable uid=%s provider=%s reason=%s', uid, provider, reason

@@ -41,6 +41,7 @@ docopt==0.6.2
 email_validator==2.2.0
 executing==2.0.1
 fal_client==0.4.1
+fakeredis==2.36.2
 fastapi==0.121.0
 fastapi-cli==0.0.5
 fastapi-utilities==0.2.0
@@ -131,6 +132,7 @@ omegaconf==2.3.0
 onnxruntime==1.19.0
 openai==2.38.0
 scipy==1.14.0
+sherpa-onnx==1.13.4
 optuna==3.6.1
 opuslib==3.0.1
 orjson==3.11.6

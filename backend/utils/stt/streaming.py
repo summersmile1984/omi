@@ -15,7 +15,6 @@ from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEve
 from deepgram.clients.live.v1 import LiveOptions
 
 from config.stt_provider_policy import (
-    MIMO_PROVIDER,
     MODULATE_PROVIDER,
     PARAKEET_PROVIDER,
     SENSEVOICE_PROVIDER,
@@ -28,6 +27,7 @@ from config.stt_provider_policy import (
     provider_is_enabled,
     supports_live_multilingual_mode,
 )
+from utils.sensevoice.socket import SenseVoiceSocket, get_sensevoice_recognizer, sensevoice_model_is_ready
 from utils.async_tasks import create_named_task
 from utils.byok import get_byok_key
 from utils.executors import sync_executor, run_blocking
@@ -58,7 +58,6 @@ class STTService(str, Enum):
     modulate = "modulate"
     parakeet = "parakeet"
     sensevoice = "sensevoice"
-    mimo = "mimo"
 
     @staticmethod
     def get_model_name(value: 'STTService') -> Optional[str]:
@@ -70,8 +69,6 @@ class STTService(str, Enum):
             return 'parakeet_streaming'
         if value == STTService.sensevoice:
             return 'sensevoice_streaming'
-        if value == STTService.mimo:
-            return 'mimo_streaming'
 
 
 class ParakeetConnectionError(RuntimeError):
@@ -380,6 +377,10 @@ DEFAULT_STT_SERVICE_MODELS = default_models_for_surface(STTServingSurface.STREAM
 stt_service_models = os.getenv('STT_SERVICE_MODELS', ','.join(DEFAULT_STT_SERVICE_MODELS)).split(',')
 
 
+def _policy_default_fallback_enabled() -> bool:
+    return os.getenv('STT_ROUTE_FALLBACK_TO_DEFAULT', 'true').strip().lower() == 'true'
+
+
 def modulate_is_configured_fallback(language: Optional[str]) -> bool:
     """Return whether Modulate may take over a session whose primary failed.
 
@@ -500,10 +501,6 @@ def get_stt_service_for_language(
         parakeet_fallback_reason: Optional[str] = None
         for model in _models_with_preferred_service(models, preferred_service=preferred_service):
             model = model.strip()
-            if model == 'sensevoice' and provider_is_enabled(SENSEVOICE_PROVIDER, surface) and _sensevoice_available():
-                return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
-            if model == 'mimo' and provider_is_enabled(MIMO_PROVIDER, surface) and _mimo_available():
-                return (STTService.mimo, requested_language, 'mimo'), parakeet_fallback_reason
             if (
                 model.startswith('dg-')
                 and provider_is_enabled(deepgram_provider_for_runtime(is_dg_self_hosted), surface)
@@ -523,6 +520,12 @@ def get_stt_service_for_language(
                         parakeet_fallback_reason = 'capability_mismatch'
                 else:
                     parakeet_fallback_reason = 'config_incomplete'
+            if (
+                model == 'sensevoice'
+                and provider_is_enabled(SENSEVOICE_PROVIDER, surface)
+                and sensevoice_model_is_ready()
+            ):
+                return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
             if (
                 model == 'modulate-velma-2'
                 and provider_is_enabled(MODULATE_PROVIDER, surface)
@@ -563,10 +566,11 @@ def get_stt_service_for_language(
         record_selected_fallback(selected, used_default=False, parakeet_fallback_reason=parakeet_fallback_reason)
         return selected
 
-    selected, parakeet_fallback_reason = select(default_models_for_surface(surface))
-    if selected is not None:
-        record_selected_fallback(selected, used_default=True, parakeet_fallback_reason=parakeet_fallback_reason)
-        return selected
+    if _policy_default_fallback_enabled():
+        selected, parakeet_fallback_reason = select(default_models_for_surface(surface))
+        if selected is not None:
+            record_selected_fallback(selected, used_default=True, parakeet_fallback_reason=parakeet_fallback_reason)
+            return selected
 
     record_fallback(
         component='stt_selection',
@@ -658,20 +662,6 @@ def _deepgram_is_available() -> bool:
     runtime that has no account key of its own.
     """
     return _managed_deepgram_client() is not None or bool(get_byok_key('deepgram'))
-
-
-def _sensevoice_available() -> bool:
-    """True when a local SenseVoice model directory is configured."""
-    from utils.sensevoice.socket import SENSEVOICE_MODEL_DIR
-
-    return bool(SENSEVOICE_MODEL_DIR) and os.path.exists(os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx"))
-
-
-def _mimo_available() -> bool:
-    """True when MiMo streaming STT is configured (MIMO_API_KEY set)."""
-    from utils.mimo_pipeline.socket import mimo_available
-
-    return mimo_available()
 
 
 async def process_audio_dg(
@@ -1238,6 +1228,26 @@ async def process_audio_modulate(
 
 
 # --- Parakeet (self-hosted, opt-in) ---------------------------------------------------------------
+async def process_audio_sensevoice(
+    stream_transcript: Callable[[List[Dict[str, Any]]], None],
+    sample_rate: int,
+) -> SenseVoiceSocket:
+    """Create a ready local incremental SenseVoice socket.
+
+    Model loading is completed before the listen session reports readiness, so
+    a missing runtime wheel or model mount becomes an initialization failure
+    rather than a dead session after audio has already been accepted.
+    """
+    recognizer = await run_blocking(sync_executor, get_sensevoice_recognizer)
+    socket = SenseVoiceSocket(
+        sample_rate=sample_rate,
+        transcript_callback=stream_transcript,
+        recognizer=recognizer,
+    )
+    socket.start()
+    return socket
+
+
 PARAKEET_WINDOW_SECONDS = float(os.getenv('PARAKEET_WINDOW_SECONDS', '6.0'))
 PARAKEET_WS_CONNECT_TIMEOUT = float(os.getenv('PARAKEET_WS_CONNECT_TIMEOUT', '10.0'))
 

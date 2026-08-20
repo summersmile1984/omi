@@ -6,10 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     {% set display_client_name = client_name | default("ChatGPT") %}
     <title>Connect {{ display_client_name }} to Omi</title>
+    {% if auth_provider != "better_auth" %}
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/ui/6.0.1/firebase-ui-auth.js"></script>
     <link type="text/css" rel="stylesheet" href="https://www.gstatic.com/firebasejs/ui/6.0.1/firebase-ui-auth.css" />
+    {% endif %}
     {% include "_oauth_shared_styles.html" %}
 </head>
 
@@ -92,8 +94,10 @@
                 </section>
 
                 <div class="oauth-actions">
+                    {% if auth_provider != "better_auth" %}
                     <div id="firebaseui-auth-container"></div>
                     <div class="oauth-divider" id="social-sign-in-divider">or sign in with email</div>
+                    {% endif %}
                     <form class="email-sign-in-form" id="email-sign-in-form" novalidate>
                         <div class="oauth-field">
                             <label for="email-input">Email</label>
@@ -148,8 +152,11 @@
 
     <script>
         const oauthParams = {{ oauth_params | tojson }};
+        const identityCsrfToken = "{{ identity_csrf_token | default('') }}";
+        {% if auth_provider != "better_auth" %}
         const firebaseConfig = {{ firebase_config | tojson }};
         firebase.initializeApp(firebaseConfig);
+        {% endif %}
 
         let idToken = null;
         let signedInEmail = null;
@@ -165,10 +172,12 @@
         const loader = document.getElementById('loader');
         const errorMessage = document.getElementById('error-message');
         const errorText = document.getElementById('error-text');
+        {% if auth_provider != "better_auth" %}
         const signInOptions = [firebase.auth.GoogleAuthProvider.PROVIDER_ID];
         if (/Mac|iPod|iPhone|iPad/.test(navigator.platform)) {
             signInOptions.push('apple.com');
         }
+        {% endif %}
 
         function setLoading(isLoading) {
             loader.classList.toggle('is-visible', isLoading);
@@ -207,8 +216,8 @@
 
         function hideSignInOptions() {
             emailSignInForm.style.display = 'none';
-            socialSignInDivider.style.display = 'none';
-            firebaseUiContainer.style.display = 'none';
+            if (socialSignInDivider) socialSignInDivider.style.display = 'none';
+            if (firebaseUiContainer) firebaseUiContainer.style.display = 'none';
         }
 
         function submitConsent() {
@@ -244,21 +253,27 @@
                 .catch(showError);
         }
 
-        function finishSignIn(user, autoSubmitConsent) {
+        function finishIdentityToken(token, email, autoSubmitConsent) {
             setLoading(true);
             clearError();
-            signedInEmail = user.email || null;
+            signedInEmail = email || null;
+            idToken = token;
+            hideSignInOptions();
+            if (autoSubmitConsent) {
+                submitConsent();
+                return;
+            }
+            setLoading(false);
+            showConsentRetry();
+        }
+
+        {% if auth_provider != "better_auth" %}
+        function finishSignIn(user, autoSubmitConsent) {
             user.getIdToken().then(function (token) {
-                idToken = token;
-                hideSignInOptions();
-                if (autoSubmitConsent) {
-                    submitConsent();
-                    return;
-                }
-                setLoading(false);
-                showConsentRetry();
+                finishIdentityToken(token, user.email, autoSubmitConsent);
             }).catch(showError);
         }
+        {% endif %}
 
         emailSignInForm.addEventListener('submit', function (event) {
             event.preventDefault();
@@ -270,6 +285,25 @@
             }
 
             setLoading(true);
+            {% if auth_provider == "better_auth" %}
+            const identityForm = new FormData();
+            identityForm.append('email', emailInput.value.trim());
+            identityForm.append('password', passwordInput.value);
+            identityForm.append('csrf_token', identityCsrfToken);
+            fetch('/v1/identity/email-token', { method: 'POST', body: identityForm })
+                .then(function (response) {
+                    if (!response.ok) throw new Error('Sign-in failed');
+                    return response.json();
+                })
+                .then(function (data) {
+                    if (!data.token) throw new Error('Sign-in failed');
+                    finishIdentityToken(data.token, emailInput.value.trim(), true);
+                })
+                .catch(function () {
+                    passwordInput.value = '';
+                    showSignInError();
+                });
+            {% else %}
             firebase.auth()
                 .signInWithEmailAndPassword(emailInput.value.trim(), passwordInput.value)
                 .then(function (result) {
@@ -279,9 +313,11 @@
                     passwordInput.value = '';
                     showSignInError();
                 });
+            {% endif %}
         });
 
         connectButton.addEventListener('click', submitConsent);
+        {% if auth_provider != "better_auth" %}
         const ui = new firebaseui.auth.AuthUI(firebase.auth());
         ui.start('#firebaseui-auth-container', {
             signInFlow: 'popup',
@@ -299,6 +335,9 @@
                 }
             }
         });
+        {% else %}
+        setLoading(false);
+        {% endif %}
     </script>
 </body>
 

@@ -57,7 +57,8 @@ _mod("database.screen_activity")
 _mod("database.vector_db", search_screen_activity_vectors=MagicMock())
 _mod("database.notifications", get_user_time_zone=lambda uid: None)
 _mod("database._client", db=MagicMock())
-_mod("utils.llm.clients", gemini_embed_query=MagicMock())
+_mod("utils.llm.clients", embeddings=MagicMock())
+_mod("utils.llm.capabilities", resolve_model_capability=MagicMock())
 
 
 def _load():

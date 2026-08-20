@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import wave
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from utils.stt.pre_recorded import PrerecordedSTTProvider
@@ -32,10 +33,10 @@ class MossPrerecordedProvider(PrerecordedSTTProvider):
     unchanged.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, client: Any = None) -> None:
         from .moss_client import MossClient
 
-        self._client = MossClient()
+        self._client = client or MossClient()
 
     def _transcribe(self, audio_source: str, *, is_url: bool, diarize: bool) -> List[Dict[str, Any]]:
         # MOSS takes a public URL or an uploaded file id; there is no inline
@@ -92,8 +93,22 @@ class MossPrerecordedProvider(PrerecordedSTTProvider):
         return_language: bool = False,
         keywords: Optional[Sequence[str]] = None,
     ) -> Union[List[Dict[str, Any]], Tuple[List[Dict[str, Any]], str]]:
+        normalized_encoding = (encoding or '').strip().lower()
+        is_wav = audio_bytes[:4] == b'RIFF' and audio_bytes[8:12] == b'WAVE'
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-            tmp.write(audio_bytes)
+            if is_wav:
+                tmp.write(audio_bytes)
+            elif normalized_encoding in {'linear16', 'pcm', 'pcm16', 's16le'}:
+                with wave.open(tmp, 'wb') as wav_file:
+                    wav_file.setnchannels(max(1, channels))
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(audio_bytes)
+            else:
+                raise ValueError(
+                    'MOSS byte transcription requires WAV or raw PCM16 with encoding=linear16; '
+                    'convert compressed audio before invoking this provider'
+                )
             tmp.flush()
             words = self._transcribe(tmp.name, is_url=False, diarize=diarize)
         if return_language:

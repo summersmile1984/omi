@@ -72,13 +72,48 @@ async def tts_synthesize(
     ),
 ):
     """Proxy a TTS request to the configured provider. Per-user rate limited."""
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text must not be empty")
+    if not _is_valid_voice_id(req.voice_id):
+        raise HTTPException(status_code=400, detail="invalid voice_id")
+    char_count = len(text)
+    if char_count > _TTS_REQUEST_CHAR_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"text exceeds maximum length of {_TTS_REQUEST_CHAR_LIMIT} characters",
+        )
+
     api_key = os.getenv('ELEVENLABS_API_KEY')
     mimo_enabled = _is_mimo_enabled()
     if not api_key and not mimo_enabled:
         logger.error("tts_synthesize: no TTS provider configured (ELEVENLABS_API_KEY or MIMO_API_KEY)")
         raise HTTPException(status_code=503, detail="TTS service not configured")
 
-    text = req.text.strip()
+    status, retry_after = await run_blocking(
+        critical_executor,
+        redis_db.check_tts_rate_limit,
+        uid,
+        char_count=char_count,
+        burst_limit=_TTS_BURST_PER_MINUTE,
+        burst_window_secs=_TTS_BURST_WINDOW_SECS,
+        daily_char_limit=_TTS_DAILY_CHAR_LIMIT,
+    )
+    if status == 1:
+        logger.warning(f"tts_synthesize: burst rate limit exceeded uid={uid}")
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded: too many TTS requests. Try again in 60 seconds.",
+            headers={"Retry-After": str(retry_after or _TTS_BURST_WINDOW_SECS)},
+        )
+    if status == 2:
+        logger.warning(f"tts_synthesize: daily character limit exceeded uid={uid}")
+        raise HTTPException(
+            status_code=429,
+            detail="Daily TTS character limit exceeded. Resets at midnight UTC.",
+            headers={"Retry-After": str(retry_after or 3600)},
+        )
+    # status == -1 (Redis error): fail-open intentionally — TTS is best-effort.
 
     if mimo_enabled:
         # MiMo-TTS: one-shot chat-completions request returning audio bytes.
@@ -112,44 +147,6 @@ async def tts_synthesize(
         )
 
     assert api_key is not None
-
-    if not _is_valid_voice_id(req.voice_id):
-        raise HTTPException(status_code=400, detail="invalid voice_id")
-
-    if not text:
-        raise HTTPException(status_code=400, detail="text must not be empty")
-
-    char_count = len(text)
-    if char_count > _TTS_REQUEST_CHAR_LIMIT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"text exceeds maximum length of {_TTS_REQUEST_CHAR_LIMIT} characters",
-        )
-
-    status, retry_after = await run_blocking(
-        critical_executor,
-        redis_db.check_tts_rate_limit,
-        uid,
-        char_count=char_count,
-        burst_limit=_TTS_BURST_PER_MINUTE,
-        burst_window_secs=_TTS_BURST_WINDOW_SECS,
-        daily_char_limit=_TTS_DAILY_CHAR_LIMIT,
-    )
-    if status == 1:
-        logger.warning(f"tts_synthesize: burst rate limit exceeded uid={uid}")
-        raise HTTPException(
-            status_code=429,
-            detail="Rate limit exceeded: too many TTS requests. Try again in 60 seconds.",
-            headers={"Retry-After": str(retry_after or _TTS_BURST_WINDOW_SECS)},
-        )
-    if status == 2:
-        logger.warning(f"tts_synthesize: daily character limit exceeded uid={uid}")
-        raise HTTPException(
-            status_code=429,
-            detail="Daily TTS character limit exceeded. Resets at midnight UTC.",
-            headers={"Retry-After": str(retry_after or 3600)},
-        )
-    # status == -1 (Redis error): fail-open intentionally — TTS is best-effort.
 
     body: Dict[str, Any] = {
         "text": text,

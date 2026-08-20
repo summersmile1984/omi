@@ -8,10 +8,15 @@ from typing import Any, cast
 import httpx
 from langchain_core.tools import tool  # type: ignore[reportUnknownVariableType]  # langchain @tool decorator partially typed
 from utils.http_client import get_webhook_client
+from utils.llm.capabilities import resolve_model_capability
 from utils.llm.gateway_client import feature_auto_lane_id, get_llm_gateway_base_url, llm_gateway_headers
 from utils.log_sanitizer import sanitize
 
 logger = logging.getLogger(__name__)
+
+WEB_SEARCH_TRANSPORT_ENV = 'WEB_SEARCH_TRANSPORT'
+WEB_SEARCH_TRANSPORT_GATEWAY = 'gateway'
+WEB_SEARCH_TRANSPORT_DISABLED = 'disabled'
 
 # Legacy QoS coverage anchor: web search maps to get_model('web_search') in model_config.
 
@@ -48,6 +53,10 @@ async def perplexity_web_search_tool(
     """
     logger.info(f"🔍 perplexity_web_search_tool called - query: {query}")
 
+    capability = resolve_model_capability('web_search')
+    if not capability.selected:
+        logger.error('Web search capability unavailable: %s', capability.reason)
+        return capability.unavailable_tool_result()
     return await _perplexity_gateway_search(query)
 
 

@@ -199,24 +199,12 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
     if len(text) > _MAX_TTS_CHARS:
         raise HTTPException(status_code=400, detail="text is too long")
 
-    # Cloud-neutral override: MiMo-TTS (self-hosted) when TTS_PROVIDER=mimo.
-    if mimo_tts_enabled():
-        try:
-            audio = await _mimo_tts_synthesize(text)
-        except Exception as exc:
-            logger.error("tts_synthesize: MiMo TTS failed uid=%s: %s", uid, sanitize(str(exc)))
-            raise HTTPException(status_code=502, detail="TTS upstream unavailable")
-        return Response(content=audio, media_type="audio/wav")
-
-    voice_id = request.voice_id.strip()
-    if not _is_allowed_openai_voice(voice_id):
-        raise HTTPException(status_code=400, detail="voice_id is not supported")
     if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop"):
         raise HTTPException(status_code=403, detail="A paid subscription is required")
-    api_key = get_byok_key("openai") or os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise HTTPException(status_code=503, detail="OpenAI TTS is not configured")
-    if not get_byok_key("openai"):
+
+    provider_is_mimo = mimo_tts_enabled()
+    openai_byok = None if provider_is_mimo else get_byok_key("openai")
+    if not openai_byok:
         status, _ = await run_blocking(
             critical_executor,
             redis_db.check_tts_rate_limit,
@@ -231,6 +219,22 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
             raise HTTPException(status_code=429, detail="TTS burst rate limit exceeded")
         if status == 2:
             raise HTTPException(status_code=429, detail="TTS daily character limit exceeded")
+
+    # Cloud-neutral override: MiMo-TTS (self-hosted) when TTS_PROVIDER=mimo.
+    if provider_is_mimo:
+        try:
+            audio = await _mimo_tts_synthesize(text)
+        except Exception as exc:
+            logger.error("tts_synthesize: MiMo TTS failed uid=%s: %s", uid, sanitize(str(exc)))
+            raise HTTPException(status_code=502, detail="TTS upstream unavailable")
+        return Response(content=audio, media_type="audio/wav")
+
+    voice_id = request.voice_id.strip()
+    if not _is_allowed_openai_voice(voice_id):
+        raise HTTPException(status_code=400, detail="voice_id is not supported")
+    api_key = openai_byok or os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OpenAI TTS is not configured")
     payload = {"model": _OPENAI_TTS_MODEL, "input": text, "voice": voice_id, "response_format": "mp3"}
     if request.instructions and request.instructions.strip():
         payload["instructions"] = request.instructions.strip()

@@ -140,3 +140,12 @@ def test_send_notification_body_is_plain_text() -> None:
         body = sent_messages[0].notification.body
         assert '**' not in body
         assert body == "• 🇺🇸 US President: Donald Trump\n• 🇮🇳 India's President: Droupadi Murmu"
+
+
+def test_disabled_push_provider_never_reads_tokens_or_calls_firebase(monkeypatch) -> None:
+    monkeypatch.setenv('PUSH_PROVIDER', 'disabled')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        notifications.send_notification('user-1', 'omi', 'hello')
+
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()

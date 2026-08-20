@@ -11,6 +11,13 @@ from typing import Any, Callable, Dict, List, Optional, TypedDict, cast
 from pinecone import Pinecone
 
 from database import projection_repair
+from database.vector_projection import (
+    ProjectionUnavailableError,
+    VECTOR_PROJECTION_LOGICAL_NAMESPACES,
+    VersionedVectorStoreAdapter,
+    require_projection_store,
+)
+from database.vector_store import PineconeVectorStoreAdapter, create_qdrant_vector_store_from_env
 from database.memory_vector_metadata import (
     build_archive_memory_vector_filter,
     build_canonical_memory_vector_delete_filter,
@@ -63,6 +70,12 @@ class VectorMetadataDoc(TypedDict, total=False):
     subject_entity_id: str
     kind: str
     appName: str
+    projection_provider: str
+    projection_model: str
+    projection_dimension: int
+    projection_schema_version: int
+    projection_namespace_version: str
+    projection_logical_namespace: str
 
 
 class VectorRecordDoc(TypedDict):
@@ -97,9 +110,14 @@ _pinecone_index_name: Optional[str] = os.getenv('PINECONE_INDEX_NAME')
 # warning-clean without per-call ignores.
 pc: Any = None
 index: Any = None
-if _pinecone_api_key and _pinecone_index_name:
+_vector_store_provider = os.getenv('VECTOR_STORE_PROVIDER', 'pinecone').strip().lower()
+if _vector_store_provider == 'qdrant':
+    index = VersionedVectorStoreAdapter(create_qdrant_vector_store_from_env(), embeddings)
+elif _vector_store_provider == 'pinecone' and _pinecone_api_key and _pinecone_index_name:
     pc = Pinecone(api_key=_pinecone_api_key)
-    index = pc.Index(_pinecone_index_name)
+    index = VersionedVectorStoreAdapter(PineconeVectorStoreAdapter(pc.Index(_pinecone_index_name)), embeddings)
+elif _vector_store_provider not in {'pinecone', 'qdrant'}:
+    raise ValueError(f"Unsupported VECTOR_STORE_PROVIDER '{_vector_store_provider}'")
 
 
 def _get_data(uid: str, conversation_id: str, vector: List[float]) -> VectorRecordDoc:
@@ -167,8 +185,7 @@ def query_vectors(
     k: int = 5,
     query_vector: Optional[List[float]] = None,
 ) -> List[str]:
-    if index is None:
-        return []
+    store = require_projection_store(index, 'conversation_search')
 
     filter_data: Dict[str, Any] = {'uid': uid}
     created_at = _created_at_filter(starts_at, ends_at)
@@ -179,7 +196,7 @@ def query_vectors(
         filter_data['created_at'] = created_at
 
     xq = query_vector if query_vector is not None else embeddings.embed_query(query)
-    xc = index.query(vector=xq, top_k=k, include_metadata=False, filter=filter_data, namespace="ns1")
+    xc = store.query(vector=xq, top_k=k, include_metadata=False, filter=filter_data, namespace="ns1")
     matches: List[Any] = xc['matches']
     return [item['id'].replace(f'{uid}-', '') for item in matches]
 
@@ -194,8 +211,7 @@ def query_vectors_by_metadata(
     dates: List[str],
     limit: int = 5,
 ) -> List[str]:
-    if index is None:
-        return []
+    store = require_projection_store(index, 'conversation_search')
     and_clauses: List[Dict[str, Any]] = [{'uid': {'$eq': uid}}]
     filter_data: Dict[str, Any] = {'$and': and_clauses}
     if people or topics or entities or dates:
@@ -215,7 +231,7 @@ def query_vectors_by_metadata(
             {'created_at': {'$gte': int(dates_filter[0].timestamp()), '$lte': int(dates_filter[1].timestamp())}}
         )
 
-    xc = index.query(
+    xc = store.query(
         vector=vector, filter=filter_data, namespace="ns1", include_values=False, include_metadata=True, top_k=1000
     )
     if not xc['matches']:
@@ -227,7 +243,7 @@ def query_vectors_by_metadata(
         if len(and_clauses) > 1 and '$or' in and_clauses[1]:
             and_clauses.pop(1)
             logger.warning(f'query_vectors_by_metadata retrying without structured filters: {json.dumps(filter_data)}')
-            xc = index.query(
+            xc = store.query(
                 vector=vector,
                 filter=filter_data,
                 namespace="ns1",
@@ -315,9 +331,10 @@ def query_workstream_association_candidates(
     uid: str, summary: str, *, account_generation: int = 0, limit: int = 5
 ) -> List[str]:
     """Return derived candidate IDs only; callers must hydrate authority."""
-    if index is None or not summary.strip():
+    if not summary.strip():
         return []
-    response = index.query(
+    store = require_projection_store(index, 'task_search')
+    response = store.query(
         vector=embeddings.embed_query(summary),
         top_k=max(1, min(limit, 20)),
         include_metadata=True,
@@ -494,14 +511,12 @@ def find_similar_memories(
     Returns list of matches with similarity scores.
     Used for duplicate detection and semantic search.
     """
-    if index is None:
-        logger.warning('Pinecone index not initialized, skipping similarity search')
-        return []
+    store = require_projection_store(index, 'memory_search')
 
     vector = embeddings.embed_query(content)
     filter_data = build_legacy_memory_vector_filter(uid, subject_entity_id=subject_entity_id)
 
-    xc = index.query(
+    xc = store.query(
         vector=vector, top_k=limit, include_metadata=True, filter=filter_data, namespace=MEMORIES_NAMESPACE
     )
 
@@ -538,14 +553,12 @@ def search_memories_by_vector(uid: str, query: str, limit: int = 10) -> List[str
     Semantic search for memories.
     Returns list of memory_ids ordered by relevance.
     """
-    if index is None:
-        logger.warning('Pinecone index not initialized, skipping memory search')
-        return []
+    store = require_projection_store(index, 'memory_search')
 
     vector = embeddings.embed_query(query)
     filter_data = build_legacy_memory_vector_filter(uid)
 
-    xc = index.query(
+    xc = store.query(
         vector=vector, top_k=limit, include_metadata=True, filter=filter_data, namespace=MEMORIES_NAMESPACE
     )
 
@@ -618,9 +631,7 @@ def query_memory_vector_candidates(
     uid: str, query: str, *, mode: SearchMode = SearchMode.default, limit: int = 10
 ) -> VectorCandidateQueryResult:
     """Query ns2 for canonical neutral-metadata memory vector candidates."""
-    if index is None:
-        logger.warning('Pinecone index not initialized, skipping canonical memory vector candidate search')
-        return VectorCandidateQueryResult()
+    store = require_projection_store(index, 'memory_search')
 
     vector = embeddings.embed_query(query)
     filter_data = (
@@ -628,7 +639,7 @@ def query_memory_vector_candidates(
         if mode == SearchMode.archive_explicit
         else build_default_memory_vector_filter(uid)
     )
-    response = index.query(
+    response = store.query(
         vector=vector,
         top_k=limit,
         include_metadata=True,
@@ -833,9 +844,7 @@ def search_screen_activity_vectors(
     k: int = 10,
 ) -> List[Dict[str, Any]]:
     """Vector search across screenshot embeddings in ns3."""
-    if index is None:
-        logger.warning('Pinecone index not initialized, skipping screen activity search')
-        return []
+    store = require_projection_store(index, 'screen_search')
 
     filter_data: Dict[str, Any] = {'uid': uid}
     if start_date and end_date:
@@ -847,7 +856,7 @@ def search_screen_activity_vectors(
     if app_filter:
         filter_data['appName'] = app_filter
 
-    xc = index.query(
+    xc = store.query(
         vector=query_vector,
         top_k=k,
         include_metadata=True,
@@ -957,14 +966,12 @@ def upsert_action_item_vectors_batch(uid: str, items: List[Dict[str, Any]]) -> i
 
 
 def search_action_items_by_vector(uid: str, query: str, limit: int = 10, min_score: float = 0.3) -> List[str]:
-    if index is None:
-        logger.warning('Pinecone index not initialized, skipping action item search')
-        return []
+    store = require_projection_store(index, 'task_search')
 
     vector = embeddings.embed_query(query)
     filter_data: Dict[str, Any] = {'uid': uid}
 
-    xc = index.query(
+    xc = store.query(
         vector=vector, top_k=limit, include_metadata=True, filter=filter_data, namespace=ACTION_ITEMS_NAMESPACE
     )
 
@@ -986,16 +993,14 @@ def find_similar_action_items(uid: str, query: str, threshold: float = 0.6, limi
 
     Returns matches at or above the threshold. Each result is
     `{'action_item_id': str, 'score': float}` ordered by Pinecone relevance.
-    Pinecone or embedding failures degrade silently to an empty list — the
-    caller treats "no candidates" as "user has nothing relevant," which is
-    the same behavior as a brand-new user.
+    Provider failures raise ``ProjectionUnavailableError`` so callers cannot
+    confuse an unavailable task projection with a user who has no matches.
     """
-    if index is None:
-        return []
+    store = require_projection_store(index, 'task_search')
 
     try:
         vector = embeddings.embed_query(query)
-        xc = index.query(
+        xc = store.query(
             vector=vector,
             top_k=limit,
             include_metadata=True,
@@ -1022,7 +1027,9 @@ def find_similar_action_items(uid: str, query: str, threshold: float = 0.6, limi
         return kept
     except Exception as e:
         logger.exception(f'find_similar_action_items failed uid={uid}: {e}')
-        return []
+        if isinstance(e, ProjectionUnavailableError):
+            raise
+        raise ProjectionUnavailableError('task_search', type(e).__name__) from e
 
 
 def delete_action_item_vector(uid: str, action_item_id: str) -> None:
@@ -1170,8 +1177,7 @@ def search_transcript_chunks(
     """Semantic search over transcript chunks. Returns chunk references
     [{conversation_id, chunk_index, created_at, score}] — hydrate text from
     Firestore (utils.conversations.transcript_chunks.hydrate_chunk_texts)."""
-    if index is None:
-        return []
+    store = require_projection_store(index, 'conversation_search')
     filter_data: Dict[str, Any] = {'uid': uid}
     # Same one-sided / invalid-range rules as summary vector search (_created_at_filter).
     created_at = _created_at_filter(starts_at, ends_at)
@@ -1181,7 +1187,7 @@ def search_transcript_chunks(
     if created_at is not None:
         filter_data['created_at'] = created_at
     vector = query_vector if query_vector is not None else embeddings.embed_query(query)
-    xc = index.query(
+    xc = store.query(
         vector=vector,
         top_k=limit,
         include_metadata=True,
@@ -1249,3 +1255,43 @@ def delete_transcript_chunk_vectors_batch(
         raise RuntimeError(f'transcript chunk vector delete failed for {failures} conversation(s)')
     logger.info(f'delete_transcript_chunk_vectors_batch uid={uid} total_deleted={deleted}')
     return deleted
+
+
+# Every vector record written by this module carries the authoritative owner in
+# metadata, including canonical-memory ids whose physical id is a hash and
+# cannot be found by an id prefix.  Privacy deletion therefore closes over the
+# metadata owner in every namespace instead of relying on document-derived ids.
+USER_VECTOR_NAMESPACES = VECTOR_PROJECTION_LOGICAL_NAMESPACES
+
+
+def count_user_vectors(uid: str) -> int:
+    """Return the exact number of vectors still owned by ``uid``."""
+
+    if not uid.strip():
+        raise ValueError('uid is required')
+    if index is None:
+        return 0
+    owner_filter = {'uid': {'$eq': uid}}
+    count = getattr(index, 'count_deletion_versions', index.count)
+    return sum(count(namespace=namespace, filter=owner_filter) for namespace in USER_VECTOR_NAMESPACES)
+
+
+def delete_all_user_vectors(uid: str) -> int:
+    """Delete and reconcile all UID-owned vector projections.
+
+    The returned value is the pre-delete count.  A non-zero residual raises so
+    account deletion cannot be marked complete while a projection survives.
+    """
+
+    if not uid.strip():
+        raise ValueError('uid is required')
+    if index is None:
+        return 0
+    owner_filter = {'uid': {'$eq': uid}}
+    before = count_user_vectors(uid)
+    for namespace in USER_VECTOR_NAMESPACES:
+        index.delete(namespace=namespace, filter=owner_filter)
+    residual = count_user_vectors(uid)
+    if residual:
+        raise RuntimeError(f'vector reconciliation found {residual} residual records')
+    return before

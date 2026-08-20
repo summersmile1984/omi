@@ -2,10 +2,11 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
-from firebase_admin import messaging, auth
+from firebase_admin import messaging
 import database.notifications as notification_db
 from utils.executors import db_executor, postprocess_executor, run_blocking
 from database.redis_db import (
@@ -16,6 +17,7 @@ from database.redis_db import (
 )
 from database.auth import get_user_from_uid
 from utils.notification_text import to_plain_text
+from utils import identity
 from .llm.notifications import (
     generate_notification_message,
     generate_credit_limit_notification,
@@ -26,8 +28,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def push_notifications_enabled() -> bool:
+    """Return whether this deployment opted into the Firebase push adapter."""
+
+    return os.getenv('PUSH_PROVIDER', 'firebase').strip().lower() == 'firebase'
+
+
 def _get_user(uid: str) -> Any:
-    return auth.get_user(uid)  # type: ignore[reportUnknownMemberType]  # firebase_admin auth untyped
+    return identity.get_user(uid)
 
 
 # iOS bundle ID for APNs
@@ -240,6 +248,9 @@ def send_notification(
     user_id: str, title: str, body: str, data: Optional[Dict[str, Any]] = None, tokens: Optional[List[str]] = None
 ) -> None:
     """Send notification to all user's devices. Optionally pass pre-fetched tokens to avoid DB lookup."""
+    if not push_notifications_enabled():
+        logger.info('Push notification skipped because PUSH_PROVIDER=disabled')
+        return
     logger.info(f'send_notification to user {user_id}')
     body = to_plain_text(body)
     tag = _generate_notification_tag(user_id, title, body, data)
@@ -251,6 +262,9 @@ async def send_notification_async(
     user_id: str, title: str, body: str, data: Optional[Dict[str, Any]] = None, tokens: Optional[List[str]] = None
 ) -> None:
     """Async counterpart used by event-loop callers while preserving the sync public API."""
+    if not push_notifications_enabled():
+        logger.info('Push notification skipped because PUSH_PROVIDER=disabled')
+        return
     logger.info(f'send_notification to user {user_id}')
     body = to_plain_text(body)
     tag = _generate_notification_tag(user_id, title, body, data)
@@ -367,6 +381,9 @@ def send_training_data_submitted_notification(user_id: str) -> None:
 
 async def send_bulk_notification(user_tokens: List[str], title: str, body: str) -> None:
     """Send notification to multiple users in batches."""
+    if not push_notifications_enabled():
+        logger.info('Bulk push notification skipped because PUSH_PROVIDER=disabled')
+        return
     try:
         batch_size = 500
         num_batches = math.ceil(len(user_tokens) / batch_size)

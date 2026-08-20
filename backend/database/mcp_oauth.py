@@ -13,7 +13,13 @@ from urllib.parse import unquote, urlsplit
 from google.cloud import firestore
 
 from database._client import db
-from database.account_deletion_policy import account_deletion_blocks_access, normalize_account_deletion_status
+from database.account_deletion_policy import (
+    ACCOUNT_DELETION_ACTIVE_COLLECTION,
+    ACCOUNT_DELETION_RECEIPT_COLLECTION,
+    account_deletion_blocks_access,
+    account_deletion_receipt_id,
+    normalize_account_deletion_status,
+)
 
 PRODUCTION_MCP_RESOURCE_URL = "https://api.omi.me/v1/mcp/sse"
 # Omi Beta intentionally serves MCP data from dev while retaining the production
@@ -504,7 +510,8 @@ def create_grant_and_authorization_code_if_allowed(
 ) -> Tuple[Dict[str, Any], str]:
     """Atomically fence deletion admission with both OAuth consent writes."""
     deterministic_grant_id = f"{uid}:{client_id}:{hash_secret(resource)[:16]}"
-    deletion_ref = db.collection("account_deletions").document(uid)
+    deletion_ref = db.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).document(uid)
+    deletion_receipt_ref = db.collection(ACCOUNT_DELETION_RECEIPT_COLLECTION).document(account_deletion_receipt_id(uid))
     grant_ref = db.collection("mcp_oauth_grants").document(deterministic_grant_id)
     raw_code = "omi_code_" + secrets.token_urlsafe(32)
     code_ref = db.collection("mcp_oauth_authorization_codes").document(hash_secret(raw_code))
@@ -513,9 +520,11 @@ def create_grant_and_authorization_code_if_allowed(
     @_typed_transactional
     def _create(transaction: Any) -> Tuple[Dict[str, Any], str]:
         deletion_doc = deletion_ref.get(transaction=transaction)
-        deletion_data = _typed_doc(deletion_doc) if deletion_doc.exists else {}
+        deletion_receipt_doc = deletion_receipt_ref.get(transaction=transaction)
+        deletion_authority = deletion_doc if deletion_doc.exists else deletion_receipt_doc
+        deletion_data = _typed_doc(deletion_authority) if deletion_authority.exists else {}
         deletion_status = normalize_account_deletion_status(
-            marker_exists=deletion_doc.exists,
+            marker_exists=deletion_authority.exists,
             raw_status=deletion_data.get("wipe_status"),
         )
         if account_deletion_blocks_access(deletion_status):

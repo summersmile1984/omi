@@ -28,7 +28,7 @@ def test_loads_default_gateway_config():
     assert config.route_artifacts[ACTIVE_ROUTE].provider_options['reasoning_effort'] == 'low'
 
 
-def test_gateway_route_overrides_do_not_change_the_legacy_model_profile():
+def test_gateway_uses_the_same_provider_model_as_the_direct_profile():
     config = load_gateway_config(prod_mode=True)
 
     assert get_model('conv_discard') == 'gpt-5-nano'
@@ -39,12 +39,12 @@ def test_gateway_route_overrides_do_not_change_the_legacy_model_profile():
     assert config.route_artifacts['route.conv_discard.model_config.001'].primary.model == 'gpt-5-nano'
     assert config.route_artifacts['route.memories.model_config.001'].primary.model == 'gpt-5.6-luna'
     assert config.route_artifacts['route.fair_use.model_config.001'].primary.model == 'gpt-5.6-luna'
-    assert config.route_artifacts['route.chat_agent.model_config.001'].primary.provider == 'openai'
-    assert config.route_artifacts['route.chat_agent.model_config.001'].primary.model == 'gpt-5.6-luna'
+    assert config.route_artifacts['route.chat_agent.model_config.001'].primary.provider == 'anthropic'
+    assert config.route_artifacts['route.chat_agent.model_config.001'].primary.model == 'claude-sonnet-4-6'
     assert config.route_artifacts['route.memory_l2.model_config.001'].provider_options['reasoning_effort'] == 'medium'
-    assert config.route_artifacts['route.chat_agent.model_config.001'].provider_options == {'reasoning_effort': 'none'}
+    assert config.route_artifacts['route.chat_agent.model_config.001'].provider_options == {}
     chat_agent_lane = config.lanes['omi:auto:chat-agent']
-    assert chat_agent_lane.surface == Surface.OPENAI_CHAT_COMPLETIONS
+    assert chat_agent_lane.surface == Surface.ANTHROPIC_MESSAGES
     assert chat_agent_lane.capabilities.streaming is True
     assert chat_agent_lane.capabilities.tools is True
 

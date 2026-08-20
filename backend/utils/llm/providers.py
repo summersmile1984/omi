@@ -10,7 +10,7 @@ import logging
 import os
 import hashlib
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -37,30 +37,56 @@ class OpenAICompatibleProviderConfig:
     name: str
     api_key_env: str
     base_url: Optional[str] = None
+    base_url_env: Optional[str] = None
+    require_base_url: bool = False
     default_headers: Dict[str, str] = field(default_factory=dict)
     prefix_google_models: bool = False
 
+    def resolved_base_url(self, env: Optional[Mapping[str, str]] = None) -> Optional[str]:
+        values = os.environ if env is None else env
+        configured = values.get(self.base_url_env, '').strip() if self.base_url_env else ''
+        resolved = configured or (self.base_url or '')
+        if self.require_base_url and not resolved:
+            raise ValueError(f'{self.base_url_env} is required for provider {self.name!r}')
+        return resolved.rstrip('/') or None
+
 
 OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
-    'openai': OpenAICompatibleProviderConfig(name='openai', api_key_env='OPENAI_API_KEY'),
+    'openai': OpenAICompatibleProviderConfig(
+        name='openai',
+        api_key_env='OPENAI_API_KEY',
+        base_url='https://api.openai.com/v1',
+        base_url_env='OPENAI_BASE_URL',
+    ),
     'openrouter': OpenAICompatibleProviderConfig(
         name='openrouter',
         api_key_env='OPENROUTER_API_KEY',
         base_url="https://openrouter.ai/api/v1",
+        base_url_env='OPENROUTER_BASE_URL',
         default_headers={"X-Title": "Omi Chat"},
         prefix_google_models=True,
+    ),
+    # Arbitrary OpenAI-compatible service. There is deliberately no vendor
+    # default: a missing base URL fails closed instead of reaching OpenAI.
+    'generic': OpenAICompatibleProviderConfig(
+        name='generic',
+        api_key_env='GENERIC_OPENAI_API_KEY',
+        base_url_env='GENERIC_OPENAI_BASE_URL',
+        require_base_url=True,
     ),
     # Xiaomi MiMo (OpenAI-compatible)
     'mimo': OpenAICompatibleProviderConfig(
         name='mimo',
         api_key_env='MIMO_API_KEY',
         base_url="https://token-plan-cn.xiaomimimo.com/v1",
+        base_url_env='MIMO_LLM_BASE_URL',
     ),
     # DeepSeek (OpenAI-compatible)
     'deepseek': OpenAICompatibleProviderConfig(
         name='deepseek',
         api_key_env='DEEPSEEK_API_KEY',
         base_url="https://api.deepseek.com/v1",
+        base_url_env='DEEPSEEK_BASE_URL',
     ),
 }
 
@@ -71,6 +97,14 @@ def get_openai_api_key() -> str:
     """Return the platform OpenAI credential at the provider boundary."""
 
     return os.environ.get(OPENAI_COMPATIBLE_PROVIDERS['openai'].api_key_env, '').strip()
+
+
+def get_openai_compatible_provider_config(provider: str) -> OpenAICompatibleProviderConfig:
+    normalized = provider.strip().lower()
+    try:
+        return OPENAI_COMPATIBLE_PROVIDERS[normalized]
+    except KeyError as exc:
+        raise ValueError(f"Unknown OpenAI-compatible provider '{provider}'") from exc
 
 
 def _cache_key(provider: str, model_name: str, streaming: bool, options: Dict[str, Any]) -> tuple:
@@ -93,10 +127,7 @@ def get_or_create_openai_compatible_llm(
     """Get or create a cached ChatOpenAI-compatible chat model."""
 
     options = options or {}
-    if provider not in OPENAI_COMPATIBLE_PROVIDERS:
-        raise ValueError(f"Unknown OpenAI-compatible provider '{provider}'")
-
-    provider_config = OPENAI_COMPATIBLE_PROVIDERS[provider]
+    provider_config = get_openai_compatible_provider_config(provider)
     # Only include options that are actually transferred to kwargs in the cache key,
     # so arbitrary caller options don't create duplicate cache entries.
     _handled_options = {
@@ -109,7 +140,22 @@ def get_or_create_openai_compatible_llm(
         'api_key',
     }
     _effective_options = {k: v for k, v in options.items() if k in _handled_options}
-    key = _cache_key(provider, model_name, streaming, _effective_options)
+    effective_base_url = options.get('base_url') or provider_config.resolved_base_url()
+    effective_api_key = options.get('api_key') or os.environ.get(provider_config.api_key_env, '').strip()
+    if provider_config.name in {'generic', 'deepseek', 'mimo'} and not effective_api_key:
+        raise ValueError(f'{provider_config.api_key_env} is required for provider {provider_config.name!r}')
+    if provider_config.name != 'openai' and not effective_api_key:
+        # ChatOpenAI otherwise consults OPENAI_API_KEY implicitly and can leak an
+        # unrelated credential to another provider's configured base URL.
+        effective_api_key = f'{provider_config.name}-key-not-configured'
+    cache_options = {
+        **_effective_options,
+        'base_url': effective_base_url,
+        'api_key_fingerprint': (
+            hashlib.sha256(str(effective_api_key).encode()).hexdigest() if effective_api_key else 'environment-default'
+        ),
+    }
+    key = _cache_key(provider_config.name, model_name, streaming, cache_options)
     if key not in _llm_cache:
         kwargs: Dict[str, Any] = {
             'callbacks': [_usage_callback],
@@ -118,11 +164,10 @@ def get_or_create_openai_compatible_llm(
             'request_timeout': options.get('request_timeout', 120),
             'max_retries': options.get('max_retries', 1),
         }
-        api_key = os.environ.get(provider_config.api_key_env)
-        if api_key:
-            kwargs['api_key'] = api_key
-        if provider_config.base_url:
-            kwargs['base_url'] = provider_config.base_url
+        if effective_api_key:
+            kwargs['api_key'] = effective_api_key
+        if effective_base_url:
+            kwargs['base_url'] = effective_base_url
         if provider_config.default_headers:
             kwargs['default_headers'] = provider_config.default_headers
         if options.get('extra_body'):

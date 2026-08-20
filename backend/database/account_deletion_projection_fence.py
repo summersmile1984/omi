@@ -5,9 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, cast
 
-from database.account_deletion_policy import account_deletion_blocks_access, normalize_account_deletion_status
+from database.account_deletion_policy import (
+    ACCOUNT_DELETION_ACTIVE_COLLECTION,
+    ACCOUNT_DELETION_RECEIPT_COLLECTION,
+    account_deletion_blocks_access,
+    account_deletion_receipt_id,
+    normalize_account_deletion_status,
+)
 
-ACCOUNT_DELETION_COLLECTION = "account_deletions"
+ACCOUNT_DELETION_COLLECTION = ACCOUNT_DELETION_ACTIVE_COLLECTION
 
 
 @dataclass(frozen=True)
@@ -26,7 +32,10 @@ def read_account_deletion_projection_fence(
         raise ValueError("uid is required")
     snapshot = db_client.document(f"{ACCOUNT_DELETION_COLLECTION}/{uid}").get()
     if not getattr(snapshot, "exists", False):
-        return AccountDeletionProjectionFence(status=None, blocks_projection_writes=False)
+        receipt_path = f"{ACCOUNT_DELETION_RECEIPT_COLLECTION}/{account_deletion_receipt_id(uid)}"
+        snapshot = db_client.document(receipt_path).get()
+        if not getattr(snapshot, "exists", False):
+            return AccountDeletionProjectionFence(status=None, blocks_projection_writes=False)
     raw: object = snapshot.to_dict()
     payload = cast(Dict[str, Any], raw) if isinstance(raw, dict) else {}
     status = normalize_account_deletion_status(marker_exists=True, raw_status=payload.get("wipe_status"))

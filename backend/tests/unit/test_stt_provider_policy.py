@@ -58,8 +58,10 @@ def test_cloud_neutral_providers_are_explicit_and_surface_bounded():
     assert provider_for_model_token('sensevoice') == SENSEVOICE_PROVIDER
     assert provider_for_model_token('mimo') == MIMO_PROVIDER
     assert provider_for_model_token('moss') == MOSS_PROVIDER
+    assert provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.PRERECORDED)
     assert provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.STREAMING)
-    assert provider_is_enabled(MIMO_PROVIDER, STTServingSurface.STREAMING)
+    assert provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PRERECORDED)
+    assert not provider_is_enabled(MIMO_PROVIDER, STTServingSurface.STREAMING)
     assert not provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PTT)
     assert provider_is_enabled(MOSS_PROVIDER, STTServingSurface.PRERECORDED)
     assert not provider_is_enabled(MOSS_PROVIDER, STTServingSurface.STREAMING)

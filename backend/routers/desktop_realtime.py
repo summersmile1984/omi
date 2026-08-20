@@ -13,6 +13,7 @@ from pydantic import BaseModel, StrictInt, StrictStr
 
 from database._client import get_customer_firestore_client
 from utils.executors import db_executor, run_blocking
+from utils.llm.capabilities import resolve_model_capability
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import enforce_desktop_chat_quota
 
@@ -23,8 +24,6 @@ _OPENAI_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 # Leftover AI Studio Live token mint. Vertex Live is not wired here; this is
 # not the $1k/day Flash text bill. See backend/docs/vertex-pt-flash.md.
 _GEMINI_AUTH_TOKENS_URL = "https://generativelanguage.googleapis.com/v1alpha/auth_tokens"
-_OPENAI_REALTIME_MODEL = "gpt-realtime-2"
-_GEMINI_LIVE_MODEL = "models/gemini-3.1-flash-live-preview"
 _SESSION_START_WINDOW_MIN = 2
 _SESSION_MAX_MIN = 30
 
@@ -142,6 +141,16 @@ async def _persist_session(uid: str, token: str, provider: str, model: str, expi
 @router.post("/v2/realtime/session")
 async def mint_session(request: MintRequest, uid: str = Depends(get_current_user_uid)) -> JSONResponse:
     await run_blocking(db_executor, enforce_desktop_chat_quota, uid, "desktop")
+    capability = resolve_model_capability('realtime', requested_provider=request.provider)
+    if not capability.selected:
+        return _error(
+            503,
+            'model_capability_unavailable',
+            capability.reason or 'Realtime model capability is unavailable',
+            request.provider,
+            retryable=capability.retryable,
+        )
+    selected_model = capability.routes[0].model
     if request.provider == "openai":
         key = os.getenv("OPENAI_API_KEY", "").strip()
         if not key:
@@ -150,7 +159,7 @@ async def mint_session(request: MintRequest, uid: str = Depends(get_current_user
             _OPENAI_CLIENT_SECRETS_URL,
             "openai",
             {"Authorization": f"Bearer {key}"},
-            {"session": {"type": "realtime", "model": _OPENAI_REALTIME_MODEL}},
+            {"session": {"type": "realtime", "model": selected_model}},
         )
         if error:
             return error
@@ -160,7 +169,7 @@ async def mint_session(request: MintRequest, uid: str = Depends(get_current_user
                 502, "provider_mint_transport_error", "openai mint: no client secret in response", retryable=True
             )
         expires_at = json.dumps(data["expires_at"], separators=(",", ":")) if data and "expires_at" in data else None
-        await _persist_session(uid, token, "openai", _OPENAI_REALTIME_MODEL, expires_at or "")
+        await _persist_session(uid, token, "openai", selected_model, expires_at or "")
         return JSONResponse(
             {"provider": "openai", "token": token, **({"expires_at": expires_at} if expires_at is not None else {})}
         )
@@ -185,7 +194,7 @@ async def mint_session(request: MintRequest, uid: str = Depends(get_current_user
             return _error(
                 502, "provider_mint_transport_error", "gemini mint: no token name in response", retryable=True
             )
-        await _persist_session(uid, token, "gemini", _GEMINI_LIVE_MODEL, expires_at)
+        await _persist_session(uid, token, "gemini", selected_model, expires_at)
         return JSONResponse({"provider": "gemini", "token": token, "expires_at": expires_at})
     return _error(400, "bad_provider", 'provider must be "openai" or "gemini"')
 

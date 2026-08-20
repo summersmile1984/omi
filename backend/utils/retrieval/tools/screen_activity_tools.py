@@ -3,6 +3,7 @@ Tools for accessing screen/computer activity data from the desktop app.
 """
 
 import contextvars
+import json
 from datetime import datetime, timezone, tzinfo
 from typing import Any, Dict, List, Optional, Tuple, cast
 from zoneinfo import ZoneInfo
@@ -14,7 +15,8 @@ import database.screen_activity as screen_activity_db
 import database.vector_db as vector_db
 import database.notifications as notification_db
 from database._client import db as firestore_db
-from utils.llm.clients import gemini_embed_query
+from utils.llm.clients import embeddings
+from utils.llm.capabilities import resolve_model_capability
 import logging
 
 logger = logging.getLogger(__name__)
@@ -257,11 +259,23 @@ def search_screen_activity_tool(
         except ValueError:
             pass
 
+    capability = resolve_model_capability('screen')
+    if not capability.selected:
+        return capability.unavailable_tool_result()
     try:
-        query_vector = gemini_embed_query(query)
+        query_vector = embeddings.embed_query(query)
     except Exception as e:
         logger.error(f"search_screen_activity_tool - embedding error: {e}")
-        return f"Error generating search embedding: {e}"
+        return json.dumps(
+            {
+                'code': 'model_capability_unavailable',
+                'capability': 'screen',
+                'reason': type(e).__name__,
+                'retryable': True,
+            },
+            sort_keys=True,
+            separators=(',', ':'),
+        )
 
     matches = vector_db.search_screen_activity_vectors(
         uid=uid,

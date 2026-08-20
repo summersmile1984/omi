@@ -1,10 +1,10 @@
-"""Fail-open durable export of dev-only parity-pack cassettes to GCS.
+"""Fail-open durable export of dev-only parity-pack cassettes to object storage.
 
 Local emptyDir capture remains the source of truth inside the pod. This module
 best-effort mirrors `cassettes/*.json` to a private development bucket so
 operators can download packs for offline replay after the pod is gone.
 
-Export never raises into the listen path. GCS outages only log + optional
+Export never raises into the listen path. Provider outages only log + optional
 fallback telemetry.
 """
 
@@ -27,11 +27,11 @@ _reconcile_lock = threading.Lock()
 _reconcile_started = False
 
 
-def _parse_gcs_uri(uri: str) -> tuple[str, str] | None:
+def _parse_storage_uri(uri: str) -> tuple[str, str] | None:
     value = (uri or "").strip()
     if not value:
         return None
-    if value.startswith("gs://"):
+    if value.startswith(("gs://", "s3://", "minio://")):
         parsed = urlparse(value)
         bucket = parsed.netloc.strip()
         prefix = parsed.path.lstrip("/")
@@ -44,14 +44,18 @@ def _parse_gcs_uri(uri: str) -> tuple[str, str] | None:
 def resolve_export_target(environ: Mapping[str, str] | None = None) -> tuple[str, str] | None:
     """Return (bucket, object_prefix) when durable export is configured."""
     env = os.environ if environ is None else environ
-    uri = (env.get("OMI_PARITY_PACK_GCS_URI") or "").strip()
-    parsed = _parse_gcs_uri(uri)
+    uri = (env.get("OMI_PARITY_PACK_STORAGE_URI") or env.get("OMI_PARITY_PACK_GCS_URI") or "").strip()
+    parsed = _parse_storage_uri(uri)
     if parsed is not None:
         return parsed
-    bucket = (env.get("OMI_PARITY_PACK_GCS_BUCKET") or "").strip()
+    bucket = (env.get("OMI_PARITY_PACK_STORAGE_BUCKET") or env.get("OMI_PARITY_PACK_GCS_BUCKET") or "").strip()
     if not bucket:
         return None
-    prefix = (env.get("OMI_PARITY_PACK_GCS_PREFIX") or "parity-pack/v0").strip().strip("/")
+    prefix = (
+        (env.get("OMI_PARITY_PACK_STORAGE_PREFIX") or env.get("OMI_PARITY_PACK_GCS_PREFIX") or "parity-pack/v0")
+        .strip()
+        .strip("/")
+    )
     return bucket, prefix
 
 
@@ -66,30 +70,11 @@ def _object_name(prefix: str, local_path: Path, root: Path) -> str:
     return f"{prefix.rstrip('/')}/{rel_s}"
 
 
-_client = None
-_client_lock = threading.Lock()
-
-
 def _storage_client():
-    """Lazy GCS client using the same credential sources as backend storage."""
-    global _client
-    if _client is not None:
-        return _client
-    with _client_lock:
-        if _client is not None:
-            return _client
-        from google.cloud import storage
-        from google.oauth2 import service_account
-        import json
+    """Use the same mutable provider boundary as all backend object storage."""
+    from utils.other.storage import get_storage_client
 
-        if os.environ.get("SERVICE_ACCOUNT_JSON"):
-            info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
-            credentials = service_account.Credentials.from_service_account_info(info)
-            _client = storage.Client(credentials=credentials)
-        else:
-            project = (os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("FIREBASE_PROJECT_ID") or "").strip()
-            _client = storage.Client(project=project) if project else storage.Client()
-        return _client
+    return get_storage_client()
 
 
 def _record_export_failure(*, reason: str) -> None:

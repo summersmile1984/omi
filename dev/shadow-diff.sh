@@ -17,12 +17,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$REPO_ROOT/backend"
 PY="$BACKEND_DIR/.venv/bin/python"
 DIFF="$BACKEND_DIR/firestore_pg/tests/shadow_diff.py"
-REAL_OUT="/tmp/shadow-real.json"
-SHIM_OUT="/tmp/shadow-shim.json"
+REAL_OUT="${SHADOW_REAL_OUT:-/tmp/shadow-real.json}"
+SHIM_OUT="${SHADOW_SHIM_OUT:-/tmp/shadow-shim.json}"
 
-export FIRESTORE_PG_DSN="postgresql+psycopg://omi:omi-dev-password@localhost:5434/omi"
-export FIRESTORE_EMULATOR_HOST=localhost:8080
-export FIREBASE_PROJECT_ID=demo-omi-local
+export FIRESTORE_PG_DSN="${FIRESTORE_PG_DSN:-postgresql+psycopg://omi:omi-dev-password@localhost:5434/omi}"
+export FIRESTORE_EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-localhost:8080}"
+export FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-demo-omi-local}"
 
 if [[ ! -x "$PY" ]]; then
   echo "error: backend venv not found at $PY (run scripts/sync-python-deps.sh)" >&2
@@ -39,8 +39,8 @@ fi
 
 echo "==> real mode (Firestore emulator)"
 env -u FIRESTORE_PG_DSN \
-  FIRESTORE_EMULATOR_HOST=localhost:8080 \
-  FIREBASE_PROJECT_ID=demo-omi-local \
+  FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
+  FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" \
   "$PY" "$DIFF" --mode real --out "$REAL_OUT"
 
 echo "==> diff"

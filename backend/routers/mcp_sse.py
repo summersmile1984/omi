@@ -18,13 +18,19 @@ from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 
 from pydantic import BaseModel
 
-import firebase_admin.auth
 from google.api_core.exceptions import FailedPrecondition
 from fastapi import APIRouter, HTTPException, Header, Request, Response, Form
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-from utils.other.endpoints import check_rate_limit_inline
+from utils.other.endpoints import (
+    CertificateFetchError,
+    InvalidIdTokenError,
+    check_rate_limit_inline,
+    verify_token,
+)
 from utils.executors import critical_executor, db_executor, run_blocking
+from utils.identity import identity_provider
+from routers.identity_browser import new_browser_identity_csrf, set_browser_identity_csrf
 
 import database.conversations as conversations_db
 import database.mcp_api_key as mcp_api_key_db
@@ -96,7 +102,12 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 MCP_RESOURCE_URL = mcp_oauth_db.MCP_RESOURCE_URL
-MCP_AUTHORIZATION_SERVER_URL = os.getenv("MCP_AUTHORIZATION_SERVER_URL", "https://api.omi.me")
+MCP_AUTHORIZATION_SERVER_URL = (
+    os.getenv('MCP_AUTHORIZATION_SERVER_URL')
+    or os.getenv('API_BASE_URL')
+    or os.getenv('BASE_API_URL')
+    or 'http://127.0.0.1:8000'
+).rstrip('/')
 MCP_AUTHORIZATION_ENDPOINT = f"{MCP_AUTHORIZATION_SERVER_URL}/authorize"
 MCP_TOKEN_ENDPOINT = f"{MCP_AUTHORIZATION_SERVER_URL}/token"
 MCP_PROTECTED_RESOURCE_METADATA_URL = f"{MCP_AUTHORIZATION_SERVER_URL}/.well-known/oauth-protected-resource/v1/mcp/sse"
@@ -1581,7 +1592,8 @@ def mcp_authorize(
 
     client_name = str(client.get("name") or client_id)
     permissions = [SCOPE_PERMISSION_TEXT[item] for item in scopes]
-    return templates.TemplateResponse(
+    identity_csrf_token = new_browser_identity_csrf()
+    response = templates.TemplateResponse(
         request,
         "mcp_oauth_authorize.html",
         {
@@ -1597,6 +1609,8 @@ def mcp_authorize(
                 "code_challenge_method": code_challenge_method,
             },
             "permissions": permissions,
+            "auth_provider": identity_provider(),
+            "identity_csrf_token": identity_csrf_token,
             "firebase_config": {
                 "apiKey": os.getenv("FIREBASE_API_KEY"),
                 "authDomain": os.getenv("FIREBASE_AUTH_DOMAIN"),
@@ -1604,6 +1618,8 @@ def mcp_authorize(
             },
         },
     )
+    set_browser_identity_csrf(response, identity_csrf_token)
+    return response
 
 
 @router.post("/authorize", tags=["mcp"], response_model=McpAuthorizeConsentResponse)
@@ -1630,16 +1646,17 @@ async def mcp_authorize_consent(
             code_challenge,
             code_challenge_method,
         )
-        decoded_token: Dict[str, Any] = await run_blocking(
-            critical_executor, firebase_admin.auth.verify_id_token, firebase_id_token
-        )  # type: ignore[reportUnknownMemberType]  # firebase_admin auth untyped
-        uid = cast(str, decoded_token["uid"])
-    except firebase_admin.auth.InvalidIdTokenError:
+        # The form field keeps its legacy name for released clients; the token
+        # itself belongs to the selected deployment identity provider.
+        uid = await run_blocking(critical_executor, verify_token, firebase_id_token)
+    except InvalidIdTokenError:
         return _oauth_error("access_denied", "Invalid Omi sign-in token", status_code=401)
+    except CertificateFetchError:
+        return _oauth_error("temporarily_unavailable", "Identity provider unavailable", status_code=503)
     except Exception as e:
         if isinstance(e, ValueError):
             return _oauth_error("invalid_request", str(e))
-        return _oauth_error("access_denied", "Could not verify Omi sign-in token", status_code=401)
+        return _oauth_error("temporarily_unavailable", "Could not verify Omi sign-in token", status_code=503)
 
     try:
         _, code = await run_blocking(

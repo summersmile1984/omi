@@ -124,11 +124,13 @@ PROVIDER_SERVING_SURFACES: Final[Mapping[str, frozenset[STTServingSurface]]] = {
             STTServingSurface.PTT,
         }
     ),
-    # Cloud-neutral providers are opt-in only: they are admitted on the surfaces
-    # their adapters implement, but deliberately stay out of the upstream-safe
-    # default model order below.
-    SENSEVOICE_PROVIDER: frozenset({STTServingSurface.STREAMING}),
-    MIMO_PROVIDER: frozenset({STTServingSurface.STREAMING}),
+    # SenseVoice is an offline recognizer, but our local adapter decodes bounded
+    # PCM windows asynchronously and force-flushes on VAD/session boundaries, so
+    # it supplies a real incremental serving contract without a cloud API.
+    SENSEVOICE_PROVIDER: frozenset({STTServingSurface.STREAMING, STTServingSurface.PRERECORDED}),
+    # MiMo still accepts a complete recording and returns only when it ends; it
+    # cannot be advertised on the live surface without stalling long sessions.
+    MIMO_PROVIDER: frozenset({STTServingSurface.PRERECORDED}),
     MOSS_PROVIDER: frozenset({STTServingSurface.PRERECORDED}),
 }
 

@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "migrate": "node src/migrate.js",
+    "migrate:check": "node src/migrate.js --check",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "better-auth": "^1.4.0",

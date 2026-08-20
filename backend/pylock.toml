@@ -1372,6 +1372,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/58/15/8b3609fd3830ef7b2
 wheels = [{ url = "https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl", upload-time = 2023-10-24T04:13:38Z, size = 9755, hashes = { sha256 = "7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686" } }]
 
 [[packages]]
+name = "sherpa-onnx"
+version = "1.13.4"
+sdist = { url = "https://files.pythonhosted.org/packages/ca/f8/735244770b4bc63f85fabdad0e46d6ec1f4cc24e64f6e082c2e0fea92b8c/sherpa_onnx-1.13.4.tar.gz", upload-time = 2026-07-07T13:04:55Z, size = 982750, hashes = { sha256 = "29547692418513ad88034c2b5f98985e33042b2351e4ab375469f19a8de18c5f" } }
+wheels = [{ url = "https://files.pythonhosted.org/packages/e0/ac/88b4e1ce614ddebe2484e95cad4b19d7db24f3b489d04f9877667cb48ccb/sherpa_onnx-1.13.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", upload-time = 2026-07-07T12:42:29Z, size = 4356406, hashes = { sha256 = "fbfc385b98d730080e1b12dc94c604be3867e4fb7bd6b15b830eb33cbf390111" } }]
+
+[[packages]]
+name = "sherpa-onnx-core"
+version = "1.13.4"
+wheels = [{ url = "https://files.pythonhosted.org/packages/41/be/38c57721d71ee74d984b1ca21720a8ca8477d6d341026af24ff658866ef9/sherpa_onnx_core-1.13.4-py3-none-manylinux2014_x86_64.whl", upload-time = 2026-07-07T12:21:33Z, size = 10338839, hashes = { sha256 = "367aa06cee90b3fd7959d4e071d6fc821710b859af399b4987e5c3119ee6ae2a" } }]
+
+[[packages]]
 name = "simsimd"
 version = "6.5.16"
 sdist = { url = "https://files.pythonhosted.org/packages/99/8c/070a179eb509b689509dacbd0bc81aa2e36614aff2c8aa6dc6c440886206/simsimd-6.5.16.tar.gz", upload-time = 2026-03-07T14:36:23Z, size = 187216, hashes = { sha256 = "0a005c6e2dacec83f235a747f7dbecca46b5d4d1e183ecc1929ca556ee7d7564" } }

@@ -25,6 +25,11 @@ import tiktoken
 from models.structured_extraction import StructuredExtraction
 from utils.byok import get_byok_key
 from utils.llm.byok_errors import handle_llm_error
+from utils.llm.embedding_providers import (
+    ConfiguredEmbeddingProviderProxy,
+    GeminiEmbeddingProviderAdapter,
+    LangChainEmbeddingProviderAdapter,
+)
 from utils.llm.model_config import (
     MODEL_QOS_PROFILES,
     _ANTHROPIC_ONLY_FEATURES,
@@ -45,8 +50,7 @@ from utils.llm.model_config import (
     get_model,
     get_provider,
     get_route_options,
-    is_anthropic_only_feature,
-    is_perplexity_only_feature,
+    resolve_feature_route,
     is_structured_output_feature,
     supports_cache_retention,
     supports_prompt_cache,
@@ -469,15 +473,6 @@ def get_llm(
     """
     gateway_feature_mode = should_route_features_through_gateway()
 
-    if is_anthropic_only_feature(feature) and not gateway_feature_mode:
-        raise ValueError(
-            f"Feature '{feature}' is Anthropic — use get_model('{feature}') with anthropic_client instead of get_llm()"
-        )
-    if is_perplexity_only_feature(feature) and not gateway_feature_mode:
-        raise ValueError(
-            f"Feature '{feature}' is Perplexity — use get_model('{feature}') with the Perplexity HTTP client instead of get_llm()"
-        )
-
     model, provider = _get_model_config(feature)
 
     if provider == 'anthropic' and not gateway_feature_mode:
@@ -541,6 +536,28 @@ def get_llm(
         if max_retries is not None:
             route_options = {**route_options, "max_retries": max_retries}
         result = get_default_client(model, provider, streaming, route_options)
+        resolved_route = resolve_feature_route(feature)
+        if resolved_route.fallbacks:
+            from utils.llm.direct_fallback import BoundedFallbackChatModel
+
+            fallback_models: list[BaseChatModel] = []
+            route_labels = [f'{provider}:{model}']
+            for fallback in resolved_route.fallbacks:
+                fallback_options = get_route_options(feature, fallback.model, fallback.provider)
+                if request_timeout is not None:
+                    fallback_options = {**fallback_options, 'request_timeout': request_timeout}
+                if max_retries is not None:
+                    fallback_options = {**fallback_options, 'max_retries': max_retries}
+                fallback_models.append(
+                    get_default_client(fallback.model, fallback.provider, streaming, fallback_options)
+                )
+                route_labels.append(f'{fallback.provider}:{fallback.model}')
+            result = BoundedFallbackChatModel(
+                primary=result,
+                fallback_models=tuple(fallback_models),
+                route_labels=tuple(route_labels),
+                feature=feature,
+            )
 
     result = maybe_wrap_dev_gateway_shadow(
         feature=feature,
@@ -658,8 +675,8 @@ class _LazyClientProxy:
         return other | self._resolve()
 
 
-def _create_legacy_llm_mini() -> ChatOpenAI:
-    return ChatOpenAI(model=get_model('learnings'), callbacks=[_usage_callback], request_timeout=120, max_retries=1)
+def _create_legacy_llm_mini() -> BaseChatModel:
+    return get_llm('learnings', request_timeout=120, max_retries=1)
 
 
 llm_mini = _LazyClientProxy(_create_legacy_llm_mini)
@@ -667,12 +684,22 @@ llm_mini = _LazyClientProxy(_create_legacy_llm_mini)
 # ---------------------------------------------------------------------------
 # Embeddings, parser, utilities
 # ---------------------------------------------------------------------------
-embeddings = _OpenAIEmbeddingsProxy(
+_openai_embeddings_proxy = _OpenAIEmbeddingsProxy(
     model="text-embedding-3-large",
     default=None,
     ctor_kwargs={},
 )
+embeddings = ConfiguredEmbeddingProviderProxy(
+    LangChainEmbeddingProviderAdapter(
+        _openai_embeddings_proxy,
+        provider_id='openai',
+        model_id='text-embedding-3-large',
+        dimension=3072,
+    ),
+    gemini_factory=lambda: GeminiEmbeddingProviderAdapter(_gemini_embed_query_direct),
+)
 parser = PydanticOutputParser(pydantic_object=StructuredExtraction)
+_gemini_screen_embedding_provider: Optional[GeminiEmbeddingProviderAdapter] = None
 
 
 @lru_cache(maxsize=1)
@@ -693,6 +720,15 @@ def generate_embedding(content: str) -> List[float]:
 
 
 def gemini_embed_query(text: str) -> List[float]:
+    """Embed one screen-activity query through the provider-neutral adapter."""
+
+    global _gemini_screen_embedding_provider
+    if _gemini_screen_embedding_provider is None:
+        _gemini_screen_embedding_provider = GeminiEmbeddingProviderAdapter(_gemini_embed_query_direct)
+    return _gemini_screen_embedding_provider.embed_query(text)
+
+
+def _gemini_embed_query_direct(text: str) -> List[float]:
     """Embed a query using Gemini embedding-001 (3072-dim) for screen activity search.
 
     Uses RETRIEVAL_QUERY task type to match the RETRIEVAL_DOCUMENT embeddings

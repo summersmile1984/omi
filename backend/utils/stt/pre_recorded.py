@@ -22,9 +22,11 @@ from config.prerecorded_stt import (
     require_provider_environment,
 )
 from config.stt_provider_policy import (
+    MIMO_PROVIDER,
     MODULATE_PROVIDER,
     MOSS_PROVIDER,
     PARAKEET_PROVIDER,
+    SENSEVOICE_PROVIDER,
     STTServingSurface,
     default_models_for_surface,
     normalized_stt_language,
@@ -93,6 +95,10 @@ def get_prerecorded_service(language: Optional[str] = 'en') -> Tuple[str, Option
     def select(models: Sequence[str]) -> Optional[Tuple[str, Optional[str], str]]:
         for m in models:
             m = m.strip()
+            if m == 'sensevoice' and provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.PRERECORDED):
+                return PrerecordedSTTService.SENSEVOICE, base_lang, 'sensevoice'
+            if m == 'mimo' and provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PRERECORDED):
+                return PrerecordedSTTService.MIMO, base_lang, 'mimo-v2.5-asr'
             if m == 'moss' and provider_is_enabled(MOSS_PROVIDER, STTServingSurface.PRERECORDED):
                 return PrerecordedSTTService.MOSS, base_lang, 'moss-transcribe-diarize'
             if m == 'modulate-velma-2' and provider_is_enabled(MODULATE_PROVIDER, STTServingSurface.PRERECORDED):
@@ -1066,6 +1072,16 @@ def get_prerecorded_provider(language: Optional[str] = 'en') -> PrerecordedSTTPr
         from utils.moss_pipeline.prerecorded_provider import MossPrerecordedProvider
 
         return MossPrerecordedProvider()
+    if service == PrerecordedSTTService.SENSEVOICE:
+        require_provider_environment(PrerecordedSTTService.SENSEVOICE)
+        from utils.sensevoice.prerecorded_provider import SenseVoicePrerecordedProvider
+
+        return SenseVoicePrerecordedProvider()
+    if service == PrerecordedSTTService.MIMO:
+        require_provider_environment(PrerecordedSTTService.MIMO)
+        from utils.mimo_pipeline.prerecorded_provider import MimoPrerecordedProvider
+
+        return MimoPrerecordedProvider()
     if service == PrerecordedSTTService.MODULATE:
         return ModulatePrerecordedProvider()
     if service == PrerecordedSTTService.PARAKEET:

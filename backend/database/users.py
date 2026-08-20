@@ -6,7 +6,12 @@ from google.api_core.exceptions import NotFound
 from google.cloud import firestore
 from google.cloud.firestore_v1 import FieldFilter, transactional
 from ._client import db, delete_collection_recursive, document_id_from_seed, get_firestore_client
-from database.account_deletion_policy import normalize_account_deletion_status
+from database.account_deletion_policy import (
+    ACCOUNT_DELETION_ACTIVE_COLLECTION,
+    ACCOUNT_DELETION_RECEIPT_COLLECTION,
+    account_deletion_receipt_id,
+    normalize_account_deletion_status,
+)
 from database.account_deletion_transitions import (
     adopt_legacy_late_agent_vm_cleanup as _adopt_legacy_late_agent_vm_cleanup_txn,
     mark_wipe_completed as _mark_user_deletion_wipe_completed_txn,
@@ -306,7 +311,7 @@ def set_user_deletion_feedback(uid: str, reason: Optional[str], reason_details: 
     # Stored in a top-level collection so it survives the user record being deleted.
     # Use merge=True so a retried delete request does not erase a durable wipe marker
     # (pending/failed/retrying/deleting_auth) already written to the same document.
-    db.collection('account_deletions').document(uid).set(
+    db.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).document(uid).set(
         {
             'uid': uid,
             'reason': reason or '',
@@ -325,10 +330,14 @@ def get_user_deletion_wipe_status(uid: str, *, firestore_client: Any | None = No
     reopen the exact half-deleted-account window this marker closes.
     """
     client = firestore_client or get_firestore_client()
-    snapshot = client.collection('account_deletions').document(uid).get()
-    if not snapshot.exists:
+    snapshot = client.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).document(uid).get()
+    if snapshot.exists:
+        status = (snapshot.to_dict() or {}).get('wipe_status')
+        return normalize_account_deletion_status(marker_exists=True, raw_status=status)
+    receipt = client.collection(ACCOUNT_DELETION_RECEIPT_COLLECTION).document(account_deletion_receipt_id(uid)).get()
+    if not receipt.exists:
         return None
-    status = (snapshot.to_dict() or {}).get('wipe_status')
+    status = (receipt.to_dict() or {}).get('wipe_status')
     return normalize_account_deletion_status(marker_exists=True, raw_status=status)
 
 
@@ -430,9 +439,10 @@ def mark_user_deletion_wipe_started(uid: str, wipe_job_id: str) -> bool:
 
 
 def mark_user_deletion_wipe_completed(uid: str) -> bool:
-    """Complete the wipe only if no provider cleanup remains outstanding."""
-    doc_ref = db.collection('account_deletions').document(uid)
-    return _mark_user_deletion_wipe_completed_txn(db.transaction(), doc_ref)
+    """Replace the UID-keyed marker only if provider cleanup is complete."""
+    active_ref = db.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).document(uid)
+    receipt_ref = db.collection(ACCOUNT_DELETION_RECEIPT_COLLECTION).document(account_deletion_receipt_id(uid))
+    return _mark_user_deletion_wipe_completed_txn(db.transaction(), active_ref, receipt_ref, uuid.uuid4().hex)
 
 
 def mark_user_deletion_wipe_failed(uid: str):
@@ -450,10 +460,12 @@ def record_late_agent_vm_cleanup(
     expected_instance_id: str | None = None,
 ) -> bool:
     """Persist a late VM only when an admitted deletion owns its cleanup."""
-    doc_ref = db.collection('account_deletions').document(uid)
+    active_ref = db.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).document(uid)
+    receipt_ref = db.collection(ACCOUNT_DELETION_RECEIPT_COLLECTION).document(account_deletion_receipt_id(uid))
     return _record_late_agent_vm_cleanup_txn(
         db.transaction(),
-        doc_ref,
+        active_ref,
+        receipt_ref,
         vm_name,
         zone,
         expected_instance_id,
@@ -525,9 +537,19 @@ def ensure_deletion_wipe_job_id(uid: str) -> str | None:
 
 def resolve_deletion_wipe_job_id(wipe_job_id: str) -> DeletionWipeTaskResolution:
     """Resolve an opaque task id to one canonical deletion job document."""
-    docs = list(db.collection('account_deletions').where('wipe_job_id', '==', wipe_job_id).limit(2).stream())
+    docs = list(
+        db.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).where('wipe_job_id', '==', wipe_job_id).limit(2).stream()
+    )
     if not docs:
-        return {'outcome': 'missing', 'uid': None}
+        receipts = list(
+            db.collection(ACCOUNT_DELETION_RECEIPT_COLLECTION).where('wipe_job_id', '==', wipe_job_id).limit(2).stream()
+        )
+        if not receipts:
+            return {'outcome': 'missing', 'uid': None}
+        if len(receipts) != 1:
+            return {'outcome': 'ambiguous', 'uid': None}
+        status = (receipts[0].to_dict() or {}).get('wipe_status')
+        return {'outcome': 'completed' if status == 'completed' else 'not_actionable', 'uid': None}
     if len(docs) != 1:
         return {'outcome': 'ambiguous', 'uid': None}
 
@@ -548,9 +570,15 @@ def resolve_legacy_deletion_wipe_uid(legacy_uid: str) -> DeletionWipeTaskResolut
     It must name a still-actionable canonical deletion record, and the handler
     uses the document id returned here rather than the payload value.
     """
-    doc = db.collection('account_deletions').document(legacy_uid).get()
+    doc = db.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).document(legacy_uid).get()
     if not doc.exists:
-        return {'outcome': 'missing', 'uid': None}
+        receipt = (
+            db.collection(ACCOUNT_DELETION_RECEIPT_COLLECTION).document(account_deletion_receipt_id(legacy_uid)).get()
+        )
+        if not receipt.exists:
+            return {'outcome': 'missing', 'uid': None}
+        status = (receipt.to_dict() or {}).get('wipe_status')
+        return {'outcome': 'completed' if status == 'completed' else 'not_actionable', 'uid': None}
     status = (doc.to_dict() or {}).get('wipe_status')
     if status == 'completed':
         return {'outcome': 'completed', 'uid': None}
@@ -1237,6 +1265,52 @@ def update_person_speech_samples_version(uid: str, person_id: str, version: int)
     return True
 
 
+_ACCOUNT_DELETION_CONTROL_COLLECTIONS = frozenset(
+    {ACCOUNT_DELETION_ACTIVE_COLLECTION, ACCOUNT_DELETION_RECEIPT_COLLECTION}
+)
+_ACCOUNT_OWNER_FIELDS = ('uid', 'user_id', 'user_uid', 'owner_uid')
+
+
+def _top_level_user_owned_documents(uid: str) -> list[Any]:
+    """Enumerate UID-owned rows outside the canonical user subtree.
+
+    Active deletion state is retained only while cleanup is outstanding. Its
+    completion atomically replaces the UID-keyed row with an opaque HMAC-keyed
+    pseudonymous receipt containing no direct account identifier or deletion
+    feedback. Every other top-level row that declares this account as ``uid``
+    or ``user_id`` is owned data, including durable jobs, analytics and API
+    credentials added by future upstream code.
+    """
+
+    seen: set[str] = set()
+    snapshots: list[Any] = []
+    for collection in db.collections():
+        if collection.id == 'users' or collection.id in _ACCOUNT_DELETION_CONTROL_COLLECTIONS:
+            continue
+        for field in _ACCOUNT_OWNER_FIELDS:
+            for snapshot in collection.where(field, '==', uid).stream():
+                path = snapshot.reference.path
+                if path not in seen:
+                    seen.add(path)
+                    snapshots.append(snapshot)
+    return snapshots
+
+
+def count_user_owned_rows(uid: str) -> int:
+    """Count authoritative user rows remaining after privacy deletion."""
+
+    user_ref = db.collection('users').document(uid)
+
+    def count_descendants(document_ref: Any) -> int:
+        total = 1 if document_ref.get().exists else 0
+        for subcollection in document_ref.collections():
+            for snapshot in subcollection.stream():
+                total += count_descendants(snapshot.reference)
+        return total
+
+    return count_descendants(user_ref) + len(_top_level_user_owned_documents(uid))
+
+
 def delete_user_data(uid: str):
     user_ref = db.collection('users').document(uid)
     root_exists = user_ref.get().exists
@@ -1256,6 +1330,19 @@ def delete_user_data(uid: str):
     if root_exists:
         logger.info(f"Deleting user document: {uid}")
         user_ref.delete()
+
+    # User-owned durable jobs and credentials are intentionally top-level so
+    # workers can query them globally.  Discover them by their explicit owner
+    # field instead of maintaining a collection allow-list that inevitably
+    # misses new upstream job types.
+    for snapshot in _top_level_user_owned_documents(uid):
+        for sub in snapshot.reference.collections():
+            delete_collection_recursive(sub, client=db)
+        snapshot.reference.delete()
+
+    residual = count_user_owned_rows(uid)
+    if residual:
+        return {'status': 'error', 'message': f'account deletion left {residual} owned rows'}
     return {'status': 'ok', 'message': 'Account deleted successfully'}
 
 

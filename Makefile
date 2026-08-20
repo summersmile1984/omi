@@ -38,7 +38,7 @@ CHAT_FIRST_E2E_ACTION ?= prepare
 CHAT_FIRST_E2E_CASE ?= enabled
 CHAT_FIRST_E2E_SECONDS ?= 86400
 
-.PHONY: setup setup-main setup-hooks setup-backend preflight runtime-image-source-closure runtime-image-smoke dev-check dev-up dev-status dev-summary dev-reset dev-down dev-logs dev-shadow-diff dev dev-desktop dev-init dev-verify list-memory-scenarios seed-memory-scenario reset-memory-scenario desktop-run-local chat-first-e2e-fixture run-canonical-promotion run-canonical-maintenance
+.PHONY: setup setup-main setup-hooks setup-backend preflight runtime-image-source-closure runtime-image-smoke dev-check dev-up dev-status dev-summary dev-reset dev-down dev-logs dev-shadow-diff dev dev-desktop dev-init dev-verify self-host-config-check self-host-migration-gate self-host-ops-check self-host-zero-vendor-acceptance list-memory-scenarios seed-memory-scenario reset-memory-scenario desktop-run-local chat-first-e2e-fixture run-canonical-promotion run-canonical-maintenance
 
 # Baseline setup is deliberately limited to prerequisites that the default
 # pre-push gate may require; app and desktop runtime environments stay opt-in.
@@ -100,6 +100,19 @@ dev-logs:
 
 dev-shadow-diff:
 	$(BASH) dev/shadow-diff.sh
+
+self-host-config-check:
+	$(PYTHON_RUNNER) .github/scripts/check_self_host_deployment.py --env-file "$(or $(SELF_HOST_ENV),deploy/self-host/.env.production.example)"
+	@docker compose --env-file "$(or $(SELF_HOST_ENV),deploy/self-host/.env.production.example)" --file deploy/self-host/compose.production.yml config --quiet
+
+self-host-migration-gate:
+	$(BASH) deploy/self-host/migration-cutover-gate.sh
+
+self-host-ops-check:
+	$(BASH) deploy/self-host/operations.sh self-check
+
+self-host-zero-vendor-acceptance:
+	$(BASH) deploy/self-host/zero-vendor-acceptance.sh
 
 list-memory-scenarios:
 	$(PYTHON_RUNNER) scripts/dev-harness/list-memory-scenarios.py

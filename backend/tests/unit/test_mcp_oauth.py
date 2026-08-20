@@ -13,6 +13,7 @@ os.environ['MCP_OAUTH_CHATGPT_CLIENT_ID'] = 'omi-chatgpt-prod'
 os.environ['MCP_OAUTH_CHATGPT_CLIENT_SECRET'] = 'client-secret'
 os.environ['MCP_OAUTH_CHATGPT_REDIRECT_URIS'] = 'https://chatgpt.com/connector_platform_oauth_redirect'
 os.environ['MCP_OAUTH_PUBLIC_REDIRECT_URIS'] = 'https://chatgpt.com/connector_platform_oauth_redirect'
+os.environ.setdefault('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
 
 
 class _DocSnapshot:
@@ -206,6 +207,28 @@ def test_consent_transaction_rejects_deletion_marker_without_oauth_writes():
 
     assert all(doc['uid'] != uid for doc in mcp_oauth.db.collection('mcp_oauth_grants')._docs.values())
     assert all(doc['uid'] != uid for doc in mcp_oauth.db.collection('mcp_oauth_authorization_codes')._docs.values())
+
+
+def test_consent_transaction_rejects_opaque_completion_receipt_without_oauth_writes():
+    uid = 'completed-consent-user'
+    receipt_id = mcp_oauth.account_deletion_receipt_id(uid)
+    receipt = {'schema_version': 1, 'wipe_status': 'completed', 'wipe_job_id': 'opaque-job-id'}
+    mcp_oauth.db.collection('account_deletion_receipts').document(receipt_id).set(receipt)
+
+    with pytest.raises(mcp_oauth.AccountDeletionAccessBlocked):
+        mcp_oauth.create_grant_and_authorization_code_if_allowed(
+            uid,
+            'omi-chatgpt-prod',
+            'https://chatgpt.com/connector_platform_oauth_redirect',
+            mcp_oauth.MCP_RESOURCE_URL,
+            ['memories.read'],
+            mcp_oauth.pkce_s256('e' * 64),
+        )
+
+    assert all(doc['uid'] != uid for doc in mcp_oauth.db.collection('mcp_oauth_grants')._docs.values())
+    assert all(doc['uid'] != uid for doc in mcp_oauth.db.collection('mcp_oauth_authorization_codes')._docs.values())
+    assert set(receipt) == {'schema_version', 'wipe_status', 'wipe_job_id'}
+    assert uid not in json.dumps(receipt, sort_keys=True)
 
 
 def test_public_client_uses_pkce_without_shared_secret():

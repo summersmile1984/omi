@@ -48,6 +48,7 @@ def _build_mcp_context(auth: _McpVerifiedAuth, *, surface: str) -> _ProductAutho
 @contextmanager
 def _loaded_dependencies() -> Iterator[tuple[ModuleType, ModuleType, ModuleType, ModuleType]]:
     firebase_auth = _module('firebase_admin.auth', verify_id_token=lambda _token: {'uid': 'user-1'})
+    certificate_fetch_error = type('CertificateFetchError', (Exception,), {})
     mcp_api_key_db = _module(
         'database.mcp_api_key',
         get_api_key_auth_result=lambda _token: SimpleNamespace(context=None, repairs=frozenset()),
@@ -60,6 +61,8 @@ def _loaded_dependencies() -> Iterator[tuple[ModuleType, ModuleType, ModuleType,
         'utils.other.endpoints',
         check_api_key_rate_limit=lambda **_kwargs: None,
         enforce_account_deletion_http_access=lambda _uid: None,
+        verify_token=lambda token: firebase_auth.verify_id_token(token)['uid'],
+        CertificateFetchError=certificate_fetch_error,
     )
     mcp_memories = _module(
         'utils.mcp_memories',
@@ -124,7 +127,7 @@ def test_firebase_verification_uses_the_critical_executor() -> None:
 
         assert result == 'user-1'
         assert calls == [
-            (dependencies.critical_executor, verify_id_token, ('firebase-token',), {}),
+            (dependencies.critical_executor, dependencies.auth_endpoints.verify_token, ('firebase-token',), {}),
             (
                 dependencies.db_executor,
                 dependencies.enforce_account_deletion_http_access,
