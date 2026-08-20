@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_COMPOSE = ROOT / 'deploy' / 'self-host' / 'compose.production.yml'
 DEFAULT_EXAMPLE_ENV = ROOT / 'deploy' / 'self-host' / '.env.production.example'
@@ -199,7 +198,7 @@ MACOS_MODEL_BOUNDARY_REQUIREMENTS = {
         'allowsClientDirectVendorEgress',
         'routes model calls through its backend',
     ),
-    'desktop/macos/Desktop/Sources/Chat/AgentRuntimeProcess.swift': (
+    'desktop/macos/Desktop/Sources/Chat/AgentRuntimeEgressPolicy.swift': (
         'allowsAgentAdapter(',
         'removeInheritedModelVendorEnvironment(',
     ),

@@ -8,7 +8,6 @@ import unittest
 import shutil
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).with_name('check_self_host_deployment.py')
 SPEC = importlib.util.spec_from_file_location('check_self_host_deployment', SCRIPT)
 assert SPEC and SPEC.loader
@@ -72,6 +71,19 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
 
             errors = CHECK.validate_macos_client_model_egress(root)
             self.assertTrue(any('ChatLabView.swift missing self-hosted model boundary' in error for error in errors))
+
+            runtime_egress = root / 'desktop/macos/Desktop/Sources/Chat/AgentRuntimeEgressPolicy.swift'
+            runtime_egress.write_text(
+                runtime_egress.read_text(encoding='utf-8').replace(
+                    'allowsAgentAdapter(',
+                    'allowsUnreviewedAdapter(',
+                ),
+                encoding='utf-8',
+            )
+            errors = CHECK.validate_macos_client_model_egress(root)
+            self.assertTrue(
+                any('AgentRuntimeEgressPolicy.swift missing self-hosted model boundary' in error for error in errors)
+            )
 
     def test_rejects_http_public_auth_origin(self) -> None:
         errors = self.validate_mutation(
