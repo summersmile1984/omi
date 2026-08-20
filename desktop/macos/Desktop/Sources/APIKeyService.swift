@@ -92,7 +92,7 @@ final class APIKeyService: ObservableObject {
       DesktopModelEgressPolicy.allowsBYOK(
         deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
     else { return nil }
-    return nonEmpty(UserDefaults.standard.string(forKey: "dev_gemini_api_key")) ?? geminiApiKey
+    return nonEmpty(UserDefaults.standard.string(forKey: .devGeminiApiKey)) ?? geminiApiKey
   }
 
   var effectiveFirebaseApiKey: String? {
@@ -197,7 +197,7 @@ final class APIKeyService: ObservableObject {
       DesktopModelEgressPolicy.allowsBYOK(
         deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
     else { return nil }
-    return nonEmptyStatic(UserDefaults.standard.string(forKey: "dev_gemini_api_key"))
+    return nonEmptyStatic(UserDefaults.standard.string(forKey: .devGeminiApiKey))
       ?? (getenv("GEMINI_API_KEY").flatMap { String(validatingCString: $0) })
   }
 

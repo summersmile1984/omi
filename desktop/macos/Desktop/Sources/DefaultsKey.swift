@@ -85,6 +85,7 @@ enum DefaultsKey: String {
   /// `PUT /v1/users/preferences/app`. Same name mobile uses in SharedPreferences.
   case preferredSummarizationAppId = "preferredSummarizationAppId"
   case disableSystemAudioCapture = "disableSystemAudioCapture"
+  case devGeminiApiKey = "dev_gemini_api_key"
 }
 
 /// Compile-checked owner-scoped defaults keys whose final storage key is

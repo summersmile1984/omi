@@ -46,9 +46,15 @@ enum BYOKValidator {
         ]
       )
     case .gemini:
-      var components = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models")!
+      guard
+        var components = URLComponents(
+          string: "https://generativelanguage.googleapis.com/v1beta/models")
+      else {
+        return .failed("Invalid provider URL")
+      }
       components.queryItems = [URLQueryItem(name: "key", value: trimmed)]
-      return await send(components.url!, [:])
+      guard let url = components.url else { return .failed("Invalid provider URL") }
+      return await send(url, [:])
     case .deepgram:
       return await send(
         URL(string: "https://api.deepgram.com/v1/projects")!,

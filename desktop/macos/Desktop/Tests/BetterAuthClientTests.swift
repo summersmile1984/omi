@@ -5,7 +5,7 @@ import XCTest
 
 final class BetterAuthClientTests: XCTestCase {
   func testSignInExchangesRevocableSessionForBackendJWT() async throws {
-    let jwt = makeJWT(subject: "better-user", expiresAt: Date().addingTimeInterval(900))
+    let jwt = try makeJWT(subject: "better-user", expiresAt: Date().addingTimeInterval(900))
     let recorder = RequestRecorder(responses: [
       response(
         path: "/api/auth/sign-in/email",
@@ -90,15 +90,15 @@ final class BetterAuthClientTests: XCTestCase {
     XCTAssertEqual(requests.count, 1)
   }
 
-  private func makeJWT(subject: String, expiresAt: Date) -> String {
-    func encoded(_ object: [String: Any]) -> String {
-      let data = try! JSONSerialization.data(withJSONObject: object)
+  private func makeJWT(subject: String, expiresAt: Date) throws -> String {
+    func encoded(_ object: [String: Any]) throws -> String {
+      let data = try JSONSerialization.data(withJSONObject: object)
       return data.base64EncodedString()
         .replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_")
         .replacingOccurrences(of: "=", with: "")
     }
-    return "\(encoded(["alg": "ES256", "typ": "JWT"]))"
+    return try "\(encoded(["alg": "ES256", "typ": "JWT"]))"
       + ".\(encoded(["sub": subject, "uid": subject, "exp": expiresAt.timeIntervalSince1970])).signature"
   }
 
@@ -129,8 +129,12 @@ private actor RequestRecorder {
     guard !remaining.isEmpty else { throw URLError(.badServerResponse) }
     let next = remaining.removeFirst()
     guard request.url?.path == next.path else { throw URLError(.badURL) }
-    let response = HTTPURLResponse(
-      url: request.url!, statusCode: next.status, httpVersion: "HTTP/1.1", headerFields: next.headers)!
+    guard let url = request.url,
+      let response = HTTPURLResponse(
+        url: url, statusCode: next.status, httpVersion: "HTTP/1.1", headerFields: next.headers)
+    else {
+      throw URLError(.badURL)
+    }
     return (next.data, response)
   }
 }
