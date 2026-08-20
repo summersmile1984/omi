@@ -1,0 +1,36 @@
+version: 2
+name: self-host-profile-smoke
+tier: manual
+description: Signed named-bundle proof that the self-host profile stays on Better Auth and backend-owned model capabilities
+app: non-prod
+covers:
+  - desktop/macos/Desktop/Sources/Auth/BetterAuthClient.swift
+  - desktop/macos/Desktop/Sources/BYOKValidator.swift
+  - desktop/macos/Desktop/Sources/ProactiveAssistants/Assistants/TaskAgent/TaskAgentManager.swift
+  - desktop/macos/Desktop/Sources/RealtimeOmni/AutoModelSelector.swift
+  - desktop/macos/Desktop/Sources/RealtimeOmni/RealtimeOmniSettings.swift
+preconditions:
+  - named_non_production_bundle
+  - signed_self_hosted_profile_with_explicit_backend_auth_and_mcp_origins
+  - automation_bridge_ready
+
+steps:
+  - id: S1
+    name: Verify the signed self-host artifact boundary
+    do: "Run the signed artifact smoke for the named self-host bundle. Confirm its embedded environment selects self_hosted plus better_auth, contains only explicit operator origins, and the complete bundle contains no GoogleService-Info.plist or Firebase/vendor API key."
+
+  - id: S2
+    name: Launch signed out on the Better Auth form
+    do: "Launch the named bundle and wait for the automation bridge. Confirm state is signed_out, the visible form requests Better Auth name/email/password, and startup logs report Firebase configuration skipped plus model egress backend_only."
+    expect:
+      text_visible:
+        - Email
+        - Password
+
+  - id: S3
+    name: Reject a client-direct realtime provider
+    do: "Invoke omni_test_turn with provider=gemini. It must return the typed realtime backend capability unavailable result before opening a vendor socket, and the process must have no non-loopback model connection."
+
+  - id: S4
+    name: Reject direct BYOK and local Claude Task Agent paths
+    do: "Open AI Chat settings in the same self-host bundle. A BYOK validation attempt and Task Agent start must return their typed capability-unavailable results before validator transport or local claude process launch."
