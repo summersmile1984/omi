@@ -8,6 +8,7 @@ covers:
   - desktop/Desktop/Sources/Rewind/Core/TranscriptionStorage.swift
   - desktop/Desktop/Sources/MainWindow/Pages/ConversationsPage.swift
   - desktop/Desktop/Sources/MainWindow/Pages/ConversationDetailView.swift
+  - desktop/macos/Desktop/Sources/MainWindow/Components/ConversationStatusBadge.swift
 preconditions:
   - auth_ready
   - microphone_permission_granted
@@ -31,7 +32,7 @@ steps:
 
   - id: S3
     name: Stop and wait for finalization
-    do: "Click Stop Recording. Wait for the recording indicator to clear and for the conversation list to refresh after backend finalization. The UI should not immediately start a new active recording unless the user explicitly clicked Start Recording again."
+    do: "Click Stop Recording. While backend finalization is pending, verify the newest row identifies that state with the Processing badge rather than a generic Untitled title. Wait for the recording indicator to clear and the list to refresh; if finalization wins the race before the badge is observed, verify the row has already transitioned to its real title and no stale Processing badge remains. The UI should not immediately start a new active recording unless the user explicitly clicked Start Recording again."
     expect:
       interactive_count: { min: 1 }
 
