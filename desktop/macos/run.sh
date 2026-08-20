@@ -624,6 +624,46 @@ update_app_desktop_api_url() {
     substep "OMI_DESKTOP_API_URL=$EFFECTIVE_API_URL"
 }
 
+update_app_deployment_profile() {
+    local env_file="$1"
+    local profile="${OMI_DEPLOYMENT_PROFILE:-omi_cloud}"
+    local provider="${OMI_AUTH_PROVIDER:-}"
+    if [ -z "$provider" ]; then
+        [ "$profile" = "self_hosted" ] && provider="better_auth" || provider="firebase"
+    fi
+
+    local key value
+    for key in OMI_DEPLOYMENT_PROFILE OMI_AUTH_PROVIDER; do
+        [ "$key" = "OMI_DEPLOYMENT_PROFILE" ] && value="$profile" || value="$provider"
+        sed -i '' "/^${key}=/d" "$env_file"
+        echo "$key=$value" >> "$env_file"
+    done
+
+    if [ "$profile" = "self_hosted" ]; then
+        [ -n "${OMI_PYTHON_API_URL:-}" ] || fail "self_hosted requires OMI_PYTHON_API_URL"
+        [ -n "${OMI_DESKTOP_API_URL:-}" ] || fail "self_hosted requires OMI_DESKTOP_API_URL"
+        [ -n "${OMI_AUTH_SERVER_URL:-}" ] || fail "self_hosted requires OMI_AUTH_SERVER_URL"
+        for key in OMI_AUTH_SERVER_URL OMI_MCP_API_URL; do
+            value="${!key:-}"
+            if [ -z "$value" ] && [ "$key" = "OMI_MCP_API_URL" ]; then
+                value="$OMI_PYTHON_API_URL"
+            fi
+            sed -i '' "/^${key}=/d" "$env_file"
+            echo "$key=$value" >> "$env_file"
+        done
+    fi
+
+    # Optional signed deployment capabilities. Removing stale values first is
+    # important when a disposable bundle is rebuilt against a different fork.
+    for key in OMI_SHARE_BASE_URL OMI_REALTIME_MODEL_PROVIDER OMI_MCP_CHATGPT_OAUTH_CLIENT_ID OMI_MCP_CLAUDE_OAUTH_CLIENT_ID; do
+        value="${!key:-}"
+        sed -i '' "/^${key}=/d" "$env_file"
+        if [ -n "$value" ]; then
+            echo "$key=$value" >> "$env_file"
+        fi
+    done
+}
+
 rewrite_bundled_dylib_load_path() {
     local binary="$1"
     local dylib_name="$2"
@@ -991,6 +1031,7 @@ if [ "$FAST_BUNDLE" = "1" ]; then
         substep "Refreshed local-profile bundle environment"
     else
         update_app_desktop_api_url "$APP_PATH/Contents/Resources/.env"
+        update_app_deployment_profile "$APP_PATH/Contents/Resources/.env"
     fi
 
     step "Signing updated app with hardened runtime..."
@@ -1097,15 +1138,19 @@ cp -f Desktop/Info.plist "$APP_BUNDLE/Contents/Info.plist"
 
 auth_debug "AFTER plist edits: auth_isSignedIn=$(defaults read "$BUNDLE_ID" auth_isSignedIn 2>&1 || true)"
 
-substep "Copying GoogleService-Info.plist"
-if [ "$LOCAL_PROFILE" = true ] && [ -f "Desktop/Sources/GoogleService-Info-Local.plist" ]; then
+substep "Applying identity-provider resources"
+if [ "${OMI_DEPLOYMENT_PROFILE:-omi_cloud}" = "self_hosted" ]; then
+    rm -f "$APP_BUNDLE/Contents/Resources/GoogleService-Info.plist"
+elif [ "$LOCAL_PROFILE" = true ] && [ -f "Desktop/Sources/GoogleService-Info-Local.plist" ]; then
     cp -f Desktop/Sources/GoogleService-Info-Local.plist "$APP_BUNDLE/Contents/Resources/GoogleService-Info.plist"
 elif [ -f "Desktop/Sources/GoogleService-Info-Dev.plist" ]; then
     cp -f Desktop/Sources/GoogleService-Info-Dev.plist "$APP_BUNDLE/Contents/Resources/GoogleService-Info.plist"
 else
     cp -f Desktop/Sources/GoogleService-Info.plist "$APP_BUNDLE/Contents/Resources/"
 fi
-/usr/libexec/PlistBuddy -c "Set :BUNDLE_ID $BUNDLE_ID" "$APP_BUNDLE/Contents/Resources/GoogleService-Info.plist" 2>/dev/null || true
+if [ -f "$APP_BUNDLE/Contents/Resources/GoogleService-Info.plist" ]; then
+    /usr/libexec/PlistBuddy -c "Set :BUNDLE_ID $BUNDLE_ID" "$APP_BUNDLE/Contents/Resources/GoogleService-Info.plist" 2>/dev/null || true
+fi
 
 # Copy resource bundle (contains app assets like permissions.gif, herologo.png, etc.)
 RESOURCE_BUNDLE="$SWIFTPM_DEBUG_PRODUCTS_DIR/Omi Computer_Omi Computer.bundle"
@@ -1118,6 +1163,12 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
     # package a second 200+ MiB copy.
     omi_normalize_packaged_resource_bundle \
         "$APP_BUNDLE/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
+fi
+
+# SwiftPM also embeds the managed Google plist inside its resource bundle.
+# A self-hosted artifact must remove every copy after all resources have landed.
+if [ "${OMI_DEPLOYMENT_PROFILE:-omi_cloud}" = "self_hosted" ]; then
+    find "$APP_BUNDLE/Contents/Resources" -type f -name 'GoogleService-Info.plist' -delete
 fi
 
 substep "Copying agent"
@@ -1176,8 +1227,13 @@ else
     touch "$APP_BUNDLE/Contents/Resources/.env"
 fi
 update_app_desktop_api_url "$APP_BUNDLE/Contents/Resources/.env"
-# Bootstrap FIREBASE_API_KEY — check env var first (yolo mode), then backend .env
-if ! grep -q "^FIREBASE_API_KEY=" "$APP_BUNDLE/Contents/Resources/.env"; then
+update_app_deployment_profile "$APP_BUNDLE/Contents/Resources/.env"
+# A Better Auth artifact must not retain Firebase values copied from a cloud
+# `.env.app`; runtime suppression alone is not an acceptable packaging boundary.
+if [ "${OMI_DEPLOYMENT_PROFILE:-omi_cloud}" = "self_hosted" ]; then
+    sed -i '' '/^FIREBASE_/d' "$APP_BUNDLE/Contents/Resources/.env"
+# Cloud bundles bootstrap FIREBASE_API_KEY from the explicit environment or backend .env.
+elif ! grep -q "^FIREBASE_API_KEY=" "$APP_BUNDLE/Contents/Resources/.env"; then
     FIREBASE_KEY="${FIREBASE_API_KEY:-}"
     if [ -z "$FIREBASE_KEY" ] && [ -f "$BACKEND_DIR/.env" ]; then
         FIREBASE_KEY=$(grep "^FIREBASE_API_KEY=" "$BACKEND_DIR/.env" | head -1 | cut -d= -f2-)

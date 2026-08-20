@@ -225,6 +225,18 @@ final class RealtimeHubSession: NSObject, @unchecked Sendable {
 
   private func _start() {
     guard !terminated else { return }
+    guard
+      DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else {
+      notifyError(
+        RealtimeHubTransportFailure(
+          kind: .configuration,
+          message: "Realtime model capability is unavailable for this deployment",
+          systemDomain: nil,
+          systemCode: nil))
+      return
+    }
     guard let request = makeRequest(), let url = request.url else {
       notifyError(
         RealtimeHubTransportFailure(

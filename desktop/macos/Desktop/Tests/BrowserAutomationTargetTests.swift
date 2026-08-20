@@ -198,11 +198,12 @@ import XCTest
     XCTAssertTrue(setup.steps.first?.contains("Customize") == true)
   }
 
-  func testGuidedBrowserTaskIncludesExactChatGPTOAuthValues() {
+  func testGuidedBrowserTaskIncludesExactChatGPTOAuthValues() throws {
     let task = MemoryExportDestination.chatgpt.guidedBrowserSetupTask(
       key: "test-key",
       browserName: "Brave Browser"
     )
+    let oauthClientID = try XCTUnwrap(MemoryExportDestination.chatgptOAuthClientID)
 
     XCTAssertNotNil(task)
     XCTAssertTrue(task?.body.contains("Use macOS UI automation first") == true)
@@ -220,11 +221,11 @@ import XCTest
     // ChatGPT uses the registered public PKCE client — never the per-user key
     // as a client secret (the token endpoint rejects secrets for public clients).
     XCTAssertTrue(
-      task?.body.contains("OAuth Client ID: \(MemoryExportDestination.chatgptOAuthClientID)")
+      task?.body.contains("OAuth Client ID: \(oauthClientID)")
         == true)
     XCTAssertTrue(task?.body.contains("Token auth method: none") == true)
     XCTAssertTrue(
-      task?.body.contains("\"oauth_client_id\":\"\(MemoryExportDestination.chatgptOAuthClientID)\"")
+      task?.body.contains("\"oauth_client_id\":\"\(oauthClientID)\"")
         == true)
     XCTAssertTrue(task?.body.contains("\"token_auth_method\":\"none\"") == true)
     XCTAssertFalse(task?.body.contains("\"oauth_client_secret\"") == true)

@@ -640,8 +640,9 @@ struct UserProfileResponse: Codable {
 // MARK: - Desktop Update Policy Models
 
 struct DesktopUpdatePolicyResponse: Decodable, Equatable, Sendable {
-  static let stableManualDownloadURL = URL(
-    string: "https://api.omi.me/v2/desktop/download/latest?channel=stable")!
+  static var stableManualDownloadURL: URL {
+    AppBuild.manualDownloadURL(channel: "stable", isBetaIdentity: false)
+  }
 
   enum Severity: String, Codable, Sendable {
     case none
@@ -724,14 +725,17 @@ struct DesktopUpdatePolicyResponse: Decodable, Equatable, Sendable {
     )
   }
 
-  static func resolvedDownloadURL(from candidate: String?) -> URL {
+  static func resolvedDownloadURL(
+    from candidate: String?,
+    fallbackURL: URL = stableManualDownloadURL
+  ) -> URL {
     guard let candidate = nonEmptyString(candidate),
       let url = URL(string: candidate),
       let scheme = url.scheme?.lowercased(),
       ["http", "https"].contains(scheme),
       url.host != nil
     else {
-      return stableManualDownloadURL
+      return fallbackURL
     }
     return url
   }

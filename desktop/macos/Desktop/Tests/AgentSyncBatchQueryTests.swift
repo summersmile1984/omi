@@ -84,6 +84,8 @@ private actor AgentSyncDelayedTokenGate {
   func requestURLs() -> [URL] {
     requests.compactMap(\.url)
   }
+
+  func requestsSnapshot() -> [URLRequest] { requests }
 }
 
 #if DEBUG
@@ -353,7 +355,7 @@ final class AgentSyncBatchQueryTests: XCTestCase {
   }
 
   @MainActor
-  func testDelayedOwnerATokenCannotResumeIntoOwnerBVM() async {
+  func testDelayedOwnerATokenCannotResumeIntoOwnerBVM() async throws {
     let originalPhase = AuthState.shared.sessionPhase
     AuthState.shared.transition(to: .authenticated)
     defer { AuthState.shared.transition(to: originalPhase) }
@@ -388,6 +390,13 @@ final class AgentSyncBatchQueryTests: XCTestCase {
     XCTAssertEqual(requestURLs.count, 1)
     XCTAssertEqual(requestURLs.first?.host, "owner-b-vm")
     XCTAssertEqual(requestURLs.first?.path, "/auth")
+    let requests = await gate.requestsSnapshot()
+    let request = try XCTUnwrap(requests.first)
+    let body = try XCTUnwrap(request.httpBody)
+    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+    XCTAssertEqual(json["accessToken"], "owner-b-token")
+    XCTAssertEqual(json["identityProvider"], "firebase")
+    XCTAssertNil(json["firebaseToken"])
   }
 }
 

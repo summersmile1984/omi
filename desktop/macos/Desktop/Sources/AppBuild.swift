@@ -228,10 +228,19 @@ enum AppBuild {
     manualDownloadURL(channel: "beta", isBetaIdentity: true)
   }
 
-  static func manualDownloadURL(channel: String, isBetaIdentity: Bool) -> URL {
-    var components = URLComponents()
-    components.scheme = "https"
-    components.host = "api.omi.me"
+  static func manualDownloadURL(
+    channel: String,
+    isBetaIdentity: Bool,
+    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile,
+    backendBaseURL: String? = nil
+  ) -> URL {
+    let baseURL =
+      deploymentProfile == .selfHosted
+      ? (backendBaseURL ?? DesktopBackendEnvironment.pythonBaseURL())
+      : DesktopBackendEnvironment.productionPythonAPIURL
+    guard var components = URLComponents(string: baseURL), components.host != nil else {
+      preconditionFailure("desktop download origin must be a valid backend URL")
+    }
     components.path = "/v2/desktop/download/latest"
     var queryItems = [URLQueryItem(name: "channel", value: channel)]
     if isBetaIdentity {
@@ -239,7 +248,9 @@ enum AppBuild {
       queryItems.append(URLQueryItem(name: "identity", value: "beta"))
     }
     components.queryItems = queryItems
-    // Fixed scheme/host/path always produce a URL; the fallback is unreachable.
-    return components.url ?? URL(fileURLWithPath: "/")
+    guard let url = components.url else {
+      preconditionFailure("desktop download URL could not be constructed")
+    }
+    return url
   }
 }

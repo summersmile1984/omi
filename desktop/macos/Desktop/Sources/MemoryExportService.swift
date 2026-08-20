@@ -19,59 +19,80 @@ enum MemoryExportDestination: String, CaseIterable, Identifiable, Sendable {
   /// Base of the hosted Omi API for this build — stable channel hits prod
   /// (api.omi.me), beta hits dev (api.omiapi.com). Always ends with "/".
   static var mcpBaseURL: String {
-    DesktopBackendEnvironment.pythonBaseURL()
+    DesktopBackendEnvironment.mcpBaseURL()
   }
 
   /// MCP data serving follows the selected Python serving plane, but OAuth grant
   /// issuance and readback belong to the production identity authority for every
   /// production-family app (including Beta).
   static var mcpOAuthBaseURL: String {
-    DesktopBackendEnvironment.authBaseURL()
+    if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+      return DesktopBackendEnvironment.mcpBaseURL()
+    }
+    return DesktopBackendEnvironment.authBaseURL()
   }
 
   static func mcpServerURL(
     bundleIdentifier: String,
-    environmentValue: String? = nil
+    environmentValue: String? = nil,
+    deploymentProfile: DesktopDeploymentProfile = .omiCloud
   ) -> String {
     let useDevelopmentBackends = DesktopBackendEnvironment.shouldUseDevelopmentBackends(
       bundleIdentifier: bundleIdentifier,
       updateChannel: AppBuild.currentUpdateChannel
     )
-    return DesktopBackendEnvironment.pythonBaseURL(
+    return DesktopBackendEnvironment.mcpBaseURL(
       useDevelopmentBackends: useDevelopmentBackends,
       bundleIdentifier: bundleIdentifier,
-      environmentValue: environmentValue
+      environmentValue: environmentValue,
+      deploymentProfile: deploymentProfile
     ) + "v1/mcp/sse"
   }
 
   static func mcpAuthorizeURL(
     bundleIdentifier: String,
-    environmentValue: String? = nil
+    environmentValue: String? = nil,
+    deploymentProfile: DesktopDeploymentProfile = .omiCloud
   ) -> String {
     let useDevelopmentBackends = DesktopBackendEnvironment.shouldUseDevelopmentBackends(
       bundleIdentifier: bundleIdentifier,
       updateChannel: AppBuild.currentUpdateChannel
     )
-    return DesktopBackendEnvironment.authBaseURL(
-      useDevelopmentBackends: useDevelopmentBackends,
-      bundleIdentifier: bundleIdentifier,
-      environmentValue: environmentValue
-    ) + "authorize"
+    let origin =
+      deploymentProfile == .selfHosted
+      ? DesktopBackendEnvironment.mcpBaseURL(
+        useDevelopmentBackends: useDevelopmentBackends,
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: environmentValue,
+        deploymentProfile: deploymentProfile)
+      : DesktopBackendEnvironment.authBaseURL(
+        useDevelopmentBackends: useDevelopmentBackends,
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: environmentValue)
+    return origin + "authorize"
   }
 
   static func mcpTokenURL(
     bundleIdentifier: String,
-    environmentValue: String? = nil
+    environmentValue: String? = nil,
+    deploymentProfile: DesktopDeploymentProfile = .omiCloud
   ) -> String {
     let useDevelopmentBackends = DesktopBackendEnvironment.shouldUseDevelopmentBackends(
       bundleIdentifier: bundleIdentifier,
       updateChannel: AppBuild.currentUpdateChannel
     )
-    return DesktopBackendEnvironment.authBaseURL(
-      useDevelopmentBackends: useDevelopmentBackends,
-      bundleIdentifier: bundleIdentifier,
-      environmentValue: environmentValue
-    ) + "token"
+    let origin =
+      deploymentProfile == .selfHosted
+      ? DesktopBackendEnvironment.mcpBaseURL(
+        useDevelopmentBackends: useDevelopmentBackends,
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: environmentValue,
+        deploymentProfile: deploymentProfile)
+      : DesktopBackendEnvironment.authBaseURL(
+        useDevelopmentBackends: useDevelopmentBackends,
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: environmentValue)
+    return origin + "token"
   }
 
   /// The hosted Omi MCP SSE endpoint every client connects to.
@@ -85,23 +106,48 @@ enum MemoryExportDestination: String, CaseIterable, Identifiable, Sendable {
   /// Prod registers `omi-chatgpt-prod` as a PUBLIC PKCE client — the token
   /// endpoint rejects any client secret for it, so setup must leave the
   /// secret blank. Dev registers `omi-chatgpt-dev`.
-  static var chatgptOAuthClientID: String {
-    chatgptOAuthClientID(forOAuthBaseURL: mcpOAuthBaseURL)
+  static var chatgptOAuthClientID: String? {
+    chatgptOAuthClientID(
+      forOAuthBaseURL: mcpOAuthBaseURL,
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile,
+      configuredValue: DesktopBackendEnvironment.currentEnvironmentValue(
+        "OMI_MCP_CHATGPT_OAUTH_CLIENT_ID"))
   }
 
-  static func chatgptOAuthClientID(forOAuthBaseURL baseURL: String) -> String {
-    URL(string: baseURL)?.host == "api.omi.me" ? "omi-chatgpt-prod" : "omi-chatgpt-dev"
+  static func chatgptOAuthClientID(
+    forOAuthBaseURL baseURL: String,
+    deploymentProfile: DesktopDeploymentProfile = .omiCloud,
+    configuredValue: String? = nil
+  ) -> String? {
+    let cloudDefault = URL(string: baseURL)?.host == "api.omi.me" ? "omi-chatgpt-prod" : "omi-chatgpt-dev"
+    return DesktopBackendEnvironment.mcpOAuthClientID(
+      environmentValue: configuredValue,
+      cloudDefault: cloudDefault,
+      deploymentProfile: deploymentProfile)
   }
 
   /// The approved ChatGPT directory listing. This is the primary ChatGPT
   /// connection path; the custom-connector flow remains an advanced fallback.
-  static let chatGPTDirectoryInstallURL = URL(
+  private static let omiChatGPTDirectoryInstallURL = URL(
     string: "https://chatgpt.com/plugins/plugin_asdk_app_6a1490df4c588191b9339ae21978c873?q=omi")!
+
+  static var chatGPTDirectoryInstallURL: URL? {
+    chatGPTDirectoryInstallURL(
+      allowsOmiManagedServices: DesktopBackendEnvironment.allowsOmiManagedServices)
+  }
+
+  static func chatGPTDirectoryInstallURL(allowsOmiManagedServices: Bool) -> URL? {
+    allowsOmiManagedServices ? omiChatGPTDirectoryInstallURL : nil
+  }
 
   var cloudOAuthClientID: String? {
     switch self {
     case .chatgpt: return Self.chatgptOAuthClientID
-    case .claude: return "omi-claude-prod"
+    case .claude:
+      return DesktopBackendEnvironment.mcpOAuthClientID(
+        environmentValue: DesktopBackendEnvironment.currentEnvironmentValue(
+          "OMI_MCP_CLAUDE_OAUTH_CLIENT_ID"),
+        cloudDefault: "omi-claude-prod")
     case .notion, .obsidian, .gemini, .agents, .claudeCode, .codex, .openclaw, .hermes:
       return nil
     }
@@ -114,8 +160,16 @@ enum MemoryExportDestination: String, CaseIterable, Identifiable, Sendable {
   /// it or ChatGPT never connects on Beta. Mirrors backend `PUBLIC_CHATGPT_CLIENT_IDS`.
   var cloudOAuthGrantClientIDs: Set<String> {
     switch self {
-    case .chatgpt: return ["omi-chatgpt-prod", "omi-chatgpt-dev"]
-    case .claude: return ["omi-claude-prod"]
+    case .chatgpt:
+      if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+        return Set(Self.chatgptOAuthClientID.map { [$0] } ?? [])
+      }
+      return ["omi-chatgpt-prod", "omi-chatgpt-dev"]
+    case .claude:
+      if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+        return Set(cloudOAuthClientID.map { [$0] } ?? [])
+      }
+      return ["omi-claude-prod"]
     case .notion, .obsidian, .gemini, .agents, .claudeCode, .codex, .openclaw, .hermes:
       return []
     }
@@ -246,7 +300,8 @@ enum MemoryExportDestination: String, CaseIterable, Identifiable, Sendable {
   enum MCPExecuteKind: Equatable { case directoryApp, localAutonomous, browserAutonomous, assisted }
   var mcpExecuteKind: MCPExecuteKind {
     switch self {
-    case .chatgpt: return .directoryApp
+    case .chatgpt:
+      return directoryInstallURL == nil ? .assisted : .directoryApp
     case .claudeCode, .codex, .openclaw, .hermes: return .localAutonomous
     case .claude, .notion, .obsidian, .gemini, .agents: return .assisted
     }
@@ -685,7 +740,7 @@ enum MemoryExportDestination: String, CaseIterable, Identifiable, Sendable {
           title: "Advanced OAuth settings",
           fields: [
             CloudConnectorCopyField(
-              id: "oauth_client_id", label: "OAuth Client ID", value: Self.chatgptOAuthClientID),
+              id: "oauth_client_id", label: "OAuth Client ID", value: Self.chatgptOAuthClientID ?? ""),
             CloudConnectorCopyField(
               id: "oauth_client_secret", label: "OAuth Client Secret", value: "", masksValue: false),
             CloudConnectorCopyField(

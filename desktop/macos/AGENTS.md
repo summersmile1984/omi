@@ -201,11 +201,27 @@ do not hand-edit those paths to match a specific machine.
 ## Key Architecture Notes
 
 ### Authentication
-- Firebase Auth with Apple/Google Sign-In
+- The signed `OMI_DEPLOYMENT_PROFILE` owns the identity path: Omi Cloud uses
+  Firebase Apple/Google Sign-In; self-hosted releases require Better Auth and
+  must not initialize or package Firebase.
 - Desktop apps should use backend OAuth flow: `/v1/auth/authorize`
 - Apple Services ID: `me.omi.web` (shared across all apps)
 - iOS apps use native Sign-In, Desktop uses backend OAuth + custom token
 - Session death is owned by `AuthSessionCoordinator` (`INV-AUTH-1`); use `invalidateSession` for expired/revoked Firebase creds, not nuclear `signOut()`.
+- Self-hosted bundles may sign `OMI_SHARE_BASE_URL`,
+  `OMI_REALTIME_MODEL_PROVIDER` (`openai` or `gemini`, backend relay only),
+  `OMI_MCP_CHATGPT_OAUTH_CLIENT_ID`, and
+  `OMI_MCP_CLAUDE_OAUTH_CLIENT_ID`. Missing public MCP client IDs disable those
+  OAuth setup paths; they never select an Omi registration from the backend
+  hostname. Missing share config stays on the configured self-hosted backend.
+- Self-hosted model calls use configured backend capability routes. Missing
+  realtime or embedding/tool-loop capabilities fail closed before vendor
+  network; BYOK keys, inherited vendor credentials, Auto/Gemini defaults,
+  client-direct realtime sockets, and local vendor CLI agents are cloud-only
+  behavior.
+- The local agent `/auth` body is provider-neutral:
+  `{accessToken, identityProvider}`. Do not reintroduce `firebaseToken`; both
+  Firebase ID tokens and Better Auth JWTs are backend bearer credentials.
 
 #### Session 401 vs BYOK/provider 401
 

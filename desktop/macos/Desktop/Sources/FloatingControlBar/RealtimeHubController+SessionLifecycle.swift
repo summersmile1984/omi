@@ -11,6 +11,13 @@ extension RealtimeHubController {
   /// client-direct with the user's key. Otherwise, if signed in → mint a server-side
   /// ephemeral token and connect with it.
   func ensureWarm() {
+    guard
+      DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else {
+      log("RealtimeHub: unavailable for self_hosted; using configured backend voice capabilities")
+      return
+    }
     #if DEBUG
       // The local-profile action owns an already-installed hermetic transport.
       // Re-entering normal warm-up here would replace it and mint a real provider

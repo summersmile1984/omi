@@ -94,6 +94,26 @@ final class RealtimeOmniSettings {
     guard selectedProvider == .auto else { return selectedProvider }
     return AutoModelSelector.shared.currentPick ?? .geminiFlashLive
   }
+
+  /// Provider admitted to the configured backend relay. Cloud keeps the
+  /// existing preference/Auto behavior. Self-hosted artifacts ignore local
+  /// preferences and require an exact signed deployment capability.
+  var resolvedRelayProvider: RealtimeOmniProvider? {
+    switch DesktopModelEgressPolicy.realtimeRelaySelection(
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile,
+      configuredProvider: DesktopBackendEnvironment.currentEnvironmentValue(
+        "OMI_REALTIME_MODEL_PROVIDER"))
+    {
+    case .cloudPreference:
+      return effectiveProvider
+    case .backend("openai"):
+      return .gptRealtime2
+    case .backend("gemini"):
+      return .geminiFlashLive
+    case .backend, .unavailable:
+      return nil
+    }
+  }
 }
 
 extension Notification.Name {

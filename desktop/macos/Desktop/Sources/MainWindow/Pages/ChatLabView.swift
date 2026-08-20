@@ -471,6 +471,12 @@ class ChatLabViewModel: ObservableObject {
 
   private func callClaude(systemPrompt: String, userMessage: String) async -> (String, Int, String) {
     guard !anthropicKey.isEmpty else { return ("No API key", 0, "") }
+    guard
+      DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else {
+      return ("Unavailable: this deployment routes model calls through its backend", 0, "")
+    }
 
     do {
       let url = URL(string: "https://api.anthropic.com/v1/messages")!
@@ -504,6 +510,12 @@ class ChatLabViewModel: ObservableObject {
   }
 
   private func gradeResponse(question: String, response: String) async -> (Int, String) {
+    guard
+      DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else {
+      return (0, "Unavailable: backend model capability required")
+    }
     do {
       let url = URL(string: "https://api.anthropic.com/v1/messages")!
       var request = URLRequest(url: url)

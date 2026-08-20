@@ -16,6 +16,11 @@
 #   CONTEXT_SPARKLE_PUBLIC_KEY       Context's 44-character Ed25519 public key
 #   CONTEXT_VERSION                  version injected into the built Info.plist
 #   CONTEXT_BUILD_NUMBER             numeric Sparkle build number injected into the built Info.plist
+#   CONTEXT_DEPLOYMENT_PROFILE       omi_cloud (default) or self_hosted
+#   CONTEXT_AUTH_PROVIDER            firebase (cloud) or better_auth (self-hosted)
+#   CONTEXT_BACKEND_BASE_URL         self-hosted backend origin
+#   CONTEXT_AUTH_BASE_URL            self-hosted Better Auth origin
+#   CONTEXT_MCP_BASE_URL             MCP origin; defaults to backend origin
 #
 # SAFETY: this script only ever touches Context for Claude. It never reads, writes, signs, launches, or kills
 # /Applications/Omi.app, /Applications/Omi Beta.app, or any com.omi.computer-macos* bundle, and
@@ -52,6 +57,11 @@ DO_RELEASE=0
 CONTEXT_VERSION_VALUE="${CONTEXT_VERSION:-}"
 CONTEXT_BUILD_NUMBER_VALUE="${CONTEXT_BUILD_NUMBER:-}"
 SPARKLE_PUBLIC_KEY="${CONTEXT_SPARKLE_PUBLIC_KEY:-}"
+DEPLOYMENT_PROFILE="${CONTEXT_DEPLOYMENT_PROFILE:-omi_cloud}"
+AUTH_PROVIDER="${CONTEXT_AUTH_PROVIDER:-firebase}"
+BACKEND_BASE_URL="${CONTEXT_BACKEND_BASE_URL:-}"
+AUTH_BASE_URL="${CONTEXT_AUTH_BASE_URL:-}"
+MCP_BASE_URL="${CONTEXT_MCP_BASE_URL:-${CONTEXT_BACKEND_BASE_URL:-}}"
 
 log()  { printf '\033[1m[context]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[context]\033[0m %s\n' "$*" >&2; }
@@ -285,6 +295,29 @@ fi
 
 cp -f "$INFO_PLIST_TEMPLATE" "$APP_BUNDLE/Contents/Info.plist"
 
+if [[ "$DEPLOYMENT_PROFILE" == "self_hosted" ]]; then
+    [[ "$AUTH_PROVIDER" == "better_auth" ]] \
+        || die "self_hosted requires CONTEXT_AUTH_PROVIDER=better_auth"
+    [[ -n "$BACKEND_BASE_URL" ]] || die "self_hosted requires CONTEXT_BACKEND_BASE_URL"
+    [[ -n "$AUTH_BASE_URL" ]] || die "self_hosted requires CONTEXT_AUTH_BASE_URL"
+    [[ -n "$MCP_BASE_URL" ]] || die "self_hosted requires CONTEXT_MCP_BASE_URL or CONTEXT_BACKEND_BASE_URL"
+    if [[ "$DO_RELEASE" -eq 1 ]]; then
+        [[ "$BACKEND_BASE_URL" == https://* ]] || die "release backend URL must use HTTPS"
+        [[ "$AUTH_BASE_URL" == https://* ]] || die "release auth URL must use HTTPS"
+        [[ "$MCP_BASE_URL" == https://* ]] || die "release MCP URL must use HTTPS"
+    fi
+elif [[ "$DEPLOYMENT_PROFILE" != "omi_cloud" ]]; then
+    die "CONTEXT_DEPLOYMENT_PROFILE must be omi_cloud or self_hosted"
+fi
+
+/usr/libexec/PlistBuddy -c "Set :OmiDeploymentProfile $DEPLOYMENT_PROFILE" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :OmiAuthProvider $AUTH_PROVIDER" "$APP_BUNDLE/Contents/Info.plist"
+if [[ "$DEPLOYMENT_PROFILE" == "self_hosted" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :OmiBackendBaseURL $BACKEND_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :OmiAuthBaseURL $AUTH_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :OmiMCPBaseURL $MCP_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
+fi
+
 # A developer build claims its own identity. All four keys move together by necessity: the binary
 # was copied to Contents/MacOS/$APP_NAME above, so CFBundleExecutable has to follow it or macOS
 # cannot launch the bundle at all, and CFBundleName is the name macOS shows in the Screen Recording
@@ -295,6 +328,7 @@ if [[ "$CFC_IS_DEVELOPMENT" -eq 1 ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :OmiAllowsInsecureLocalEndpoints true" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
 # Release metadata belongs to the immutable built bundle, not the source template. This lets a tag
@@ -327,7 +361,9 @@ fi
 # plist ships at desktop/macos. `OMI_GOOGLE_SERVICE_PLIST` overrides it for a checkout laid out
 # differently. An absolute path to somebody's home directory would build only on their machine.
 GS_PLIST="${OMI_GOOGLE_SERVICE_PLIST:-$PKG_DIR/../macos/Desktop/Sources/GoogleService-Info.plist}"
-if [[ -f "$GS_PLIST" ]]; then
+if [[ "$AUTH_PROVIDER" != "firebase" ]]; then
+  log "Better Auth profile selected; Firebase client key is not included"
+elif [[ -f "$GS_PLIST" ]]; then
   FB_KEY="$(/usr/libexec/PlistBuddy -c 'Print :API_KEY' "$GS_PLIST" 2>/dev/null || true)"
   if [[ -n "$FB_KEY" ]]; then
     /usr/libexec/PlistBuddy -c "Add :OmiFirebaseAPIKey string $FB_KEY" "$APP_BUNDLE/Contents/Info.plist" >/dev/null 2>&1 \

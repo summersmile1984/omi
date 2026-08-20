@@ -1,3 +1,4 @@
+import ContextCore
 import Foundation
 import Security
 
@@ -99,6 +100,8 @@ enum UpdatePolicy {
     case signedWithoutATeam = "signed-without-a-team"
     /// `CONTEXT_DISABLE_UPDATES` is set in this process's environment.
     case disabledByEnvironment = "disabled-by-environment"
+    /// A self-hosted release did not select the Omi GitHub release feed.
+    case disabledByDeploymentProfile = "disabled-by-deployment-profile"
   }
 
   enum Decision: Equatable, Sendable {
@@ -127,8 +130,10 @@ enum UpdatePolicy {
     feedURL: String?,
     publicEDKey: String?,
     teamIdentifier: String?,
-    isDisabledByEnvironment: Bool
+    isDisabledByEnvironment: Bool,
+    deploymentMode: ContextDeploymentMode = .omiCloud
   ) -> Decision {
+    if deploymentMode == .selfHosted { return .refused(.disabledByDeploymentProfile) }
     if isDisabledByEnvironment { return .refused(.disabledByEnvironment) }
     guard bundleIdentifier == shippingBundleIdentifier else {
       return .refused(.notTheShippingBundle)
@@ -212,6 +217,8 @@ enum UpdatePolicy {
         + "so it doesn't update itself — rebuild from source instead."
     case .disabledByEnvironment:
       return "Updates are turned off for this run by \(disableEnvironmentVariable)."
+    case .disabledByDeploymentProfile:
+      return "This self-hosted build has no update feed selected, so it won't contact Omi's release feed."
     }
   }
 
@@ -227,7 +234,8 @@ enum UpdatePolicy {
       feedURL: bundle.object(forInfoDictionaryKey: "SUFeedURL") as? String,
       publicEDKey: bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
       teamIdentifier: currentTeamIdentifier(),
-      isDisabledByEnvironment: environment[disableEnvironmentVariable] != nil)
+      isDisabledByEnvironment: environment[disableEnvironmentVariable] != nil,
+      deploymentMode: ContextDeploymentProfile.current.mode)
   }
 
   /// The Team ID of the certificate this process is signed with, or `nil` when there is none.

@@ -241,9 +241,20 @@ class TaskAgentManager: ObservableObject {
   // static + nonisolated: blocking Process/waitUntilExit work runs off the main
   // actor, and being static means Task.detached call sites capture only Sendable
   // values (never the main-actor-isolated `self`).
+  nonisolated static func allowsClaudeTaskAgent(
+    deploymentProfile: DesktopDeploymentProfile
+  ) -> Bool {
+    DesktopModelEgressPolicy.allowsAgentAdapter(
+      "claude-code-task-agent",
+      deploymentProfile: deploymentProfile)
+  }
+
   nonisolated private static func launchTmuxSession(sessionName: String, prompt: String, workingDir: String)
     async throws
   {
+    guard allowsClaudeTaskAgent(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
+      throw AgentError.modelCapabilityUnavailable
+    }
     // Kill any stale tmux session with the same name (e.g. survived an app restart)
     killTmuxSession(sessionName: sessionName)
 
@@ -714,12 +725,15 @@ class TaskAgentManager: ObservableObject {
   // MARK: - Errors
 
   enum AgentError: LocalizedError {
+    case modelCapabilityUnavailable
     case tmuxNotInstalled
     case claudeNotInstalled
     case launchFailed(String)
 
     var errorDescription: String? {
       switch self {
+      case .modelCapabilityUnavailable:
+        return "Task Agent is unavailable: this deployment routes model calls through its backend"
       case .tmuxNotInstalled:
         return "tmux is not installed. Install with: brew install tmux"
       case .claudeNotInstalled:

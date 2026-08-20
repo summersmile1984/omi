@@ -21,6 +21,10 @@ class PostHogManager {
   /// Initialize PostHog with analytics
   func initialize() {
     guard !isInitialized else { return }
+    guard DesktopBackendEnvironment.allowsOmiManagedServices else {
+      log("PostHog: disabled by self-hosted deployment profile")
+      return
+    }
 
     let config = PostHogConfig(projectToken: apiKey, host: host)
 

@@ -215,6 +215,7 @@ actor GeminiClient {
 
   nonisolated enum GeminiClientError: LocalizedError {
     case missingAPIKey
+    case capabilityUnavailable(String)
     case networkError(Error)
     case invalidResponse
     case apiError(String, retryable: Bool? = nil)
@@ -243,7 +244,7 @@ actor GeminiClient {
           || lower.contains("internal error")
       case .networkError:
         return true
-      case .invalidResponse, .missingAPIKey:
+      case .invalidResponse, .missingAPIKey, .capabilityUnavailable:
         return false
       }
     }
@@ -259,7 +260,7 @@ actor GeminiClient {
         // A transport error after dispatch is ambiguous. Only a typed backend
         // response may authorize replay.
         return false
-      case .invalidResponse, .missingAPIKey:
+      case .invalidResponse, .missingAPIKey, .capabilityUnavailable:
         return false
       }
     }
@@ -280,6 +281,8 @@ actor GeminiClient {
           || lower.contains("http 402")
       case .missingAPIKey:
         return true
+      case .capabilityUnavailable:
+        return true
       case .networkError, .invalidResponse:
         return false
       }
@@ -289,6 +292,8 @@ actor GeminiClient {
       switch self {
       case .missingAPIKey:
         return "AI features are not configured. Please update the app."
+      case .capabilityUnavailable(let capability):
+        return "AI capability is unavailable in this deployment (\(capability))."
       case .networkError:
         return "Could not reach AI service. Check your internet connection and try again."
       case .invalidResponse:
@@ -374,7 +379,13 @@ actor GeminiClient {
     // measurable click-through cost, and until now it was invisible at runtime — the model
     // appears only inside the request URL, so a tier change could not be confirmed on a
     // real machine. Model IDs are non-sensitive and low-cardinality.
-    log("GeminiClient: model=\(model) fallback=\(fallbackModel ?? "none")")
+    if DesktopModelEgressPolicy.proactiveRoute(
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile
+    ) == .providerNeutralBackendCapability {
+      log("GeminiClient: route=provider_neutral_backend workload=\(workload.rawValue)")
+    } else {
+      log("GeminiClient: model=\(model) fallback=\(fallbackModel ?? "none")")
+    }
   }
 
   /// Get Firebase auth header for proxy requests
@@ -387,6 +398,67 @@ actor GeminiClient {
   /// other than the instance default (e.g. the fallback model).
   private func proxyURL(action: String, modelOverride: String? = nil) -> URL {
     URL(string: "\(Self.proxyBaseURL)v1/proxy/gemini/models/\(modelOverride ?? model):\(action)")!
+  }
+
+  private var usesProviderNeutralBackend: Bool {
+    DesktopModelEgressPolicy.proactiveRoute(
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile
+    ) == .providerNeutralBackendCapability
+  }
+
+  private var providerNeutralOperation: String {
+    workload == .interactive ? "proactive_reasoning" : "proactive_extraction"
+  }
+
+  private func providerNeutralSchema(
+    _ schema: GeminiRequest.GenerationConfig.ResponseSchema
+  ) throws -> [String: Any] {
+    let data = try JSONEncoder().encode(schema)
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      throw GeminiClientError.invalidResponse
+    }
+    return Self.providerNeutralJSONSchema(object)
+  }
+
+  static func providerNeutralJSONSchema(_ object: [String: Any]) -> [String: Any] {
+    var normalized = object.reduce(into: [String: Any]()) { result, pair in
+      if pair.key == "type", let type = pair.value as? String {
+        result[pair.key] = type.lowercased()
+      } else if let nested = pair.value as? [String: Any] {
+        result[pair.key] = providerNeutralJSONSchema(nested)
+      } else if let array = pair.value as? [[String: Any]] {
+        result[pair.key] = array.map(providerNeutralJSONSchema)
+      } else {
+        result[pair.key] = pair.value
+      }
+    }
+    if normalized["type"] as? String == "object" {
+      normalized["additionalProperties"] = false
+    }
+    return normalized
+  }
+
+  private func providerNeutralCompletion(
+    prompt: String,
+    systemPrompt: String,
+    imageData: Data?,
+    jsonSchema: sending [String: Any],
+    maxCompletionTokens: Int = 1024
+  ) async throws -> String {
+    do {
+      let result = try await ProactiveLaneClient.shared.complete(
+        operation: providerNeutralOperation,
+        prompt: systemPrompt,
+        uncachedPrompt: prompt,
+        imageData: imageData,
+        jsonSchema: jsonSchema,
+        maxCompletionTokens: maxCompletionTokens)
+      return result.content
+    } catch let error as ProactiveLaneClientError {
+      throw GeminiClientError.apiError(error.localizedDescription, retryable: false)
+    } catch {
+      throw GeminiClientError.networkError(error)
+    }
   }
 
   /// Log the raw API error message for debugging and throw a sanitized error.
@@ -527,7 +599,7 @@ actor GeminiClient {
           return "provider_5xx"
         }
         return "other"
-      case .invalidResponse, .missingAPIKey:
+      case .invalidResponse, .missingAPIKey, .capabilityUnavailable:
         return "other"
       }
     }
@@ -558,6 +630,13 @@ actor GeminiClient {
     responseSchema: GeminiRequest.GenerationConfig.ResponseSchema,
     thinkingBudget: Int = 0
   ) async throws -> String {
+    if usesProviderNeutralBackend {
+      return try await providerNeutralCompletion(
+        prompt: prompt,
+        systemPrompt: systemPrompt,
+        imageData: imageData,
+        jsonSchema: providerNeutralSchema(responseSchema))
+    }
     let maxRetries = 2
     var lastError: Error?
 
@@ -645,6 +724,26 @@ actor GeminiClient {
     timeout: TimeInterval = 300,
     thinkingBudget: Int = 0
   ) async throws -> String {
+    if usesProviderNeutralBackend {
+      let schema: [String: Any] = [
+        "type": "object",
+        "properties": ["answer": ["type": "string"]],
+        "required": ["answer"],
+        "additionalProperties": false,
+      ]
+      let content = try await providerNeutralCompletion(
+        prompt: prompt,
+        systemPrompt: systemPrompt,
+        imageData: nil,
+        jsonSchema: schema)
+      guard let data = content.data(using: .utf8),
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let answer = object["answer"] as? String
+      else {
+        throw GeminiClientError.invalidResponse
+      }
+      return answer
+    }
     var lastError: Error?
 
     for attempt in 0...maxRetries {
@@ -717,6 +816,13 @@ actor GeminiClient {
     responseSchema: GeminiRequest.GenerationConfig.ResponseSchema,
     thinkingBudget: Int = 0
   ) async throws -> String {
+    if usesProviderNeutralBackend {
+      return try await providerNeutralCompletion(
+        prompt: prompt,
+        systemPrompt: systemPrompt,
+        imageData: nil,
+        jsonSchema: providerNeutralSchema(responseSchema))
+    }
     let maxRetries = 2
     var lastError: Error?
 
@@ -1008,6 +1114,9 @@ extension GeminiClient {
     forceToolCall: Bool = false,
     thinkingBudget: Int = 0
   ) async throws -> ToolChatResult {
+    if usesProviderNeutralBackend {
+      throw GeminiClientError.capabilityUnavailable("proactive_tool_calling")
+    }
     // Try the primary model first; if it keeps failing transiently, fall back to the
     // secondary model (e.g. Pro overloaded → Flash) before giving up.
     let models: [String] = {

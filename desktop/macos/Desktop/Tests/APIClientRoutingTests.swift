@@ -428,6 +428,30 @@ final class APIClientRoutingTests: XCTestCase {
     )
   }
 
+  func testSelfHostedMCPUsesExplicitOriginForServingAndOAuth() {
+    let bundleIdentifier = AppBuild.productionBundleIdentifier
+    let origin = "https://mcp.fork.example/"
+
+    XCTAssertEqual(
+      MemoryExportDestination.mcpServerURL(
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: origin,
+        deploymentProfile: .selfHosted),
+      "https://mcp.fork.example/v1/mcp/sse")
+    XCTAssertEqual(
+      MemoryExportDestination.mcpAuthorizeURL(
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: origin,
+        deploymentProfile: .selfHosted),
+      "https://mcp.fork.example/authorize")
+    XCTAssertEqual(
+      MemoryExportDestination.mcpTokenURL(
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: origin,
+        deploymentProfile: .selfHosted),
+      "https://mcp.fork.example/token")
+  }
+
   func testNonProductionBundlesDefaultToDevelopmentBackends() {
     XCTAssertTrue(
       DesktopBackendEnvironment.shouldUseDevelopmentBackends(

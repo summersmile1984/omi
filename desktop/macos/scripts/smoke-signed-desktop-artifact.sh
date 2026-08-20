@@ -469,12 +469,23 @@ assert_backend_routing_config() {
     || fail "artifact .env contains a local/dev tunnel backend reference"
 
   if [[ "$IS_EXTERNAL_PREVIEW" != true ]]; then
-    local firebase_plist firebase_project
+    local firebase_plist firebase_project deployment_profile auth_provider
     firebase_plist="$APP_BUNDLE/Contents/Resources/GoogleService-Info.plist"
-    [[ -f "$firebase_plist" ]] || fail "production-family artifact is missing GoogleService-Info.plist"
-    firebase_project="$(/usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "$firebase_plist" 2>/dev/null || true)"
-    [[ "$firebase_project" == "based-hardware" ]] \
-      || fail "production-family artifact Firebase project must be based-hardware"
+    deployment_profile="$(sed -n 's/^OMI_DEPLOYMENT_PROFILE=//p' "$env_file" | tail -1)"
+    auth_provider="$(sed -n 's/^OMI_AUTH_PROVIDER=//p' "$env_file" | tail -1)"
+    if [[ "$deployment_profile" == "self_hosted" ]]; then
+      [[ "$auth_provider" == "better_auth" ]] \
+        || fail "self-hosted production artifact must select Better Auth"
+      [[ ! -f "$firebase_plist" ]] \
+        || fail "self-hosted production artifact must not bundle GoogleService-Info.plist"
+      ! grep -Eq '^(FIREBASE_API_KEY|FIREBASE_AUTH_EMULATOR_HOST|FIREBASE_PROJECT_ID)=' "$env_file" \
+        || fail "self-hosted production artifact must not bundle Firebase configuration"
+    else
+      [[ -f "$firebase_plist" ]] || fail "production-family artifact is missing GoogleService-Info.plist"
+      firebase_project="$(/usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "$firebase_plist" 2>/dev/null || true)"
+      [[ "$firebase_project" == "based-hardware" ]] \
+        || fail "production-family artifact Firebase project must be based-hardware"
+    fi
     ! grep -q '^OMI_AUTH_API_URL=' "$env_file" \
       || fail "production-family artifact must not bundle an OMI_AUTH_API_URL override"
     ! grep -Eq '^(FIREBASE_AUTH_EMULATOR_HOST|FIREBASE_PROJECT_ID|OMI_DESKTOP_LOCAL_PROFILE)=' "$env_file" \

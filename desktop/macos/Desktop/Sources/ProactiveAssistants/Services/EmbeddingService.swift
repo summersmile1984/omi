@@ -72,6 +72,9 @@ actor EmbeddingService {
   ///   - text: Text to embed
   ///   - taskType: Optional Gemini task type (e.g. "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY")
   func embed(text: String, taskType: String? = nil) async throws -> [Float] {
+    guard DesktopBackendEnvironment.deploymentProfile != .selfHosted else {
+      throw EmbeddingError.capabilityUnavailable
+    }
     guard !Self.proxyBaseURL.isEmpty else {
       throw EmbeddingError.missingAPIKey
     }
@@ -122,6 +125,9 @@ actor EmbeddingService {
   ///   - texts: Texts to embed
   ///   - taskType: Optional Gemini task type (e.g. "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY")
   func embedBatch(texts: [String], taskType: String? = nil) async throws -> [[Float]] {
+    guard DesktopBackendEnvironment.deploymentProfile != .selfHosted else {
+      throw EmbeddingError.capabilityUnavailable
+    }
     guard !Self.proxyBaseURL.isEmpty else {
       throw EmbeddingError.missingAPIKey
     }
@@ -389,6 +395,7 @@ actor EmbeddingService {
 
   enum EmbeddingError: LocalizedError {
     case missingAPIKey
+    case capabilityUnavailable
     case invalidResponse
     case serverError(statusCode: Int, body: String)
 
@@ -396,6 +403,8 @@ actor EmbeddingService {
       switch self {
       case .missingAPIKey:
         return "missing_api_key"
+      case .capabilityUnavailable:
+        return "capability_unavailable"
       case .invalidResponse:
         return "malformed_response"
       case .serverError(let statusCode, let body):
@@ -418,7 +427,9 @@ actor EmbeddingService {
       }
     }
 
-    var isExpectedProductState: Bool { reasonCode == "product_gate" }
+    var isExpectedProductState: Bool {
+      reasonCode == "product_gate" || reasonCode == "capability_unavailable"
+    }
     var isTransient: Bool { reasonCode == "rate_limited" || reasonCode == "temporarily_unavailable" }
     var isNonActionableForSentry: Bool { isExpectedProductState || isTransient }
 
@@ -426,6 +437,8 @@ actor EmbeddingService {
       switch self {
       case .missingAPIKey:
         return "AI features are not configured. Please update the app."
+      case .capabilityUnavailable:
+        return "Embedding capability is unavailable in this deployment."
       case .invalidResponse:
         return "Embedding API returned an unexpected response."
       case .serverError:

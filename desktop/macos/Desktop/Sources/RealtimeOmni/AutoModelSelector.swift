@@ -38,6 +38,10 @@ final class AutoModelSelector {
 
   /// Call at launch and once a day. No-op if a fresh pick already exists.
   func refreshIfStale() {
+    guard DesktopBackendEnvironment.deploymentProfile == .omiCloud else {
+      log("AutoModelSelector: unavailable for self_hosted; no implicit provider selected")
+      return
+    }
     if let last = lastRefresh, Date().timeIntervalSince(last) < refreshInterval, currentPick != nil {
       return
     }
@@ -53,6 +57,10 @@ final class AutoModelSelector {
   /// Analysis quality/speed scoring server-side, keeping the AA key off the
   /// client). Falls back to Gemini only if we've never had a pick.
   func refresh() async {
+    guard DesktopBackendEnvironment.deploymentProfile == .omiCloud else {
+      log("AutoModelSelector: refresh denied for self_hosted; deployment capability owns provider")
+      return
+    }
     let httpBase = DesktopBackendEnvironment.pythonBaseURL()
       .replacingOccurrences(of: "wss://", with: "https://")
       .replacingOccurrences(of: "ws://", with: "http://")

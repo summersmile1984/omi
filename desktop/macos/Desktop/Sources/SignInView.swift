@@ -21,6 +21,9 @@ struct SignInView: View {
   /// Sign-in opens on just the Omi mark + wordmark; after a beat the mark spins,
   /// the "Omi" wordmark fades, and the rest of the screen reveals.
   @State private var introRevealed = false
+  @State private var email = ""
+  @State private var password = ""
+  @State private var displayName = ""
 
   var body: some View {
     // Clean, centered, symmetric sign-in: brand on the glass, one primary capsule and one secondary,
@@ -52,25 +55,51 @@ struct SignInView: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, InkLayout.rhythm[5])
 
-          VStack(spacing: InkLayout.rhythm[6]) {
-            signInButton(
-              title: "Continue with Apple",
-              kind: .primary,
-              leading: { Image(systemName: "applelogo").font(.system(size: 13)) },
-              action: { signIn(apple: true) })
-            signInButton(
-              title: "Continue with Google",
-              kind: .secondary,
-              leading: { GoogleLogo().frame(width: 15, height: 15) },
-              action: { signIn(apple: false) })
+          if DesktopBackendEnvironment.identityProvider == .betterAuth {
+            VStack(spacing: InkLayout.rhythm[6]) {
+              TextField("Name (for a new account)", text: $displayName)
+                .textContentType(.name)
+                .betterAuthField()
+              TextField("Email", text: $email)
+                .textContentType(.emailAddress)
+                .betterAuthField()
+              SecureField("Password", text: $password)
+                .textContentType(.password)
+                .betterAuthField()
+              signInButton(
+                title: "Sign in",
+                kind: .primary,
+                leading: { Image(systemName: "person.crop.circle").font(.system(size: 13)) },
+                action: { signInWithBetterAuth(createAccount: false) })
+              signInButton(
+                title: "Create account",
+                kind: .secondary,
+                leading: { Image(systemName: "person.crop.circle.badge.plus").font(.system(size: 13)) },
+                action: { signInWithBetterAuth(createAccount: true) })
+            }
+            .frame(maxWidth: 320)
+            .frame(maxWidth: .infinity)
+            .padding(.top, InkLayout.rhythm[0])
+          } else {
+            VStack(spacing: InkLayout.rhythm[6]) {
+              signInButton(
+                title: "Continue with Apple",
+                kind: .primary,
+                leading: { Image(systemName: "applelogo").font(.system(size: 13)) },
+                action: { signIn(apple: true) })
+              signInButton(
+                title: "Continue with Google",
+                kind: .secondary,
+                leading: { GoogleLogo().frame(width: 15, height: 15) },
+                action: { signIn(apple: false) })
+            }
+            .frame(maxWidth: 320)
+            .frame(maxWidth: .infinity)
+            .padding(.top, InkLayout.rhythm[0])
           }
           // This used to be a fixed 320pt column. When the window was
           // narrower (or its usable width was reduced by window chrome),
           // both sign-in actions extended past the visible content area.
-          .frame(maxWidth: 320)
-          .frame(maxWidth: .infinity)
-          .padding(.top, InkLayout.rhythm[0])
-
           if authState.isLoading {
             HStack(spacing: InkLayout.rhythm[5]) {
               // `Ink.primary`, not a wash: a spinner nobody can see is a screen that looks frozen.
@@ -158,6 +187,38 @@ struct SignInView: View {
         NSLog("OMI Sign in error: %@", errorMsg)
       }
     }
+  }
+
+  private func signInWithBetterAuth(createAccount: Bool) {
+    Task {
+      do {
+        try await AuthService.shared.signInWithBetterAuth(
+          email: email,
+          password: password,
+          displayName: displayName,
+          createAccount: createAccount
+        )
+      } catch is CancellationError {
+      } catch {
+        let errorMsg = UserFacingErrorPresentation.message(for: error, while: .signIn)
+        authState.error = errorMsg
+        NSLog("OMI Better Auth sign in error: %@", errorMsg)
+      }
+    }
+  }
+}
+
+extension View {
+  fileprivate func betterAuthField() -> some View {
+    self
+      .textFieldStyle(.plain)
+      .padding(.horizontal, 12)
+      .frame(height: 38)
+      .background(Ink.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(Ink.primary.opacity(0.16), lineWidth: 1)
+      )
   }
 }
 

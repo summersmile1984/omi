@@ -2318,7 +2318,9 @@ workflows:
           [ -f "omi_icon.icns" ] && cp omi_icon.icns "$APP_BUNDLE/Contents/Resources/OmiIcon.icns"
 
           # Copy Firebase config
-          cp Desktop/Sources/GoogleService-Info.plist "$APP_BUNDLE/Contents/Resources/"
+          if [[ "${OMI_DEPLOYMENT_PROFILE:-omi_cloud}" != "self_hosted" ]]; then
+            cp Desktop/Sources/GoogleService-Info.plist "$APP_BUNDLE/Contents/Resources/"
+          fi
 
           # Copy SPM resource bundle (app assets: permissions.gif, herologo.png, etc.)
           # Use x86_64 arch path; fallback to arm64
@@ -2337,6 +2339,11 @@ workflows:
               "$APP_BUNDLE/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
           else
             echo "WARNING: SPM resource bundle not found (non-fatal)"
+          fi
+          # SwiftPM also embeds the managed Google plist inside its resource
+          # bundle. Self-hosted artifacts retain no identity-provider config.
+          if [[ "${OMI_DEPLOYMENT_PROFILE:-omi_cloud}" == "self_hosted" ]]; then
+            find "$APP_BUNDLE/Contents/Resources" -type f -name 'GoogleService-Info.plist' -delete
           fi
 
           # Copy agent (Claude Code integration)
@@ -2405,15 +2412,36 @@ workflows:
           [ -f "Desktop/embedded.provisionprofile" ] && \
             cp Desktop/embedded.provisionprofile "$APP_BUNDLE/Contents/embedded.provisionprofile"
 
-          # Write runtime .env from OMI_DESKTOP_APP_ENV_V3 secret (base64-encoded, secrets only)
-          # V3 contains only: FIREBASE_API_KEY, MIXPANEL_PROJECT_TOKEN
-          # URLs are appended from workflow vars below
-          # API keys (Deepgram, Gemini, Anthropic, Google Calendar) are fetched at
-          # runtime from backend /v1/config/api-keys via APIKeyService
-          echo "$OMI_DESKTOP_APP_ENV_V3" | base64 --decode > "$APP_BUNDLE/Contents/Resources/.env"
+          # A self-hosted Better Auth bundle has no Firebase build secret. Cloud
+          # bundles retain the signed V3 environment contract. Better Auth is
+          # the identity default for self-hosted profiles on every client.
+          DEPLOYMENT_PROFILE="${OMI_DEPLOYMENT_PROFILE:-omi_cloud}"
+          AUTH_PROVIDER="${OMI_AUTH_PROVIDER:-}"
+          if [[ -z "$AUTH_PROVIDER" ]]; then
+            [[ "$DEPLOYMENT_PROFILE" == "self_hosted" ]] && AUTH_PROVIDER="better_auth" || AUTH_PROVIDER="firebase"
+          fi
+          if [[ "$DEPLOYMENT_PROFILE" == "self_hosted" && "$AUTH_PROVIDER" == "better_auth" ]]; then
+            : > "$APP_BUNDLE/Contents/Resources/.env"
+          else
+            : "${OMI_DESKTOP_APP_ENV_V3:?OMI_DESKTOP_APP_ENV_V3 is required for an Omi Cloud desktop bundle}"
+            echo "$OMI_DESKTOP_APP_ENV_V3" | base64 --decode > "$APP_BUNDLE/Contents/Resources/.env"
+          fi
           # Append backend URLs from workflow vars
           echo "OMI_DESKTOP_API_URL=$OMI_DESKTOP_API_URL" >> "$APP_BUNDLE/Contents/Resources/.env"
           echo "OMI_PYTHON_API_URL=$OMI_PYTHON_API_URL" >> "$APP_BUNDLE/Contents/Resources/.env"
+          # Deployment identity is part of the signed bundle. Fork release
+          # workflows may select self_hosted + better_auth without shipping a
+          # runtime environment override that can be changed after signing.
+          echo "OMI_DEPLOYMENT_PROFILE=$DEPLOYMENT_PROFILE" >> "$APP_BUNDLE/Contents/Resources/.env"
+          echo "OMI_AUTH_PROVIDER=$AUTH_PROVIDER" >> "$APP_BUNDLE/Contents/Resources/.env"
+          echo "OMI_AUTH_SERVER_URL=${OMI_AUTH_SERVER_URL:-$OMI_PYTHON_API_URL}" >> "$APP_BUNDLE/Contents/Resources/.env"
+          echo "OMI_MCP_API_URL=${OMI_MCP_API_URL:-$OMI_PYTHON_API_URL}" >> "$APP_BUNDLE/Contents/Resources/.env"
+          for key in OMI_SHARE_BASE_URL OMI_REALTIME_MODEL_PROVIDER OMI_MCP_CHATGPT_OAUTH_CLIENT_ID OMI_MCP_CLAUDE_OAUTH_CLIENT_ID; do
+            value="${!key:-}"
+            if [[ -n "$value" ]]; then
+              echo "$key=$value" >> "$APP_BUNDLE/Contents/Resources/.env"
+            fi
+          done
           echo "App bundle created: $APP_BUNDLE"
 
           # Generate symbols from the final universal executable after lipo and

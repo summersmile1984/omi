@@ -1,3 +1,4 @@
+import ContextCore
 import Foundation
 
 /// Everything that can go wrong between here and `api.omi.me`.
@@ -79,17 +80,9 @@ final class OmiAPI: @unchecked Sendable {
     /// environment per request would let a mid-run `setenv` split one session's traffic across two
     /// backends. The override is ignored in release builds so a wrapper or launcher cannot redirect
     /// production traffic.
-    static var baseURL: URL { resolvedBaseURL }
+    static var baseURL: URL { ContextDeploymentProfile.current.backendBaseURL }
 
     static let productionBaseURL = URL(string: "https://api.omi.me/")!
-
-    private static let resolvedBaseURL: URL = {
-        #if DEBUG
-        return resolveBaseURL(ProcessInfo.processInfo.environment["OMI_PYTHON_API_URL"])
-        #else
-        return productionBaseURL
-        #endif
-    }()
 
     /// Always ends in `/`, so relative paths concatenate onto it without a special case.
     static func resolveBaseURL(_ override: String?) -> URL {

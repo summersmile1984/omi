@@ -533,16 +533,16 @@ actor AgentVMService {
       await AgentSyncService.shared.stop(flushPendingChanges: false)
       return
     }
-    // Send Firebase token so the VM can call backend tools
-    await sendFirebaseToken(
+    // Send the configured identity provider's backend JWT so the VM can call backend tools.
+    await sendBackendIdentityCredential(
       vmIP: vmIP,
       authToken: authToken,
       ownerID: ownerID,
       generation: generation)
   }
 
-  /// Send the user's Firebase ID token to the VM so it can call Python backend tools.
-  private func sendFirebaseToken(
+  /// Send the user's backend JWT to the VM so it can call Python backend tools.
+  private func sendBackendIdentityCredential(
     vmIP: String,
     authToken: String,
     ownerID: String,
@@ -560,8 +560,10 @@ actor AgentVMService {
       request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
       request.timeoutInterval = 15
 
-      let body: [String: String] = ["firebaseToken": idToken]
-      request.httpBody = try JSONSerialization.data(withJSONObject: body)
+      request.httpBody = try AgentBackendIdentityCredential(
+        accessToken: idToken,
+        identityProvider: DesktopBackendEnvironment.identityProvider
+      ).encoded()
 
       let (data, response) = try await URLSession.shared.data(for: request)
       guard isCurrent(ownerID: ownerID, generation: generation) else { return }
@@ -571,16 +573,16 @@ actor AgentVMService {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let toolCount = json["toolsRegistered"] as? Int
         {
-          log("AgentVMService: Firebase token sent to VM (\(toolCount) backend tools registered)")
+          log("AgentVMService: backend identity token sent to VM (\(toolCount) backend tools registered)")
         } else {
-          log("AgentVMService: Firebase token sent to VM")
+          log("AgentVMService: backend identity token sent to VM")
         }
       } else {
         let body = String(data: data, encoding: .utf8) ?? ""
-        log("AgentVMService: Failed to send Firebase token — HTTP \(httpResponse.statusCode): \(body)")
+        log("AgentVMService: Failed to send backend identity token — HTTP \(httpResponse.statusCode): \(body)")
       }
     } catch {
-      log("AgentVMService: Failed to send Firebase token — \(error.localizedDescription)")
+      log("AgentVMService: Failed to send backend identity token — \(error.localizedDescription)")
     }
   }
 

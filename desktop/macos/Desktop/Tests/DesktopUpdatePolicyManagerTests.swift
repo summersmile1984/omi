@@ -62,6 +62,20 @@ final class DesktopUpdatePolicyManagerTests: XCTestCase {
     XCTAssertEqual(policy.downloadURL, DesktopUpdatePolicyResponse.stableManualDownloadURL.absoluteString)
   }
 
+  func testMalformedSelfHostedPolicyFallsBackToForkDownloadOrigin() {
+    let forkFallback = AppBuild.manualDownloadURL(
+      channel: "stable",
+      isBetaIdentity: false,
+      deploymentProfile: .selfHosted,
+      backendBaseURL: "https://backend.fork.example/")
+
+    XCTAssertEqual(
+      DesktopUpdatePolicyResponse.resolvedDownloadURL(
+        from: "javascript:alert(1)",
+        fallbackURL: forkFallback),
+      forkFallback)
+  }
+
   func testUnavailableRefreshClearsStaleRequiredPolicy() async {
     let required = DesktopUpdatePolicyResponse(
       id: "legacy-repair",

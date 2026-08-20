@@ -1502,9 +1502,17 @@ final class DesktopAutomationActionRegistry {
       else {
         return ["error": "missing or unreadable 'pcm' file (expected raw s16le 16k mono)"]
       }
-      let provider =
-        params["provider"].flatMap(RealtimeOmniProvider.init(rawValue:))
-        ?? RealtimeOmniSettings.shared.effectiveProvider
+      let provider: RealtimeOmniProvider?
+      if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+        provider = RealtimeOmniSettings.shared.resolvedRelayProvider
+      } else {
+        provider =
+          params["provider"].flatMap(RealtimeOmniProvider.init(rawValue:))
+          ?? RealtimeOmniSettings.shared.effectiveProvider
+      }
+      guard let provider else {
+        return ["error": "realtime backend capability unavailable"]
+      }
       let base = DesktopBackendEnvironment.pythonBaseURL()
       let authHeader: String
       do {

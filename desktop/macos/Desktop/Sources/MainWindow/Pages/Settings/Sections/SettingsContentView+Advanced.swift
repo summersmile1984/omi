@@ -155,9 +155,13 @@ extension SettingsContentView {
           }
 
           if let p = RealtimeOmniProvider(rawValue: realtimeOmniProvider), p == .auto {
-            Text("\(p.subtitle) · currently \(RealtimeOmniSettings.shared.effectiveProvider.displayName)")
-              .scaledFont(size: OmiType.caption)
-              .foregroundColor(Ink.secondary)
+            Text(
+              DesktopBackendEnvironment.deploymentProfile == .selfHosted
+                ? "Provider is selected by the signed deployment capability"
+                : "\(p.subtitle) · currently \(RealtimeOmniSettings.shared.effectiveProvider.displayName)"
+            )
+            .scaledFont(size: OmiType.caption)
+            .foregroundColor(Ink.secondary)
           } else if let p = RealtimeOmniProvider(rawValue: realtimeOmniProvider) {
             Text(p.subtitle)
               .scaledFont(size: OmiType.caption)

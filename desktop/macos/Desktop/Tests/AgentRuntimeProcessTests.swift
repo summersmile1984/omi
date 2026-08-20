@@ -295,6 +295,31 @@ private actor ContextAdmissionRetryTestState {
 }
 
 final class AgentRuntimeProcessTests: XCTestCase {
+  func testSelfHostedRuntimeStripsInheritedModelVendorCredentials() {
+    var environment = [
+      "OPENAI_API_KEY": "openai",
+      "ANTHROPIC_API_KEY": "anthropic",
+      "GEMINI_API_KEY": "gemini",
+      "GOOGLE_API_KEY": "google",
+      "DEEPGRAM_API_KEY": "deepgram",
+      "KEEP_ME": "backend-config",
+    ]
+
+    AgentRuntimeProcess.removeInheritedModelVendorEnvironment(
+      from: &environment,
+      deploymentProfile: .selfHosted)
+
+    XCTAssertEqual(environment, ["KEEP_ME": "backend-config"])
+  }
+
+  func testCloudRuntimePreservesExistingVendorCredentialBehavior() {
+    var environment = ["OPENAI_API_KEY": "openai"]
+    AgentRuntimeProcess.removeInheritedModelVendorEnvironment(
+      from: &environment,
+      deploymentProfile: .omiCloud)
+    XCTAssertEqual(environment["OPENAI_API_KEY"], "openai")
+  }
+
   func testHermeticFaultModelTokenIsNonProductionOnlyAndAvoidsFirebaseRefresh() {
     let environment = [
       AgentRuntimeCredentialPolicy.hermeticFaultModelTokenEnvironmentKey: "fault-suite-model-token"

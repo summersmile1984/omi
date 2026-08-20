@@ -1,6 +1,23 @@
 import Foundation
 @preconcurrency import GRDB
 
+struct AgentBackendIdentityCredential: Encodable, Equatable {
+  enum CredentialError: Error, Equatable { case emptyAccessToken }
+
+  let accessToken: String
+  let identityProvider: DesktopIdentityProvider
+
+  init(accessToken: String, identityProvider: DesktopIdentityProvider) throws {
+    guard !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw CredentialError.emptyAccessToken
+    }
+    self.accessToken = accessToken
+    self.identityProvider = identityProvider
+  }
+
+  func encoded() throws -> Data { try JSONEncoder().encode(self) }
+}
+
 /// A bound query parameter for the sync batch query. Kept as a small typed enum
 /// (rather than `any DatabaseValueConvertible`) so `buildBatchQuery` is pure and
 /// its output is `Equatable`-testable.
@@ -417,7 +434,7 @@ actor AgentSyncService {
     }
   }
 
-  // MARK: - Firebase token refresh
+  // MARK: - Backend identity token refresh
 
   private func refreshFirebaseToken(generation: UInt64) async {
     guard syncGeneration == generation else { return }
@@ -435,17 +452,19 @@ actor AgentSyncService {
       request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
       request.timeoutInterval = 15
 
-      let body: [String: String] = ["firebaseToken": idToken]
-      request.httpBody = try JSONSerialization.data(withJSONObject: body)
+      request.httpBody = try AgentBackendIdentityCredential(
+        accessToken: idToken,
+        identityProvider: DesktopBackendEnvironment.identityProvider
+      ).encoded()
 
       let (_, response) = try await networkHooks.dataForRequest(request)
       guard isCurrent(generation: generation, ownerID: ownerID, vmIP: vmIP) else { return }
       if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
         lastTokenRefresh = Date()
-        log("AgentSync: Firebase token refreshed on VM")
+        log("AgentSync: backend identity token refreshed on VM")
       }
     } catch {
-      log("AgentSync: Firebase token refresh failed — \(error.localizedDescription)")
+      log("AgentSync: backend identity token refresh failed — \(error.localizedDescription)")
     }
   }
 

@@ -886,8 +886,12 @@ def check_desktop_preview_publishing() -> list[str]:
             errors.append(f"external preview build classification is missing: {required}")
 
     updater_text = updater.read_text(encoding="utf-8") if updater.exists() else ""
-    if "startingUpdater: AppBuild.allowsSparkleUpdates" not in updater_text:
-        errors.append("external preview builds must not start the shared Sparkle updater")
+    for required in (
+        "startingUpdater: Self.allowsSparkleUpdates",
+        "AppBuild.allowsSparkleUpdates && DesktopBackendEnvironment.allowsOmiManagedServices",
+    ):
+        if required not in updater_text:
+            errors.append("external preview or self-hosted builds must not start the shared Sparkle updater")
 
     smoke_text = smoke.read_text(encoding="utf-8") if smoke.exists() else ""
     for required in ("--preview", "IS_EXTERNAL_PREVIEW", "external preview must not carry a shared Sparkle feed"):

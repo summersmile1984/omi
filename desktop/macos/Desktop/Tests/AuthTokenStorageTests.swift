@@ -247,6 +247,34 @@ final class AuthTokenStorageTests: XCTestCase {
     XCTAssertEqual(UserDefaults.standard.string(forKey: .authUserId), "user-keychain")
   }
 
+  func testBetterAuthSessionPersistsProviderWithOpaqueRefreshCredential() throws {
+    var keychainPayload: String?
+    let auth = AuthService()
+    auth.tokenStorageHooks = AuthService.TokenStorageHooks(
+      usesKeychainTokenStorage: { true },
+      allowsUserDefaultsFallback: { false },
+      readKeychainString: { _, _ in keychainPayload },
+      writeKeychainString: { value, _, _ in
+        keychainPayload = value
+        return true
+      },
+      deleteKeychainString: { _, _ in keychainPayload = nil },
+      recordsFallbackTelemetry: false
+    )
+
+    try auth.saveTokens(
+      idToken: "backend-jwt",
+      refreshToken: "better-auth-session",
+      expiresIn: 900,
+      userId: "better-user",
+      provider: .betterAuth)
+
+    let data = try XCTUnwrap(keychainPayload?.data(using: .utf8))
+    let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    XCTAssertEqual(stored["authProvider"] as? String, "better_auth")
+    XCTAssertEqual(stored["refreshToken"] as? String, "better-auth-session")
+  }
+
   /// Regression: the token Keychain store must NOT opt into the data-protection keychain.
   /// That requires a `keychain-access-groups` entitlement this non-sandboxed Developer ID
   /// app doesn't have, so on the signed/notarized build every SecItem write failed with

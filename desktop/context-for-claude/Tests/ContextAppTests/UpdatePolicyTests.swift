@@ -39,6 +39,18 @@ final class UpdatePolicyTests: XCTestCase {
     XCTAssertEqual(decide(), .allowed)
   }
 
+  func testSelfHostedProfileNeverUsesTheOmiUpdateFeed() {
+    XCTAssertEqual(
+      UpdatePolicy.decide(
+        bundleIdentifier: UpdatePolicy.shippingBundleIdentifier,
+        feedURL: UpdatePolicy.releaseFeedURL,
+        publicEDKey: Self.realShapedKey,
+        teamIdentifier: "ABCDE12345",
+        isDisabledByEnvironment: false,
+        deploymentMode: .selfHosted),
+      .refused(.disabledByDeploymentProfile))
+  }
+
   // MARK: - Local builds must not update themselves
 
   /// **The regression test for the failure this policy exists to prevent.**

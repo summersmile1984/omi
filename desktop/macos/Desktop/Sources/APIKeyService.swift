@@ -88,7 +88,11 @@ final class APIKeyService: ObservableObject {
   }
 
   var effectiveGeminiKey: String? {
-    nonEmpty(UserDefaults.standard.string(forKey: "dev_gemini_api_key")) ?? geminiApiKey
+    guard
+      DesktopModelEgressPolicy.allowsBYOK(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else { return nil }
+    return nonEmpty(UserDefaults.standard.string(forKey: "dev_gemini_api_key")) ?? geminiApiKey
   }
 
   var effectiveFirebaseApiKey: String? {
@@ -163,8 +167,13 @@ final class APIKeyService: ObservableObject {
 
   /// Push effective keys into the process environment for backward compatibility.
   private func applyToEnvironment() {
-    if let key = effectiveGeminiKey {
+    if DesktopModelEgressPolicy.allowsBYOK(
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile),
+      let key = effectiveGeminiKey
+    {
       setenv("GEMINI_API_KEY", key, 1)
+    } else {
+      unsetenv("GEMINI_API_KEY")
     }
     if let key = effectiveFirebaseApiKey {
       setenv("FIREBASE_API_KEY", key, 1)
@@ -184,7 +193,11 @@ final class APIKeyService: ObservableObject {
   // Use these from actors, nonisolated inits, and background threads.
 
   nonisolated static var currentGeminiKey: String? {
-    nonEmptyStatic(UserDefaults.standard.string(forKey: "dev_gemini_api_key"))
+    guard
+      DesktopModelEgressPolicy.allowsBYOK(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else { return nil }
+    return nonEmptyStatic(UserDefaults.standard.string(forKey: "dev_gemini_api_key"))
       ?? (getenv("GEMINI_API_KEY").flatMap { String(validatingCString: $0) })
   }
 
@@ -210,7 +223,11 @@ final class APIKeyService: ObservableObject {
   /// The subscription-bypass gate: when this is true, the user is on the free
   /// plan and we attach their keys to every backend request.
   nonisolated static var isByokActive: Bool {
-    BYOKProvider.allCases.allSatisfy { byokKey($0) != nil }
+    guard
+      DesktopModelEgressPolicy.allowsBYOK(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else { return false }
+    return BYOKProvider.allCases.allSatisfy { byokKey($0) != nil }
   }
 
   /// SHA-256 fingerprint of a key, used by the backend to detect when the
@@ -222,6 +239,10 @@ final class APIKeyService: ObservableObject {
 
   /// Map of provider → (key, fingerprint) for every provider the user has configured.
   nonisolated static var byokSnapshot: [BYOKProvider: (key: String, fingerprint: String)] {
+    guard
+      DesktopModelEgressPolicy.allowsBYOK(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else { return [:] }
     var out: [BYOKProvider: (String, String)] = [:]
     for provider in BYOKProvider.allCases {
       if let key = byokKey(provider) {

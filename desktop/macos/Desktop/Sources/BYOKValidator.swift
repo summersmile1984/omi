@@ -8,6 +8,8 @@ import Foundation
 /// that shows up later as a normal inference error — at least it's not a key
 /// shape problem we could have caught up front).
 enum BYOKValidator {
+  typealias Transport = @Sendable (URL, [String: String]) async -> Status
+
   enum Status: Equatable {
     case notChecked
     case checking
@@ -16,20 +18,29 @@ enum BYOKValidator {
   }
 
   /// Hit the provider and return whether the key authenticates.
-  static func validate(_ provider: BYOKProvider, key: String) async -> Status {
+  static func validate(
+    _ provider: BYOKProvider,
+    key: String,
+    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile,
+    transport: Transport? = nil
+  ) async -> Status {
     let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return .failed("Empty") }
+    guard DesktopModelEgressPolicy.allowsBYOK(deploymentProfile: deploymentProfile) else {
+      return .failed("Unavailable: this deployment routes model credentials through its backend")
+    }
+    let send = transport ?? ping
 
     switch provider {
     case .openai:
-      return await ping(
-        url: URL(string: "https://api.openai.com/v1/models")!,
-        headers: ["Authorization": "Bearer \(trimmed)"]
+      return await send(
+        URL(string: "https://api.openai.com/v1/models")!,
+        ["Authorization": "Bearer \(trimmed)"]
       )
     case .anthropic:
-      return await ping(
-        url: URL(string: "https://api.anthropic.com/v1/models?limit=1")!,
-        headers: [
+      return await send(
+        URL(string: "https://api.anthropic.com/v1/models?limit=1")!,
+        [
           "x-api-key": trimmed,
           "anthropic-version": "2023-06-01",
         ]
@@ -37,11 +48,11 @@ enum BYOKValidator {
     case .gemini:
       var components = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models")!
       components.queryItems = [URLQueryItem(name: "key", value: trimmed)]
-      return await ping(url: components.url!, headers: [:])
+      return await send(components.url!, [:])
     case .deepgram:
-      return await ping(
-        url: URL(string: "https://api.deepgram.com/v1/projects")!,
-        headers: ["Authorization": "Token \(trimmed)"]
+      return await send(
+        URL(string: "https://api.deepgram.com/v1/projects")!,
+        ["Authorization": "Token \(trimmed)"]
       )
     }
   }

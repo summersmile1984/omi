@@ -1,4 +1,5 @@
 import AppKit
+import ContextCore
 import CryptoKit
 import Foundation
 import Security
@@ -40,7 +41,7 @@ enum OmiAuthError: LocalizedError {
     }
 }
 
-/// Signs Context for Claude in to the user's real Omi account and keeps a Firebase ID token available.
+/// Signs Context for Claude in to the selected deployment and keeps a backend JWT available.
 ///
 /// No Firebase SDK. Context for Claude is a small menu-bar app and the SDK would drag in a method-swizzling
 /// app-delegate, its own keychain item, and a background token-refresh thread we cannot see into.
@@ -81,7 +82,7 @@ final class OmiAuth: ObservableObject {
     /// Treat a token as dead five minutes early: a request that starts inside the window must not
     /// arrive at the backend after the token turns invalid.
     private static let expiryBuffer: TimeInterval = 300
-    private static let apiBaseURL = "https://api.omi.me/"
+    private static var apiBaseURL: String { ContextDeploymentProfile.current.authBaseURL.absoluteString }
 
     private let urlSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -114,6 +115,12 @@ final class OmiAuth: ObservableObject {
     private func adoptRestored(_ stored: OmiSession?) {
         guard let stored else {
             ContextLog.info("No stored Omi session", "auth")
+            return
+        }
+        guard ContextDeploymentProfile.current.acceptsStoredIdentityProvider(stored.authProvider) else {
+            ContextLog.info("Stored identity provider does not match this deployment; clearing the local session", "auth")
+            Task.detached(priority: .utility) { SessionStore.clear() }
+            MCPKeyProvisioner.shared.removeKey()
             return
         }
         adopt(stored, email: Self.claim("email", in: stored.idToken))
@@ -164,6 +171,9 @@ final class OmiAuth: ObservableObject {
     /// The user is told, not stonewalled: this throws before the browser opens, and both sign-in
     /// surfaces already render the thrown sentence.
     func signIn(provider: OmiAuthProvider) async throws {
+        guard ContextDeploymentProfile.current.identityProvider == .firebase else {
+            throw OmiAuthError.badResponse("This build uses Better Auth email sign-in.")
+        }
         guard !isSigningIn else {
             ContextLog.info("Sign-in already in progress; ignoring duplicate request", "auth")
             throw OmiAuthError.cancelled
@@ -236,7 +246,8 @@ final class OmiAuth: ObservableObject {
             idToken: tokens.idToken,
             refreshToken: tokens.refreshToken,
             expiryTime: Date().timeIntervalSince1970 + Double(tokens.expiresIn) - Self.expiryBuffer,
-            tokenUserId: tokens.localId
+            tokenUserId: tokens.localId,
+            authProvider: .firebase
         )
         guard SessionStore.save(stored) else {
             throw OmiAuthError.badResponse(
@@ -247,7 +258,53 @@ final class OmiAuth: ObservableObject {
         Task { await MCPKeyProvisioner.shared.ensureKey() }
     }
 
+    /// Email/password entry point used by signed self-hosted release profiles.
+    func signIn(email: String, password: String, name: String?, createAccount: Bool) async throws {
+        guard ContextDeploymentProfile.current.identityProvider == .betterAuth else {
+            throw OmiAuthError.badResponse("This build uses browser sign-in.")
+        }
+        guard !isSigningIn else { throw OmiAuthError.cancelled }
+        guard !NetworkEgress.isSuppressed(.signIn) else {
+            NetworkEgress.recordSuppression(.signIn, outcome: .bypassed)
+            throw OmiAuthError.airgapMode
+        }
+
+        isSigningIn = true
+        lastSignInError = nil
+        defer { isSigningIn = false }
+        let client = betterAuthClient(for: .signIn)
+        let credential: ContextBetterAuthCredential
+        do {
+            if createAccount {
+                let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard !trimmedName.isEmpty else {
+                    throw OmiAuthError.badResponse("Enter your name to create an account.")
+                }
+                credential = try await client.signUp(name: trimmedName, email: email, password: password)
+            } else {
+                credential = try await client.signIn(email: email, password: password)
+            }
+        } catch {
+            lastSignInError = error.localizedDescription
+            throw error
+        }
+        let stored = OmiSession(
+            idToken: credential.jwt,
+            refreshToken: credential.sessionToken,
+            expiryTime: Date().timeIntervalSince1970 + Double(credential.expiresIn) - Self.expiryBuffer,
+            tokenUserId: credential.userID,
+            authProvider: .betterAuth)
+        guard SessionStore.save(stored) else {
+            throw OmiAuthError.badResponse(
+                "Signed in, but Context for Claude couldn't store the session in your Keychain. Try again.")
+        }
+        adopt(stored, email: credential.email)
+        ContextLog.info("Signed in via Better Auth", "auth")
+        Task { await MCPKeyProvisioner.shared.ensureKey() }
+    }
+
     func signOut() {
+        let remoteSession = session
         refreshFlight?.task.cancel()
         refreshFlight = nil
         session = nil
@@ -261,6 +318,11 @@ final class OmiAuth: ObservableObject {
         SessionStore.clear()
         MCPKeyProvisioner.shared.removeKey()
         ContextLog.info("Signed out", "auth")
+        if remoteSession?.authProvider == .betterAuth, let token = remoteSession?.refreshToken {
+            Task {
+                try? await betterAuthClient(for: .tokenRefresh).signOut(sessionToken: token)
+            }
+        }
     }
 
     // MARK: - Tokens
@@ -318,6 +380,10 @@ final class OmiAuth: ObservableObject {
             throw OmiAuthError.airgapMode
         }
 
+        if session?.authProvider == .betterAuth {
+            return try await performBetterAuthRefresh(sessionToken: refreshToken)
+        }
+
         let apiKey = try Self.firebaseAPIKey()
         guard let url = URL(string: "https://securetoken.googleapis.com/v1/token?key=\(apiKey)") else {
             throw OmiAuthError.badResponse("Context for Claude couldn't build the token refresh URL.")
@@ -370,7 +436,8 @@ final class OmiAuth: ObservableObject {
             idToken: idToken,
             refreshToken: newRefreshToken,
             expiryTime: Date().timeIntervalSince1970 + Double(expiresIn) - Self.expiryBuffer,
-            tokenUserId: ownerId
+            tokenUserId: ownerId,
+            authProvider: .firebase
         )
         guard !Task.isCancelled, let session = self.session, session.refreshToken == refreshToken, self.isSignedIn else {
             throw OmiAuthError.cancelled
@@ -383,6 +450,42 @@ final class OmiAuth: ObservableObject {
         adopt(refreshed, email: email)
         ContextLog.info("Refreshed Omi session", "auth")
         return idToken
+    }
+
+    private func performBetterAuthRefresh(sessionToken: String) async throws -> String {
+        do {
+            let credential = try await betterAuthClient(for: .tokenRefresh).refresh(
+                sessionToken: sessionToken, expectedUserID: session?.tokenUserId)
+            let refreshed = OmiSession(
+                idToken: credential.jwt,
+                refreshToken: credential.sessionToken,
+                expiryTime: Date().timeIntervalSince1970 + Double(credential.expiresIn) - Self.expiryBuffer,
+                tokenUserId: credential.userID,
+                authProvider: .betterAuth)
+            guard !Task.isCancelled, self.session?.refreshToken == sessionToken, isSignedIn else {
+                throw OmiAuthError.cancelled
+            }
+            if !SessionStore.save(refreshed) {
+                ContextLog.error("Refreshed session couldn't be stored; keeping it in memory for this launch", "auth")
+            }
+            adopt(refreshed, email: credential.email ?? email)
+            ContextLog.info("Refreshed Better Auth session", "auth")
+            return credential.jwt
+        } catch ContextBetterAuthError.sessionRejected {
+            signOut()
+            throw OmiAuthError.badResponse("Your self-hosted session expired. Sign in again.")
+        }
+    }
+
+    private func betterAuthClient(for egressClient: NetworkEgress.Client) -> ContextBetterAuthClient {
+        ContextBetterAuthClient(baseURL: ContextDeploymentProfile.current.authBaseURL) { [urlSession] request in
+            guard !NetworkEgress.isSuppressed(egressClient) else {
+                NetworkEgress.recordSuppression(
+                    egressClient, outcome: egressClient == .signIn ? .bypassed : .degraded)
+                throw OmiAuthError.airgapMode
+            }
+            return try await urlSession.data(for: request)
+        }
     }
 
     /// Only these mean the refresh credential itself is gone. Anything else, including a 400 whose

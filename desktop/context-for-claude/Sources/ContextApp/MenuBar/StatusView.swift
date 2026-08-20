@@ -59,6 +59,8 @@ struct StatusView: View {
     /// `@State`, so re-opening the popover comes back to the resting state — which is right, because
     /// re-opening it is how a user backs out of a menu on this platform.
     @State private var offeringProviders = false
+    @State private var authEmail = ""
+    @State private var authPassword = ""
 
     /// Permissions are flipped in System Settings, outside this process, and a system-audio consent
     /// dialog can be answered while the popover is still on screen. The subscription lives and dies
@@ -458,7 +460,19 @@ struct StatusView: View {
             // Outside the inset above on purpose: these are commands, and every command on this
             // surface starts on the one left edge `MenuCommand` holds open for a checkmark.
             // Indenting them under the sentence would give the popover a second left margin.
-            if account.showsProviders {
+            if account.showsProviders && ContextDeploymentProfile.current.identityProvider == .betterAuth {
+                VStack(spacing: 6) {
+                    TextField("Email", text: $authEmail)
+                        .textContentType(.emailAddress)
+                    SecureField("Password", text: $authPassword)
+                        .textContentType(.password)
+                    Button(auth.isSigningIn ? "Signing in…" : "Sign in") { beginBetterAuthSignIn() }
+                        .disabled(auth.isSigningIn || authEmail.isEmpty || authPassword.isEmpty)
+                }
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, Self.rowTextInset)
+                .padding(.bottom, 4)
+            } else if account.showsProviders {
                 ForEach(AccountPresentation.providers) { choice in
                     MenuCommand(title: choice.title) { begin(choice.provider) }
                 }
@@ -501,6 +515,24 @@ struct StatusView: View {
     private func begin(_ provider: OmiAuthProvider) {
         offeringProviders = false
         auth.beginSignIn(provider: provider)
+    }
+
+    private func beginBetterAuthSignIn() {
+        Task { @MainActor in
+            do {
+                try await auth.signIn(
+                    email: authEmail.trimmingCharacters(in: .whitespacesAndNewlines),
+                    password: authPassword,
+                    name: nil,
+                    createAccount: false)
+                offeringProviders = false
+                authPassword = ""
+            } catch {
+                // OmiAuth publishes the browser flow error itself. Keep parity for the
+                // credential form, whose view remains alive while the request runs.
+                offeringProviders = true
+            }
+        }
     }
 
     private var uploadNote: String? {
