@@ -118,10 +118,7 @@ PR CI runs `flutter test` and an analyzer ratchet (`app/scripts/analyze_ratchet.
 - Google Sign In (`google_sign_in` package)
 - Apple Sign In (`sign_in_with_apple` package, includes PKCE via nonce+sha256)
 - Firebase remains the default identity layer for official builds
-- Self-hosted builds set `OMI_APP_PROFILE=self_hosted`, `OMI_API_BASE_URL`, `OMI_AUTH_PROVIDER=better_auth`, `OMI_AUTH_SERVER_URL`, `OMI_PRIVACY_URL`, `OMI_TERMS_URL`, and `OMI_SHARE_BASE_URL` at compile time; all public URLs must be explicit non-Omi HTTPS endpoints. Debug and release use Better Auth email/password, persist its signed bearer session, and refresh the short-lived backend JWT through `/api/auth/token`
-- Better Auth build helpers also set `OMI_FIREBASE_SERVICES_ENABLED=false`; the app must not initialize Firebase Auth, FCM, or Crashlytics in that profile
-- Production iOS self-host artifacts use `scripts/build_ios_self_host_release.sh`; it requires operator-owned bundle/app-group/callback identities, selects `Info-SelfHost.plist` plus `RunnerSelfHost.entitlements`, sets `FIREBASE_SERVICES_ENABLED=NO`, and restores the developer's local `Custom.xcconfig` after the build. `OMI_IOS_NO_CODESIGN=true` is an explicit local smoke mode only; releasable artifacts use the default signed path. The native copy phase must omit `GoogleService-Info.plist`
-- Never include `AUTH_DEV_ISSUER_SECRET` or another server secret in any mobile build
+- Self-hosted builds use Better Auth, explicit operator-owned HTTPS origins, and no Firebase services or Google plist. Build with `scripts/build_ios_self_host_release.sh`; the complete signed env/native identity contract is in `../deploy/self-host/README.md`. Never embed a server secret in a mobile build
 
 ### Request Headers
 All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash, X-App-Version, plus Bearer token.
