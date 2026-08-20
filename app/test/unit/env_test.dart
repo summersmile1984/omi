@@ -277,6 +277,7 @@ void main() {
         configuredPrivacyUrl: 'https://legal.example.com/privacy',
         configuredTermsUrl: 'https://legal.example.com/terms',
         configuredShareUrl: 'https://share.example.com',
+        configuredMcpBaseUrl: 'https://mcp.example.com',
       );
       for (final invalid in ['', 'http://legal.example.com/privacy', 'https://www.omi.me/pages/privacy']) {
         expect(
@@ -285,6 +286,28 @@ void main() {
             configuredPrivacyUrl: invalid,
             configuredTermsUrl: 'https://legal.example.com/terms',
             configuredShareUrl: 'https://share.example.com',
+            configuredMcpBaseUrl: 'https://mcp.example.com',
+          ),
+          throwsStateError,
+        );
+      }
+    });
+
+    test('self-hosted MCP authority is explicit and distinct from the API origin', () {
+      expect(
+        Env.resolveMcpBaseUrl(
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredMcpBaseUrl: 'https://mcp.example.com/root/',
+          configuredApiBaseUrl: 'https://api.example.com/',
+        ),
+        'https://mcp.example.com/root/',
+      );
+      for (final invalid in ['', 'http://mcp.example.com', 'https://api.omi.me']) {
+        expect(
+          () => Env.resolveMcpBaseUrl(
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredMcpBaseUrl: invalid,
+            configuredApiBaseUrl: 'https://api.example.com/',
           ),
           throwsStateError,
         );

@@ -61,7 +61,7 @@ class _AboutOmiPageState extends State<AboutOmiPage> {
               contentPadding: const EdgeInsets.fromLTRB(4, 0, 24, 0),
               trailing: const Icon(Icons.help_outline_outlined, color: Colors.white, size: 20),
               onTap: () async {
-                await IntercomManager.instance.intercom.displayMessenger();
+                await IntercomManager.instance.displayMessenger();
               },
             ),
             ListTile(

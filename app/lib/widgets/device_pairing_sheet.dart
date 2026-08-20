@@ -94,7 +94,7 @@ class DevicePairingSheet extends StatelessWidget {
                   onTap: () async {
                     PlatformManager.instance.analytics.connectionGuideReportIssue(product.id);
                     onDismissAll();
-                    await IntercomManager.instance.intercom.displayMessenger();
+                    await IntercomManager.instance.displayMessenger();
                   },
                   child: Text(
                     context.l10n.reportAnIssue,

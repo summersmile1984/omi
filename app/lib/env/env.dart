@@ -12,6 +12,7 @@ abstract class Env {
   static const privacyPolicyUrl = String.fromEnvironment('OMI_PRIVACY_URL');
   static const termsOfServiceUrl = String.fromEnvironment('OMI_TERMS_URL');
   static const shareBaseUrl = String.fromEnvironment('OMI_SHARE_BASE_URL');
+  static const _mcpBaseUrlFromDefine = String.fromEnvironment('OMI_MCP_BASE_URL');
   static const firebaseAuthEmulatorHost = String.fromEnvironment(
     'OMI_FIREBASE_AUTH_EMULATOR_HOST',
     defaultValue: '127.0.0.1',
@@ -59,6 +60,34 @@ abstract class Env {
 
   static String get authRedirectUri => '$authCallbackScheme://auth/callback';
 
+  static String resolveMcpBaseUrl({
+    AppEnvironmentProfile? configuredProfile,
+    String? configuredMcpBaseUrl,
+    String? configuredApiBaseUrl,
+  }) {
+    final effectiveProfile = configuredProfile ?? profile;
+    var value = (configuredMcpBaseUrl ?? _mcpBaseUrlFromDefine).trim();
+    if (value.isEmpty && effectiveProfile != AppEnvironmentProfile.selfHosted) {
+      value = (configuredApiBaseUrl ?? apiBaseUrl ?? '').trim();
+    }
+    final uri = Uri.tryParse(value);
+    if (uri == null || uri.host.isEmpty || uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment) {
+      throw StateError('OMI_MCP_BASE_URL must be an absolute origin.');
+    }
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted &&
+        (uri.scheme != 'https' || _isOmiOperatedHost(uri.host))) {
+      throw StateError('Profile self_hosted requires an explicit non-Omi HTTPS OMI_MCP_BASE_URL.');
+    }
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      throw StateError('OMI_MCP_BASE_URL must use HTTP or HTTPS.');
+    }
+    final origin = uri.hasPort ? '${uri.scheme}://${uri.host}:${uri.port}' : '${uri.scheme}://${uri.host}';
+    final path = uri.path.replaceFirst(RegExp(r'/+$'), '');
+    return path.isEmpty || path == '/' ? '$origin/' : '$origin$path/';
+  }
+
+  static String get mcpSseUrl => '${resolveMcpBaseUrl()}v1/mcp/sse';
+
   /// OAuth remains on the production identity plane even when mobile Beta
   /// uses the development serving API for product traffic.
   static String get authApiBaseUrl => authApiBaseUrlForProfile(profile, servingApiBaseUrl: apiBaseUrl);
@@ -90,6 +119,7 @@ abstract class Env {
     String? configuredPrivacyUrl,
     String? configuredTermsUrl,
     String? configuredShareUrl,
+    String? configuredMcpBaseUrl,
   }) {
     final effectiveProfile = configuredProfile ?? profile;
     if (effectiveProfile != AppEnvironmentProfile.selfHosted) return;
@@ -97,6 +127,7 @@ abstract class Env {
       'OMI_PRIVACY_URL': configuredPrivacyUrl ?? privacyPolicyUrl,
       'OMI_TERMS_URL': configuredTermsUrl ?? termsOfServiceUrl,
       'OMI_SHARE_BASE_URL': configuredShareUrl ?? shareBaseUrl,
+      'OMI_MCP_BASE_URL': configuredMcpBaseUrl ?? _mcpBaseUrlFromDefine,
     }.entries) {
       final uri = Uri.tryParse(origin.value.trim());
       if (uri == null ||

@@ -327,6 +327,7 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   Future<void> linkWithGoogle() async {
+    AuthService.ensureProviderLinkAllowed(Env.profile);
     setLoading(true);
     try {
       final result = await completeProviderLinkAndMigrate(
@@ -349,6 +350,7 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   Future<void> linkWithApple() async {
+    AuthService.ensureProviderLinkAllowed(Env.profile);
     setLoading(true);
     try {
       final appleProvider = AppleAuthProvider();

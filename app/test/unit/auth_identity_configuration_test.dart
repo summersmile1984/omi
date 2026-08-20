@@ -3,6 +3,13 @@ import 'package:omi/env/environment_profile.dart';
 import 'package:omi/services/auth_service.dart';
 
 void main() {
+  test('self-hosted provider linking rejects before any Firebase/OAuth entrypoint', () {
+    expect(
+      () => AuthService.ensureProviderLinkAllowed(AppEnvironmentProfile.selfHosted),
+      throwsStateError,
+    );
+  });
+
   test('Better Auth production configuration is explicit and Firebase-free', () {
     expect(
       () => AuthService.validateIdentityConfiguration(
@@ -20,6 +27,7 @@ void main() {
       (provider: 'better_auth', url: 'http://auth.example.com', firebaseEnabled: false),
       (provider: 'better_auth', url: 'https://auth.example.com', firebaseEnabled: true),
       (provider: 'firebase', url: '', firebaseEnabled: false),
+      (provider: 'firebase', url: '', firebaseEnabled: true),
       (provider: 'unknown', url: 'https://auth.example.com', firebaseEnabled: false),
       (provider: 'better_auth', url: 'https://auth.omi.me', firebaseEnabled: false),
     ]) {

@@ -168,6 +168,9 @@ class AuthService {
       throw StateError('Unsupported OMI_AUTH_PROVIDER: $provider');
     }
     if (provider == 'firebase') {
+      if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+        throw StateError('Profile self_hosted requires OMI_AUTH_PROVIDER=better_auth');
+      }
       if (!firebaseServicesEnabled) {
         throw StateError('Firebase identity requires OMI_FIREBASE_SERVICES_ENABLED=true');
       }
@@ -961,6 +964,7 @@ class AuthService {
   }
 
   Future<ProviderLinkResult?> linkWithProvider(String provider) async {
+    ensureProviderLinkAllowed(Env.profile);
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) {
@@ -1067,6 +1071,12 @@ class AuthService {
       Logger.debug('OAuth linking error: $e');
       Logger.handle(e, StackTrace.current, message: 'Account linking failed');
       rethrow;
+    }
+  }
+
+  static void ensureProviderLinkAllowed(AppEnvironmentProfile profile) {
+    if (profile == AppEnvironmentProfile.selfHosted || betterAuthEnabled) {
+      throw StateError('Firebase provider linking is unavailable for Better Auth deployments.');
     }
   }
 

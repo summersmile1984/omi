@@ -1,6 +1,7 @@
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import 'package:omi/models/stt_response_schema.dart';
+import 'package:omi/env/environment_profile.dart';
 
 enum SttProvider {
   omi,
@@ -20,6 +21,12 @@ enum SttProvider {
   static SttProvider fromString(String value) {
     return SttProvider.values.firstWhere((e) => e.name == value, orElse: () => SttProvider.omi);
   }
+
+  /// Self-hosted releases route network STT through their configured backend.
+  /// Only fully local engines remain selectable client-side; a persisted legacy
+  /// vendor/custom config is also rejected by the socket factory before URL use.
+  bool get isSelfHostedClientSafe =>
+      this == SttProvider.omi || this == SttProvider.localWhisper || this == SttProvider.onDeviceWhisper;
 }
 
 /// Request types determine how audio is sent and whether it's streaming
@@ -395,6 +402,11 @@ class SttProviderConfig {
 
   static List<SttProviderConfig> get allProviders => _visibleProviders.map((p) => get(p)).toList();
 
+  static List<SttProviderConfig> providersForProfile(AppEnvironmentProfile profile) =>
+      profile == AppEnvironmentProfile.selfHosted
+          ? allProviders.where((config) => config.provider.isSelfHostedClientSafe).toList()
+          : allProviders;
+
   /// Template names that are live/streaming
   static const Set<String> liveRequestTemplates = {'Deepgram', 'Google Gemini'};
 
@@ -411,6 +423,9 @@ class SttProviderConfig {
         ).buildRequestConfig(apiKey: 'YOUR_API_KEY', language: 'en', model: 'gemini-2.5-flash'),
         'Whisper': get(SttProvider.localWhisper).buildRequestConfig(language: 'en'),
       };
+
+  static Map<String, Map<String, dynamic>> requestTemplatesForProfile(AppEnvironmentProfile profile) =>
+      profile == AppEnvironmentProfile.selfHosted ? {'Whisper': requestTemplates['Whisper']!} : requestTemplates;
 
   Map<String, dynamic> getFullTemplateJson() => {
         'request_type': requestType,

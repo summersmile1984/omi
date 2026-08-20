@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
-import 'package:intercom_flutter/intercom_flutter.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
+import 'package:omi/utils/analytics/intercom.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 
@@ -83,7 +83,7 @@ class LoggerSnackbar extends StatelessWidget {
           icon: const Icon(Icons.share, color: Colors.white),
           onPressed: () async {
             // TODO: Have a custom form which can be prefilled with the error stack trace instead of opening the Gleap Homepage
-            await Intercom.instance.displayMessenger();
+            await IntercomManager.instance.displayMessenger();
           },
         ),
       ),

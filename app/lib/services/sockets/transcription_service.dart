@@ -9,6 +9,7 @@ import 'package:omi/backend/schema/transcript_segment.dart';
 import 'package:omi/env/env.dart';
 import 'package:omi/models/custom_stt_config.dart';
 import 'package:omi/models/stt_provider.dart';
+import 'package:omi/env/environment_profile.dart';
 import 'package:omi/services/sockets/on_device_apple_provider.dart';
 import 'package:omi/services/sockets/on_device_whisper_provider.dart';
 import 'package:omi/services/sockets/pure_socket.dart';
@@ -358,9 +359,13 @@ class TranscriptSocketServiceFactory {
     );
 
     // Create primary socket based on isLive/isPolling
-    final primarySocket = config.isLive
-        ? _createStreamingSocket(sampleRate, codec, config)
-        : _createPollingSocket(sampleRate, codec, config);
+    final primarySocket = createTransportForProfile(
+      profile: Env.profile,
+      provider: config.provider,
+      createTransport: () => config.isLive
+          ? _createStreamingSocket(sampleRate, codec, config)
+          : _createPollingSocket(sampleRate, codec, config),
+    );
 
     // Wrap with composite service (primary STT + Omi backend)
     return _createCompositeService(
@@ -373,6 +378,30 @@ class TranscriptSocketServiceFactory {
       sttProvider: config.provider.name,
       forwardRawAudioToSecondary: config.sendRawAudioToOmi,
     );
+  }
+
+  static void validateDeploymentEgress({
+    required AppEnvironmentProfile profile,
+    required SttProvider provider,
+  }) {
+    if (profile == AppEnvironmentProfile.selfHosted && !provider.isSelfHostedClientSafe) {
+      throw StateError(
+        'Profile self_hosted routes network transcription through its configured backend; '
+        'client-direct ${provider.name} is unavailable.',
+      );
+    }
+  }
+
+  /// Compiler-visible network-object construction boundary. Production passes
+  /// the socket/provider constructor as [createTransport]; self-hosted rejection
+  /// happens before that closure can read a URL or instantiate an HTTP/WS client.
+  static T createTransportForProfile<T>({
+    required AppEnvironmentProfile profile,
+    required SttProvider provider,
+    required T Function() createTransport,
+  }) {
+    validateDeploymentEgress(profile: profile, provider: provider);
+    return createTransport();
   }
 
   /// Create streaming WebSocket for live STT

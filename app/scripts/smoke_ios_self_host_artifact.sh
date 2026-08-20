@@ -34,6 +34,13 @@ if plutil -convert json -o - "$info_plist" | grep -Eiq 'h[.]omi[.]me|googleuserc
   exit 1
 fi
 
+if find "$artifact" -type f -print0 \
+  | xargs -0 strings \
+  | grep -Eiq 'AIza[0-9A-Za-z_-]{30,}|phc_[0-9A-Za-z_-]{12,}|[0-9]+-[0-9A-Za-z_-]+\.apps\.googleusercontent\.com|[a-z0-9-]+\.firebaseapp\.com|[a-z0-9-]+\.firebaseio\.com'; then
+  echo 'self-hosted iOS artifact retained populated managed-client credentials/origins' >&2
+  exit 1
+fi
+
 if [[ "$verify_signature" == true ]]; then
   codesign --verify --deep --strict "$artifact"
 fi

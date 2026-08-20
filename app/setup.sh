@@ -66,7 +66,7 @@ if [[ -n "${OMI_AUTH_PROVIDER:-}" ]]; then
     exit 1
   fi
   if [[ "${OMI_AUTH_PROVIDER}" == "better_auth" ]]; then
-    for public_origin in OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL; do
+    for public_origin in OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL OMI_MCP_BASE_URL; do
       if [[ -z "${!public_origin:-}" ]]; then
         echo "${public_origin} is required when OMI_AUTH_PROVIDER=better_auth" >&2
         exit 1
@@ -278,12 +278,28 @@ function run_build_android() {
     "--dart-define=OMI_API_BASE_URL=$api_base_url"
   )
   flutter_args+=("${IDENTITY_FLUTTER_ARGS[@]}")
+  local firebase_services_enabled="${OMI_FIREBASE_SERVICES_ENABLED:-true}"
+  if [[ "$flavor" == "selfhost" ]]; then
+    firebase_services_enabled=false
+    flutter_args+=("--dart-define=OMI_FIREBASE_SERVICES_ENABLED=false")
+  fi
   if [[ -n "$emulator_host" ]]; then
     flutter_args+=("--dart-define=OMI_FIREBASE_AUTH_EMULATOR_HOST=$emulator_host")
   fi
-  flutter pub get \
-    && dart run build_runner build \
-    && flutter run "${flutter_args[@]}"
+  if [[ "$flavor" == "selfhost" ]]; then
+    source scripts/self_host_env_guard.sh
+    with_self_host_env_guard "$PWD" env OMI_FIREBASE_SERVICES_ENABLED=false bash -c '
+      set -e
+      flutter pub get --enforce-lockfile
+      dart run build_runner build
+      bash scripts/check_self_host_generated_env.sh
+      flutter run "$@"
+    ' self-host-android "${flutter_args[@]}"
+  else
+    flutter pub get \
+      && dart run build_runner build \
+      && OMI_FIREBASE_SERVICES_ENABLED="$firebase_services_enabled" flutter run "${flutter_args[@]}"
+  fi
 }
 
 # #####################################
@@ -415,10 +431,39 @@ function run_build_ios() {
   check_ios_prerequisites || return 1
   local device_id
   device_id=$(select_ios_device) || return 1
-  flutter pub get \
-    && pushd ios && pod install --repo-update && popd \
-    && dart run build_runner build \
-    && flutter run --flavor "$flavor" -d "$device_id" "${IDENTITY_FLUTTER_ARGS[@]}" "$@"
+  if [[ "${OMI_AUTH_PROVIDER:-firebase}" == "better_auth" ]]; then
+    for extra_arg in "$@"; do
+      case "$extra_arg" in
+        --dart-define-from-file|--dart-define-from-file=*|--flavor|--flavor=*|-t|--target|--target=*|-t?*|--debug|--profile|--release)
+          echo "self-hosted iOS run arguments cannot override build authority with ${extra_arg}" >&2
+          return 2
+          ;;
+        --dart-define=OMI_APP_PROFILE=*|--dart-define=OMI_API_BASE_URL=*|--dart-define=OMI_AUTH_PROVIDER=*|--dart-define=OMI_AUTH_SERVER_URL=*|--dart-define=OMI_FIREBASE_SERVICES_ENABLED=*|--dart-define=OMI_PRIVACY_URL=*|--dart-define=OMI_TERMS_URL=*|--dart-define=OMI_SHARE_BASE_URL=*|--dart-define=OMI_MCP_BASE_URL=*)
+          echo "self-hosted iOS run arguments cannot override ${extra_arg%%=*}" >&2
+          return 2
+          ;;
+      esac
+    done
+    source scripts/self_host_env_guard.sh
+    with_self_host_env_guard "$PWD" bash -c '
+      set -e
+      flutter pub get --enforce-lockfile
+      pushd ios
+      pod install --repo-update
+      popd
+      dart run build_runner build
+      bash scripts/check_self_host_generated_env.sh
+      flutter run "$@"
+    ' self-host-ios --flavor "$flavor" -d "$device_id" "$@" \
+      --dart-define=OMI_APP_PROFILE=self_hosted \
+      "--dart-define=OMI_API_BASE_URL=${OMI_API_BASE_URL}" \
+      "${IDENTITY_FLUTTER_ARGS[@]}"
+  else
+    flutter pub get \
+      && pushd ios && pod install --repo-update && popd \
+      && dart run build_runner build \
+      && flutter run --flavor "$flavor" -d "$device_id" "${IDENTITY_FLUTTER_ARGS[@]}" "$@"
+  fi
 }
 
 
@@ -429,7 +474,7 @@ case "${1}" in
       if [[ "${OMI_AUTH_PROVIDER:-firebase}" == "better_auth" ]]; then
         generate_ios_self_host_config omi "${OMI_SELF_HOST_BUNDLE_ID:-com.friend-app-with-wearable.ios12.selfhost}" \
           && setup_app_env self_hosted "$OMI_API_BASE_URL" \
-          && run_build_ios prod --dart-define=OMI_APP_PROFILE=self_hosted --dart-define=OMI_API_BASE_URL="$OMI_API_BASE_URL"
+          && run_build_ios prod
       else
         if [[ -z "${FIREBASE_SERVICE_ACCOUNT_KEY:-}" ]]; then
           echo "ios beta requires FIREBASE_SERVICE_ACCOUNT_KEY so the production Firebase app config can be generated." >&2
@@ -456,7 +501,6 @@ case "${1}" in
     if [[ "${2:-}" == "beta" ]]; then
       if [[ "${OMI_AUTH_PROVIDER:-firebase}" == "better_auth" ]]; then
         setup_keystore_android \
-          && setup_firebase \
           && setup_app_env self_hosted "$OMI_API_BASE_URL" \
           && run_build_android selfhost
       else

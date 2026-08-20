@@ -16,6 +16,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/env/env.dart';
 import 'package:omi/models/custom_stt_config.dart';
 import 'package:omi/models/stt_provider.dart';
 import 'package:omi/pages/settings/usage_page.dart';
@@ -320,7 +321,7 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
 
   void _initializeJsonConfigs() {
     // Initialize JSON configs for all providers
-    for (final config in SttProviderConfig.allProviders) {
+    for (final config in SttProviderConfig.providersForProfile(Env.profile)) {
       // Skip if already loaded as customized (from _populateUIFromConfig)
       if (_requestJsonCustomized[config.provider] != true) {
         _regenerateRequestJson(config.provider);
@@ -1231,7 +1232,9 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
               style: const TextStyle(color: Colors.white, fontSize: 15),
               icon: Icon(Icons.keyboard_arrow_down, color: Colors.grey.shade500),
               items: [
-                ...SttProviderConfig.allProviders.where((config) => config.provider != SttProvider.onDeviceWhisper).map(
+                ...SttProviderConfig.providersForProfile(Env.profile)
+                    .where((config) => config.provider != SttProvider.onDeviceWhisper)
+                    .map(
                   (config) {
                     return DropdownMenuItem<SttProvider>(
                       value: config.provider,
@@ -2440,7 +2443,7 @@ class _JsonEditorPageState extends State<_JsonEditorPage> {
   }
 
   void _applyRequestTemplate(String templateName) {
-    final template = SttProviderConfig.requestTemplates[templateName];
+    final template = SttProviderConfig.requestTemplatesForProfile(Env.profile)[templateName];
     if (template != null) {
       _controller.text = const JsonEncoder.withIndent('  ').convert(template);
       _parseJson();
@@ -2479,8 +2482,9 @@ class _JsonEditorPageState extends State<_JsonEditorPage> {
 
   Widget _buildTemplateSelector() {
     final isResponseSchema = widget.isResponseSchema;
-    final templates =
-        isResponseSchema ? SttResponseSchema.templates.keys.toList() : SttProviderConfig.requestTemplates.keys.toList();
+    final templates = isResponseSchema
+        ? SttResponseSchema.templates.keys.toList()
+        : SttProviderConfig.requestTemplatesForProfile(Env.profile).keys.toList();
     final description = isResponseSchema ? context.l10n.quicklyPopulateResponse : context.l10n.quicklyPopulateRequest;
 
     return Column(
