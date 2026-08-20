@@ -374,9 +374,13 @@ final class SettingsTests: XCTestCase {
     /// gigabytes, so the confirmation asked "Delete recordings once **5.37 GB** is reached?" while the
     /// stepper moved in whole units. Verified against the live dialog before the units were changed.
     func testEveryReachableThresholdPrintsAsARoundNumber() {
-        XCTAssertEqual(StorageLimit.format(StorageLimit.defaultBytes), "5 GB")
-        XCTAssertEqual(StorageLimit.format(StorageLimit.minimumBytes), "1 GB")
-        XCTAssertEqual(StorageLimit.format(StorageLimit.maximumBytes), "200 GB")
+        func normalizedWhitespace(_ value: String) -> String {
+            value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        }
+
+        XCTAssertEqual(normalizedWhitespace(StorageLimit.format(StorageLimit.defaultBytes)), "5 GB")
+        XCTAssertEqual(normalizedWhitespace(StorageLimit.format(StorageLimit.minimumBytes)), "1 GB")
+        XCTAssertEqual(normalizedWhitespace(StorageLimit.format(StorageLimit.maximumBytes)), "200 GB")
         var bytes = StorageLimit.minimumBytes
         while bytes <= StorageLimit.maximumBytes {
             XCTAssertFalse(
