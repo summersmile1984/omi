@@ -179,6 +179,12 @@ def _validate_vectors(vectors: Sequence[Sequence[Any]], expected_count: int) -> 
     return converted, dimension
 
 
+def _embed_with_projection_descriptor(request: EmbeddingCapabilityRequest) -> tuple[list[list[float]], Any]:
+    vectors, dimension = _validate_vectors(_embed(request), len(request.input))
+    descriptor = describe_active_projection(embeddings, dimension=dimension, capability='embedding')
+    return vectors, descriptor
+
+
 @router.post('/v1/model-capabilities/embeddings')
 async def create_embeddings(
     request: EmbeddingCapabilityRequest,
@@ -198,9 +204,7 @@ async def create_embeddings(
     ):
         return _unavailable(route, reason='projection_identity_not_configured', retryable=False)
     try:
-        raw_vectors = await run_blocking(llm_executor, _embed, request)
-        vectors, dimension = _validate_vectors(raw_vectors, len(request.input))
-        descriptor = describe_active_projection(embeddings, dimension=dimension, capability='embedding')
+        vectors, descriptor = await run_blocking(llm_executor, _embed_with_projection_descriptor, request)
     except ProjectionUnavailableError as error:
         return _unavailable(route, reason=error.reason, retryable=error.retryable)
     except (ValueError, TypeError):
@@ -525,7 +529,7 @@ def _realtime_contract(route: ModelCapabilityRoute) -> dict[str, Any]:
 
 
 @router.get('/v1/model-capabilities/realtime')
-async def get_realtime_capability(uid: str = Depends(get_current_user_uid)) -> JSONResponse:
+def get_realtime_capability(uid: str = Depends(get_current_user_uid)) -> JSONResponse:
     del uid
     return JSONResponse(_realtime_contract(resolve_model_capability('realtime')))
 

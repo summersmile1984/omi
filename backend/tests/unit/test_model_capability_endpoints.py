@@ -56,6 +56,15 @@ def _configure_generic_embedding(monkeypatch):
 @pytest.mark.asyncio
 async def test_embedding_endpoint_runs_generic_provider_and_returns_projection_identity(monkeypatch):
     _configure_generic_embedding(monkeypatch)
+    caller_thread = threading.get_ident()
+    projection_threads = []
+    describe_projection = model_capabilities.describe_active_projection
+
+    def describe_projection_off_event_loop(*args, **kwargs):
+        projection_threads.append(threading.get_ident())
+        return describe_projection(*args, **kwargs)
+
+    monkeypatch.setattr(model_capabilities, 'describe_active_projection', describe_projection_off_event_loop)
 
     response = await model_capabilities.create_embeddings(
         model_capabilities.EmbeddingCapabilityRequest(
@@ -82,6 +91,7 @@ async def test_embedding_endpoint_runs_generic_provider_and_returns_projection_i
         'namespace_version': 'v7',
         'logical_namespace': 'ns3',
     }
+    assert projection_threads and projection_threads[0] != caller_thread
 
 
 @pytest.mark.asyncio
@@ -982,11 +992,10 @@ def test_legacy_omni_relay_cannot_bypass_deployment_relay_authority(monkeypatch)
     assert calls == []
 
 
-@pytest.mark.asyncio
-async def test_realtime_capability_reports_same_relay_session_contract(monkeypatch):
+def test_realtime_capability_reports_same_relay_session_contract(monkeypatch):
     _configure_relay(monkeypatch, 'ws://127.0.0.1:9000/v1/realtime')
 
-    response = await model_capabilities.get_realtime_capability(uid='uid-1')
+    response = model_capabilities.get_realtime_capability(uid='uid-1')
 
     assert response.status_code == 200
     payload = __import__('json').loads(response.body)
