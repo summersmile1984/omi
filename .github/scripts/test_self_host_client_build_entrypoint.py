@@ -6,9 +6,11 @@ from __future__ import annotations
 import os
 import plistlib
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -63,22 +65,37 @@ printf 'completed\\n'
         with tempfile.TemporaryDirectory() as directory:
             fake_bin = Path(directory)
             command_log = fake_bin / 'commands.log'
+            clean_payload = fake_bin / 'clean-payload'
+            clean_payload.mkdir()
+            (clean_payload / 'payload.bin').write_text('self-host fixture', encoding='utf-8')
+            clean_archive = shutil.make_archive(str(fake_bin / 'clean-artifact'), 'zip', clean_payload)
             for command in ('flutter', 'dart'):
                 executable = fake_bin / command
                 executable.write_text(
-                    '#!/usr/bin/env bash\nprintf \'%s\\n\' "$0 $*" >> "$SELF_HOST_COMMAND_LOG"\n',
+                    '#!/usr/bin/env bash\n'
+                    'printf \'%s\\n\' "$0 $*" >> "$SELF_HOST_COMMAND_LOG"\n'
+                    'if [[ "${1:-}" == "build" && "${2:-}" == "appbundle" ]]; then\n'
+                    '  mkdir -p build/app/outputs/bundle/selfhostRelease\n'
+                    '  cp "$SELF_HOST_CLEAN_ARCHIVE" build/app/outputs/bundle/selfhostRelease/app-selfhost-release.aab\n'
+                    'fi\n'
+                    'if [[ "${1:-}" == "build" && "${2:-}" == "apk" ]]; then\n'
+                    '  mkdir -p build/app/outputs/flutter-apk\n'
+                    '  cp "$SELF_HOST_CLEAN_ARCHIVE" build/app/outputs/flutter-apk/app-selfhost-release.apk\n'
+                    'fi\n',
                     encoding='utf-8',
                 )
                 executable.chmod(0o755)
             env = {
                 'PATH': f'{fake_bin}:/usr/bin:/bin',
                 'SELF_HOST_COMMAND_LOG': str(command_log),
+                'SELF_HOST_CLEAN_ARCHIVE': clean_archive,
                 'OMI_AUTH_PROVIDER': 'better_auth',
                 'OMI_AUTH_SERVER_URL': 'https://auth.example.com',
                 'OMI_API_BASE_URL': 'https://api.example.com',
                 'OMI_PRIVACY_URL': 'https://legal.example.com/privacy',
                 'OMI_TERMS_URL': 'https://legal.example.com/terms',
                 'OMI_SHARE_BASE_URL': 'https://share.example.com',
+                'OMI_MCP_BASE_URL': 'https://mcp.example.com',
             }
             result = subprocess.run(
                 ['bash', 'release.sh'],
@@ -98,7 +115,38 @@ printf 'completed\\n'
             self.assertIn('--dart-define=OMI_PRIVACY_URL=https://legal.example.com/privacy', commands)
             self.assertIn('--dart-define=OMI_TERMS_URL=https://legal.example.com/terms', commands)
             self.assertIn('--dart-define=OMI_SHARE_BASE_URL=https://share.example.com', commands)
+            self.assertIn('--dart-define=OMI_MCP_BASE_URL=https://mcp.example.com', commands)
             self.assertNotIn('FIREBASE_SERVICE_ACCOUNT', commands)
+            self.assertIn('flutter pub get --enforce-lockfile', commands)
+
+            command_log.write_text('', encoding='utf-8')
+            mismatched = subprocess.run(
+                ['bash', 'release.sh'],
+                cwd=ROOT / 'app',
+                env={**env, 'OMI_APP_PROFILE': 'mobile_beta'},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(mismatched.returncode, 1)
+            self.assertIn('requires OMI_APP_PROFILE=self_hosted', mismatched.stderr)
+            self.assertEqual(command_log.read_text(encoding='utf-8'), '')
+
+            missing_provider = subprocess.run(
+                ['bash', 'release.sh'],
+                cwd=ROOT / 'app',
+                env={
+                    **env,
+                    'OMI_APP_PROFILE': 'self_hosted',
+                    'OMI_AUTH_PROVIDER': '',
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(missing_provider.returncode, 1)
+            self.assertIn('requires OMI_AUTH_PROVIDER=better_auth', missing_provider.stderr)
+            self.assertEqual(command_log.read_text(encoding='utf-8'), '')
 
     def test_windows_flutter_release_entrypoint_has_the_same_identity_contract(self) -> None:
         script = (ROOT / 'app' / 'setup' / 'scripts' / 'release.ps1').read_text(encoding='utf-8')
@@ -109,10 +157,31 @@ printf 'completed\\n'
         self.assertIn('"self_hosted"', script)
         self.assertIn('"selfhost"', script)
         self.assertIn('OMI_API_BASE_URL is required when OMI_AUTH_PROVIDER=better_auth', script)
-        self.assertIn('foreach ($publicOrigin in @("OMI_PRIVACY_URL", "OMI_TERMS_URL", "OMI_SHARE_BASE_URL"))', script)
+        self.assertIn(
+            'foreach ($publicOrigin in @("OMI_PRIVACY_URL", "OMI_TERMS_URL", "OMI_SHARE_BASE_URL", "OMI_MCP_BASE_URL"))',
+            script,
+        )
         self.assertIn('$publicOrigin is required when OMI_AUTH_PROVIDER=better_auth', script)
         self.assertIn('$env:OMI_FIREBASE_SERVICES_ENABLED = "false"', script)
         self.assertIn('--dart-define=OMI_FIREBASE_SERVICES_ENABLED=false', script)
+        self.assertIn('requires OMI_APP_PROFILE=self_hosted for this release lane', script)
+        self.assertIn('requires OMI_AUTH_PROVIDER=better_auth for this release lane', script)
+        self.assertIn('$appProfile -eq "self_hosted"', script)
+        self.assertIn('Invoke-CheckedNative "flutter" @("pub", "get", "--enforce-lockfile")', script)
+        self.assertIn('self-host build changed pubspec.lock', script)
+        self.assertIn('[Convert]::ToBase64String([IO.File]::ReadAllBytes($lockFile))', script)
+        self.assertIn('function Invoke-CheckedNative', script)
+        self.assertIn('if ($LASTEXITCODE -ne 0)', script)
+        self.assertIn('Invoke-CheckedNative "flutter" (@("build", "appbundle") + $flutterArgs)', script)
+        self.assertIn('Invoke-CheckedNative "flutter" (@("build", "apk") + $flutterArgs)', script)
+        self.assertIn('"USE_AUTH_CUSTOM_TOKEN=false"', script)
+        self.assertIn('self-host codegen embedded managed client value', script)
+        self.assertIn('scripts/smoke_android_self_host_artifact.ps1', script)
+        checker = (ROOT / 'app' / 'scripts' / 'smoke_android_self_host_artifact.ps1').read_text(encoding='utf-8')
+        self.assertIn('[IO.Compression.ZipFile]::OpenRead', checker)
+        self.assertIn('$entry.Open()', checker)
+        self.assertIn('[IO.File]::ReadAllBytes', checker)
+        self.assertIn('Remove-Item -LiteralPath $scanRoot -Recurse -Force', checker)
 
     def test_android_self_host_flavor_cannot_inherit_managed_native_credentials(self) -> None:
         gradle = (ROOT / 'app' / 'android' / 'app' / 'build.gradle').read_text(encoding='utf-8')
@@ -124,6 +193,170 @@ printf 'completed\\n'
         self.assertIn('buildConfigField "String", "INTERCOM_APP_ID", \'""\'', selfhost)
         self.assertIn('buildConfigField "String", "INTERCOM_ANDROID_API_KEY", \'""\'', selfhost)
         self.assertIn('android:usesCleartextTraffic="false"', manifest)
+        setup = (ROOT / 'app' / 'setup.sh').read_text(encoding='utf-8')
+        selfhost_branch = setup.split('run_build_android selfhost', 1)[0].rsplit('if [[', 1)[-1]
+        self.assertNotIn('setup_firebase', selfhost_branch)
+        run_build_android = setup.split('function run_build_android()', 1)[1].split(
+            '# #####################################', 1
+        )[0]
+        self.assertIn('firebase_services_enabled=false', run_build_android)
+        self.assertIn(
+            'OMI_FIREBASE_SERVICES_ENABLED="$firebase_services_enabled" flutter run', run_build_android
+        )
+
+    def test_android_self_host_artifact_gate_rejects_packaged_firebase_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bad_root = root / 'bad'
+            (bad_root / 'res' / 'values').mkdir(parents=True)
+            (bad_root / 'res' / 'values' / 'google_app_id.xml').write_text('managed', encoding='utf-8')
+            artifact = shutil.make_archive(str(root / 'bad-selfhost'), 'zip', bad_root)
+            result = subprocess.run(
+                ['bash', str(ROOT / 'app' / 'scripts' / 'smoke_android_self_host_artifact.sh'), artifact],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('managed Firebase configuration', result.stderr)
+
+    def test_android_self_host_artifact_gate_scans_compressed_payload_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / 'bad-credential.zip'
+            with zipfile.ZipFile(artifact, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('assets/runtime.bin', 'benign')
+                archive.writestr('ASSETS/RUNTIME.BIN', 'compressed-only credential AIza' + 'A' * 35)
+            result = subprocess.run(
+                ['bash', str(ROOT / 'app' / 'scripts' / 'smoke_android_self_host_artifact.sh'), artifact],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('populated managed-client credentials', result.stderr)
+
+    def test_self_host_codegen_uses_clean_env_and_restores_local_files_and_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app_root = Path(directory) / 'app'
+            scripts = app_root / 'scripts'
+            generated_dir = app_root / 'lib' / 'env'
+            scripts.mkdir(parents=True)
+            generated_dir.mkdir(parents=True)
+            shutil.copy2(ROOT / 'app' / 'scripts' / 'self_host_env_guard.sh', scripts)
+            env_file = app_root / '.env'
+            generated = generated_dir / 'prod_env.g.dart'
+            analysis = app_root / 'analysis_options.yaml'
+            lock_file = app_root / 'pubspec.lock'
+            env_file.write_text('POSTHOG_API_KEY=phc_local_secret\nCUSTOM=keep\n', encoding='utf-8')
+            env_file.chmod(0o644)
+            generated.write_text('// developer generated state\n', encoding='utf-8')
+            analysis.write_text('// developer analysis state\n', encoding='utf-8')
+            lock_file.write_text('# developer lock state\n', encoding='utf-8')
+            command = scripts / 'mutate-and-fail.sh'
+            command.write_text(
+                '#!/usr/bin/env bash\n'
+                'set -e\n'
+                '! grep -q POSTHOG_API_KEY .env\n'
+                'grep -Fx "API_BASE_URL=https://api.example.com" .env\n'
+                'printf "sanitized generated\n" > lib/env/prod_env.g.dart\n'
+                'printf "flutter mutation\n" > analysis_options.yaml\n'
+                'exit 7\n',
+                encoding='utf-8',
+            )
+            command.chmod(0o755)
+            result = subprocess.run(
+                [
+                    'bash',
+                    '-c',
+                    'source scripts/self_host_env_guard.sh; with_self_host_env_guard "$PWD" scripts/mutate-and-fail.sh',
+                ],
+                cwd=app_root,
+                env={**os.environ, 'OMI_API_BASE_URL': 'https://api.example.com'},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertEqual(env_file.read_text(encoding='utf-8'), 'POSTHOG_API_KEY=phc_local_secret\nCUSTOM=keep\n')
+            self.assertEqual(stat.S_IMODE(env_file.stat().st_mode), 0o644)
+            self.assertEqual(generated.read_text(encoding='utf-8'), '// developer generated state\n')
+            self.assertEqual(analysis.read_text(encoding='utf-8'), '// developer analysis state\n')
+            self.assertEqual(lock_file.read_text(encoding='utf-8'), '# developer lock state\n')
+
+            succeeded = subprocess.run(
+                [
+                    'bash',
+                    '-c',
+                    'source scripts/self_host_env_guard.sh; with_self_host_env_guard "$PWD" true',
+                ],
+                cwd=app_root,
+                env={**os.environ, 'OMI_API_BASE_URL': 'https://api.example.com'},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(succeeded.returncode, 0, succeeded.stderr)
+            self.assertEqual(stat.S_IMODE(env_file.stat().st_mode), 0o644)
+
+    def test_self_host_codegen_rejects_and_restores_dependency_lock_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app_root = Path(directory) / 'app'
+            scripts = app_root / 'scripts'
+            generated_dir = app_root / 'lib' / 'env'
+            scripts.mkdir(parents=True)
+            generated_dir.mkdir(parents=True)
+            shutil.copy2(ROOT / 'app' / 'scripts' / 'self_host_env_guard.sh', scripts)
+            (app_root / '.env').write_text('CUSTOM=keep\n', encoding='utf-8')
+            (generated_dir / 'prod_env.g.dart').write_text('// generated\n', encoding='utf-8')
+            (app_root / 'analysis_options.yaml').write_text('// analysis\n', encoding='utf-8')
+            lock_file = app_root / 'pubspec.lock'
+            lock_file.write_text('# pinned lock\n', encoding='utf-8')
+            result = subprocess.run(
+                [
+                    'bash',
+                    '-c',
+                    'source scripts/self_host_env_guard.sh; '
+                    'with_self_host_env_guard "$PWD" bash -c \'printf "changed lock\\n" > pubspec.lock\'',
+                ],
+                cwd=app_root,
+                env={**os.environ, 'OMI_API_BASE_URL': 'https://api.example.com'},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('self-host build changed pubspec.lock', result.stderr)
+            self.assertEqual(lock_file.read_text(encoding='utf-8'), '# pinned lock\n')
+
+    def test_ios_artifact_gate_scans_binary_payload_for_managed_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / 'Runner.app'
+            artifact.mkdir()
+            (artifact / 'Info.plist').write_bytes(
+                plistlib.dumps(
+                    {
+                        'CFBundleIdentifier': 'org.example.memory.selfhost',
+                        'CFBundleURLTypes': [{'CFBundleURLSchemes': ['memory-auth']}],
+                    }
+                )
+            )
+            (artifact / 'Runner').write_bytes(b'compiled-data phc_' + b'A' * 32)
+            result = subprocess.run(
+                [
+                    'bash',
+                    str(ROOT / 'app' / 'scripts' / 'smoke_ios_self_host_artifact.sh'),
+                    str(artifact),
+                    'org.example.memory.selfhost',
+                    'memory-auth',
+                    'false',
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('managed-client credentials', result.stderr)
 
     def test_ios_self_host_entrypoint_uses_a_distinct_signed_identity(self) -> None:
         script = (ROOT / 'app' / 'setup.sh').read_text(encoding='utf-8')
@@ -134,6 +367,8 @@ printf 'completed\\n'
             'else', 1
         )[0]
         self.assertNotIn('setup_firebase', better_auth_branch)
+        self.assertIn('flutter pub get --enforce-lockfile', script)
+        self.assertIn('self-hosted iOS run arguments cannot override', script)
 
     def test_ios_self_host_generator_selects_vendor_free_native_authority(self) -> None:
         generator = ROOT / 'app' / 'scripts' / 'generate_ios_self_host_config.sh'
@@ -184,6 +419,8 @@ printf 'completed\\n'
                 'build_ios_self_host_release.sh',
                 'generate_ios_self_host_config.sh',
                 'smoke_ios_self_host_artifact.sh',
+                'self_host_env_guard.sh',
+                'check_self_host_generated_env.sh',
             ):
                 shutil.copy2(ROOT / 'app' / 'scripts' / name, scripts / name)
             original_config = '// developer-local config\nAPP_BUNDLE_IDENTIFIER=local.example\n'
@@ -192,6 +429,23 @@ printf 'completed\\n'
             analysis_options = root / 'app' / 'analysis_options.yaml'
             original_analysis = 'include: package:flutter_lints/flutter.yaml\n'
             analysis_options.write_text(original_analysis, encoding='utf-8')
+            generated_env = root / 'app' / 'lib' / 'env' / 'prod_env.g.dart'
+            generated_env.parent.mkdir(parents=True)
+            generated_env.write_text(
+                '\n'.join(
+                    f'  static final String? {field} = null;'
+                    for field in (
+                        'posthogApiKey',
+                        'googleMapsApiKey',
+                        'intercomAppId',
+                        'intercomIOSApiKey',
+                        'intercomAndroidApiKey',
+                        'googleClientId',
+                        'googleClientSecret',
+                    )
+                ),
+                encoding='utf-8',
+            )
             artifact = root / 'app' / 'build' / 'ios' / 'iphoneos' / 'Runner.app'
             artifact.mkdir(parents=True)
             (artifact / 'Info.plist').write_bytes(
@@ -227,6 +481,7 @@ printf 'completed\\n'
                 'OMI_PRIVACY_URL': 'https://legal.example.com/privacy',
                 'OMI_TERMS_URL': 'https://legal.example.com/terms',
                 'OMI_SHARE_BASE_URL': 'https://share.example.com',
+                'OMI_MCP_BASE_URL': 'https://mcp.example.com',
                 'OMI_SELF_HOST_BUNDLE_ID': 'org.example.memory.selfhost',
                 'OMI_SELF_HOST_APP_GROUP_ID': 'group.org.example.memory.selfhost',
                 'OMI_SELF_HOST_AUTH_CALLBACK_SCHEME': 'memory-auth',
@@ -243,13 +498,35 @@ printf 'completed\\n'
             self.assertEqual(custom_config.read_text(encoding='utf-8'), original_config)
             self.assertEqual(analysis_options.read_text(encoding='utf-8'), original_analysis)
             commands = command_log.read_text(encoding='utf-8')
-            self.assertIn('flutter pub get', commands)
+            self.assertIn('flutter pub get --enforce-lockfile', commands)
             self.assertIn('dart run build_runner build', commands)
             self.assertIn('flutter build ios --release --flavor prod -t lib/main.dart', commands)
             self.assertIn('--dart-define=OMI_APP_PROFILE=self_hosted', commands)
             self.assertIn('--dart-define=OMI_AUTH_PROVIDER=better_auth', commands)
             self.assertIn('--dart-define=OMI_FIREBASE_SERVICES_ENABLED=false', commands)
+            self.assertIn('--dart-define=OMI_MCP_BASE_URL=https://mcp.example.com', commands)
             self.assertIn('--no-codesign', commands)
+
+            override_cases = (
+                (['--dart-define=OMI_APP_PROFILE=mobile_beta'], 'cannot override OMI_APP_PROFILE'),
+                (['--dart-define-from-file=untrusted.json'], 'cannot override build authority'),
+                (['--flavor', 'dev'], 'cannot override build authority'),
+                (['--target=lib/main_prod.dart'], 'cannot override build authority'),
+                (['--debug'], 'cannot override build authority'),
+            )
+            for override_args, expected_error in override_cases:
+                with self.subTest(override_args=override_args):
+                    command_log.write_text('', encoding='utf-8')
+                    override = subprocess.run(
+                        ['bash', str(scripts / 'build_ios_self_host_release.sh'), *override_args],
+                        env=env,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(override.returncode, 2)
+                    self.assertIn(expected_error, override.stderr)
+                    self.assertEqual(command_log.read_text(encoding='utf-8'), '')
 
             managed_config = artifact / 'GoogleService-Info.plist'
             managed_config.write_text('managed', encoding='utf-8')

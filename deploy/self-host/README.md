@@ -8,7 +8,8 @@ the dev file remains the emulator harness and is reused by the migration gate.
 ## What runs
 
 `compose.production.yml` runs the backend, Better Auth server, PostgreSQL,
-password-protected Redis plus its durable queue worker, MinIO, and Qdrant. Every
+password-protected Redis plus its durable queue worker, MinIO, Qdrant, and a
+reviewed SearXNG search boundary. Every
 service has a health check. PostgreSQL, Redis, MinIO, Qdrant, and backend sync
 staging use named persistent volumes. The SenseVoice model directory is an
 explicit read-only host mount. Remote base/state images are pinned by immutable
@@ -30,17 +31,75 @@ ends without blocking the WebSocket loop. `model.int8.onnx`, `tokens.txt`, and
 the locked `sherpa-onnx` runtime are all required before a session is admitted.
 `STT_ROUTE_FALLBACK_TO_DEFAULT=false` prevents a missing local model from
 falling through to any managed STT policy default.
-Realtime multimodal model sessions are separately disabled with
-`REALTIME_PROVIDER=disabled`; requests
-return a typed unavailable response before any OpenAI/Gemini credential or
-official endpoint is considered. Optional integrations require separately
-configured services; the core profile does not silently reach an official
-endpoint for them.
+Realtime multimodal sessions use the authenticated provider-neutral relay.
+`REALTIME_PROVIDER=relay` requires an explicit compatible WebSocket URL,
+server-only credential, provider id, model and exact target-host allowlist.
+`REALTIME_RELAY_WIRE_PROTOCOL` is also mandatory (currently only
+`openai_realtime_v1` is supported): the relay is byte-opaque, so this field tells signed clients
+which upstream event dialect to speak while `REALTIME_RELAY_PROVIDER_ID` remains
+descriptive metadata.
+There is no official endpoint default. The profile validator rejects official
+vendor hosts, and the relay limits each frame and session duration. Optional
+integrations require separately configured services; the core profile does not
+silently reach an official endpoint for them.
 
-Web search is explicitly disabled in the core profile. The agent's search tool
-returns a typed unavailable result and never falls back to Omi's LLM gateway or
-Perplexity. A deployment that needs live search must add and verify an explicit
-search-provider capability instead of relying on a hidden default.
+The backend also exposes two authenticated desktop model boundaries:
+
+- `POST /v1/model-capabilities/embeddings` accepts at most 32 OCR, task, or
+  Rewind inputs. OCR/Rewind must declare projection namespace `ns3`; task must
+  declare `ns4`. The response carries provider, model, actual dimension, schema
+  and active namespace version so consumers cannot persist an unversioned
+  vector.
+- `POST /v1/model-capabilities/tool-completions` accepts bounded messages,
+  function schemas and inline PNG/JPEG/WebP data URLs. It returns either an
+  assistant message or tool calls; the backend never executes client tools.
+  Direct mode and gateway mode use the same configured feature route and
+  bounded 429/5xx/timeout fallback policy. A missing optional direct fallback
+  is reported but cannot borrow another provider's key or block a configured
+  primary.
+
+`GET /v1/model-capabilities/realtime` and `POST /v2/realtime/session` report the
+same relay selection. The client then connects to
+`/v1/model-capabilities/realtime/relay` with its Bearer token and WebSocket
+subprotocol `omi.realtime.v1`. The backend authenticates before opening the
+allowlisted upstream, injects `REALTIME_RELAY_API_KEY` only upstream, and pipes
+text/binary frames in both directions. `REALTIME_RELAY_WIRE_PROTOCOL` explicitly
+declares that those opaque frames use the currently implemented
+`openai_realtime_v1` dialect; clients must select their adapter from the returned
+`wire_protocol`, not from `provider_id`. Configure the public reverse proxy to
+support WebSocket upgrades on that path.
+
+App-icon image generation and the legacy OpenAI Files/Assistants file-chat
+pipeline do not yet have generic equivalents. The self-host profile pins
+`APP_ICON_GENERATION_TRANSPORT=disabled`, `FILE_CHAT_TRANSPORT=disabled`, and
+`DESKTOP_VENDOR_PROXY_TRANSPORT=disabled`; legacy clients therefore receive a
+typed unavailable response before any OpenAI/Gemini endpoint or credential is
+resolved.
+This is an explicit optional-feature gap, not credential-driven behavior.
+
+Web search uses `WEB_SEARCH_TRANSPORT=searxng` and the private
+`http://searxng:8080` service origin. `searxng-settings.yml` enables JSON output
+and keeps only the reviewed Wikipedia engine; it does not inherit the image's
+default engine set. `SEARXNG_SECRET` is mandatory and injected at runtime. The
+health check uses `/healthz`, so readiness causes no search or public traffic.
+Only an explicit agent search during acceptance exercises the declared
+Wikipedia egress. The backend never falls back to Omi's gateway or Perplexity.
+For direct generic desktop chat, the backend searches only the bounded trusted
+current-user instruction, labels returned snippets as untrusted public context,
+and refuses search when private tool output is present or user authorization is
+denied.
+
+Speaker identification is a separately declared capability. The production
+profile sets `SPEAKER_EMBEDDING_PROVIDER=disabled`, so Capture remains correct
+but does not claim managed speaker-identification parity. A reviewed deployment
+may select `http` and set `SPEAKER_EMBEDDING_API_URL` to a private compatible
+`/v2/embedding` service. There is no hosted-vendor alias or endpoint fallback.
+
+The profile fixes `TTS_PROVIDER=disabled` until an operator deploys and reviews
+a neutral TTS service. Both mobile and desktop TTS routes return a typed
+`model_capability_unavailable` response before resolving any residual
+ElevenLabs/OpenAI key, rate-limit side effect, or upstream client; disabled can
+never mean an implicit vendor fallback.
 
 The checked-in example sets `BACKEND_PLATFORM=linux/amd64` because the pinned
 runtime lock includes `onnxruntime==1.19.0`, which has no Linux ARM64 wheel.
@@ -50,13 +109,14 @@ silently resolving a different package set.
 
 ## TLS and public origins are prerequisites
 
-Put an HTTPS reverse proxy/load balancer in front of the three bound ports:
+Put an HTTPS reverse proxy/load balancer in front of the bound ports:
 
 - `PUBLIC_BACKEND_URL` -> `${SELF_HOST_BIND_ADDRESS}:${BACKEND_PORT}`
 - `PUBLIC_AUTH_URL` -> `${SELF_HOST_BIND_ADDRESS}:${AUTH_SERVER_PORT}`
+- `PUBLIC_MCP_URL` -> the backend MCP routes, with streaming/buffering disabled
 - `PUBLIC_OBJECTS_URL` -> `${SELF_HOST_BIND_ADDRESS}:${MINIO_API_PORT}`
 
-All three URLs must be explicit HTTPS URLs. Better Auth tokens keep
+All four URLs must be explicit HTTPS URLs. Better Auth tokens keep
 `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` on `PUBLIC_AUTH_URL`, so the client
 contract never changes. JWKS fetches and privileged lifecycle calls use
 `http://auth-server:3000` only inside the private Compose network, with the
@@ -321,17 +381,81 @@ SELF_HOST_ACCEPTANCE_EVIDENCE=/secure/change-record/zero-vendor.json \
 ```
 
 The default evidence path is the host temporary directory so a local run cannot
-dirty the repository. The evidence deliberately does not authorize a
-production traffic switch. The live replacement smoke proves identity,
-PostgreSQL, Redis, MinIO, Qdrant, account deletion, and an actual SenseVoice PCM
-decode. It also invokes the production generic chat and embedding adapters,
-requiring a bounded chat marker plus a nonzero vector of the configured
-dimension. The full Capture → Understand → Remember → Retrieve → Act assertions
-remain a separately-labelled hermetic contract using fake provider boundaries;
-these service/adaptor probes do not send one captured artifact through that
-whole live product path. Keep the epic's full assembled-loop gate open until
-that assembled path and the reverse-proxy change record are exercised on the
-intended release host.
+dirty the repository. Before starting any cutover-live services, the runner
+requires a clean Git worktree and records the full `git_commit`, exact
+`git_tree`, and `worktree_clean=true`. This binds the result to reviewable
+source: evidence from an uncommitted tree cannot authorize either a tested
+configuration or production cutover, and the gate must be rerun after the
+tested changes are committed. Evidence keeps three lanes distinct:
+
+- the default hermetic contract denies DNS and sockets but uses fake provider
+  boundaries;
+- `--live` proves the selected replacement services, real SenseVoice PCM
+  decode, generic model/embedding adapters, and account-deletion reconciliation,
+  but it is not an assembled product loop;
+- `--cutover-live` additionally creates a one-day `.omi.test` CA and HTTPS
+  proxy, then drives one disposable principal through public product routes.
+
+The local cutover lane uses `https://api.omi.test`,
+`https://auth.omi.test`, and `https://mcp.omi.test` with no port. Inside the
+Compose network those names resolve to the proxy's real TLS listener on 443;
+`CUTOVER_HTTPS_PORT` only publishes an optional loopback diagnostic port on the
+host. The lane proves public Better Auth signup/token/JWKS, exact JWT
+issuer/audience, private JWKS backend verification, MCP metadata, and public
+WSS Capture with the checked-in LibriSpeech fixture. It then uses authenticated
+`/v2/messages` turns to understand that transcript and invoke
+`web_search_tool`; the latter must emit the public SSE tool event and return a
+Wikipedia source from SearXNG. Remember uses public `/v3/memories`, the normal
+scheduled canonical-maintenance function processes and projects the record,
+Retrieve uses public vector search, and Act writes/reads an action item with
+canonical conversation and memory provenance. The maintenance tick is labelled
+internal scheduler evidence, not a public product route or adapter probe. The
+interactive loop can still report `status=passed` when a processed Short-term
+memory is durably projected and retrieved while Long-term consolidation remains
+retryable; that state is recorded as `remember.long_term_admission=retry_pending`
+and can never authorize production cutover. Production authorization requires
+that field to be `passed`.
+
+```bash
+SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
+SELF_HOST_ACCEPTANCE_EVIDENCE=/secure/change-record/zero-vendor-local.json \
+  deploy/self-host/zero-vendor-acceptance.sh --cutover-live
+```
+
+Local Compose does not impose a network-level application egress policy, so its
+evidence says `live_sentinel_egress_policy.enforcement=not_enforced_by_compose`
+and never claims live DNS denial. It can authorize only the exact tested
+configuration, and only when the assembled loop, replacement-service smoke,
+Long-term admission, and clean source attribution all pass; it cannot authorize
+production traffic. On the intended host, first isolate
+backend, queue-worker, and auth-server from arbitrary public sockets while
+allowing SearXNG's reviewed Wikipedia egress and the explicitly selected
+private model/realtime services. Save the applied network policy manifest or
+firewall export as the non-secret `SELF_HOST_EGRESS_POLICY_ARTIFACT`, then run
+the same public edge lane:
+
+```bash
+SELF_HOST_ENV=/etc/omi/self-host.production.env \
+SELF_HOST_EGRESS_POLICY_ARTIFACT=/secure/change-record/application-egress-policy.yaml \
+SELF_HOST_ACCEPTANCE_EVIDENCE=/secure/change-record/zero-vendor-production.json \
+  deploy/self-host/zero-vendor-acceptance.sh --external-cutover-live
+```
+
+External mode rejects reserved/local public origins, uses system certificate
+trust, hashes the supplied policy artifact into the evidence, and requires
+socket attempts to OpenAI, Google, Anthropic, Omi, and an arbitrary public-IP
+sentinel to fail from backend, queue-worker, and auth-server. The JSON calls
+these `sentinel_targets_denied` and explicitly limits the claim to those
+targets; it does not claim DNS denial or universal Internet isolation. Only an
+assembled-loop pass through the intended public certificate/edge plus the
+operator policy artifact and all sentinel denials sets
+`authorizes_production_cutover=true`. Every cutover live mode also loads
+SearXNG's effective in-container settings, compares its secret hash to the
+reviewed env-file value in constant time, and records only the resulting
+booleans, rejecting an empty, known-default, or mismatched runtime secret. Speaker
+identity remains recorded as `disabled_not_exercised` with functional
+equivalence false; the typed realtime relay is configured but is not part of
+this assembled loop.
 
 ## Firestore-to-PostgreSQL cutover gate
 

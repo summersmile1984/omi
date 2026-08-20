@@ -44,13 +44,17 @@
 
 - Backend data, queue, storage, identity and provider adapters
 - LLM gateway, embeddings, vector search, STT, TTS and web search
-- Flutter, macOS Desktop, Context for Claude, MCP helper and release packaging
+- Flutter, macOS Desktop, Windows Desktop, Context for Claude, MCP helper and release packaging
 - Self-hosted deployment manifests, migrations, readiness and observability
 
 ## Guard tests
 
 - `.github/scripts/test_check_self_host_deployment.py`
+- `.github/scripts/test_self_host_client_build_entrypoint.py`
 - `.github/scripts/test_self_host_operations.py`
+- `backend/tests/unit/test_cutover_live_smoke.py`
+- `backend/tests/unit/test_mobile_tts_provider_policy_parity.py`
+- `backend/tests/unit/test_canonical_consolidation.py`
 - `auth-server/test/http.test.js`
 - `backend/tests/unit/test_firestore_pg_contract.py`
 - `backend/tests/unit/test_cloud_tasks_redis_contract.py`
@@ -62,7 +66,16 @@
 - `backend/firestore_pg/tests/`
 - `app/test/unit/auth_identity_configuration_test.dart`
 - `app/test/unit/env_test.dart`
+- `app/test/unit/stt_deployment_policy_test.dart`
+- `app/test/unit/onboarding_identity_test.dart`
+- `app/test/unit/intercom_deployment_policy_test.dart`
 - `desktop/macos/Desktop/Tests/DeploymentProfileTests.swift`
+- `desktop/macos/Desktop/Tests/EmbeddingCapabilityProjectionTests.swift`
+- `desktop/windows/src/shared/deploymentProfile.test.ts`
+- `desktop/windows/src/main/auth/betterAuthClient.test.ts`
+- `desktop/windows/src/main/rewind/embeddingClient.capability.test.ts`
+- `desktop/windows/src/renderer/src/lib/identity.selfhost.test.ts`
+- `desktop/windows/scripts/check-self-host-artifact.test.mjs`
 - `desktop/context-for-claude/Tests/ContextCoreTests/DeploymentProfileTests.swift`
 - `desktop/context-for-claude/Tests/ContextAppTests/ContextBetterAuthClientTests.swift`
 
@@ -83,6 +96,8 @@ days.
 - `auth-server/**`
 - `app/lib/{env,providers,services,backend}/**`
 - `desktop/macos/Desktop/Sources/**`
+- `desktop/windows/{src,scripts}/**`
+- `desktop/windows/{.env.example,.env.selfhost.example,electron.vite.config.ts,package.json}`
 - `desktop/context-for-claude/Sources/**`
 - `deploy/self-host/**`
 

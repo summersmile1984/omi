@@ -1,6 +1,6 @@
 # Deployment and model neutrality convergence
 
-**Status:** replacement-service implementation complete; assembled live product loop pending
+**Status:** replacement services and a local assembled HTTPS loop are exercised; production cutover remains blocked
 
 **Decision date:** 2026-08-20
 
@@ -31,7 +31,7 @@ signed DeploymentProfile
    | identity  | docs   | blob  | work   | model/search   |
    +-----------+--------+-------+--------+----------------+
  managed: Firebase/Firestore/GCS/Cloud Tasks/vendor routes
- hosted:  BetterAuth/Postgres/MinIO/Redis/generic routes
+self-host: BetterAuth/Postgres/MinIO/Redis/generic routes
                      |
       authoritative product services and invariants
 ```
@@ -89,31 +89,64 @@ signed DeploymentProfile
 - [ ] Migrations, backup/restore, secrets, TLS/public origins, readiness,
       metrics, worker supervision and rollback are documented and exercised.
       Migration, real volume backup/restore, readiness and worker supervision
-      passed locally; the intended host's public HTTPS reverse proxy and
-      hairpin path have not been exercised.
+      passed locally. A temporary-CA HTTPS reverse proxy exercised exact public
+      backend/Auth/MCP origins and the container hairpin path; the intended
+      host's certificate, DNS and edge have not been exercised.
 - [ ] A zero-vendor egress gate starts with all managed-vendor credentials
       removed, denies undeclared public origins, and exercises the complete
       Capture → Understand → Remember → Retrieve → Act loop plus account deletion.
 
-The remaining unchecked gate is deliberately narrow. The live acceptance run
-on 2026-08-20 exercised Better Auth, PostgreSQL, Redis, MinIO, Qdrant, generic
-Ollama chat and 768-dimensional embedding, real SenseVoice PCM decode, and
-account deletion with undeclared egress denied. The complete
-Capture → Understand → Remember → Retrieve → Act behavior currently passes a
-hermetic provider-boundary contract only; it has not yet been sent end-to-end
-through the operator's generic inference endpoint on the intended release host.
-Its evidence therefore records `authorizes_production_cutover=false`.
+The unchecked gate is evidence-sensitive. A combined local cutover run on
+2026-08-20 exercised Better Auth, PostgreSQL, Redis, MinIO, Qdrant, generic
+Ollama chat and 768-dimensional embedding, real SenseVoice PCM decode, account
+deletion, and the hermetic no-network contracts. The same run drove a
+disposable Better Auth principal through public WSS
+SenseVoice Capture, authenticated generic-model Understand, an authenticated
+agent tool call to a Wikipedia-only SearXNG, public Remember, PostgreSQL/Qdrant
+projection, public Retrieve, and public Act with conversation/memory
+provenance. It also verified the effective SearXNG secret equals the reviewed
+configuration without recording that secret or its hash. That functional run
+used a dirty worktree while its artifact named only the older `HEAD`, so it is
+not valid source-attributed cutover evidence. The gate now rejects dirty
+cutover runs before service startup and records the full commit, tree, and
+clean-worktree state. A clean-tree combined rerun remains required before the
+exact tested local configuration can be authorized.
+
+That local run cannot authorize production: Compose does not deny application
+egress, the intended public edge has not run, and speaker identity is explicitly
+disabled. An initial local Qwen 7B run exposed an ambiguous primary-user
+aboutness instruction and was correctly blocked by the unchanged subject-safety
+validator. After the production prompt made the `self + primary_user` mapping
+explicit, two consecutive full HTTPS runs reached validated Long-term admission,
+projection and public retrieval. External mode now
+requires an operator policy artifact plus exact-workload denials for OpenAI,
+Google, Anthropic, Omi and an arbitrary public-IP sentinel; no such production
+run has been claimed. Valid source-attributed evidence therefore continues to record
+`authorizes_production_cutover=false`.
 
 ## Explicit self-hosted capability gaps
 
-These paths are deployment-neutral because they fail closed before vendor
-egress, but they do not yet have feature parity with the managed deployment:
+The backend now supplies typed OCR/task/Rewind embeddings, generic
+completion-backed proactive image/tool calls, and an authenticated bounded
+realtime relay to an operator-selected OpenAI-compatible WebSocket. The macOS
+and Windows self-host profiles consume those contracts with projection identity
+fences, and their direct vendor transports fail closed before URL construction.
+The remaining paths are deployment-neutral because they fail closed before
+vendor egress, but they do not yet have feature parity with the managed
+deployment:
 
-- macOS OCR/task embeddings and Rewind screenshot semantic search need a typed
-  backend embedding endpoint;
-- proactive image/tool loops need a provider-neutral backend tool capability;
-- realtime needs a signed backend relay selection; without it push-to-talk
-  uses backend-selected prerecorded STT;
+- app-icon image generation is gateway/DALL-E-specific and is explicitly
+  disabled in the self-host profile;
+- legacy attached-file chat uses OpenAI Files/Assistants/vision and is
+  explicitly disabled; the generic tool-completion image lane does not replace
+  indexed document search;
+- legacy Gemini REST proxy and provider-native omni WebSocket relay are
+  explicitly disabled by the self-host deployment authority before vendor URL
+  or credential resolution; the primary `/v2/chat/completions` path and signed
+  proactive endpoint execute the `chat_agent`/proactive manifest through the
+  generic OpenAI-compatible target with bounded retryable-only fallback. Its
+  explicit public-web lane uses SearXNG with only the trusted current-user
+  instruction and injects results as untrusted context;
 - macOS chat permits the backend `pi-mono` adapter only; direct vendor adapters
   and the local Claude task-agent process are unavailable;
 - the self-host profile explicitly disables its unbundled Typesense keyword

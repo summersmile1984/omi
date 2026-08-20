@@ -13,9 +13,15 @@ E2E_RUNNER="$ROOT/backend/testing/e2e/run.sh"
 E2E_GUARD="$ROOT/backend/testing/e2e/conftest.py"
 AUTH_SMOKE="$ROOT/deploy/self-host/auth-flow-smoke.py"
 LIVE_REPLACEMENT_SMOKE="$ROOT/deploy/self-host/live-replacement-smoke.py"
+CUTOVER_GATE="$ROOT/deploy/self-host/cutover-https-gate.sh"
+CUTOVER_SMOKE="$ROOT/deploy/self-host/cutover-live-smoke.py"
+CUTOVER_OVERLAY="$ROOT/deploy/self-host/compose.cutover-acceptance.yml"
+CUTOVER_PROXY="$ROOT/deploy/self-host/nginx.cutover-acceptance.conf"
+EVIDENCE_BUILDER="$ROOT/deploy/self-host/acceptance_evidence.py"
 EVIDENCE="${SELF_HOST_ACCEPTANCE_EVIDENCE:-${TMPDIR:-/tmp}/omi-zero-vendor-acceptance-evidence.json}"
 MODE=contracts
 LIVE_REPLACEMENT_JSON=''
+ASSEMBLED_LOOP_JSON=''
 
 LOOP_TESTS=(
   testing/e2e/test_listen_stt.py
@@ -28,10 +34,10 @@ LOOP_TESTS=(
 
 self_check() {
   local path
-  for path in "$CHECKER" "$OPS" "$E2E_RUNNER" "$E2E_GUARD" "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE"; do
+  for path in "$CHECKER" "$OPS" "$E2E_RUNNER" "$E2E_GUARD" "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_GATE" "$CUTOVER_SMOKE" "$CUTOVER_OVERLAY" "$CUTOVER_PROXY" "$EVIDENCE_BUILDER"; do
     [[ -f "$path" ]] || { echo "error: acceptance dependency missing: $path" >&2; return 1; }
   done
-  "$PY" -m py_compile "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE"
+  "$PY" -m py_compile "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_SMOKE" "$EVIDENCE_BUILDER"
   grep -q 'blocked outbound network connection' "$E2E_GUARD"
   grep -q 'blocked DNS lookup' "$E2E_GUARD"
   for path in "${LOOP_TESTS[@]}"; do
@@ -46,17 +52,26 @@ if [[ "${1:-}" == --self-check ]]; then
   exit 0
 elif [[ "${1:-}" == --live ]]; then
   MODE=live
+elif [[ "${1:-}" == --cutover-live ]]; then
+  MODE=cutover-live
+elif [[ "${1:-}" == --external-cutover-live ]]; then
+  MODE=external-cutover-live
 elif [[ $# -ne 0 ]]; then
-  echo "usage: $0 [--self-check|--live]" >&2
+  echo "usage: $0 [--self-check|--live|--cutover-live|--external-cutover-live]" >&2
   exit 2
 fi
 
 [[ -x "$PY" ]] || PY=python3
+SOURCE_ATTRIBUTION_ARGS=(--source-attribution --root "$ROOT")
+if [[ "$MODE" == cutover-live || "$MODE" == external-cutover-live ]]; then
+  SOURCE_ATTRIBUTION_ARGS+=(--require-clean)
+fi
+SOURCE_ATTRIBUTION_JSON="$("$PY" "$EVIDENCE_BUILDER" "${SOURCE_ATTRIBUTION_ARGS[@]}")"
 self_check
 "$PY" "$CHECKER" --env-file "${SELF_HOST_ENV:-$ROOT/deploy/self-host/.env.production.example}"
 
-if [[ "$MODE" == live ]]; then
-  : "${SELF_HOST_ENV:?--live requires SELF_HOST_ENV pointing to production configuration}"
+if [[ "$MODE" != contracts ]]; then
+  : "${SELF_HOST_ENV:?live modes require SELF_HOST_ENV pointing to production configuration}"
   SELF_HOST_ENV="$SELF_HOST_ENV" "$OPS" start
   dotenv_value() {
     "$PY" -c 'import sys; key=sys.argv[1]; values=dict(line.strip().split("=",1) for line in open(sys.argv[2], encoding="utf-8") if line.strip() and not line.lstrip().startswith("#") and "=" in line); print(values[key])' "$1" "$SELF_HOST_ENV"
@@ -83,6 +98,27 @@ for line in reversed(sys.stdin.read().splitlines()):
 else:
     raise SystemExit("live replacement smoke returned no evidence object")
 ')"
+  if [[ "$MODE" == cutover-live || "$MODE" == external-cutover-live ]]; then
+    if [[ "$MODE" == cutover-live ]]; then
+      CUTOVER_OUTPUT="$(SELF_HOST_ENV="$SELF_HOST_ENV" SELF_HOST_ACCEPTANCE_ALLOW_CONTROL_SEED=true "$CUTOVER_GATE" --local)"
+    else
+      CUTOVER_OUTPUT="$(SELF_HOST_ENV="$SELF_HOST_ENV" "$CUTOVER_GATE" --external)"
+    fi
+    printf '%s\n' "$CUTOVER_OUTPUT"
+    ASSEMBLED_LOOP_JSON="$(printf '%s\n' "$CUTOVER_OUTPUT" | "$PY" -c '
+import json,sys
+for line in reversed(sys.stdin.read().splitlines()):
+    try:
+        value=json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(value, dict) and value.get("status") == "passed" and value.get("assembled_product_loop"):
+        print(json.dumps(value, separators=(",", ":")))
+        break
+else:
+    raise SystemExit("assembled cutover smoke returned no evidence object")
+')"
+  fi
 fi
 
 # This is a hermetic application-contract lane: conftest installs hard
@@ -114,54 +150,9 @@ PY
   )
 fi
 
-GIT_SHA="$(git -C "$ROOT" rev-parse HEAD)" \
 ACCEPTANCE_MODE="$MODE" \
 ACCEPTANCE_EVIDENCE="$EVIDENCE" \
+SOURCE_ATTRIBUTION_JSON="$SOURCE_ATTRIBUTION_JSON" \
 LIVE_REPLACEMENT_JSON="$LIVE_REPLACEMENT_JSON" \
-"$PY" - <<'PY'
-import json
-import os
-from datetime import datetime, timezone
-from pathlib import Path
-
-path = Path(os.environ['ACCEPTANCE_EVIDENCE'])
-path.parent.mkdir(parents=True, exist_ok=True)
-live_replacement = (
-    json.loads(os.environ['LIVE_REPLACEMENT_JSON'])
-    if os.environ['ACCEPTANCE_MODE'] == 'live'
-    else None
-)
-path.write_text(
-    json.dumps(
-        {
-            'schema_version': 1,
-            'checked_at': datetime.now(timezone.utc).isoformat(),
-            'git_sha': os.environ['GIT_SHA'],
-            'mode': os.environ['ACCEPTANCE_MODE'],
-            'gates': {
-                'zero_vendor_static_config': 'passed',
-                'undeclared_dns_and_socket_egress': 'denied',
-                'hermetic_capture_understand_remember_retrieve_act_contract': 'passed',
-                'hermetic_account_deletion_contract': 'passed',
-                'hermetic_contract_uses_replacement_services': False,
-                'live_capture_understand_remember_retrieve_act': 'not_run',
-                'production_services_healthy': (
-                    'passed' if os.environ['ACCEPTANCE_MODE'] == 'live' else 'not_run'
-                ),
-                'live_replacement_services': (
-                    live_replacement if os.environ['ACCEPTANCE_MODE'] == 'live' else 'not_run'
-                ),
-            },
-            # The live smoke covers a real SenseVoice PCM decode but not the
-            # complete generic-model-backed product loop. Model quality and a
-            # reverse-proxy traffic switch remain operator change-record steps.
-            'authorizes_production_cutover': False,
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    + '\n',
-    encoding='utf-8',
-)
-print(f'zero-vendor acceptance evidence: {path}')
-PY
+ASSEMBLED_LOOP_JSON="$ASSEMBLED_LOOP_JSON" \
+"$PY" "$EVIDENCE_BUILDER"
