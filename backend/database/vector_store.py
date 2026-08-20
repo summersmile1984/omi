@@ -11,9 +11,23 @@ import os
 import re
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from qdrant_client import QdrantClient, models  # pyright: ignore[reportMissingImports]
+if TYPE_CHECKING:
+    from qdrant_client import QdrantClient, models  # pyright: ignore[reportMissingImports]
+else:
+
+    class _LazyQdrantModels:
+        """Delay the optional Qdrant import until its adapter is exercised."""
+
+        def __getattr__(self, name: str) -> Any:
+            try:
+                from qdrant_client import models as qdrant_models
+            except ModuleNotFoundError as exc:
+                raise RuntimeError('VECTOR_STORE_PROVIDER=qdrant requires the qdrant-client package') from exc
+            return getattr(qdrant_models, name)
+
+    models = _LazyQdrantModels()
 
 _ORIGINAL_ID_PAYLOAD_KEY = '__omi_vector_id'
 _COLLECTION_COMPONENT = re.compile(r'[^a-zA-Z0-9_-]+')
@@ -295,13 +309,17 @@ class QdrantVectorStoreAdapter:
 
 
 def create_qdrant_vector_store_from_env() -> QdrantVectorStoreAdapter:
+    try:
+        from qdrant_client import QdrantClient as qdrant_client_type
+    except ModuleNotFoundError as exc:
+        raise RuntimeError('VECTOR_STORE_PROVIDER=qdrant requires the qdrant-client package') from exc
     url = os.getenv('QDRANT_URL', '').strip()
     path = os.getenv('QDRANT_PATH', '').strip()
     api_key = os.getenv('QDRANT_API_KEY', '').strip() or None
     if url:
-        client = QdrantClient(url=url, api_key=api_key)
+        client = qdrant_client_type(url=url, api_key=api_key)
     elif path:
-        client = QdrantClient(path=path)
+        client = qdrant_client_type(path=path)
     else:
         raise ValueError('VECTOR_STORE_PROVIDER=qdrant requires QDRANT_URL or QDRANT_PATH')
     return QdrantVectorStoreAdapter(

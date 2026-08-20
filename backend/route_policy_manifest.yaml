@@ -1972,3 +1972,26 @@ routes:
       deprecation:
         state: active
       owner: backend
+  - route_type: http
+    method: POST
+    path: /v1/identity/email-token
+    policy:
+      review_status: reviewed
+      auth:
+        mechanisms:
+          - public
+        placement: handler
+        scopes: []
+      byok: not_applicable
+      rate_limit:
+        policy_name: identity-email
+        key_subject: ip
+        enforcement: fail_closed
+        placement: dependency
+      timeout_class: default_method
+      surface: oauth
+      visibility: public_undocumented
+      data_domain: auth
+      deprecation:
+        state: active
+      owner: backend

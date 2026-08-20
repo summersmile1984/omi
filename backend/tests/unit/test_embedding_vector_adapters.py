@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import builtins
+import importlib
+
 import pytest
 from qdrant_client import QdrantClient
 
@@ -28,6 +31,25 @@ from utils.llm.embedding_providers import (
     LangChainEmbeddingProviderAdapter,
     OpenAICompatibleEmbeddingProviderAdapter,
 )
+
+
+def test_unselected_qdrant_adapter_does_not_expand_backend_import_requirements(monkeypatch):
+    import database.vector_store as vector_store
+
+    real_import = builtins.__import__
+
+    def reject_qdrant_import(name, *args, **kwargs):
+        if name == 'qdrant_client' or name.startswith('qdrant_client.'):
+            raise ModuleNotFoundError("No module named 'qdrant_client'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', reject_qdrant_import)
+    importlib.reload(vector_store)
+    assert vector_store.PineconeVectorStoreAdapter is not None
+
+    monkeypatch.setenv('QDRANT_PATH', ':memory:')
+    with pytest.raises(RuntimeError, match='qdrant-client package'):
+        vector_store.create_qdrant_vector_store_from_env()
 
 
 class FakeEmbeddings:
