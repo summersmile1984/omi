@@ -1,4 +1,4 @@
-import { auth } from './firebase'
+import { auth } from './identity'
 import { startOmiListen, type OmiListenHandle } from './omiListenClient'
 import type {
   BackendSegment,

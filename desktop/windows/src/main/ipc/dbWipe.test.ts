@@ -70,7 +70,13 @@ function tablesDeclaredInSource(): string[] {
   // tables are still required in USER_DATA_TABLES by the drift guard. taskStore.ts
   // holds the Track 3 task DDL (action_items + staged_tasks) execed via
   // TASK_TABLES_SCHEMA — same reason.
-  const src = ['./db.ts', './dbMigrations.ts', './liveNotesStore.ts', './taskStore.ts']
+  const src = [
+    './db.ts',
+    './dbMigrations.ts',
+    './liveNotesStore.ts',
+    './taskStore.ts',
+    './rewindEmbeddingSchema.ts'
+  ]
     .map((f) => readFileSync(new URL(f, import.meta.url), 'utf8'))
     .join('\n')
   const names = new Set<string>()
@@ -103,7 +109,9 @@ describe('USER_DATA_TABLES covers the whole schema (sign-out leak guard)', () =>
       'ai_user_profiles',
       'focus_sessions',
       'action_items',
-      'staged_tasks'
+      'staged_tasks',
+      'task_embedding_projection',
+      'rewind_embedding_projection'
     ]) {
       expect(tables, `schema should contain ${t}`).toContain(t)
     }

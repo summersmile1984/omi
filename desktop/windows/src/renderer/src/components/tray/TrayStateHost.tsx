@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { auth, onAuthStateChanged } from '../../lib/firebase'
+import { auth, onAuthStateChanged } from '../../lib/identity'
 import { getPreferences, setPreferences, onPreferencesChange } from '../../lib/preferences'
 
 // Keeps the system-tray icon/menu in sync with the app's listening state, and

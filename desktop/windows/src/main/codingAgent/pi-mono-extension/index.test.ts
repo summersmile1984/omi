@@ -59,6 +59,7 @@ beforeEach(() => {
       delete process.env[key]
     }
   }
+  process.env.OMI_API_BASE_URL = 'https://configured.example/v2'
   __resetOmiPipeForTest()
   __resetAuditWarnedForTest()
 })
@@ -168,14 +169,11 @@ function makeFakePi(): CapturedPi {
 // Provider registration (NEW — macOS had zero coverage)
 // ===========================================================================
 describe('provider registration', () => {
-  it('registers the omi openai-completions provider with default baseUrl/apiKey', () => {
+  it('fails closed when the host omits the signed backend origin', () => {
+    delete process.env.OMI_API_BASE_URL
     const cap = makeFakePi()
-    omiProvider(cap.pi)
-    expect(cap.provider?.id).toBe('omi')
-    expect(cap.provider?.cfg.api).toBe('openai-completions')
-    expect(cap.provider?.cfg.baseUrl).toBe('https://api.omi.me/v2')
-    expect(cap.provider?.cfg.apiKey).toBe('')
-    expect(cap.provider?.cfg.headers).toBeUndefined()
+    expect(() => omiProvider(cap.pi)).toThrow(/OMI_API_BASE_URL is required/)
+    expect(cap.provider).toBeUndefined()
   })
 
   it('honors OMI_API_BASE_URL and OMI_API_KEY overrides', () => {

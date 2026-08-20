@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 // Regression guard for the CI break where two capture suites died on IMPORT with
 // `auth/invalid-api-key`.
 //
-// `lib/firebase.ts` constructs `auth` at module scope, and the Firebase SDK
+// The cloud branch of `lib/identity.ts` constructs `auth` at module scope, and the Firebase SDK
 // validates the API key right there — so importing this module (or anything that
 // transitively imports it) requires a key to EXIST. Developers have a real .env,
 // so every local run passed; CI has none, so the key was undefined and the import
@@ -13,9 +13,9 @@ import { describe, it, expect } from 'vitest'
 // vitest.config.ts now supplies placeholder VITE_FIREBASE_* values when no .env
 // is present. If that config is ever removed, this test fails immediately and
 // names the cause — instead of two unrelated capture suites failing in CI only.
-describe('lib/firebase is importable without real credentials', () => {
+describe('lib/identity cloud branch is importable without real credentials', () => {
   it('exposes auth after import', async () => {
-    const mod = await import('./firebase')
+    const mod = await import('./identity')
     expect(mod.auth).toBeDefined()
   })
 

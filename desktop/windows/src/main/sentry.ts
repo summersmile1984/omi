@@ -5,6 +5,7 @@
 import { app } from 'electron'
 import * as Sentry from '@sentry/electron/main'
 import { scrubEventPii } from '../shared/sentryScrub'
+import { deploymentTelemetryDsn } from '../shared/deploymentProfile'
 
 // Redact obvious secrets/PII before an event leaves the machine: strip
 // Authorization/Cookie headers, drop the user's email from the user context, and
@@ -57,7 +58,7 @@ let initialized = false
 
 export function initSentry(): void {
   if (initialized) return
-  const dsn = import.meta.env.MAIN_VITE_SENTRY_DSN
+  const dsn = deploymentTelemetryDsn(import.meta.env.MAIN_VITE_SENTRY_DSN)
   if (!dsn) return // no DSN → reporting disabled entirely
   initialized = true
 

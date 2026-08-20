@@ -2,7 +2,13 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('./firebase', () => ({ auth: { currentUser: { uid: 'user-123' } } }))
+vi.mock('./identity', () => ({ auth: { currentUser: { uid: 'user-123' } } }))
+vi.mock('../../../shared/deploymentProfile', () => ({
+  resolveWindowsDeployment: () => ({
+    analyticsBase: 'https://us.i.posthog.com',
+    analyticsKey: 'phc_z3qUFhGUgYIOMYnfxVSrLmYISQvbgph8iREQv3sez3Y'
+  })
+}))
 
 import { trackEvent } from './analytics'
 

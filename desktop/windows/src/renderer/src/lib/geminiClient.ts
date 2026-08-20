@@ -1,4 +1,4 @@
-import { auth } from './firebase'
+import { auth } from './identity'
 
 export type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } }
 

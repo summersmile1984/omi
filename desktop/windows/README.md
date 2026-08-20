@@ -23,6 +23,25 @@ npm run dev
 config, so after `cp .env.example .env` the app runs and sign-in works with no extra
 keys to obtain.
 
+### Self-hosted release profile
+
+Windows has a distinct signed self-hosted artifact; it never derives from the
+cloud defaults. Copy `.env.selfhost.example` to `.env`, replace the four required
+API/desktop/auth/MCP origins with operator-owned HTTPS origins, then run:
+
+```bash
+npm run build:selfhost:win
+```
+
+The build fails before Vite if an origin is missing, selects Better Auth
+email/password sessions stored with Windows DPAPI, disables Firebase, Omi
+analytics/update/share fallbacks, direct BYOK/model-provider and external coding
+agent egress, and checks the emitted renderer CSP for Omi/Firebase/model-vendor
+hosts. Optional share, analytics, and update capabilities remain disabled unless
+their explicit operator URL (and analytics key) is present. Realtime voice is
+currently fail-closed in this profile until the Windows hub consumes the backend
+relay capability; it never falls back to OpenAI or Gemini.
+
 ## Authentication
 
 - **App sign-in:** each user signs in with **their own** Google or Apple/Omi account

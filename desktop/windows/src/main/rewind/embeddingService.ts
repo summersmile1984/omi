@@ -24,8 +24,23 @@ import {
   planEmbedBatch,
   type PendingEmbed
 } from './embedQueue'
-import { embedBatch, embedOne, type EmbedSession } from './embeddingClient'
-import { linkRewindEmbedding, rewindFramesNeedingEmbedding, upsertRewindEmbedding } from '../ipc/db'
+import {
+  embedBatch,
+  embedCapabilityBatch,
+  embedOne,
+  EmbeddingProjectionResponseFence,
+  embeddingProjectionKey,
+  type EmbedSession
+} from './embeddingClient'
+import {
+  activateRewindEmbeddingProjection,
+  linkRewindEmbedding,
+  rewindFramesNeedingEmbedding,
+  upsertRewindEmbedding,
+  upsertRewindEmbeddingIfProjection,
+  rewindEmbeddingProjectionMatches
+} from '../ipc/db'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
 /** How often the flush timer checks the queue (the 60s deadline lives in the queue). */
 const TICK_MS = 5_000
@@ -43,6 +58,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const queue = new EmbedQueue()
 const recentHashes = new RecentHashCache()
+const projectionResponseFence = new EmbeddingProjectionResponseFence()
 
 // Frames whose embed already failed this launch. Without this, the backfill's
 // LEFT JOIN would hand back the same permanently-failing frames on every pass and
@@ -57,7 +73,7 @@ const failedThisLaunch = new Set<number>()
 const unembeddableThisLaunch = new Set<number>()
 
 let session: EmbedSession | null = null
-// Firebase uid behind `session.token`, so a user SWITCH is detectable and not
+// Identity subject behind `session.token`, so a user switch is detectable and not
 // just a sign-out. See configureRewindEmbedSession.
 let sessionUid: string | null = null
 let timer: NodeJS.Timeout | null = null
@@ -73,7 +89,7 @@ let backfilled = 0
 // soon as that is no longer current.
 let generation = 0
 
-/** Firebase uid (`sub`) inside an id token, or null if it isn't a readable JWT
+/** Identity subject (`sub`) inside a bearer token, or null if it isn't a readable JWT
  *  (E2E stubs, malformed tokens). Never throws — a failure to read the uid must
  *  not disarm indexing, it just means we can only detect sign-OUT, not a switch. */
 function tokenUid(token: string): string | null {
@@ -123,7 +139,7 @@ function forgetSession(): void {
  * which keeps main's token fresh so background calls don't start 401ing.
  *
  * A non-null session also kicks the backfill. That closes the startup race —
- * main is ready long before the renderer has a Firebase token, so a backfill
+ * main is ready long before the renderer has an identity token, so a backfill
  * kicked at app-ready would find no session and give up for the whole launch.
  * Re-kicks are cheap (a caught-up sweep is one query returning no rows) and are
  * how frames captured while signed out eventually get indexed.
@@ -177,9 +193,61 @@ export function enqueueRewindEmbedding(
 /** Persist a vector for this content (once) and point the frames at it, then
  *  remember the hash so an identical screen later links instead of paying for
  *  another API call. Store BEFORE caching: a cached hash must always have a row. */
-function store(frameIds: number[], hash: string, vec: Float32Array): void {
-  for (const frameId of frameIds) upsertRewindEmbedding(frameId, hash, vec, EMBED_MODEL)
-  recentHashes.add(hash)
+function store(frameIds: number[], hash: string, vec: Float32Array, projectionKey: string): void {
+  const selfHosted = resolveWindowsDeployment().profile === 'self_hosted'
+  const persisted = frameIds.every((frameId) =>
+    selfHosted
+      ? upsertRewindEmbeddingIfProjection(frameId, hash, vec, projectionKey)
+      : (upsertRewindEmbedding(frameId, hash, vec, projectionKey), true)
+  )
+  if (persisted) recentHashes.add(hash)
+}
+
+async function embedDocuments(
+  current: EmbedSession,
+  texts: string[]
+): Promise<{
+  vectors: (Float32Array | null)[]
+  projectionKey: string
+  responseGeneration: number
+}> {
+  if (resolveWindowsDeployment().profile !== 'self_hosted') {
+    return {
+      vectors: await embedBatch(current, texts, 'RETRIEVAL_DOCUMENT'),
+      projectionKey: EMBED_MODEL,
+      responseGeneration: 0
+    }
+  }
+  const vectors: (Float32Array | null)[] = []
+  let projectionKey: string | null = null
+  let responseGeneration = 0
+  for (let offset = 0; offset < texts.length; offset += 32) {
+    const result = await embedCapabilityBatch(
+      current,
+      texts.slice(offset, offset + 32),
+      'rewind',
+      'document',
+      'ns3'
+    )
+    const key = embeddingProjectionKey(result.projection)
+    if (projectionKey && projectionKey !== key) {
+      throw new Error('embedding capability projection changed within one batch')
+    }
+    projectionKey = key
+    responseGeneration = Math.max(responseGeneration, result.responseGeneration)
+    vectors.push(...result.vectors)
+  }
+  if (!projectionKey) throw new Error('embedding capability returned no projection')
+  return { vectors, projectionKey, responseGeneration }
+}
+
+function activateSelfHostedProjection(projectionKey: string, responseGeneration: number): boolean {
+  return projectionResponseFence.commit(
+    responseGeneration,
+    projectionKey,
+    () => rewindEmbeddingProjectionMatches(projectionKey),
+    () => activateRewindEmbeddingProjection(projectionKey)
+  )
 }
 
 /**
@@ -207,23 +275,24 @@ async function flushBatch(
 
   if (toEmbed.length === 0) return
 
-  const vectors = await embedBatch(
+  const result = await embedDocuments(
     current,
-    toEmbed.map((g) => g.text),
-    'RETRIEVAL_DOCUMENT'
+    toEmbed.map((g) => g.text)
   )
   // The sign-out/wipe can land while that request is in flight. Persisting now
   // would write the previous user's vectors into the wiped database as orphans
   // (their frames are gone), so drop them on the floor instead.
   if (generation !== mine) return
+  if (activateSelfHostedProjection(result.projectionKey, result.responseGeneration))
+    recentHashes.clear()
   for (let i = 0; i < toEmbed.length; i++) {
     const group = toEmbed[i]
-    const vec = vectors[i]
+    const vec = result.vectors[i]
     if (!vec) {
       for (const frameId of group.frameIds) failedThisLaunch.add(frameId)
       continue
     }
-    store(group.frameIds, group.hash, vec)
+    store(group.frameIds, group.hash, vec, result.projectionKey)
   }
 }
 
@@ -292,6 +361,13 @@ export async function embedRewindQuery(text: string): Promise<Float32Array | nul
   const current = session
   if (!current || !text.trim()) return null
   try {
+    if (resolveWindowsDeployment().profile === 'self_hosted') {
+      const result = await embedCapabilityBatch(current, [text], 'rewind', 'query', 'ns3')
+      const projectionKey = embeddingProjectionKey(result.projection)
+      activateSelfHostedProjection(projectionKey, result.responseGeneration)
+      if (!rewindEmbeddingProjectionMatches(projectionKey)) return null
+      return result.vectors[0]
+    }
     const vec = await embedOne(current, text, 'RETRIEVAL_QUERY')
     return vec.length === EMBED_DIM ? vec : null
   } catch (e) {

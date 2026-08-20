@@ -2,7 +2,7 @@
 // in main; here we only relay the Firebase uid (+ token for mutations) and get
 // back non-secret connector status. Mirrors lib/byokKeys' trust split.
 
-import { auth } from './firebase'
+import { auth } from './identity'
 import type {
   McpConnectorId,
   McpExportsSnapshot,

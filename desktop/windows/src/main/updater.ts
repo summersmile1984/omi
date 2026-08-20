@@ -22,9 +22,11 @@ import {
   type WindowsUpdateChannel
 } from './windowsUpdateFeed'
 import type { UpdateCheckResult } from '../shared/types'
+import { resolveWindowsDeployment } from '../shared/deploymentProfile'
 
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
-const OMI_API_BASE = import.meta.env.VITE_OMI_API_BASE || 'https://api.omi.me'
+const deployment = resolveWindowsDeployment()
+const OMI_API_BASE = deployment.apiBase
 
 let started = false
 let selectedChannel: WindowsUpdateChannel = 'stable'
@@ -142,6 +144,7 @@ export function initAutoUpdater(
   if (started || platform !== 'win32') return
   const devForced = process.env.OMI_UPDATER_DEV === '1'
   if (!app.isPackaged && !devForced) return
+  if (deployment.profile === 'self_hosted' && !deployment.updateFeed && !devForced) return
   started = true
 
   autoUpdater.autoDownload = false
@@ -152,7 +155,9 @@ export function initAutoUpdater(
   // Kept aligned for dev feeds and electron-updater's public state. Production
   // channel selection is owned by the backend resolver below.
   autoUpdater.allowPrerelease = selectedChannel === 'beta'
-  if (!devForced) {
+  if (!devForced && deployment.profile === 'self_hosted') {
+    autoUpdater.setFeedURL({ provider: 'generic', url: deployment.updateFeed as string })
+  } else if (!devForced) {
     feedSelector = new WindowsUpdateFeedSelector(
       selectedChannel,
       (channel): Promise<string> => resolveWindowsUpdateFeedUrl(OMI_API_BASE, channel, net.fetch),

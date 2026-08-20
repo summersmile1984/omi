@@ -22,7 +22,14 @@
 // `assistants/core/session.ts` and guards every persist with the session epoch,
 // so a job started under user A can never write A's vector after A signs out.
 import { EMBED_DIM, dot } from '../rewind/embedVector'
-import { embedBatch, embedOne, type EmbedSession } from '../rewind/embeddingClient'
+import {
+  embedBatch,
+  embedCapabilityBatch,
+  embedOne,
+  EmbeddingProjectionResponseFence,
+  embeddingProjectionKey,
+  type EmbedSession
+} from '../rewind/embeddingClient'
 import { getBackendSession, getSessionEpoch } from '../assistants/core/session'
 import type { TaskEmbeddingSource } from '../../shared/types'
 import {
@@ -33,6 +40,9 @@ import {
   updateActionItemEmbedding,
   updateStagedTaskEmbedding
 } from '../ipc/db'
+import { activateTaskEmbeddingProjection } from '../ipc/db'
+import { taskEmbeddingProjectionMatches, updateTaskEmbeddingIfProjection } from '../ipc/db'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
 /** A task's identity in the index. `id` is the local rowid of its source table;
  *  action_items and staged_tasks both start rowids at 1, so `source` is required
@@ -63,6 +73,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 // the way in, so the dot IS the cosine).
 const index = new Map<string, Float32Array>()
 let loaded = false
+let activeQueryProjectionKey: string | null = null
+const projectionResponseFence = new EmbeddingProjectionResponseFence()
 
 /** Composite key for the index. `source` never contains ':' and `id` is numeric,
  *  so `${source}:${id}` round-trips unambiguously (see `parseKey`). */
@@ -80,7 +92,51 @@ function parseKey(key: string): TaskEmbeddingKey {
  *  null when signed out / not yet relayed. */
 function readSession(): EmbedSession | null {
   const s = getBackendSession()
-  return s ? { desktopApiBase: s.desktopApiBase, token: s.token } : null
+  return s ? { apiBase: s.apiBase, desktopApiBase: s.desktopApiBase, token: s.token } : null
+}
+
+async function embedSelfHosted(
+  session: EmbedSession,
+  texts: string[],
+  mode: 'document' | 'query'
+): Promise<{
+  vectors: (Float32Array | null)[]
+  projectionKey: string
+  responseGeneration: number
+}> {
+  const vectors: (Float32Array | null)[] = []
+  let projectionKey: string | null = null
+  let responseGeneration = 0
+  for (let offset = 0; offset < texts.length; offset += 32) {
+    const result = await embedCapabilityBatch(
+      session,
+      texts.slice(offset, offset + 32),
+      'task',
+      mode,
+      'ns4'
+    )
+    const key = embeddingProjectionKey(result.projection)
+    if (projectionKey && projectionKey !== key) {
+      throw new Error('embedding capability projection changed within one batch')
+    }
+    projectionKey = key
+    responseGeneration = Math.max(responseGeneration, result.responseGeneration)
+    vectors.push(...result.vectors)
+  }
+  if (!projectionKey) throw new Error('embedding capability returned no projection')
+  return { vectors, projectionKey, responseGeneration }
+}
+
+function activateProjection(projectionKey: string, responseGeneration: number): void {
+  const invalidated = projectionResponseFence.commit(
+    responseGeneration,
+    projectionKey,
+    () => taskEmbeddingProjectionMatches(projectionKey),
+    () => activateTaskEmbeddingProjection(projectionKey)
+  )
+  if (!invalidated) return
+  index.clear()
+  loaded = true
 }
 
 /**
@@ -171,6 +227,13 @@ export async function embedQuery(text: string): Promise<Float32Array | null> {
   const session = readSession()
   if (!session || !text.trim()) return null
   try {
+    if (resolveWindowsDeployment().profile === 'self_hosted') {
+      const result = await embedSelfHosted(session, [text], 'query')
+      activateProjection(result.projectionKey, result.responseGeneration)
+      if (!taskEmbeddingProjectionMatches(result.projectionKey)) return null
+      activeQueryProjectionKey = result.projectionKey
+      return result.vectors[0]
+    }
     const vec = await embedOne(session, text, 'RETRIEVAL_QUERY')
     return vec.length === EMBED_DIM ? vec : null
   } catch (e) {
@@ -185,6 +248,12 @@ export async function embedQuery(text: string): Promise<Float32Array | null> {
  * strongest first. Callers apply their own similarity threshold; this only sorts.
  */
 export function searchSimilar(queryVec: Float32Array, topK = 10): TaskSimilarity[] {
+  if (
+    resolveWindowsDeployment().profile === 'self_hosted' &&
+    (!activeQueryProjectionKey || !taskEmbeddingProjectionMatches(activeQueryProjectionKey))
+  ) {
+    return []
+  }
   ensureLoaded()
   const scored: TaskSimilarity[] = []
   for (const [key, vec] of index) {
@@ -211,11 +280,17 @@ export async function generateEmbeddingForTask(
   if (!session || !text.trim()) return
   const epoch = getSessionEpoch()
   try {
-    const vec = await embedOne(session, text, 'RETRIEVAL_DOCUMENT')
+    const selfHosted = resolveWindowsDeployment().profile === 'self_hosted'
+    const result = selfHosted ? await embedSelfHosted(session, [text], 'document') : null
+    const vec = result ? result.vectors[0] : await embedOne(session, text, 'RETRIEVAL_DOCUMENT')
     if (getSessionEpoch() !== epoch) return // session changed mid-request; drop
-    if (vec.length !== EMBED_DIM) return
-    persistEmbedding(source, id, vec)
-    addToIndex(source, id, vec)
+    if (!vec) return
+    if (result) activateProjection(result.projectionKey, result.responseGeneration)
+    if (!selfHosted && vec.length !== EMBED_DIM) return
+    const persisted = result
+      ? updateTaskEmbeddingIfProjection(source, id, vec, result.projectionKey)
+      : (persistEmbedding(source, id, vec), true)
+    if (persisted) addToIndex(source, id, vec)
   } catch (e) {
     console.warn(`[task-embed] embed for ${source}:${id} failed: ${(e as Error).message}`)
   }
@@ -253,12 +328,24 @@ export async function backfillMissing(): Promise<void> {
 
       const epoch = getSessionEpoch()
       let vectors: (Float32Array | null)[]
+      let projectionKey: string | null = null
       try {
-        vectors = await embedBatch(
-          session,
-          rows.map((r) => r.description),
-          'RETRIEVAL_DOCUMENT'
-        )
+        if (resolveWindowsDeployment().profile === 'self_hosted') {
+          const result = await embedSelfHosted(
+            session,
+            rows.map((r) => r.description),
+            'document'
+          )
+          activateProjection(result.projectionKey, result.responseGeneration)
+          projectionKey = result.projectionKey
+          vectors = result.vectors
+        } else {
+          vectors = await embedBatch(
+            session,
+            rows.map((r) => r.description),
+            'RETRIEVAL_DOCUMENT'
+          )
+        }
       } catch (e) {
         if (isExpectedBackendStop(e)) return // quota/rate limited — stop quietly
         console.warn(`[task-embed] backfill batch failed: ${(e as Error).message}`)
@@ -273,8 +360,15 @@ export async function backfillMissing(): Promise<void> {
       let persistedThisPage = 0
       for (let i = 0; i < rows.length; i++) {
         const vec = vectors[i]
-        if (!vec || vec.length !== EMBED_DIM) continue // API dropped/malformed this item
-        persistEmbedding(source, rows[i].id, vec)
+        if (
+          !vec ||
+          (resolveWindowsDeployment().profile !== 'self_hosted' && vec.length !== EMBED_DIM)
+        )
+          continue
+        const persisted = projectionKey
+          ? updateTaskEmbeddingIfProjection(source, rows[i].id, vec, projectionKey)
+          : (persistEmbedding(source, rows[i].id, vec), true)
+        if (!persisted) continue
         addToIndex(source, rows[i].id, vec)
         embedded++
         persistedThisPage++

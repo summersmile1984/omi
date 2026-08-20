@@ -38,11 +38,12 @@ import { AppCrashScreen } from './components/ui/AppCrashScreen'
 import { scrubEventPii } from '../../shared/sentryScrub'
 import { isSecondaryWindow } from './lib/windowRole'
 import { initFontScale } from './lib/fontScale'
+import { deploymentTelemetryDsn } from '../../shared/deploymentProfile'
 
 // Renderer-side crash reporting. Only initializes when a DSN is configured, so
 // dev builds (and any build without the env var) stay entirely offline. Emails
 // are scrubbed from event text before send as a best-effort PII guard.
-const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined
+const SENTRY_DSN = deploymentTelemetryDsn(import.meta.env.VITE_SENTRY_DSN as string | undefined)
 if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,

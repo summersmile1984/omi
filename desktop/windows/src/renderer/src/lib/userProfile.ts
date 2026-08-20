@@ -4,7 +4,7 @@
 // Auth displayName (the closest account-level value). All calls are best-effort;
 // the wizard persists values locally regardless and never blocks on these.
 import { updateProfile } from 'firebase/auth'
-import { auth } from './firebase'
+import { auth, firebaseUser } from './identity'
 import { omiApi } from './apiClient'
 
 export async function syncLanguage(language: string): Promise<void> {
@@ -23,5 +23,6 @@ export async function syncRecordingConsent(allowed: boolean): Promise<void> {
 export async function setDisplayName(name: string): Promise<void> {
   const user = auth.currentUser
   if (!user) return
-  await updateProfile(user, { displayName: name })
+  const cloudUser = firebaseUser(user)
+  if (cloudUser) await updateProfile(cloudUser, { displayName: name })
 }

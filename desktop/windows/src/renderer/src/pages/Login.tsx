@@ -1,11 +1,13 @@
 import { useRef, useState } from 'react'
 import { Apple } from 'lucide-react'
 import type { SignInProvider } from '../../../shared/types'
-import { signInWithProvider } from '../lib/firebase'
+import { signInWithBetterAuth, signInWithProvider } from '../lib/identity'
+import { resolveWindowsDeployment } from '../../../shared/deploymentProfile'
 import omiLogo from '../assets/omilogo.png'
 import { BrandImage } from '../components/ui/BrandImage'
 
 export function Login(): React.JSX.Element {
+  const selfHosted = resolveWindowsDeployment().profile === 'self_hosted'
   // 'activeProvider' spans the whole system-browser round-trip (opening the browser →
   // loopback callback → token exchange). Success flips auth state globally via
   // onAuthStateChanged, which unmounts this page. (A still-pending attempt's
@@ -13,6 +15,11 @@ export function Login(): React.JSX.Element {
   // at most one listener ever exists, and it's gone after success.)
   const [activeProvider, setActiveProvider] = useState<SignInProvider | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [createAccount, setCreateAccount] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   // Per-click generation: only the NEWEST attempt may write error/waiting
   // state, so a late failure from a superseded-era attempt (however phrased)
   // can never clobber the retry's pending UI.
@@ -36,12 +43,75 @@ export function Login(): React.JSX.Element {
     }
   }
 
+  const onBetterAuthSubmit = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      await signInWithBetterAuth({ email, password, name, createAccount })
+    } catch (e) {
+      setError((e as Error).message)
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div className="app-canvas relative flex h-full items-center justify-center p-8">
       <div className="animate-fade-in relative z-10 flex w-full max-w-[420px] flex-col items-center">
         <BrandImage src={omiLogo} alt="omi" className="h-24 w-auto" />
         <p className="mt-6 text-base leading-relaxed text-white/70">Sign in to continue</p>
-        <div className="h-48" />
+        {selfHosted ? (
+          <form className="mt-10 flex w-full flex-col gap-3" onSubmit={(e) => void onBetterAuthSubmit(e)}>
+            {createAccount && (
+              <input
+                aria-label="Name"
+                className="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/40"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Name"
+                autoComplete="name"
+                required
+              />
+            )}
+            <input
+              aria-label="Email"
+              className="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/40"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Email"
+              type="email"
+              autoComplete="email"
+              required
+            />
+            <input
+              aria-label="Password"
+              className="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/40"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password"
+              type="password"
+              minLength={8}
+              autoComplete={createAccount ? 'new-password' : 'current-password'}
+              required
+            />
+            <button
+              type="submit"
+              className="rounded-xl bg-white px-8 py-3.5 font-medium text-black"
+              disabled={submitting}
+            >
+              {submitting ? 'Signing in…' : createAccount ? 'Create account' : 'Sign in'}
+            </button>
+            <button
+              type="button"
+              className="text-sm text-white/60 hover:text-white"
+              onClick={() => setCreateAccount((value) => !value)}
+            >
+              {createAccount ? 'Already have an account? Sign in' : 'Need an account? Create one'}
+            </button>
+          </form>
+        ) : (
+          <>
+            <div className="h-48" />
         <button
           type="button"
           onClick={() => void onClick('apple')}
@@ -75,8 +145,10 @@ export function Login(): React.JSX.Element {
           </svg>
           {activeProvider === 'google' ? 'Try again' : 'Continue with Google'}
         </button>
+          </>
+        )}
         <div className="mt-4 min-h-[3rem] text-center">
-          {activeProvider && !error && (
+          {!selfHosted && activeProvider && !error && (
             <p className="animate-fade-in text-sm text-white/50">
               Waiting for your browser&hellip; finish signing in there, then come back.
             </p>

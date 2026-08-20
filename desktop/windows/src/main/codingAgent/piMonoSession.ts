@@ -18,6 +18,7 @@
 // (never persisted to disk), and never logged.
 import { byokEnvVars } from '../../shared/byok'
 import { ByokKeyStore } from '../agentKernel/byokStore'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
 /** The relayed Firebase session the adapter reads at spawn. */
 export interface PiMonoSession {
@@ -115,6 +116,7 @@ export function piMonoManagedApiBaseUrl(session: PiMonoSession): string {
  * Independent of the Firebase session: managed OMI_API_KEY is always the token.
  */
 export function getPiMonoByokEnv(): Record<string, string> {
+  if (!resolveWindowsDeployment().allowByok) return {}
   return byokEnvVars(getByokStore().getAllKeys())
 }
 

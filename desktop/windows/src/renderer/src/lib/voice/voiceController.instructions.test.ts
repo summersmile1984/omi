@@ -11,7 +11,7 @@ const { get, startOpenAiSession, startGeminiSession, mintRealtimeToken } = vi.ho
 }))
 
 vi.mock('../analytics', () => ({ trackEvent: vi.fn() }))
-vi.mock('../firebase', () => ({ auth: { currentUser: { uid: 'u1', displayName: 'Ada' } } }))
+vi.mock('../identity', () => ({ auth: { currentUser: { uid: 'u1', displayName: 'Ada' } } }))
 vi.mock('../apiClient', () => ({ omiApi: { get } }))
 vi.mock('./tokenMint', () => ({
   mintRealtimeToken,

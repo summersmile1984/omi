@@ -950,6 +950,12 @@ export type OmiBridgeApi = {
   // browser (main owns the loopback callback + token exchange; the renderer
   // finishes with signInWithCustomToken on the returned custom token).
   signInWithProvider: (provider: SignInProvider) => Promise<SignInResult>
+  /** Self-hosted Better Auth. The opaque database-session token never crosses
+   *  preload; main persists it with safeStorage and returns only short-lived JWTs. */
+  betterAuthSignIn: (request: BetterAuthSignInRequest) => Promise<BetterAuthResult>
+  betterAuthRestore: () => Promise<BetterAuthResult>
+  betterAuthRefresh: (expectedUserId: string) => Promise<BetterAuthResult>
+  betterAuthSignOut: () => Promise<void>
   // Integrations (3d): Google OAuth + Gmail/Calendar. Main owns the OAuth grant
   // and REST reads; the renderer synthesizes the returned items and writes
   // /v3/memories + /v1/action-items itself (it holds the Firebase token).
@@ -1002,7 +1008,7 @@ export type OmiBridgeApi = {
    *  (Track 4); null on sign-out. Without it, semantic search stays inert and
    *  `rewindSearch` returns keyword-only results. */
   rewindSetEmbedSession: (
-    session: { desktopApiBase: string; token: string } | null
+    session: { apiBase: string; desktopApiBase: string; token: string } | null
   ) => Promise<void>
   rewindFrameImage: (imagePath: string) => Promise<string>
   // --- Track 4 --- per-line OCR bounding boxes (normalized 0..1) for the
@@ -1301,6 +1307,13 @@ export type OmiBridgeApi = {
   /** Read-only continuity seed for the voice session — the recent turns of the
    *  same main_chat conversation, source-tagged [live:voice]/[live:typed]. */
   voiceHubGetSeedContext: (args?: VoiceHubSeedContextArgs) => Promise<VoiceHubSeedContext>
+  /** Mint an authenticated backend relay contract. The bearer stays main-side;
+   *  renderer receives only an opaque connection id and the declared wire dialect. */
+  voiceHubRelayCreate: () => Promise<VoiceHubRelayContract>
+  voiceHubRelayConnect: (connectionId: string) => void
+  voiceHubRelaySend: (connectionId: string, data: string) => void
+  voiceHubRelayClose: (connectionId: string) => void
+  onVoiceHubRelayEvent: (cb: (event: VoiceHubRelayEvent) => void) => () => void
   // --- realtime-hub tool loop (INV-AGENT) ---
   /** The per-provider-neutral tool declarations the warm voice session advertises.
    *  Built HOST-SIDE from the shared manifest with a host-derived execution role
@@ -1587,6 +1600,20 @@ export type VoiceHubSeedContext = {
   /** Idempotency keys of the complete user turns included, so the caller can tell
    *  whether the warm session already reflects them (avoids reconnect thrash). */
   idempotencyKeys: string[]
+}
+
+export type VoiceHubRelayWireProtocol = 'openai_realtime_v1'
+
+export type VoiceHubRelayContract = {
+  connectionId: string
+  wireProtocol: VoiceHubRelayWireProtocol
+}
+
+export type VoiceHubRelayEvent = {
+  connectionId: string
+  type: 'open' | 'message' | 'close' | 'error'
+  data?: string
+  code?: number
 }
 
 /** A provider-neutral realtime tool declaration. Each hub session subclass projects
@@ -1896,6 +1923,29 @@ export type SignInProvider = 'google' | 'apple'
 export type SignInResult =
   | { ok: true; customToken: string; email?: string; givenName?: string; familyName?: string }
   | { ok: false; error: string }
+
+export type BetterAuthUser = {
+  uid: string
+  email?: string
+  displayName?: string
+}
+
+export type BetterAuthSession = {
+  user: BetterAuthUser
+  token: string
+  expiresAt: number
+}
+
+export type BetterAuthSignInRequest = {
+  email: string
+  password: string
+  createAccount: boolean
+  name?: string
+}
+
+export type BetterAuthResult =
+  | { ok: true; session: BetterAuthSession | null }
+  | { ok: false; error: string; definitive: boolean; user?: BetterAuthUser }
 
 // --- Integrations: Google (Gmail + Calendar) OAuth (parity 3d) ---
 

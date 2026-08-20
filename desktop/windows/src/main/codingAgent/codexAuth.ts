@@ -18,6 +18,7 @@
 
 import { ByokKeyStore } from '../agentKernel/byokStore'
 import type { CodexKeyResult, CodexKeyStatus } from '../../shared/types'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
 /** The subset of ByokKeyStore this module needs (so tests can inject a fake
  *  without Electron safeStorage). */
@@ -34,6 +35,7 @@ function getStore(): CodexKeyBackingStore {
 
 /** The stored Codex OpenAI key, or null. Read by the adapter registry at spawn. */
 export function getCodexApiKey(): string | null {
+  if (!resolveWindowsDeployment().allowDirectModelProviders) return null
   try {
     return getStore().getKey('openai')
   } catch {
@@ -63,6 +65,9 @@ export async function validateOpenAiKey(
   key: string,
   fetchImpl: FetchLike = fetch as unknown as FetchLike
 ): Promise<{ ok: boolean; status?: number; unreachable?: boolean; error?: string }> {
+  if (!resolveWindowsDeployment().allowDirectModelProviders) {
+    return { ok: false, error: 'Direct model-provider credentials are disabled by this deployment profile.' }
+  }
   const trimmed = key.trim()
   if (!trimmed) return { ok: false, error: 'Enter a key first.' }
   const controller = new AbortController()
@@ -96,6 +101,9 @@ export async function saveCodexApiKey(
   key: string,
   validate: typeof validateOpenAiKey = validateOpenAiKey
 ): Promise<CodexKeyResult> {
+  if (!resolveWindowsDeployment().allowDirectModelProviders) {
+    return { ok: false, hasKey: false, error: 'Direct coding-agent credentials are disabled by this deployment profile.' }
+  }
   const trimmed = key.trim()
   if (!trimmed) {
     getStore().clearKey('openai')

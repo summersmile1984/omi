@@ -24,8 +24,10 @@ import { IntegrationsTab } from './IntegrationsTab'
 import { DeveloperKeysSection } from './DeveloperKeysSection'
 import { AiProfileCard } from './AiProfileCard'
 import type { ExportMemory, FileIndexStatus, LocalKGStatus } from '../../../../../shared/types'
+import { resolveWindowsDeployment } from '../../../../../shared/deploymentProfile'
 
 export function AdvancedTab(): React.JSX.Element {
+  const allowByok = resolveWindowsDeployment().allowByok
   const { memories, refresh } = useMemories()
 
   // --- File indexing ---
@@ -434,7 +436,7 @@ export function AdvancedTab(): React.JSX.Element {
       <AiProfileCard />
 
       {/* Developer API Keys (BYOK) — Mac renders this as an Advanced subsection. */}
-      <DeveloperKeysSection />
+      {allowByok && <DeveloperKeysSection />}
 
       <SettingRow
         icon={FolderSearch}

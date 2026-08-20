@@ -14,7 +14,7 @@ import {
 
 // firebase is only reached by the real uploader, which we never call (every test
 // injects an upload). Mock it so the transitive import is inert.
-vi.mock('./firebase', () => ({ auth: { currentUser: null } }))
+vi.mock('./identity', () => ({ auth: { currentUser: null } }))
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 

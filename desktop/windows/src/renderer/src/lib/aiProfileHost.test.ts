@@ -1,4 +1,4 @@
-// The AI-profile renderer host is a pure session relay: it forwards the Firebase
+// The AI-profile renderer host is a pure session relay: it forwards the identity
 // session to the main-process profile service (which is inert without one) and
 // clears it on sign-out. It must NEVER drive generation — cadence lives in main.
 // These tests pin exactly that contract.
@@ -8,13 +8,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // can close over them.
 const h = vi.hoisted(() => ({
   onIdTokenChanged: vi.fn(),
-  // Stands in for the Firebase Auth instance; `currentUser` is what the host
+  // Stands in for the configured identity instance; `currentUser` is what the host
   // re-checks after awaiting getIdToken().
   auth: { currentUser: null as FakeUser | null }
 }))
 
-vi.mock('firebase/auth', () => ({ onIdTokenChanged: h.onIdTokenChanged }))
-vi.mock('./firebase', () => ({ auth: h.auth }))
+vi.mock('./identity', () => ({ auth: h.auth, onIdTokenChanged: h.onIdTokenChanged }))
 
 type FakeUser = { getIdToken: () => Promise<string> }
 type AuthCallback = (user: FakeUser | null) => void
@@ -24,7 +23,7 @@ function authCallback(): AuthCallback {
   return h.onIdTokenChanged.mock.calls[0][1] as AuthCallback
 }
 
-/** Fire a sign-in event the way Firebase would: currentUser is already set by the
+/** Fire a sign-in event the way an identity provider would: currentUser is already set by the
  *  time the listener runs. */
 function signIn(token: string): FakeUser {
   const user: FakeUser = { getIdToken: async () => token }
@@ -96,12 +95,12 @@ describe('startAiProfileHost (session relay)', () => {
     expect(session).toHaveProperty('desktopApiBase')
   })
 
-  it('relays again with the refreshed token when Firebase rotates the id token', async () => {
+  it('relays again when the identity provider rotates the token', async () => {
     const { aiProfileSetSession } = installWindowOmi()
     const { startAiProfileHost } = await freshHost()
 
     startAiProfileHost()
-    // Firebase re-fires this listener ~hourly; each fire must refresh main's
+    // The identity provider re-fires this listener on refresh; each fire must refresh main's
     // cached token (otherwise main's backend calls start 401ing).
     signIn('tok-1')
     await flush()

@@ -1,4 +1,4 @@
-import { auth } from './firebase'
+import { auth } from './identity'
 import type { BackendSegment, ListenEvent, ListenMode, ListenSource } from '../../../shared/types'
 import { getPreferences } from './preferences'
 import { getWindowsDeviceIdHash } from './clientDevice'

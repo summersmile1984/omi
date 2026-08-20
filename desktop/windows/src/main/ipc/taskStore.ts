@@ -65,6 +65,10 @@ const UNSCORED_SORT = 999999
 // tables — matches Mac's staged_tasks_fts_au.
 // ---------------------------------------------------------------------------
 export const TASK_TABLES_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS task_embedding_projection (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    projection_key TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS action_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     backend_id TEXT UNIQUE,
@@ -167,6 +171,90 @@ export const TASK_TABLES_SCHEMA = `
     INSERT INTO staged_tasks_fts(rowid, description) VALUES (new.id, new.description);
   END;
 `
+
+/** Persist the projection identity beside task vectors. A changed identity
+ * clears both task tables' derived vectors so the normal backfill reindexes
+ * them; dimension alone is insufficient because models can share a dimension. */
+export function activateTaskEmbeddingProjectionOn(
+  d: TaskStoreDb,
+  projectionKey: string
+): boolean {
+  const current = cachedStmt(
+    d,
+    'SELECT projection_key AS projectionKey FROM task_embedding_projection WHERE singleton = 1'
+  ).get() as { projectionKey: string } | undefined
+  if (!current) {
+    const legacy = cachedStmt(
+      d,
+      `SELECT
+         (SELECT COUNT(*) FROM action_items WHERE embedding IS NOT NULL) +
+         (SELECT COUNT(*) FROM staged_tasks WHERE embedding IS NOT NULL) AS count`
+    ).get() as { count: number }
+    d.exec('BEGIN IMMEDIATE')
+    try {
+      if (legacy.count > 0) {
+        cachedStmt(d, 'UPDATE action_items SET embedding = NULL WHERE embedding IS NOT NULL').run()
+        cachedStmt(d, 'UPDATE staged_tasks SET embedding = NULL WHERE embedding IS NOT NULL').run()
+      }
+      cachedStmt(
+        d,
+        'INSERT INTO task_embedding_projection (singleton, projection_key) VALUES (1, ?)'
+      ).run(projectionKey)
+      d.exec('COMMIT')
+    } catch (error) {
+      d.exec('ROLLBACK')
+      throw error
+    }
+    return legacy.count > 0
+  }
+  if (current.projectionKey === projectionKey) return false
+  d.exec('BEGIN IMMEDIATE')
+  try {
+    cachedStmt(d, 'UPDATE action_items SET embedding = NULL WHERE embedding IS NOT NULL').run()
+    cachedStmt(d, 'UPDATE staged_tasks SET embedding = NULL WHERE embedding IS NOT NULL').run()
+    cachedStmt(
+      d,
+      'UPDATE task_embedding_projection SET projection_key = ? WHERE singleton = 1'
+    ).run(projectionKey)
+    d.exec('COMMIT')
+  } catch (error) {
+    d.exec('ROLLBACK')
+    throw error
+  }
+  return true
+}
+
+export function taskEmbeddingProjectionMatchesOn(d: TaskStoreDb, projectionKey: string): boolean {
+  const current = cachedStmt(
+    d,
+    'SELECT projection_key AS projectionKey FROM task_embedding_projection WHERE singleton = 1'
+  ).get() as { projectionKey: string } | undefined
+  return current?.projectionKey === projectionKey
+}
+
+/** Projection-marker CAS and vector write in one SQLite transaction. */
+export function updateTaskEmbeddingIfProjectionOn(
+  d: TaskStoreDb,
+  source: 'action_item' | 'staged_task',
+  id: number,
+  vector: Float32Array,
+  projectionKey: string
+): boolean {
+  d.exec('BEGIN IMMEDIATE')
+  try {
+    if (!taskEmbeddingProjectionMatchesOn(d, projectionKey)) {
+      d.exec('ROLLBACK')
+      return false
+    }
+    const table = source === 'action_item' ? 'action_items' : 'staged_tasks'
+    cachedStmt(d, `UPDATE ${table} SET embedding = ? WHERE id = ?`).run(vectorToBuffer(vector), id)
+    d.exec('COMMIT')
+    return true
+  } catch (error) {
+    d.exec('ROLLBACK')
+    throw error
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Column lists + row types + mappers. The SELECT lists deliberately omit

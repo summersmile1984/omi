@@ -16,7 +16,7 @@
 // and a build whose account switched away mid-fetch is discarded (never filed
 // under the old uid) so one account's vocabulary can never leak to another.
 
-import { auth } from '../firebase'
+import { auth } from '../identity'
 import { omiApi } from '../apiClient'
 
 /** Fetch the account's custom vocabulary from the backend. Any failure → [] (the

@@ -3,7 +3,7 @@ import axios, {
   type AxiosResponse,
   type InternalAxiosRequestConfig
 } from 'axios'
-import { auth } from './firebase'
+import { auth } from './identity'
 import { forceReauth, refreshIdToken } from './authSession'
 import { withByokHeadersIfActive } from './byokKeys'
 import { getWindowsDeviceIdHash } from './clientDevice'

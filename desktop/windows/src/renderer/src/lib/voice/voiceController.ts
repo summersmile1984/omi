@@ -27,6 +27,7 @@ import { getPreferences } from '../preferences'
 import { reportRealtimeUsage } from './usageReport'
 import { startOpenAiSession } from './openaiSession'
 import { startGeminiSession } from './geminiSession'
+import { resolveWindowsDeployment } from '../../../../shared/deploymentProfile'
 import { synthesizeTts, DEFAULT_TTS_VOICE } from './tts'
 import { chunkTts } from './ttsChunker'
 import type { ProviderSessionCallbacks, ProviderSessionHandle } from './providerSession'
@@ -270,6 +271,14 @@ export function getVoiceEvents(): VoiceEventRecord[] {
 
 export async function startVoiceSession(preferred?: VoiceProvider): Promise<void> {
   if (state.status === 'connecting' || state.status === 'live') return
+  if (!resolveWindowsDeployment().allowDirectModelProviders) {
+    dispatch({
+      type: 'fail',
+      message: 'Realtime voice is unavailable until the configured backend advertises its relay capability.',
+      retryable: false
+    })
+    return
+  }
   // Refresh the daily Auto pick if stale (fire-and-forget, no-op when fresh) so
   // the NEXT session uses a current pick; THIS session resolves synchronously
   // from the cache below. Mirrors Mac's "call refreshIfStale at session start".

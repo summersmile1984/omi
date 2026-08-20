@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { auth } from '../../lib/firebase'
+import { auth } from '../../lib/identity'
 
 // Receives the global mic record chord (default Ctrl+Space) from main and acts on
 // it. Main sends 'recorder:hotkey' with the capture mode after surfacing the

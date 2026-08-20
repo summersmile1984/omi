@@ -1,18 +1,17 @@
 import { useEffect, useState } from 'react'
-import { auth, onAuthStateChanged } from '../lib/firebase'
+import { auth, onAuthStateChanged, type IdentityUser } from '../lib/identity'
 import { getBenchUser } from '../lib/dev/benchAuth'
 import { getE2EUser } from '../lib/dev/e2eAuth'
 import { reconcileAccountForSignIn } from '../lib/authTeardown'
 import { isSecondaryWindow } from '../lib/windowRole'
-import type { User } from 'firebase/auth'
 
-export function useAuth(): { user: User | null; loading: boolean } {
+export function useAuth(): { user: IdentityUser | null; loading: boolean } {
   // Injected fake user (null in normal use):
   //   - perf bench (OMI_BENCH, DEV-only — see lib/dev/benchAuth)
   //   - shell E2E (OMI_E2E_FAKE_AUTH, survives prod builds — see lib/dev/e2eAuth)
   // Either mounts the authed shell without a live Firebase session.
   const fakeUser = getE2EUser() ?? getBenchUser()
-  const [user, setUser] = useState<User | null>(fakeUser)
+  const [user, setUser] = useState<IdentityUser | null>(fakeUser)
   const [loading, setLoading] = useState(!fakeUser)
 
   useEffect(() => {

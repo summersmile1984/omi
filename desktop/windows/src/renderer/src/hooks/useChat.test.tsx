@@ -22,7 +22,7 @@ const fbAuth = vi.hoisted(
       currentUser: { getIdToken: async () => 'test-token' }
     }) as { currentUser: { getIdToken: () => Promise<string> } | null }
 )
-vi.mock('../lib/firebase', () => ({ auth: fbAuth }))
+vi.mock('../lib/identity', () => ({ auth: fbAuth }))
 vi.mock('../lib/pageCache', () => ({ invalidateConversationsCache: vi.fn() }))
 vi.mock('../lib/localAgent', () => ({ gatherLocalContext: async () => '' }))
 vi.mock('../lib/screenContext', () => ({ readCurrentScreen: async () => '' }))

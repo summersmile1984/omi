@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly VITE_OMI_DEPLOYMENT_PROFILE?: 'omi_cloud' | 'self_hosted'
+  readonly VITE_OMI_IDENTITY_PROVIDER?: 'firebase' | 'better_auth'
   readonly MAIN_VITE_GOOGLE_CLIENT_ID?: string
   readonly MAIN_VITE_GOOGLE_CLIENT_SECRET?: string
   /** Sentry DSN for main-process error reporting. Unset → reporting disabled. */
@@ -8,6 +10,12 @@ interface ImportMetaEnv {
   /** Omi backend base URL (shared VITE_ prefix — visible to all processes).
    *  Main uses it for the sign-in authorize/token endpoints. */
   readonly VITE_OMI_API_BASE?: string
+  readonly VITE_OMI_DESKTOP_API_BASE?: string
+  readonly VITE_OMI_AUTH_BASE?: string
+  readonly VITE_OMI_MCP_BASE?: string
+  readonly VITE_OMI_SHARE_BASE_URL?: string
+  readonly VITE_OMI_ANALYTICS_BASE?: string
+  readonly VITE_OMI_UPDATE_FEED_URL?: string
   /** Firebase project id (shared VITE_ prefix — frozen into the main bundle at
    *  build time). Main verifies the relayed Firebase ID token's aud/iss against
    *  it (auth/firebaseIdToken.ts); it must come from here, never the renderer. */

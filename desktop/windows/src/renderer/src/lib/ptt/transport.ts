@@ -12,7 +12,7 @@
 // speech.
 import axios from 'axios'
 import { omiApi } from '../apiClient'
-import { auth } from '../firebase'
+import { auth } from '../identity'
 import { getPreferences } from '../preferences'
 import { getWindowsDeviceIdHash } from '../clientDevice'
 import {

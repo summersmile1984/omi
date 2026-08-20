@@ -3,7 +3,7 @@ import { uploadChatFile } from './chatAttachmentUpload'
 
 // firebase auth is only reached when no getToken dep is injected; every test
 // injects one, so the real module never runs. Mock it anyway so the import is inert.
-vi.mock('./firebase', () => ({ auth: { currentUser: null } }))
+vi.mock('./identity', () => ({ auth: { currentUser: null } }))
 
 const okResponse = (body: unknown): Response =>
   ({ ok: true, status: 200, json: async () => body }) as unknown as Response

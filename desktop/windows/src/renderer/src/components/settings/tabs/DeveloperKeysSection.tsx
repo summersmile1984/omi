@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, ShieldCheck, AlertTriangle, Eye, EyeOff, Loader2 } from 'lucide-react'
 import { SettingRow } from '../SettingRow'
-import { auth } from '../../../lib/firebase'
+import { auth } from '../../../lib/identity'
 import { dismissUsageLimit } from '../../../lib/usageLimit'
 import { fetchSubscription, fetchChatQuota } from '../../../lib/billing'
 import {

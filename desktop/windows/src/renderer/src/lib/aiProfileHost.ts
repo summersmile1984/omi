@@ -18,8 +18,7 @@
 // Relaying on every token refresh is the point, not a side effect: it keeps
 // main's cached token fresh so its backend calls don't start 401ing after the
 // initial token expires.
-import { onIdTokenChanged, type User } from 'firebase/auth'
-import { auth } from './firebase'
+import { auth, onIdTokenChanged, type IdentityUser } from './identity'
 
 let started = false
 
@@ -33,7 +32,7 @@ let authSeq = 0
 
 /** Relay a fresh session to main. Never throws (the caller is an auth listener)
  *  and never logs the token. */
-async function pushSession(user: User, seq: number): Promise<void> {
+async function pushSession(user: IdentityUser, seq: number): Promise<void> {
   try {
     const token = await user.getIdToken()
     // Two independent staleness checks, both AFTER the await:

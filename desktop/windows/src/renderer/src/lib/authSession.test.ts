@@ -1,7 +1,7 @@
 // 401 session-health behavior: refreshIdToken (force-refresh / dead-session
 // classification) and forceReauth (light reauth — one prompt per burst, re-armed
-// on sign-in). ./firebase and ./toast are fully mocked so this never touches the
-// real Firebase SDK or the preferences/localStorage import chain.
+// on sign-in). The identity facade and toast are fully mocked so this never touches
+// a real identity provider or the preferences/localStorage import chain.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const h = vi.hoisted(() => ({
@@ -18,9 +18,9 @@ function authError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code })
 }
 
-vi.mock('firebase/auth', () => ({ signOut: h.signOut }))
-vi.mock('./firebase', () => ({
+vi.mock('./identity', () => ({
   auth: h.authObj,
+  signOutIdentitySession: h.signOut,
   onAuthStateChanged: (_a: unknown, cb: (u: unknown) => void) => {
     h.authCb = cb
     return () => {}

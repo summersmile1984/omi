@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { auth } from '../lib/firebase'
+import { auth } from '../lib/identity'
 import { invalidateConversationsCache } from '../lib/pageCache'
 import { gatherLocalContext } from '../lib/localAgent'
 import { readCurrentScreen } from '../lib/screenContext'

@@ -29,7 +29,7 @@ vi.mock('../../hooks/usePushToTalk', () => ({
 vi.mock('../../hooks/useVoicePlaneSupervisor', () => ({
   useVoicePlaneSupervisor: () => ({ chip: null, noteCancel: vi.fn() })
 }))
-vi.mock('../../lib/firebase', () => ({
+vi.mock('../../lib/identity', () => ({
   auth: { authStateReady: async () => {} }
 }))
 vi.mock('../../lib/preferences', () => ({

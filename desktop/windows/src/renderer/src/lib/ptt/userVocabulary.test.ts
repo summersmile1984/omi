@@ -6,7 +6,7 @@ const { get, currentUser } = vi.hoisted(() => ({
   get: vi.fn(),
   currentUser: { uid: 'u1' } as { uid: string } | null
 }))
-vi.mock('../firebase', () => ({
+vi.mock('../identity', () => ({
   auth: {
     get currentUser() {
       return currentUser

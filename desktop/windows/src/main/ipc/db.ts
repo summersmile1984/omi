@@ -33,6 +33,9 @@ import {
 import { bufferToVector, vectorToBuffer } from './taskEmbeddingVector'
 import {
   TASK_TABLES_SCHEMA,
+  activateTaskEmbeddingProjectionOn,
+  taskEmbeddingProjectionMatchesOn,
+  updateTaskEmbeddingIfProjectionOn,
   insertLocalActionItemOn,
   getLocalActionItemsOn,
   getRecentActiveActionItemsOn,
@@ -1671,6 +1674,79 @@ export function upsertRewindEmbedding(
   })()
 }
 
+/** Persist only while the marker activated for this response still matches.
+ * The projection compare and both vector/mapping writes share one IMMEDIATE
+ * transaction, so an older in-flight response cannot land after a cutover. */
+export function upsertRewindEmbeddingIfProjection(
+  frameId: number,
+  hash: string,
+  vec: Float32Array,
+  projectionKey: string
+): boolean {
+  const d = get()
+  d.exec('BEGIN IMMEDIATE')
+  try {
+    const current = cachedStmt(
+      d,
+      'SELECT projection_key AS projectionKey FROM rewind_embedding_projection WHERE singleton = 1'
+    ).get() as { projectionKey: string } | undefined
+    if (current?.projectionKey !== projectionKey) {
+      d.exec('ROLLBACK')
+      return false
+    }
+    cachedStmt(
+      d,
+      `INSERT INTO rewind_embedding_vectors (hash, dim, model, vec, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(hash) DO UPDATE SET
+         dim = excluded.dim, model = excluded.model, vec = excluded.vec, created_at = excluded.created_at`
+    ).run(hash, vec.length, projectionKey, vectorToBuffer(vec), Date.now())
+    cachedStmt(
+      d,
+      `INSERT INTO rewind_embeddings (frame_id, hash) VALUES (?, ?)
+       ON CONFLICT(frame_id) DO UPDATE SET hash = excluded.hash`
+    ).run(frameId, hash)
+    d.exec('COMMIT')
+    return true
+  } catch (error) {
+    d.exec('ROLLBACK')
+    throw error
+  }
+}
+
+/** Make one backend projection identity authoritative for the local Rewind
+ * index. A provider/model/schema/namespace change invalidates every old vector
+ * and mapping so the ordinary missing-vector backfill rebuilds them. */
+export function activateRewindEmbeddingProjection(projectionKey: string): boolean {
+  const d = get()
+  const current = cachedStmt(
+    d,
+    'SELECT projection_key AS projectionKey FROM rewind_embedding_projection WHERE singleton = 1'
+  ).get() as { projectionKey: string } | undefined
+  if (current?.projectionKey === projectionKey) return false
+  const legacyCount = (cachedStmt(d, 'SELECT COUNT(*) AS count FROM rewind_embedding_vectors').get() as {
+    count: number
+  }).count
+  d.transaction(() => {
+    cachedStmt(d, 'DELETE FROM rewind_embeddings').run()
+    cachedStmt(d, 'DELETE FROM rewind_embedding_vectors').run()
+    cachedStmt(
+      d,
+      `INSERT INTO rewind_embedding_projection(singleton, projection_key) VALUES (1, ?)
+       ON CONFLICT(singleton) DO UPDATE SET projection_key = excluded.projection_key`
+    ).run(projectionKey)
+  })()
+  return current !== undefined || legacyCount > 0
+}
+
+export function rewindEmbeddingProjectionMatches(projectionKey: string): boolean {
+  const current = cachedStmt(
+    get(),
+    'SELECT projection_key AS projectionKey FROM rewind_embedding_projection WHERE singleton = 1'
+  ).get() as { projectionKey: string } | undefined
+  return current?.projectionKey === projectionKey
+}
+
 /** Map a frame to the content's vector WITHOUT re-storing the vector — the
  *  cache-hit path, when an identical screen was embedded earlier. Returns false
  *  when that vector is gone (retention pruned it), so the caller re-embeds. */
@@ -1712,7 +1788,7 @@ export async function searchRewindEmbeddings(
   // anywhere in the table silently truncated the scan there, and every vector past
   // it went unranked. Filtering in the query keeps LIMIT and "rows returned"
   // describing the same set.
-  const page = d.prepare(searchEmbeddingPageSql())
+  const page = d.prepare(searchEmbeddingPageSql(query.byteLength))
 
   const scored = await scanTopKBySimilarity(
     (offset, size) =>
@@ -2086,6 +2162,23 @@ export function recentMemories(limit = 20): { content: string; category: string 
 // logic is deterministically testable; production passes Date.now().
 function taskStoreDb(): TaskStoreDb {
   return get() as unknown as TaskStoreDb
+}
+
+export function activateTaskEmbeddingProjection(projectionKey: string): boolean {
+  return activateTaskEmbeddingProjectionOn(taskStoreDb(), projectionKey)
+}
+
+export function taskEmbeddingProjectionMatches(projectionKey: string): boolean {
+  return taskEmbeddingProjectionMatchesOn(taskStoreDb(), projectionKey)
+}
+
+export function updateTaskEmbeddingIfProjection(
+  source: 'action_item' | 'staged_task',
+  id: number,
+  vector: Float32Array,
+  projectionKey: string
+): boolean {
+  return updateTaskEmbeddingIfProjectionOn(taskStoreDb(), source, id, vector, projectionKey)
 }
 
 // action_items

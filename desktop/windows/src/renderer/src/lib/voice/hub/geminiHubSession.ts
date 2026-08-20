@@ -24,6 +24,7 @@ import {
 import { GEMINI_LIVE_MODEL } from '../tokenMint'
 import type { VoiceToolDeclaration } from '../../../../../shared/types'
 import { sanitizeGeminiToolSchema } from './geminiToolSchema'
+import { resolveWindowsDeployment } from '../../../../../shared/deploymentProfile'
 
 export class GeminiHubSession extends BaseHubSession {
   readonly provider: HubProvider = 'gemini'
@@ -42,9 +43,13 @@ export class GeminiHubSession extends BaseHubSession {
 
   constructor(opts: HubSessionOptions) {
     super(opts)
+    if (!resolveWindowsDeployment().allowDirectModelProviders && !opts.backendRelayConnectionId) {
+      throw new Error('Direct Gemini realtime is disabled by this deployment profile')
+    }
   }
 
   protected connectSpec(): { url: string; protocols?: string[] } {
+    if (!resolveWindowsDeployment().allowDirectModelProviders) return { url: 'omi-relay://backend' }
     // Managed (ephemeral) path: the Constrained endpoint on v1alpha with
     // ?access_token= (Swift `makeRequest` .ephemeral). BYOK (?key=, v1beta) is a
     // host concern not needed for the Windows managed flow — deferred.

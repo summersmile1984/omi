@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { Monitor, Mic, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
-import { auth, onAuthStateChanged } from '../../lib/firebase'
+import { auth, onAuthStateChanged, type IdentityUser } from '../../lib/identity'
 import { getPreferences, onPreferencesChange, setPreferences } from '../../lib/preferences'
 import { cn } from '../../lib/utils'
 import { Orb } from '../orb/Orb'
 import { navRoutes, isNavActive } from '../../routes/manifest'
-import type { User } from 'firebase/auth'
 import type { RewindSettings } from '../../../../shared/types'
 
 // The nav rail is driven off the shared route manifest (routes/manifest.ts) — the
@@ -20,7 +19,7 @@ const COLLAPSE_KEY = 'omi.sidebar.collapsed'
 const HOVER = 'hover:bg-[var(--nav-sel)]'
 
 export function Sidebar(): React.JSX.Element {
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<IdentityUser | null>(null)
   const [prefName, setPrefName] = useState<string | undefined>(getPreferences().displayName)
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem(COLLAPSE_KEY) === '1'

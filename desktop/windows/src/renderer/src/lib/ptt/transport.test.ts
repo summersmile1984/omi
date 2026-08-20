@@ -16,7 +16,7 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock('../apiClient', () => ({ omiApi: { post: h.post } }))
-vi.mock('../firebase', () => ({ auth: { currentUser: { getIdToken: h.getIdToken } } }))
+vi.mock('../identity', () => ({ auth: { currentUser: { getIdToken: h.getIdToken } } }))
 vi.mock('../preferences', () => ({ getPreferences: () => h.prefs }))
 // Node test env has no window.localStorage / WebCrypto subtle for the real hash.
 vi.mock('../clientDevice', () => ({ getWindowsDeviceIdHash: vi.fn(async () => 'abcd1234') }))

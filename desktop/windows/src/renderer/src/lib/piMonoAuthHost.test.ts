@@ -1,4 +1,4 @@
-// The pi-mono auth host is a pure session relay: it forwards the Firebase
+// The pi-mono auth host is a pure session relay: it forwards the configured identity
 // session to the main-side pi-mono session store (inert without one) and clears
 // it on sign-out. It must NEVER spawn or drive pi — that lifecycle lives in
 // main. These tests pin exactly that contract, including the C2 stale-push race.
@@ -10,8 +10,7 @@ const h = vi.hoisted(() => ({
   auth: { currentUser: null as FakeUser | null }
 }))
 
-vi.mock('firebase/auth', () => ({ onIdTokenChanged: h.onIdTokenChanged }))
-vi.mock('./firebase', () => ({ auth: h.auth }))
+vi.mock('./identity', () => ({ auth: h.auth, onIdTokenChanged: h.onIdTokenChanged }))
 
 type FakeUser = { getIdToken: () => Promise<string> }
 type AuthCallback = (user: FakeUser | null) => void
@@ -21,7 +20,7 @@ function authCallback(): AuthCallback {
   return h.onIdTokenChanged.mock.calls[0][1] as AuthCallback
 }
 
-/** Fire a sign-in the way Firebase would: currentUser is already set. */
+/** Fire a sign-in the way an identity provider would: currentUser is already set. */
 function signIn(token: string): FakeUser {
   const user: FakeUser = { getIdToken: async () => token }
   h.auth.currentUser = user
@@ -65,7 +64,7 @@ describe('startPiMonoAuthHost (session relay)', () => {
     expect(session).toHaveProperty('desktopApiBase')
   })
 
-  it('relays again with the refreshed token when Firebase rotates the id token', async () => {
+  it('relays again when the identity provider rotates the token', async () => {
     const { pimonoSetSession } = installWindowOmi()
     const { startPiMonoAuthHost } = await freshHost()
 

@@ -42,6 +42,7 @@ import type {
   MainChatEvent,
   MainChatSendArgs,
   VoiceHubRecordTurnArgs,
+  VoiceHubRelayEvent,
   VoiceHubSeedContextArgs,
   VoiceToolExecuteArgs,
   VoiceTurnOutboxInput,
@@ -186,6 +187,11 @@ const omi: OmiBridgeApi = {
   kgExecuteSql: (sql) => ipcRenderer.invoke('kg:executeSql', sql),
   readStickyNotes: () => ipcRenderer.invoke('integrations:stickyNotes:read'),
   signInWithProvider: (provider: SignInProvider) => ipcRenderer.invoke('auth:signIn', provider),
+  betterAuthSignIn: (request) => ipcRenderer.invoke('auth:betterAuthSignIn', request),
+  betterAuthRestore: () => ipcRenderer.invoke('auth:betterAuthRestore'),
+  betterAuthRefresh: (expectedUserId) =>
+    ipcRenderer.invoke('auth:betterAuthRefresh', expectedUserId),
+  betterAuthSignOut: () => ipcRenderer.invoke('auth:betterAuthSignOut'),
   googleConnect: () => ipcRenderer.invoke('integrations:google:connect'),
   googleDisconnect: () => ipcRenderer.invoke('integrations:google:disconnect'),
   googleStatus: () => ipcRenderer.invoke('integrations:google:status'),
@@ -361,7 +367,7 @@ const omi: OmiBridgeApi = {
   },
   // Session relay for the main-process embedding indexer + query embedder, which
   // are inert without a Firebase token.
-  rewindSetEmbedSession: (session: { desktopApiBase: string; token: string } | null) =>
+  rewindSetEmbedSession: (session: { apiBase: string; desktopApiBase: string; token: string } | null) =>
     ipcRenderer.invoke('rewind:setEmbedSession', session),
   rewindFrameImage: (imagePath: string) => ipcRenderer.invoke('rewind:frameImage', imagePath),
   // --- Track 4 --- per-line OCR boxes for the on-image search highlight overlay
@@ -410,6 +416,16 @@ const omi: OmiBridgeApi = {
     ipcRenderer.invoke('voiceHub:recordTurn', args),
   voiceHubGetSeedContext: (args?: VoiceHubSeedContextArgs) =>
     ipcRenderer.invoke('voiceHub:getSeedContext', args ?? {}),
+  voiceHubRelayCreate: () => ipcRenderer.invoke('voiceHub:relayCreate'),
+  voiceHubRelayConnect: (connectionId: string) => ipcRenderer.send('voiceHub:relayConnect', connectionId),
+  voiceHubRelaySend: (connectionId: string, data: string) =>
+    ipcRenderer.send('voiceHub:relaySend', connectionId, data),
+  voiceHubRelayClose: (connectionId: string) => ipcRenderer.send('voiceHub:relayClose', connectionId),
+  onVoiceHubRelayEvent: (cb: (event: VoiceHubRelayEvent) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, event: VoiceHubRelayEvent): void => cb(event)
+    ipcRenderer.on('voiceHub:relayEvent', listener)
+    return () => ipcRenderer.removeListener('voiceHub:relayEvent', listener)
+  },
   voiceHubToolCatalog: () => ipcRenderer.invoke('voiceHub:toolCatalog'),
   voiceToolExecute: (args: VoiceToolExecuteArgs) => ipcRenderer.invoke('voiceHub:execute', args),
   // pi-mono managed-cloud chat session relay: the Firebase token lives only in

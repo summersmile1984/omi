@@ -1,4 +1,4 @@
-import { auth } from './firebase'
+import { auth } from './identity'
 import type { XConnectorSession } from '../../../shared/types'
 
 // The X connector runs in main (so the import outlives the panel), but the Firebase

@@ -42,6 +42,10 @@ export const REWIND_EMBEDDING_DDL = `
     vec BLOB,
     created_at INTEGER
   );
+  CREATE TABLE IF NOT EXISTS rewind_embedding_projection (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    projection_key TEXT NOT NULL
+  );
 `
 
 /**

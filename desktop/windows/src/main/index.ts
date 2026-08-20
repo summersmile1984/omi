@@ -139,6 +139,7 @@ import { prewarmPrimarySourceId } from './rewind/sourceId'
 import { perfMark, flushPerfMarks } from '../shared/perf'
 import { startStartupProfiler } from './dev/startupProfiler'
 import { scheduleStartupSteps } from './startupScheduler'
+import { rendererCorsUrlPatterns } from '../shared/deploymentProfile'
 // Dev-only benchmarking / sandbox machinery. Every call below is behind
 // `import.meta.env.DEV`, so this module is tree-shaken out of packaged main.
 import * as devBench from './dev/bench'
@@ -702,15 +703,7 @@ app.whenReady().then(async () => {
   // control the network stack: strip the Origin header on outgoing requests and
   // inject permissive CORS response headers. Scoped to the specific upstreams —
   // everything else flows normally.
-  const apiUrls = [
-    'https://api.omi.me/*',
-    'https://desktop-backend-hhibjajaja-uc.a.run.app/*',
-    // PostHog analytics ingestion. Added proactively for the webSecurity-on switch.
-    // Static analysis suggests it may not actually need CORS help (a same-shape
-    // JSON POST that PostHog answers with permissive CORS), but including it is
-    // harmless and avoids a surprise block if PostHog tightens its headers.
-    'https://us.i.posthog.com/*'
-  ]
+  const apiUrls = rendererCorsUrlPatterns()
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: apiUrls }, (details, cb) => {
     const headers = { ...details.requestHeaders }
     delete headers.Origin

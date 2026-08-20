@@ -35,6 +35,8 @@ export default {
     // Explicit default; positive patterns below would otherwise replace it.
     '**/*',
     '!**/.vscode/*',
+    '!e2e/**',
+    '!**/*.test.{js,mjs,cjs,ts,tsx}',
     '!src/*',
     '!electron.vite.config.{js,ts,mjs,cjs}',
     '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}',

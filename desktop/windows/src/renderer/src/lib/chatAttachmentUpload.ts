@@ -1,4 +1,4 @@
-import { auth } from './firebase'
+import { auth } from './identity'
 import type { FileChat } from './omiApi.generated'
 
 const OMI_BASE = import.meta.env.VITE_OMI_API_BASE as string

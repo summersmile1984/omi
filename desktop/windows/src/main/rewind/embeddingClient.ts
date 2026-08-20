@@ -1,13 +1,11 @@
-// Gemini embeddings, via Omi's desktop-backend proxy. Main-process twin of the
-// renderer's `lib/geminiClient.ts` (same base URL, same Firebase Bearer auth —
-// the backend injects the real Gemini key), and a faithful port of the macOS
-// embedding client: `gemini-embedding-001`, RETRIEVAL_DOCUMENT for stored OCR
-// text vs RETRIEVAL_QUERY for a search box, L2-normalized on the way out.
+// Embedding transport for main-process Rewind/task indexing. Self-hosted builds
+// use the provider-neutral Python capability with an opaque identity bearer and
+// dynamic projection identity. Managed cloud retains its legacy Gemini proxy.
 //
 // This lives in main (not the renderer) because the indexer it feeds is a
 // background job that must survive renderer navigation/reloads — same reason as
-// `ipc/memoryCleanup.ts`. The Firebase token only exists in the renderer, so it
-// is relayed in over IPC (see `embeddingService.configureRewindEmbedSession`).
+// `ipc/memoryCleanup.ts`. The identity bearer is relayed over IPC (see
+// `embeddingService.configureRewindEmbedSession`).
 import { net } from 'electron'
 import { EMBED_DIM, EMBED_MODEL, l2Normalize } from './embedVector'
 
@@ -17,7 +15,61 @@ import { EMBED_DIM, EMBED_MODEL, l2Normalize } from './embedVector'
 export type EmbedTaskType = 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY'
 
 /** Where to reach the proxy, and who is asking. Relayed from the renderer. */
-export type EmbedSession = { desktopApiBase: string; token: string }
+export type EmbedSession = { apiBase?: string; desktopApiBase: string; token: string }
+
+export type EmbeddingPurpose = 'ocr' | 'task' | 'rewind'
+export type EmbeddingMode = 'document' | 'query'
+export type EmbeddingProjection = {
+  provider: string
+  model: string
+  dimension: number
+  schemaVersion: number
+  namespaceVersion: string
+  logicalNamespace: string
+}
+export type CapabilityEmbeddingResult = {
+  vectors: (Float32Array | null)[]
+  projection: EmbeddingProjection
+  responseGeneration: number
+}
+
+const responseGenerationBySurface = { task: 0, rewind: 0 }
+
+function issueProjectionResponseGeneration(purpose: EmbeddingPurpose): number {
+  const surface = purpose === 'task' ? 'task' : 'rewind'
+  responseGenerationBySurface[surface] += 1
+  return responseGenerationBySurface[surface]
+}
+
+/** Commits projection responses in request-generation order. A response older
+ * than the last successful projection switch may reuse that exact marker, but
+ * can never reactivate a different projection. Failed newer responses do not
+ * advance the fence, so an older successful request can still make progress. */
+export class EmbeddingProjectionResponseFence {
+  private committedGeneration = 0
+  private committedProjectionKey: string | null = null
+
+  commit(
+    responseGeneration: number,
+    projectionKey: string,
+    markerMatches: () => boolean,
+    activate: () => boolean
+  ): boolean {
+    if (responseGeneration < this.committedGeneration) {
+      if (projectionKey === this.committedProjectionKey && markerMatches()) return false
+      throw new Error('stale embedding projection response')
+    }
+    const invalidated = activate()
+    this.committedGeneration = responseGeneration
+    this.committedProjectionKey = projectionKey
+    return invalidated
+  }
+}
+
+type CapabilityFetch = (
+  input: string,
+  init?: RequestInit & { bypassCustomProtocolHandlers?: boolean }
+) => Promise<Response>
 
 const REQUEST_TIMEOUT_MS = 30_000
 const MAX_RETRIES = 2
@@ -26,6 +78,20 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 type EmbeddingResponse = { embedding?: { values?: number[] } }
 type BatchEmbeddingResponse = { embeddings?: { values?: number[] }[] }
+
+type CapabilityEmbeddingResponse = {
+  status?: unknown
+  capability?: unknown
+  data?: { index?: unknown; embedding?: unknown }[]
+  projection?: {
+    provider?: unknown
+    model?: unknown
+    dimension?: unknown
+    schema_version?: unknown
+    namespace_version?: unknown
+    logical_namespace?: unknown
+  }
+}
 
 /** Body of one `embedContent` request (also the element shape of a batch). */
 function requestBody(text: string, taskType: EmbedTaskType): Record<string, unknown> {
@@ -40,6 +106,122 @@ function requestBody(text: string, taskType: EmbedTaskType): Record<string, unkn
 function toVector(values: number[] | undefined): Float32Array | null {
   if (!values || values.length !== EMBED_DIM) return null
   return l2Normalize(Float32Array.from(values))
+}
+
+function normalizeCapabilityVector(values: number[]): Float32Array {
+  const converted = Float32Array.from(values)
+  if (!Array.from(converted).every(Number.isFinite)) {
+    throw new Error('embedding capability vector overflows client precision')
+  }
+  const normSquared = converted.reduce((sum, value) => sum + value * value, 0)
+  if (!Number.isFinite(normSquared) || normSquared <= 0) {
+    throw new Error('embedding capability returned a zero or invalid vector norm')
+  }
+  const normalized = l2Normalize(converted)
+  if (!Array.from(normalized).every(Number.isFinite)) {
+    throw new Error('embedding capability returned an invalid normalized vector')
+  }
+  return normalized
+}
+
+function projectionFromWire(value: CapabilityEmbeddingResponse['projection']): EmbeddingProjection {
+  if (
+    !value ||
+    typeof value.provider !== 'string' ||
+    typeof value.model !== 'string' ||
+    !Number.isInteger(value.dimension) ||
+    (value.dimension as number) <= 0 ||
+    !Number.isInteger(value.schema_version) ||
+    typeof value.namespace_version !== 'string' ||
+    typeof value.logical_namespace !== 'string'
+  ) {
+    throw new Error('embedding capability returned an invalid projection identity')
+  }
+  return {
+    provider: value.provider,
+    model: value.model,
+    dimension: value.dimension as number,
+    schemaVersion: value.schema_version as number,
+    namespaceVersion: value.namespace_version,
+    logicalNamespace: value.logical_namespace
+  }
+}
+
+export function embeddingProjectionKey(projection: EmbeddingProjection): string {
+  return [
+    projection.provider,
+    projection.model,
+    projection.dimension,
+    projection.schemaVersion,
+    projection.namespaceVersion,
+    projection.logicalNamespace
+  ].join('|')
+}
+
+/** Provider-neutral embedding transport used by self-hosted builds. The caller
+ * supplies the logical namespace explicitly; no provider/model is selected in
+ * the client. Response order is reconstructed from the bounded wire `index`. */
+export async function embedCapabilityBatch(
+  session: EmbedSession,
+  texts: string[],
+  purpose: EmbeddingPurpose,
+  mode: EmbeddingMode,
+  projectionNamespace: string,
+  fetchImpl: CapabilityFetch = net.fetch
+): Promise<CapabilityEmbeddingResult> {
+  if (!session.apiBase) throw new Error('embedding capability backend origin is not configured')
+  if (texts.length === 0 || texts.length > 32) {
+    throw new Error('embedding capability accepts 1-32 inputs')
+  }
+  const responseGeneration = issueProjectionResponseGeneration(purpose)
+  const response = await fetchImpl(`${session.apiBase}/v1/model-capabilities/embeddings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.token}` },
+    body: JSON.stringify({ purpose, mode, input: texts, projection_namespace: projectionNamespace })
+  })
+  if (!response.ok) {
+    throw new Error(`embedding capability request failed (status ${response.status})`)
+  }
+  const payload = (await response.json()) as CapabilityEmbeddingResponse
+  if (
+    payload.status !== 'ok' ||
+    payload.capability !== 'embedding' ||
+    !Array.isArray(payload.data)
+  ) {
+    throw new Error('embedding capability returned an invalid envelope')
+  }
+  const projection = projectionFromWire(payload.projection)
+  if (projection.logicalNamespace !== projectionNamespace) {
+    throw new Error('embedding capability returned the wrong logical namespace')
+  }
+  if (payload.data.length !== texts.length) {
+    throw new Error('embedding capability returned the wrong result count')
+  }
+  const vectors: (Float32Array | null)[] = Array.from({ length: texts.length }, () => null)
+  for (const item of payload.data) {
+    if (
+      !Number.isInteger(item.index) ||
+      (item.index as number) < 0 ||
+      (item.index as number) >= texts.length
+    ) {
+      throw new Error('embedding capability returned an invalid result index')
+    }
+    if (vectors[item.index as number] !== null) {
+      throw new Error('embedding capability returned a duplicate result index')
+    }
+    if (!Array.isArray(item.embedding) || item.embedding.length !== projection.dimension) {
+      throw new Error('embedding capability returned a vector outside its projection dimension')
+    }
+    const values = item.embedding
+    if (!values.every((value) => typeof value === 'number' && Number.isFinite(value))) {
+      throw new Error('embedding capability returned a non-finite vector')
+    }
+    vectors[item.index as number] = normalizeCapabilityVector(values as number[])
+  }
+  if (vectors.some((vector) => vector === null)) {
+    throw new Error('embedding capability omitted an input vector')
+  }
+  return { vectors, projection, responseGeneration }
 }
 
 /**

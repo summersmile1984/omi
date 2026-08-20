@@ -20,6 +20,7 @@ describe('electron-builder package scripts', () => {
     expect(platformBuilds.map(([name]) => name).sort()).toEqual([
       'build:linux',
       'build:mac',
+      'build:selfhost:win',
       'build:win'
     ])
   })

@@ -14,7 +14,7 @@ vi.mock('../components/Markdown', () => ({
 }))
 
 // Heavy / side-effectful dependencies stubbed so LegacyHome mounts hermetically.
-vi.mock('../lib/firebase', () => ({
+vi.mock('../lib/identity', () => ({
   auth: { currentUser: null },
   onAuthStateChanged: () => () => {}
 }))
