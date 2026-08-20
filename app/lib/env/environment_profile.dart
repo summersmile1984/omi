@@ -28,6 +28,14 @@ enum AppEnvironmentProfile {
     usesFirebaseAuthEmulator: false,
     allowsProductionData: true,
   ),
+  selfHosted(
+    name: 'self_hosted',
+    defaultApiBaseUrl: '',
+    firebaseProjectId: '',
+    authCallbackScheme: 'omi',
+    usesFirebaseAuthEmulator: false,
+    allowsProductionData: true,
+  ),
   production(
     name: 'production',
     defaultApiBaseUrl: 'https://api.omi.me/',
@@ -53,6 +61,10 @@ enum AppEnvironmentProfile {
   final bool usesFirebaseAuthEmulator;
   final bool allowsProductionData;
 
+  /// Managed-release credentials must never bleed into a self-hosted binary
+  /// merely because both variants use the production trust plane.
+  T? managedClientValue<T>(T? value) => this == AppEnvironmentProfile.selfHosted ? null : value;
+
   static AppEnvironmentProfile forFlavor({required bool productionFlavor}) {
     const requested = String.fromEnvironment('OMI_APP_PROFILE');
     if (requested.isEmpty) {
@@ -63,7 +75,7 @@ enum AppEnvironmentProfile {
       (profile) => profile.name == requested,
       orElse: () => throw StateError(
         'Unknown OMI_APP_PROFILE "$requested". '
-        'Use local_dev, mobile_beta, or production.',
+        'Use local_dev, local_prod, mobile_beta, self_hosted, or production.',
       ),
     );
   }

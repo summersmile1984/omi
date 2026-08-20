@@ -9,6 +9,9 @@ abstract class Env {
   static const _apiBaseUrlFromDefine = String.fromEnvironment(
     'OMI_API_BASE_URL',
   );
+  static const privacyPolicyUrl = String.fromEnvironment('OMI_PRIVACY_URL');
+  static const termsOfServiceUrl = String.fromEnvironment('OMI_TERMS_URL');
+  static const shareBaseUrl = String.fromEnvironment('OMI_SHARE_BASE_URL');
   static const firebaseAuthEmulatorHost = String.fromEnvironment(
     'OMI_FIREBASE_AUTH_EMULATOR_HOST',
     defaultValue: '127.0.0.1',
@@ -37,7 +40,7 @@ abstract class Env {
     _apiBaseUrlOverride = null;
   }
 
-  static String? get posthogApiKey => _instance.posthogApiKey;
+  static String? get posthogApiKey => profile.managedClientValue(_instance.posthogApiKey);
 
   // static String? get apiBaseUrl => 'https://omi-backend.ngrok.app/';
   static String? get apiBaseUrl {
@@ -80,6 +83,75 @@ abstract class Env {
     if (productionFlavor && profile == AppEnvironmentProfile.localDev) {
       throw StateError('The prod flavor cannot use the local_dev profile.');
     }
+  }
+
+  static void validateClientPublicOrigins({
+    AppEnvironmentProfile? configuredProfile,
+    String? configuredPrivacyUrl,
+    String? configuredTermsUrl,
+    String? configuredShareUrl,
+  }) {
+    final effectiveProfile = configuredProfile ?? profile;
+    if (effectiveProfile != AppEnvironmentProfile.selfHosted) return;
+    for (final origin in {
+      'OMI_PRIVACY_URL': configuredPrivacyUrl ?? privacyPolicyUrl,
+      'OMI_TERMS_URL': configuredTermsUrl ?? termsOfServiceUrl,
+      'OMI_SHARE_BASE_URL': configuredShareUrl ?? shareBaseUrl,
+    }.entries) {
+      final uri = Uri.tryParse(origin.value.trim());
+      if (uri == null ||
+          uri.scheme != 'https' ||
+          uri.host.isEmpty ||
+          uri.userInfo.isNotEmpty ||
+          uri.hasQuery ||
+          uri.hasFragment ||
+          _isOmiOperatedHost(uri.host)) {
+        throw StateError('Profile self_hosted requires ${origin.key} to use an explicit non-Omi HTTPS URL.');
+      }
+    }
+  }
+
+  static String resolveShareBaseUrl({
+    AppEnvironmentProfile? configuredProfile,
+    String? configuredShareUrl,
+  }) {
+    final effectiveProfile = configuredProfile ?? profile;
+    var value = (configuredShareUrl ?? shareBaseUrl).trim();
+    if (value.isEmpty && effectiveProfile != AppEnvironmentProfile.selfHosted) {
+      value = 'https://h.omi.me';
+    }
+    if (value.isNotEmpty && !value.contains('://')) {
+      value = 'https://$value';
+    }
+    final uri = Uri.tryParse(value);
+    final valid = !RegExp(r'\s').hasMatch(value) &&
+        uri != null &&
+        uri.host.isNotEmpty &&
+        RegExp(r'^[A-Za-z0-9.-]+$').hasMatch(uri.host) &&
+        uri.userInfo.isEmpty &&
+        !uri.hasQuery &&
+        !uri.hasFragment &&
+        (uri.scheme == 'http' || uri.scheme == 'https');
+    if (!valid ||
+        (effectiveProfile == AppEnvironmentProfile.selfHosted &&
+            (uri.scheme != 'https' || _isOmiOperatedHost(uri.host)))) {
+      if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+        throw StateError('Profile self_hosted requires OMI_SHARE_BASE_URL to use an explicit non-Omi HTTPS URL.');
+      }
+      return 'https://h.omi.me';
+    }
+    final origin = uri.hasPort ? '${uri.scheme}://${uri.host}:${uri.port}' : '${uri.scheme}://${uri.host}';
+    final path = uri.path.replaceFirst(RegExp(r'/+$'), '');
+    return path.isEmpty || path == '/' ? origin : '$origin$path';
+  }
+
+  static String requireConfiguredApiBaseUrl([String? configuredApiBaseUrl]) {
+    final value = (configuredApiBaseUrl ?? apiBaseUrl ?? '').trim();
+    final uri = Uri.tryParse(value);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      throw StateError('A configured absolute OMI_API_BASE_URL is required.');
+    }
+    return value;
   }
 
   static void validateFirebaseProject({
@@ -131,6 +203,20 @@ abstract class Env {
       return;
     }
 
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      final uri = Uri.tryParse(normalized);
+      if (uri == null || !uri.hasScheme || uri.host.isEmpty || (uri.scheme != 'http' && uri.scheme != 'https')) {
+        throw StateError('Profile self_hosted requires an explicit absolute OMI_API_BASE_URL.');
+      }
+      if (releaseBuild && uri.scheme != 'https') {
+        throw StateError('Profile self_hosted requires an HTTPS OMI_API_BASE_URL in release builds.');
+      }
+      if (_isOmiOperatedHost(uri.host)) {
+        throw StateError('Profile self_hosted cannot use an Omi-operated API origin.');
+      }
+      return;
+    }
+
     if (normalized != expected) {
       throw StateError(
         'Profile ${effectiveProfile.name} requires API_BASE_URL=${effectiveProfile.defaultApiBaseUrl}',
@@ -167,21 +253,29 @@ abstract class Env {
         (first == 127);
   }
 
-  static String? get googleMapsApiKey => _instance.googleMapsApiKey;
+  static bool _isOmiOperatedHost(String host) {
+    final normalized = host.toLowerCase();
+    return normalized == 'omi.me' ||
+        normalized.endsWith('.omi.me') ||
+        normalized == 'omiapi.com' ||
+        normalized.endsWith('.omiapi.com');
+  }
 
-  static String? get intercomAppId => _instance.intercomAppId;
+  static String? get googleMapsApiKey => profile.managedClientValue(_instance.googleMapsApiKey);
 
-  static String? get intercomIOSApiKey => _instance.intercomIOSApiKey;
+  static String? get intercomAppId => profile.managedClientValue(_instance.intercomAppId);
 
-  static String? get intercomAndroidApiKey => _instance.intercomAndroidApiKey;
+  static String? get intercomIOSApiKey => profile.managedClientValue(_instance.intercomIOSApiKey);
 
-  static String? get googleClientId => _instance.googleClientId;
+  static String? get intercomAndroidApiKey => profile.managedClientValue(_instance.intercomAndroidApiKey);
 
-  static String? get googleClientSecret => _instance.googleClientSecret;
+  static String? get googleClientId => profile.managedClientValue(_instance.googleClientId);
 
-  static bool get useWebAuth => _instance.useWebAuth ?? false;
+  static String? get googleClientSecret => profile.managedClientValue(_instance.googleClientSecret);
 
-  static bool get useAuthCustomToken => _instance.useAuthCustomToken ?? false;
+  static bool get useWebAuth => profile.managedClientValue(_instance.useWebAuth) ?? false;
+
+  static bool get useAuthCustomToken => profile.managedClientValue(_instance.useAuthCustomToken) ?? false;
 }
 
 abstract class EnvFields {

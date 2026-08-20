@@ -1183,6 +1183,27 @@ class GetGeolocationWidgets extends StatelessWidget {
     return fullAddress;
   }
 
+  Widget _mapUnavailable(BuildContext context) {
+    return Container(
+      height: 200,
+      color: const Color(0xFF2A2A2A),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.location_off, size: 40, color: Colors.grey),
+            const SizedBox(height: 8),
+            Text(
+              context.l10n.couldNotLoadMap,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.grey),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Selector<ConversationDetailProvider, Geolocation?>(
@@ -1191,6 +1212,8 @@ class GetGeolocationWidgets extends StatelessWidget {
         return provider.conversation.geolocation;
       },
       builder: (context, geolocation, child) {
+        final mapImageUrl =
+            geolocation == null ? null : MapsUtil.getMapImageUrl(geolocation.latitude!, geolocation.longitude!);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: geolocation == null
@@ -1208,37 +1231,23 @@ class GetGeolocationWidgets extends StatelessWidget {
                         child: Stack(
                           children: [
                             // Map Image
-                            CachedNetworkImage(
-                              imageBuilder: (context, imageProvider) {
-                                return Container(
-                                  height: 200,
-                                  decoration: BoxDecoration(
-                                    image: DecorationImage(image: imageProvider, fit: BoxFit.cover),
-                                  ),
-                                );
-                              },
-                              errorWidget: (context, url, error) {
-                                return Container(
-                                  height: 200,
-                                  color: const Color(0xFF2A2A2A),
-                                  child: Center(
-                                    child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        const Icon(Icons.location_off, size: 40, color: Colors.grey),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          context.l10n.couldNotLoadMap,
-                                          textAlign: TextAlign.center,
-                                          style: const TextStyle(color: Colors.grey),
-                                        ),
-                                      ],
+                            if (mapImageUrl == null)
+                              _mapUnavailable(context)
+                            else
+                              CachedNetworkImage(
+                                imageBuilder: (context, imageProvider) {
+                                  return Container(
+                                    height: 200,
+                                    decoration: BoxDecoration(
+                                      image: DecorationImage(image: imageProvider, fit: BoxFit.cover),
                                     ),
-                                  ),
-                                );
-                              },
-                              imageUrl: MapsUtil.getMapImageUrl(geolocation.latitude!, geolocation.longitude!),
-                            ),
+                                  );
+                                },
+                                errorWidget: (context, url, error) {
+                                  return _mapUnavailable(context);
+                                },
+                                imageUrl: mapImageUrl,
+                              ),
                             // Gradient blur overlay from bottom
                             Positioned(
                               bottom: 0,

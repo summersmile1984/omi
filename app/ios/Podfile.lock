@@ -144,6 +144,9 @@ PODS:
     - Flutter
   - flutter_native_splash (2.4.3):
     - Flutter
+  - flutter_secure_storage_darwin (10.0.0):
+    - Flutter
+    - FlutterMacOS
   - flutter_sound (9.25.1):
     - Flutter
     - flutter_sound_core (= 9.25.1)
@@ -296,6 +299,7 @@ DEPENDENCIES:
   - flutter_contacts (from `.symlinks/plugins/flutter_contacts/ios`)
   - flutter_foreground_task (from `.symlinks/plugins/flutter_foreground_task/ios`)
   - flutter_native_splash (from `.symlinks/plugins/flutter_native_splash/ios`)
+  - flutter_secure_storage_darwin (from `.symlinks/plugins/flutter_secure_storage_darwin/darwin`)
   - flutter_sound (from `.symlinks/plugins/flutter_sound/ios`)
   - flutter_timezone (from `.symlinks/plugins/flutter_timezone/ios`)
   - flutter_tts (from `.symlinks/plugins/flutter_tts/ios`)
@@ -402,6 +406,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/flutter_foreground_task/ios"
   flutter_native_splash:
     :path: ".symlinks/plugins/flutter_native_splash/ios"
+  flutter_secure_storage_darwin:
+    :path: ".symlinks/plugins/flutter_secure_storage_darwin/darwin"
   flutter_sound:
     :path: ".symlinks/plugins/flutter_sound/ios"
   flutter_timezone:
@@ -487,12 +493,13 @@ SPEC CHECKSUMS:
   FirebaseMessaging: 2b9f56aa4ed286e1f0ce2ee1d413aabb8f9f5cb9
   FirebaseRemoteConfigInterop: 1c6135e8a094cc6368949f5faeeca7ee8948b8aa
   FirebaseSessions: 9b3b30947b97a15370e0902ee7a90f50ef60ead6
-  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
   flutter_archive: ad8edfd7f7d1bb12058d05424ba93e27d9930efe
   flutter_background_service_ios: 00d31bdff7b4bfe06d32375df358abe0329cf87e
-  flutter_contacts: 5383945387e7ca37cf963d4be57c21f2fc15ca9f
+  flutter_contacts: 2ec1d6b62ca2869c3bbb3871bd74d4e3ef157135
   flutter_foreground_task: a159d2c2173b33699ddb3e6c2a067045d7cebb89
   flutter_native_splash: c32d145d68aeda5502d5f543ee38c192065986cf
+  flutter_secure_storage_darwin: acdb3f316ed05a3e68f856e0353b133eec373a23
   flutter_sound: 69343c1dd74d2cc5a7fe6693f20369b63ea2e249
   flutter_sound_core: 065aca7698f13a934d8cb8156a2865efd282b1e8
   flutter_timezone: ee50ce7786b5fde27e2fe5375bbc8c9661ffc13f

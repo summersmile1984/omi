@@ -1170,7 +1170,7 @@ class CaptureController extends ChangeNotifier
         'codec': codec.toString(),
         'sampleRate': mapCodecToSampleRate(codec),
         'source': _getConversationSourceFromDevice(),
-        'apiBaseUrl': Env.apiBaseUrl ?? 'https://api.omiapi.com/',
+        'apiBaseUrl': Env.requireConfiguredApiBaseUrl(),
         'serviceUuid': audioTarget.key,
         'characteristicUuid': audioTarget.value,
         'deviceType': device.type.name,

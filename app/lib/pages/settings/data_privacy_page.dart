@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:omi/env/env.dart';
+import 'package:omi/env/environment_profile.dart';
+
 import 'package:omi/backend/schema/app.dart';
 import 'package:omi/pages/apps/app_detail/app_detail.dart';
 import 'package:omi/providers/app_provider.dart';
@@ -62,7 +65,11 @@ class _DataPrivacyPageState extends State<DataPrivacyPage> {
                     ),
                     recognizer: TapGestureRecognizer()
                       ..onTap = () async {
-                        final url = Uri.parse('https://www.omi.me/pages/privacy');
+                        final url = Uri.parse(
+                          Env.profile == AppEnvironmentProfile.selfHosted
+                              ? Env.privacyPolicyUrl
+                              : 'https://www.omi.me/pages/privacy',
+                        );
                         if (await canLaunchUrl(url)) {
                           await launchUrl(url, mode: LaunchMode.externalApplication);
                         }

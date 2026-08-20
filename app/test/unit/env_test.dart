@@ -32,6 +32,16 @@ class _TestEnvFields implements EnvFields {
 }
 
 void main() {
+  group('Android flavor trust plane', () {
+    test('selfhost is a production-family flavor', () {
+      expect(Environment.fromFlavorName('selfhost'), Environment.prod);
+    });
+
+    test('unknown flavors remain fail-safe development builds', () {
+      expect(Environment.fromFlavorName('unexpected'), Environment.dev);
+    });
+  });
+
   // Init once for the entire test suite (late final constraint)
   setUpAll(() {
     Env.init(_TestEnvFields());
@@ -79,6 +89,14 @@ void main() {
       expect(AppEnvironmentProfile.localProd.usesFirebaseAuthEmulator, isFalse);
       expect(AppEnvironmentProfile.localProd.allowsProductionData, isTrue);
       expect(AppEnvironmentProfile.localProd.authCallbackScheme, 'omi');
+    });
+
+    test('self-hosted profile has no Firebase or Omi endpoint default', () {
+      expect(AppEnvironmentProfile.selfHosted.defaultApiBaseUrl, isEmpty);
+      expect(AppEnvironmentProfile.selfHosted.firebaseProjectId, isEmpty);
+      expect(AppEnvironmentProfile.selfHosted.usesFirebaseAuthEmulator, isFalse);
+      expect(AppEnvironmentProfile.selfHosted.managedClientValue('managed-secret'), isNull);
+      expect(AppEnvironmentProfile.production.managedClientValue('managed-secret'), 'managed-secret');
     });
 
     test('local profile rejects a production Firebase project', () {
@@ -230,6 +248,71 @@ void main() {
         ),
         throwsStateError,
       );
+    });
+
+    test('self-hosted release accepts only an explicit non-Omi HTTPS API', () {
+      Env.validateStartupRouting(
+        productionFamily: true,
+        configuredProfile: AppEnvironmentProfile.selfHosted,
+        configuredApiBaseUrl: 'https://api.example.com/',
+        releaseBuild: true,
+      );
+      for (final endpoint in ['http://api.example.com/', 'https://api.omi.me/', 'https://api.omiapi.com/', '']) {
+        expect(
+          () => Env.validateStartupRouting(
+            productionFamily: true,
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredApiBaseUrl: endpoint,
+            releaseBuild: true,
+          ),
+          throwsStateError,
+          reason: endpoint,
+        );
+      }
+    });
+
+    test('self-hosted client public origins are explicit, HTTPS, and non-Omi', () {
+      Env.validateClientPublicOrigins(
+        configuredProfile: AppEnvironmentProfile.selfHosted,
+        configuredPrivacyUrl: 'https://legal.example.com/privacy',
+        configuredTermsUrl: 'https://legal.example.com/terms',
+        configuredShareUrl: 'https://share.example.com',
+      );
+      for (final invalid in ['', 'http://legal.example.com/privacy', 'https://www.omi.me/pages/privacy']) {
+        expect(
+          () => Env.validateClientPublicOrigins(
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredPrivacyUrl: invalid,
+            configuredTermsUrl: 'https://legal.example.com/terms',
+            configuredShareUrl: 'https://share.example.com',
+          ),
+          throwsStateError,
+        );
+      }
+    });
+
+    test('self-hosted share origin never falls back to the managed service', () {
+      expect(
+        Env.resolveShareBaseUrl(
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredShareUrl: 'https://share.example.com/omi/',
+        ),
+        'https://share.example.com/omi',
+      );
+      for (final invalid in ['', 'http://share.example.com', 'https://h.omi.me']) {
+        expect(
+          () => Env.resolveShareBaseUrl(
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredShareUrl: invalid,
+          ),
+          throwsStateError,
+        );
+      }
+    });
+
+    test('native capture configuration has no managed API fallback', () {
+      expect(Env.requireConfiguredApiBaseUrl('https://api.example.com/'), 'https://api.example.com/');
+      expect(() => Env.requireConfiguredApiBaseUrl(''), throwsStateError);
     });
 
     test('local development startup accepts the emulator API', () {

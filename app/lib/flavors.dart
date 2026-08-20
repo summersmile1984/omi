@@ -7,13 +7,20 @@ enum Environment {
   dev;
 
   static Environment fromFlavor() {
-    return Environment.values.firstWhere(
-      (e) => e.name == appFlavor?.toLowerCase(),
-      orElse: () {
-        Logger.debug('Warning: Unknown flavor "$appFlavor", defaulting to dev');
+    return fromFlavorName(appFlavor);
+  }
+
+  static Environment fromFlavorName(String? flavor) {
+    switch (flavor?.trim().toLowerCase()) {
+      case 'prod':
+      case 'selfhost':
+        return Environment.prod;
+      case 'dev':
         return Environment.dev;
-      },
-    );
+      default:
+        Logger.debug('Warning: Unknown flavor "$flavor", defaulting to dev');
+        return Environment.dev;
+    }
   }
 }
 

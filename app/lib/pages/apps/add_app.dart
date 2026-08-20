@@ -8,6 +8,9 @@ import 'package:provider/provider.dart';
 import 'package:omi/widgets/shimmer_with_timeout.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:omi/env/env.dart';
+import 'package:omi/env/environment_profile.dart';
+
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/backend/schema/app.dart';
@@ -846,7 +849,13 @@ class _AddAppPageState extends State<AddAppPage> {
                       const SizedBox(height: 10),
                       GestureDetector(
                         onTap: () {
-                          launchUrl(Uri.parse('https://omi.me/pages/privacy'));
+                          launchUrl(
+                            Uri.parse(
+                              Env.profile == AppEnvironmentProfile.selfHosted
+                                  ? Env.privacyPolicyUrl
+                                  : 'https://omi.me/pages/privacy',
+                            ),
+                          );
                         },
                         child: Text.rich(
                           TextSpan(

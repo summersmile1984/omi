@@ -110,15 +110,18 @@ PR CI runs `flutter test` and an analyzer ratchet (`app/scripts/analyze_ratchet.
 
 ### Token Lifecycle
 1. `getAuthHeader()` in `lib/backend/http/shared.dart` checks token expiry (5-minute buffer)
-2. If expired, calls `AuthService.instance.getIdToken()` for Firebase refresh
+2. If expired, calls `AuthService.instance.getIdToken()` through the selected identity provider
 3. Token stored in SharedPreferencesUtil with expiration timestamp
 4. 401 responses trigger automatic refresh + retry
 
 ### Auth Methods
 - Google Sign In (`google_sign_in` package)
 - Apple Sign In (`sign_in_with_apple` package, includes PKCE via nonce+sha256)
-- Firebase Auth as the identity layer
-- Local Better Auth bridge only in non-release builds, and only when both `OMI_AUTH_SERVER_URL` and `OMI_AUTH_DEV_ISSUER_SECRET` are provided as compile-time defines; the bridge UID returned by the server is the stored owner identity
+- Firebase remains the default identity layer for official builds
+- Self-hosted builds set `OMI_APP_PROFILE=self_hosted`, `OMI_API_BASE_URL`, `OMI_AUTH_PROVIDER=better_auth`, `OMI_AUTH_SERVER_URL`, `OMI_PRIVACY_URL`, `OMI_TERMS_URL`, and `OMI_SHARE_BASE_URL` at compile time; all public URLs must be explicit non-Omi HTTPS endpoints. Debug and release use Better Auth email/password, persist its signed bearer session, and refresh the short-lived backend JWT through `/api/auth/token`
+- Better Auth build helpers also set `OMI_FIREBASE_SERVICES_ENABLED=false`; the app must not initialize Firebase Auth, FCM, or Crashlytics in that profile
+- Production iOS self-host artifacts use `scripts/build_ios_self_host_release.sh`; it requires operator-owned bundle/app-group/callback identities, selects `Info-SelfHost.plist` plus `RunnerSelfHost.entitlements`, sets `FIREBASE_SERVICES_ENABLED=NO`, and restores the developer's local `Custom.xcconfig` after the build. `OMI_IOS_NO_CODESIGN=true` is an explicit local smoke mode only; releasable artifacts use the default signed path. The native copy phase must omit `GoogleService-Info.plist`
+- Never include `AUTH_DEV_ISSUER_SECRET` or another server secret in any mobile build
 
 ### Request Headers
 All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash, X-App-Version, plus Bearer token.

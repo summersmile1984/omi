@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 class CrashlyticsManager {
   static final CrashlyticsManager _instance = CrashlyticsManager._internal();
@@ -14,6 +15,7 @@ class CrashlyticsManager {
   }
 
   static Future<void> init() async {
+    if (Firebase.apps.isEmpty) return;
     // Disable Crashlytics collection in debug mode
     if (kDebugMode) {
       await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(false);
@@ -23,6 +25,7 @@ class CrashlyticsManager {
   }
 
   void identifyUser(String email, String name, String userId) {
+    if (Firebase.apps.isEmpty) return;
     FirebaseCrashlytics.instance.setUserIdentifier(userId);
     if (email.isNotEmpty) {
       FirebaseCrashlytics.instance.setCustomKey('user_email', email);
@@ -33,30 +36,37 @@ class CrashlyticsManager {
   }
 
   void logInfo(String message) {
+    if (Firebase.apps.isEmpty) return;
     FirebaseCrashlytics.instance.log(message);
   }
 
   void logError(String message) {
+    if (Firebase.apps.isEmpty) return;
     FirebaseCrashlytics.instance.log('ERROR: $message');
   }
 
   void logWarn(String message) {
+    if (Firebase.apps.isEmpty) return;
     FirebaseCrashlytics.instance.log('WARN: $message');
   }
 
   void logDebug(String message) {
+    if (Firebase.apps.isEmpty) return;
     FirebaseCrashlytics.instance.log('DEBUG: $message');
   }
 
   void logVerbose(String message) {
+    if (Firebase.apps.isEmpty) return;
     FirebaseCrashlytics.instance.log('VERBOSE: $message');
   }
 
   void setUserAttribute(String key, String value) {
+    if (Firebase.apps.isEmpty) return;
     FirebaseCrashlytics.instance.setCustomKey(key, value);
   }
 
   void setEnabled(bool isEnabled) {
+    if (Firebase.apps.isEmpty) return;
     FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(isEnabled);
   }
 
@@ -65,6 +75,7 @@ class CrashlyticsManager {
     StackTrace stackTrace, {
     Map<String, String>? userAttributes,
   }) async {
+    if (Firebase.apps.isEmpty) return;
     if (userAttributes != null) {
       for (final entry in userAttributes.entries) {
         await FirebaseCrashlytics.instance.setCustomKey(entry.key, entry.value);

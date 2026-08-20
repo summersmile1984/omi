@@ -55,6 +55,34 @@ LOCAL_API_BASE_URL="${OMI_LOCAL_API_BASE_URL:-http://${LOCAL_DEV_HOST}:8000/}"
 ANDROID_DEV_HOST="${OMI_ANDROID_DEV_HOST:-${OMI_DEV_HOST:-10.0.2.2}}"
 ANDROID_LOCAL_API_BASE_URL="${OMI_LOCAL_API_BASE_URL:-http://${ANDROID_DEV_HOST}:8000/}"
 BETA_API_BASE_URL="${OMI_BETA_API_BASE_URL:-https://api.omiapi.com/}"
+IDENTITY_FLUTTER_ARGS=()
+if [[ -n "${OMI_AUTH_PROVIDER:-}" ]]; then
+  if [[ "${OMI_AUTH_PROVIDER}" == "better_auth" && -z "${OMI_AUTH_SERVER_URL:-}" ]]; then
+    echo "OMI_AUTH_SERVER_URL is required when OMI_AUTH_PROVIDER=better_auth" >&2
+    exit 1
+  fi
+  if [[ "${OMI_AUTH_PROVIDER}" == "better_auth" && -z "${OMI_API_BASE_URL:-}" ]]; then
+    echo "OMI_API_BASE_URL is required when OMI_AUTH_PROVIDER=better_auth" >&2
+    exit 1
+  fi
+  if [[ "${OMI_AUTH_PROVIDER}" == "better_auth" ]]; then
+    for public_origin in OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL; do
+      if [[ -z "${!public_origin:-}" ]]; then
+        echo "${public_origin} is required when OMI_AUTH_PROVIDER=better_auth" >&2
+        exit 1
+      fi
+      IDENTITY_FLUTTER_ARGS+=("--dart-define=${public_origin}=${!public_origin}")
+    done
+  fi
+  IDENTITY_FLUTTER_ARGS+=("--dart-define=OMI_AUTH_PROVIDER=${OMI_AUTH_PROVIDER}")
+  if [[ "${OMI_AUTH_PROVIDER}" == "better_auth" ]]; then
+    export OMI_FIREBASE_SERVICES_ENABLED=false
+    IDENTITY_FLUTTER_ARGS+=("--dart-define=OMI_FIREBASE_SERVICES_ENABLED=false")
+  fi
+  if [[ -n "${OMI_AUTH_SERVER_URL:-}" ]]; then
+    IDENTITY_FLUTTER_ARGS+=("--dart-define=OMI_AUTH_SERVER_URL=${OMI_AUTH_SERVER_URL}")
+  fi
+fi
 
 ######################################
 # Generate device suffix from hostname
@@ -71,6 +99,7 @@ function generate_device_suffix() {
 function generate_ios_custom_config() {
   local config_name="${1:-Dev}"
   local callback_scheme="${2:-omi-dev}"
+  local bundle_identifier="${3:-}"
   bash scripts/generate_ios_custom_config.sh "ios/Config/${config_name}/GoogleService-Info.plist" ios/Flutter
 
   if [[ "$config_name" == "Dev" ]]; then
@@ -88,11 +117,25 @@ function generate_ios_custom_config() {
     /usr/libexec/PlistBuddy -c "Set :BUNDLE_ID ${suffixed_bundle_id}" "ios/Config/${config_name}/GoogleService-Info.plist"
     /usr/libexec/PlistBuddy -c "Set :BUNDLE_ID ${suffixed_bundle_id}" ios/Runner/GoogleService-Info.plist
   else
-    # Beta uses a distinct bundle/callback identity and must be provisioned
-    # explicitly by the developer's Apple team.
-    echo "APP_BUNDLE_IDENTIFIER=${OMI_MOBILE_BETA_BUNDLE_ID:-com.friend-app-with-wearable.ios12.beta}" >> ios/Flutter/Custom.xcconfig
+    # Production-family variants use a distinct bundle/callback identity and
+    # must be provisioned explicitly by the developer's Apple team.
+    if [[ -z "$bundle_identifier" ]]; then
+      bundle_identifier="${OMI_MOBILE_BETA_BUNDLE_ID:-com.friend-app-with-wearable.ios12.beta}"
+    fi
+    echo "APP_BUNDLE_IDENTIFIER=${bundle_identifier}" >> ios/Flutter/Custom.xcconfig
     echo "AUTH_CALLBACK_SCHEME=${callback_scheme}" >> ios/Flutter/Custom.xcconfig
   fi
+}
+
+function generate_ios_self_host_config() {
+  local callback_scheme="${1:-omi}"
+  local bundle_identifier="${2:-${OMI_SELF_HOST_BUNDLE_ID:-com.friend-app-with-wearable.ios12.selfhost}}"
+  local app_group_identifier="${OMI_SELF_HOST_APP_GROUP_ID:-group.${bundle_identifier}}"
+  bash scripts/generate_ios_self_host_config.sh \
+    ios/Flutter \
+    "$bundle_identifier" \
+    "$callback_scheme" \
+    "$app_group_identifier"
 }
 
 ######################################
@@ -161,8 +204,10 @@ function setup_app_env() {
   local configured_api_base_url="${2:-}"
   local env_file='.dev.env'
   local api_base_url="${configured_api_base_url:-$LOCAL_API_BASE_URL}"
-  if [[ "$profile" == "mobile_beta" ]]; then
+  if [[ "$profile" == "mobile_beta" || "$profile" == "self_hosted" ]]; then
     env_file='.env'
+  fi
+  if [[ "$profile" == "mobile_beta" ]]; then
     api_base_url="$BETA_API_BASE_URL"
   fi
 
@@ -217,9 +262,14 @@ function run_build_android() {
   local profile='local_dev'
   local api_base_url="$ANDROID_LOCAL_API_BASE_URL"
   local emulator_host="$ANDROID_DEV_HOST"
-  if [[ "$flavor" == "prod" ]]; then
-    profile='mobile_beta'
-    api_base_url="$BETA_API_BASE_URL"
+  if [[ "$flavor" == "prod" || "$flavor" == "selfhost" ]]; then
+    if [[ "$flavor" == "selfhost" ]]; then
+      profile='self_hosted'
+      api_base_url="$OMI_API_BASE_URL"
+    else
+      profile='mobile_beta'
+      api_base_url="$BETA_API_BASE_URL"
+    fi
     emulator_host=''
   fi
   local flutter_args=(
@@ -227,6 +277,7 @@ function run_build_android() {
     "--dart-define=OMI_APP_PROFILE=$profile"
     "--dart-define=OMI_API_BASE_URL=$api_base_url"
   )
+  flutter_args+=("${IDENTITY_FLUTTER_ARGS[@]}")
   if [[ -n "$emulator_host" ]]; then
     flutter_args+=("--dart-define=OMI_FIREBASE_AUTH_EMULATOR_HOST=$emulator_host")
   fi
@@ -367,7 +418,7 @@ function run_build_ios() {
   flutter pub get \
     && pushd ios && pod install --repo-update && popd \
     && dart run build_runner build \
-    && flutter run --flavor "$flavor" -d "$device_id" "$@"
+    && flutter run --flavor "$flavor" -d "$device_id" "${IDENTITY_FLUTTER_ARGS[@]}" "$@"
 }
 
 
@@ -375,15 +426,21 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1}" in
   ios)
     if [[ "${2:-}" == "beta" ]]; then
-      if [[ -z "${FIREBASE_SERVICE_ACCOUNT_KEY:-}" ]]; then
-        echo "ios beta requires FIREBASE_SERVICE_ACCOUNT_KEY so the production Firebase app config can be generated." >&2
-        exit 1
+      if [[ "${OMI_AUTH_PROVIDER:-firebase}" == "better_auth" ]]; then
+        generate_ios_self_host_config omi "${OMI_SELF_HOST_BUNDLE_ID:-com.friend-app-with-wearable.ios12.selfhost}" \
+          && setup_app_env self_hosted "$OMI_API_BASE_URL" \
+          && run_build_ios prod --dart-define=OMI_APP_PROFILE=self_hosted --dart-define=OMI_API_BASE_URL="$OMI_API_BASE_URL"
+      else
+        if [[ -z "${FIREBASE_SERVICE_ACCOUNT_KEY:-}" ]]; then
+          echo "ios beta requires FIREBASE_SERVICE_ACCOUNT_KEY so the production Firebase app config can be generated." >&2
+          exit 1
+        fi
+        setup_firebase \
+          && setup_firebase_with_service_account_ios \
+          && generate_ios_custom_config Prod omi-beta \
+          && setup_app_env mobile_beta \
+          && run_build_ios prod --dart-define=OMI_APP_PROFILE=mobile_beta
       fi
-      setup_firebase \
-        && setup_firebase_with_service_account_ios \
-        && generate_ios_custom_config Prod omi-beta \
-        && setup_app_env mobile_beta \
-        && run_build_ios prod --dart-define=OMI_APP_PROFILE=mobile_beta
     else
       setup_firebase \
         && bash scripts/generate_ios_dev_info_plist.sh \
@@ -397,15 +454,22 @@ case "${1}" in
     ;;
   android)
     if [[ "${2:-}" == "beta" ]]; then
-      if [[ -z "${FIREBASE_SERVICE_ACCOUNT_KEY:-}" ]]; then
-        echo "android beta requires FIREBASE_SERVICE_ACCOUNT_KEY so the production Firebase app config can be generated." >&2
-        exit 1
+      if [[ "${OMI_AUTH_PROVIDER:-firebase}" == "better_auth" ]]; then
+        setup_keystore_android \
+          && setup_firebase \
+          && setup_app_env self_hosted "$OMI_API_BASE_URL" \
+          && run_build_android selfhost
+      else
+        if [[ -z "${FIREBASE_SERVICE_ACCOUNT_KEY:-}" ]]; then
+          echo "android beta requires FIREBASE_SERVICE_ACCOUNT_KEY so the production Firebase app config can be generated." >&2
+          exit 1
+        fi
+        setup_keystore_android \
+          && setup_firebase \
+          && setup_firebase_with_service_account_android \
+          && setup_app_env mobile_beta "$BETA_API_BASE_URL" \
+          && run_build_android prod
       fi
-      setup_keystore_android \
-        && setup_firebase \
-        && setup_firebase_with_service_account_android \
-        && setup_app_env mobile_beta "$BETA_API_BASE_URL" \
-        && run_build_android prod
     else
       setup_keystore_android \
         && setup_firebase \
