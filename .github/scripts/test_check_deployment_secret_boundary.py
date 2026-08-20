@@ -177,5 +177,14 @@ jobs:
             self.assertEqual(call.kwargs["encoding"], "utf-8")
 
 
+class RepositoryDeploymentSettingPolicyTest(unittest.TestCase):
+    def test_speaker_embedding_deploy_controls_are_runtime_config(self) -> None:
+        policy = CHECKER.load_policy(REPO_ROOT / "config/deployment-setting-classification.json")
+        config_names = CHECKER._policy_kinds(policy)["config"]
+
+        self.assertIn("SPEAKER_EMBEDDING_API_URL", config_names)
+        self.assertIn("SPEAKER_EMBEDDING_PROVIDER", config_names)
+
+
 if __name__ == "__main__":
     unittest.main()
