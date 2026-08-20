@@ -713,7 +713,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/conversation_processing.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         for key in [
             'conv_folder',
             'conv_discard',
@@ -731,7 +731,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/memories.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         for key in ['memories', 'learnings', 'memory_category', 'memory_conflict']:
             assert key in calls, f"Missing get_llm('{key}') in memories.py"
         assert calls.count('memories') == 3, "memories should appear exactly three times"
@@ -740,7 +740,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/knowledge_graph.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert calls.count('knowledge_graph') == 2, "knowledge_graph should appear exactly twice"
 
     def test_followup_key(self):
@@ -755,7 +755,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/chat.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'chat_responses' in calls
         assert 'chat_extraction' in calls
 
@@ -763,7 +763,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/persona.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'persona_clone' in calls
         assert calls.count('persona_clone') >= 4, "persona_clone should appear in multiple clone functions"
         # Dynamic persona_chat/persona_chat_premium routing via feature variable
@@ -773,7 +773,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/goals.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'goals' in calls, "Missing get_llm('goals') in goals.py"
         assert 'goals_advice' in calls, "Missing get_llm('goals_advice') in goals.py"
 
@@ -781,14 +781,14 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/notifications.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'notifications' in calls
 
     def test_app_generator_py_all_keys(self):
         import re
 
         source = self._read_source("utils/llm/app_generator.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'app_generator' in calls
         assert 'app_integration' in calls
         assert calls.count('app_integration') >= 2, "app_integration should appear in multiple functions"
@@ -797,7 +797,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/retrieval/graph.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'chat_graph' in calls
 
     def test_web_search_tool_uses_typed_capability_route(self):
@@ -820,7 +820,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/external_integrations.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'external_structure' in calls
         assert calls.count('external_structure') >= 2, "external_structure should appear at least twice"
         assert 'daily_summary_simple' in calls, "Missing get_llm('daily_summary_simple') in external_integrations.py"
@@ -830,7 +830,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/llm/proactive_notification.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'proactive_notification' in calls
         assert calls.count('proactive_notification') >= 4, "proactive_notification should appear in 4 functions"
 
@@ -838,7 +838,7 @@ class TestExpandedCallsiteCoverage:
         import re
 
         source = self._read_source("utils/wrapped/generate_2025.py")
-        calls = re.findall(r"get_llm\('(\w+)'", source)
+        calls = re.findall(r"get_llm\(\s*'(\w+)'", source)
         assert 'wrapped_analysis' in calls
 
     def test_onboarding_key(self):

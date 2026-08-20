@@ -25,9 +25,8 @@ abstract class Env {
   static String? _apiBaseUrlOverride;
   static bool isTestFlight = false;
 
-  static AppEnvironmentProfile get profile => AppEnvironmentProfile.forFlavor(
-        productionFlavor: F.env == Environment.prod,
-      );
+  static AppEnvironmentProfile get profile =>
+      AppEnvironmentProfile.forFlavor(productionFlavor: F.env == Environment.prod);
 
   static void init(EnvFields instance) {
     _instance = instance;
@@ -92,10 +91,7 @@ abstract class Env {
   /// uses the development serving API for product traffic.
   static String get authApiBaseUrl => authApiBaseUrlForProfile(profile, servingApiBaseUrl: apiBaseUrl);
 
-  static String authApiBaseUrlForProfile(
-    AppEnvironmentProfile configuredProfile, {
-    String? servingApiBaseUrl,
-  }) {
+  static String authApiBaseUrlForProfile(AppEnvironmentProfile configuredProfile, {String? servingApiBaseUrl}) {
     if (configuredProfile == AppEnvironmentProfile.mobileBeta) {
       return productionApiBaseUrl;
     }
@@ -105,9 +101,7 @@ abstract class Env {
   static void validateProfilePairing() {
     final productionFlavor = F.env == Environment.prod;
     if (!productionFlavor && profile != AppEnvironmentProfile.localDev) {
-      throw StateError(
-        'Profile ${profile.name} must be built with the prod flavor.',
-      );
+      throw StateError('Profile ${profile.name} must be built with the prod flavor.');
     }
     if (productionFlavor && profile == AppEnvironmentProfile.localDev) {
       throw StateError('The prod flavor cannot use the local_dev profile.');
@@ -208,10 +202,7 @@ abstract class Env {
   }) {
     final effectiveProfile = configuredProfile ?? (productionFamily ? AppEnvironmentProfile.production : profile);
     final normalized = (configuredApiBaseUrl ?? apiBaseUrl ?? '').trim().replaceFirst(RegExp(r'/+$'), '');
-    final expected = effectiveProfile.defaultApiBaseUrl.replaceFirst(
-      RegExp(r'/+$'),
-      '',
-    );
+    final expected = effectiveProfile.defaultApiBaseUrl.replaceFirst(RegExp(r'/+$'), '');
 
     if (effectiveProfile == AppEnvironmentProfile.localDev) {
       if (!_isLocalDevelopmentApi(normalized)) {
@@ -249,9 +240,7 @@ abstract class Env {
     }
 
     if (normalized != expected) {
-      throw StateError(
-        'Profile ${effectiveProfile.name} requires API_BASE_URL=${effectiveProfile.defaultApiBaseUrl}',
-      );
+      throw StateError('Profile ${effectiveProfile.name} requires API_BASE_URL=${effectiveProfile.defaultApiBaseUrl}');
     }
   }
 
