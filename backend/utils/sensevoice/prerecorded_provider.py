@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import httpx
 from pydub import AudioSegment
 
-from utils.sensevoice.socket import _pcm16_to_samples, get_sensevoice_recognizer
+from utils.sensevoice.socket import get_sensevoice_recognizer, pcm16_to_samples
 from utils.stt.pre_recorded import PrerecordedSTTProvider
 
 _DOWNLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -28,7 +28,13 @@ def _as_pcm16_mono(
             format_hint = 'mp3'
         segment = AudioSegment.from_file(BytesIO(audio_bytes), format=format_hint)
     prepared = segment.set_channels(1).set_frame_rate(16000).set_sample_width(2)
-    return prepared.raw_data, prepared.frame_rate
+    raw_data = prepared.raw_data
+    frame_rate = prepared.frame_rate
+    if not isinstance(raw_data, bytes):
+        raise TypeError('decoded audio did not produce an immutable PCM byte buffer')
+    if not isinstance(frame_rate, int) or frame_rate <= 0:
+        raise ValueError('decoded audio did not produce a valid sample rate')
+    return raw_data, frame_rate
 
 
 class SenseVoicePrerecordedProvider(PrerecordedSTTProvider):
@@ -54,7 +60,7 @@ class SenseVoicePrerecordedProvider(PrerecordedSTTProvider):
         )
         recognizer = self._recognizer or get_sensevoice_recognizer()
         stream = recognizer.create_stream()
-        stream.accept_waveform(prepared_rate, _pcm16_to_samples(pcm))
+        stream.accept_waveform(prepared_rate, pcm16_to_samples(pcm))
         recognizer.decode_stream(stream)
         text = stream.result.text.strip()
         duration = len(pcm) / max(1, 2 * prepared_rate)

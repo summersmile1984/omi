@@ -66,7 +66,7 @@ def get_sensevoice_recognizer() -> Any:
     return _recognizer
 
 
-def _pcm16_to_samples(pcm: bytes) -> List[int]:
+def pcm16_to_samples(pcm: bytes) -> List[int]:
     aligned = pcm[: len(pcm) - (len(pcm) % 2)]
     return list(array.array('h', aligned))
 
@@ -75,7 +75,7 @@ def _decode_pcm(recognizer: Any, sample_rate: int, pcm: bytes) -> str:
     """Decode one window under the recognizer's process-wide concurrency gate."""
     with _decode_lock:
         stream = recognizer.create_stream()
-        stream.accept_waveform(sample_rate, _pcm16_to_samples(pcm))
+        stream.accept_waveform(sample_rate, pcm16_to_samples(pcm))
         recognizer.decode_stream(stream)
         return str(stream.result.text).strip()
 

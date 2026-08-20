@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Mapping, Optional, Tuple, Union
 
-from utils.llm.gateway_client import is_auto_lane_id
+from utils.llm.gateway_route_ids import is_auto_lane_id
 
 logger = logging.getLogger(__name__)
 

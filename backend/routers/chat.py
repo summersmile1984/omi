@@ -61,6 +61,7 @@ from config.stt_provider_policy import STTServingSurface
 from utils.stt.outcomes import TranscriptionFailure, failure_from_exception
 from utils.observability.transcription import TranscriptionAttempt
 from utils.llm.goals import extract_and_update_goal_progress
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from database.redis_db import try_acquire_goal_extraction_lock, check_rate_limit, store_chat_share, get_chat_share
 from database.users import set_chat_message_rating_score
 from utils.rate_limit_config import get_effective_limit, RATE_LIMIT_SHADOW
@@ -1519,6 +1520,8 @@ def upload_file_chat(
                 result = FileChatTool.upload(temp_file)
             except UnsupportedChatFileError as error:
                 raise HTTPException(status_code=400, detail=str(error))
+            except ModelCapabilityUnavailableError as error:
+                raise HTTPException(status_code=503, detail=error.as_dict()) from error
 
             thumb_name = result.get("thumbnail_name", "")
             if thumb_name != "":
@@ -1587,6 +1590,8 @@ def upload_file_chat_v1(
                 result = FileChatTool.upload(temp_file)
             except UnsupportedChatFileError as error:
                 raise HTTPException(status_code=400, detail=str(error))
+            except ModelCapabilityUnavailableError as error:
+                raise HTTPException(status_code=503, detail=error.as_dict()) from error
 
             thumb_name = result.get("thumbnail_name", "")
             if thumb_name != "":

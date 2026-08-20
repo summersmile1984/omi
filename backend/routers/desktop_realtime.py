@@ -13,7 +13,7 @@ from pydantic import BaseModel, StrictInt, StrictStr
 
 from database._client import get_customer_firestore_client
 from utils.executors import db_executor, run_blocking
-from utils.llm.capabilities import resolve_model_capability
+from utils.llm.capabilities import realtime_relay_wire_protocol, resolve_model_capability
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import enforce_desktop_chat_quota
 
@@ -140,7 +140,6 @@ async def _persist_session(uid: str, token: str, provider: str, model: str, expi
 
 @router.post("/v2/realtime/session")
 async def mint_session(request: MintRequest, uid: str = Depends(get_current_user_uid)) -> JSONResponse:
-    await run_blocking(db_executor, enforce_desktop_chat_quota, uid, "desktop")
     capability = resolve_model_capability('realtime', requested_provider=request.provider)
     if not capability.selected:
         return _error(
@@ -151,6 +150,19 @@ async def mint_session(request: MintRequest, uid: str = Depends(get_current_user
             retryable=capability.retryable,
         )
     selected_model = capability.routes[0].model
+    if capability.transport == 'websocket_relay':
+        return JSONResponse(
+            {
+                'provider': 'relay',
+                'provider_id': capability.routes[0].provider,
+                'model': selected_model,
+                'transport': 'websocket_relay',
+                'protocol': 'omi.realtime.v1',
+                'wire_protocol': realtime_relay_wire_protocol(),
+                'websocket_url': '/v1/model-capabilities/realtime/relay',
+            }
+        )
+    await run_blocking(db_executor, enforce_desktop_chat_quota, uid, "desktop")
     if request.provider == "openai":
         key = os.getenv("OPENAI_API_KEY", "").strip()
         if not key:

@@ -45,6 +45,7 @@ from utils.stt.speaker_embedding import (
     SPEAKER_MATCH_THRESHOLD,
     async_extract_embedding_from_bytes,
     compare_embeddings,
+    speaker_embedding_provider,
 )
 from utils.observability.fallback import record_fallback
 from utils.other.backoff import calculate_backoff_with_jitter
@@ -1294,8 +1295,10 @@ class ParakeetStreamingSocket(STTSocket):
         # Basic online diarization: Parakeet returns no speaker info, so we embed each segment's
         # voice (via the same hosted embedding service the listen pipeline uses downstream) and
         # cluster into session-stable SPEAKER_N labels. Opt-in: only when that service is wired up.
-        self._diarize = bool(os.getenv('HOSTED_SPEAKER_EMBEDDING_API_URL')) and (
-            os.getenv('PARAKEET_DIARIZATION', '1') == '1'
+        self._diarize = (
+            speaker_embedding_provider() == 'http'
+            and bool(os.getenv('SPEAKER_EMBEDDING_API_URL'))
+            and (os.getenv('PARAKEET_DIARIZATION', '1') == '1')
         )
         self._spk_centroids: List[np.ndarray[Any, Any]] = []  # running-mean embedding per discovered speaker
         self._spk_counts: List[int] = []

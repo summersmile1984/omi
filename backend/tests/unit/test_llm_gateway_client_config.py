@@ -416,18 +416,36 @@ async def test_app_icon_generation_always_uses_gateway(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_perplexity_tool_always_uses_gateway(monkeypatch):
-    perplexity_tools = _load_perplexity_tools()
+async def test_app_icon_generation_is_typed_unavailable_when_deployment_disables_it(monkeypatch):
+    from utils.llm import app_generator
+    from utils.llm.capabilities import ModelCapabilityUnavailableError
 
-    monkeypatch.setattr(perplexity_tools, '_perplexity_gateway_search', lambda _query: _async_return('gateway-search'))
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'disabled')
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_gateway',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not be called')),
+    )
 
-    assert await perplexity_tools.perplexity_web_search_tool.coroutine('query') == 'gateway-search'
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        await app_generator.generate_app_icon('Name', 'Description', 'other')
+
+    assert error.value.as_dict()['reason'] == 'disabled_by_deployment'
 
 
-def test_perplexity_gateway_response_preserves_top_level_citations():
-    perplexity_tools = _load_perplexity_tools()
+@pytest.mark.asyncio
+async def test_managed_web_search_tool_uses_gateway(monkeypatch):
+    web_search_tools = _load_web_search_tools()
 
-    formatted = perplexity_tools._format_perplexity_response(
+    monkeypatch.setattr(web_search_tools, '_gateway_search', lambda _query: _async_return('gateway-search'))
+
+    assert await web_search_tools.web_search_tool.coroutine('query') == 'gateway-search'
+
+
+def test_managed_web_search_response_preserves_top_level_citations():
+    web_search_tools = _load_web_search_tools()
+
+    formatted = web_search_tools._format_gateway_response(
         {
             'choices': [{'message': {'content': 'answer'}}],
             'citations': [{'title': 'Source title', 'url': 'https://example.com/source'}],
@@ -481,13 +499,13 @@ def test_chat_agent_route_invalid_raises(monkeypatch):
         raise AssertionError('expected invalid chat agent route to raise')
 
 
-def _load_perplexity_tools():
-    module_path = Path(__file__).parents[2] / 'utils' / 'retrieval' / 'tools' / 'perplexity_tools.py'
-    spec = importlib.util.spec_from_file_location('perplexity_tools_under_test', module_path)
+def _load_web_search_tools():
+    module_path = Path(__file__).parents[2] / 'utils' / 'retrieval' / 'tools' / 'web_search_tools.py'
+    spec = importlib.util.spec_from_file_location('web_search_tools_under_test', module_path)
     assert spec is not None and spec.loader is not None
-    perplexity_tools = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(perplexity_tools)
-    return perplexity_tools
+    web_search_tools = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(web_search_tools)
+    return web_search_tools
 
 
 async def _async_return(value):

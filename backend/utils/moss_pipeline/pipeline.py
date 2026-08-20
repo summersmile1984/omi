@@ -12,8 +12,7 @@ Chain:
 
 No GPU required: MOSS does transcription+diarization server-side; speaker
 identification runs on CPU via a pluggable embedding extractor (wespeaker /
-pyannote), defaulting to the existing hosted embedding API so no new
-inference service is needed.
+pyannote), defaulting to the deployment-selected HTTP embedding API.
 """
 
 from __future__ import annotations
@@ -80,10 +79,10 @@ def _wav_slice(wav_bytes: bytes, start_sec: float, end_sec: float) -> Optional[b
 
 
 def _default_embedding_extractor() -> EmbeddingExtractor:
-    """Embedding extractor backed by the existing hosted embedding API.
+    """Embedding extractor backed by the configured HTTP embedding API.
 
-    Returns a callable ``(wav_bytes) -> (1, D) np.ndarray``. The hosted
-    endpoint (``HOSTED_SPEAKER_EMBEDDING_API_URL``) is the diarizer's
+    Returns a callable ``(wav_bytes) -> (1, D) np.ndarray``. The configured
+    endpoint (``SPEAKER_EMBEDDING_API_URL``) is the diarizer's
     ``/v2/embedding`` (wespeaker resnet34) — works with or without a local
     GPU because the diarizer service falls back to CPU.
     """

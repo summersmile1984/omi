@@ -50,6 +50,104 @@ def test_nonportable_capabilities_return_typed_unavailable_payloads():
     assert json.loads(realtime.unavailable_tool_result())['reason'] == 'provider_not_selected'
 
 
+def test_model_api_and_realtime_relay_require_explicit_transports_and_target_allowlist():
+    base = {
+        'OMI_LLM_DEFAULT_PROVIDER': 'generic',
+        'OMI_LLM_DEFAULT_MODEL': 'local-chat',
+        'GENERIC_OPENAI_BASE_URL': 'http://model.internal/v1',
+        'GENERIC_OPENAI_API_KEY': 'local-key',
+        'EMBEDDING_PROVIDER': 'generic',
+        'EMBEDDING_MODEL': 'local-embedding',
+    }
+    assert resolve_model_capability('embedding', env=base).reason == 'disabled_by_deployment'
+    assert resolve_model_capability('proactive_tools', env=base).reason == 'disabled_by_deployment'
+
+    selected = resolve_model_capability(
+        'realtime',
+        env={
+            'REALTIME_PROVIDER': 'relay',
+            'REALTIME_MODEL': 'local-live',
+            'REALTIME_RELAY_URL': 'ws://realtime.internal/v1/realtime',
+            'REALTIME_RELAY_API_KEY': 'server-only',
+            'REALTIME_RELAY_PROVIDER_ID': 'generic',
+            'REALTIME_RELAY_WIRE_PROTOCOL': 'openai_realtime_v1',
+            'REALTIME_RELAY_ALLOWED_HOSTS': 'realtime.internal',
+            'REALTIME_RELAY_MAX_MESSAGE_BYTES': '4096',
+            'REALTIME_RELAY_MAX_SESSION_SECONDS': '30',
+        },
+    )
+    mismatched_host = resolve_model_capability(
+        'realtime',
+        env={
+            'REALTIME_PROVIDER': 'relay',
+            'REALTIME_MODEL': 'local-live',
+            'REALTIME_RELAY_URL': 'ws://realtime.internal/v1/realtime',
+            'REALTIME_RELAY_API_KEY': 'server-only',
+            'REALTIME_RELAY_PROVIDER_ID': 'generic',
+            'REALTIME_RELAY_WIRE_PROTOCOL': 'openai_realtime_v1',
+            'REALTIME_RELAY_ALLOWED_HOSTS': 'other.internal',
+        },
+    )
+
+    assert selected.transport == 'websocket_relay'
+    assert selected.routes[0].provider == 'generic'
+    assert mismatched_host.reason == 'relay_host_not_allowed'
+
+    unsupported_dialect = resolve_model_capability(
+        'realtime',
+        env={
+            'REALTIME_PROVIDER': 'relay',
+            'REALTIME_MODEL': 'local-live',
+            'REALTIME_RELAY_URL': 'ws://realtime.internal/v1/realtime',
+            'REALTIME_RELAY_API_KEY': 'server-only',
+            'REALTIME_RELAY_PROVIDER_ID': 'generic',
+            'REALTIME_RELAY_WIRE_PROTOCOL': 'vendor_magic_v9',
+            'REALTIME_RELAY_ALLOWED_HOSTS': 'realtime.internal',
+        },
+    )
+    assert unsupported_dialect.reason == 'relay_wire_protocol_not_supported'
+
+    metadata_target = resolve_model_capability(
+        'realtime',
+        env={
+            'REALTIME_PROVIDER': 'relay',
+            'REALTIME_MODEL': 'local-live',
+            'REALTIME_RELAY_URL': 'ws://169.254.169.254/v1/realtime',
+            'REALTIME_RELAY_API_KEY': 'server-only',
+            'REALTIME_RELAY_PROVIDER_ID': 'generic',
+            'REALTIME_RELAY_WIRE_PROTOCOL': 'openai_realtime_v1',
+            'REALTIME_RELAY_ALLOWED_HOSTS': '169.254.169.254',
+        },
+    )
+    assert metadata_target.reason == 'relay_host_not_allowed'
+
+
+def test_self_host_optional_vendor_only_capabilities_are_typed_disabled():
+    icon = resolve_model_capability('app_icon_generation', env={'APP_ICON_GENERATION_TRANSPORT': 'disabled'})
+    files = resolve_model_capability('file_chat', env={'FILE_CHAT_TRANSPORT': 'disabled'})
+    keyless_files = resolve_model_capability('file_chat', env={'FILE_CHAT_TRANSPORT': 'openai_assistants'})
+    vendor_proxy = resolve_model_capability('desktop_vendor_proxy', env={'DESKTOP_VENDOR_PROXY_TRANSPORT': 'disabled'})
+
+    assert icon.unavailable_payload()['reason'] == 'disabled_by_deployment'
+    assert files.unavailable_payload()['reason'] == 'disabled_by_deployment'
+    assert keyless_files.unavailable_payload()['reason'] == 'openai_credential_not_configured'
+    assert vendor_proxy.unavailable_payload()['reason'] == 'disabled_by_deployment'
+
+
+def test_self_hosted_web_search_selects_only_an_explicit_searxng_endpoint():
+    missing = resolve_model_capability('web_search', env={'WEB_SEARCH_TRANSPORT': 'searxng'})
+    selected = resolve_model_capability(
+        'web_search',
+        env={'WEB_SEARCH_TRANSPORT': 'searxng', 'SEARXNG_BASE_URL': 'http://searxng:8080'},
+    )
+
+    assert missing.selected is False
+    assert missing.reason == 'searxng_endpoint_not_configured'
+    assert selected.selected is True
+    assert selected.transport == 'searxng'
+    assert selected.routes == ()
+
+
 def test_screen_search_executes_the_selected_embedding_boundary(monkeypatch):
     calls = []
     monkeypatch.setenv('EMBEDDING_PROVIDER', 'generic')

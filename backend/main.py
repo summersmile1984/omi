@@ -81,6 +81,7 @@ from routers import (
     desktop_core,
     desktop_proxy,
     desktop_realtime,
+    model_capabilities,
     desktop_screen_crisp,
     desktop_tts_updates,
     scores,
@@ -232,6 +233,7 @@ app.include_router(desktop_agent_vm.router)
 app.include_router(desktop_chat.router)
 app.include_router(desktop_proxy.router)
 app.include_router(desktop_realtime.router)
+app.include_router(model_capabilities.router)
 app.include_router(desktop_screen_crisp.router)
 app.include_router(desktop_tts_updates.router)
 

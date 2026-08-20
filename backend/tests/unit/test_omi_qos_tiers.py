@@ -800,12 +800,9 @@ class TestExpandedCallsiteCoverage:
         calls = re.findall(r"get_llm\('(\w+)'", source)
         assert 'chat_graph' in calls
 
-    def test_perplexity_tools_key(self):
-        import re
-
-        source = self._read_source("utils/retrieval/tools/perplexity_tools.py")
-        calls = re.findall(r"get_model\('(\w+)'", source)
-        assert 'web_search' in calls
+    def test_web_search_tool_uses_typed_capability_route(self):
+        source = self._read_source("utils/retrieval/tools/web_search_tools.py")
+        assert "resolve_model_capability('web_search')" in source
 
     def test_chat_sessions_router_key(self):
         source = self._read_source("routers/chat_sessions.py")

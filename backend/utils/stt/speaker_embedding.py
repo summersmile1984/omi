@@ -21,6 +21,27 @@ SPEAKER_MATCH_THRESHOLD = 0.45
 # Minimum audio duration (seconds) for speaker embedding extraction.
 # Audio shorter than this crashes pyannote wespeaker fbank (see issue #4572).
 MIN_EMBEDDING_AUDIO_DURATION = float(os.getenv("MIN_EMBEDDING_AUDIO_DURATION", "0.5"))
+SPEAKER_EMBEDDING_PROVIDER_ENV = "SPEAKER_EMBEDDING_PROVIDER"
+
+
+class SpeakerEmbeddingUnavailable(RuntimeError):
+    """The selected deployment intentionally has no speaker diarization provider."""
+
+
+def speaker_embedding_provider() -> str:
+    """Return the explicit speaker-embedding provider selection.
+
+    ``http`` selects any operator-controlled implementation of the
+    ``POST /v2/embedding`` contract. ``disabled`` is a
+    deliberate self-host capability boundary: ordinary transcription remains
+    available, but a caller that actually requests speaker embeddings fails
+    before constructing an HTTP request. Unknown values also fail closed.
+    """
+
+    provider = os.getenv(SPEAKER_EMBEDDING_PROVIDER_ENV, "http").strip().lower()
+    if provider not in {"http", "disabled"}:
+        raise SpeakerEmbeddingUnavailable(f"Unsupported speaker embedding provider: {provider or '<empty>'}")
+    return provider
 
 
 def _get_wav_duration(audio_data: bytes) -> float:
@@ -37,9 +58,11 @@ def _get_wav_duration(audio_data: bytes) -> float:
 
 def _get_api_url() -> str:
     """Get the speaker embedding API URL from environment."""
-    url = os.getenv('HOSTED_SPEAKER_EMBEDDING_API_URL')
+    if speaker_embedding_provider() == "disabled":
+        raise SpeakerEmbeddingUnavailable("Speaker embedding is disabled for this deployment")
+    url = os.getenv('SPEAKER_EMBEDDING_API_URL')
     if not url:
-        raise ValueError("HOSTED_SPEAKER_EMBEDDING_API_URL environment variable not set")
+        raise ValueError("SPEAKER_EMBEDDING_API_URL environment variable not set")
     return url
 
 

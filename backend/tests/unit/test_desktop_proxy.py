@@ -154,6 +154,32 @@ async def test_gemini_proxy_rejects_paywalled_desktop_user(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_self_host_disables_legacy_gemini_proxy_before_metering_or_upstream(monkeypatch):
+    calls = []
+
+    async def forbidden(*_args, **_kwargs):
+        calls.append('forbidden')
+        raise AssertionError('disabled proxy must not meter or resolve a vendor upstream')
+
+    monkeypatch.setenv('DESKTOP_VENDOR_PROXY_TRANSPORT', 'disabled')
+    monkeypatch.setattr(desktop_proxy, 'llm_stub_enabled', lambda: False)
+    monkeypatch.setattr(desktop_proxy, '_meter_server_request', forbidden)
+    monkeypatch.setattr(desktop_proxy, '_upstream', forbidden)
+
+    with pytest.raises(HTTPException) as unavailable:
+        await desktop_proxy._proxy(make_request(), 'models/gemini-2.5-flash:generateContent', False, 'user')
+
+    assert unavailable.value.status_code == 503
+    assert unavailable.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'desktop_vendor_proxy',
+        'reason': 'disabled_by_deployment',
+        'retryable': False,
+    }
+    assert calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("model_tier", "used_requests"), [("", 1), ("", 30), ("max", 300)])
 async def test_server_gemini_meter_keeps_pro_within_the_soft_limit(monkeypatch, model_tier, used_requests):
     fallbacks = []
@@ -569,11 +595,15 @@ async def test_proxy_dispatches_server_paid_bodies_with_the_2048_cap(monkeypatch
     async def meter(_uid, path, _model, _action):
         return path
 
+    async def passthrough(_request, awaitable):
+        return await awaitable
+
     output = io.StringIO()
     monkeypatch.setattr(desktop_proxy.sys, "stdout", output)
     monkeypatch.setattr(desktop_proxy, "get_byok_key", lambda _: None)
     monkeypatch.setattr(desktop_proxy, "_meter_server_request", meter)
     monkeypatch.setattr(desktop_proxy, "_upstream", route)
+    monkeypatch.setattr(desktop_proxy, "_cancel_on_disconnect", passthrough)
     monkeypatch.setattr(desktop_proxy, "get_desktop_gemini_client", lambda: CapturingClient())
     monkeypatch.setattr(desktop_proxy, "get_desktop_gemini_semaphore", lambda: asyncio.Semaphore(1))
 

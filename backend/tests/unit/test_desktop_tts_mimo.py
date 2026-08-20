@@ -28,6 +28,30 @@ def test_mimo_enabled_only_when_provider_and_key_set(monkeypatch):
     assert mimo_tts_enabled() is False  # other provider wins
 
 
+@pytest.mark.asyncio
+async def test_disabled_desktop_tts_never_resolves_openai_or_subscription(monkeypatch):
+    import routers.desktop_tts_updates as mod
+
+    monkeypatch.setenv('TTS_PROVIDER', 'disabled')
+    monkeypatch.setenv('OPENAI_API_KEY', 'must-not-be-used')
+
+    async def fail_run_blocking(*_args, **_kwargs):
+        raise AssertionError('disabled TTS must fail before subscription/rate-limit/provider work')
+
+    monkeypatch.setattr(mod, 'run_blocking', fail_run_blocking)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello', voice_id='alloy'), uid='user-1')
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'tts',
+        'reason': 'disabled',
+        'retryable': False,
+    }
+
+
 def test_mimo_synthesize_uses_client_and_returns_audio(monkeypatch):
     audio = b'RIFF\x24\x00\x00\x00WAVE'
     captured = {}
@@ -133,12 +157,12 @@ async def test_mimo_cannot_bypass_desktop_tts_rate_limit(monkeypatch):
 def asyncio_run(coro):
     import asyncio
 
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def asyncio_future(value):
     import asyncio
 
-    f = asyncio.get_event_loop().create_future()
+    f = asyncio.get_running_loop().create_future()
     f.set_result(value)
     return f

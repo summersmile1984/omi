@@ -52,6 +52,23 @@ def test_sensevoice_keeps_its_prerecorded_adapter_and_emits_batch_shape():
     assert recognizer.stream.sample_rate == 16000
 
 
+def test_sensevoice_decodes_container_audio_to_typed_mono_pcm():
+    source = io.BytesIO()
+    with wave.open(source, 'wb') as wav_file:
+        wav_file.setnchannels(2)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(b'\x00\x00\x00\x00' * 8000)
+
+    recognizer = _SenseVoiceRecognizer()
+    provider = SenseVoicePrerecordedProvider(recognizer=recognizer)
+    words = provider.transcribe_bytes(source.getvalue(), encoding='audio/wav')
+
+    assert recognizer.stream.sample_rate == 16000
+    assert 15990 <= len(recognizer.stream.samples) <= 16000
+    assert words[0]['timestamp'][1] == pytest.approx(1.0, abs=0.001)
+
+
 def test_mimo_raw_pcm_is_wrapped_as_wav_and_shaped():
     captured = {}
 

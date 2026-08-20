@@ -215,6 +215,21 @@ class BoundedFallbackChatModel(BaseChatModel):
         ]
         return BoundedFallbackRunnable(candidates, self.route_labels, feature=self.feature)
 
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Any],
+        *,
+        tool_choice: str | dict[str, Any] | bool | None = None,
+        **kwargs: Any,
+    ) -> Runnable[Any, Any]:
+        """Preserve the bounded route policy for OpenAI-compatible tool calls."""
+
+        bind_options = dict(kwargs)
+        if tool_choice is not None:
+            bind_options['tool_choice'] = tool_choice
+        candidates = [candidate.bind_tools(tools, **bind_options) for candidate in self._candidates()]
+        return BoundedFallbackRunnable(candidates, self.route_labels, feature=self.feature)
+
 
 def _record_route_fallback(from_mode: str, to_mode: str, reason: str | None, outcome: str) -> None:
     record_fallback(

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, _guess_format
-from utils.mimo_pipeline.socket import MimoSttSocket, _pcm16_to_wav, mimo_available
+from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, infer_audio_format
+from utils.mimo_pipeline.socket import MimoSttSocket, mimo_available, pcm16_to_wav
 from config.prerecorded_stt import PrerecordedSTTService
 from config.stt_provider_policy import MIMO_PROVIDER, STTServingSurface, provider_is_enabled
 from utils.stt.pre_recorded import get_prerecorded_service
@@ -47,7 +47,7 @@ def test_streaming_selection_rejects_batch_only_mimo(monkeypatch):
 
 def test_pcm16_to_wav_produces_valid_container():
     pcm = b'\x00\x00' * 8000  # 1s of silence at 16kHz/16bit
-    wav = _pcm16_to_wav(pcm, 16000, 1)
+    wav = pcm16_to_wav(pcm, 16000, 1)
     assert wav[:4] == b'RIFF'
     assert wav[8:12] == b'WAVE'
     assert wav[20:22] == b'\x01\x00'  # PCM
@@ -117,11 +117,11 @@ def test_finalize_clears_buffer():
 
 
 def test_guess_format_by_suffix_and_content_type():
-    assert _guess_format('audio.wav') == 'wav'
-    assert _guess_format('audio.mp3') == 'mp3'
-    assert _guess_format('x', 'audio/wav') == 'wav'
-    assert _guess_format('x', 'audio/mpeg') == 'mp3'
-    assert _guess_format('unknown.bin') == 'wav'  # conservative default
+    assert infer_audio_format('audio.wav') == 'wav'
+    assert infer_audio_format('audio.mp3') == 'mp3'
+    assert infer_audio_format('x', 'audio/wav') == 'wav'
+    assert infer_audio_format('x', 'audio/mpeg') == 'mp3'
+    assert infer_audio_format('unknown.bin') == 'wav'  # conservative default
 
 
 def test_client_requires_api_key():

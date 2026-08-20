@@ -91,6 +91,69 @@ class ProjectionDescriptor:
         }
 
 
+def describe_projection(
+    embeddings: EmbeddingIdentity,
+    *,
+    dimension: int,
+    namespace_version: str,
+    schema_version: int,
+    capability: str = 'vector_write',
+) -> ProjectionDescriptor:
+    """Build one validated projection identity for writes and API responses."""
+
+    configured_dimension = embeddings.dimension
+    if configured_dimension is not None and configured_dimension != dimension:
+        raise ProjectionUnavailableError(
+            capability,
+            f'embedding dimension mismatch configured={configured_dimension} actual={dimension}',
+            retryable=False,
+        )
+    if schema_version < 1:
+        raise ProjectionUnavailableError(capability, 'projection schema version must be positive', retryable=False)
+    return ProjectionDescriptor(
+        provider=embeddings.provider_id,
+        model=embeddings.model_id,
+        dimension=dimension,
+        schema_version=schema_version,
+        namespace_version=_normalize_version(namespace_version),
+    )
+
+
+def describe_active_projection(
+    embeddings: EmbeddingIdentity,
+    *,
+    dimension: int,
+    capability: str = 'embedding',
+    env: Mapping[str, str] | None = None,
+) -> ProjectionDescriptor:
+    """Resolve explicit active projection metadata without constructing a store.
+
+    Capability endpoints use this boundary so returning an embedding can never
+    silently invent the schema/namespace version that a consumer will persist.
+    """
+
+    values = os.environ if env is None else env
+    active_raw = values.get(PROJECTION_ACTIVE_VERSION_ENV, '').strip()
+    schema_raw = values.get(PROJECTION_SCHEMA_VERSION_ENV, '').strip()
+    if not active_raw or not schema_raw:
+        raise ProjectionUnavailableError(
+            capability,
+            'active projection version and schema version must be configured',
+            retryable=False,
+        )
+    try:
+        schema_version = int(schema_raw)
+    except ValueError as error:
+        raise ProjectionUnavailableError(capability, 'invalid projection schema version', retryable=False) from error
+    return describe_projection(
+        embeddings,
+        dimension=dimension,
+        namespace_version=active_raw,
+        schema_version=schema_version,
+        capability=capability,
+    )
+
+
 @dataclass(frozen=True)
 class ProjectionRecord:
     id: str
@@ -162,17 +225,9 @@ class VersionedVectorStoreAdapter:
     def descriptor(
         self, *, dimension: int, namespace_version: str, schema_version: int | None = None
     ) -> ProjectionDescriptor:
-        configured_dimension = self._embeddings.dimension
-        if configured_dimension is not None and configured_dimension != dimension:
-            raise ProjectionUnavailableError(
-                'vector_write',
-                f'embedding dimension mismatch configured={configured_dimension} actual={dimension}',
-                retryable=False,
-            )
         _, _, _, runtime_schema = self._runtime()
-        return ProjectionDescriptor(
-            provider=self._embeddings.provider_id,
-            model=self._embeddings.model_id,
+        return describe_projection(
+            self._embeddings,
             dimension=dimension,
             schema_version=schema_version or runtime_schema,
             namespace_version=_normalize_version(namespace_version),

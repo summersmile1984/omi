@@ -17,6 +17,7 @@ from utils.executors import critical_executor, db_executor, run_blocking
 from utils.log_sanitizer import sanitize
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_desktop_trial_paywalled
+from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,9 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
         raise HTTPException(status_code=400, detail="text is required")
     if len(text) > _MAX_TTS_CHARS:
         raise HTTPException(status_code=400, detail="text is too long")
+
+    if tts_explicitly_disabled():
+        raise HTTPException(status_code=503, detail=TTS_DISABLED_DETAIL)
 
     if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop"):
         raise HTTPException(status_code=403, detail="A paid subscription is required")

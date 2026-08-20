@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -119,7 +120,8 @@ from utils.apps import (
 from database.memories import migrate_memories
 
 from utils.llm.persona import generate_persona_intro_message
-from utils.llm.app_generator import generate_description, generate_description_and_emoji
+from utils.llm.app_generator import generate_app_icon, generate_description, generate_description_and_emoji
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.llm.app_generation_prompts import app_generation_prompts_from_llm_payload, app_generation_prompts_response
 from utils.subscription import enforce_chat_quota
 from utils.llm.usage_tracker import track_usage, Features
@@ -1614,9 +1616,6 @@ async def generate_app_icon_endpoint(data: GenerateAppIconRequest, uid: str = De
     Generate an app icon using AI (DALL-E).
     Returns the icon as a base64 encoded PNG image.
     """
-    from utils.llm.app_generator import generate_app_icon
-    import base64
-
     app_name = data.name.strip()
     app_description = data.description.strip()
     category = data.category.strip()
@@ -1636,6 +1635,8 @@ async def generate_app_icon_endpoint(data: GenerateAppIconRequest, uid: str = De
         icon_base64 = base64.b64encode(icon_bytes).decode('utf-8')
 
         return {'status': 'ok', 'icon_base64': icon_base64, 'mime_type': 'image/png'}
+    except ModelCapabilityUnavailableError as error:
+        raise HTTPException(status_code=503, detail=error.as_dict()) from error
     except Exception as e:
         logger.error(f"Error generating icon: {e}")
         raise HTTPException(status_code=500, detail=f'Failed to generate icon: {str(e)}')

@@ -13,6 +13,7 @@ import pytest
 
 from utils.stt.speaker_embedding import (
     MIN_EMBEDDING_AUDIO_DURATION,
+    SpeakerEmbeddingUnavailable,
     _get_wav_duration,
     extract_embedding_from_bytes,
 )
@@ -61,6 +62,28 @@ class TestGetWavDuration:
 
 
 class TestExtractEmbeddingFromBytesValidation:
+    def test_disabled_provider_fails_before_network(self, monkeypatch):
+        wav = _make_wav_bytes(1.0)
+        request = MagicMock(side_effect=AssertionError("speaker embedding must not make an HTTP request"))
+        monkeypatch.setenv("SPEAKER_EMBEDDING_PROVIDER", "disabled")
+        monkeypatch.setattr(httpx, "post", request)
+
+        with pytest.raises(SpeakerEmbeddingUnavailable, match="disabled"):
+            extract_embedding_from_bytes(wav, "test.wav")
+
+        request.assert_not_called()
+
+    def test_unknown_provider_fails_closed_before_network(self, monkeypatch):
+        wav = _make_wav_bytes(1.0)
+        request = MagicMock(side_effect=AssertionError("unknown provider must not make an HTTP request"))
+        monkeypatch.setenv("SPEAKER_EMBEDDING_PROVIDER", "mystery")
+        monkeypatch.setattr(httpx, "post", request)
+
+        with pytest.raises(SpeakerEmbeddingUnavailable, match="Unsupported"):
+            extract_embedding_from_bytes(wav, "test.wav")
+
+        request.assert_not_called()
+
     def test_short_audio_raises_value_error(self):
         """Audio shorter than MIN_EMBEDDING_AUDIO_DURATION raises ValueError."""
         wav = _make_wav_bytes(0.025)  # 25ms - the crash case from issue #4572
@@ -78,7 +101,8 @@ class TestExtractEmbeddingFromBytesValidation:
         wav = _make_wav_bytes(MIN_EMBEDDING_AUDIO_DURATION)
 
         # Mock the API call since we only test validation, not the actual embedding
-        monkeypatch.setenv("HOSTED_SPEAKER_EMBEDDING_API_URL", "http://fake:1234")
+        monkeypatch.setenv("SPEAKER_EMBEDDING_PROVIDER", "http")
+        monkeypatch.setenv("SPEAKER_EMBEDDING_API_URL", "http://fake:1234")
         mock_response = MagicMock()
         mock_response.json.return_value = [0.1] * 512
         mock_response.raise_for_status = MagicMock()

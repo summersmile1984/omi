@@ -112,7 +112,7 @@ def _cache_key(provider: str, model_name: str, streaming: bool, options: Dict[st
     return provider, model_name, streaming, option_items
 
 
-def _api_model_name(provider_config: OpenAICompatibleProviderConfig, model_name: str) -> str:
+def openai_compatible_api_model_name(provider_config: OpenAICompatibleProviderConfig, model_name: str) -> str:
     if provider_config.prefix_google_models and model_name.startswith('gemini'):
         return f'google/{model_name}'
     return model_name
@@ -178,7 +178,7 @@ def get_or_create_openai_compatible_llm(
             kwargs['streaming'] = True
             kwargs['stream_options'] = {"include_usage": True}
 
-        _llm_cache[key] = ChatOpenAI(model=_api_model_name(provider_config, model_name), **kwargs)
+        _llm_cache[key] = ChatOpenAI(model=openai_compatible_api_model_name(provider_config, model_name), **kwargs)
     return _llm_cache[key]
 
 

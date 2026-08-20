@@ -1995,3 +1995,98 @@ routes:
       deprecation:
         state: active
       owner: backend
+  - route_type: http
+    method: GET
+    path: /v1/model-capabilities/realtime
+    policy:
+      review_status: reviewed
+      auth:
+        mechanisms:
+          - user_bearer_token
+        placement: dependency
+        scopes: []
+      byok: not_applicable
+      rate_limit:
+        policy_name: none
+        key_subject: none
+        enforcement: none
+        placement: none
+      timeout_class: default_method
+      surface: first_party_app
+      visibility: first_party
+      data_domain: user_profile
+      deprecation:
+        state: active
+      owner: backend-model-capabilities
+  - route_type: http
+    method: POST
+    path: /v1/model-capabilities/embeddings
+    policy:
+      review_status: reviewed
+      auth:
+        mechanisms:
+          - user_bearer_token
+        placement: dependency
+        scopes:
+          - desktop_model_access
+      byok: not_applicable
+      rate_limit:
+        policy_name: model:embeddings
+        key_subject: uid
+        enforcement: fail_open
+        placement: dependency
+      timeout_class: default_method
+      surface: first_party_app
+      visibility: first_party
+      data_domain: memories
+      deprecation:
+        state: active
+      owner: backend-model-capabilities
+  - route_type: http
+    method: POST
+    path: /v1/model-capabilities/tool-completions
+    policy:
+      review_status: reviewed
+      auth:
+        mechanisms:
+          - user_bearer_token
+        placement: dependency
+        scopes:
+          - desktop_model_access
+      byok: not_applicable
+      rate_limit:
+        policy_name: desktop_proactive_reasoning
+        key_subject: uid
+        enforcement: fail_closed
+        placement: handler
+      timeout_class: default_method
+      surface: first_party_app
+      visibility: first_party
+      data_domain: action_items
+      deprecation:
+        state: active
+      owner: backend-model-capabilities
+  - route_type: websocket
+    method: WEBSOCKET
+    path: /v1/model-capabilities/realtime/relay
+    policy:
+      review_status: reviewed
+      auth:
+        mechanisms:
+          - user_bearer_token
+        placement: inline
+        scopes:
+          - desktop_chat_access
+      byok: not_applicable
+      rate_limit:
+        policy_name: desktop_chat_quota+realtime_connect_lease
+        key_subject: uid
+        enforcement: fail_closed
+        placement: websocket_lock
+      timeout_class: websocket
+      surface: first_party_app
+      visibility: first_party
+      data_domain: conversations
+      deprecation:
+        state: active
+      owner: backend-model-capabilities

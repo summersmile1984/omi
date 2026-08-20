@@ -51,6 +51,8 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     "voice:transcribe_stream": (60, 3600),
     "voice:message": (60, 3600),
     "file:upload": (40, 3600),
+    # Provider-neutral OCR/task/Rewind embedding batches (up to 32 inputs each).
+    "model:embeddings": (600, 3600),
     # STT proxy — parakeet GPU batch transcription behind the Omi auth guard
     "stt:transcribe": (60, 3600),
     # Agent/MCP — bursty tool calls

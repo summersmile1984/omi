@@ -40,7 +40,7 @@ HAS_GEMINI_KEY = bool(os.environ.get('GEMINI_API_KEY', ''))
 
 
 # ---------------------------------------------------------------------------
-# Helper: call Perplexity via HTTP (same pattern as perplexity_tools.py)
+# Helper: call the managed Perplexity provider directly for live QoS coverage.
 # ---------------------------------------------------------------------------
 def call_perplexity(model: str, prompt: str) -> str:
     url = "https://api.perplexity.ai/chat/completions"

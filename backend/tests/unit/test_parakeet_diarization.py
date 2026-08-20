@@ -11,7 +11,7 @@ import os
 import numpy as np
 import pytest
 
-os.environ.setdefault('HOSTED_SPEAKER_EMBEDDING_API_URL', 'http://fake')  # enables _diarize
+os.environ.setdefault('SPEAKER_EMBEDDING_API_URL', 'http://fake')  # enables _diarize
 os.environ.setdefault('DEEPGRAM_API_KEY', 'x')
 
 import utils.stt.streaming as st  # noqa: E402

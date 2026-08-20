@@ -7,6 +7,30 @@ from models.tts import TtsSynthesizeRequest
 
 
 @pytest.mark.asyncio
+async def test_disabled_mobile_tts_never_resolves_vendor_key_or_rate_limit(monkeypatch):
+    import routers.tts as mod
+
+    monkeypatch.setenv('TTS_PROVIDER', 'disabled')
+    monkeypatch.setenv('ELEVENLABS_API_KEY', 'must-not-be-used')
+
+    async def fail_run_blocking(*_args, **_kwargs):
+        raise AssertionError('disabled TTS must fail before rate-limit/provider work')
+
+    monkeypatch.setattr(mod, 'run_blocking', fail_run_blocking)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello'), uid='user-1')
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'tts',
+        'reason': 'disabled',
+        'retryable': False,
+    }
+
+
+@pytest.mark.asyncio
 async def test_mimo_obeys_mobile_tts_rate_limit_before_synthesis(monkeypatch):
     import routers.tts as mod
     import utils.mimo_pipeline.tts as mimo_mod

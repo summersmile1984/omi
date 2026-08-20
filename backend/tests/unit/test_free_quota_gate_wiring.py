@@ -14,7 +14,7 @@ router module (the sanctioned monkeypatch-on-module seam).
 import asyncio
 import os
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -66,6 +66,7 @@ def _make_fakes() -> dict:
         "utils.llm.usage_tracker": AutoMockModule("utils.llm.usage_tracker"),
         "utils.llm.clients": AutoMockModule("utils.llm.clients"),
         "utils.llm.gateway_client": AutoMockModule("utils.llm.gateway_client"),
+        "utils.llm.capabilities": AutoMockModule("utils.llm.capabilities"),
     }
 
     streaming = ModuleType("utils.stt.streaming")
@@ -223,9 +224,13 @@ class TestOmniRelayGate:
         from models.users import PlanType
 
         ws = _fake_websocket()
-        with patch.object(relay, 'raise_if_gateway_feature_mode_blocks_direct_model_surface'), patch.object(
+        with patch.object(
+            relay, 'resolve_model_capability', return_value=SimpleNamespace(transport='ephemeral_token')
+        ), patch.object(relay, 'raise_if_gateway_feature_mode_blocks_direct_model_surface'), patch.object(
             relay, 'run_blocking', _passthrough_run_blocking
-        ), patch.object(relay, '_verify_ws_auth', return_value='u1'), patch.object(
+        ), patch.object(
+            relay, '_verify_ws_auth', return_value='u1'
+        ), patch.object(
             relay, 'extract_byok_from_websocket', return_value={}
         ), patch.object(
             relay, 'is_trial_paywalled', return_value=False
@@ -243,9 +248,13 @@ class TestOmniRelayGate:
         # BYOK key for THIS session's provider + genuine enrollment → exempt.
         # _upstream is forced to error so the handler exits right after the gate.
         ws = _fake_websocket(provider='gemini')
-        with patch.object(relay, 'raise_if_gateway_feature_mode_blocks_direct_model_surface'), patch.object(
+        with patch.object(
+            relay, 'resolve_model_capability', return_value=SimpleNamespace(transport='ephemeral_token')
+        ), patch.object(relay, 'raise_if_gateway_feature_mode_blocks_direct_model_surface'), patch.object(
             relay, 'run_blocking', _passthrough_run_blocking
-        ), patch.object(relay, '_verify_ws_auth', return_value='u1'), patch.object(
+        ), patch.object(
+            relay, '_verify_ws_auth', return_value='u1'
+        ), patch.object(
             relay, 'extract_byok_from_websocket', return_value={'gemini': 'sk-user'}
         ), patch.object(
             relay, 'set_byok_keys'
@@ -273,9 +282,13 @@ class TestOmniRelayGate:
         from models.users import PlanType
 
         ws = _fake_websocket(provider='gemini')
-        with patch.object(relay, 'raise_if_gateway_feature_mode_blocks_direct_model_surface'), patch.object(
+        with patch.object(
+            relay, 'resolve_model_capability', return_value=SimpleNamespace(transport='ephemeral_token')
+        ), patch.object(relay, 'raise_if_gateway_feature_mode_blocks_direct_model_surface'), patch.object(
             relay, 'run_blocking', _passthrough_run_blocking
-        ), patch.object(relay, '_verify_ws_auth', return_value='u1'), patch.object(
+        ), patch.object(
+            relay, '_verify_ws_auth', return_value='u1'
+        ), patch.object(
             relay, 'extract_byok_from_websocket', return_value={'deepgram': 'dg-user'}
         ), patch.object(
             relay, 'set_byok_keys'
@@ -297,9 +310,13 @@ class TestOmniRelayGate:
         from models.users import PlanType
 
         ws = _fake_websocket(provider='unsupported-provider')
-        with patch.object(relay, 'raise_if_gateway_feature_mode_blocks_direct_model_surface'), patch.object(
+        with patch.object(
+            relay, 'resolve_model_capability', return_value=SimpleNamespace(transport='ephemeral_token')
+        ), patch.object(relay, 'raise_if_gateway_feature_mode_blocks_direct_model_surface'), patch.object(
             relay, 'run_blocking', _passthrough_run_blocking
-        ), patch.object(relay, '_verify_ws_auth', return_value='u1'), patch.object(
+        ), patch.object(
+            relay, '_verify_ws_auth', return_value='u1'
+        ), patch.object(
             relay, 'extract_byok_from_websocket', return_value={}
         ), patch.object(
             relay, 'is_trial_paywalled', return_value=False

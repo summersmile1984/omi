@@ -63,7 +63,7 @@ for seg in result.segments:
 | `MOSS_API_KEY` | — | **必填**。api.mosi.cn 控制台生成 |
 | `MOSS_API_BASE` | `https://api.mosi.cn` | API base |
 | `MOSS_TIMEOUT_SECONDS` | `120` | 请求超时 |
-| `HOSTED_SPEAKER_EMBEDDING_API_URL` | — | 说话人 embedding 端点(默认走现有 diarizer `/v2/embedding`,CPU 兼容) |
+| `SPEAKER_EMBEDDING_API_URL` | — | 说话人 embedding HTTP 端点(`/v2/embedding`,CPU 兼容) |
 
 ## 接入现有路径
 

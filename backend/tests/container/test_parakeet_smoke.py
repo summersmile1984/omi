@@ -237,7 +237,7 @@ class TestGPUInference:
         from gpu_worker import GPUWorker
         from transcribe import _diarize_segments, set_gpu_worker
 
-        os.environ.pop("HOSTED_SPEAKER_EMBEDDING_API_URL", None)
+        os.environ.pop("SPEAKER_EMBEDDING_API_URL", None)
 
         worker = GPUWorker()
         worker.start()

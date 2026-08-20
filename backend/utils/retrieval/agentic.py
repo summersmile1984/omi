@@ -90,24 +90,24 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-class _PerplexityWebSearchToolProxy:
-    """Lazy adapter for the gateway-only web-search function tool.
+class _WebSearchToolProxy:
+    """Lazy adapter for the deployment-selected web-search function tool.
 
     Agentic unit tests intentionally load this module with a minimal LangChain
-    stub. Avoid importing the optional Perplexity tool module at import time,
-    while retaining the real LangChain tool and gateway implementation when a
+    stub. Avoid importing the optional web-search tool module at import time,
+    while retaining the real LangChain tool and selected implementation when a
     managed request actually executes it.
     """
 
-    name = 'perplexity_web_search_tool'
-    description = 'Search the web for current information using Perplexity AI.'
+    name = 'web_search_tool'
+    description = 'Search the web for current public information.'
 
     @property
     def args_schema(self):
         try:
-            from utils.retrieval.tools.perplexity_tools import perplexity_web_search_tool
+            from utils.retrieval.tools.web_search_tools import web_search_tool
 
-            return perplexity_web_search_tool.args_schema
+            return web_search_tool.args_schema
         except ModuleNotFoundError as error:
             if error.name != 'langchain_core.tools':
                 raise
@@ -123,12 +123,12 @@ class _PerplexityWebSearchToolProxy:
             return _FallbackArgsSchema
 
     async def ainvoke(self, tool_input, config=None):
-        from utils.retrieval.tools.perplexity_tools import perplexity_web_search_tool
+        from utils.retrieval.tools.web_search_tools import web_search_tool
 
-        return await perplexity_web_search_tool.ainvoke(tool_input, config=config)
+        return await web_search_tool.ainvoke(tool_input, config=config)
 
 
-perplexity_web_search_tool = _PerplexityWebSearchToolProxy()
+web_search_tool = _WebSearchToolProxy()
 
 
 def _positive_timeout_from_env(name: str, default: float) -> float:
@@ -1321,20 +1321,17 @@ IMPORTANT: Always search for and use these tools when relevant. Never tell the u
 You have fetch_url_tool available. When the user shares any URL (starting with http:// or https://), you MUST call fetch_url_tool to read its content before responding. Never say you cannot browse, visit, or read a URL. Always attempt to fetch it first.
 </url_fetching_instructions>"""
 
-    # Build the canonical tool schemas once. Direct mode keeps Anthropic's shape;
-    # managed mode converts function tools to the OpenAI-compatible shape below.
+    # Build the canonical tool schemas once. Web search is always replaced by
+    # the provider-neutral client tool so WEB_SEARCH_TRANSPORT remains the sole
+    # authority even when chat itself uses Anthropic's Messages protocol.
     tool_schemas, tool_registry = _convert_tools(core_tools, app_tools)
+    tool_registry = dict(tool_registry)
+    tool_registry[web_search_tool.name] = web_search_tool
+    tool_schemas = [
+        *(schema for schema in tool_schemas if schema.get('name') != WEB_SEARCH_TOOL['name']),
+        _langchain_tool_to_anthropic(web_search_tool, defer_loading=False),
+    ]
     if openai_compatible_agent_mode:
-        # Anthropic's native web_search server tool is not understood by the
-        # OpenAI-compatible gateway. Expose the existing Perplexity-backed
-        # function tool in the managed lane and register the same object for
-        # execution; direct Anthropic mode keeps the native server tool above.
-        tool_registry = dict(tool_registry)
-        tool_registry[perplexity_web_search_tool.name] = perplexity_web_search_tool
-        tool_schemas = [
-            *tool_schemas,
-            _langchain_tool_to_anthropic(perplexity_web_search_tool, defer_loading=False),
-        ]
         tool_schemas = _convert_anthropic_tools_to_openai(tool_schemas)
 
     # Build the provider-neutral role/content message shape. The current datetime is injected

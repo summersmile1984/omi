@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import httpx
 
-from utils.mimo_pipeline.mimo_client import MAX_AUDIO_BYTES, MimoClient, _guess_format
-from utils.mimo_pipeline.socket import _pcm16_to_wav
+from utils.mimo_pipeline.mimo_client import MAX_AUDIO_BYTES, MimoClient, infer_audio_format
+from utils.mimo_pipeline.socket import pcm16_to_wav
 from utils.stt.pre_recorded import PrerecordedSTTProvider
 
 _DOWNLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -40,12 +40,12 @@ class MimoPrerecordedProvider(PrerecordedSTTProvider):
         language: Optional[str],
     ) -> Tuple[List[Dict[str, Any]], str]:
         if _raw_pcm_encoding(encoding):
-            prepared = _pcm16_to_wav(audio_bytes, sample_rate, channels)
+            prepared = pcm16_to_wav(audio_bytes, sample_rate, channels)
             audio_format = 'wav'
             duration = len(audio_bytes) / max(1, 2 * channels * sample_rate)
         else:
             prepared = audio_bytes
-            audio_format = _guess_format('', encoding)
+            audio_format = infer_audio_format('', encoding)
             duration = 0.0
         result = self._client.transcribe_audio(prepared, audio_format=audio_format, language=language)
         return self._segments(result.text, duration or result.duration), language or 'multi'

@@ -30,6 +30,7 @@ from utils.llm.desktop_llm_stub import (
     stub_gemini_proxy_json,
     stub_gemini_proxy_stream_chunks,
 )
+from utils.llm.capabilities import resolve_model_capability
 from utils.observability.fallback import record_fallback
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_desktop_trial_paywalled
@@ -1241,6 +1242,9 @@ async def _proxy(request: Request, path: str, streaming: bool, uid: str) -> Resp
                 media_type='application/json',
                 headers=_response_headers(telemetry),
             )
+        capability = resolve_model_capability('desktop_vendor_proxy')
+        if not capability.selected:
+            raise HTTPException(status_code=503, detail=capability.unavailable_payload())
         telemetry.phase = 'metering'
         path = await _meter_server_request(uid, path, model, action)
         path = _retarget_path(*_path_parts(path))

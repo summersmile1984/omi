@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, cast
 from pydantic import BaseModel
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.executors import llm_executor, run_blocking
+from utils.llm.capabilities import ModelCapabilityUnavailableError, resolve_model_capability
 from utils.llm.clients import get_llm
 from utils.llm.gateway_client import generate_image_via_gateway
 
@@ -162,6 +163,12 @@ async def generate_app_icon(app_name: str, app_description: str, category: str) 
     Returns:
         PNG image bytes of the generated icon
     """
+    capability = resolve_model_capability('app_icon_generation')
+    if not capability.selected:
+        raise ModelCapabilityUnavailableError(
+            'app_icon_generation', capability.reason or 'not_configured', retryable=capability.retryable
+        )
+
     # Create a prompt for icon generation
     icon_prompt = f"""Create a modern, minimal app icon for an AI app called "{app_name}".
 

@@ -83,7 +83,7 @@ def _raise_for_error(resp: httpx.Response) -> None:
     raise MimoAPIError(f"MiMo ASR API {resp.status_code}: {detail}")
 
 
-def _guess_format(path_or_name: str, content_type: Optional[str] = None) -> str:
+def infer_audio_format(path_or_name: str, content_type: Optional[str] = None) -> str:
     """Map a file suffix / content type to the MiMo format token."""
     if content_type:
         ct = content_type.lower()
@@ -166,7 +166,7 @@ class MimoClient:
                 f"audio too large for MiMo ASR ({len(audio_bytes)} > {MAX_AUDIO_BYTES} bytes); "
                 "MiMo docs cap audio at 10MB — chunk it upstream"
             )
-        fmt = _guess_format(filename or "", content_type) if audio_format is None else audio_format
+        fmt = infer_audio_format(filename or "", content_type) if audio_format is None else audio_format
         audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
         messages = self._build_messages(audio_b64, fmt, language=language, instruction=instruction)
         payload: Dict[str, Any] = {

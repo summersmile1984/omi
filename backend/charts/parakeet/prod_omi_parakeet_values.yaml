@@ -124,7 +124,7 @@ env:
     value: "5.0"
   - name: PARAKEET_MAX_INFLIGHT
     value: "2"
-  - name: HOSTED_SPEAKER_EMBEDDING_API_URL
+  - name: SPEAKER_EMBEDDING_API_URL
     value: "http://prod-omi-diarizer.prod-omi-backend.svc.cluster.local:8080"
 
 terminationGracePeriodSeconds: 150

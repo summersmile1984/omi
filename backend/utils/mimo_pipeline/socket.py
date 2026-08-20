@@ -30,7 +30,7 @@ def mimo_available() -> bool:
     return bool(os.getenv("MIMO_API_KEY"))
 
 
-def _pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
+def pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
     """Wrap raw PCM16 little-endian audio in a WAV container (MiMo wants wav)."""
     with tempfile.SpooledTemporaryFile() as tmp:
         with wave.open(tmp, "wb") as w:
@@ -74,7 +74,7 @@ class MimoSttSocket(STTSocket):
             return
         self._finished = True
         try:
-            audio = _pcm16_to_wav(bytes(self._pcm), self._sample_rate, self._channels)
+            audio = pcm16_to_wav(bytes(self._pcm), self._sample_rate, self._channels)
             client = self._client or MimoClient()
             transcription = client.transcribe_audio(audio, audio_format="wav")
             text = (transcription.text or "").strip()

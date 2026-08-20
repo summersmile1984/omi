@@ -15,6 +15,7 @@ from pydantic import BaseModel, PrivateAttr, ValidationError
 
 from utils.http_client import get_llm_gateway_client, get_llm_gateway_semaphore
 from utils.llm.gateway_observability import record_direct_exception_surface, record_gateway_request_result
+from utils.llm.gateway_route_ids import LLM_GATEWAY_AUTO_LANE_PREFIX
 from utils.llm.gateway_resilience import gateway_circuit, gateway_transport_timeout, observe_gateway_first_byte
 from utils.llm.usage_tracker import get_current_context
 
@@ -22,7 +23,6 @@ LLM_GATEWAY_SERVICE_TOKEN_ENV_VAR = 'OMI_LLM_GATEWAY_SERVICE_TOKEN'
 LEGACY_LLM_GATEWAY_SERVICE_TOKEN_ENV_VAR = 'LLM_GATEWAY_SERVICE_TOKEN'
 LLM_GATEWAY_URL_ENV_VAR = 'OMI_LLM_GATEWAY_URL'
 DEFAULT_LLM_GATEWAY_URL = 'http://127.0.0.1:9080'
-LLM_GATEWAY_AUTO_LANE_PREFIX = 'omi:auto:'
 CHAT_STRUCTURED_AUTO_LANE_ID = 'omi:auto:chat-structured'
 CHAT_AGENT_AUTO_LANE_ID = 'omi:auto:chat-agent'
 PUBLIC_SHARED_CONVERSATION_CHAT_FEATURE = 'public_shared_conversation_chat'
@@ -122,10 +122,6 @@ def get_llm_gateway_service_token() -> str | None:
         if configured is not None and configured.strip():
             return configured.strip()
     return None
-
-
-def is_auto_lane_id(model_or_lane: object) -> bool:
-    return isinstance(model_or_lane, str) and model_or_lane.startswith(LLM_GATEWAY_AUTO_LANE_PREFIX)
 
 
 def feature_auto_lane_id(feature: str) -> str:

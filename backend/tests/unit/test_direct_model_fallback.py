@@ -31,6 +31,9 @@ class SequencedChatModel(BaseChatModel):
     def with_structured_output(self, _schema, *, include_raw=False, **_kwargs):
         return self
 
+    def bind_tools(self, _tools, *, tool_choice=None, **_kwargs):
+        return self
+
 
 def _fallback_model(primary: SequencedChatModel, fallback: SequencedChatModel) -> BoundedFallbackChatModel:
     return BoundedFallbackChatModel(
@@ -70,6 +73,24 @@ def test_direct_mode_preserves_bounded_fallback_after_structured_output_binding(
     result = _fallback_model(primary, fallback).with_structured_output({'type': 'object'}).invoke('hello')
 
     assert result.content == 'structured recovery'
+    assert primary.calls == 1
+    assert fallback.calls == 1
+
+
+def test_direct_mode_preserves_bounded_fallback_after_tool_binding():
+    primary = SequencedChatModel(model_name='primary', outcomes=[httpx.ReadTimeout('timed out')])
+    fallback = SequencedChatModel(model_name='fallback', outcomes=['tool recovery'])
+
+    result = (
+        _fallback_model(primary, fallback)
+        .bind_tools(
+            [{'type': 'function', 'function': {'name': 'capture', 'parameters': {'type': 'object'}}}],
+            tool_choice='auto',
+        )
+        .invoke('hello')
+    )
+
+    assert result.content == 'tool recovery'
     assert primary.calls == 1
     assert fallback.calls == 1
 

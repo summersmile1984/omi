@@ -14,6 +14,8 @@ os.environ.setdefault('ENCRYPTION_SECRET', 'omi_ZwB2ZNqB2HHpMK6wStk7sTpavJiPTFg7
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 import utils.other.chat_file as cf  # noqa: E402
 from utils.llm.gateway_client import LLM_GATEWAY_FEATURE_MODE_ENV_VAR  # noqa: E402
 
@@ -69,3 +71,19 @@ def test_upload_does_not_record_surface_outside_gateway_mode(monkeypatch, tmp_pa
 
     assert result['file_id'] == 'file-1'
     record.assert_not_called()
+
+
+def test_upload_is_typed_unavailable_before_openai_when_deployment_disables_file_chat(monkeypatch, tmp_path):
+    from utils.llm.capabilities import ModelCapabilityUnavailableError
+
+    monkeypatch.setenv('FILE_CHAT_TRANSPORT', 'disabled')
+    file_path = tmp_path / 'note.txt'
+    file_path.write_text('hello')
+    fake_files = SimpleNamespace(
+        create=lambda **_kwargs: (_ for _ in ()).throw(AssertionError('OpenAI must not be called'))
+    )
+
+    with patch.object(cf.openai, 'files', fake_files), pytest.raises(ModelCapabilityUnavailableError) as error:
+        cf.FileChatTool.upload(file_path)
+
+    assert error.value.as_dict()['reason'] == 'disabled_by_deployment'

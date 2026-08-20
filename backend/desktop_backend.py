@@ -17,6 +17,7 @@ from routers import (
     desktop_proxy,
     desktop_proactivity,
     desktop_realtime,
+    model_capabilities,
     desktop_screen_crisp,
     desktop_tts_updates,
 )
@@ -93,6 +94,7 @@ def _build_app() -> FastAPI:
     app.include_router(desktop_proxy.router)
     app.include_router(desktop_proactivity.router)
     app.include_router(desktop_realtime.router)
+    app.include_router(model_capabilities.router)
     app.include_router(desktop_screen_crisp.router)
     app.include_router(desktop_tts_updates.router)
     app.include_router(desktop_deprecated.router)

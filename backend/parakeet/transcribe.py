@@ -200,7 +200,7 @@ def transcribe_file_v2(
     return base
 
 
-SPEAKER_EMBEDDING_URL: str = os.getenv("HOSTED_SPEAKER_EMBEDDING_API_URL", "")
+SPEAKER_EMBEDDING_URL: str = os.getenv("SPEAKER_EMBEDDING_API_URL", "")
 SPEAKER_MATCH_THRESHOLD: float = float(os.getenv("PARAKEET_SPEAKER_THRESHOLD", "0.45"))
 MIN_SEGMENT_DURATION = 0.6
 

@@ -46,6 +46,7 @@ REVIEW_STATUS = {'reviewed', 'legacy_unreviewed', 'exempt'}
 ROUTE_TYPES = {'http', 'websocket'}
 AUTH_MECHANISMS = {
     'public',
+    'user_bearer_token',
     'firebase_id_token',
     'admin_key',
     'beta_promotion_token',

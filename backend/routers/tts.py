@@ -24,6 +24,7 @@ from utils.http_client import get_tts_client, get_tts_semaphore
 from utils.log_sanitizer import sanitize
 from utils.other import endpoints as auth
 from utils.executors import run_blocking, critical_executor
+from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,9 @@ async def tts_synthesize(
             status_code=400,
             detail=f"text exceeds maximum length of {_TTS_REQUEST_CHAR_LIMIT} characters",
         )
+
+    if tts_explicitly_disabled():
+        raise HTTPException(status_code=503, detail=TTS_DISABLED_DETAIL)
 
     api_key = os.getenv('ELEVENLABS_API_KEY')
     mimo_enabled = _is_mimo_enabled()

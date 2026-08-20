@@ -17,6 +17,7 @@ from pydantic import ValidationError
 import database.chat as chat_db
 from models.chat import ChatSession, FileChat
 from utils.executors import db_executor, llm_executor, run_blocking
+from utils.llm.capabilities import ModelCapabilityUnavailableError, resolve_model_capability
 from utils.llm.gateway_client import should_route_features_through_gateway
 from utils.llm.gateway_observability import record_direct_exception_surface
 import logging
@@ -90,6 +91,11 @@ def _record_direct_file_chat_surface() -> None:
     feature mode it stays an acknowledged direct surface: counted, never blocked.
     A misconfigured gateway rollout (should_route_features_through_gateway raising) must
     not block it either."""
+    capability = resolve_model_capability('file_chat')
+    if not capability.selected:
+        raise ModelCapabilityUnavailableError(
+            'file_chat', capability.reason or 'not_configured', retryable=capability.retryable
+        )
     try:
         routed = should_route_features_through_gateway()
     except RuntimeError:

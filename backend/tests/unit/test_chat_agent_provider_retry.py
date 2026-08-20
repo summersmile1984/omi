@@ -529,7 +529,7 @@ async def test_openai_compatible_route_selects_openai_agent_runner(agentic_mod):
     assert seen['system'].startswith('SYSTEM')
     assert '<url_fetching_instructions>' in seen['system']
     assert seen['messages'] == [{'role': 'user', 'content': 'hello'}]
-    assert [schema['function']['name'] for schema in seen['schemas']] == ['perplexity_web_search_tool']
+    assert [schema['function']['name'] for schema in seen['schemas']] == ['web_search_tool']
 
 
 async def test_anthropic_route_keeps_agentic_chat_on_anthropic_runner(agentic_mod):
@@ -545,8 +545,10 @@ async def test_anthropic_route_keeps_agentic_chat_on_anthropic_runner(agentic_mo
             return []
         raise AssertionError(f'unexpected blocking setup call: {function}')
 
-    async def direct_runner(_system, _messages, _schemas, _registry, callback, full_response, _guard, _configurable):
+    async def direct_runner(_system, _messages, schemas, registry, callback, full_response, _guard, _configurable):
         seen['direct'] = True
+        seen['schemas'] = schemas
+        seen['registry'] = registry
         full_response.append('direct answer')
         await callback.put_data('direct answer')
         await callback.end()
@@ -578,6 +580,8 @@ async def test_anthropic_route_keeps_agentic_chat_on_anthropic_runner(agentic_mo
 
     assert chunks == [f'think: {agentic_mod.AGENT_STREAM_SETUP_PROGRESS}', 'data: direct answer', None]
     assert seen['direct'] is True
+    assert [schema['name'] for schema in seen['schemas']] == ['web_search_tool']
+    assert list(seen['registry']) == ['web_search_tool']
 
 
 async def test_safety_guard_message_becomes_the_answer(agentic_mod):

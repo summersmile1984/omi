@@ -21,7 +21,7 @@ from utils.llm.model_config import (
     get_feature_route_manifest,
     resolve_feature_route,
 )
-from utils.retrieval.tools.perplexity_tools import perplexity_web_search_tool
+from utils.retrieval.tools.web_search_tools import web_search_tool
 
 OFFICIAL_MODEL_DOMAINS = (
     'api.openai.com',
@@ -163,11 +163,11 @@ async def test_disabled_web_search_never_calls_the_omi_gateway(monkeypatch):
         raise AssertionError('disabled self-host web search must not use the managed gateway')
 
     monkeypatch.setattr(
-        'utils.retrieval.tools.perplexity_tools._perplexity_gateway_search',
+        'utils.retrieval.tools.web_search_tools._gateway_search',
         forbidden_gateway_call,
     )
 
-    result = await perplexity_web_search_tool.ainvoke({'query': 'latest news'})
+    result = await web_search_tool.coroutine('latest news')
 
     assert json.loads(result) == {
         'code': 'model_capability_unavailable',
