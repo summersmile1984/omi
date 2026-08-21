@@ -84,9 +84,27 @@ payload. Background notification paths use the same gate before token lookup,
 including data-only reminders, important-conversation updates, and BYOK error
 alerts; they record the unavailable outcome and do not read tokens, initialize
 or call Firebase, or mark a notification as delivered. No generic webhook
-provider is implied by this profile. To add operator-owned delivery, implement
-and review a separate provider contract with explicit endpoint, authentication,
-TLS, retry, and delivery receipts before selecting it in `PUSH_PROVIDER`.
+provider is implied by this profile. `PUSH_PROVIDER=webhook` is deliberately
+reserved and rejected during startup; `PUSH_WEBHOOK_URL` or
+`PUSH_WEBHOOK_SECRET` are inert configuration and are never read by the
+checked-in runtime. This is a fail-closed boundary, not a claim that a generic
+HTTP POST delivered a mobile push.
+
+An operator-owned webhook may be added only as a separate reviewed provider
+contract. Its admission checklist is executable before implementation:
+
+- an explicit credential-free endpoint is required; public targets use HTTPS,
+  while private/loopback targets may use HTTP only with an explicit deployment
+  opt-in and DNS/IP pinning (no metadata, CGNAT, or arbitrary private target);
+- a secret-manager supplied signing secret is required, used for an HMAC
+  request signature, and must never appear in URLs, payloads, exceptions, or
+  logs;
+- requests use the shared bounded webhook client/semaphore and circuit breaker,
+  a short fixed timeout, and retries only for transport/429/5xx failures with
+  an idempotency key; permanent failures must not be reported as delivered;
+- the receiver contract maps operator user/device identities and returns a
+  verifiable delivery receipt. Without that contract the stable typed
+  `deployment_capability_unavailable` response remains the only valid outcome.
 
 `GET /v1/model-capabilities/realtime` and `POST /v2/realtime/session` report the
 same relay selection. The client then connects to
