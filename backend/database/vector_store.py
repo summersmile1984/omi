@@ -13,7 +13,27 @@ import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
-from qdrant_client import QdrantClient, models  # pyright: ignore[reportMissingImports]
+try:
+    from qdrant_client import QdrantClient, models  # pyright: ignore[reportMissingImports]
+except ModuleNotFoundError:  # Qdrant is an optional deployment adapter.
+    QdrantClient: Any = None
+    models: Any = None
+
+
+def _load_qdrant_models() -> Any:
+    """Load the optional Qdrant SDK only when a Qdrant operation is selected."""
+
+    global QdrantClient, models
+    if models is not None and QdrantClient is not None:
+        return models
+    try:
+        from qdrant_client import QdrantClient as qdrant_client, models as qdrant_models
+    except ModuleNotFoundError as exc:
+        raise RuntimeError('Qdrant vector-store adapter requires the qdrant-client package') from exc
+    QdrantClient = qdrant_client
+    models = qdrant_models
+    return models
+
 
 _ORIGINAL_ID_PAYLOAD_KEY = '__omi_vector_id'
 _COLLECTION_COMPONENT = re.compile(r'[^a-zA-Z0-9_-]+')
@@ -139,11 +159,12 @@ class QdrantVectorStoreAdapter:
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f'omi-vector:{collection}:{vector_id}'))
 
     def _ensure_collection(self, collection: str, dimension: int) -> None:
+        qdrant_models = _load_qdrant_models()
         if self._client.collection_exists(collection):
             return
         self._client.create_collection(
             collection_name=collection,
-            vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
+            vectors_config=qdrant_models.VectorParams(size=dimension, distance=qdrant_models.Distance.COSINE),
         )
 
     def upsert(self, *, vectors: Sequence[Mapping[str, Any]], namespace: str) -> Any:
@@ -182,6 +203,7 @@ class QdrantVectorStoreAdapter:
         include_values: bool = False,
         filter: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
+        _load_qdrant_models()
         collection = self._collection(namespace)
         if not self._client.collection_exists(collection):
             return {'matches': []}
@@ -210,15 +232,16 @@ class QdrantVectorStoreAdapter:
         ids: Sequence[str] | None = None,
         filter: Mapping[str, Any] | None = None,
     ) -> Any:
+        qdrant_models = _load_qdrant_models()
         collection = self._collection(namespace)
         if not self._client.collection_exists(collection):
             return {'deleted_count': 0}
         if ids is not None:
-            selector: Any = models.PointIdsList(
+            selector: Any = qdrant_models.PointIdsList(
                 points=[self._point_id(collection, str(vector_id)) for vector_id in ids]
             )
         elif filter is not None:
-            selector = models.FilterSelector(filter=_qdrant_filter(filter) or models.Filter())
+            selector = qdrant_models.FilterSelector(filter=_qdrant_filter(filter) or qdrant_models.Filter())
         else:
             raise ValueError('Qdrant delete requires ids or filter')
         result = self._client.delete(collection_name=collection, points_selector=selector, wait=True)
@@ -262,6 +285,7 @@ class QdrantVectorStoreAdapter:
                 break
 
     def count(self, *, namespace: str, filter: Mapping[str, Any]) -> int:
+        _load_qdrant_models()
         collection = self._collection(namespace)
         if not self._client.collection_exists(collection):
             return 0
@@ -295,6 +319,7 @@ class QdrantVectorStoreAdapter:
 
 
 def create_qdrant_vector_store_from_env() -> QdrantVectorStoreAdapter:
+    _load_qdrant_models()
     url = os.getenv('QDRANT_URL', '').strip()
     path = os.getenv('QDRANT_PATH', '').strip()
     api_key = os.getenv('QDRANT_API_KEY', '').strip() or None
@@ -318,6 +343,7 @@ def _collection_name(value: str) -> str:
 
 
 def _qdrant_filter(raw: Mapping[str, Any] | None) -> models.Filter | None:
+    qdrant_models = _load_qdrant_models()
     if not raw:
         return None
     must: list[Any] = []
@@ -341,8 +367,9 @@ def _qdrant_filter(raw: Mapping[str, Any] | None) -> models.Filter | None:
 
 
 def _qdrant_field_condition(key: str, value: Any) -> tuple[Any, bool]:
+    qdrant_models = _load_qdrant_models()
     if not isinstance(value, Mapping):
-        return models.FieldCondition(key=key, match=models.MatchValue(value=value)), False
+        return qdrant_models.FieldCondition(key=key, match=qdrant_models.MatchValue(value=value)), False
     if '$in' in value:
         return models.FieldCondition(key=key, match=models.MatchAny(any=list(value['$in']))), False
     if '$nin' in value:
