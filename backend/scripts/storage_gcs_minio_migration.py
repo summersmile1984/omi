@@ -930,8 +930,7 @@ class GcsSource:
     def __init__(self, *, project: str, credentials_path: Path, endpoint: str) -> None:
         if not project.strip():
             raise StorageMigrationError('source project must be explicit')
-        if not credentials_path.is_file():
-            raise StorageMigrationError('source credentials file is missing')
+        _require_private_file(credentials_path, 'source credentials file')
         from google.cloud import storage  # pyright: ignore[reportAttributeAccessIssue]
         from google.oauth2 import service_account  # pyright: ignore[reportMissingImports]
 
