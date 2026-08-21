@@ -73,6 +73,28 @@ class _Collections:
         return schema
 
 
+class _Aliases:
+    def __init__(self, collections):
+        self.collections = collections
+        self.values: dict[str, dict[str, str]] = {}
+
+    def __getitem__(self, name):
+        aliases = self.values
+
+        class _Alias:
+            def retrieve(self):
+                if name not in aliases:
+                    raise ObjectNotFound()
+                return dict(aliases[name])
+
+        return _Alias()
+
+    def upsert(self, name, mapping):
+        self.values[name] = dict(mapping)
+        self.collections.values[name] = self.collections.values[mapping['collection_name']]
+        return dict(mapping)
+
+
 class _Snapshot:
     def __init__(self, uid: str, conversation_id: str, data: dict):
         self.id = conversation_id
@@ -151,7 +173,8 @@ def projection(monkeypatch):
     monkeypatch.setenv(index.CONVERSATION_COLLECTION_ENV, 'test_conversations')
     monkeypatch.setenv('TYPESENSE_HOST', 'typesense')
     monkeypatch.setenv('TYPESENSE_API_KEY', 'test-key')
-    client = SimpleNamespace(collections=_Collections())
+    collections = _Collections()
+    client = SimpleNamespace(collections=collections, aliases=_Aliases(collections))
     with patch.object(index, '_typesense_client', return_value=client):
         yield client
 
@@ -268,6 +291,14 @@ def test_bulk_rebuild_and_count_hash_reconciliation_detect_drift(projection):
     assert report.matches is True
     assert report.expected_count == report.actual_count == 2
     assert report.expected_hash == report.actual_hash
+    first_shadow = projection.aliases.values['test_conversations']['collection_name']
+    assert first_shadow.startswith('test_conversations__shadow_')
+    assert first_shadow in projection.collections.values
+
+    assert index.rebuild_conversation_index(firestore_client=firestore, batch_size=1) == 2
+    second_shadow = projection.aliases.values['test_conversations']['collection_name']
+    assert second_shadow != first_shadow
+    assert projection.collections.values[first_shadow].documents.rows
 
     documents = projection.collections['test_conversations'].documents
     next(iter(documents.rows.values()))['content_hash'] = 'drift'

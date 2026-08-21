@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, Optional, cast
@@ -91,9 +92,9 @@ def _is_object_not_found(exc: BaseException) -> bool:
     return type(exc).__name__ == 'ObjectNotFound' or getattr(exc, 'status_code', None) == 404
 
 
-def _schema() -> Dict[str, Any]:
+def _schema(collection_name: str | None = None) -> Dict[str, Any]:
     return {
-        'name': conversations_collection_name(),
+        'name': collection_name or conversations_collection_name(),
         'fields': [
             {'name': 'conversation_id', 'type': 'string'},
             {'name': 'userId', 'type': 'string', 'facet': True},
@@ -124,8 +125,10 @@ def ensure_conversations_collection() -> Dict[str, Any]:
     require_typesense_projection()
     expected = _schema()
     collection_name = conversations_collection_name()
+    alias_target = _conversation_alias_target(collection_name)
+    inspected_name = alias_target or collection_name
     try:
-        actual = cast(Dict[str, Any], _typesense_client().collections[collection_name].retrieve())
+        actual = cast(Dict[str, Any], _typesense_client().collections[inspected_name].retrieve())
     except Exception as exc:
         if not _is_object_not_found(exc):
             raise ConversationIndexUnavailableError('unable to inspect conversation Typesense schema') from exc
@@ -142,6 +145,24 @@ def ensure_conversations_collection() -> Dict[str, Any]:
             f'Typesense collection {collection_name!r} does not match conversation schema v{SCHEMA_VERSION}'
         )
     return actual
+
+
+def _conversation_alias_target(alias_name: str) -> str | None:
+    """Resolve an active Typesense alias without making aliases mandatory at bootstrap."""
+    client = _typesense_client()
+    aliases = getattr(client, 'aliases', None)
+    if aliases is None:
+        return None
+    try:
+        mapping = aliases[alias_name].retrieve()
+    except Exception as exc:
+        if _is_object_not_found(exc):
+            return None
+        raise ConversationIndexUnavailableError('unable to inspect conversation Typesense alias') from exc
+    target = mapping.get('collection_name') if isinstance(mapping, dict) else None
+    if not isinstance(target, str) or not target.strip():
+        raise ConversationIndexSchemaError(f'Typesense alias {alias_name!r} has no collection target')
+    return target
 
 
 def _epoch(value: Any, fallback: int = 0) -> int:
@@ -317,34 +338,47 @@ def _import_results(value: Any) -> Iterable[Dict[str, Any]]:
 
 
 def rebuild_conversation_index(*, firestore_client: Any = None, batch_size: int = 200) -> int:
-    """Replace the entire self-host projection using Typesense bulk import."""
+    """Build, reconcile, and atomically publish a shadow Typesense collection."""
     if batch_size < 1:
         raise ValueError('batch_size must be positive')
     require_typesense_projection()
     collection_name = conversations_collection_name()
-    # Recreate rather than filter-delete: a stale/incompatible schema may not
-    # have schema_version at all, and a filtered clear could retain precisely
-    # the unexpected documents a full rebuild is meant to eliminate.
+    shadow_name = f'{collection_name}__shadow_{uuid.uuid4().hex[:12]}'
+    client = _typesense_client()
     try:
-        _typesense_client().collections[collection_name].delete()
+        client.collections.create(_schema(shadow_name))
     except Exception as exc:
-        if not _is_object_not_found(exc):
-            raise ConversationIndexUnavailableError('unable to replace conversation Typesense collection') from exc
+        raise ConversationIndexUnavailableError('unable to create conversation Typesense shadow collection') from exc
     try:
-        _typesense_client().collections.create(_schema())
-    except Exception as exc:
-        raise ConversationIndexUnavailableError('unable to recreate conversation Typesense collection') from exc
-    documents_api = _typesense_client().collections[conversations_collection_name()].documents
-    total = 0
-    batch: list[Dict[str, Any]] = []
-    for document in _iter_source_documents(firestore_client):
-        batch.append(document)
-        if len(batch) >= batch_size:
+        documents_api = client.collections[shadow_name].documents
+        total = 0
+        batch: list[Dict[str, Any]] = []
+        for document in _iter_source_documents(firestore_client):
+            batch.append(document)
+            if len(batch) >= batch_size:
+                total += _import_batch(documents_api, batch)
+                batch = []
+        if batch:
             total += _import_batch(documents_api, batch)
-            batch = []
-    if batch:
-        total += _import_batch(documents_api, batch)
-    return total
+        report = _reconcile_conversation_collection(shadow_name, firestore_client=firestore_client)
+        if not report.matches:
+            raise ConversationIndexUnavailableError('conversation Typesense shadow reconciliation failed')
+        aliases = getattr(client, 'aliases', None)
+        if aliases is None:
+            raise ConversationIndexUnavailableError('Typesense aliases API is required for atomic conversation rebuild')
+        try:
+            aliases.upsert(collection_name, {'collection_name': shadow_name})
+        except Exception as exc:
+            raise ConversationIndexUnavailableError(
+                'unable to atomically publish conversation Typesense alias'
+            ) from exc
+        return total
+    except Exception:
+        try:
+            client.collections[shadow_name].delete()
+        except Exception:
+            pass
+        raise
 
 
 def _import_batch(documents_api: Any, batch: list[Dict[str, Any]]) -> int:
@@ -366,9 +400,18 @@ def _digest(items: Dict[str, str]) -> str:
 def reconcile_conversation_index(*, firestore_client: Any = None) -> ConversationIndexReconciliation:
     """Compare authoritative Firestore count/hash with the Typesense export."""
     ensure_conversations_collection()
+    return _reconcile_conversation_collection(conversations_collection_name(), firestore_client=firestore_client)
+
+
+def _reconcile_conversation_collection(
+    collection_name: str,
+    *,
+    firestore_client: Any = None,
+) -> ConversationIndexReconciliation:
+    """Compare authority against one physical collection or active alias."""
     expected = {str(doc['id']): str(doc['content_hash']) for doc in _iter_source_documents(firestore_client)}
     try:
-        exported = _typesense_client().collections[conversations_collection_name()].documents.export()
+        exported = _typesense_client().collections[collection_name].documents.export()
     except Exception as exc:
         raise ConversationIndexUnavailableError('unable to export conversation Typesense projection') from exc
     actual: Dict[str, str] = {}
