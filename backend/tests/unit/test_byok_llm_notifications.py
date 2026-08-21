@@ -318,3 +318,19 @@ def test_handle_llm_error_batches_sends_over_500_tokens(
     assert batch_sizes == [500, 100]
     assert all(size <= 500 for size in batch_sizes)
     mock_release.assert_not_called()
+
+
+def test_neutral_profile_does_not_fallback_to_firebase_for_byok_error(monkeypatch):
+    """The BYOK error path must share the neutral push default and stop before token I/O."""
+    import utils.llm.byok_errors as byok_errors
+
+    monkeypatch.delenv('PUSH_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self-hosted')
+    with patch.object(byok_errors.notification_db, 'get_all_tokens') as get_tokens, patch.object(
+        byok_errors.messaging, 'send_each'
+    ) as send_each, patch.object(byok_errors, 'try_acquire_byok_llm_error_notification_lock') as acquire_lock:
+        byok_errors._send_byok_llm_error_notification('user-1', 'openai', 'quota')
+
+    get_tokens.assert_not_called()
+    send_each.assert_not_called()
+    acquire_lock.assert_not_called()

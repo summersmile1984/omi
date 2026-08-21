@@ -186,3 +186,13 @@ def test_disabled_push_provider_blocks_async_data_only_sender(monkeypatch) -> No
         assert result is False
         notification_db.get_all_tokens.assert_not_called()
         messaging.send_each.assert_not_called()
+
+
+def test_disabled_push_provider_blocks_important_conversation_token_read(monkeypatch) -> None:
+    """Every data-only helper must reach the provider gate before reading tokens."""
+    monkeypatch.setenv('PUSH_PROVIDER', 'disabled')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        notifications.send_important_conversation_message('user-1', 'conversation-1')
+
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()

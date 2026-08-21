@@ -74,6 +74,20 @@ The backend also exposes two authenticated desktop model boundaries:
   is reported but cannot borrow another provider's key or block a configured
   primary.
 
+Push is an explicit optional capability. The checked-in self-host profile sets
+`PUSH_PROVIDER=disabled`; an omitted value in a neutral/self-hosted profile has
+the same result, even when Firebase credentials happen to be present in the
+process environment. The FCM token-registration and notification endpoints
+return HTTP 503 with the stable
+`deployment_capability_unavailable/push_notifications/disabled_by_deployment`
+payload. Background notification paths use the same gate before token lookup,
+including data-only reminders, important-conversation updates, and BYOK error
+alerts; they record the unavailable outcome and do not read tokens, initialize
+or call Firebase, or mark a notification as delivered. No generic webhook
+provider is implied by this profile. To add operator-owned delivery, implement
+and review a separate provider contract with explicit endpoint, authentication,
+TLS, retry, and delivery receipts before selecting it in `PUSH_PROVIDER`.
+
 `GET /v1/model-capabilities/realtime` and `POST /v2/realtime/session` report the
 same relay selection. The client then connects to
 `/v1/model-capabilities/realtime/relay` with its Bearer token and WebSocket
