@@ -16,10 +16,10 @@ CONFIG_CHECKER="$REPO_ROOT/.github/scripts/check_self_host_deployment.py"
 APPLICATION_SERVICES=(queue-worker backend auth-server)
 STATE_SERVICES=(postgres redis minio qdrant typesense searxng)
 STATE_ARCHIVES=(redis minio qdrant typesense backend)
-ARCHIVE_FILES=(postgres.dump redis.tar.gz minio.tar.gz qdrant.tar.gz typesense.tar.gz backend.tar.gz)
+ARCHIVE_FILES=(postgres.dump.enc redis.tar.gz.enc minio.tar.gz.enc qdrant.tar.gz.enc typesense.tar.gz.enc backend.tar.gz.enc)
 
 usage() {
-  echo "usage: SELF_HOST_ENV=... $0 <self-check|start|status|runtime-evidence|metrics|backup DIR|verify-backup DIR|restore DIR|rollback-plan DIR>" >&2
+  echo "usage: SELF_HOST_ENV=... SELF_HOST_BACKUP_KEY_FILE=... $0 <self-check|start|status|runtime-evidence|metrics|backup DIR|verify-backup DIR|restore DIR|rollback-plan DIR>" >&2
 }
 
 compose() {
@@ -55,17 +55,14 @@ migration_fingerprint() {
 }
 
 verify_backup() {
-  local directory runtime_sha256 config_sha256 migration_sha256
+  local directory runtime_sha256 config_sha256 migration_sha256 key_file
   require_runtime
   directory="$(absolute_directory "$1")"
+  key_file="$(backup_key_file)"
   runtime_sha256="$(runtime_fingerprint)"
   config_sha256="$(effective_config_sha256)"
   migration_sha256="$(migration_fingerprint)"
-  "$PY" "$SNAPSHOT_TOOL" verify "$directory" \
-    --expected-files "${ARCHIVE_FILES[@]}" \
-    --expected-runtime-fingerprint "$runtime_sha256" \
-    --expected-config-fingerprint "$config_sha256" \
-    --expected-migration-fingerprint "$migration_sha256"
+  verify_snapshot "$directory" "$key_file" "$runtime_sha256" "$config_sha256" "$migration_sha256"
 }
 
 require_runtime() {
@@ -85,6 +82,25 @@ absolute_directory() {
   printf '%s\n' "$path"
 }
 
+backup_key_file() {
+  local key_file="${SELF_HOST_BACKUP_KEY_FILE:-}" mode
+  [[ -n "$key_file" && "$key_file" == /* && "$key_file" != "/" ]] || {
+    echo "error: SELF_HOST_BACKUP_KEY_FILE must be an absolute path to a private key file" >&2
+    exit 1
+  }
+  [[ -f "$key_file" && ! -L "$key_file" ]] || {
+    echo "error: SELF_HOST_BACKUP_KEY_FILE is missing or is a symlink" >&2
+    exit 1
+  }
+  mode="$(stat -f '%Lp' "$key_file" 2>/dev/null || true)"
+  [[ "$mode" == 600 ]] || mode="$(stat -c '%a' "$key_file" 2>/dev/null || true)"
+  [[ "$mode" == 600 ]] || {
+    echo "error: SELF_HOST_BACKUP_KEY_FILE must be mode 0600" >&2
+    exit 1
+  }
+  printf '%s\n' "$key_file"
+}
+
 volume_name() {
   local service="$1" destination="$2" container volume
   container="$(compose ps --all --quiet "$service")"
@@ -99,7 +115,8 @@ helper_image() {
 }
 
 snapshot_volume() {
-  local mode="$1" service="$2" destination="$3" archive="$4" volume image state_mode backup_mode
+  local mode="$1" service="$2" destination="$3" archive="$4" key_file volume image state_mode backup_mode
+  key_file="$(backup_key_file)"
   volume="$(volume_name "$service" "$destination")"
   image="$(helper_image)"
   state_mode=ro
@@ -111,8 +128,62 @@ snapshot_volume() {
   docker run --rm --user 0 \
     --volume "$volume:/state:$state_mode" \
     --volume "$OPS_DIR:/ops:ro" \
+    --volume "$key_file:/backup-key/key:ro" \
     --volume "$(dirname "$archive"):/backup:$backup_mode" \
-    "$image" python /ops/volume-snapshot.py "$mode" /state "/backup/$(basename "$archive")"
+    "$image" python /ops/volume-snapshot.py "$mode" /state "/backup/$(basename "$archive")" --key-file /backup-key/key
+}
+
+seal_stdin() {
+  local archive="$1" key_file image
+  key_file="$(backup_key_file)"
+  image="$(helper_image)"
+  docker run --rm --interactive --user 0 \
+    --volume "$OPS_DIR:/ops:ro" \
+    --volume "$key_file:/backup-key/key:ro" \
+    --volume "$(dirname "$archive"):/backup:rw" \
+    "$image" python /ops/volume-snapshot.py seal-stdin "/backup/$(basename "$archive")" --key-file /backup-key/key
+}
+
+write_snapshot_manifest() {
+  local directory="$1" git_sha="$2" runtime_sha256="$3" config_sha256="$4" migration_sha256="$5" image
+  image="$(helper_image)"
+  docker run --rm --user 0 \
+    --volume "$OPS_DIR:/ops:ro" \
+    --volume "$directory:/backup:rw" \
+    "$image" python /ops/volume-snapshot.py manifest /backup \
+      --git-sha "$git_sha" \
+      --runtime-fingerprint "$runtime_sha256" \
+      --config-fingerprint "$config_sha256" \
+      --migration-fingerprint "$migration_sha256" \
+      "${ARCHIVE_FILES[@]}"
+}
+
+verify_snapshot() {
+  local directory="$1" key_file="$2" runtime_sha256="$3" config_sha256="$4" migration_sha256="$5" image
+  image="$(helper_image)"
+  docker run --rm --user 0 \
+    --volume "$OPS_DIR:/ops:ro" \
+    --volume "$key_file:/backup-key/key:ro" \
+    --volume "$directory:/backup:ro" \
+    "$image" python /ops/volume-snapshot.py verify /backup \
+      --expected-files "${ARCHIVE_FILES[@]}" \
+      --expected-runtime-fingerprint "$runtime_sha256" \
+      --expected-config-fingerprint "$config_sha256" \
+      --expected-migration-fingerprint "$migration_sha256" \
+      --key-file /backup-key/key
+}
+
+open_snapshot() {
+  local archive="$1" plaintext="$2" key_file="$3" image
+  image="$(helper_image)"
+  docker run --rm --user 0 \
+    --volume "$OPS_DIR:/ops:ro" \
+    --volume "$key_file:/backup-key/key:ro" \
+    --volume "$(dirname "$archive"):/backup:rw" \
+    "$image" python /ops/volume-snapshot.py open \
+      "/backup/$(basename "$archive")" \
+      "/backup/$(basename "$plaintext")" \
+      --key-file /backup-key/key
 }
 
 start_profile() {
@@ -164,8 +235,15 @@ runtime_evidence() {
 }
 
 backup_state() {
-  local directory git_sha runtime_sha256 config_sha256 migration_sha256
+  local directory git_sha runtime_sha256 config_sha256 migration_sha256 key_file
   directory="$(absolute_directory "$1")"
+  key_file="$(backup_key_file)"
+  case "$key_file" in
+    "$directory"/*)
+      echo "error: backup key must be stored outside the backup directory" >&2
+      exit 1
+      ;;
+  esac
   mkdir -p "$directory"
   [[ -z "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
     echo "error: backup directory must be empty: $directory" >&2
@@ -175,49 +253,51 @@ backup_state() {
   compose stop "${APPLICATION_SERVICES[@]}"
   trap 'start_profile >/dev/null 2>&1 || true' EXIT INT TERM
 
-  compose exec -T postgres sh -ec 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner' >"$directory/postgres.dump"
+  compose exec -T postgres sh -ec 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner' \
+    | seal_stdin "$directory/postgres.dump.enc"
   compose exec -T redis redis-cli SAVE >/dev/null
   compose stop redis minio qdrant typesense
-  snapshot_volume backup redis /data "$directory/redis.tar.gz"
-  snapshot_volume backup minio /data "$directory/minio.tar.gz"
-  snapshot_volume backup qdrant /qdrant/storage "$directory/qdrant.tar.gz"
-  snapshot_volume backup typesense /data "$directory/typesense.tar.gz"
-  snapshot_volume backup backend /app/syncing "$directory/backend.tar.gz"
+  snapshot_volume backup redis /data "$directory/redis.tar.gz.enc"
+  snapshot_volume backup minio /data "$directory/minio.tar.gz.enc"
+  snapshot_volume backup qdrant /qdrant/storage "$directory/qdrant.tar.gz.enc"
+  snapshot_volume backup typesense /data "$directory/typesense.tar.gz.enc"
+  snapshot_volume backup backend /app/syncing "$directory/backend.tar.gz.enc"
 
   git_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   runtime_sha256="$(runtime_fingerprint)"
   config_sha256="$(effective_config_sha256)"
   migration_sha256="$(migration_fingerprint)"
-  "$PY" "$SNAPSHOT_TOOL" manifest "$directory" \
-    --git-sha "$git_sha" \
-    --runtime-fingerprint "$runtime_sha256" \
-    --config-fingerprint "$config_sha256" \
-    --migration-fingerprint "$migration_sha256" \
-    "${ARCHIVE_FILES[@]}"
+  write_snapshot_manifest "$directory" "$git_sha" "$runtime_sha256" "$config_sha256" "$migration_sha256"
   start_profile
   trap - EXIT INT TERM
   echo "backup OK: $directory"
 }
 
 restore_state() {
-  local directory
+  local directory key_file postgres_restore
   directory="$(absolute_directory "$1")"
   [[ "${SELF_HOST_RESTORE_ACK:-}" == "I_ACKNOWLEDGE_THIS_OVERWRITES_STATE" ]] || {
     echo "error: restore requires SELF_HOST_RESTORE_ACK=I_ACKNOWLEDGE_THIS_OVERWRITES_STATE" >&2
     exit 1
   }
+  key_file="$(backup_key_file)"
   verify_backup "$directory"
   compose stop queue-worker backend auth-server auth-migrate firestore-pg-migrate searxng typesense redis minio qdrant postgres || true
-  snapshot_volume restore redis /data "$directory/redis.tar.gz"
-  snapshot_volume restore minio /data "$directory/minio.tar.gz"
-  snapshot_volume restore qdrant /qdrant/storage "$directory/qdrant.tar.gz"
-  snapshot_volume restore typesense /data "$directory/typesense.tar.gz"
-  snapshot_volume restore backend /app/syncing "$directory/backend.tar.gz"
+  snapshot_volume restore redis /data "$directory/redis.tar.gz.enc"
+  snapshot_volume restore minio /data "$directory/minio.tar.gz.enc"
+  snapshot_volume restore qdrant /qdrant/storage "$directory/qdrant.tar.gz.enc"
+  snapshot_volume restore typesense /data "$directory/typesense.tar.gz.enc"
+  snapshot_volume restore backend /app/syncing "$directory/backend.tar.gz.enc"
   compose up --detach --wait postgres
   # pg_restore --clean only drops objects named in the archive. Recreate the
   # database so objects created after the backup cannot survive the rollback.
   compose exec -T postgres sh -ec 'dropdb -U "$POSTGRES_USER" --force --if-exists -- "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O "$POSTGRES_USER" -- "$POSTGRES_DB"'
-  compose exec -T postgres sh -ec 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner' <"$directory/postgres.dump"
+  postgres_restore="$directory/.postgres.dump.restore"
+  trap 'rm -f "$postgres_restore"' EXIT INT TERM
+  open_snapshot "$directory/postgres.dump.enc" "$postgres_restore" "$key_file"
+  compose exec -T postgres sh -ec 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner' <"$postgres_restore"
+  rm -f "$postgres_restore"
+  trap - EXIT INT TERM
   start_profile
   echo "restore OK: $directory"
 }
