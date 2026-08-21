@@ -1704,6 +1704,28 @@ class SelfHostOperationsTest(unittest.TestCase):
                     key_file,
                 )
 
+    def test_restore_works_with_read_only_backup_directory(self) -> None:
+        """The operations restore container mounts the operator backup read-only."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = self._key_file(root)
+            source = root / 'state'
+            source.mkdir()
+            (source / 'record.json').write_text('{"version":1}\n', encoding='utf-8')
+            backup_directory = root / 'backup'
+            backup_directory.mkdir()
+            archive = backup_directory / 'state.tar.gz.enc'
+            SNAPSHOT.backup(source, archive, key_file)
+
+            source.joinpath('record.json').write_text('corrupt\n', encoding='utf-8')
+            backup_directory.chmod(0o500)
+            try:
+                SNAPSHOT.restore(source, archive, key_file)
+            finally:
+                backup_directory.chmod(0o700)
+            self.assertEqual((source / 'record.json').read_text(encoding='utf-8'), '{"version":1}\n')
+
     def test_restore_rejects_archive_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

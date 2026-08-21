@@ -243,8 +243,17 @@ def _verify_envelope(path: Path, key: bytes) -> None:
 
 
 @contextmanager
-def _decrypted_temp(path: Path, key: bytes):
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.restore', dir=path.parent)
+def _decrypted_temp(path: Path, key: bytes, directory: Path):
+    """Materialize authenticated plaintext in a writable, private staging dir.
+
+    Restore mounts the backup directory read-only.  Keeping the temporary
+    plaintext beside the encrypted artifact therefore makes a valid restore
+    fail before tar validation.  The caller-owned staging directory is
+    writable and is removed after extraction, so the decrypted stream never
+    needs write access to the operator backup directory.
+    """
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.restore', dir=directory)
     temporary = Path(temporary_name)
     os.fchmod(descriptor, 0o600)
     try:
@@ -297,7 +306,7 @@ def restore(source: Path, archive_path: Path, key_file: Path) -> None:
     source.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f'.{source.name}.restore-', dir=source.parent))
     try:
-        with _decrypted_temp(archive_path, key) as plaintext:
+        with _decrypted_temp(archive_path, key, staging) as plaintext:
             with tarfile.open(plaintext, 'r:gz') as archive:
                 members = _safe_members(archive)
                 archive.extractall(staging, members=members)
