@@ -882,3 +882,42 @@ def test_pkce_rejects_malformed_values():
         pass
     else:
         raise AssertionError('non-ASCII verifier should fail closed')
+
+
+def test_managed_mcp_resource_keeps_historical_default():
+    resource, reason = mcp_oauth.resolve_mcp_resource_url({'OMI_DEPLOYMENT_PROFILE': ''})
+
+    assert resource == mcp_oauth.PRODUCTION_MCP_RESOURCE_URL
+    assert reason is None
+
+
+def test_neutral_mcp_resource_requires_operator_authority_and_never_uses_omi():
+    missing, missing_reason = mcp_oauth.resolve_mcp_resource_url({'OMI_DEPLOYMENT_PROFILE': 'self_hosted'})
+    derived, derived_reason = mcp_oauth.resolve_mcp_resource_url(
+        {'OMI_DEPLOYMENT_PROFILE': 'neutral', 'PUBLIC_MCP_URL': 'https://mcp.example.test'}
+    )
+    rejected, rejected_reason = mcp_oauth.resolve_mcp_resource_url(
+        {'OMI_DEPLOYMENT_PROFILE': 'self-hosted', 'MCP_RESOURCE_URL': mcp_oauth.PRODUCTION_MCP_RESOURCE_URL}
+    )
+
+    assert (missing, missing_reason) == ('', 'mcp_resource_url_not_configured')
+    assert (derived, derived_reason) == ('https://mcp.example.test/v1/mcp/sse', None)
+    assert (rejected, rejected_reason) == ('', 'invalid_mcp_resource_url')
+
+
+def test_mcp_resource_call_boundary_reloads_profile_and_returns_typed_unavailable(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'neutral')
+    monkeypatch.delenv('MCP_RESOURCE_URL', raising=False)
+    monkeypatch.delenv('PUBLIC_MCP_URL', raising=False)
+
+    with pytest.raises(mcp_oauth.MCPResourceUnavailable) as error:
+        mcp_oauth.require_mcp_resource_url()
+    assert error.value.as_dict() == {
+        'code': 'deployment_capability_unavailable',
+        'capability': 'mcp_oauth',
+        'reason': 'mcp_resource_url_not_configured',
+        'retryable': False,
+    }
+
+    monkeypatch.setenv('PUBLIC_MCP_URL', 'https://operator-mcp.example.test')
+    assert mcp_oauth.require_mcp_resource_url() == 'https://operator-mcp.example.test/v1/mcp/sse'

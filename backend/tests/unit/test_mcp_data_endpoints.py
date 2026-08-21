@@ -485,6 +485,36 @@ def test_authorize_request_accepts_chatgpt_public_client():
     assert scopes == ['memories.read']
 
 
+def test_mcp_oauth_discovery_returns_typed_unavailable_when_resource_is_missing():
+    class _McpResourceUnavailable(RuntimeError):
+        def as_dict(self):
+            return {
+                'code': 'deployment_capability_unavailable',
+                'capability': 'mcp_oauth',
+                'reason': 'mcp_resource_url_not_configured',
+                'retryable': False,
+            }
+
+    with (
+        patch.object(sse.mcp_oauth_db, 'MCPResourceUnavailable', _McpResourceUnavailable),
+        patch.object(
+            sse.mcp_oauth_db,
+            'require_mcp_resource_url',
+            side_effect=_McpResourceUnavailable('mcp_resource_url_not_configured'),
+        ),
+        pytest.raises(sse.HTTPException) as error,
+    ):
+        sse.oauth_protected_resource_metadata()
+
+    assert error.value.status_code == 503
+    assert error.value.detail == {
+        'code': 'deployment_capability_unavailable',
+        'capability': 'mcp_oauth',
+        'reason': 'mcp_resource_url_not_configured',
+        'retryable': False,
+    }
+
+
 def test_authorize_request_rejects_legacy_omi_client_id():
     with patch('routers.mcp_sse.mcp_oauth_db.get_client', return_value=None):
         with pytest.raises(ValueError, match='Unknown OAuth client'):

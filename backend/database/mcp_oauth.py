@@ -6,7 +6,7 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, TypedDict, cast
 import re
 from urllib.parse import unquote, urlsplit
 
@@ -31,7 +31,127 @@ PRODUCTION_MCP_RESOURCE_URL = "https://api.omi.me/v1/mcp/sse"
 # Omi Beta intentionally serves MCP data from dev while retaining the production
 # OAuth authority and its production Firestore grants.
 BETA_MCP_RESOURCE_URL = "https://api.omiapi.com/v1/mcp/sse"
-MCP_RESOURCE_URL = os.getenv("MCP_RESOURCE_URL", PRODUCTION_MCP_RESOURCE_URL)
+MCP_RESOURCE_URL_ENV = "MCP_RESOURCE_URL"
+PUBLIC_MCP_URL_ENV = "PUBLIC_MCP_URL"
+NEUTRAL_DEPLOYMENT_PROFILES = frozenset({"neutral", "self_hosted", "self-hosted"})
+
+
+class MCPResourceUnavailable(RuntimeError):
+    """Raised when this deployment has no safe OAuth resource authority."""
+
+    def __init__(self, reason: str = "mcp_resource_url_not_configured"):
+        super().__init__(reason)
+        self.reason = reason
+        self.retryable = False
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "code": "deployment_capability_unavailable",
+            "capability": "mcp_oauth",
+            "reason": self.reason,
+            "retryable": self.retryable,
+        }
+
+
+def _is_neutral_deployment(values: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if values is None else values
+    return (env.get("OMI_DEPLOYMENT_PROFILE") or "").strip().lower() in NEUTRAL_DEPLOYMENT_PROFILES
+
+
+def _is_omi_operated_host(host: str) -> bool:
+    normalized = host.lower().rstrip(".")
+    return (
+        normalized == "omi.me"
+        or normalized.endswith(".omi.me")
+        or normalized == "omiapi.com"
+        or normalized.endswith(".omiapi.com")
+    )
+
+
+def _operator_mcp_resource(value: str, *, setting: str, append_path: bool = False) -> tuple[str | None, str | None]:
+    """Validate an operator MCP URL without making any network request.
+
+    ``PUBLIC_MCP_URL`` is an origin and is converted to the resource endpoint;
+    ``MCP_RESOURCE_URL`` is already the endpoint. Neutral profiles reject Omi
+    operated hosts even when a stale environment explicitly supplies one.
+    """
+
+    raw = value.strip()
+    if not raw:
+        return None, "mcp_resource_url_not_configured"
+    try:
+        parsed = urlsplit(raw)
+        host = parsed.hostname or ""
+        _ = parsed.port
+    except ValueError:
+        return None, f"invalid_{setting.lower()}"
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or _is_omi_operated_host(host)
+    ):
+        return None, f"invalid_{setting.lower()}"
+    if append_path:
+        if parsed.path not in {"", "/"}:
+            return None, f"invalid_{setting.lower()}"
+        return f"{raw.rstrip('/')}/v1/mcp/sse", None
+    if not parsed.path or parsed.path == "/":
+        return None, f"invalid_{setting.lower()}"
+    return raw.rstrip("/"), None
+
+
+def resolve_mcp_resource_url(values: Mapping[str, str] | None = None) -> tuple[str, str | None]:
+    """Resolve MCP authority while keeping managed compatibility.
+
+    Managed deployments retain the historic ``api.omi.me`` default. A neutral
+    or self-hosted process must use an explicit endpoint, or an explicit
+    operator public origin from which the endpoint is derived. Missing or
+    invalid configuration returns an empty URL plus a typed reason; callers
+    must expose the capability as unavailable rather than inventing a URL.
+    """
+
+    env = os.environ if values is None else values
+    configured = (env.get(MCP_RESOURCE_URL_ENV) or "").strip()
+    if not _is_neutral_deployment(env):
+        return configured or PRODUCTION_MCP_RESOURCE_URL, None
+    if configured:
+        resolved, reason = _operator_mcp_resource(configured, setting=MCP_RESOURCE_URL_ENV)
+        return resolved or "", reason
+    public_url = (env.get(PUBLIC_MCP_URL_ENV) or "").strip()
+    if public_url:
+        resolved, reason = _operator_mcp_resource(public_url, setting=PUBLIC_MCP_URL_ENV, append_path=True)
+        return resolved or "", reason
+    return "", "mcp_resource_url_not_configured"
+
+
+MCP_RESOURCE_URL, _MCP_RESOURCE_UNAVAILABLE_REASON = resolve_mcp_resource_url()
+
+
+def require_mcp_resource_url() -> str:
+    """Return the current authority or raise a typed unavailable error.
+
+    Resolve at the call boundary so a long-lived process cannot retain a
+    managed URL after its deployment profile or operator env is changed.
+    """
+
+    resource_url, reason = resolve_mcp_resource_url()
+    if not resource_url:
+        raise MCPResourceUnavailable(reason or "mcp_resource_url_not_configured")
+    return resource_url
+
+
+def _current_mcp_resource_url() -> str:
+    """Return the current URL for internal optional-resource decisions."""
+
+    resource_url, _ = resolve_mcp_resource_url()
+    return resource_url
+
+
 DEFAULT_CLIENT_ID = os.getenv("MCP_OAUTH_CHATGPT_CLIENT_ID", "omi-chatgpt-prod")
 DEFAULT_CLIENT_NAME = os.getenv("MCP_OAUTH_CHATGPT_CLIENT_NAME", "ChatGPT")
 DEFAULT_CLAUDE_CLIENT_ID = os.getenv("MCP_OAUTH_CLAUDE_CLIENT_ID", "omi-claude-prod")
@@ -138,6 +258,13 @@ def _csv_values(value: object) -> List[str]:
     return []
 
 
+def _default_allowed_resources() -> List[str]:
+    """Return the local authority, or no authority when MCP is unavailable."""
+
+    resource_url = _current_mcp_resource_url()
+    return [resource_url] if resource_url else []
+
+
 def _secret_hash_from_config(config: Dict[str, Any]) -> str:
     secret_hash: Any = config.get("client_secret_hash") or config.get("secret_hash") or ""
     secret_hash_env = config.get("client_secret_hash_env") or config.get("secret_hash_env")
@@ -173,7 +300,7 @@ def _client_from_config(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             config.get("allowed_redirect_uri_prefixes") or config.get("redirect_uri_prefixes")
         ),
         "allowed_resources": _csv_values(config.get("allowed_resources") or config.get("resources"))
-        or [MCP_RESOURCE_URL],
+        or _default_allowed_resources(),
         "allowed_scopes": _csv_values(config.get("allowed_scopes") or config.get("scopes")) or SUPPORTED_SCOPES,
         "token_endpoint_auth_method": auth_method,
         "client_secret_hash": _secret_hash_from_config(config) if auth_method == "client_secret_post" else "",
@@ -225,7 +352,7 @@ def _legacy_chatgpt_client(client_id: Optional[str] = None) -> Dict[str, Any]:
         "allowed_redirect_uri_prefixes": (
             [CHATGPT_CONNECTOR_REDIRECT_URI_PREFIX] if resolved_client_id in PUBLIC_CHATGPT_CLIENT_IDS else []
         ),
-        "allowed_resources": [MCP_RESOURCE_URL],
+        "allowed_resources": _default_allowed_resources(),
         "allowed_scopes": SUPPORTED_SCOPES,
         "token_endpoint_auth_method": auth_method,
         "client_secret_hash": secret_hash
@@ -241,7 +368,7 @@ def _default_claude_client() -> Dict[str, Any]:
         "registration_mode": "claude_env",
         "allowed_redirect_uris": _csv_env("MCP_OAUTH_CLAUDE_REDIRECT_URIS") or [CLAUDE_CONNECTOR_REDIRECT_URI],
         "allowed_redirect_uri_prefixes": [],
-        "allowed_resources": [MCP_RESOURCE_URL],
+        "allowed_resources": _default_allowed_resources(),
         "allowed_scopes": SUPPORTED_SCOPES,
         "token_endpoint_auth_method": "none",
         "client_secret_hash": "",
@@ -265,7 +392,7 @@ def _builtin_public_chatgpt_client(client_id: str) -> Optional[Dict[str, Any]]:
         "name": DEFAULT_CLIENT_NAME,
         "registration_mode": "builtin_public_chatgpt",
         "allowed_redirect_uris": redirect_uris,
-        "allowed_resources": [MCP_RESOURCE_URL],
+        "allowed_resources": _default_allowed_resources(),
         "allowed_scopes": SUPPORTED_SCOPES,
         "token_endpoint_auth_method": "none",
         "client_secret_hash": "",
@@ -284,8 +411,9 @@ def _finalize_client(client: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         if CHATGPT_CONNECTOR_REDIRECT_URI_PREFIX not in prefixes:
             prefixes.append(CHATGPT_CONNECTOR_REDIRECT_URI_PREFIX)
         finalized["allowed_redirect_uri_prefixes"] = prefixes
-    if client_id in PRODUCTION_CROSS_PLANE_CLIENT_IDS and MCP_RESOURCE_URL == PRODUCTION_MCP_RESOURCE_URL:
-        resources = _csv_values(finalized.get("allowed_resources")) or [MCP_RESOURCE_URL]
+    resource_url = _current_mcp_resource_url()
+    if client_id in PRODUCTION_CROSS_PLANE_CLIENT_IDS and resource_url == PRODUCTION_MCP_RESOURCE_URL:
+        resources = _csv_values(finalized.get("allowed_resources")) or _default_allowed_resources()
         if BETA_MCP_RESOURCE_URL not in resources:
             resources.append(BETA_MCP_RESOURCE_URL)
         finalized["allowed_resources"] = resources
@@ -301,7 +429,7 @@ def _default_public_client() -> Optional[Dict[str, Any]]:
         "name": DEFAULT_PUBLIC_CLIENT_NAME,
         "registration_mode": "public_env",
         "allowed_redirect_uris": redirect_uris,
-        "allowed_resources": [MCP_RESOURCE_URL],
+        "allowed_resources": _default_allowed_resources(),
         "allowed_scopes": SUPPORTED_SCOPES,
         "token_endpoint_auth_method": "none",
         "client_secret_hash": "",
@@ -315,7 +443,7 @@ def get_client(client_id: str) -> Optional[Dict[str, Any]]:
     if doc.exists:
         data: Dict[str, Any] = _typed_doc(doc)
         data.setdefault("id", client_id)
-        data.setdefault("allowed_resources", [MCP_RESOURCE_URL])
+        data.setdefault("allowed_resources", _default_allowed_resources())
         data.setdefault("allowed_scopes", SUPPORTED_SCOPES)
         data.setdefault("token_endpoint_auth_method", "client_secret_post")
         data.setdefault("allowed_redirect_uri_prefixes", [])
@@ -406,7 +534,14 @@ def validate_redirect_uri(client: Dict[str, Any], redirect_uri: str) -> bool:
 
 
 def validate_resource(client: Dict[str, Any], resource: str) -> bool:
-    return resource in set(client.get("allowed_resources") or [])
+    # An omitted neutral/self-host authority is an unavailable capability, not
+    # an empty resource that can be authorized or persisted accidentally.
+    resource_url = _current_mcp_resource_url()
+    if not resource_url or resource not in set(client.get("allowed_resources") or []):
+        return False
+    # Managed production clients intentionally retain the beta cross-plane
+    # resource. Neutral profiles may authorize only their current operator URL.
+    return resource == resource_url or not _is_neutral_deployment()
 
 
 def normalize_scopes(scope: Optional[str], client: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -515,6 +650,7 @@ def _ensure_oauth_memory_grant(grant: Dict[str, Any]) -> bool:
 
 
 def create_or_update_grant(uid: str, client_id: str, resource: str, scopes: List[str]) -> Dict[str, Any]:
+    require_mcp_resource_url()
     deterministic_grant_id = f"{uid}:{client_id}:{hash_secret(resource)[:16]}"
     now = _now()
     ref = db.collection("mcp_oauth_grants").document(deterministic_grant_id)
@@ -560,6 +696,7 @@ def issue_authorization_code(
     scopes: List[str],
     code_challenge: str,
 ) -> str:
+    require_mcp_resource_url()
     raw_code = "omi_code_" + secrets.token_urlsafe(32)
     now = _now()
     db.collection("mcp_oauth_authorization_codes").document(hash_secret(raw_code)).set(
@@ -577,6 +714,7 @@ def create_grant_and_authorization_code_if_allowed(
     code_challenge: str,
 ) -> Tuple[Dict[str, Any], str]:
     """Atomically fence deletion admission with both OAuth consent writes."""
+    require_mcp_resource_url()
     deterministic_grant_id = f"{uid}:{client_id}:{hash_secret(resource)[:16]}"
     deletion_ref = db.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).document(uid)
     deletion_receipt_ref = db.collection(ACCOUNT_DELETION_RECEIPT_COLLECTION).document(account_deletion_receipt_id(uid))
@@ -875,7 +1013,11 @@ def _validated_access_token_identity(
     }
 
 
-def validate_access_token(access_token: str, resource: str = MCP_RESOURCE_URL) -> Optional[Dict[str, Any]]:
+def validate_access_token(access_token: str, resource: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    resource_url = _current_mcp_resource_url()
+    if not resource_url or (resource is not None and resource != resource_url):
+        return None
+    resource = resource_url
     doc = db.collection("mcp_oauth_access_tokens").document(hash_secret(access_token)).get()
     if not doc.exists:
         return None

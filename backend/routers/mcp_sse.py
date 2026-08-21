@@ -117,6 +117,15 @@ MCP_SCOPES_SUPPORTED = list(MCP_FULL_ACCESS_SCOPES)
 MCP_LEGACY_API_KEY_SCOPES = list(MCP_FULL_ACCESS_SCOPES)
 
 
+def _require_mcp_resource_url() -> str:
+    """Require an explicit/current MCP authority before exposing OAuth."""
+
+    try:
+        return mcp_oauth_db.require_mcp_resource_url()
+    except mcp_oauth_db.MCPResourceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=exc.as_dict()) from exc
+
+
 def _enforce_mcp_cutover_access(uid: str) -> None:
     """Fence MCP product principals when cutover enforcement is enabled.
 
@@ -232,7 +241,11 @@ def authenticate_mcp_request(authorization: Optional[str]) -> Optional[MCPAuthCo
             memory_context=_mcp_memory_context_from_auth_data(user_data),
         )
 
-    oauth_context = mcp_oauth_db.validate_access_token(token, MCP_RESOURCE_URL)
+    try:
+        resource_url = mcp_oauth_db.require_mcp_resource_url()
+    except mcp_oauth_db.MCPResourceUnavailable:
+        return None
+    oauth_context = mcp_oauth_db.validate_access_token(token, resource_url)
     if not oauth_context:
         return None
     enforce_account_deletion_http_access(oauth_context["uid"])
@@ -743,8 +756,9 @@ MCP_TOOLS: List[Dict[str, Any]] = [
 @router.get("/.well-known/oauth-protected-resource", tags=["mcp"])
 @router.get("/.well-known/oauth-protected-resource/v1/mcp/sse", tags=["mcp"])
 def oauth_protected_resource_metadata():
+    resource_url = _require_mcp_resource_url()
     return {
-        "resource": MCP_RESOURCE_URL,
+        "resource": resource_url,
         "authorization_servers": [MCP_AUTHORIZATION_SERVER_URL],
         "scopes_supported": MCP_SCOPES_SUPPORTED,
         "bearer_methods_supported": ["header"],
@@ -755,11 +769,13 @@ def oauth_protected_resource_metadata():
 @router.head("/.well-known/oauth-protected-resource", tags=["mcp"])
 @router.head("/.well-known/oauth-protected-resource/v1/mcp/sse", tags=["mcp"])
 def oauth_protected_resource_metadata_head():
+    _require_mcp_resource_url()
     return Response(status_code=200)
 
 
 @router.get("/.well-known/oauth-authorization-server", tags=["mcp"])
 def oauth_authorization_server_metadata():
+    _require_mcp_resource_url()
     return {
         "issuer": MCP_AUTHORIZATION_SERVER_URL,
         "authorization_endpoint": MCP_AUTHORIZATION_ENDPOINT,
@@ -774,6 +790,7 @@ def oauth_authorization_server_metadata():
 
 @router.head("/.well-known/oauth-authorization-server", tags=["mcp"])
 def oauth_authorization_server_metadata_head():
+    _require_mcp_resource_url()
     return Response(status_code=200)
 
 
@@ -1534,6 +1551,7 @@ def _validate_authorize_request(
     code_challenge: Optional[str],
     code_challenge_method: Optional[str],
 ) -> Tuple[Dict[str, Any], List[str]]:
+    _require_mcp_resource_url()
     client = mcp_oauth_db.get_client(client_id)
     if response_type != "code":
         raise ValueError("response_type must be code")
@@ -1649,6 +1667,8 @@ async def mcp_authorize_consent(
         # The form field keeps its legacy name for released clients; the token
         # itself belongs to the selected deployment identity provider.
         uid = await run_blocking(critical_executor, verify_token, firebase_id_token)
+    except HTTPException:
+        raise
     except InvalidIdTokenError:
         return _oauth_error("access_denied", "Invalid Omi sign-in token", status_code=401)
     except CertificateFetchError:
@@ -1678,6 +1698,7 @@ async def mcp_authorize_consent(
 @router.post("/token", tags=["mcp"], response_model=McpTokenResponse)
 async def mcp_token(request: Request):
     """OAuth token endpoint."""
+    _require_mcp_resource_url()
     try:
         request_data = await _get_token_request_data(request)
     except Exception:
@@ -1874,6 +1895,7 @@ def mcp_sse_info(request: Request):
     """
     Get information about the pre-hosted MCP server.
     """
+    resource_url = _require_mcp_resource_url()
     base_url = str(request.base_url).rstrip("/")
     return {
         "endpoint": "/v1/mcp/sse",
@@ -1885,7 +1907,7 @@ def mcp_sse_info(request: Request):
             "oauth2": {
                 "authorization_endpoint": MCP_AUTHORIZATION_ENDPOINT,
                 "token_endpoint": MCP_TOKEN_ENDPOINT,
-                "resource": MCP_RESOURCE_URL,
+                "resource": resource_url,
                 "scopes": MCP_SCOPES_SUPPORTED,
             },
         },
