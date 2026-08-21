@@ -18,6 +18,7 @@ from types import SimpleNamespace
 SCRIPT = Path(__file__).resolve().parents[2] / 'deploy' / 'self-host' / 'volume-snapshot.py'
 OPERATIONS = SCRIPT.with_name('operations.sh')
 CUTOVER_GATE = SCRIPT.with_name('cutover-https-gate.sh')
+CUTOVER_OVERLAY = SCRIPT.with_name('compose.cutover-acceptance.yml')
 COMPOSE_WRAPPER = SCRIPT.with_name('compose-clean-env.sh')
 ZERO_VENDOR_ACCEPTANCE = SCRIPT.with_name('zero-vendor-acceptance.sh')
 EVIDENCE_SCRIPT = SCRIPT.with_name('acceptance_evidence.py')
@@ -65,6 +66,14 @@ PASSED_RUNTIME_EVIDENCE = {
 
 
 class SelfHostOperationsTest(unittest.TestCase):
+    def test_local_cutover_backend_trusts_the_generated_public_edge_ca(self) -> None:
+        overlay = CUTOVER_OVERLAY.read_text(encoding='utf-8')
+        self.assertIn('SSL_CERT_FILE=/etc/ssl/certs/omi-cutover-ca.crt', overlay)
+        self.assertIn(
+            '${CUTOVER_TLS_CERT_PATH:?CUTOVER_TLS_CERT_PATH is required}:' '/etc/ssl/certs/omi-cutover-ca.crt:ro',
+            overlay,
+        )
+
     def test_all_acceptance_compose_commands_use_the_clean_environment_wrapper(self) -> None:
         for script in (OPERATIONS, CUTOVER_GATE, ZERO_VENDOR_ACCEPTANCE):
             source = script.read_text(encoding='utf-8')

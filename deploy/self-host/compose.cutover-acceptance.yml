@@ -19,11 +19,17 @@ services:
 
   backend:
     environment:
+      # The disposable local edge uses an ephemeral CA. Trust it inside the
+      # backend too, because the firmware manifest transport is intentionally
+      # fetched server-side through PUBLIC_OBJECTS_URL.
+      - SSL_CERT_FILE=/etc/ssl/certs/omi-cutover-ca.crt
       - REALTIME_RELAY_URL=ws://realtime-relay-fixture:8765/v1/realtime
       - REALTIME_RELAY_API_KEY=cutover-local-relay-fixture-key
       - REALTIME_RELAY_PROVIDER_ID=cutover_local_fixture
       - REALTIME_RELAY_WIRE_PROTOCOL=openai_realtime_v1
       - REALTIME_RELAY_ALLOWED_HOSTS=realtime-relay-fixture
+    volumes:
+      - ${CUTOVER_TLS_CERT_PATH:?CUTOVER_TLS_CERT_PATH is required}:/etc/ssl/certs/omi-cutover-ca.crt:ro
     depends_on:
       realtime-relay-fixture:
         condition: service_healthy
