@@ -8,6 +8,7 @@
 !.env.offline.template
 !.envrc.example
 !deploy/self-host/.env.production.example
+!desktop/windows/.env.selfhost.example
 .personal_configs/
 *__pycache__/
 *venv/
