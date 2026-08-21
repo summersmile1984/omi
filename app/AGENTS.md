@@ -118,7 +118,7 @@ PR CI runs `flutter test` and an analyzer ratchet (`app/scripts/analyze_ratchet.
 - Google Sign In (`google_sign_in` package)
 - Apple Sign In (`sign_in_with_apple` package, includes PKCE via nonce+sha256)
 - Firebase remains the default identity layer for official builds
-- Self-hosted builds use Better Auth, explicit operator-owned HTTPS origins, and no Firebase services or Google plist. The runtime deployment policy selects the local-only notification provider before an FCM factory can be evaluated, gates remote permission/token work by typed provider capability, and constructs no Crashlytics observer. Local notifications remain available; remote push is explicitly unsupported until an operator-owned provider is implemented. Build with `scripts/build_ios_self_host_release.sh`; the complete signed env/native identity contract is in `../deploy/self-host/README.md`. Never embed a server secret in a mobile build
+- Self-hosted builds use Better Auth, explicit operator-owned HTTPS origins, no Firebase services/Google plist, and local-only notifications; remote push is typed-unavailable. Build with `scripts/build_ios_self_host_release.sh`; signed env/native identity is in `../deploy/self-host/README.md`. Never embed a server secret in a mobile build
 
 ### Request Headers
 All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash, X-App-Version, plus Bearer token.
