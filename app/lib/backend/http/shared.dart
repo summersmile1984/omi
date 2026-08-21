@@ -197,6 +197,7 @@ Future<http.StreamedResponse> makeRawApiCall({
   required String url,
   required String method,
   Map<String, String> headers = const {},
+  bool followRedirects = true,
 }) async {
   final requireAuthCheck = _isRequiredAuthCheck(url);
   try {
@@ -207,6 +208,7 @@ Future<http.StreamedResponse> makeRawApiCall({
       method: method,
     );
     var request = http.Request(method, Uri.parse(url));
+    request.followRedirects = followRedirects;
     request.headers.addAll(builtHeaders);
     var response = await HttpPoolManager.instance.sendStreaming(request);
     if (requireAuthCheck && response.statusCode == 401) {
@@ -218,6 +220,7 @@ Future<http.StreamedResponse> makeRawApiCall({
         replay: () async {
           builtHeaders = await buildHeaders(requireAuthCheck: true, fromHeaders: headers, url: url, method: method);
           request = http.Request(method, Uri.parse(url));
+          request.followRedirects = followRedirects;
           request.headers.addAll(builtHeaders);
           return HttpPoolManager.instance.sendStreaming(request);
         },
