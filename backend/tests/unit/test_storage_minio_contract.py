@@ -1,5 +1,6 @@
 import datetime
 import json
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import MagicMock
 
 import pytest
@@ -183,9 +184,31 @@ def test_minio_client_uses_public_endpoint_for_urls_and_signing(monkeypatch):
         'http://minio:9000',
         'https://cdn.example.test',
     ]
+    for _, kwargs, _ in clients:
+        assert kwargs['config'].signature_version == 's3v4'
+        assert kwargs['config'].s3 == {'addressing_style': 'path'}
     assert client.public_url('assets', 'icons/a b.png') == 'https://cdn.example.test/assets/icons/a%20b.png'
     assert client.object_name_from_url('assets', 'https://cdn.example.test/assets/icons/a%20b.png') == 'icons/a b.png'
     assert client.object_name_from_url('other', 'https://cdn.example.test/assets/icons/a%20b.png') is None
+
+
+def test_real_botocore_presign_uses_sigv4_without_signing_caller_content_type():
+    client = storage_minio._MinioClient(
+        ('http://minio:9000', 'access', 'secret', 'us-east-1', False, 'https://objects.example.test')
+    )
+    blob = storage_minio._MinioBlob(
+        client._s3,
+        client._public_s3,
+        client._public_endpoint,
+        'private',
+        'folder/item.txt',
+    )
+
+    signed_url = blob.generate_signed_url(expiration=300, method='PUT')
+    query = parse_qs(urlsplit(signed_url).query)
+
+    assert query['X-Amz-Algorithm'] == ['AWS4-HMAC-SHA256']
+    assert query['X-Amz-SignedHeaders'] == ['host']
 
 
 def test_cached_minio_client_reloads_mutable_runtime_configuration(monkeypatch):

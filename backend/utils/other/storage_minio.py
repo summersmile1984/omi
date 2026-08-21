@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterator, Mapping, NoReturn, Optional
 from urllib.parse import quote, unquote, urlparse
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from google.cloud.exceptions import NotFound
 
@@ -271,6 +272,10 @@ class _MinioClient:
             "aws_secret_access_key": secret_key,
             "region_name": region,
             "use_ssl": secure,
+            # Do not inherit botocore's legacy SigV2 presign default. SigV2
+            # incorporates an unsigned caller Content-Type into PUT validation,
+            # which breaks otherwise valid signed URLs behind the public edge.
+            "config": Config(signature_version="s3v4", s3={"addressing_style": "path"}),
         }
         self._s3 = boto3.client("s3", endpoint_url=endpoint, **client_kwargs)
         self._public_s3 = (
