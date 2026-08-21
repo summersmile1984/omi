@@ -126,6 +126,9 @@ All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash
 ### API Base URLs
 - Dev: configured in `.dev.env` → `Env.apiBaseUrl`
 - Prod: configured in `.prod.env` → `Env.apiBaseUrl`
+- Self-hosted app-marketplace image paths resolve against the signed operator API
+  origin; they must never fall back to the managed GitHub raw asset host. An
+  explicit Omi-operated image origin is rejected by `Env.resolveAppImageUrl`.
 
 ## Codegen Rules
 

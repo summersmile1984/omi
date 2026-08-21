@@ -1,4 +1,5 @@
 import 'package:omi/backend/schema/gen/apps_wire.g.dart' as wire;
+import 'package:omi/env/env.dart';
 import 'package:omi/utils/other/string_utils.dart';
 import 'package:omi/widgets/extensions/string.dart';
 
@@ -554,11 +555,7 @@ class App {
   }
 
   String getImageUrl() {
-    if (image.startsWith('http')) {
-      return image;
-    } else {
-      return 'https://raw.githubusercontent.com/BasedHardware/Omi/main$image';
-    }
+    return Env.resolveAppImageUrl(image: image);
   }
 
   updateReviewResponse(String response, reviewId, DateTime respondedAt) {

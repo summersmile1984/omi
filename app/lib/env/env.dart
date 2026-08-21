@@ -167,6 +167,45 @@ abstract class Env {
     return path.isEmpty || path == '/' ? origin : '$origin$path';
   }
 
+  /// Resolves an app-marketplace image without reintroducing a managed host.
+  ///
+  /// Relative image paths are served by the authority that supplied the app
+  /// in a self-hosted build. The old GitHub fallback is retained only for the
+  /// managed profiles, where the marketplace is owned by Omi. Absolute URLs
+  /// remain supported for operator-owned integrations, but an explicit Omi
+  /// origin is rejected in self-hosted mode rather than silently fetched.
+  static String resolveAppImageUrl({
+    required String image,
+    AppEnvironmentProfile? configuredProfile,
+    String? configuredApiBaseUrl,
+  }) {
+    final effectiveProfile = configuredProfile ?? profile;
+    final raw = image.trim();
+    if (raw.isEmpty) throw StateError('App image URL must not be empty.');
+
+    final parsed = Uri.tryParse(raw);
+    if (parsed != null && parsed.hasScheme) {
+      if (parsed.scheme != 'http' && parsed.scheme != 'https') {
+        throw StateError('App image URL must use HTTP or HTTPS.');
+      }
+      if (effectiveProfile == AppEnvironmentProfile.selfHosted && _isOmiOperatedHost(parsed.host)) {
+        throw StateError('Self-hosted app images cannot use an Omi-operated origin.');
+      }
+      return raw;
+    }
+
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      final base = canonicalSelfHostedOrigin(
+        configuredApiBaseUrl ?? apiBaseUrl ?? '',
+        key: 'OMI_API_BASE_URL',
+      );
+      final path = raw.startsWith('/') ? raw.substring(1) : raw;
+      return '$base/$path';
+    }
+
+    return 'https://raw.githubusercontent.com/BasedHardware/Omi/main${raw.startsWith('/') ? raw : '/$raw'}';
+  }
+
   static String requireConfiguredApiBaseUrl([String? configuredApiBaseUrl]) {
     final value = (configuredApiBaseUrl ?? apiBaseUrl ?? '').trim();
     final uri = Uri.tryParse(value);
