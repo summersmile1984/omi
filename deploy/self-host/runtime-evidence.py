@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 REQUIRED_SERVICES = (
     'postgres',
@@ -30,6 +31,96 @@ OBJECT_ID = re.compile(r'^[0-9a-f]{40}$')
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 IMAGE_ID = re.compile(r'^sha256:[0-9a-f]{64}$')
 COMPOSE_WRAPPER = Path(__file__).with_name('compose-clean-env.sh')
+IDENTIFIER = re.compile(r'^[a-z0-9][a-z0-9_.:-]*$')
+HOSTNAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.-]*$')
+
+
+def _required_text(environment: dict[str, Any], name: str) -> str:
+    value = environment.get(name)
+    if not isinstance(value, str):
+        raise ValueError(f'effective provider configuration is missing {name}')
+    value = value.strip()
+    if not value:
+        raise ValueError(f'effective provider configuration is missing {name}')
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError(f'{name} contains an invalid control character')
+    return value
+
+
+def _parsed_safe_endpoint(environment: dict[str, Any], name: str, *, schemes: set[str]) -> tuple[str, Any]:
+    value = _required_text(environment, name)
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        # Accessing .port validates the port syntax and range.
+        parsed.port
+    except ValueError as error:
+        raise ValueError(f'{name} must be a credential-free endpoint') from error
+    if (
+        parsed.scheme not in schemes
+        or not parsed.netloc
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in parsed.netloc)
+    ):
+        raise ValueError(f'{name} must be a credential-free endpoint without query or fragment')
+    return value, parsed
+
+
+def _safe_endpoint_origin(environment: dict[str, Any], name: str, *, schemes: set[str]) -> str:
+    _, parsed = _parsed_safe_endpoint(environment, name, schemes=schemes)
+    # Keep only the authority in the evidence.  Paths may identify a protocol
+    # route, but are not part of the provider identity and may contain tenant
+    # details in operator-managed URLs.
+    return f'{parsed.scheme}://{parsed.netloc}'
+
+
+def _safe_endpoint(
+    environment: dict[str, Any], name: str, *, schemes: set[str], required_path: str | None = None
+) -> str:
+    value, parsed = _parsed_safe_endpoint(environment, name, schemes=schemes)
+    if required_path is not None and parsed.path != required_path:
+        raise ValueError(f'{name} must use the exact {required_path} path')
+    return value
+
+
+def _safe_model_name(environment: dict[str, Any], name: str) -> str:
+    value = _required_text(environment, name)
+    if any(character in value for character in '\r\n\x00'):
+        raise ValueError(f'{name} contains an invalid control character')
+    return value
+
+
+def _basename_model(environment: dict[str, Any], name: str) -> str:
+    value = _safe_model_name(environment, name)
+    basename = Path(value).name
+    if basename in {'', '.', '..'}:
+        raise ValueError(f'{name} does not identify a model artifact')
+    return basename
+
+
+def _safe_identifier(environment: dict[str, Any], name: str) -> str:
+    value = _required_text(environment, name)
+    if not IDENTIFIER.fullmatch(value.lower()):
+        raise ValueError(f'{name} must be a safe provider identifier')
+    return value
+
+
+def _safe_host(environment: dict[str, Any], name: str) -> str:
+    value = _required_text(environment, name)
+    if not HOSTNAME.fullmatch(value):
+        raise ValueError(f'{name} must be a host name without credentials or a URL')
+    return value
+
+
+def _positive_integer(environment: dict[str, Any], name: str) -> str:
+    value = _required_text(environment, name)
+    if not value.isdecimal() or int(value) <= 0:
+        raise ValueError(f'{name} must be a positive integer')
+    return value
 
 
 def environment_sha256(path: Path) -> str:
@@ -80,29 +171,149 @@ def effective_compose_config_sha256(*, compose_file: Path, env_file: Path) -> st
     )
 
 
+PROVIDER_CONFIGURATION_KEYS = frozenset(
+    {
+        'stt_prerecorded_model',
+        'mlx_moss_diarize_endpoint',
+        'mlx_moss_diarize_model',
+        'generic_llm_provider',
+        'generic_llm_model',
+        'generic_llm_transport',
+        'generic_llm_endpoint_origin',
+        'embedding_provider',
+        'embedding_model',
+        'embedding_transport',
+        'embedding_dimension',
+        'realtime_provider',
+        'realtime_model',
+        'realtime_transport',
+        'realtime_endpoint_origin',
+        'realtime_wire_protocol',
+        'tts_provider',
+        'tts_model',
+        'tts_transport',
+        'tts_endpoint_origin',
+        'file_chat_provider',
+        'file_chat_model',
+        'file_chat_transport',
+        'push_provider',
+        'push_model',
+        'push_transport',
+        'memory_keyword_provider',
+        'conversation_keyword_provider',
+        'typesense_transport',
+        'typesense_host',
+        'memory_typesense_collection',
+        'conversation_typesense_collection',
+    }
+)
+
+
+def _validate_origin_value(value: Any, name: str, *, schemes: set[str]) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f'{name} must be a sanitized endpoint origin')
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+    except ValueError as error:
+        raise ValueError(f'{name} must be a sanitized endpoint origin') from error
+    if (
+        parsed.scheme not in schemes
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {'', '/'}
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in parsed.netloc)
+    ):
+        raise ValueError(f'{name} must be a sanitized endpoint origin without userinfo or query')
+
+
+def _validate_provider_configuration(configuration: dict[str, Any]) -> None:
+    if not isinstance(configuration, dict):
+        raise ValueError('effective provider configuration must be an object')
+    if set(configuration) != PROVIDER_CONFIGURATION_KEYS:
+        raise ValueError('effective provider configuration has an incomplete or unexpected identity shape')
+    if any(str(key).lower().endswith(('_key', '_secret', '_token', '_password')) for key in configuration):
+        raise ValueError('effective provider configuration must not contain credentials')
+    for key, value in configuration.items():
+        if key == 'tts_endpoint_origin' and value == '':
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f'effective provider configuration is missing {key}')
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError(f'{key} contains an invalid control character')
+    if configuration['stt_prerecorded_model'] != 'mlx_moss_diarize':
+        raise ValueError('effective provider configuration selected the wrong prerecorded provider')
+    _safe_endpoint(
+        {'value': configuration['mlx_moss_diarize_endpoint']},
+        'value',
+        schemes={'http', 'https'},
+        required_path='/v1/audio/transcriptions',
+    )
+    if (
+        configuration['generic_llm_provider'] != 'generic'
+        or configuration['generic_llm_transport'] != 'openai_compatible_http'
+    ):
+        raise ValueError('self-host generic LLM must use the operator-compatible HTTP provider')
+    _validate_origin_value(
+        configuration['generic_llm_endpoint_origin'], 'generic_llm_endpoint_origin', schemes={'http', 'https'}
+    )
+    if configuration['embedding_provider'] != 'generic' or configuration['embedding_transport'] != 'direct':
+        raise ValueError('self-host embeddings must use the direct generic provider')
+    if configuration['embedding_dimension'].isdecimal() is not True or int(configuration['embedding_dimension']) <= 0:
+        raise ValueError('embedding_dimension must be a positive integer')
+    if configuration['realtime_provider'] != 'relay' or configuration['realtime_transport'] != 'websocket_relay':
+        raise ValueError('self-host realtime must use the bounded WebSocket relay')
+    _validate_origin_value(configuration['realtime_endpoint_origin'], 'realtime_endpoint_origin', schemes={'ws', 'wss'})
+    if configuration['realtime_wire_protocol'] != 'openai_realtime_v1':
+        raise ValueError('self-host realtime uses an unsupported relay wire protocol')
+    tts_origin = configuration['tts_endpoint_origin']
+    if configuration['tts_provider'] == 'sherpa_onnx':
+        if tts_origin:
+            raise ValueError('local sherpa_onnx TTS must not include a remote endpoint origin')
+    elif configuration['tts_provider'] == 'openai_compatible':
+        if configuration['tts_transport'] != 'openai_compatible_http' or not tts_origin:
+            raise ValueError('compatible TTS requires a credential-free endpoint origin')
+        _validate_origin_value(tts_origin, 'tts_endpoint_origin', schemes={'http', 'https'})
+    else:
+        raise ValueError('self-host selected an unsupported TTS provider')
+    if configuration['tts_provider'] == 'sherpa_onnx' and configuration['tts_transport'] != 'local':
+        raise ValueError('local sherpa_onnx TTS must use the local transport')
+    if (
+        configuration['file_chat_provider'] != 'local_extraction'
+        or configuration['file_chat_transport'] != 'local_extraction'
+    ):
+        raise ValueError('self-host file chat must use local extraction')
+    if configuration['memory_keyword_provider'] != 'typesense':
+        raise ValueError('memory keyword provider must be typesense')
+    if configuration['conversation_keyword_provider'] != 'typesense':
+        raise ValueError('conversation keyword provider must be typesense')
+    if configuration['typesense_transport'] != 'http':
+        raise ValueError('self-host Typesense must use HTTP transport')
+    if not HOSTNAME.fullmatch(configuration['typesense_host']):
+        raise ValueError('typesense_host must be a host name without credentials or a URL')
+    if configuration['push_provider'] != 'disabled':
+        raise ValueError('self-host push provider must be disabled')
+    if configuration['push_model'] != 'disabled' or configuration['push_transport'] != 'disabled':
+        raise ValueError('self-host push must be disabled')
+
+
 def validate_runtime_snapshot(
     *,
     services: dict[str, dict[str, Any]],
     expected_git_commit: str,
     expected_git_tree: str,
     expected_config_sha256: str,
-    effective_provider_configuration: dict[str, str],
+    effective_provider_configuration: dict[str, Any],
 ) -> dict[str, Any]:
     if not OBJECT_ID.fullmatch(expected_git_commit) or not OBJECT_ID.fullmatch(expected_git_tree):
         raise ValueError('expected source commit/tree must be full Git object IDs')
     if not SHA256.fullmatch(expected_config_sha256):
         raise ValueError('expected runtime config hash must be a sha256 digest')
-    required_provider_configuration = {
-        'stt_prerecorded_model',
-        'mlx_moss_diarize_endpoint',
-        'mlx_moss_diarize_model',
-    }
-    if (
-        set(effective_provider_configuration) != required_provider_configuration
-        or effective_provider_configuration.get('stt_prerecorded_model') != 'mlx_moss_diarize'
-        or not all(effective_provider_configuration.values())
-    ):
-        raise ValueError('effective provider configuration is incomplete or selected the wrong prerecorded provider')
+    _validate_provider_configuration(effective_provider_configuration)
 
     missing = sorted(set(REQUIRED_SERVICES) - services.keys())
     if missing:
@@ -161,14 +372,60 @@ def _run(command: list[str], *, environment: dict[str, str] | None = None) -> st
     return result.stdout.strip()
 
 
-def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, str]:
+def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any]:
     services = effective.get('services') if isinstance(effective.get('services'), dict) else {}
     backend = services.get('backend') if isinstance(services.get('backend'), dict) else {}
     environment = backend.get('environment') if isinstance(backend.get('environment'), dict) else {}
+    tts_provider = _safe_identifier(environment, 'TTS_PROVIDER')
+    tts_model = (
+        _safe_model_name(environment, 'TTS_OPENAI_COMPATIBLE_MODEL')
+        if tts_provider == 'openai_compatible'
+        else _basename_model(environment, 'TTS_SHERPA_MODEL')
+    )
     return {
-        'stt_prerecorded_model': str(environment.get('STT_PRERECORDED_MODEL') or ''),
-        'mlx_moss_diarize_endpoint': str(environment.get('MLX_MOSS_DIARIZE_ENDPOINT') or ''),
-        'mlx_moss_diarize_model': str(environment.get('MLX_MOSS_DIARIZE_MODEL') or ''),
+        'stt_prerecorded_model': _required_text(environment, 'STT_PRERECORDED_MODEL'),
+        'mlx_moss_diarize_endpoint': _safe_endpoint(
+            environment,
+            'MLX_MOSS_DIARIZE_ENDPOINT',
+            schemes={'http', 'https'},
+            required_path='/v1/audio/transcriptions',
+        ),
+        'mlx_moss_diarize_model': _safe_model_name(environment, 'MLX_MOSS_DIARIZE_MODEL'),
+        'generic_llm_provider': _safe_identifier(environment, 'OMI_LLM_DEFAULT_PROVIDER'),
+        'generic_llm_model': _safe_model_name(environment, 'OMI_LLM_DEFAULT_MODEL'),
+        'generic_llm_transport': 'openai_compatible_http',
+        'generic_llm_endpoint_origin': _safe_endpoint_origin(
+            environment, 'GENERIC_OPENAI_BASE_URL', schemes={'http', 'https'}
+        ),
+        'embedding_provider': _safe_identifier(environment, 'EMBEDDING_PROVIDER'),
+        'embedding_model': _safe_model_name(environment, 'EMBEDDING_MODEL'),
+        'embedding_transport': _safe_identifier(environment, 'EMBEDDING_CAPABILITY_TRANSPORT'),
+        'embedding_dimension': _positive_integer(environment, 'EMBEDDING_DIMENSION'),
+        'realtime_provider': _safe_identifier(environment, 'REALTIME_PROVIDER'),
+        'realtime_model': _safe_model_name(environment, 'REALTIME_MODEL'),
+        'realtime_transport': 'websocket_relay',
+        'realtime_endpoint_origin': _safe_endpoint_origin(environment, 'REALTIME_RELAY_URL', schemes={'ws', 'wss'}),
+        'realtime_wire_protocol': _safe_identifier(environment, 'REALTIME_RELAY_WIRE_PROTOCOL'),
+        'tts_provider': tts_provider,
+        'tts_model': tts_model,
+        'tts_transport': 'local' if tts_provider == 'sherpa_onnx' else 'openai_compatible_http',
+        'tts_endpoint_origin': (
+            _safe_endpoint_origin(environment, 'TTS_OPENAI_COMPATIBLE_BASE_URL', schemes={'http', 'https'})
+            if tts_provider == 'openai_compatible'
+            else ''
+        ),
+        'file_chat_provider': 'local_extraction',
+        'file_chat_model': _safe_model_name(environment, 'OMI_LLM_DEFAULT_MODEL'),
+        'file_chat_transport': _safe_identifier(environment, 'FILE_CHAT_TRANSPORT'),
+        'push_provider': _safe_identifier(environment, 'PUSH_PROVIDER'),
+        'push_model': 'disabled',
+        'push_transport': 'disabled',
+        'memory_keyword_provider': _safe_identifier(environment, 'MEMORY_KEYWORD_INDEX_PROVIDER'),
+        'conversation_keyword_provider': _safe_identifier(environment, 'CONVERSATION_KEYWORD_INDEX_PROVIDER'),
+        'typesense_transport': _safe_identifier(environment, 'TYPESENSE_PROTOCOL'),
+        'typesense_host': _safe_host(environment, 'TYPESENSE_HOST'),
+        'memory_typesense_collection': _safe_model_name(environment, 'MEMORY_TYPESENSE_COLLECTION'),
+        'conversation_typesense_collection': _safe_model_name(environment, 'CONVERSATION_TYPESENSE_COLLECTION'),
     }
 
 

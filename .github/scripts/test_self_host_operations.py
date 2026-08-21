@@ -51,6 +51,66 @@ EFFECTIVE_PROVIDER_CONFIGURATION = {
     'stt_prerecorded_model': 'mlx_moss_diarize',
     'mlx_moss_diarize_endpoint': 'http://host.docker.internal:5002/v1/audio/transcriptions',
     'mlx_moss_diarize_model': 'operator-model',
+    'generic_llm_provider': 'generic',
+    'generic_llm_model': 'operator-llm',
+    'generic_llm_transport': 'openai_compatible_http',
+    'generic_llm_endpoint_origin': 'https://llm.example.org',
+    'embedding_provider': 'generic',
+    'embedding_model': 'operator-embedding',
+    'embedding_transport': 'direct',
+    'embedding_dimension': '1536',
+    'realtime_provider': 'relay',
+    'realtime_model': 'operator-realtime',
+    'realtime_transport': 'websocket_relay',
+    'realtime_endpoint_origin': 'wss://realtime.example.org',
+    'realtime_wire_protocol': 'openai_realtime_v1',
+    'tts_provider': 'sherpa_onnx',
+    'tts_model': 'model.onnx',
+    'tts_transport': 'local',
+    'tts_endpoint_origin': '',
+    'file_chat_provider': 'local_extraction',
+    'file_chat_model': 'operator-llm',
+    'file_chat_transport': 'local_extraction',
+    'push_provider': 'disabled',
+    'push_model': 'disabled',
+    'push_transport': 'disabled',
+    'memory_keyword_provider': 'typesense',
+    'conversation_keyword_provider': 'typesense',
+    'typesense_transport': 'http',
+    'typesense_host': 'typesense',
+    'memory_typesense_collection': 'canonical_memory_atoms',
+    'conversation_typesense_collection': 'omi_conversations',
+}
+EFFECTIVE_BACKEND_ENVIRONMENT = {
+    'STT_PRERECORDED_MODEL': 'mlx_moss_diarize',
+    'MLX_MOSS_DIARIZE_ENDPOINT': 'http://host.docker.internal:5002/v1/audio/transcriptions',
+    'MLX_MOSS_DIARIZE_MODEL': 'operator-model',
+    'OMI_LLM_DEFAULT_PROVIDER': 'generic',
+    'OMI_LLM_DEFAULT_MODEL': 'operator-llm',
+    'GENERIC_OPENAI_BASE_URL': 'https://llm.example.org/v1',
+    'GENERIC_OPENAI_API_KEY': 'operator-secret',
+    'EMBEDDING_PROVIDER': 'generic',
+    'EMBEDDING_MODEL': 'operator-embedding',
+    'EMBEDDING_CAPABILITY_TRANSPORT': 'direct',
+    'EMBEDDING_DIMENSION': '1536',
+    'REALTIME_PROVIDER': 'relay',
+    'REALTIME_MODEL': 'operator-realtime',
+    'REALTIME_RELAY_URL': 'wss://realtime.example.org/v1/realtime',
+    'REALTIME_RELAY_API_KEY': 'operator-realtime-secret',
+    'REALTIME_RELAY_WIRE_PROTOCOL': 'openai_realtime_v1',
+    'TTS_PROVIDER': 'sherpa_onnx',
+    'TTS_SHERPA_MODEL': '/models/tts/model.onnx',
+    'TTS_OPENAI_COMPATIBLE_BASE_URL': '',
+    'TTS_OPENAI_COMPATIBLE_MODEL': '',
+    'FILE_CHAT_TRANSPORT': 'local_extraction',
+    'PUSH_PROVIDER': 'disabled',
+    'MEMORY_KEYWORD_INDEX_PROVIDER': 'typesense',
+    'CONVERSATION_KEYWORD_INDEX_PROVIDER': 'typesense',
+    'TYPESENSE_PROTOCOL': 'http',
+    'TYPESENSE_HOST': 'typesense',
+    'TYPESENSE_API_KEY': 'operator-typesense-secret',
+    'MEMORY_TYPESENSE_COLLECTION': 'canonical_memory_atoms',
+    'CONVERSATION_TYPESENSE_COLLECTION': 'omi_conversations',
 }
 PASSED_RUNTIME_EVIDENCE = {
     'status': 'passed',
@@ -89,6 +149,18 @@ class SelfHostOperationsTest(unittest.TestCase):
             operations.index('runtime_evidence() {') : operations.index('\n}', operations.index('runtime_evidence() {'))
         ]
         self.assertIn('require_runtime >&2', runtime_evidence)
+
+    def test_runtime_evidence_extracts_complete_sanitized_provider_identity(self) -> None:
+        effective = {'services': {'backend': {'environment': EFFECTIVE_BACKEND_ENVIRONMENT}}}
+
+        configuration = RUNTIME_EVIDENCE.effective_provider_configuration(effective)
+
+        self.assertEqual(configuration, EFFECTIVE_PROVIDER_CONFIGURATION)
+        serialized = json.dumps(configuration, sort_keys=True)
+        self.assertNotIn('operator-secret', serialized)
+        self.assertNotIn('operator-realtime-secret', serialized)
+        self.assertNotIn('operator-typesense-secret', serialized)
+        self.assertNotIn('api_key', serialized.lower())
 
     def test_clean_compose_wrapper_removes_deployment_overrides_and_preserves_only_gate_controls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -284,6 +356,49 @@ class SelfHostOperationsTest(unittest.TestCase):
                     **EFFECTIVE_PROVIDER_CONFIGURATION,
                     'mlx_moss_diarize_model': '',
                 },
+            )
+
+        for key, value in (
+            ('generic_llm_endpoint_origin', 'https://operator:secret@llm.example.org'),
+            ('realtime_endpoint_origin', 'wss://relay.example.org/path'),
+            ('generic_llm_endpoint_origin', 'https://llm.example.org:invalid'),
+        ):
+            unsafe_provider_config = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
+            unsafe_provider_config[key] = value
+            with self.assertRaisesRegex(ValueError, 'sanitized endpoint|credential-free endpoint'):
+                RUNTIME_EVIDENCE.validate_runtime_snapshot(
+                    services=services,
+                    expected_git_commit='d' * 40,
+                    expected_git_tree='e' * 40,
+                    expected_config_sha256='c' * 64,
+                    effective_provider_configuration=unsafe_provider_config,
+                )
+
+        for key, value, message in (
+            ('generic_llm_model', 123, 'missing generic_llm_model'),
+            ('embedding_dimension', '0', 'positive integer'),
+            ('typesense_host', 'https://typesense.example.org', 'host name'),
+        ):
+            unsafe_provider_config = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
+            unsafe_provider_config[key] = value
+            with self.assertRaisesRegex(ValueError, message):
+                RUNTIME_EVIDENCE.validate_runtime_snapshot(
+                    services=services,
+                    expected_git_commit='d' * 40,
+                    expected_git_tree='e' * 40,
+                    expected_config_sha256='c' * 64,
+                    effective_provider_configuration=unsafe_provider_config,
+                )
+
+        unsafe_provider_config = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
+        unsafe_provider_config['GENERIC_OPENAI_API_KEY'] = 'operator-secret'
+        with self.assertRaisesRegex(ValueError, 'incomplete or unexpected identity shape'):
+            RUNTIME_EVIDENCE.validate_runtime_snapshot(
+                services=services,
+                expected_git_commit='d' * 40,
+                expected_git_tree='e' * 40,
+                expected_config_sha256='c' * 64,
+                effective_provider_configuration=unsafe_provider_config,
             )
 
         stale = json.loads(json.dumps(services))
