@@ -87,10 +87,11 @@ process environment. The FCM token-registration and notification endpoints
 return HTTP 503 with the stable
 `deployment_capability_unavailable/push_notifications/disabled_by_deployment`
 payload. Background notification paths use the same gate before token lookup,
-including data-only reminders, important-conversation updates, and BYOK error
-alerts; they record the unavailable outcome and do not read tokens, initialize
-or call Firebase, or mark a notification as delivered. No generic webhook
-provider is implied by this profile. An operator may opt into the separate
+including data-only reminders, important-conversation updates, bulk/daily
+notifications, and BYOK error alerts; they record the unavailable outcome and
+do not read tokens, initialize or call Firebase, or mark a notification as
+delivered. No generic webhook provider is implied by this profile. An operator
+may opt into the separate
 `PUSH_PROVIDER=webhook` bridge in an unmodified deployment overlay. It
 requires an HTTPS `PUSH_WEBHOOK_URL`, a regular non-symlink mode-0600
 `PUSH_WEBHOOK_SECRET_FILE` containing at least 32 printable bytes, and the

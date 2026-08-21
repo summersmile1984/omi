@@ -502,6 +502,25 @@ async def send_bulk_notification(user_tokens: List[str], title: str, body: str) 
         num_batches = math.ceil(len(user_tokens) / batch_size)
         body = to_plain_text(body)
         tag = _generate_tag(f"bulk:{title}:{body}")
+
+        # The operator-owned webhook is the selected delivery authority for
+        # every notification shape, including this legacy broadcast helper.
+        # Keep it out of the Firebase message builder: otherwise a neutral
+        # deployment that explicitly selects ``webhook`` would still create
+        # an implicit Firebase egress path for daily/bulk notifications.
+        if selected_push_provider() == 'webhook':
+            from utils.push_webhook import send_webhook_notifications_async
+
+            for start in range(0, len(user_tokens), batch_size):
+                await send_webhook_notifications_async(
+                    'bulk',
+                    tag,
+                    title=title,
+                    body=body,
+                    tokens=user_tokens[start : start + batch_size],
+                )
+            return
+
         notification = messaging.Notification(title=title, body=body)
 
         def send_batch(batch_tokens: List[str]) -> Tuple[Any, List[str]]:
