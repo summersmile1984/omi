@@ -8,6 +8,7 @@ import httpx
 
 from utils.mimo_pipeline.mimo_client import MAX_AUDIO_BYTES, MimoClient, infer_audio_format
 from utils.mimo_pipeline.socket import pcm16_to_wav
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.stt.pre_recorded import PrerecordedSTTProvider
 
 _DOWNLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -60,6 +61,10 @@ class MimoPrerecordedProvider(PrerecordedSTTProvider):
         language: Optional[str] = None,
         keywords: Optional[Sequence[str]] = None,
     ) -> Union[List[Dict[str, Any]], Tuple[List[Dict[str, Any]], str]]:
+        # This synchronous download does not use the shared HTTP client pool;
+        # enforce the same neutral/self-host egress policy before handing a
+        # caller-controlled audio URL to httpx.
+        assert_http_endpoint_allowed(audio_url)
         response = httpx.get(audio_url, timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True)
         response.raise_for_status()
         if len(response.content) > MAX_AUDIO_BYTES:

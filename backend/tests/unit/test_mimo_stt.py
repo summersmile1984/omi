@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import pytest
 
+import utils.mimo_pipeline.prerecorded_provider as prerecorded_module
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, infer_audio_format
+from utils.mimo_pipeline.prerecorded_provider import MimoPrerecordedProvider
 from utils.mimo_pipeline.socket import MimoSttSocket, mimo_available, pcm16_to_wav
 from config.prerecorded_stt import PrerecordedSTTService
 from config.stt_provider_policy import MIMO_PROVIDER, STTServingSurface, provider_is_enabled
@@ -210,6 +212,16 @@ def test_transcribe_audio_rejects_undeclared_neutral_endpoint_before_network(mon
     client = MimoClient(api_key='test-key', base_url=OPERATOR_BASE)
     with pytest.raises(EgressPolicyUnavailable, match='egress_allowlist_not_configured'):
         client.transcribe_audio(b'\x00\x01')
+
+
+def test_prerecorded_url_rejects_undeclared_audio_origin_before_download(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+    monkeypatch.setattr(prerecorded_module.httpx, 'get', lambda *_args, **_kwargs: pytest.fail('network call'))
+
+    provider = MimoPrerecordedProvider(client=object())
+    with pytest.raises(EgressPolicyUnavailable, match='egress_allowlist_not_configured'):
+        provider.transcribe_url('https://audio.operator.example/recording.wav')
 
 
 def test_transcribe_audio_rejects_oversized(monkeypatch):

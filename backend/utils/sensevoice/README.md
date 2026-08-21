@@ -58,6 +58,7 @@ export STT_SERVICE_MODELS="sensevoice"   # 或 "modulate-velma-2,sensevoice,para
   - 仅允许 `sherpa_onnx`，不会借用 `SPEAKER_EMBEDDING_PROVIDER=http`，不会构造 HTTP 请求或隐式下载模型
   - live 解码与 embedding 都经共享 `sync_executor`；finalize/drain 仍逐个消费有界窗口，不会把积压会话合成一次无界推理
 - `prerecorded_provider.py` — `diarize=true` 且本地 speaker provider 已选择时，按同一窗口契约逐段 ASR、聚类并返回带时间戳的多 speaker segments；oversize/错误配置返回 typed transcription failure
+- 预录 `transcribe_url` 下载前会经过统一 neutral/self-host egress policy；中立部署只能下载内部 Compose authority 或 `SELF_HOST_EGRESS_ALLOWLIST` 中的 operator-owned origin，未声明的 caller URL fail-closed
 - 懒加载进程级 recognizer(`get_sensevoice_recognizer`,线程安全)
 - 上游改动: `utils/stt/streaming.py` 加 `STTService.sensevoice` 枚举 + 选择分支;`routers/listen/receiver.py` 加 socket 构建分支(自包含)
 

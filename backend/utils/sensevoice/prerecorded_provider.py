@@ -15,6 +15,7 @@ from utils.sensevoice.speaker import (
     speaker_window_seconds,
     validate_prerecorded_audio_bound,
 )
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.stt.speaker_embedding import MIN_EMBEDDING_AUDIO_DURATION
 from utils.stt.pre_recorded import PrerecordedSTTProvider
 
@@ -115,6 +116,10 @@ class SenseVoicePrerecordedProvider(PrerecordedSTTProvider):
         language: Optional[str] = None,
         keywords: Optional[Sequence[str]] = None,
     ) -> Union[List[Dict[str, Any]], Tuple[List[Dict[str, Any]], str]]:
+        # This synchronous download does not use the shared HTTP client pool;
+        # enforce the same neutral/self-host egress policy before handing a
+        # caller-controlled audio URL to httpx.
+        assert_http_endpoint_allowed(audio_url)
         response = httpx.get(audio_url, timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True)
         response.raise_for_status()
         words, detected_language = self._transcribe_bytes(

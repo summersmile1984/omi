@@ -50,6 +50,7 @@ transcript_callback(text, duration) → 下游(与上游 STT socket 契约一致
 - **认证**: `Authorization: Bearer $MIMO_API_KEY`(gateway 可按自身协议转发)。
 - **端点安全**: endpoint 必须是无 userinfo/query/fragment 的 HTTP(S) URL；公共 HTTP、metadata/unsafe
   hostname、官方 MiMo 域名都会被拒绝。loopback、容器服务名及私网 HTTP 仅用于 operator-owned 内网。
+- **预录音频下载**: `transcribe_url` 在下载 caller-provided audio URL 前复用同一 neutral/self-host egress policy；中立部署只能访问内部 Compose authority 或 `SELF_HOST_EGRESS_ALLOWLIST` 声明的 operator-owned origin，未声明 authority fail-closed。
 - **fail-closed**: 缺少 key、所选 endpoint 或 endpoint 非法时，client 构造和 provider availability
   都失败；不会回退到官方云端、其他 key 或默认 provider。
 - **说话人**: MiMo ASR 只转写、不分离说话人;分离/识别走 MOSS pipeline 或本地 wespeaker。

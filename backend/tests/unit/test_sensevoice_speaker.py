@@ -12,6 +12,7 @@ import utils.sensevoice.speaker as speaker_module
 from utils.sensevoice.prerecorded_provider import SenseVoicePrerecordedProvider
 from utils.sensevoice.socket import SenseVoiceSocket
 from utils.sensevoice.speaker import SenseVoiceSpeakerError, WindowSpeakerClusterer, build_window_speaker_clusterer
+from utils.egress_policy import EgressPolicyUnavailable
 
 
 def _clusterer(vectors: list[list[float]], *, max_clusters: int = 4) -> WindowSpeakerClusterer:
@@ -188,3 +189,13 @@ def test_prerecorded_diarization_rejects_oversize_before_model_construction(monk
 
     assert raised.value.reason == 'speaker_audio_too_large'
     assert raised.value.outcome.value == 'invalid_input'
+
+
+def test_sensevoice_url_rejects_undeclared_audio_origin_before_download(monkeypatch) -> None:
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+    monkeypatch.setattr(prerecorded_module.httpx, 'get', lambda *_args, **_kwargs: pytest.fail('network call'))
+
+    provider = SenseVoicePrerecordedProvider(recognizer=_Recognizer(['unused']))
+    with pytest.raises(EgressPolicyUnavailable, match='egress_allowlist_not_configured'):
+        provider.transcribe_url('https://audio.operator.example/recording.wav')
