@@ -701,6 +701,10 @@ export type OmiBridgeApi = {
   deleteLiveNote: (id: string) => Promise<void>
   /** All notes for a session, oldest-first (crash-recovery reload). */
   listLiveNotes: (sessionId: string) => Promise<LiveNote[]>
+  /** Provider-neutral screen synthesis/live-note turn; main owns auth and routing. */
+  modelCapabilityGenerate: (
+    request: RendererModelCapabilityRequest
+  ) => Promise<RendererModelCapabilityResult>
   // --- Track 2: Voice & PTT depth (voice turn outbox) ---
   /** Enqueue (idempotent UPSERT on idempotencyKey) a voice turn for durable
    *  delivery. A re-enqueue for the same key updates the assistant text /
