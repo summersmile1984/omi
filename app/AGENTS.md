@@ -134,10 +134,6 @@ All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash
   the existing Markdown flow.
 - Self-hosted mobile builds never download Whisper from Hugging Face; select a
   local `.bin` model instead. Managed profiles retain the convenience download.
-- Self-hosted firmware assets returned by the operator API must use HTTPS and
-  cannot redirect to Omi/GitHub release origins; invalid `zip_url` values fail
-  closed before any update bytes are requested. Managed profiles retain their
-  existing firmware release authority.
 
 ## Codegen Rules
 
