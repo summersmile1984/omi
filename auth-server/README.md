@@ -93,6 +93,10 @@ npm run migrate:firebase:verify -- \
   --hash-config /migration/firebase-hash-config.json
 ```
 
+Both migration inputs contain customer identity material and must be regular
+mode-0600 files (not symlinks); the importer rejects weaker permissions before
+parsing either file.
+
 The apply step takes a PostgreSQL advisory lock and a serializable transaction,
 requires empty Better Auth user/account/session tables, and records a single
 source SHA-256/config fingerprint/count/content receipt. Reapplying the exact

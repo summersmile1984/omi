@@ -2,7 +2,7 @@
 // LIFECYCLE: permanent
 // Fail-closed Firebase Auth export -> Better Auth identity migration.
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -314,10 +314,30 @@ function parseArguments(argv) {
   return { command, usersPath: options.users, hashConfigPath: options["hash-config"] };
 }
 
+async function readPrivateInput(filePath, label) {
+  let metadata;
+  try {
+    metadata = await lstat(filePath);
+  } catch (_error) {
+    throw new FirebaseIdentityMigrationError(`${label} is missing or unreadable`);
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new FirebaseIdentityMigrationError(`${label} must be a regular file, not a symlink`);
+  }
+  if ((metadata.mode & 0o77) !== 0) {
+    throw new FirebaseIdentityMigrationError(`${label} must be mode 0600 or stricter`);
+  }
+  try {
+    return await readFile(filePath);
+  } catch (_error) {
+    throw new FirebaseIdentityMigrationError(`${label} is missing or unreadable`);
+  }
+}
+
 async function loadPlan(usersPath, hashConfigPath) {
   const [usersRaw, configRaw] = await Promise.all([
-    readFile(usersPath),
-    readFile(hashConfigPath),
+    readPrivateInput(usersPath, "Firebase user export"),
+    readPrivateInput(hashConfigPath, "Firebase hash configuration"),
   ]);
   const source = parseJson(usersRaw, "Firebase user export");
   const configDocument = parseJson(configRaw, "Firebase hash configuration");

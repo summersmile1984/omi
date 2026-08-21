@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import test from "node:test";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
 import {
   FirebaseIdentityMigrationError,
   planFirebaseIdentityImport,
@@ -17,6 +28,29 @@ const config = parseFirebaseScryptConfig({
 
 const passwordHash =
   "lSrfV15cpx95/sZS2W9c9Kp6i/LVgQNDNC/qzrCnh1SAyZvqmZqAjTdn3aoItz+VHjoZilo78198JAdRuid5lQ==";
+
+function runValidate(usersPath, hashConfigPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [
+        path.resolve("src/import-firebase-users.js"),
+        "validate",
+        "--users",
+        usersPath,
+        "--hash-config",
+        hashConfigPath,
+      ],
+      { cwd: path.resolve("."), stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stderr }));
+  });
+}
 
 test("plans password, Google, and Apple identities while preserving Firebase uid", () => {
   const source = {
@@ -53,6 +87,36 @@ test("plans password, Google, and Apple identities while preserving Firebase uid
       .accountId,
     "firebase-uid-1",
   );
+});
+
+test("CLI rejects symlinked or group/world-readable Firebase import artifacts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "omi-auth-import-"));
+  try {
+    const users = path.join(root, "users.json");
+    const hashConfig = path.join(root, "hash-config.json");
+    const sourceUsers = await readFile(
+      path.resolve("test/fixtures/firebase-users.sample.json"),
+    );
+    const sourceHashConfig = await readFile(
+      path.resolve("test/fixtures/firebase-hash-config.sample.json"),
+    );
+    await writeFile(users, sourceUsers);
+    await writeFile(hashConfig, sourceHashConfig);
+    await chmod(users, 0o644);
+    await chmod(hashConfig, 0o600);
+    const modeResult = await runValidate(users, hashConfig);
+    assert.equal(modeResult.status, 2);
+    assert.match(modeResult.stderr, /mode 0600/);
+
+    await chmod(users, 0o600);
+    const symlinkPath = path.join(root, "users-link.json");
+    await symlink(users, symlinkPath);
+    const symlinkResult = await runValidate(symlinkPath, hashConfig);
+    assert.equal(symlinkResult.status, 2);
+    assert.match(symlinkResult.stderr, /regular file, not a symlink/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("fails closed for identities that cannot sign in after migration", () => {
