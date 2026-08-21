@@ -7,7 +7,9 @@ function rowValue(rows: { label: string; value: string; blank?: boolean }[], lab
 
 describe('buildCloudConnectors (field correctness — Mac parity)', () => {
   it('Claude card: omi-claude-prod, blank secret, add-custom-connector URL', () => {
-    const [claude] = buildCloudConnectors('https://api.omi.me')
+    const [claude] = buildCloudConnectors('https://api.omi.me', {
+      claude: 'omi-claude-prod'
+    })
     expect(claude.id).toBe('claude')
     expect(claude.connectorUrl).toBe(
       'https://claude.ai/customize/connectors?modal=add-custom-connector'
@@ -19,7 +21,9 @@ describe('buildCloudConnectors (field correctness — Mac parity)', () => {
   })
 
   it('ChatGPT card: omi-chatgpt-prod, token_auth_method none, authorize/token URLs', () => {
-    const chatgpt = buildCloudConnectors('https://api.omi.me')[1]
+    const [chatgpt] = buildCloudConnectors('https://api.omi.me', {
+      chatgpt: 'omi-chatgpt-prod'
+    })
     expect(chatgpt.id).toBe('chatgpt')
     expect(chatgpt.connectorUrl).toBe('https://chatgpt.com/#settings/Connectors')
     expect(rowValue(chatgpt.rows, 'OAuth Client ID')?.value).toBe('omi-chatgpt-prod')
@@ -29,8 +33,20 @@ describe('buildCloudConnectors (field correctness — Mac parity)', () => {
     expect(rowValue(chatgpt.rows, 'Token URL')?.value).toBe('https://api.omi.me/token')
   })
 
-  it('uses the dev ChatGPT client id on a non-prod base', () => {
-    const chatgpt = buildCloudConnectors('https://dev.example.com')[1]
-    expect(chatgpt.rows.find((r) => r.label === 'OAuth Client ID')?.value).toBe('omi-chatgpt-dev')
+  it('uses only configured operator ids on a self-hosted base', () => {
+    const connectors = buildCloudConnectors('https://mcp.operator.example', {
+      chatgpt: 'operator-chatgpt-public'
+    })
+    expect(connectors).toHaveLength(1)
+    expect(connectors[0].id).toBe('chatgpt')
+    expect(connectors[0].rows.find((r) => r.label === 'OAuth Client ID')?.value).toBe(
+      'operator-chatgpt-public'
+    )
+    expect(JSON.stringify(connectors)).not.toContain('omi-chatgpt')
+    expect(JSON.stringify(connectors)).not.toContain('omi-claude')
+  })
+
+  it('omits public connector cards when the self-hosted profile has no registered client', () => {
+    expect(buildCloudConnectors('https://mcp.operator.example', {})).toEqual([])
   })
 })

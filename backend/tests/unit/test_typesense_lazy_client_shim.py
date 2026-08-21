@@ -28,6 +28,9 @@ from utils.memory import atom_keyword_index
 def fake_typesense(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Replace the constructed client, keeping the real shim under test."""
     fake = MagicMock()
+    monkeypatch.setenv("MEMORY_KEYWORD_INDEX_PROVIDER", "typesense")
+    monkeypatch.setenv("TYPESENSE_HOST", "typesense.test")
+    monkeypatch.setenv("TYPESENSE_API_KEY", "test-key")
     monkeypatch.setattr(search, "_typesense_client", None)
     monkeypatch.setattr(search, "_get_typesense_client", lambda: fake)
     return fake

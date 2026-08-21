@@ -25,7 +25,7 @@ const prefMocks = vi.hoisted(() => ({
   automationConsentedAt: '2026-07-15T00:00:00Z' as string | null
 }))
 
-vi.mock('../lib/firebase', () => ({
+vi.mock('../lib/identity', () => ({
   auth: { currentUser: { getIdToken: async () => 'test-token' } }
 }))
 vi.mock('../lib/pageCache', () => ({ invalidateConversationsCache: vi.fn() }))

@@ -71,6 +71,7 @@ from utils.analytics import record_usage
 from utils.byok import get_byok_keys, set_byok_keys, set_byok_uid
 from utils.conversations.factory import deserialize_conversation
 from utils.conversations.process_conversation import process_conversation
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.executors import db_executor, run_blocking, start_background_task, storage_executor, sync_executor
 from utils.fair_use import (
     FAIR_USE_ENABLED,
@@ -824,6 +825,12 @@ def build_person_embeddings_cache(uid: str) -> Dict[str, dict]:
 def _download_audio_bytes(url: str) -> Optional[bytes]:
     """Download audio from a signed URL. Returns WAV bytes or None on failure."""
     try:
+        # Signed object URLs are normally issued by the selected storage
+        # provider, but they are still caller-controlled authorities at this
+        # boundary.  Apply the same neutral/self-host egress policy before
+        # opening a socket so an ambient vendor URL cannot bypass the shared
+        # HTTP clients.
+        assert_http_endpoint_allowed(url)
         resp = httpx.get(url, timeout=60.0)
         resp.raise_for_status()
         return resp.content

@@ -146,7 +146,9 @@ env:
         key: FAL_KEY
   - name: HOSTED_SPEECH_PROFILE_API_URL
     value: "http://vad.omiapi.com:80/v1/speaker-identification"
-  - name: HOSTED_SPEAKER_EMBEDDING_API_URL
+  - name: SPEAKER_EMBEDDING_PROVIDER
+    value: "http"
+  - name: SPEAKER_EMBEDDING_API_URL
     value: "http://diarizer.omiapi.com:80"
   - name: PINECONE_API_KEY
     valueFrom:

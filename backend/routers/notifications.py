@@ -16,6 +16,8 @@ import database.notifications as notification_db
 from models.other import FcmTokenResponse, SaveFcmTokenRequest
 from models.integrations import IntegrationNotificationResponse
 from utils.notifications import (
+    push_capability_unavailable,
+    push_notifications_enabled,
     send_notification,
 )
 from utils.other import endpoints as auth
@@ -72,6 +74,8 @@ def save_token(
     x_app_platform: Optional[str] = Header(None, alias='X-App-Platform'),
     x_device_id_hash: Optional[str] = Header(None, alias='X-Device-Id-Hash'),
 ) -> FcmTokenResponse:
+    if not push_notifications_enabled():
+        raise HTTPException(status_code=503, detail=push_capability_unavailable())
     platform = x_app_platform or 'unknown'
     device_hash = x_device_id_hash or 'default'
 
@@ -94,6 +98,8 @@ def save_token(
 def send_notification_to_user(data: Dict[str, Any], secret_key: str = Header(...)) -> Dict[str, str]:
     if secret_key != os.getenv('ADMIN_KEY'):
         raise HTTPException(status_code=403, detail='You are not authorized to perform this action')
+    if not push_notifications_enabled():
+        raise HTTPException(status_code=503, detail=push_capability_unavailable())
     if not data.get('uid'):
         raise HTTPException(status_code=400, detail='uid is required')
     uid = cast(str, data['uid'])
@@ -118,6 +124,8 @@ def send_app_notification_to_user(
 
     if not data.get('uid'):
         raise HTTPException(status_code=400, detail='uid is required')
+    if not push_notifications_enabled():
+        raise HTTPException(status_code=503, detail=push_capability_unavailable())
     uid = cast(str, data['uid'])
 
     # Verify API key from Authorization header

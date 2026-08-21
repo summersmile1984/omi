@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
@@ -9,7 +10,9 @@ import pytest
 from fastapi import Response
 
 from llm_gateway.gateway.config_loader import load_gateway_config
+from models.users import PlanType
 from routers import desktop_proactivity
+from utils.model_capability_policy import desktop_proactive_quota_limit
 from utils.subscription import (
     DESKTOP_ACCESS_TIER_ARCHITECT,
     DESKTOP_ACCESS_TIER_FREE,
@@ -20,6 +23,14 @@ from utils.subscription import (
 # The provider ignores a cached prefix under 1024 tokens, so any test that expects
 # explicit caching to engage must carry a stable block that clears that floor.
 CACHEABLE_STABLE_PROMPT = "stable bucket instructions for the proactive director. " * 400
+
+
+def quota_limit(operation: desktop_proactivity.ProactiveOperation, subscription: Any) -> int:
+    return desktop_proactive_quota_limit(
+        operation.value,
+        subscription,
+        tier_resolver=desktop_proactivity.effective_desktop_access_tier,
+    )
 
 
 def request(
@@ -322,79 +333,41 @@ def test_release_after_delete_does_not_go_negative():
 )
 def test_each_tier_resolves_to_its_exact_limit_pair(monkeypatch, tier, extraction_limit, reasoning_limit):
     monkeypatch.setattr(desktop_proactivity, "effective_desktop_access_tier", lambda *_args, **_kwargs: tier)
-    subscription = SimpleNamespace(plan=desktop_proactivity.PlanType.basic)
-    assert (
-        desktop_proactivity._quota_limit_for_subscription(
-            desktop_proactivity.ProactiveOperation.EXTRACTION, subscription
-        )
-        == extraction_limit
-    )
-    assert (
-        desktop_proactivity._quota_limit_for_subscription(
-            desktop_proactivity.ProactiveOperation.REASONING, subscription
-        )
-        == reasoning_limit
-    )
+    subscription = SimpleNamespace(plan=PlanType.basic)
+    assert quota_limit(desktop_proactivity.ProactiveOperation.EXTRACTION, subscription) == extraction_limit
+    assert quota_limit(desktop_proactivity.ProactiveOperation.REASONING, subscription) == reasoning_limit
 
 
 def test_unknown_tier_falls_back_to_free_row_without_raising(monkeypatch):
     monkeypatch.setattr(
         desktop_proactivity, "effective_desktop_access_tier", lambda *_args, **_kwargs: "desktop_does_not_exist"
     )
-    subscription = SimpleNamespace(plan=desktop_proactivity.PlanType.basic)
-    assert (
-        desktop_proactivity._quota_limit_for_subscription(
-            desktop_proactivity.ProactiveOperation.EXTRACTION, subscription
-        )
-        == 150
-    )
-    assert (
-        desktop_proactivity._quota_limit_for_subscription(
-            desktop_proactivity.ProactiveOperation.REASONING, subscription
-        )
-        == 60
-    )
+    subscription = SimpleNamespace(plan=PlanType.basic)
+    assert quota_limit(desktop_proactivity.ProactiveOperation.EXTRACTION, subscription) == 150
+    assert quota_limit(desktop_proactivity.ProactiveOperation.REASONING, subscription) == 60
 
 
 @pytest.mark.parametrize(
     ("plan", "reasoning_limit", "extraction_limit"),
     [
-        (desktop_proactivity.PlanType.basic, 60, 150),
-        (desktop_proactivity.PlanType.operator, 500, 1000),
-        (desktop_proactivity.PlanType.architect, 1000, 2000),
+        (PlanType.basic, 60, 150),
+        (PlanType.operator, 500, 1000),
+        (PlanType.architect, 1000, 2000),
     ],
 )
 def test_quota_limit_scales_from_server_verified_subscription(plan, reasoning_limit, extraction_limit):
     subscription = SimpleNamespace(plan=plan)
-    assert (
-        desktop_proactivity._quota_limit_for_subscription(
-            desktop_proactivity.ProactiveOperation.REASONING, subscription
-        )
-        == reasoning_limit
-    )
-    assert (
-        desktop_proactivity._quota_limit_for_subscription(
-            desktop_proactivity.ProactiveOperation.EXTRACTION, subscription
-        )
-        == extraction_limit
-    )
+    assert quota_limit(desktop_proactivity.ProactiveOperation.REASONING, subscription) == reasoning_limit
+    assert quota_limit(desktop_proactivity.ProactiveOperation.EXTRACTION, subscription) == extraction_limit
 
 
 def test_post_cutoff_neo_uses_free_quota_while_grandfathered_neo_keeps_full_quota():
     cutoff = NEO_DESKTOP_GRANDFATHER_CUTOFF
-    post_cutoff = SimpleNamespace(plan=desktop_proactivity.PlanType.unlimited, current_period_start=cutoff)
-    grandfathered = SimpleNamespace(plan=desktop_proactivity.PlanType.unlimited, current_period_start=cutoff - 1)
+    post_cutoff = SimpleNamespace(plan=PlanType.unlimited, current_period_start=cutoff)
+    grandfathered = SimpleNamespace(plan=PlanType.unlimited, current_period_start=cutoff - 1)
 
-    assert (
-        desktop_proactivity._quota_limit_for_subscription(desktop_proactivity.ProactiveOperation.REASONING, post_cutoff)
-        == 60
-    )
-    assert (
-        desktop_proactivity._quota_limit_for_subscription(
-            desktop_proactivity.ProactiveOperation.REASONING, grandfathered
-        )
-        == 500
-    )
+    assert quota_limit(desktop_proactivity.ProactiveOperation.REASONING, post_cutoff) == 60
+    assert quota_limit(desktop_proactivity.ProactiveOperation.REASONING, grandfathered) == 500
 
 
 @pytest.mark.asyncio
@@ -531,6 +504,127 @@ def test_direct_provider_fallback_fails_closed_outside_dev(monkeypatch):
 
     assert unavailable.value.status_code == 503
     assert unavailable.value.detail == "Proactive model gateway is not configured"
+
+
+@pytest.mark.asyncio
+async def test_self_host_generic_proactivity_executes_without_gateway_or_openai_key(monkeypatch):
+    calls = []
+
+    class DirectClient:
+        async def post(self, url, *, headers, json):
+            calls.append((url, headers, json))
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={
+                    "model": "local-reasoner",
+                    "choices": [{"message": {"content": '{"summary":"ok"}'}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                },
+            )
+
+    class Semaphore:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def allow(*_args):
+        return desktop_proactivity.ProactiveQuotaState(limit=60, remaining=59, reset_seconds=3600)
+
+    monkeypatch.setattr(desktop_proactivity, "llm_stub_enabled", lambda: False)
+    monkeypatch.delenv("OMI_LLM_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OMI_ENV_STAGE", "prod")
+    monkeypatch.setenv("OMI_LLM_ROUTE_DESKTOP_PROACTIVE_REASONING_PROVIDER", "generic")
+    monkeypatch.setenv("OMI_LLM_ROUTE_DESKTOP_PROACTIVE_REASONING_MODEL", "local-reasoner")
+    monkeypatch.setenv("GENERIC_OPENAI_BASE_URL", "http://llm.internal:8000/v1")
+    monkeypatch.setenv("GENERIC_OPENAI_API_KEY", "local-secret")
+    monkeypatch.setattr(desktop_proactivity, "_consume_quota", allow)
+    monkeypatch.setattr(desktop_proactivity, "get_llm_gateway_client", lambda: DirectClient())
+    monkeypatch.setattr(desktop_proactivity, "get_llm_gateway_semaphore", lambda: Semaphore())
+
+    result = await desktop_proactivity.proactive_completion(
+        request(
+            "proactive_reasoning",
+            cache_key="bucket-7-version-3",
+            messages=[{"role": "user", "content": CACHEABLE_STABLE_PROMPT}],
+        ),
+        Response(),
+        uid="user-1",
+    )
+
+    assert result.provider_model == "local-reasoner"
+    assert calls[0][0] == "http://llm.internal:8000/v1/chat/completions"
+    assert calls[0][1]["Authorization"] == "Bearer local-secret"
+    assert calls[0][2]["model"] == "local-reasoner"
+    assert calls[0][2]["max_tokens"] == 2400
+    assert "max_completion_tokens" not in calls[0][2]
+    assert "metadata" not in calls[0][2]
+    assert "prompt_cache_key" not in calls[0][2]
+    assert "prompt_cache_options" not in calls[0][2]
+    assert "prompt_cache_breakpoint" not in json.dumps(calls[0][2])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("primary_status", "expected_models"), [(503, ["local-reasoner", "deepseek-chat"]), (401, ["local-reasoner"])]
+)
+async def test_self_host_proactivity_fallback_is_retryable_only(monkeypatch, primary_status, expected_models):
+    models = []
+
+    class DirectClient:
+        async def post(self, url, *, headers, json):
+            models.append(json["model"])
+            status = primary_status if json["model"] == "local-reasoner" else 200
+            return httpx.Response(
+                status,
+                request=httpx.Request("POST", url),
+                json={
+                    "model": json["model"],
+                    "choices": [{"message": {"content": '{"summary":"ok"}'}}],
+                    "usage": {},
+                },
+            )
+
+    class Semaphore:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def allow(*_args):
+        return desktop_proactivity.ProactiveQuotaState(limit=60, remaining=59, reset_seconds=3600)
+
+    async def release(*_args):
+        return None
+
+    monkeypatch.setattr(desktop_proactivity, "llm_stub_enabled", lambda: False)
+    monkeypatch.delenv("OMI_LLM_GATEWAY_URL", raising=False)
+    monkeypatch.setenv("OMI_LLM_ROUTE_DESKTOP_PROACTIVE_REASONING_PROVIDER", "generic")
+    monkeypatch.setenv("OMI_LLM_ROUTE_DESKTOP_PROACTIVE_REASONING_MODEL", "local-reasoner")
+    monkeypatch.setenv("OMI_LLM_ROUTE_DESKTOP_PROACTIVE_REASONING_FALLBACKS", "deepseek:deepseek-chat")
+    monkeypatch.setenv("GENERIC_OPENAI_BASE_URL", "http://llm.internal:8000/v1")
+    monkeypatch.setenv("GENERIC_OPENAI_API_KEY", "local-secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    monkeypatch.setattr(desktop_proactivity, "_consume_quota", allow)
+    monkeypatch.setattr(desktop_proactivity, "_release_quota", release)
+    monkeypatch.setattr(desktop_proactivity, "get_llm_gateway_client", lambda: DirectClient())
+    monkeypatch.setattr(desktop_proactivity, "get_llm_gateway_semaphore", lambda: Semaphore())
+
+    if primary_status == 503:
+        result = await desktop_proactivity.proactive_completion(
+            request("proactive_reasoning"), Response(), uid="user-1"
+        )
+        assert result.provider_model == "deepseek-chat"
+        assert result.fallback_class == "direct_deepseek"
+    else:
+        with pytest.raises(desktop_proactivity.HTTPException) as unavailable:
+            await desktop_proactivity.proactive_completion(request("proactive_reasoning"), Response(), uid="user-1")
+        assert unavailable.value.status_code == 502
+    assert models == expected_models
 
 
 def test_development_release_channel_allows_direct_recovery_without_env_stage(monkeypatch):

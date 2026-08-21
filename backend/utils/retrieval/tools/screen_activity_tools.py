@@ -267,6 +267,9 @@ def search_screen_activity_tool(
         except ValueError:
             pass
 
+    capability = resolve_model_capability('screen')
+    if not capability.selected:
+        return capability.unavailable_tool_result()
     try:
         capability = resolve_model_capability('screen')
         if not capability.selected:
@@ -274,7 +277,16 @@ def search_screen_activity_tool(
         query_vector = embeddings.embed_query(query)
     except Exception as e:
         logger.error(f"search_screen_activity_tool - embedding error: {e}")
-        return f"Error generating search embedding: {e}"
+        return json.dumps(
+            {
+                'code': 'model_capability_unavailable',
+                'capability': 'screen',
+                'reason': type(e).__name__,
+                'retryable': True,
+            },
+            sort_keys=True,
+            separators=(',', ':'),
+        )
 
     matches = vector_db.search_screen_activity_vectors(
         uid=uid,

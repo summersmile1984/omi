@@ -17,6 +17,7 @@ from models.other import Person
 from utils.conversations.factory import deserialize_conversation
 from utils.conversations.render import conversations_to_string
 from utils.conversations.search import (
+    ConversationSearchUnavailableError,
     conversation_matches_date_range,
     keyword_search_conversation_ids,
     merge_conversation_search_ids,
@@ -563,6 +564,9 @@ def search_conversations_tool(
 
         return result
 
+    except ConversationSearchUnavailableError:
+        logger.warning('search_conversations_tool keyword capability unavailable')
+        return 'Conversation keyword search is currently unavailable; results were not silently reduced to vector-only.'
     except Exception as e:
         logger.warning("search_conversations_tool vector search failed (%s)", type(e).__name__)
         return "Found vector search results but encountered an error processing them."

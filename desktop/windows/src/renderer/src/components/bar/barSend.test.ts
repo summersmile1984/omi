@@ -11,7 +11,7 @@ import { createBarSender } from './barSend'
 
 // ./firebase is mocked so the sender's signed-in probe never touches the real SDK.
 const h = vi.hoisted(() => ({ authObj: { currentUser: null as unknown } }))
-vi.mock('../../lib/firebase', () => ({ auth: h.authObj }))
+vi.mock('../../lib/identity', () => ({ auth: h.authObj }))
 
 const quota = (over: Partial<ChatUsageQuota> = {}): ChatUsageQuota => ({
   plan: 'Free',

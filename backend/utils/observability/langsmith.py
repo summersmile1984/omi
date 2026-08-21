@@ -7,10 +7,58 @@ and for submitting feedback to LangSmith.
 """
 
 import os
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any, Dict, Callable, cast
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+_NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
+_LANGSMITH_TRACING_ENV_VARS = (
+    'LANGSMITH_TRACING',
+    'LANGSMITH_TRACING_V2',
+    'LANGCHAIN_TRACING',
+    'LANGCHAIN_TRACING_V2',
+)
+
+
+def _is_neutral_deployment() -> bool:
+    """Return whether the process is running without Omi-managed egress."""
+    return os.environ.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in _NEUTRAL_DEPLOYMENT_PROFILES
+
+
+def _disable_ambient_langsmith_tracing() -> None:
+    """Prevent LangChain's implicit LangSmith callback from using ambient credentials.
+
+    LangChain/LangSmith inspect their tracing environment at model invocation time,
+    independently of the callbacks returned by this module.  A neutral process may
+    inherit managed ``LANGCHAIN_*`` secrets from a shared environment, so simply
+    returning an empty callback list is not sufficient: the SDK could still create
+    its own ``LangChainTracer`` and post to its default endpoint.  Disable all
+    supported tracing aliases before any model call.  This does not remove keys or
+    endpoints, preserving managed-profile behavior and leaving operator diagnostics
+    intact.
+    """
+    if not _is_neutral_deployment():
+        return
+
+    for env_name in _LANGSMITH_TRACING_ENV_VARS:
+        os.environ[env_name] = 'false'
+
+    # The SDK caches environment lookups.  Clear that cache when the optional SDK
+    # is already installed so a value read before this guard cannot re-enable tracing.
+    try:
+        from langsmith import utils as langsmith_utils
+
+        cache_clear = getattr(langsmith_utils.get_env_var, 'cache_clear', None)
+        if callable(cache_clear):
+            cast(Callable[[], None], cache_clear)()
+    except Exception:
+        # LangSmith is optional; the public helpers below remain fail-closed without it.
+        pass
+
+
+_disable_ambient_langsmith_tracing()
 
 
 def is_langsmith_enabled() -> bool:
@@ -22,6 +70,10 @@ def is_langsmith_enabled() -> bool:
     Returns:
         True if tracing is enabled, False otherwise
     """
+    _disable_ambient_langsmith_tracing()
+    if _is_neutral_deployment():
+        return False
+
     # Check new-style env vars first
     langsmith_tracing = os.environ.get("LANGSMITH_TRACING", "").lower()
     if langsmith_tracing == "true":
@@ -52,6 +104,9 @@ def get_langsmith_endpoint() -> str:
     Returns:
         Endpoint URL or default LangSmith endpoint
     """
+    if _is_neutral_deployment():
+        return ''
+
     return (
         os.environ.get("LANGSMITH_ENDPOINT")
         or os.environ.get("LANGCHAIN_ENDPOINT")
@@ -66,6 +121,10 @@ def has_langsmith_api_key() -> bool:
     Returns:
         True if an API key is set (doesn't validate the key)
     """
+    _disable_ambient_langsmith_tracing()
+    if _is_neutral_deployment():
+        return False
+
     api_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY")
     return bool(api_key and len(api_key) > 0 and api_key != "lsv2_pt_REPLACE_WITH_YOUR_KEY")
 
@@ -79,6 +138,10 @@ def log_langsmith_status() -> None:
     """
     global_enabled = is_langsmith_enabled()
     has_key = has_langsmith_api_key()
+    if _is_neutral_deployment():
+        logger.info("📊 LangSmith: DISABLED by deployment profile")
+        return
+
     project = get_langsmith_project()
     endpoint = get_langsmith_endpoint()
 

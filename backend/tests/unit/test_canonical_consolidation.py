@@ -496,6 +496,8 @@ def test_consolidation_messages_cache_the_planner_prefix_not_the_batch_json():
 
     assert prefix["prompt_cache_breakpoint"] == {"mode": "explicit"}
     assert "MUST NOT route promote" in prefix["text"]
+    assert "relationship_to_user=self and aboutness=primary_user" in prefix["text"]
+    assert "MUST NOT be paired with relationship_to_user=self" in prefix["text"]
     assert "mem_a" not in prefix["text"]
     assert "Enjoys hiking" not in prefix["text"]
     assert '"memory_id":"mem_a"' in suffix
@@ -564,6 +566,22 @@ def test_batch_rejects_restricted_sensitivity_promotion(label):
     )
 
     assert error == "output_invalid:restricted_sensitivity_promotion:mem_a"
+
+
+def test_primary_user_preference_requires_self_primary_user_pair():
+    item = _item("mem_a", "I prefer jasmine tea every morning")
+
+    accepted = _validate_agent_batch(
+        _context([item]),
+        ConsolidationAgentBatch(decisions=[_promote(item, relationship_to_user="self", aboutness="primary_user")]),
+    )
+    rejected = _validate_agent_batch(
+        _context([item]),
+        ConsolidationAgentBatch(decisions=[_promote(item, relationship_to_user="self", aboutness="user_relationship")]),
+    )
+
+    assert accepted is None
+    assert rejected == "output_invalid:source_subject_contradiction:mem_a"
 
 
 def test_batch_rejects_third_party_promotion():

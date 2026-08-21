@@ -15,7 +15,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile, unlink } from "node:f
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join as pathJoin } from "node:path";
-import {
+import omiProvider, {
   classifyBash,
   classifyFileWrite,
   inspectToolCall,
@@ -38,8 +38,9 @@ import {
   omiReasoningEffortFromRelayContext,
   applyOmiProviderHeaders,
   OMI_CHAT_CONTRACT_VERSION,
+  resolveOmiProviderBaseUrl,
 } from "./index.ts";
-import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { agentControlCapabilityManifest } from "../agent/dist/runtime/control-tool-manifest.js";
 import { discoverSkillCatalog, searchSkills } from "../agent/dist/runtime/node-tools.js";
 import {
@@ -81,6 +82,35 @@ test("provider headers always advertise the versioned chat contract", () => {
     "x-omi-request-id": "req_1",
     "x-omi-reasoning-effort": "adaptive",
   });
+});
+
+test("provider authority is explicit: missing OMI_API_BASE_URL has no managed fallback", () => {
+  assert.equal(resolveOmiProviderBaseUrl({}), undefined);
+  assert.equal(resolveOmiProviderBaseUrl({ OMI_API_BASE_URL: "   " }), undefined);
+  assert.equal(
+    resolveOmiProviderBaseUrl({ OMI_API_BASE_URL: "https://operator.example/v2 " }),
+    "https://operator.example/v2",
+  );
+});
+
+test("provider registration refuses to start without an explicit backend authority", () => {
+  const previous = process.env.OMI_API_BASE_URL;
+  delete process.env.OMI_API_BASE_URL;
+  let registrations = 0;
+  try {
+    omiProvider({
+      registerProvider: () => {
+        registrations += 1;
+      },
+      on: () => {
+        registrations += 1;
+      },
+    } as ExtensionAPI);
+  } finally {
+    if (previous === undefined) delete process.env.OMI_API_BASE_URL;
+    else process.env.OMI_API_BASE_URL = previous;
+  }
+  assert.equal(registrations, 0);
 });
 
 test("classifyBash: allows normal dev commands", () => {

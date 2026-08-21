@@ -111,15 +111,15 @@ PR CI runs `flutter test` and an analyzer ratchet (`app/scripts/analyze_ratchet.
 
 ### Token Lifecycle
 1. `getAuthHeader()` in `lib/backend/http/shared.dart` checks token expiry (5-minute buffer)
-2. If expired, calls `AuthService.instance.getIdToken()` for Firebase refresh
+2. If expired, calls `AuthService.instance.getIdToken()` through the selected identity provider
 3. Token stored in SharedPreferencesUtil with expiration timestamp
 4. 401 responses trigger automatic refresh + retry
 
 ### Auth Methods
 - Google Sign In (`google_sign_in` package)
 - Apple Sign In (`sign_in_with_apple` package, includes PKCE via nonce+sha256)
-- Firebase Auth as the identity layer
-- Local Better Auth bridge only in non-release builds, and only when both `OMI_AUTH_SERVER_URL` and `OMI_AUTH_DEV_ISSUER_SECRET` are provided as compile-time defines; the bridge UID returned by the server is the stored owner identity
+- Firebase remains the default identity layer for official builds
+- Self-hosted builds use Better Auth, explicit operator-owned HTTPS origins, no Firebase services/Google plist, and local-only notifications; remote push is typed-unavailable. Build with `scripts/build_ios_self_host_release.sh`; signed env/native identity is in `../deploy/self-host/README.md`. Never embed a server secret in a mobile build
 
 ### Request Headers
 All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash, X-App-Version, plus Bearer token.
@@ -127,6 +127,14 @@ All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash
 ### API Base URLs
 - Dev: configured in `.dev.env` → `Env.apiBaseUrl`
 - Prod: configured in `.prod.env` → `Env.apiBaseUrl`
+- Self-hosted app-marketplace image paths resolve against the signed operator API
+  origin; they must never fall back to the managed GitHub raw asset host. An
+  explicit Omi-operated image origin is rejected by `Env.resolveAppImageUrl`.
+- Legacy Omi GitHub Markdown setup instructions are hidden in self-hosted
+  builds when no operator-owned replacement is supplied; managed profiles keep
+  the existing Markdown flow.
+- Self-hosted mobile builds never download Whisper from Hugging Face; select a
+  local `.bin` model instead. Managed profiles retain the convenience download.
 
 ## Codegen Rules
 

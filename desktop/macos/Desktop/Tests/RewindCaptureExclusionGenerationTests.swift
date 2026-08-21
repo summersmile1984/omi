@@ -194,19 +194,24 @@ final class RewindCaptureExclusionGenerationTests: XCTestCase {
   func testOwnerSnapshotStaysCurrentWhenAuthLeadsUnresolvedRewindDatabase() {
     let defaults = UserDefaults.standard
     let previousAuth = defaults.object(forKey: .authUserId)
+    let previousOwnerID = defaults.string(forKey: .authUserId)
     let previousDB = RewindDatabase.currentUserId
     defer {
+      RuntimeOwnerAuthorizationAuthority.shared.beginTransition()
       if let previousAuth {
         defaults.set(previousAuth, forKey: .authUserId)
       } else {
         defaults.removeObject(forKey: .authUserId)
       }
       RewindDatabase.currentUserId = previousDB
+      RuntimeOwnerAuthorizationAuthority.shared.endTransition(ownerID: previousOwnerID)
     }
 
     let authOwner = "auth-leading-\(UUID().uuidString)"
+    RuntimeOwnerAuthorizationAuthority.shared.beginTransition()
     defaults.set(authOwner, forKey: .authUserId)
     RewindDatabase.currentUserId = nil
+    RuntimeOwnerAuthorizationAuthority.shared.endTransition(ownerID: authOwner)
 
     guard let snapshot = RewindCaptureOwnerSnapshot.capture() else {
       XCTFail("expected capture with auth_userId set")

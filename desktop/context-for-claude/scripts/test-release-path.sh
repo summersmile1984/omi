@@ -205,6 +205,12 @@ grep -qF 'CONTEXT_SPARKLE_PRIVATE_KEY' "$SCRIPT_DIR/release-context.sh" \
     || fail "Context private key naming contract"
 grep -qF 'assert_not_production' "$SCRIPT_DIR/build.sh" \
     || fail "build.sh production guard"
+grep -qF 'self_hosted requires CONTEXT_SPEECH_MODEL_MODE=local or disabled' "$SCRIPT_DIR/build.sh" \
+    || fail "self-hosted speech-model authority gate"
+grep -qF 'ditto "$SPEECH_MODEL_PATH" "$APP_BUNDLE/Contents/Resources/$SPEECH_MODEL_BUNDLE_PATH"' "$SCRIPT_DIR/build.sh" \
+    || fail "self-hosted packaged speech-model copy"
+grep -qF "must contain compiled FluidAudio .mlmodelc artifacts" "$SCRIPT_DIR/build.sh" \
+    || fail "self-hosted speech-model artifact validation"
 grep -qF 'assert_not_production' "$SCRIPT_DIR/package-dmg.sh" \
     || fail "package-dmg.sh production guard"
 # The metadata block existed only so the retired backend feed could parse a release body. Nothing

@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -213,6 +214,30 @@ def test_credit_limit_notification_keeps_fcm_failure_fail_soft() -> None:
         asyncio.run(notifications.send_credit_limit_notification('user-4'))
 
         assert cache_writes['credit'] == ['user-4']
+
+
+def test_bulk_notification_uses_selected_webhook_instead_of_firebase(monkeypatch) -> None:
+    with _loaded_notifications() as (notifications, _notification_db, messaging, _cache_writes):
+        calls: list[dict[str, Any]] = []
+
+        async def send_webhook_notifications_async(user_id: str, tag: str, **kwargs: Any) -> int:
+            calls.append({'user_id': user_id, 'tag': tag, **kwargs})
+            return len(kwargs.get('tokens') or [])
+
+        webhook = _module('utils.push_webhook', send_webhook_notifications_async=send_webhook_notifications_async)
+        monkeypatch.setitem(sys.modules, 'utils.push_webhook', webhook)
+        monkeypatch.setattr(notifications, 'selected_push_provider', lambda: 'webhook')
+        messaging.send_each = lambda _messages: (_ for _ in ()).throw(
+            AssertionError('webhook bulk notification must not call Firebase')
+        )
+
+        asyncio.run(notifications.send_bulk_notification(['token-1', 'token-2'], 'Hello', 'World'))
+
+        assert len(calls) == 1
+        assert calls[0]['user_id'] == 'bulk'
+        assert calls[0]['title'] == 'Hello'
+        assert calls[0]['body'] == 'World'
+        assert calls[0]['tokens'] == ['token-1', 'token-2']
 
 
 def test_notification_enrichment_uses_auth_and_fcm_pool_without_consuming_db_pool() -> None:

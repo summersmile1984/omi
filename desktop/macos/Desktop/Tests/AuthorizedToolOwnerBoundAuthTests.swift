@@ -217,7 +217,7 @@ private actor PermissionCallbackBox<Value: Sendable> {
     await AuthorizedToolOwnerURLProtocol.gate.succeed(
       path: "/v1/tools/memories",
       with:
-        #"{"tool_name":"get_memories","result_text":"owner-a-memory","is_error":false}"#)
+        #"{"tool_name":"get_memories","result_text":"owner-a-memory","is_error":false,"sources":[]}"#)
 
     let result = await operation.value
     XCTAssertEqual(result, "owner-a-memory")

@@ -7,6 +7,7 @@ import httpx
 from pydub import AudioSegment  # pydub is untyped
 
 from utils.executors import storage_executor, run_blocking
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.http_client import get_stt_client
 from utils.log_sanitizer import sanitize
 from utils.other.storage import (
@@ -58,12 +59,18 @@ def get_speech_profile_matching_predictions(
 ) -> List[Dict[str, Any]]:
     logger.info('get_speech_profile_matching_predictions')
     default = [{'is_user': False, 'person_id': None}] * len(segments)
+    endpoint = _get_speech_profile_api_url()
+    # This synchronous path uses the module-level httpx helper and therefore
+    # does not inherit the shared client's request hook.  Validate the
+    # operator authority before opening customer audio so neutral deployments
+    # cannot send a profile to an ambient hosted/vendor endpoint.
+    assert_http_endpoint_allowed(endpoint)
     with open(audio_file_path, 'rb') as audio_f:
         files = [
             ('audio_file', (os.path.basename(audio_file_path), audio_f, 'audio/wav')),
         ]
         response = httpx.post(
-            _get_speech_profile_api_url() + f'?uid={uid}',
+            endpoint + f'?uid={uid}',
             data={'segments': json.dumps(segments)},
             files=files,
             timeout=120.0,
@@ -98,6 +105,10 @@ async def async_get_speech_profile_matching_predictions(
 ) -> List[Dict[str, Any]]:
     """Async version of get_speech_profile_matching_predictions using httpx.AsyncClient."""
     logger.info('async_get_speech_profile_matching_predictions')
+    endpoint = _get_speech_profile_api_url()
+    # Keep the authority check explicit before reading/uploading audio even
+    # though the shared async client also carries the egress request hook.
+    assert_http_endpoint_allowed(endpoint)
     file_data = await run_blocking(storage_executor, _read_file, audio_file_path)
 
     files = {'audio_file': (os.path.basename(audio_file_path), file_data, 'audio/wav')}
@@ -106,7 +117,7 @@ async def async_get_speech_profile_matching_predictions(
     try:
         client = get_stt_client()
         response = await client.post(
-            _get_speech_profile_api_url() + f'?uid={uid}',
+            endpoint + f'?uid={uid}',
             data={'segments': json.dumps(segments)},
             files=files,
         )

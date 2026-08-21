@@ -2,11 +2,11 @@
 Tests for find_similar_action_items — the helper that powers semantic dedup
 during conversation extraction.
 
-Critical contract: the helper must (a) return [] when Pinecone isn't
-configured, (b) filter matches below the threshold, (c) swallow Pinecone
-exceptions and return [] (so a Pinecone outage degrades to "no dedup
-context" rather than failing the whole conversation pipeline), and
-(d) preserve match order from Pinecone (most-similar first).
+Critical contract: the helper must (a) distinguish an unavailable projection
+from a valid empty result, (b) filter matches below the threshold, and (c)
+preserve match order from the vector store (most-similar first). This follows
+INV-DEPLOY-1's explicit-unavailability contract; the conversation pipeline owns
+its separate best-effort fallback at the call boundary.
 
 database.vector_db binds ``embeddings`` at import (``from utils.llm.clients
 import embeddings``) and ``from pinecone import Pinecone``, and its
@@ -114,13 +114,12 @@ def _setup_mocks(
 
 
 class TestFindSimilarActionItems:
-    def test_returns_empty_when_pinecone_not_configured(self, monkeypatch, vector_db):
-        """No-op cleanly when Pinecone isn't initialized (tests, local dev, env-var-missing)."""
+    def test_raises_typed_unavailable_when_vector_store_not_configured(self, monkeypatch, vector_db):
         _, fake_embeddings = _setup_mocks(monkeypatch, vector_db, index_none=True)
 
-        result = vector_db.find_similar_action_items('uid-abc', 'buy milk')
+        with pytest.raises(vector_db.ProjectionUnavailableError, match='vector store is not configured'):
+            vector_db.find_similar_action_items('uid-abc', 'buy milk')
 
-        assert result == []
         # Embedding call must not happen — no point spending OpenAI tokens if Pinecone is down.
         fake_embeddings.embed_query.assert_not_called()
 
@@ -167,21 +166,17 @@ class TestFindSimilarActionItems:
         assert kwargs['namespace'] == vector_db.ACTION_ITEMS_NAMESPACE
         assert kwargs['filter'] == {'uid': 'uid-abc'}
 
-    def test_pinecone_exception_returns_empty(self, monkeypatch, vector_db):
-        """A Pinecone outage must not fail the conversation pipeline."""
+    def test_vector_store_exception_raises_typed_unavailable(self, monkeypatch, vector_db):
         _setup_mocks(monkeypatch, vector_db, query_raises=RuntimeError('pinecone is down'))
 
-        result = vector_db.find_similar_action_items('uid-abc', 'buy milk')
+        with pytest.raises(vector_db.ProjectionUnavailableError, match='RuntimeError'):
+            vector_db.find_similar_action_items('uid-abc', 'buy milk')
 
-        assert result == []
-
-    def test_embedding_exception_returns_empty(self, monkeypatch, vector_db):
-        """An OpenAI embeddings outage must not fail the conversation pipeline."""
+    def test_embedding_exception_raises_typed_unavailable(self, monkeypatch, vector_db):
         _setup_mocks(monkeypatch, vector_db, embed_raises=RuntimeError('openai is down'))
 
-        result = vector_db.find_similar_action_items('uid-abc', 'buy milk')
-
-        assert result == []
+        with pytest.raises(vector_db.ProjectionUnavailableError, match='RuntimeError'):
+            vector_db.find_similar_action_items('uid-abc', 'buy milk')
 
     def test_empty_query_still_calls_pinecone(self, monkeypatch, vector_db):
         """The helper itself doesn't gate on empty query — that's the caller's concern.

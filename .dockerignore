@@ -1,1 +1,7 @@
 backend/google-credentials.json
+backend/.venv
+backend/.pytest_cache
+backend/**/__pycache__
+backend/_temp
+backend/syncing
+auth-server/node_modules

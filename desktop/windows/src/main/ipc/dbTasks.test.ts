@@ -13,6 +13,8 @@ import { bufferToVector } from './taskEmbeddingVector'
 import type { TaskStoreDb } from './taskStore'
 import {
   TASK_TABLES_SCHEMA,
+  activateTaskEmbeddingProjectionOn,
+  updateTaskEmbeddingIfProjectionOn,
   insertLocalActionItemOn,
   getLocalActionItemsOn,
   getRecentActiveActionItemsOn,
@@ -645,6 +647,45 @@ describe('getRecentActiveActionItems (recency order, active-only)', () => {
 })
 
 describe('embeddings + unsynced + counts', () => {
+  it('invalidates stored task vectors when the backend projection identity changes', () => {
+    const action = insertLocalActionItemOn(db, ai({ description: 'action' }))
+    const staged = insertLocalStagedTaskOn(db, st({ description: 'staged' }))
+    updateActionItemEmbeddingOn(db, action.id, new Float32Array([1, 2]))
+    updateStagedTaskEmbeddingOn(db, staged.id, new Float32Array([1, 2]))
+
+    expect(activateTaskEmbeddingProjectionOn(db, 'generic|model-a|2|1|v1|ns4')).toBe(true)
+    expect(activateTaskEmbeddingProjectionOn(db, 'generic|model-a|2|1|v1|ns4')).toBe(false)
+    expect(getAllActionItemEmbeddingsOn(db)).toEqual([])
+
+    updateActionItemEmbeddingOn(db, action.id, new Float32Array([1, 2]))
+    updateStagedTaskEmbeddingOn(db, staged.id, new Float32Array([1, 2]))
+
+    expect(activateTaskEmbeddingProjectionOn(db, 'generic|model-b|2|1|v2|ns4')).toBe(true)
+    expect(getAllActionItemEmbeddingsOn(db)).toEqual([])
+    expect(getAllStagedTaskEmbeddingsOn(db)).toEqual([])
+  })
+
+  it('records the first projection without a destructive rewrite for an empty legacy store', () => {
+    expect(activateTaskEmbeddingProjectionOn(db, 'generic|model-a|2|1|v1|ns4')).toBe(false)
+  })
+
+  it('rejects a stale response write after a newer projection wins the interleaving', () => {
+    const action = insertLocalActionItemOn(db, ai({ description: 'action' }))
+    const v1 = 'generic|model-a|2|1|v1|ns4'
+    const v2 = 'generic|model-b|2|1|v2|ns4'
+    activateTaskEmbeddingProjectionOn(db, v1)
+    // Request A has returned v1 but is paused. Request B activates v2 first.
+    activateTaskEmbeddingProjectionOn(db, v2)
+
+    expect(updateTaskEmbeddingIfProjectionOn(db, 'action_item', action.id, new Float32Array([1, 0]), v1)).toBe(
+      false
+    )
+    expect(getAllActionItemEmbeddingsOn(db)).toEqual([])
+    expect(updateTaskEmbeddingIfProjectionOn(db, 'action_item', action.id, new Float32Array([0, 1]), v2)).toBe(
+      true
+    )
+  })
+
   it('getAllActionItemEmbeddings round-trips vectors; missing-embeddings backfill lists the rest', () => {
     const withVec = insertLocalActionItemOn(db, ai({ description: 'has vec' }))
     updateActionItemEmbeddingOn(db, withVec.id, new Float32Array([0.5, -0.25, 1.0]))

@@ -13,6 +13,22 @@ struct OmiSession: Codable, Equatable, Sendable {
     /// Epoch seconds.
     let expiryTime: Double
     let tokenUserId: String
+    /// Missing on sessions written by older Firebase-only builds.
+    let authProvider: ContextIdentityProvider?
+
+    init(
+        idToken: String,
+        refreshToken: String,
+        expiryTime: Double,
+        tokenUserId: String,
+        authProvider: ContextIdentityProvider? = nil
+    ) {
+        self.idToken = idToken
+        self.refreshToken = refreshToken
+        self.expiryTime = expiryTime
+        self.tokenUserId = tokenUserId
+        self.authProvider = authProvider
+    }
 
     var isExpired: Bool { Date().timeIntervalSince1970 >= expiryTime }
 }

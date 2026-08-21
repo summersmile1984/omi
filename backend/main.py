@@ -11,6 +11,11 @@ load_backend_env()  # No-op if no env files exist (production); stage + local ov
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from utils.identity import identity_provider, validate_identity_configuration
+from config.push_provider import validate_push_provider
+
+validate_identity_configuration()
+
 import firebase_admin
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
@@ -88,6 +93,7 @@ from routers import (
     task_recommendations,
     conversation_finalization,
     public_shared_conversation_chat,
+    identity_browser,
 )
 
 from utils.other.timeout import TimeoutMiddleware
@@ -103,6 +109,7 @@ from utils.executors import (
 from utils.executors import start_background_task
 from utils.cloud_tasks import validate_account_deletion_dispatch_configuration
 from services.conversation_finalization import reconcile_listen_finalization_jobs
+from services.conversation_finalization import reconcile_meeting_receipts
 from services.conversation_finalization import reconcile_stale_processing_conversations
 from services.users.account_deletion import reconcile_pending_deletion_wipes
 
@@ -112,21 +119,27 @@ log_langsmith_status()
 # Validate Stripe price IDs so misconfigured plans fail loud
 validate_stripe_price_ids()
 
-_auth_emulator_host = os.environ.get("FIREBASE_AUTH_EMULATOR_HOST", "").strip()
-_firebase_admin_options = firebase_admin_options()
-if _auth_emulator_host:
-    for _adc_key in ("GOOGLE_APPLICATION_CREDENTIALS", "SERVICE_ACCOUNT_JSON", "FIREBASE_AUTH_CREDENTIALS_PATH"):
-        os.environ.pop(_adc_key, None)
-    _firebase_project_id = (
-        os.environ.get("FIREBASE_AUTH_PROJECT_ID") or os.environ.get("FIREBASE_PROJECT_ID") or "demo-omi-local"
-    )
-    firebase_admin.initialize_app(options={"projectId": _firebase_project_id})  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
-elif os.environ.get("SERVICE_ACCOUNT_JSON"):
-    service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
-    credentials = firebase_admin.credentials.Certificate(service_account_info)
-    firebase_admin.initialize_app(credentials, options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
-else:
-    firebase_admin.initialize_app(options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
+try:
+    _push_provider = validate_push_provider()
+except ValueError as error:
+    raise RuntimeError(str(error)) from error
+_firebase_admin_required = identity_provider() == 'firebase' or _push_provider == 'firebase'
+if _firebase_admin_required:
+    _auth_emulator_host = os.environ.get("FIREBASE_AUTH_EMULATOR_HOST", "").strip()
+    _firebase_admin_options = firebase_admin_options()
+    if _auth_emulator_host:
+        for _adc_key in ("GOOGLE_APPLICATION_CREDENTIALS", "SERVICE_ACCOUNT_JSON", "FIREBASE_AUTH_CREDENTIALS_PATH"):
+            os.environ.pop(_adc_key, None)
+        _firebase_project_id = (
+            os.environ.get("FIREBASE_AUTH_PROJECT_ID") or os.environ.get("FIREBASE_PROJECT_ID") or "demo-omi-local"
+        )
+        firebase_admin.initialize_app(options={"projectId": _firebase_project_id})  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
+    elif os.environ.get("SERVICE_ACCOUNT_JSON"):
+        service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
+        credentials = firebase_admin.credentials.Certificate(service_account_info)
+        firebase_admin.initialize_app(credentials, options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
+    else:
+        firebase_admin.initialize_app(options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
 
 app = FastAPI()
 
@@ -185,6 +198,7 @@ app.include_router(calendar_meetings.router)
 app.include_router(google_calendar.router)
 app.include_router(calendar_onboarding.router)
 app.include_router(oauth.router)  # Added oauth router (for Omi Apps)
+app.include_router(identity_browser.router)
 app.include_router(auth.router)  # Added auth router (for the main Omi App, this is the core auth router)
 
 
@@ -277,6 +291,10 @@ async def startup_event():
         run_blocking(db_executor, _drain_stale_processing_conversations),
         name='startup_stale_processing_reconcile',
     )
+    start_background_task(
+        run_blocking(db_executor, _drain_meeting_receipts),
+        name='startup_meeting_receipt_reconcile',
+    )
     start_background_task(_periodic_listen_finalization_reconcile(), name='periodic_listen_finalization_reconcile')
 
 
@@ -326,6 +344,16 @@ def _drain_stale_processing_conversations():
         logger.error(f"Startup stale-processing reconciliation failed: {e}")
 
 
+def _drain_meeting_receipts():
+    """Best-effort repair of missing meeting receipt intents and historical receipts."""
+    try:
+        result = reconcile_meeting_receipts()
+        if result.get('repaired') or result.get('backfilled'):
+            logger.info(f"Startup meeting-receipt reconciliation: {result}")
+    except Exception as e:
+        logger.error(f"Startup meeting-receipt reconciliation failed: {e}")
+
+
 def _listen_finalization_reconcile_interval_seconds() -> int:
     """Periodic reconcile cadence; overridable for hermetic behavioral tests."""
     try:
@@ -353,6 +381,12 @@ async def _periodic_listen_finalization_reconcile(interval_seconds: int | None =
                 logger.info(f"Periodic stale-processing reconciliation: {stale_result}")
         except Exception as e:
             logger.error(f"Periodic stale-processing reconciliation failed: {e}")
+        try:
+            receipt_result = await run_blocking(db_executor, reconcile_meeting_receipts)
+            if receipt_result.get('repaired') or receipt_result.get('backfilled'):
+                logger.info(f"Periodic meeting-receipt reconciliation: {receipt_result}")
+        except Exception as e:
+            logger.error(f"Periodic meeting-receipt reconciliation failed: {e}")
 
 
 @app.on_event("shutdown")  # type: ignore[reportDeprecated]  # FastAPI on_event still functional; lifespan migration would change app wiring

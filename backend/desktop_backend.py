@@ -17,11 +17,13 @@ from routers import (
     desktop_proxy,
     desktop_proactivity,
     desktop_realtime,
+    model_capabilities,
     desktop_screen_crisp,
     desktop_tts_updates,
 )
 from utils.env_loader import firebase_admin_options, load_backend_env
 from utils.http_client import close_all_clients
+from utils.identity import identity_provider
 
 
 def _initialize_firebase_admin() -> None:
@@ -56,7 +58,8 @@ def _initialize_firebase_admin() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     prepare_google_credentials()
-    _initialize_firebase_admin()
+    if identity_provider() == 'firebase':
+        _initialize_firebase_admin()
     try:
         yield
     finally:
@@ -91,6 +94,7 @@ def _build_app() -> FastAPI:
     app.include_router(desktop_proxy.router)
     app.include_router(desktop_proactivity.router)
     app.include_router(desktop_realtime.router)
+    app.include_router(model_capabilities.router)
     app.include_router(desktop_screen_crisp.router)
     app.include_router(desktop_tts_updates.router)
     app.include_router(desktop_deprecated.router)

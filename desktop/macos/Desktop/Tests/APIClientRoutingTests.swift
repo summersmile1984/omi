@@ -133,6 +133,35 @@ private func assertRoutes(
 // MARK: - Tests
 
 final class APIClientRoutingTests: XCTestCase {
+  func testRealtimeRelayURLRejectsCrossOriginBeforeBearerCanReachWebSocket() throws {
+    XCTAssertThrowsError(
+      try APIClient.resolvedRealtimeRelayURL(
+        "https://attacker.example/steal",
+        backendBaseURL: "https://operator.example/",
+        requireTLS: true))
+    XCTAssertThrowsError(
+      try APIClient.resolvedRealtimeRelayURL(
+        "http://operator.example/v1/model-capabilities/realtime/relay",
+        backendBaseURL: "http://operator.example/",
+        requireTLS: true))
+    XCTAssertThrowsError(
+      try APIClient.resolvedRealtimeRelayURL(
+        "wss://user:secret@operator.example/v1/model-capabilities/realtime/relay",
+        backendBaseURL: "https://operator.example/",
+        requireTLS: true))
+    XCTAssertThrowsError(
+      try APIClient.resolvedRealtimeRelayURL(
+        "/v1/model-capabilities/realtime/relay#ignored",
+        backendBaseURL: "https://operator.example/",
+        requireTLS: true))
+    XCTAssertEqual(
+      try APIClient.resolvedRealtimeRelayURL(
+        "/v1/model-capabilities/realtime/relay",
+        backendBaseURL: "https://operator.example/",
+        requireTLS: true
+      ).absoluteString,
+      "wss://operator.example/v1/model-capabilities/realtime/relay")
+  }
 
   // MARK: - URL property tests
 
@@ -426,6 +455,30 @@ final class APIClientRoutingTests: XCTestCase {
       MemoryExportDestination.chatgptOAuthClientID(forOAuthBaseURL: "https://api.omiapi.com/"),
       "omi-chatgpt-dev"
     )
+  }
+
+  func testSelfHostedMCPUsesExplicitOriginForServingAndOAuth() {
+    let bundleIdentifier = AppBuild.productionBundleIdentifier
+    let origin = "https://mcp.fork.example/"
+
+    XCTAssertEqual(
+      MemoryExportDestination.mcpServerURL(
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: origin,
+        deploymentProfile: .selfHosted),
+      "https://mcp.fork.example/v1/mcp/sse")
+    XCTAssertEqual(
+      MemoryExportDestination.mcpAuthorizeURL(
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: origin,
+        deploymentProfile: .selfHosted),
+      "https://mcp.fork.example/authorize")
+    XCTAssertEqual(
+      MemoryExportDestination.mcpTokenURL(
+        bundleIdentifier: bundleIdentifier,
+        environmentValue: origin,
+        deploymentProfile: .selfHosted),
+      "https://mcp.fork.example/token")
   }
 
   func testNonProductionBundlesDefaultToDevelopmentBackends() {

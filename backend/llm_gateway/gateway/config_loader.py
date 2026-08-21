@@ -12,16 +12,20 @@ from llm_gateway.gateway.schemas import FeatureBundle, GeneratedRouteOverride, L
 from utils.llm.gateway_client import feature_auto_lane_id
 from utils.llm.model_config import (
     get_all_configured_features,
-    get_model,
-    get_provider,
     get_route_options,
     is_structured_output_feature,
+    resolve_feature_route,
 )
 
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[1] / 'config'
 PROD_ENV_VAR = 'OMI_LLM_GATEWAY_PROD'
 GENERATED_ROUTE_OVERRIDES_FILE = 'generated_route_overrides.yaml'
 ConfigItem: TypeAlias = dict[str, Any]
+
+_STATIC_DEPLOYMENT_ROUTE_FEATURES = {
+    'omi:auto:public-shared-conversation-chat': 'public_shared_conversation_chat',
+    'omi:auto:chat-structured': 'chat_extraction',
+}
 
 
 class ConfigValidationError(ValueError):
@@ -50,7 +54,9 @@ def load_gateway_config(config_dir: str | Path | None = None, *, prod_mode: bool
     )
 
     lanes = _parse_lanes([*generated_lane_items, *lane_items])
-    route_artifacts = _parse_route_artifacts([*generated_artifact_items, *artifact_items], prod_mode=resolved_prod_mode)
+    route_artifacts = _parse_route_artifacts(
+        [*generated_artifact_items, *_resolve_static_deployment_routes(artifact_items)], prod_mode=resolved_prod_mode
+    )
     feature_bundles = _parse_feature_bundles([*generated_bundle_items, *bundle_items])
 
     _validate_lane_routes(lanes, route_artifacts)
@@ -145,6 +151,47 @@ def _parse_route_artifacts(items: list[ConfigItem], *, prod_mode: bool) -> dict[
     return route_artifacts
 
 
+def _resolve_static_deployment_routes(items: list[ConfigItem]) -> list[ConfigItem]:
+    """Apply the deployment manifest to legacy named lanes without changing their contracts.
+
+    These two lanes predate feature-generated routes and keep dedicated bundle,
+    timeout, output-budget, and credential policies. Their provider/model must
+    still resolve from the same deployment route manifest as every generated
+    lane; otherwise a global self-host route silently retains OpenAI traffic.
+    """
+
+    resolved_items: list[ConfigItem] = []
+    for original in items:
+        item = dict(original)
+        feature = _STATIC_DEPLOYMENT_ROUTE_FEATURES.get(str(item.get('lane_id', '')))
+        if feature is None:
+            resolved_items.append(item)
+            continue
+
+        route = resolve_feature_route(feature)
+        primary = {
+            'provider': route.primary.provider,
+            'model': _provider_model_name(route.primary.provider, route.primary.model),
+        }
+        configured_primary = item.get('primary')
+        if route.source == 'profile' and not route.fallbacks:
+            resolved_items.append(item)
+            continue
+
+        item['primary'] = primary
+        item['fallbacks'] = [
+            {'provider': fallback.provider, 'model': _provider_model_name(fallback.provider, fallback.model)}
+            for fallback in route.fallbacks
+        ]
+        if configured_primary != primary:
+            item['provider_options'] = get_route_options(feature, route.primary.model, route.primary.provider)
+        # The checked-in digest describes the checked-in provider route. Runtime
+        # deployment overlays use the schema-computed content digest instead.
+        item.pop('artifact_digest', None)
+        resolved_items.append(item)
+    return resolved_items
+
+
 def _parse_feature_bundles(items: list[ConfigItem]) -> dict[str, FeatureBundle]:
     feature_bundles: dict[str, FeatureBundle] = {}
     for item in items:
@@ -206,11 +253,14 @@ def _generated_feature_route_items(
     artifacts: list[dict[str, Any]] = []
     bundles: list[dict[str, Any]] = []
     for feature in sorted(get_all_configured_features()):
-        legacy_model = get_model(feature)
-        legacy_provider = get_provider(feature)
+        if feature == 'public_shared_conversation_chat':
+            # This gateway-only feature retains its dedicated non-streaming,
+            # no-fallback public endpoint lane and bundle contract.
+            continue
+        resolved_route = resolve_feature_route(feature)
         override = route_overrides.get(feature)
-        model = override.primary.model if override is not None else legacy_model
-        provider = override.primary.provider if override is not None else legacy_provider
+        model = resolved_route.primary.model
+        provider = resolved_route.primary.provider
         lane_id = feature_lane_id(feature)
         route_id = f"route.{feature}.model_config.001"
         surface = _surface_for_feature(feature, provider)
@@ -230,15 +280,22 @@ def _generated_feature_route_items(
         )
         primary = {'provider': provider, 'model': _provider_model_name(provider, model)}
         provider_options = get_route_options(feature, model, provider)
-        if override is not None:
+        # Gateway policy may tune the checked-in provider/model, but it must
+        # never replace the deployment-resolved route. ``primary`` is retained
+        # in the YAML schema as a match guard for those provider-specific knobs.
+        if override is not None and override.primary.provider == provider and override.primary.model == model:
             provider_options.update(override.provider_options)
+        fallbacks = [
+            {'provider': route.provider, 'model': _provider_model_name(route.provider, route.model)}
+            for route in resolved_route.fallbacks
+        ]
         artifacts.append(
             {
                 'route_artifact_id': route_id,
                 'lane_id': lane_id,
                 'surface': surface,
                 'primary': primary,
-                'fallbacks': [],
+                'fallbacks': fallbacks,
                 'provider_options': provider_options,
                 'output_budget': _output_budget_for_feature(feature, provider),
                 'timeouts': {
@@ -307,7 +364,8 @@ def _capabilities_for_feature(feature: str, *, provider: str, surface: str) -> d
     anthropic_messages = surface == 'anthropic.messages'
     return {
         'text_input': True,
-        'streaming': anthropic_messages or provider in {'openai', 'openrouter', 'perplexity', 'gemini'},
+        'streaming': anthropic_messages
+        or provider in {'openai', 'openrouter', 'perplexity', 'gemini', 'generic', 'deepseek', 'mimo'},
         'structured_output': structured_output,
         'tools': anthropic_messages or feature in {'chat_agent', 'memory_l2'},
         'translation': feature == 'translation',

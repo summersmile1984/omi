@@ -234,15 +234,13 @@ class _AuthComponentState extends State<AuthComponent> {
                         width: double.infinity,
                         height: 56,
                         child: ElevatedButton(
-                          key: const Key('betterAuthSignInButton'),
                           onPressed: () {
                             HapticFeedback.mediumImpact();
                             _showBetterAuthDialog(provider);
                           },
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.black,
-                            foregroundColor: Colors.white,
-                            side: const BorderSide(color: Colors.white24),
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black,
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
                           ),
                           child: const Row(

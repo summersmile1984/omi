@@ -257,7 +257,7 @@ class AuthenticationProvider extends BaseProvider {
   Future<String?> _getIdToken() async {
     try {
       final token = await AuthService.instance.getIdToken();
-      NotificationService.instance.saveNotificationToken();
+      NotificationService.instance.saveRemoteNotificationTokenIfSupported();
 
       Logger.debug('Firebase token retrieved successfully');
       return token;
@@ -328,6 +328,7 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   Future<void> linkWithGoogle() async {
+    AuthService.ensureProviderLinkAllowed(Env.profile);
     setLoading(true);
     try {
       final result = await completeProviderLinkAndMigrate(
@@ -350,6 +351,7 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   Future<void> linkWithApple() async {
+    AuthService.ensureProviderLinkAllowed(Env.profile);
     setLoading(true);
     try {
       final appleProvider = AppleAuthProvider();

@@ -5,12 +5,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Connect {{ app_name }} to Omi</title>
-    <!-- Include Firebase SDKs -->
+    {% if auth_provider != "better_auth" %}
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
-    <!-- Include FirebaseUI for easy login UI, or use custom Firebase auth calls -->
     <script src="https://www.gstatic.com/firebasejs/ui/6.0.1/firebase-ui-auth.js"></script>
     <link type="text/css" rel="stylesheet" href="https://www.gstatic.com/firebasejs/ui/6.0.1/firebase-ui-auth.css" />
+    {% endif %}
     {% include "_oauth_shared_styles.html" %}
 </head>
 
@@ -117,8 +117,10 @@
                             Sign in
                         </button>
                     </form>
+                    {% if auth_provider != "better_auth" %}
                     <div class="oauth-divider" id="social-sign-in-divider">or continue with</div>
                     <div id="firebaseui-auth-container"></div>
+                    {% endif %}
                     <div class="loader" id="loader" role="status" aria-live="polite">
                         <span class="spinner" aria-hidden="true"></span>
                         <span>Connecting…</span>
@@ -152,8 +154,9 @@
         const appId = "{{ app_id }}";
         const state = "{{ state }}";
         const csrfToken = "{{ csrf_token }}";
+        const identityCsrfToken = "{{ identity_csrf_token | default('') }}";
 
-        // Firebase configuration
+        {% if auth_provider != "better_auth" %}
         const firebaseConfig = {
             apiKey: "{{ firebase_api_key }}",
             authDomain: "{{ firebase_auth_domain }}",
@@ -162,6 +165,7 @@
 
         // Initialize Firebase
         firebase.initializeApp(firebaseConfig);
+        {% endif %}
 
         const loader = document.getElementById('loader');
         const errorMessage = document.getElementById('error-message');
@@ -190,8 +194,8 @@
             errorMessage.classList.add('is-visible');
             setLoading(false);
             emailSignInForm.style.display = 'grid';
-            socialSignInDivider.style.display = 'flex';
-            firebaseUiContainer.style.display = 'block';
+            if (socialSignInDivider) socialSignInDivider.style.display = 'flex';
+            if (firebaseUiContainer) firebaseUiContainer.style.display = 'block';
         }
 
         function showSignInError() {
@@ -200,8 +204,8 @@
 
         function hideSignInOptions() {
             emailSignInForm.style.display = 'none';
-            socialSignInDivider.style.display = 'none';
-            firebaseUiContainer.style.display = 'none';
+            if (socialSignInDivider) socialSignInDivider.style.display = 'none';
+            if (firebaseUiContainer) firebaseUiContainer.style.display = 'none';
         }
 
         function exchangeFirebaseToken(idToken) {
@@ -235,12 +239,17 @@
                 });
         }
 
-        function finishSignIn(user) {
+        function finishIdentityToken(idToken) {
             setLoading(true);
             hideSignInOptions();
             clearError();
+            exchangeFirebaseToken(idToken);
+        }
+
+        {% if auth_provider != "better_auth" %}
+        function finishSignIn(user) {
             user.getIdToken()
-                .then(exchangeFirebaseToken)
+                .then(finishIdentityToken)
                 .catch(function () {
                     showError('We could not complete sign-in. Please try again.');
                 });
@@ -257,6 +266,7 @@
         if (isAppleDevice()) {
             signInOptions.push('apple.com');
         }
+        {% endif %}
 
         emailSignInForm.addEventListener('submit', function (event) {
             event.preventDefault();
@@ -268,6 +278,25 @@
             }
 
             setLoading(true);
+            {% if auth_provider == "better_auth" %}
+            const identityForm = new FormData();
+            identityForm.append('email', emailInput.value.trim());
+            identityForm.append('password', passwordInput.value);
+            identityForm.append('csrf_token', identityCsrfToken);
+            fetch('/v1/identity/email-token', { method: 'POST', body: identityForm })
+                .then(function (response) {
+                    if (!response.ok) throw new Error('Sign-in failed');
+                    return response.json();
+                })
+                .then(function (data) {
+                    if (!data.token) throw new Error('Sign-in failed');
+                    finishIdentityToken(data.token);
+                })
+                .catch(function () {
+                    passwordInput.value = '';
+                    showSignInError();
+                });
+            {% else %}
             firebase.auth()
                 .signInWithEmailAndPassword(emailInput.value.trim(), passwordInput.value)
                 .then(function (result) {
@@ -277,8 +306,10 @@
                     passwordInput.value = '';
                     showSignInError();
                 });
+            {% endif %}
         });
 
+        {% if auth_provider != "better_auth" %}
         const uiConfig = {
             signInFlow: 'popup', // Use popup flow instead of redirect
             signInSuccessUrl: null, // We will handle redirect manually
@@ -301,6 +332,9 @@
         const ui = new firebaseui.auth.AuthUI(firebase.auth());
         // The start method will wait until the DOM is loaded.
         ui.start('#firebaseui-auth-container', uiConfig);
+        {% else %}
+        setLoading(false);
+        {% endif %}
 
     </script>
 </body>

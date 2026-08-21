@@ -36,6 +36,24 @@ def test_get_memories_tool_reads_arbitrary_uid_through_universal_service(monkeyp
     assert calls == [("uid-former-cohort", {"limit": 10, "offset": 0})]
 
 
+def test_get_memories_tool_does_not_report_provider_failure_as_empty(monkeypatch):
+    class _UnavailableService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def read(self, _uid, **_kwargs):
+            raise TimeoutError('database unavailable')
+
+    monkeypatch.setattr(memory_tools, "MemoryService", _UnavailableService)
+
+    result = memory_tools.get_memories_tool.invoke(
+        {"limit": 10, "offset": 0}, config={"configurable": {"user_id": "uid-1"}}
+    )
+
+    assert result == "Error retrieving memories: TimeoutError"
+    assert "No memories found" not in result
+
+
 def test_search_memories_tool_reads_arbitrary_uid_through_universal_service(monkeypatch):
     calls = []
     match = SimpleNamespace(memory=_Memory(), score=0.91)

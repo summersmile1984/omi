@@ -21,6 +21,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from utils.egress_policy import httpx_request_event_hooks
+
 logger = logging.getLogger(__name__)
 
 
@@ -415,6 +417,7 @@ def get_webhook_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=2.0),
             limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -426,6 +429,7 @@ def get_maps_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=2.0),
             limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -448,6 +452,7 @@ def get_auth_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=2.0),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=0),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -459,6 +464,7 @@ def get_stt_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(300.0, connect=5.0),
             limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -482,6 +488,7 @@ def get_stt_proxy_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(300.0, connect=5.0),
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=0),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -501,6 +508,7 @@ def get_tts_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(60.0, connect=5.0),
             limits=httpx.Limits(max_connections=32, max_keepalive_connections=0),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -516,6 +524,7 @@ def get_web_fetch_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(15.0, connect=5.0),
             limits=httpx.Limits(max_connections=16, max_keepalive_connections=4),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -527,6 +536,7 @@ def get_llm_gateway_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(20.0, connect=3.0),
             limits=httpx.Limits(max_connections=24, max_keepalive_connections=12),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -543,6 +553,7 @@ def get_desktop_gemini_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=70.0, write=15.0, pool=5.0),
             limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 
@@ -559,6 +570,7 @@ def get_desktop_gemini_stream_client() -> httpx.AsyncClient:
         lambda: httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=15.0, pool=5.0),
             limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            event_hooks=httpx_request_event_hooks(),
         ),
     )
 

@@ -536,11 +536,12 @@ actor TaskAssistant: ProactiveAssistant {
   /// Generate embedding for a newly saved staged task and store it
   private func generateEmbeddingForTask(id: Int64, text: String) async {
     do {
-      let embedding = try await EmbeddingService.shared.embed(text: text)
-      let data = await EmbeddingService.shared.floatsToData(embedding)
-      try await StagedTaskStorage.shared.updateEmbedding(id: id, embedding: data)
-      await EmbeddingService.shared.addToIndex(source: .staged, id: id, embedding: embedding)
-      log("Task: Generated embedding for staged task \(id)")
+      let result = try await EmbeddingService.shared.embedProjected(text: text)
+      if try await EmbeddingService.shared.persistStagedEmbedding(id: id, result: result) {
+        log("Task: Generated embedding for staged task \(id)")
+      } else {
+        log("Task: Discarded stale embedding for staged task \(id) after projection changed")
+      }
     } catch {
       logError("Task: Failed to generate embedding for staged task \(id)", error: error)
     }
@@ -1689,8 +1690,10 @@ actor TaskAssistant: ProactiveAssistant {
     var results: [TaskSearchResult] = []
 
     do {
-      let queryEmbedding = try await EmbeddingService.shared.embed(text: query)
-      let vectorResults = await EmbeddingService.shared.searchSimilar(query: queryEmbedding, topK: 10)
+      let queryEmbedding = try await EmbeddingService.shared.embedProjected(
+        text: query, taskType: "RETRIEVAL_QUERY")
+      let vectorResults = await EmbeddingService.shared.searchSimilar(
+        projectedQuery: queryEmbedding, topK: 10)
 
       for result in vectorResults where result.similarity > 0.3 {
         // Resolve against the exact table the embedding came from — the

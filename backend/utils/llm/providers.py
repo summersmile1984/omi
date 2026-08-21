@@ -68,7 +68,12 @@ class OpenAICompatibleProviderConfig:
 
 
 OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
-    'openai': OpenAICompatibleProviderConfig(name='openai', api_key_env='OPENAI_API_KEY'),
+    'openai': OpenAICompatibleProviderConfig(
+        name='openai',
+        api_key_env='OPENAI_API_KEY',
+        base_url='https://api.openai.com/v1',
+        base_url_env='OPENAI_BASE_URL',
+    ),
     'openrouter': OpenAICompatibleProviderConfig(
         name='openrouter',
         api_key_env='OPENROUTER_API_KEY',
@@ -131,7 +136,7 @@ def _cache_key(provider: str, model_name: str, streaming: bool, options: Dict[st
     return provider, model_name, streaming, option_items
 
 
-def _api_model_name(provider_config: OpenAICompatibleProviderConfig, model_name: str) -> str:
+def openai_compatible_api_model_name(provider_config: OpenAICompatibleProviderConfig, model_name: str) -> str:
     if provider_config.prefix_google_models and model_name.startswith('gemini'):
         return f'google/{model_name}'
     return model_name
@@ -278,7 +283,7 @@ def get_or_create_gemini_llm(
     Routing priority:
       1. USE_VERTEX_AI=true + GOOGLE_CLOUD_PROJECT → Vertex AI
       2. GEMINI_API_KEY set → AI Studio
-      3. Neither → placeholder that fails at invoke time (unit tests)
+      3. Neither → fail before an SDK client or official URL is constructed
 
     BYOK users still go through the OpenAI-compatible Gemini endpoint in clients.py.
     """

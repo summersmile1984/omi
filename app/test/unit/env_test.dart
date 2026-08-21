@@ -32,6 +32,16 @@ class _TestEnvFields implements EnvFields {
 }
 
 void main() {
+  group('Android flavor trust plane', () {
+    test('selfhost is a production-family flavor', () {
+      expect(Environment.fromFlavorName('selfhost'), Environment.prod);
+    });
+
+    test('unknown flavors remain fail-safe development builds', () {
+      expect(Environment.fromFlavorName('unexpected'), Environment.dev);
+    });
+  });
+
   // Init once for the entire test suite (late final constraint)
   setUpAll(() {
     Env.init(_TestEnvFields());
@@ -85,6 +95,70 @@ void main() {
       expect(AppEnvironmentProfile.localProd.usesFirebaseAuthEmulator, isFalse);
       expect(AppEnvironmentProfile.localProd.allowsProductionData, isTrue);
       expect(AppEnvironmentProfile.localProd.authCallbackScheme, 'omi');
+    });
+
+    test('self-hosted profile has no Firebase or Omi endpoint default', () {
+      expect(AppEnvironmentProfile.selfHosted.defaultApiBaseUrl, isEmpty);
+      expect(AppEnvironmentProfile.selfHosted.firebaseProjectId, isEmpty);
+      expect(AppEnvironmentProfile.selfHosted.usesFirebaseAuthEmulator, isFalse);
+      expect(AppEnvironmentProfile.selfHosted.managedClientValue('managed-secret'), isNull);
+      expect(AppEnvironmentProfile.production.managedClientValue('managed-secret'), 'managed-secret');
+    });
+
+    test('self-hosted app instructions never fall back to managed GitHub content', () {
+      const managedPath = 'https://raw.githubusercontent.com/BasedHardware/Omi/main/plugins/instructions/a/README.md';
+      expect(Env.isManagedAppInstructionsPath(managedPath), isTrue);
+      expect(
+        Env.supportsAppInstructions(raw: managedPath, configuredProfile: AppEnvironmentProfile.selfHosted),
+        isFalse,
+      );
+      expect(
+        Env.supportsAppInstructions(raw: managedPath, configuredProfile: AppEnvironmentProfile.production),
+        isTrue,
+      );
+    });
+
+    test('self-hosted clients cannot download models from managed origins', () {
+      expect(
+        Env.allowsManagedModelDownloads(configuredProfile: AppEnvironmentProfile.selfHosted),
+        isFalse,
+      );
+      expect(
+        Env.allowsManagedModelDownloads(configuredProfile: AppEnvironmentProfile.production),
+        isTrue,
+      );
+    });
+
+    test('self-hosted firmware downloads require an operator HTTPS origin', () {
+      expect(
+        Env.validateFirmwareDownloadUrl(
+          'https://objects.example.com/firmware/Omi_CV1.zip?sig=operator',
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+        ),
+        'https://objects.example.com/firmware/Omi_CV1.zip?sig=operator',
+      );
+      for (final invalid in [
+        'http://objects.example.com/firmware/Omi_CV1.zip',
+        'https://api.omi.me/releases/Omi_CV1.zip',
+        'https://github.com/BasedHardware/omi/releases/download/fw.zip',
+        'https://objects.githubusercontent.com/omi/fw.zip',
+        'https://user:secret@objects.example.com/firmware/Omi_CV1.zip',
+        'https://objects.example.com/firmware/Omi_CV1.zip#fragment',
+        'not-a-url',
+      ]) {
+        expect(
+          () => Env.validateFirmwareDownloadUrl(invalid, configuredProfile: AppEnvironmentProfile.selfHosted),
+          throwsStateError,
+          reason: invalid,
+        );
+      }
+      expect(
+        Env.validateFirmwareDownloadUrl(
+          'https://github.com/BasedHardware/omi/releases/download/fw.zip',
+          configuredProfile: AppEnvironmentProfile.production,
+        ),
+        'https://github.com/BasedHardware/omi/releases/download/fw.zip',
+      );
     });
 
     test('local profile rejects a production Firebase project', () {
@@ -226,6 +300,118 @@ void main() {
         ),
         throwsStateError,
       );
+    });
+
+    test('self-hosted release accepts only an explicit non-Omi HTTPS API', () {
+      Env.validateStartupRouting(
+        productionFamily: true,
+        configuredProfile: AppEnvironmentProfile.selfHosted,
+        configuredApiBaseUrl: 'https://api.example.com/',
+        releaseBuild: true,
+      );
+      for (final endpoint in ['http://api.example.com/', 'https://api.omi.me/', 'https://api.omiapi.com/', '']) {
+        expect(
+          () => Env.validateStartupRouting(
+            productionFamily: true,
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredApiBaseUrl: endpoint,
+            releaseBuild: true,
+          ),
+          throwsStateError,
+          reason: endpoint,
+        );
+      }
+      for (final endpoint in [
+        'https://user:secret@api.example.com/',
+        'https://api.example.com/path',
+        'https://api.example.com/?query=value',
+        'https://api.example.com/#fragment',
+      ]) {
+        expect(
+          () => Env.validateStartupRouting(
+            productionFamily: true,
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredApiBaseUrl: endpoint,
+            releaseBuild: true,
+          ),
+          throwsStateError,
+          reason: endpoint,
+        );
+      }
+      expect(
+        Env.canonicalSelfHostedOrigin(
+          'HTTPS://API.Example.COM:443/',
+          key: 'OMI_API_BASE_URL',
+        ),
+        'https://api.example.com',
+      );
+    });
+
+    test('self-hosted client public origins are explicit, HTTPS, and non-Omi', () {
+      Env.validateClientPublicOrigins(
+        configuredProfile: AppEnvironmentProfile.selfHosted,
+        configuredPrivacyUrl: 'https://legal.example.com/privacy',
+        configuredTermsUrl: 'https://legal.example.com/terms',
+        configuredShareUrl: 'https://share.example.com',
+        configuredMcpBaseUrl: 'https://mcp.example.com',
+      );
+      for (final invalid in ['', 'http://legal.example.com/privacy', 'https://www.omi.me/pages/privacy']) {
+        expect(
+          () => Env.validateClientPublicOrigins(
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredPrivacyUrl: invalid,
+            configuredTermsUrl: 'https://legal.example.com/terms',
+            configuredShareUrl: 'https://share.example.com',
+            configuredMcpBaseUrl: 'https://mcp.example.com',
+          ),
+          throwsStateError,
+        );
+      }
+    });
+
+    test('self-hosted MCP authority is explicit and distinct from the API origin', () {
+      expect(
+        Env.resolveMcpBaseUrl(
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredMcpBaseUrl: 'HTTPS://MCP.Example.COM:443/',
+          configuredApiBaseUrl: 'https://api.example.com/',
+        ),
+        'https://mcp.example.com/',
+      );
+      for (final invalid in ['', 'http://mcp.example.com', 'https://api.omi.me', 'https://mcp.example.com/root']) {
+        expect(
+          () => Env.resolveMcpBaseUrl(
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredMcpBaseUrl: invalid,
+            configuredApiBaseUrl: 'https://api.example.com/',
+          ),
+          throwsStateError,
+        );
+      }
+    });
+
+    test('self-hosted share origin never falls back to the managed service', () {
+      expect(
+        Env.resolveShareBaseUrl(
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredShareUrl: 'HTTPS://SHARE.Example.COM:443/',
+        ),
+        'https://share.example.com',
+      );
+      for (final invalid in ['', 'http://share.example.com', 'https://h.omi.me', 'https://share.example.com/path']) {
+        expect(
+          () => Env.resolveShareBaseUrl(
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredShareUrl: invalid,
+          ),
+          throwsStateError,
+        );
+      }
+    });
+
+    test('native capture configuration has no managed API fallback', () {
+      expect(Env.requireConfiguredApiBaseUrl('https://api.example.com/'), 'https://api.example.com/');
+      expect(() => Env.requireConfiguredApiBaseUrl(''), throwsStateError);
     });
 
     test('local development startup accepts the emulator API', () {

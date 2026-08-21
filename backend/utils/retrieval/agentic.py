@@ -60,11 +60,12 @@ from utils.retrieval.safety import (
     should_retry_provider_error,
     INPUT_TOO_LONG_MESSAGE,
 )
+from utils.retrieval.web_search_gate import SERVER_WEB_SEARCH_NAME, WEB_SEARCH_TOOL, request_tools_after_private_taint
 from utils.observability.fallback import record_fallback
 from utils.llm.byok_errors import handle_llm_error_async
-from utils.llm.clients import anthropic_client, ANTHROPIC_AGENT_MODEL, get_llm, num_tokens_from_string
+from utils.llm.clients import anthropic_client, get_llm, get_model, num_tokens_from_string
+from utils.llm.model_config import get_provider
 from utils.llm.usage_tracker import reset_usage_context, set_usage_context
-from utils.byok import get_byok_key
 from utils.llm.chat import _get_agentic_qa_prompt, get_current_datetime_block, get_user_timezone
 from utils.executors import run_blocking, db_executor
 from database.redis_db import get_cached_user_geolocation
@@ -74,14 +75,6 @@ from utils.conversations.location import async_get_google_maps_city
 from utils.other.endpoints import timeit
 from utils.observability.langsmith import is_langsmith_enabled
 import logging
-
-try:
-    from utils.llm.gateway_client import should_route_chat_agent_through_gateway
-except ImportError:
-
-    def should_route_chat_agent_through_gateway() -> bool:
-        return False
-
 
 # Import langsmith traceable if available
 try:
@@ -98,24 +91,24 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-class _PerplexityWebSearchToolProxy:
-    """Lazy adapter for the gateway-only web-search function tool.
+class _WebSearchToolProxy:
+    """Lazy adapter for the deployment-selected web-search function tool.
 
     Agentic unit tests intentionally load this module with a minimal LangChain
-    stub. Avoid importing the optional Perplexity tool module at import time,
-    while retaining the real LangChain tool and gateway implementation when a
+    stub. Avoid importing the optional web-search tool module at import time,
+    while retaining the real LangChain tool and selected implementation when a
     managed request actually executes it.
     """
 
-    name = 'perplexity_web_search_tool'
-    description = 'Search the web for current information using Perplexity AI.'
+    name = 'web_search_tool'
+    description = 'Search the web for current public information.'
 
     @property
     def args_schema(self):
         try:
-            from utils.retrieval.tools.perplexity_tools import perplexity_web_search_tool
+            from utils.retrieval.tools.web_search_tools import web_search_tool
 
-            return perplexity_web_search_tool.args_schema
+            return web_search_tool.args_schema
         except ModuleNotFoundError as error:
             if error.name != 'langchain_core.tools':
                 raise
@@ -131,12 +124,12 @@ class _PerplexityWebSearchToolProxy:
             return _FallbackArgsSchema
 
     async def ainvoke(self, tool_input, config=None):
-        from utils.retrieval.tools.perplexity_tools import perplexity_web_search_tool
+        from utils.retrieval.tools.web_search_tools import web_search_tool
 
-        return await perplexity_web_search_tool.ainvoke(tool_input, config=config)
+        return await web_search_tool.ainvoke(tool_input, config=config)
 
 
-perplexity_web_search_tool = _PerplexityWebSearchToolProxy()
+web_search_tool = _WebSearchToolProxy()
 
 
 def _positive_timeout_from_env(name: str, default: float) -> float:
@@ -382,13 +375,6 @@ def _langchain_tool_to_anthropic(lc_tool, defer_loading: bool = False) -> dict:
 TOOL_SEARCH_TOOL = {
     "type": "tool_search_tool_regex_20251119",
     "name": "tool_search_tool_regex",
-}
-
-# Web search tool — Anthropic's built-in server-side web search (replaces Perplexity)
-WEB_SEARCH_TOOL = {
-    "type": "web_search_20260209",
-    "name": "web_search",
-    "max_uses": 5,
 }
 
 
@@ -650,6 +636,10 @@ async def _run_anthropic_agent_stream(
     Returns ``None`` when the loop finished on its own terms, or a short failure reason when it
     gave up on the provider.
     """
+    # Resolve at the request boundary so deployment route changes never leave a
+    # module-import-time Anthropic model pinned behind the shared manifest.
+    agent_model = get_model('chat_agent')
+
     # System prompt with cache_control for Anthropic prompt caching
     # TTL=1h: Anthropic changed default from 1h→5m on 2026-03-06; interactive chat
     # sessions have gaps >5min between turns, so the 5-min default kills cache hit rate.
@@ -658,8 +648,16 @@ async def _run_anthropic_agent_stream(
     producer_started_at = asyncio.get_running_loop().time()
     loop_iteration = 0
 
+    # Re-decide the server-side web_search offer inside the loop. The taint
+    # only appears after tool results are appended; see web_search_gate.py.
+    server_web_search_withheld = False
+
     while True:
         loop_iteration += 1
+
+        request_tools, server_web_search_withheld = request_tools_after_private_taint(
+            tool_schemas, messages, withheld=server_web_search_withheld
+        )
 
         attempts_made = 0
         retried_reason: Optional[str] = None
@@ -671,10 +669,10 @@ async def _run_anthropic_agent_stream(
 
             try:
                 async with anthropic_client.messages.stream(
-                    model=ANTHROPIC_AGENT_MODEL,
+                    model=agent_model,
                     system=system_blocks,
                     messages=messages,
-                    tools=tool_schemas,
+                    tools=request_tools,
                     max_tokens=8192,
                     # Anthropic moves this breakpoint to the last cacheable message
                     # block on every request. That incrementally caches both the
@@ -746,7 +744,7 @@ async def _run_anthropic_agent_stream(
                     await asyncio.sleep(AGENT_STREAM_PROVIDER_RETRY_BACKOFF_SECONDS)
                     continue
 
-                await handle_llm_error_async(e, 'anthropic', feature='chat_agent', model=ANTHROPIC_AGENT_MODEL)
+                await handle_llm_error_async(e, 'anthropic', feature='chat_agent', model=agent_model)
                 # ``put_data`` alone reaches the live stream but not the persisted answer, so the
                 # router would overwrite this apology with its own canned error.
                 await _put_answer_text(callback, full_response, "\n\nSorry, I encountered an error. Please try again.")
@@ -1212,7 +1210,7 @@ async def execute_agentic_chat_stream(
 
     # Setup and post-setup TTFT use separate clocks so multi-second prompt/tool
     # loading cannot silently consume the first-stream-event window.
-    gateway_feature_mode = False
+    openai_compatible_agent_mode = False
     try:
         # Resolve the user's timezone once and reuse it for both the system prompt and the
         # injected datetime block, avoiding a duplicate notification_db lookup per request.
@@ -1224,8 +1222,10 @@ async def execute_agentic_chat_stream(
         if setup_remaining <= 0:
             raise asyncio.TimeoutError()
         async with asyncio.timeout(setup_remaining):
-            # BYOK Anthropic and CHAT_AGENT_ROUTE=direct stay off the managed OpenAI lane.
-            gateway_feature_mode = should_route_chat_agent_through_gateway() and not bool(get_byok_key('anthropic'))
+            # Provider choice and transport choice are independent. Anthropic can
+            # use the gateway's Messages surface; any OpenAI-compatible provider
+            # uses the same tool loop in direct and gateway modes.
+            openai_compatible_agent_mode = get_provider('chat_agent') != 'anthropic'
             tz = tz or await run_blocking(db_executor, get_user_timezone, uid)
             city = await get_mobile_city(uid, platform) if current_datetime_block is None else None
             system_prompt = await run_blocking(
@@ -1294,7 +1294,7 @@ async def execute_agentic_chat_stream(
             # Tool names are prefixed with app_id; extract the human-readable app name from description
             app_names.add(t.name)
         app_tool_names = ", ".join(sorted(app_names))
-        if gateway_feature_mode:
+        if openai_compatible_agent_mode:
             system_prompt += f"""
 
 <available_app_tools>
@@ -1323,20 +1323,17 @@ IMPORTANT: Always search for and use these tools when relevant. Never tell the u
 You have fetch_url_tool available. When the user shares any URL (starting with http:// or https://), you MUST call fetch_url_tool to read its content before responding. Never say you cannot browse, visit, or read a URL. Always attempt to fetch it first.
 </url_fetching_instructions>"""
 
-    # Build the canonical tool schemas once. Direct mode keeps Anthropic's shape;
-    # managed mode converts function tools to the OpenAI-compatible shape below.
+    # Build the canonical tool schemas once. Web search is always replaced by
+    # the provider-neutral client tool so WEB_SEARCH_TRANSPORT remains the sole
+    # authority even when chat itself uses Anthropic's Messages protocol.
     tool_schemas, tool_registry = _convert_tools(core_tools, app_tools)
-    if gateway_feature_mode:
-        # Anthropic's native web_search server tool is not understood by the
-        # OpenAI-compatible gateway. Expose the existing Perplexity-backed
-        # function tool in the managed lane and register the same object for
-        # execution; direct Anthropic mode keeps the native server tool above.
-        tool_registry = dict(tool_registry)
-        tool_registry[perplexity_web_search_tool.name] = perplexity_web_search_tool
-        tool_schemas = [
-            *tool_schemas,
-            _langchain_tool_to_anthropic(perplexity_web_search_tool, defer_loading=False),
-        ]
+    tool_registry = dict(tool_registry)
+    tool_registry[web_search_tool.name] = web_search_tool
+    tool_schemas = [
+        *(schema for schema in tool_schemas if schema.get('name') != WEB_SEARCH_TOOL['name']),
+        _langchain_tool_to_anthropic(web_search_tool, defer_loading=False),
+    ]
+    if openai_compatible_agent_mode:
         tool_schemas = _convert_anthropic_tools_to_openai(tool_schemas)
 
     # Build the provider-neutral role/content message shape. The current datetime is injected
@@ -1382,7 +1379,7 @@ You have fetch_url_tool available. When the user shares any URL (starting with h
     # Start the provider-specific agent task. Direct mode retains the native Anthropic
     # Messages contract for BYOK/specialist callers; managed feature mode uses the gateway's
     # OpenAI-compatible chat-completions contract.
-    agent_runner = _run_openai_agent_stream if gateway_feature_mode else _run_anthropic_agent_stream
+    agent_runner = _run_openai_agent_stream if openai_compatible_agent_mode else _run_anthropic_agent_stream
     task = asyncio.create_task(
         agent_runner(
             system_prompt,

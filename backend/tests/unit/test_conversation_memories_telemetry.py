@@ -169,6 +169,21 @@ def test_posthog_failure_is_swallowed_and_records_bounded_fallback(monkeypatch):
     ]
 
 
+def test_self_hosted_profile_ignores_ambient_posthog_configuration(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('POSTHOG_PROJECT_API_KEY', 'ambient-managed-key')
+    monkeypatch.delenv('POSTHOG_HOST', raising=False)
+    monkeypatch.setattr(
+        met.importlib,
+        'import_module',
+        lambda _name: pytest.fail('self-hosted telemetry must not import PostHog'),
+    )
+    met._posthog_client = None
+    met._posthog_disabled = False
+    _emit('uid-1', 'conv-self-hosted', count=2)
+    assert met._posthog_client is None
+
+
 def test_payload_properties_carry_no_content_or_identifiers():
     fake = FakePosthog()
     met.set_posthog_client_for_tests(fake)

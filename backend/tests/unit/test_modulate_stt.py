@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from utils.egress_policy import EgressPolicyUnavailable
 from utils.stt.streaming import (
     STTService,
     SafeModulateSocket,
@@ -403,6 +404,17 @@ class TestUtteranceHandling(unittest.TestCase):
 
 
 class TestModulatePrerecorded(unittest.TestCase):
+    @patch.dict('os.environ', {'MODULATE_API_KEY': 'test-key', 'OMI_DEPLOYMENT_PROFILE': 'self_hosted'}, clear=False)
+    @patch('utils.stt.pre_recorded.httpx.Client')
+    def test_neutral_profile_rejects_official_batch_authority_before_network(self, mock_client_cls):
+        from utils.stt.pre_recorded import modulate_prerecorded_from_bytes
+
+        with self.assertRaises(RuntimeError) as error:
+            modulate_prerecorded_from_bytes(b'\x00' * 100, 16000)
+
+        self.assertIsInstance(error.exception.__cause__, EgressPolicyUnavailable)
+        mock_client_cls.assert_not_called()
+
     @patch.dict('os.environ', {'MODULATE_API_KEY': 'test-key'})
     @patch('utils.stt.pre_recorded.httpx.Client')
     def test_basic_transcription(self, mock_client_cls):

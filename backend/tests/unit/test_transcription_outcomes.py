@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from config.prerecorded_stt import PrerecordedSTTConfigurationError
+from config.prerecorded_stt import PrerecordedSTTConfigurationError, PrerecordedSTTService
 from utils.observability.transcription import LiveSTTAttempt, TranscriptionAttempt, record_live_stt_failure
 from utils.stt.outcomes import (
     TranscriptionFailure,
@@ -55,6 +55,21 @@ def test_unknown_provider_is_bounded_in_public_failure():
     failure = TranscriptionFailure(TranscriptionOutcome.UPSTREAM_ERROR, provider='user-supplied-provider')
     assert failure.provider == 'unknown'
     assert failure.as_detail()['provider'] == 'unknown'
+
+
+def test_every_enabled_prerecorded_provider_has_a_bounded_public_label():
+    providers = {
+        PrerecordedSTTService.DEEPGRAM,
+        PrerecordedSTTService.MODULATE,
+        PrerecordedSTTService.PARAKEET,
+        PrerecordedSTTService.SENSEVOICE,
+        PrerecordedSTTService.MIMO,
+        PrerecordedSTTService.MOSS,
+        PrerecordedSTTService.MLX_MOSS_DIARIZE,
+    }
+    assert {
+        TranscriptionFailure(TranscriptionOutcome.UPSTREAM_ERROR, provider=provider).provider for provider in providers
+    } == providers
 
 
 @patch('utils.observability.transcription.OMI_TRANSCRIPTION_LATENCY_SECONDS')

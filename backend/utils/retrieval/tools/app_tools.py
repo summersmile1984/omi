@@ -29,6 +29,7 @@ from database.webhook_health import (
 from models.app import App, ChatTool
 from utils.mcp_client import call_mcp_tool
 from utils.http_client import get_webhook_circuit_breaker
+from utils.egress_policy import EgressPolicyUnavailable, assert_http_endpoint_allowed
 from utils.executors import db_executor, run_blocking
 from utils.notifications import send_notification
 import logging
@@ -207,6 +208,10 @@ def create_app_tool(
             kwargs.pop('config', None)
             if await run_blocking(db_executor, is_app_webhook_disabled, app_id):
                 return f"The {app_tool.name} tool is temporarily disabled due to sustained failures."
+            try:
+                assert_http_endpoint_allowed(_mcp_url)
+            except EgressPolicyUnavailable as error:
+                return f"Error calling MCP tool {app_tool.name}: deployment_capability_unavailable/{error.reason}"
             cb = get_webhook_circuit_breaker(_mcp_url)
             if not cb.allow_request():
                 return f"The {app_tool.name} tool is temporarily unavailable. Please try again shortly."
@@ -314,6 +319,14 @@ async def _call_tool_endpoint(
 
     if await run_blocking(db_executor, is_app_webhook_disabled, app_id):
         return f"The {app_tool.name} tool is temporarily disabled due to sustained failures. The app developer has been notified."
+
+    try:
+        # App tools are user-configured remote authorities.  In a neutral
+        # profile they must be explicitly allowlisted before constructing an
+        # AsyncClient or opening a socket.
+        assert_http_endpoint_allowed(app_tool.endpoint)
+    except EgressPolicyUnavailable as error:
+        return f"Error calling {app_tool.name}: deployment_capability_unavailable/{error.reason}"
 
     cb = get_webhook_circuit_breaker(app_tool.endpoint)
     if not cb.allow_request():

@@ -24,8 +24,6 @@ _OPENAI_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 # Leftover AI Studio Live token mint. Vertex Live is not wired here; this is
 # not the $1k/day Flash text bill. See backend/docs/vertex-pt-flash.md.
 _GEMINI_AUTH_TOKENS_URL = "https://generativelanguage.googleapis.com/v1alpha/auth_tokens"
-_OPENAI_REALTIME_MODEL = "gpt-realtime-2"
-_GEMINI_LIVE_MODEL = "models/gemini-3.1-flash-live-preview"
 _SESSION_START_WINDOW_MIN = 2
 _SESSION_MAX_MIN = 30
 

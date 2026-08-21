@@ -15,7 +15,6 @@ from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEve
 from deepgram.clients.live.v1 import LiveOptions
 
 from config.stt_provider_policy import (
-    MIMO_PROVIDER,
     MODULATE_PROVIDER,
     PARAKEET_PROVIDER,
     SENSEVOICE_PROVIDER,
@@ -26,8 +25,10 @@ from config.stt_provider_policy import (
     normalized_stt_language,
     parakeet_supports_language,
     provider_is_enabled,
+    sensevoice_supports_language,
     supports_live_multilingual_mode,
 )
+from utils.sensevoice.socket import SenseVoiceSocket, get_sensevoice_recognizer, sensevoice_model_is_ready
 from utils.async_tasks import create_named_task
 from utils.byok import get_byok_key
 from utils.executors import sync_executor, run_blocking
@@ -45,6 +46,7 @@ from utils.stt.speaker_embedding import (
     SPEAKER_MATCH_THRESHOLD,
     async_extract_embedding_from_bytes,
     compare_embeddings,
+    speaker_embedding_provider,
 )
 from utils.observability.fallback import record_fallback
 from utils.other.backoff import calculate_backoff_with_jitter
@@ -58,7 +60,6 @@ class STTService(str, Enum):
     modulate = "modulate"
     parakeet = "parakeet"
     sensevoice = "sensevoice"
-    mimo = "mimo"
 
     @staticmethod
     def get_model_name(value: 'STTService') -> Optional[str]:
@@ -70,8 +71,6 @@ class STTService(str, Enum):
             return 'parakeet_streaming'
         if value == STTService.sensevoice:
             return 'sensevoice_streaming'
-        if value == STTService.mimo:
-            return 'mimo_streaming'
 
 
 class ParakeetConnectionError(RuntimeError):
@@ -380,6 +379,10 @@ DEFAULT_STT_SERVICE_MODELS = default_models_for_surface(STTServingSurface.STREAM
 stt_service_models = os.getenv('STT_SERVICE_MODELS', ','.join(DEFAULT_STT_SERVICE_MODELS)).split(',')
 
 
+def _policy_default_fallback_enabled() -> bool:
+    return os.getenv('STT_ROUTE_FALLBACK_TO_DEFAULT', 'true').strip().lower() == 'true'
+
+
 def modulate_is_configured_fallback(language: Optional[str]) -> bool:
     """Return whether Modulate may take over a session whose primary failed.
 
@@ -500,10 +503,6 @@ def get_stt_service_for_language(
         parakeet_fallback_reason: Optional[str] = None
         for model in _models_with_preferred_service(models, preferred_service=preferred_service):
             model = model.strip()
-            if model == 'sensevoice' and provider_is_enabled(SENSEVOICE_PROVIDER, surface) and _sensevoice_available():
-                return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
-            if model == 'mimo' and provider_is_enabled(MIMO_PROVIDER, surface) and _mimo_available():
-                return (STTService.mimo, requested_language, 'mimo'), parakeet_fallback_reason
             if (
                 model.startswith('dg-')
                 and provider_is_enabled(deepgram_provider_for_runtime(is_dg_self_hosted), surface)
@@ -523,6 +522,18 @@ def get_stt_service_for_language(
                         parakeet_fallback_reason = 'capability_mismatch'
                 else:
                     parakeet_fallback_reason = 'config_incomplete'
+            if (
+                model == 'sensevoice'
+                and provider_is_enabled(SENSEVOICE_PROVIDER, surface)
+                and sensevoice_model_is_ready()
+                # ``requested_language`` may be ``multi`` for a user whose
+                # actual locale is unsupported. SenseVoice auto-detection is
+                # bounded to its own language set, so admission must check the
+                # normalized user language rather than treating multi as
+                # arbitrary-language support.
+                and sensevoice_supports_language(base_lang)
+            ):
+                return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
             if (
                 model == 'modulate-velma-2'
                 and provider_is_enabled(MODULATE_PROVIDER, surface)
@@ -563,10 +574,11 @@ def get_stt_service_for_language(
         record_selected_fallback(selected, used_default=False, parakeet_fallback_reason=parakeet_fallback_reason)
         return selected
 
-    selected, parakeet_fallback_reason = select(default_models_for_surface(surface))
-    if selected is not None:
-        record_selected_fallback(selected, used_default=True, parakeet_fallback_reason=parakeet_fallback_reason)
-        return selected
+    if _policy_default_fallback_enabled():
+        selected, parakeet_fallback_reason = select(default_models_for_surface(surface))
+        if selected is not None:
+            record_selected_fallback(selected, used_default=True, parakeet_fallback_reason=parakeet_fallback_reason)
+            return selected
 
     record_fallback(
         component='stt_selection',
@@ -595,7 +607,10 @@ deepgram: Optional[DeepgramClient] = None
 
 
 def _deepgram_options(endpoint: str) -> DeepgramClientOptions:
-    """Build options pinned to an explicit endpoint, never the SDK default."""
+    """Build options per client, pinned to an endpoint, never the SDK default.
+
+    DeepgramClient.__init__ writes its key into what it is handed, so a shared
+    object strands the managed client on whichever BYOK key came last."""
     options = DeepgramClientOptions(options={"termination_exception_connect": "true"})
     options.url = endpoint
     return options
@@ -614,9 +629,6 @@ def _require_self_hosted_deepgram_endpoint(endpoint: str) -> str:
     return endpoint
 
 
-# Built once; also keys the per-request BYOK client below.
-deepgram_cloud_options = _deepgram_options(DEEPGRAM_CLOUD_ENDPOINT)
-
 _managed_deepgram_lock = threading.RLock()
 _managed_deepgram_ready = False
 
@@ -631,7 +643,7 @@ def _build_managed_deepgram_client() -> Optional[DeepgramClient]:
     if not api_key:
         return None
     logger.info('Using Deepgram hosted API')
-    return DeepgramClient(api_key, deepgram_cloud_options)
+    return DeepgramClient(api_key, _deepgram_options(DEEPGRAM_CLOUD_ENDPOINT))
 
 
 def _managed_deepgram_client() -> Optional[DeepgramClient]:
@@ -820,7 +832,7 @@ def _deepgram_client_for_request() -> DeepgramClient:
         return managed
     byok = get_byok_key('deepgram')
     if byok:
-        return DeepgramClient(byok, deepgram_cloud_options)
+        return DeepgramClient(byok, _deepgram_options(DEEPGRAM_CLOUD_ENDPOINT))
     if managed is None:
         raise RuntimeError('Deepgram is not configured; set DEEPGRAM_API_KEY or provide a BYOK key')
     return managed
@@ -1238,6 +1250,26 @@ async def process_audio_modulate(
 
 
 # --- Parakeet (self-hosted, opt-in) ---------------------------------------------------------------
+async def process_audio_sensevoice(
+    stream_transcript: Callable[[List[Dict[str, Any]]], None],
+    sample_rate: int,
+) -> SenseVoiceSocket:
+    """Create a ready local incremental SenseVoice socket.
+
+    Model loading is completed before the listen session reports readiness, so
+    a missing runtime wheel or model mount becomes an initialization failure
+    rather than a dead session after audio has already been accepted.
+    """
+    recognizer = await run_blocking(sync_executor, get_sensevoice_recognizer)
+    socket = SenseVoiceSocket(
+        sample_rate=sample_rate,
+        transcript_callback=stream_transcript,
+        recognizer=recognizer,
+    )
+    socket.start()
+    return socket
+
+
 PARAKEET_WINDOW_SECONDS = float(os.getenv('PARAKEET_WINDOW_SECONDS', '6.0'))
 PARAKEET_WS_CONNECT_TIMEOUT = float(os.getenv('PARAKEET_WS_CONNECT_TIMEOUT', '10.0'))
 
@@ -1284,8 +1316,10 @@ class ParakeetStreamingSocket(STTSocket):
         # Basic online diarization: Parakeet returns no speaker info, so we embed each segment's
         # voice (via the same hosted embedding service the listen pipeline uses downstream) and
         # cluster into session-stable SPEAKER_N labels. Opt-in: only when that service is wired up.
-        self._diarize = bool(os.getenv('HOSTED_SPEAKER_EMBEDDING_API_URL')) and (
-            os.getenv('PARAKEET_DIARIZATION', '1') == '1'
+        self._diarize = (
+            speaker_embedding_provider() == 'http'
+            and bool(os.getenv('SPEAKER_EMBEDDING_API_URL'))
+            and (os.getenv('PARAKEET_DIARIZATION', '1') == '1')
         )
         self._spk_centroids: List[np.ndarray[Any, Any]] = []  # running-mean embedding per discovered speaker
         self._spk_counts: List[int] = []

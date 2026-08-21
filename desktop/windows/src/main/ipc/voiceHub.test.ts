@@ -12,17 +12,110 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentRuntimeKernel } from '../agentKernel/kernel'
 import { AdapterRegistry } from '../agentKernel/adapterRegistry'
 import { SqliteAgentStore, type DatabaseFactory } from '../agentKernel/store'
 import type { ConversationTurn } from '../agentKernel/types'
-import { recordVoiceHubTurn, readVoiceHubSeedContext, type VoiceHubDeps } from './voiceHub'
+import {
+  mintVoiceHubRelayContract,
+  recordVoiceHubTurn,
+  readVoiceHubSeedContext,
+  resolveVoiceHubRelayUrl,
+  VoiceHubRelayLeaseRegistry,
+  type VoiceHubDeps
+} from './voiceHub'
 
 const nodeSqliteFactory = DatabaseSync as unknown as DatabaseFactory
 const createdDirs: string[] = []
 const openStores: SqliteAgentStore[] = []
 const OWNER = 'owner-voice-1'
+
+describe('self-hosted realtime relay contract', () => {
+  it('mints relay with bearer auth and consumes wire_protocol before connect', async () => {
+    const fetchImpl = vi.fn(async (_input: string, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({
+          provider: 'relay',
+          protocol: 'omi.realtime.v1',
+          wire_protocol: 'openai_realtime_v1',
+          websocket_url: '/v1/model-capabilities/realtime/relay'
+        }),
+        { status: 200 }
+      )
+    )
+    const relay = await mintVoiceHubRelayContract(
+      { apiBase: 'https://operator.example', desktopApiBase: 'https://desktop.operator.example', token: 'jwt' },
+      fetchImpl
+    )
+
+    expect(relay.websocketUrl).toBe('wss://operator.example/v1/model-capabilities/realtime/relay')
+    expect(relay.wireProtocol).toBe('openai_realtime_v1')
+    expect((fetchImpl.mock.calls[0]![1] as RequestInit).headers).toMatchObject({ Authorization: 'Bearer jwt' })
+  })
+
+  it('rejects cross-origin, insecure, and credential-bearing relay URLs before websocket construction', () => {
+    expect(() => resolveVoiceHubRelayUrl('https://operator.example', 'wss://attacker.example/relay')).toThrow(
+      /outside the signed backend origin/
+    )
+    expect(() => resolveVoiceHubRelayUrl('http://operator.example', '/relay')).toThrow(/HTTPS backend origin/)
+    expect(() => resolveVoiceHubRelayUrl('https://operator.example', 'wss://user@operator.example/relay')).toThrow(
+      /outside the signed backend origin/
+    )
+  })
+
+  it('rejects a missing or unsupported upstream wire dialect', async () => {
+    const fetchImpl = vi.fn(async (_input: string, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({
+          protocol: 'omi.realtime.v1',
+          wire_protocol: 'generic',
+          websocket_url: 'wss://attacker.example/relay'
+        }),
+        { status: 200 }
+      )
+    )
+    await expect(
+      mintVoiceHubRelayContract(
+        { apiBase: 'https://operator.example', desktopApiBase: 'https://desktop.operator.example', token: 'jwt' },
+        fetchImpl
+      )
+    ).rejects.toThrow(/unsupported wire protocol/)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('bounds minted, connecting, and open leases and expires or destroys every owner-scoped relay', () => {
+    vi.useFakeTimers()
+    try {
+      const expired: string[] = []
+      const registry = new VoiceHubRelayLeaseRegistry(50, 1)
+      registry.reserve('first', 7, () => expired.push('first'))
+      expect(() => registry.reserve('overflow', 7, () => expired.push('overflow'))).toThrow(
+        /too many pending/
+      )
+      registry.markConnected('first')
+      expect(() => registry.reserve('still-overflow', 7, () => expired.push('still-overflow'))).toThrow(
+        /too many pending/
+      )
+      vi.advanceTimersByTime(50)
+      expect(expired).toEqual([])
+      expect(registry.size).toBe(1)
+
+      registry.release('first')
+      registry.reserve('handshake-timeout', 7, () => expired.push('handshake-timeout'))
+      vi.advanceTimersByTime(50)
+      expect(expired).toEqual(['handshake-timeout'])
+      expect(registry.size).toBe(0)
+
+      registry.reserve('destroyed', 7, () => expired.push('destroyed'))
+      registry.cleanupOwner(7)
+      expect(expired).toEqual(['handshake-timeout', 'destroyed'])
+      expect(registry.size).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
 
 afterEach(() => {
   for (const store of openStores.splice(0)) {

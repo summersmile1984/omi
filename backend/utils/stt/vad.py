@@ -12,6 +12,7 @@ from pydub import AudioSegment  # pydub is untyped
 
 from database import redis_db
 from utils.executors import db_executor, storage_executor, sync_executor, run_blocking
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.http_client import get_stt_client
 from utils.observability.fallback import record_fallback
 
@@ -216,6 +217,11 @@ def vad_is_empty(
     hosted_vad_url = os.getenv('HOSTED_VAD_API_URL')
     if hosted_vad_url:
         try:
+            # The synchronous path uses the module-level requests client and
+            # therefore does not inherit the shared httpx pool's egress hook.
+            # Validate before opening the audio file so a neutral deployment
+            # can never hand customer audio to an unreviewed/vendor authority.
+            assert_http_endpoint_allowed(hosted_vad_url)
             with open(file_path, 'rb') as file:
                 files = {'file': (file_path.split('/')[-1], file, 'audio/wav')}
                 response = requests.post(hosted_vad_url, files=files, timeout=_hosted_vad_timeout_seconds())
@@ -374,6 +380,10 @@ async def async_vad_is_empty(
     hosted_vad_url = os.getenv('HOSTED_VAD_API_URL')
     if hosted_vad_url:
         try:
+            # Keep the check explicit even though get_stt_client currently
+            # carries the same request hook: this guards the authority before
+            # reading audio and remains true if the client factory changes.
+            assert_http_endpoint_allowed(hosted_vad_url)
             file_data = await run_blocking(storage_executor, _read_file, file_path)
             files = {'file': (file_path.split('/')[-1], file_data, 'audio/wav')}
             client = get_stt_client()

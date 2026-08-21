@@ -6,7 +6,7 @@ import uuid
 import re
 import base64
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 from pathlib import Path
 from utils.executors import critical_executor, db_executor, llm_executor, storage_executor, sync_executor, run_blocking
 
@@ -15,6 +15,7 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     File,
@@ -27,6 +28,7 @@ from multipart.multipart import shutil
 from pydantic import BaseModel
 
 import database.chat as chat_db
+from utils.chat_session_target import resolve_chat_target
 import database.llm_usage as llm_usage_db
 from database.apps import record_app_usage
 from models.app import App, UsageHistoryType
@@ -61,13 +63,14 @@ from config.stt_provider_policy import STTServingSurface
 from utils.stt.outcomes import TranscriptionFailure, failure_from_exception
 from utils.observability.transcription import TranscriptionAttempt
 from utils.llm.goals import extract_and_update_goal_progress
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from database.redis_db import try_acquire_goal_extraction_lock, check_rate_limit, store_chat_share, get_chat_share
 from database.users import set_chat_message_rating_score
 from utils.rate_limit_config import get_effective_limit, RATE_LIMIT_SHADOW
 from utils.subscription import enforce_chat_quota, is_trial_paywalled
 from utils import share_links
 from utils.other import endpoints as auth, storage
-from utils.other.chat_file import FileChatTool, UnsupportedChatFileError
+from utils.other.chat_file import FileChatTool, LocalFileChatError, UnsupportedChatFileError
 from utils.multipart import (
     CHAT_FILE_MAX_PART_SIZE,
     MultipartMaxPartSizeRoute,
@@ -201,9 +204,19 @@ def filter_messages(messages, app_id):
 
 
 def _build_quota_exceeded_reply(
-    uid: str, data: SendMessageRequest, compat_app_id: Optional[str], detail: dict
+    uid: str,
+    data: SendMessageRequest,
+    compat_app_id: Optional[str],
+    detail: dict,
+    chat_session: Optional[ChatSession] = None,
 ) -> ResponseMessage:
     """Persist the user's question + a canned AI reply and return it.
+
+    Both messages join `chat_session` when the request named one. Without it the
+    turn is stored unthreaded: the client shows it optimistically against the
+    session the user is looking at, and then it disappears on the next history
+    load, because that read is scoped to the session and these rows belong to no
+    session at all.
 
     Mobile clients render the reply as a normal AI message, so users on
     older builds without structured 402 handling at least see *why* nothing
@@ -219,8 +232,11 @@ def _build_quota_exceeded_reply(
         sender='human',
         type='text',
         app_id=compat_app_id,
+        chat_session_id=chat_session.id if chat_session else None,
     )
     chat_db.add_message(uid, user_msg.model_dump())
+    if chat_session:
+        chat_db.add_message_to_chat_session(uid, chat_session.id, user_msg.id)
 
     plan = detail.get('plan') or 'Free'
     unit = detail.get('unit')
@@ -252,8 +268,11 @@ def _build_quota_exceeded_reply(
         sender='ai',
         type='text',
         app_id=compat_app_id,
+        chat_session_id=chat_session.id if chat_session else None,
     )
     chat_db.add_message(uid, ai_msg.model_dump())
+    if chat_session:
+        chat_db.add_message_to_chat_session(uid, chat_session.id, ai_msg.id)
     return ResponseMessage(**ai_msg.model_dump(), ask_for_nps=False)
 
 
@@ -325,6 +344,7 @@ def send_message(
     data: SendMessageRequest,
     plugin_id: Optional[str] = None,
     app_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
     uid: str = Depends(auth.with_rate_limit(auth.get_current_user_uid, "chat:send_message")),
     x_app_platform: Optional[str] = Header(None, alias='X-App-Platform'),
 ):
@@ -345,7 +365,17 @@ def send_message(
         _compat_id = app_id or plugin_id
         if _compat_id in ['null', '']:
             _compat_id = None
-        response_msg = _build_quota_exceeded_reply(uid, data, _compat_id, exc.detail)
+        # Resolved here rather than at the happy path's `_resolve_chat_session`
+        # below: quota enforcement returns before that line is ever reached, and
+        # the canned reply still belongs in the session the request named.
+        _quota_target = resolve_chat_target(uid, _compat_id, chat_session_id)
+        response_msg = _build_quota_exceeded_reply(
+            uid,
+            data,
+            _quota_target.app_id,
+            exc.detail,
+            ChatSession(**_quota_target.session) if _quota_target.session else None,
+        )
 
         def _quota_exceeded_stream():
             encoded = base64.b64encode(bytes(response_msg.model_dump_json(), 'utf-8')).decode('utf-8')
@@ -359,9 +389,10 @@ def send_message(
     if compat_app_id in ['null', '']:
         compat_app_id = None
 
-    # get chat session
-    chat_session = chat_db.get_chat_session(uid, app_id=compat_app_id)
-    chat_session = ChatSession(**chat_session) if chat_session else None
+    # get chat session — a named session also decides which app this turn runs as
+    target = resolve_chat_target(uid, compat_app_id, chat_session_id)
+    compat_app_id = target.app_id
+    chat_session = ChatSession(**target.session) if target.session else None
 
     message = Message(
         id=str(uuid.uuid4()),
@@ -476,9 +507,15 @@ def send_message(
 
         chat_db.add_message(uid, ai_message.model_dump())
         ai_message.memories = [MessageConversation(**m) for m in (memories if len(memories) < 5 else memories[:5])]
-        if app_id:
+        usage_app_id = app_id_from_app or compat_app_id
+        if usage_app_id:
             try:
-                record_app_usage(uid, app_id, UsageHistoryType.chat_message_sent, message_id=ai_message.id)
+                record_app_usage(
+                    uid,
+                    usage_app_id,
+                    UsageHistoryType.chat_message_sent,
+                    message_id=ai_message.id,
+                )
             except Exception as analytics_exc:
                 # Message is already durable; analytics must not change the client-visible id.
                 logger.error(
@@ -635,15 +672,23 @@ def report_message(message_id: str, uid: str = Depends(auth.get_current_user_uid
 
 @router.delete('/v2/messages', tags=['chat'], response_model=Message)
 def clear_chat_messages(
-    app_id: Optional[str] = None, plugin_id: Optional[str] = None, uid: str = Depends(auth.get_current_user_uid)
+    app_id: Optional[str] = None,
+    plugin_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
+    uid: str = Depends(auth.get_current_user_uid),
 ):
+    explicit = bool(chat_session_id)
     compat_app_id = app_id or plugin_id
     if compat_app_id in ['null', '']:
         compat_app_id = None
 
-    # get current chat session
-    chat_session = chat_db.get_chat_session(uid, app_id=compat_app_id)
-    chat_session_id = chat_session['id'] if chat_session else None
+    # get the targeted chat session. Its own app id scopes the delete: the
+    # message rows carry the session's `plugin_id`, so filtering by the query
+    # string's app instead deletes the session record and orphans its messages.
+    target = resolve_chat_target(uid, compat_app_id, chat_session_id)
+    compat_app_id = target.app_id
+    chat_session = target.session
+    chat_session_id = target.session_id
 
     err = chat_db.clear_chat(uid, app_id=compat_app_id, chat_session_id=chat_session_id)
     if err:
@@ -654,15 +699,16 @@ def clear_chat_messages(
         try:
             fc_tool = FileChatTool(uid, chat_session['id'])
             fc_tool.cleanup()
+        except LocalFileChatError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_dict()) from error
         except ValueError:
             # Session not found, continue with cleanup
             pass
 
     # clear session
-    if chat_session_id is not None:
+    if chat_session_id is not None and not explicit:
         chat_db.delete_chat_session(uid, chat_session_id)
-
-    return initial_message_util(uid, compat_app_id)
+    return initial_message_util(uid, compat_app_id, chat_session_id=chat_session_id if explicit else None)
 
 
 @router.post('/v2/initial-message', tags=['chat'], response_model=Message)
@@ -677,17 +723,28 @@ def create_initial_message(
 
 @router.get('/v2/messages', response_model=List[Message], tags=['chat'])
 def get_messages(
-    plugin_id: Optional[str] = None, app_id: Optional[str] = None, uid: str = Depends(auth.get_current_user_uid)
+    plugin_id: Optional[str] = None,
+    app_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    uid: str = Depends(auth.get_current_user_uid),
 ):
     compat_app_id = app_id or plugin_id
     if compat_app_id in ['null', '']:
         compat_app_id = None
 
-    chat_session = chat_db.get_chat_session(uid, app_id=compat_app_id)
-    chat_session_id = chat_session['id'] if chat_session else None
+    target = resolve_chat_target(uid, compat_app_id, chat_session_id)
+    compat_app_id = target.app_id
+    chat_session_id = target.session_id
 
     messages = chat_db.get_messages(
-        uid, limit=100, include_conversations=True, app_id=compat_app_id, chat_session_id=chat_session_id
+        uid,
+        limit=limit,
+        offset=offset,
+        include_conversations=True,
+        app_id=compat_app_id,
+        chat_session_id=chat_session_id,
     )
     logger.info(f'get_messages {len(messages)} {compat_app_id}')
 
@@ -699,7 +756,9 @@ def get_messages(
             logger.info(f"  - Message {m.get('id')}: rating={m.get('rating')}")
 
     if not messages:
-        return [initial_message_util(uid, compat_app_id)]
+        # The greeting belongs to the session that was read, not to whatever
+        # session `acquire_chat_session` would pick for the app.
+        return [] if offset > 0 else [initial_message_util(uid, compat_app_id, chat_session_id=chat_session_id)]
     return messages
 
 
@@ -1499,64 +1558,86 @@ async def transcribe_voice_message_stream(
         parity_capture.persist()
 
 
+def _upload_file_chat_records(files: List[UploadFile], uid: str) -> List[dict[str, Any]]:
+    if len(files) > 9:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                'code': 'file_chat_failure',
+                'capability': 'file_chat',
+                'reason': 'too_many_attachments',
+                'retryable': False,
+            },
+        )
+    thumbs_name = []
+    files_chat: List[FileChat] = []
+    try:
+        for file in files:
+            # Use a UUID-based temp file name to prevent path traversal via user-controlled filename
+            safe_suffix = Path(file.filename).name if file.filename else "upload"
+            temp_file = Path(tempfile.gettempdir()) / f"{uuid.uuid4().hex}_{safe_suffix}"
+            try:
+                with temp_file.open("wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+
+                try:
+                    result = FileChatTool.upload(temp_file, uid=uid, file_name=safe_suffix)
+                except UnsupportedChatFileError as error:
+                    raise HTTPException(status_code=400, detail=str(error))
+                except LocalFileChatError as error:
+                    raise HTTPException(status_code=error.status_code, detail=error.as_dict()) from error
+                except ModelCapabilityUnavailableError as error:
+                    raise HTTPException(status_code=503, detail=error.as_dict()) from error
+
+                thumb_name = result.get("thumbnail_name", "")
+                if thumb_name != "":
+                    thumbs_name.append(thumb_name)
+
+                files_chat.append(
+                    FileChat(
+                        id=str(uuid.uuid4()),
+                        name=result.get("file_name", ""),
+                        mime_type=result.get("mime_type", ""),
+                        openai_file_id=result.get("file_id", ""),
+                        created_at=datetime.now(timezone.utc),
+                        thumb_name=thumb_name,
+                    )
+                )
+            finally:
+                if temp_file.exists():
+                    temp_file.unlink()
+
+        if thumbs_name:
+            thumbs_path = storage.upload_multi_chat_files(thumbs_name, uid)
+            for file_chat in files_chat:
+                if not file_chat.is_image():
+                    continue
+                thumb_path = thumbs_path.get(file_chat.thumb_name, "")
+                file_chat.thumbnail = thumb_path
+                thumb_file = Path(file_chat.thumb_name)
+                if thumb_file.exists():
+                    thumb_file.unlink()
+
+        files_chat_dict = [file_chat.model_dump() for file_chat in files_chat]
+        chat_db.add_multi_files(uid, files_chat_dict)
+        return files_chat_dict
+    except Exception:
+        FileChatTool.cleanup_uploaded_local_files(uid, files_chat)
+        raise
+    finally:
+        for thumb_name in thumbs_name:
+            thumb_file = Path(thumb_name)
+            if thumb_file.exists():
+                thumb_file.unlink()
+
+
 @router.post('/v2/files', response_model=List[FileChat], tags=['chat'])
 @max_part_size(CHAT_FILE_MAX_PART_SIZE)
 def upload_file_chat(
     files: List[UploadFile] = File(...),
     uid: str = Depends(auth.with_rate_limit(auth.get_current_user_uid, "file:upload")),
 ):
-    thumbs_name = []
-    files_chat = []
-    for file in files:
-        # Use a UUID-based temp file name to prevent path traversal via user-controlled filename
-        safe_suffix = Path(file.filename).name if file.filename else "upload"
-        temp_file = Path(tempfile.gettempdir()) / f"{uuid.uuid4().hex}_{safe_suffix}"
-        try:
-            with temp_file.open("wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-
-            try:
-                result = FileChatTool.upload(temp_file)
-            except UnsupportedChatFileError as error:
-                raise HTTPException(status_code=400, detail=str(error))
-
-            thumb_name = result.get("thumbnail_name", "")
-            if thumb_name != "":
-                thumbs_name.append(thumb_name)
-
-            filechat = FileChat(
-                id=str(uuid.uuid4()),
-                name=result.get("file_name", ""),
-                mime_type=result.get("mime_type", ""),
-                openai_file_id=result.get("file_id", ""),
-                created_at=datetime.now(timezone.utc),
-                thumb_name=thumb_name,
-            )
-            files_chat.append(filechat)
-        finally:
-            if temp_file.exists():
-                temp_file.unlink()
-
-    if len(thumbs_name) > 0:
-        thumbs_path = storage.upload_multi_chat_files(thumbs_name, uid)
-        for fc in files_chat:
-            if not fc.is_image():
-                continue
-            thumb_path = thumbs_path.get(fc.thumb_name, "")
-            fc.thumbnail = thumb_path
-            # cleanup file thumb
-            thumb_file = Path(fc.thumb_name)
-            if thumb_file.exists():
-                thumb_file.unlink()
-
-    # save db
-    files_chat_dict = [fc.model_dump() for fc in files_chat]
-
-    chat_db.add_multi_files(uid, files_chat_dict)
-
-    response = [fc.model_dump() for fc in files_chat]
-
-    return response
+    return _upload_file_chat_records(files, uid)
 
 
 # CLEANUP: Remove after new app goes to prod ----------------------------------------------------------
@@ -1573,57 +1654,7 @@ def upload_file_chat_v1(
     files: List[UploadFile] = File(...),
     uid: str = Depends(auth.with_rate_limit(auth.get_current_user_uid, "file:upload")),
 ):
-    thumbs_name = []
-    files_chat = []
-    for file in files:
-        # Use a UUID-based temp file name to prevent path traversal via user-controlled filename
-        safe_suffix = Path(file.filename).name if file.filename else "upload"
-        temp_file = Path(tempfile.gettempdir()) / f"{uuid.uuid4().hex}_{safe_suffix}"
-        try:
-            with temp_file.open("wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-
-            try:
-                result = FileChatTool.upload(temp_file)
-            except UnsupportedChatFileError as error:
-                raise HTTPException(status_code=400, detail=str(error))
-
-            thumb_name = result.get("thumbnail_name", "")
-            if thumb_name != "":
-                thumbs_name.append(thumb_name)
-
-            filechat = FileChat(
-                id=str(uuid.uuid4()),
-                name=result.get("file_name", ""),
-                mime_type=result.get("mime_type", ""),
-                openai_file_id=result.get("file_id", ""),
-                created_at=datetime.now(timezone.utc),
-                thumb_name=thumb_name,
-            )
-            files_chat.append(filechat)
-        finally:
-            if temp_file.exists():
-                temp_file.unlink()
-
-    if len(thumbs_name) > 0:
-        thumbs_path = storage.upload_multi_chat_files(thumbs_name, uid)
-        for fc in files_chat:
-            if not fc.is_image():
-                continue
-            thumb_path = thumbs_path.get(fc.thumb_name, "")
-            fc.thumbnail = thumb_path
-            # cleanup file thumb
-            thumb_file = Path(fc.thumb_name)
-            thumb_file.unlink()
-
-    # save db
-    files_chat_dict = [fc.model_dump() for fc in files_chat]
-
-    chat_db.add_multi_files(uid, files_chat_dict)
-
-    response = [fc.model_dump() for fc in files_chat]
-
-    return response
+    return _upload_file_chat_records(files, uid)
 
 
 @router.post(
@@ -1671,6 +1702,8 @@ def clear_chat_messages_v1(
         try:
             fc_tool = FileChatTool(uid, chat_session['id'])
             fc_tool.cleanup()
+        except LocalFileChatError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_dict()) from error
         except ValueError:
             # Session not found, continue with cleanup
             pass

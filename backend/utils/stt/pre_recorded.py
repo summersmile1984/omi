@@ -18,21 +18,28 @@ from config.prerecorded_stt import (
     PrerecordedSTTConfigurationError as _PrerecordedSTTConfigurationError,
     PrerecordedSTTService,
     TranscriptionOutcome,
+    get_mlx_moss_diarize_config,
     get_prerecorded_models,
     require_provider_environment,
 )
 from config.stt_provider_policy import (
+    MIMO_PROVIDER,
+    MLX_MOSS_DIARIZE_PROVIDER,
     MODULATE_PROVIDER,
     MOSS_PROVIDER,
     PARAKEET_PROVIDER,
+    SENSEVOICE_PROVIDER,
     STTServingSurface,
     default_models_for_surface,
     normalized_stt_language,
     parakeet_supports_language,
     provider_is_enabled,
+    sensevoice_supports_language,
 )
 from models.transcript_segment import TranscriptSegment
 from utils.byok import get_byok_key
+from utils.egress_policy import assert_http_endpoint_allowed
+from utils.mlx_moss_diarize.prerecorded_provider import MlxMossDiarizePrerecordedProvider
 from utils.other.endpoints import timeit
 from utils.stt.outcomes import TranscriptionFailure
 from utils.stt.speaker_embedding import SPEAKER_MATCH_THRESHOLD, compare_embeddings, extract_embedding_from_bytes
@@ -93,8 +100,21 @@ def get_prerecorded_service(language: Optional[str] = 'en') -> Tuple[str, Option
     def select(models: Sequence[str]) -> Optional[Tuple[str, Optional[str], str]]:
         for m in models:
             m = m.strip()
+            if (
+                m == 'sensevoice'
+                and provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.PRERECORDED)
+                and sensevoice_supports_language(base_lang)
+            ):
+                return PrerecordedSTTService.SENSEVOICE, base_lang, 'sensevoice'
+            if m == 'mimo' and provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PRERECORDED):
+                return PrerecordedSTTService.MIMO, base_lang, 'mimo-v2.5-asr'
             if m == 'moss' and provider_is_enabled(MOSS_PROVIDER, STTServingSurface.PRERECORDED):
                 return PrerecordedSTTService.MOSS, base_lang, 'moss-transcribe-diarize'
+            if m == 'mlx_moss_diarize' and provider_is_enabled(
+                MLX_MOSS_DIARIZE_PROVIDER,
+                STTServingSurface.PRERECORDED,
+            ):
+                return PrerecordedSTTService.MLX_MOSS_DIARIZE, base_lang, get_mlx_moss_diarize_config().model
             if m == 'modulate-velma-2' and provider_is_enabled(MODULATE_PROVIDER, STTServingSurface.PRERECORDED):
                 if base_lang in {'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'ja', 'ko', 'zh'}:
                     return PrerecordedSTTService.MODULATE, base_lang, 'velma-2'
@@ -104,9 +124,17 @@ def get_prerecorded_service(language: Optional[str] = 'en') -> Tuple[str, Option
                     return PrerecordedSTTService.PARAKEET, base_lang, 'parakeet'
         return None
 
-    selected = select(get_prerecorded_models())
+    configured_models = get_prerecorded_models()
+    selected = select(configured_models)
     if selected is not None:
         return selected
+
+    # Explicit batch-only routes own the whole request. A configured local
+    # SenseVoice deployment must report a capability mismatch for languages its
+    # mounted model does not support, not borrow a managed default omitted by
+    # the operator.
+    if 'sensevoice' in configured_models:
+        raise TranscriptionFailure(TranscriptionOutcome.CONFIG_ERROR, retryable=False)
 
     # A disabled/unknown preference must not become a provider call. Use the
     # deployment-validated, policy-owned defaults instead.
@@ -125,18 +153,18 @@ def get_prerecorded_service(language: Optional[str] = 'en') -> Tuple[str, Option
 
 # Lazily initialized because constructing the SDK client at import makes every
 # backend consumer credential-dependent, including schema export and unit discovery.
-_deepgram_options: Optional[DeepgramClientOptions] = None
 _deepgram_client: Optional[DeepgramClient] = None
 _deepgram_client_lock = RLock()
 
 
-def _get_deepgram_options() -> DeepgramClientOptions:
-    global _deepgram_options
-    if _deepgram_options is None:
-        with _deepgram_client_lock:
-            if _deepgram_options is None:
-                _deepgram_options = DeepgramClientOptions(options={"keepalive": "true"})
-    return _deepgram_options
+def _deepgram_options() -> DeepgramClientOptions:
+    """Build fresh options per client.
+
+    DeepgramClient.__init__ calls config.set_apikey(), so a cached options
+    object shared with a BYOK client rewrites the credential the managed
+    client still holds — every later request would bill that user's key.
+    """
+    return DeepgramClientOptions(options={"keepalive": "true"})
 
 
 def _get_deepgram_client() -> DeepgramClient:
@@ -147,7 +175,7 @@ def _get_deepgram_client() -> DeepgramClient:
                 api_key = os.getenv('DEEPGRAM_API_KEY')
                 if not api_key:
                     raise PrerecordedSTTConfigurationError(PrerecordedSTTService.DEEPGRAM, 'DEEPGRAM_API_KEY')
-                _deepgram_client = DeepgramClient(api_key, _get_deepgram_options())
+                _deepgram_client = DeepgramClient(api_key, _deepgram_options())
     return _deepgram_client
 
 
@@ -155,7 +183,7 @@ def _deepgram_client_for_request() -> DeepgramClient:
     """Route to BYOK Deepgram key when set; otherwise use the process-wide client."""
     byok = get_byok_key('deepgram')
     if byok:
-        return DeepgramClient(byok, _get_deepgram_options())
+        return DeepgramClient(byok, _deepgram_options())
     return _get_deepgram_client()
 
 
@@ -584,6 +612,10 @@ def modulate_prerecorded_from_bytes(
 
     try:
         url = 'https://modulate-developer-apis.com/api/velma-2-stt-batch'
+        # This provider is an explicit managed option, but its synchronous
+        # client bypasses the shared pool.  Keep neutral/self-hosted runtimes
+        # from sending audio to the official authority if misconfigured.
+        assert_http_endpoint_allowed(url)
         headers = {'X-API-Key': api_key}
         files = {'upload_file': ('audio.wav', BytesIO(audio_bytes), 'audio/wav')}
         data = {'speaker_diarization': str(diarize).lower()}
@@ -840,10 +872,14 @@ def parakeet_prerecorded_from_bytes(
             url = api_url.rstrip('/') + '/v1/transcribe'
             data = {}
 
+        # The batch client is synchronous and does not inherit the shared
+        # httpx pool's request hook.  Validate before handing audio to it.
+        assert_http_endpoint_allowed(url)
         with httpx.Client(timeout=_PARAKEET_TIMEOUT) as client:
             response = client.post(url, files=files, data=data if data else None)
             if response.status_code == 404 and use_v2:
                 url = api_url.rstrip('/') + '/v1/transcribe'
+                assert_http_endpoint_allowed(url)
                 response = client.post(url, files={'file': ('audio.wav', BytesIO(audio_bytes), 'audio/wav')})
                 use_v2 = False
         response.raise_for_status()
@@ -1072,6 +1108,19 @@ def get_prerecorded_provider(language: Optional[str] = 'en') -> PrerecordedSTTPr
     if moss_prerecorded_requested():
         require_moss_prerecorded()
         return MossPrerecordedProvider()
+    if service == PrerecordedSTTService.MLX_MOSS_DIARIZE:
+        require_provider_environment(PrerecordedSTTService.MLX_MOSS_DIARIZE)
+        return cast(PrerecordedSTTProvider, MlxMossDiarizePrerecordedProvider())
+    if service == PrerecordedSTTService.SENSEVOICE:
+        require_provider_environment(PrerecordedSTTService.SENSEVOICE)
+        from utils.sensevoice.prerecorded_provider import SenseVoicePrerecordedProvider
+
+        return SenseVoicePrerecordedProvider()
+    if service == PrerecordedSTTService.MIMO:
+        require_provider_environment(PrerecordedSTTService.MIMO)
+        from utils.mimo_pipeline.prerecorded_provider import MimoPrerecordedProvider
+
+        return MimoPrerecordedProvider()
     if service == PrerecordedSTTService.MODULATE:
         return ModulatePrerecordedProvider()
     if service == PrerecordedSTTService.PARAKEET:

@@ -407,7 +407,7 @@ public struct OmiHistoryProbe: Sendable {
 public final class OmiBackend: @unchecked Sendable {
     public static let shared = OmiBackend()
 
-    public static let baseURL = URL(string: "https://api.omi.me/")!
+    public static let baseURL = ContextDeploymentProfile.current.mcpBaseURL
 
     /// Claude is blocked on this call, so the ceiling is what a person will sit through, not what
     /// the network might eventually manage.

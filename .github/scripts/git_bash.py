@@ -7,8 +7,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from typing import Optional
 
-Which = Callable[[str], str | None]
+Which = Callable[[str], Optional[str]]
 Run = Callable[..., subprocess.CompletedProcess[str]]
 GIT_LAYOUT_PARENT_LIMIT = 3
 

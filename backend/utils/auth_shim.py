@@ -62,6 +62,24 @@ def _jwks_timeout() -> float:
     return float(os.getenv("AUTH_JWKS_TIMEOUT_SECONDS", "5"))
 
 
+def _jwks_max_stale() -> int:
+    return int(os.getenv("AUTH_JWKS_MAX_STALE_SECONDS", "3600"))
+
+
+def _expected_issuer() -> str:
+    explicit = os.getenv('AUTH_JWT_ISSUER', '').strip()
+    if explicit:
+        return explicit
+    parsed = urlsplit(_jwks_url())
+    if parsed.scheme in {'http', 'https'} and parsed.netloc:
+        return f'{parsed.scheme}://{parsed.netloc}'
+    raise CertificateFetchError('AUTH_JWT_ISSUER could not be derived from AUTH_JWKS_URL')
+
+
+def _expected_audience() -> str:
+    return os.getenv('AUTH_JWT_AUDIENCE', '').strip() or _expected_issuer()
+
+
 def _fetch_jwks() -> Dict[str, Any]:
     """Fetch and cache the Better Auth JWKS (public keys for JWT verification)."""
     global _jwks, _jwks_fetched_at, _jwks_source_url
@@ -81,8 +99,8 @@ def _fetch_jwks() -> Dict[str, Any]:
                 logger.warning("JWKS refresh failed, using stale cache: %s", exc)
                 return cached
             raise CertificateFetchError(f"JWKS fetch failed: {exc}") from exc
-        if "keys" not in data:
-            raise CertificateFetchError(f"JWKS response missing keys: {data}")
+        if not isinstance(data, dict) or not isinstance(data.get('keys'), list):
+            raise CertificateFetchError("JWKS response missing keys")
         _jwks = data
         _jwks_fetched_at = now
         _jwks_source_url = url
@@ -128,7 +146,10 @@ def verify_id_token(token: str, **_: Any) -> Dict[str, Any]:
             token,
             verify_key,
             algorithms=[algorithm],
-            options={"verify_aud": False},  # Better Auth JWT carries no aud
+            issuer=_expected_issuer(),
+            audience=_expected_audience(),
+            leeway=float(os.getenv('AUTH_JWT_CLOCK_SKEW_SECONDS', '30')),
+            options={'require': ['exp', 'iss', 'aud']},
         )
     except pyjwt.PyJWTError as exc:
         raise InvalidIdTokenError(str(exc)) from exc

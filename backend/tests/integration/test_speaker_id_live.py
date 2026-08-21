@@ -20,7 +20,7 @@ Prerequisites:
   - Local backend running with speaker ID enabled:
     LOCAL_DEVELOPMENT=true \
     HOSTED_PUSHER_API_URL=http://localhost:10152 \
-    HOSTED_SPEAKER_EMBEDDING_API_URL=http://localhost:10155 \
+    SPEAKER_EMBEDDING_PROVIDER=http SPEAKER_EMBEDDING_API_URL=http://localhost:10155 \
       uvicorn main:app --port 10151
   - Pusher service running:
     PYTHONPATH=. python3 -m uvicorn pusher.main:app --port 10152

@@ -419,7 +419,7 @@ checks:
     lanes: ["local", "ci"]
     reason: "backend Python changed"
   - id: backend-datetime-sort-sentinel-ratchet
-    command: ["python3", "backend/scripts/check_datetime_sort_sentinel_ratchet.py"]
+    command: ["bash", "scripts/dev-harness/run-python.sh", "backend/scripts/check_datetime_sort_sentinel_ratchet.py"]
     triggers: ["backend/**/*.py", "backend/scripts/check_datetime_sort_sentinel_ratchet.py"]
     lanes: ["local", "ci"]
     reason: "#9571/#9600 reject naive datetime min/max fallbacks in backend sort keys"
@@ -434,7 +434,7 @@ checks:
     lanes: ["local", "ci"]
     reason: "Firebase composite-index manifest must be generated from the registered requirements"
   - id: firestore-query-coverage
-    command: ["python3", "backend/scripts/firestore_query_coverage.py", "--check-ratchet"]
+    command: ["bash", "scripts/dev-harness/run-python.sh", "backend/scripts/firestore_query_coverage.py", "--check-ratchet"]
     triggers: ["backend/**/*.py", "backend/scripts/firestore_query_coverage_baseline.json", "backend/scripts/firestore_query_coverage_waivers.json"]
     lanes: ["local", "ci"]
     reason: "serving Firestore compound queries cannot add unregistered or unsupported debt"
@@ -469,7 +469,7 @@ checks:
     lanes: ["local", "ci"]
     reason: "backend production Python changes must retain import-time purity"
   - id: backend-runtime-image-source-closure
-    command: ["python3", "backend/scripts/runtime_image_contracts.py", "check"]
+    command: ["bash", "scripts/dev-harness/run-python.sh", "backend/scripts/runtime_image_contracts.py", "check"]
     triggers: ["backend/**/*.py", "backend/**/Dockerfile*", "backend/runtime_images.json", "backend/scripts/runtime_image_contracts.py", ".github/workflows/runtime_image_contracts.yml", ".github/workflows/desktop_backend_auto_dev.yml", ".github/workflows/gcp_backend*.yml", ".github/workflows/gcp_diarizer.yml", ".github/workflows/gcp_models.yml", ".github/workflows/gcp_parakeet.yml", ".github/workflows/gcp_nllb_translation.yml", ".github/workflows/gcp_memory_maintenance_job*.yml", ".github/workflows/gcp_notifications_job.yml", ".github/workflows/gcp_plugins.yml", "plugins/**/*.py", "plugins/Dockerfile"]
     lanes: ["local", "ci"]
     reason: "#9857: deployable Python images must contain the transitive first-party imports of their runtime entrypoints"
@@ -509,7 +509,7 @@ checks:
     lanes: ["local", "ci"]
     reason: "SCA-39: static preflight that fails closed when pusher chart env/envFrom config references are structurally invalid (the 2026-07-22 REDIS_DB_HOST outage class)"
   - id: conversation-lifecycle-write-guard
-    command: ["python3", "backend/scripts/check_conversation_lifecycle_writes.py"]
+    command: ["bash", "scripts/dev-harness/run-python.sh", "backend/scripts/check_conversation_lifecycle_writes.py"]
     triggers: ["backend/**/*.py", "backend/scripts/check_conversation_lifecycle_writes.py"]
     lanes: ["local", "ci"]
     reason: "conversation lifecycle has one mutation owner"

@@ -208,7 +208,7 @@ class TestDERRegressionGate:
                 f.write(wav_bytes)
                 tmp_path = f.name
 
-            os.environ.pop("HOSTED_SPEAKER_EMBEDDING_API_URL", None)
+            os.environ.pop("SPEAKER_EMBEDDING_API_URL", None)
             gpu_result = _build_gpu_result(ground_truth, total_dur)
             result = transcribe_file_v2(tmp_path, gpu_result=gpu_result, diarize=True)
 
@@ -261,7 +261,7 @@ class TestDERRegressionGate:
                 f.write(buf.getvalue())
                 tmp_path = f.name
 
-            os.environ.pop("HOSTED_SPEAKER_EMBEDDING_API_URL", None)
+            os.environ.pop("SPEAKER_EMBEDDING_API_URL", None)
             gpu_result = {
                 "text": "single speaker test",
                 "timestamp": {
@@ -302,7 +302,7 @@ if __name__ == "__main__":
             worker.stop()
             sys.exit(1)
 
-        os.environ.pop("HOSTED_SPEAKER_EMBEDDING_API_URL", None)
+        os.environ.pop("SPEAKER_EMBEDDING_API_URL", None)
         gpu_result = _build_gpu_result(ground_truth, total_dur)
         result = transcribe_file_v2(tmp_path, gpu_result=gpu_result, diarize=True)
 

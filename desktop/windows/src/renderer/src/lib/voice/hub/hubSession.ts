@@ -179,6 +179,42 @@ export const defaultSocketFactory: HubSocketFactory = (spec) => {
   }
 }
 
+/** Renderer-side socket facade for the authenticated main-process relay. The
+ * Better Auth bearer never crosses this boundary; only an opaque connection id
+ * is exposed to the renderer. */
+export function backendRelaySocketFactory(connectionId: string): HubSocketFactory {
+  return (spec) => {
+    let readyState = 0
+    const unsubscribe = window.omi.onVoiceHubRelayEvent((event) => {
+      if (event.connectionId !== connectionId) return
+      if (event.type === 'open') {
+        readyState = WEBSOCKET_OPEN
+        spec.onOpen()
+      } else if (event.type === 'message') {
+        spec.onMessage(event.data ?? '')
+      } else if (event.type === 'close') {
+        readyState = 3
+        unsubscribe()
+        spec.onClose(event.code ?? 1006, event.data ?? '')
+      } else {
+        spec.onError(event.data ?? 'backend relay websocket error')
+      }
+    })
+    window.omi.voiceHubRelayConnect(connectionId)
+    return {
+      send: (data) => window.omi.voiceHubRelaySend(connectionId, data),
+      close: () => {
+        readyState = 2
+        unsubscribe()
+        window.omi.voiceHubRelayClose(connectionId)
+      },
+      get readyState() {
+        return readyState
+      }
+    }
+  }
+}
+
 /** D4: release a warm socket after this much idle time. Named + tunable. */
 export const HUB_IDLE_RELEASE_MS = 180_000
 
@@ -212,6 +248,9 @@ export type HubSessionOptions = {
    *  subclass projects these to its wire shape. Default none so a warm frame with no
    *  catalog is still faithful. */
   tools?: VoiceToolDeclaration[]
+  /** Opaque main-process relay id. Presence authorizes self-hosted construction;
+   *  the socketFactory must be the matching authenticated relay facade. */
+  backendRelayConnectionId?: string
 }
 
 /** Chunked bytes → base64 (large frames must not blow the `String.fromCharCode`

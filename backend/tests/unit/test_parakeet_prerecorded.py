@@ -18,6 +18,7 @@ os.environ.setdefault('DEEPGRAM_API_KEY', 'x')
 os.environ.setdefault('HOSTED_PARAKEET_API_URL', 'http://fake-parakeet:8080')
 
 import utils.stt.pre_recorded as pr  # noqa: E402
+from utils.egress_policy import EgressPolicyUnavailable  # noqa: E402
 
 
 def _cdist(a, b, metric='cosine'):
@@ -153,8 +154,36 @@ class TestFactoryRouting:
         assert pr._deepgram_client_for_request() is client
         assert factory.call_args.args[0] == 'user-byok-key'
 
+    def test_byok_client_leaves_managed_credential_intact(self, monkeypatch):
+        """DeepgramClient.__init__ rewrites the options it is handed, so each
+        client needs its own — a shared object bills the managed client's
+        requests to whichever BYOK key was constructed last."""
+        monkeypatch.setattr(pr, '_deepgram_client', None)
+        monkeypatch.setattr(pr, 'get_byok_key', lambda _provider: None)
+        monkeypatch.setenv('DEEPGRAM_API_KEY', 'managed-key')
+
+        managed = pr._deepgram_client_for_request()
+        assert managed._config.api_key == 'managed-key'
+
+        monkeypatch.setattr(pr, 'get_byok_key', lambda _provider: 'user-byok-key')
+        assert pr._deepgram_client_for_request()._config.api_key == 'user-byok-key'
+
+        assert managed._config.api_key == 'managed-key'
+
 
 class TestTranscribeBytes:
+    def test_neutral_profile_rejects_undeclared_batch_endpoint_before_network(self, monkeypatch):
+        monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+        monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+        monkeypatch.setenv('HOSTED_PARAKEET_API_URL', 'https://parakeet.operator.example')
+        client = MagicMock()
+        monkeypatch.setattr(pr.httpx, 'Client', lambda *args, **kwargs: client)
+
+        with pytest.raises(RuntimeError, match='Parakeet transcription failed') as error:
+            pr.parakeet_prerecorded_from_bytes(_make_wav(), diarize=False)
+        assert isinstance(error.value.__cause__, EgressPolicyUnavailable)
+        client.assert_not_called()
+
     def test_missing_endpoint_raises_controlled_configuration_error(self, monkeypatch):
         wav = _make_wav()
         monkeypatch.delenv('HOSTED_PARAKEET_API_URL', raising=False)

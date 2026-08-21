@@ -34,6 +34,7 @@ model_config_features:
     - backend/llm_gateway/gateway/config_loader.py:_generated_feature_route_items
   request_shapes:
     plain_chat:
+      - public_shared_conversation_chat
       - conv_action_items
       - conv_app_result
       - conv_discard
@@ -86,25 +87,26 @@ model_config_features:
       - web_search
     pinned:
       - fair_use
-  gateway_capability_needed: OpenAI-compatible chat-completions lane with provider refs for openai, native Vertex Gemini, openrouter, perplexity, and anthropic.
-  migration_status: get_llm centrally switches Omi-managed feature traffic to generated gateway lanes with OMI_LLM_GATEWAY_FEATURE_MODE=gateway and does not retain a direct-provider fallback; gateway Gemini uses native Vertex generateContent authenticated by GKE Workload Identity; Gemini BYOK remains unsupported and fails closed.
+  gateway_capability_needed: OpenAI-compatible chat-completions lane with deployment-resolved provider/model/fallback identities; optional native managed adapters remain explicit.
+  migration_status: get_llm resolves one per-feature manifest in direct and gateway modes; optional unconfigured fallbacks are filtered, configured fallbacks switch only for timeout/429/5xx, and self-host uses an explicit generic endpoint without a managed credential fallback.
   test_guardrail_coverage:
     - backend/tests/unit/test_llm_gateway_coverage_guardrails.py::test_every_model_config_feature_has_inventory_and_gateway_lane
     - backend/tests/unit/test_llm_gateway_client_config.py::test_get_llm_feature_gateway_mode_uses_generated_auto_lane
 surfaces:
   - surface: desktop_context_proactivity
     code_path: backend/routers/desktop_proactivity.py:proactive_completion
-    current_provider_model: gateway lanes desktop_proactive_extraction and desktop_proactive_reasoning; direct OpenAI only when OMI_ENV_STAGE is dev or local and the gateway URL is absent
+    current_provider_model: gateway lanes desktop_proactive_extraction and desktop_proactive_reasoning; explicit direct manifest routes support generic/openai/openrouter/deepseek/mimo with bounded fallback; legacy direct OpenAI recovery remains dev/local only
     request_shape: non-streaming strict structured output with optional explicit prompt caching on reasoning
     gateway_lane_capability_needed: OpenAI-compatible structured-output lanes with explicit-cache support for reasoning
-    migration_status: acknowledged_direct_dev_recovery_surface; production remains gateway-only and fails closed, while dev and local record shared fallback telemetry when recovering through direct OpenAI
+    migration_status: acknowledged_direct_provider_neutral_manifest_route; optional unconfigured fallbacks are filtered and 429/5xx/timeout alone may switch providers
     test_guardrail_coverage: backend/tests/unit/test_desktop_proactivity.py and backend/tests/unit/test_llm_gateway_coverage_guardrails.py
   - surface: public_shared_conversation_chat
     code_path: backend/routers/public_shared_conversation_chat.py:public_shared_conversation_chat
-    current_provider_model: gateway-only openai/gpt-5-nano
+    current_provider_model: gateway-only deployment manifest route; checked-in cloud default is openai/gpt-5-nano
     request_shape: non-streaming plain chat with server-resolved shared transcript, at most eight user/assistant history entries, and no tools or retrieval
     gateway_lane_capability_needed: dedicated non-streaming no-tools omi:auto:public-shared-conversation-chat lane
     migration_status: gateway_only_trusted_frontend_bff
+    deployment_route_contract: dedicated lane provider/model follows OMI_LLM_ROUTE_PUBLIC_SHARED_CONVERSATION_CHAT_* or the deployment-wide route
     test_guardrail_coverage: backend/tests/unit/test_public_shared_conversation_chat.py and web/frontend/src/__tests__/shared-conversation-chat-contract.test.mjs
   - surface: langchain_feature_routing
     code_path: backend/utils/llm/clients.py:get_llm
@@ -115,46 +117,60 @@ surfaces:
     test_guardrail_coverage: backend/tests/unit/test_llm_gateway_coverage_guardrails.py
   - surface: anthropic_agentic_chat
     code_path: backend/utils/llm/gateway_anthropic.py:_GatewayAnthropicStream
-    current_provider_model: anthropic/chat_agent
-    request_shape: streaming, native tool calling, server-side web search
-    gateway_lane_capability_needed: native anthropic.messages surface with streaming and tools on omi:auto:chat-agent
-    migration_status: gateway_only_fail_closed; transport failures and an open circuit return a typed gateway-unavailable error without constructing or calling a direct Anthropic client
-    test_guardrail_coverage: backend/tests/unit/test_gateway_anthropic_client.py
-  - surface: perplexity_web_search_tool
-    code_path: backend/utils/retrieval/tools/perplexity_tools.py:perplexity_web_search_tool
-    current_provider_model: perplexity/web_search
-    request_shape: provider search chat completion
-    gateway_lane_capability_needed: perplexity OpenAI-compatible provider adapter on omi:auto:web-search
-    migration_status: gateway_only_fail_closed
-    test_guardrail_coverage: backend/tests/unit/test_llm_gateway_client_config.py::test_perplexity_tool_always_uses_gateway
+    current_provider_model: chat_agent manifest route; managed Anthropic Messages and generic OpenAI-compatible tool loops are explicit alternatives
+    request_shape: streaming native or OpenAI-compatible tool calling
+    gateway_lane_capability_needed: deployment-resolved tool-capable omi:auto:chat-agent lane
+    migration_status: provider_neutral_manifest_route; generic direct/gateway use the same bounded tool loop, while managed Anthropic transport failures remain typed and never construct an undeclared direct fallback
+    test_guardrail_coverage: backend/tests/unit/test_gateway_anthropic_client.py and backend/tests/unit/test_model_neutral_routing.py
+  - surface: web_search_tool
+    code_path: backend/utils/retrieval/tools/web_search_tools.py:web_search_tool
+    current_provider_model: deployment-selected SearXNG transport or managed web-search gateway lane
+    request_shape: SearXNG JSON Search API or provider search chat completion
+    gateway_lane_capability_needed: optional managed search provider adapter on omi:auto:web-search
+    migration_status: provider_neutral_explicit_transport
+    test_guardrail_coverage: backend/tests/unit/test_web_search_tools.py
   - surface: app_icon_generation
     code_path: backend/utils/llm/app_generator.py:generate_app_icon
-    current_provider_model: openai/dall-e-3
-    request_shape: image generation
-    gateway_lane_capability_needed: gateway-owned /v1/images/generations proxy
-    migration_status: gateway_only_fail_closed
-    test_guardrail_coverage: backend/tests/unit/test_llm_gateway_client_config.py::test_app_icon_generation_always_uses_gateway
+    current_provider_model: deployment-selected local deterministic template, explicit OpenAI-compatible image endpoint, managed gateway, or typed disabled
+    request_shape: local 1024px PNG rendering or bounded image generation
+    gateway_lane_capability_needed: optional managed /v1/images/generations proxy only
+    migration_status: provider_neutral_explicit_transport; local_template performs no network call and compatible mode has no endpoint or credential default
+    test_guardrail_coverage: backend/tests/unit/test_image_generation_provider.py and backend/tests/unit/test_llm_gateway_client_config.py
   - surface: file_chat_vision
     code_path: backend/utils/other/chat_file.py:_ask_vision_stream
-    current_provider_model: openai/gpt-5.6-luna
-    request_shape: streaming vision chat completion
+    current_provider_model: managed OpenAI vision only under explicit openai_assistants transport; local_extraction sends bounded private inline images through the chat_responses manifest
+    request_shape: streaming vision chat completion or bounded inline-image generic completion
     gateway_lane_capability_needed: gateway-owned vision chat lane or file-chat replacement retrieval path
-    migration_status: acknowledged_direct_file_lifecycle_surface; intentionally remains direct during OMI_LLM_GATEWAY_FEATURE_MODE=gateway and records direct-exception telemetry without raising (PR #11419)
-    test_guardrail_coverage: backend/tests/unit/test_llm_gateway_coverage_guardrails.py
+    migration_status: acknowledged_direct_file_lifecycle_surface for the explicit managed transport; self-host local_extraction is private, UID-scoped, provider-neutral, and does not construct an OpenAI client
+    test_guardrail_coverage: backend/tests/unit/test_llm_gateway_coverage_guardrails.py and backend/tests/unit/test_local_file_chat.py
   - surface: file_chat_assistants
     code_path: backend/utils/other/chat_file.py:FileChatTool
-    current_provider_model: openai/gpt-4.1 with Assistants, Threads, Files, File Search
-    request_shape: file upload, assistants, file_search, streaming run deltas
+    current_provider_model: explicit managed OpenAI Assistants transport or self-host local extraction plus chat_responses manifest route
+    request_shape: managed file lifecycle, or private UID object upload with bounded text/PDF/DOCX/CSV/JSON/image extraction and streaming completion
     gateway_lane_capability_needed: gateway-owned file/assistant lifecycle or replacement retrieval path
-    migration_status: acknowledged_direct_file_lifecycle_surface; intentionally remains direct during OMI_LLM_GATEWAY_FEATURE_MODE=gateway and records direct-exception telemetry without raising (PR #11419)
-    test_guardrail_coverage: backend/tests/unit/test_llm_gateway_coverage_guardrails.py
+    migration_status: acknowledged_direct_file_lifecycle_surface for the explicit managed transport; self-host local_extraction preserves the existing file wire without public objects or vendor lifecycle calls
+    test_guardrail_coverage: backend/tests/unit/test_llm_gateway_coverage_guardrails.py and backend/tests/unit/test_local_file_chat.py
   - surface: omni_realtime_relay
     code_path: backend/routers/omni_relay.py
     current_provider_model: openai realtime or gemini live selected by client query
     request_shape: realtime websocket relay
     gateway_lane_capability_needed: gateway-owned realtime websocket relay
-    migration_status: inventoried_direct_realtime_surface; blocked during OMI_LLM_GATEWAY_FEATURE_MODE=gateway and checked-in serving configuration does not permit the exception
+    migration_status: legacy surface blocked during OMI_LLM_GATEWAY_FEATURE_MODE=gateway and guarded by realtime deployment authority; relay/disabled deployments reject before vendor URL or key resolution
     test_guardrail_coverage: backend/tests/unit/test_llm_gateway_coverage_guardrails.py
+  - surface: desktop_openai_compatible_chat
+    code_path: backend/routers/desktop_chat.py:chat_completions
+    current_provider_model: gateway auto lane when selected; otherwise chat_agent manifest through configured generic/openai/openrouter/deepseek/mimo wire targets
+    request_shape: streaming/non-streaming OpenAI chat completions with tools, image parts, response_format, and authorized SearXNG public context derived only from the trusted user instruction
+    gateway_lane_capability_needed: existing omi:auto:chat-agent
+    migration_status: provider_neutral_direct_and_gateway_with_bounded_retryable_only_fallback
+    test_guardrail_coverage: backend/tests/unit/test_desktop_chat.py
+  - surface: desktop_gemini_proxy
+    code_path: backend/routers/desktop_proxy.py:_proxy
+    current_provider_model: managed Gemini/Vertex only when DESKTOP_VENDOR_PROXY_TRANSPORT=gemini
+    request_shape: Gemini generateContent/streamGenerateContent/embedContent
+    gateway_lane_capability_needed: none; optional legacy vendor surface
+    migration_status: typed_disabled_in_self_host_before_vendor_routing
+    test_guardrail_coverage: backend/tests/unit/test_desktop_proxy.py
   - surface: fair_use_classifier
     code_path: backend/utils/llm/fair_use_classifier.py:classify_user_purpose
     current_provider_model: openai/fair_use pinned feature

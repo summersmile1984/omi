@@ -207,6 +207,52 @@ def _stub_new_external_cleanup_boundaries(monkeypatch):
     monkeypatch.setattr(account_deletion, '_delete_memory_maintenance_registry', MagicMock())
 
 
+def test_self_hosted_disabled_agent_vm_provider_never_discovers_gce(monkeypatch):
+    monkeypatch.setenv('AGENT_VM_PROVIDER', 'disabled')
+    monkeypatch.setattr(agent_vm_account_cleanup, 'read_agent_vm_migration_journals', lambda _uid: [])
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_agent_vm', lambda _uid: None)
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_late_agent_vm_cleanup', lambda _uid: None)
+    auth_default = MagicMock(side_effect=AssertionError('self-hosted cleanup must not discover ADC'))
+    monkeypatch.setattr(agent_vm_account_cleanup.google.auth, 'default', auth_default)
+
+    agent_vm_account_cleanup.delete_agent_vm_for_account('self-hosted-user')
+
+    auth_default.assert_not_called()
+
+
+def test_self_hosted_profile_defaults_agent_vm_provider_to_disabled(monkeypatch):
+    monkeypatch.delenv('AGENT_VM_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setattr(agent_vm_account_cleanup, 'read_agent_vm_migration_journals', lambda _uid: [])
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_agent_vm', lambda _uid: None)
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_late_agent_vm_cleanup', lambda _uid: None)
+    auth_default = MagicMock(side_effect=AssertionError('self-hosted cleanup must not discover ADC'))
+    monkeypatch.setattr(agent_vm_account_cleanup.google.auth, 'default', auth_default)
+
+    agent_vm_account_cleanup.delete_agent_vm_for_account('self-hosted-user')
+
+    auth_default.assert_not_called()
+
+
+def test_managed_profile_keeps_agent_vm_gce_default(monkeypatch):
+    monkeypatch.delenv('AGENT_VM_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'omi_cloud')
+
+    assert agent_vm_account_cleanup._agent_vm_provider() == 'gce'
+
+
+def test_self_hosted_disabled_agent_vm_provider_fails_closed_on_legacy_state(monkeypatch):
+    monkeypatch.setenv('AGENT_VM_PROVIDER', 'disabled')
+    monkeypatch.setattr(
+        agent_vm_account_cleanup, 'read_agent_vm_migration_journals', lambda _uid: [_migration_journal()]
+    )
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_agent_vm', lambda _uid: None)
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_late_agent_vm_cleanup', lambda _uid: None)
+
+    with pytest.raises(RuntimeError, match='legacy Agent VM state exists'):
+        agent_vm_account_cleanup.delete_agent_vm_for_account('self-hosted-user')
+
+
 def test_agent_vm_account_cleanup_deletes_mid_migration_candidate_and_reused_state_disk(monkeypatch):
     uid = 'migration-owner'
     journal = _migration_journal()
@@ -1370,6 +1416,16 @@ def test_purge_derived_user_data_isolates_backends_and_reloads_conversation_ids(
         'purge_canonical_derived_user_data',
         MagicMock(return_value={'vector_ids': ['canonical-1', 'canonical-2']}),
     )
+    monkeypatch.setattr(
+        account_deletion.vector_db,
+        'delete_all_user_vectors',
+        lambda uid: calls.append(('vector_reconciliation', uid)) or 4,
+    )
+    monkeypatch.setattr(
+        account_deletion,
+        'delete_all_user_owned_objects',
+        lambda uid: calls.append(('object_reconciliation', uid)) or 5,
+    )
 
     result = account_deletion.purge_derived_user_data('uid1')
 
@@ -1385,11 +1441,13 @@ def test_purge_derived_user_data_isolates_backends_and_reloads_conversation_ids(
         ('get_screen', 'uid1'),
         ('delete_screen_vectors', 'uid1', ['s1']),
         ('recordings', 'uid1'),
+        ('vector_reconciliation', 'uid1'),
+        ('object_reconciliation', 'uid1'),
     ]
     assert result == {
         'required_failures': [],
         'best_effort_failures': [],
-        'vectors_deleted': 8,
+        'vectors_deleted': 12,
         'recordings_deleted': 3,
     }
 
@@ -1412,6 +1470,16 @@ def test_purge_derived_user_data_continues_after_each_failure(monkeypatch):
     monkeypatch.setattr(
         account_deletion, 'purge_canonical_derived_user_data', MagicMock(side_effect=Exception('canonical down'))
     )
+    monkeypatch.setattr(
+        account_deletion.vector_db,
+        'delete_all_user_vectors',
+        MagicMock(side_effect=Exception('vector residual')),
+    )
+    monkeypatch.setattr(
+        account_deletion,
+        'delete_all_user_owned_objects',
+        MagicMock(side_effect=Exception('object residual')),
+    )
 
     result = account_deletion.purge_derived_user_data('uid1')
 
@@ -1429,6 +1497,8 @@ def test_purge_derived_user_data_continues_after_each_failure(monkeypatch):
         'memory_vectors',
         'conversation_recordings',
         'canonical_derived_data',
+        'vector_reconciliation',
+        'object_reconciliation',
     ]
     assert result['best_effort_failures'] == []
 
@@ -1446,6 +1516,7 @@ def test_purge_derived_user_data_fails_required_vectors_when_index_missing(monke
     monkeypatch.setattr(account_deletion, 'delete_screen_activity_vectors', MagicMock())
     monkeypatch.setattr(account_deletion, 'delete_all_conversation_recordings', MagicMock())
     monkeypatch.setattr(account_deletion, 'purge_canonical_derived_user_data', MagicMock())
+    monkeypatch.setattr(account_deletion, 'delete_all_user_owned_objects', MagicMock(return_value=0))
 
     result = account_deletion.purge_derived_user_data('uid1')
 

@@ -166,8 +166,13 @@ final class APIKeyService: ObservableObject {
 
   /// Push effective keys into the process environment for backward compatibility.
   private func applyToEnvironment() {
-    if let key = effectiveGeminiKey {
+    if DesktopModelEgressPolicy.allowsBYOK(
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile),
+      let key = effectiveGeminiKey
+    {
       setenv("GEMINI_API_KEY", key, 1)
+    } else {
+      unsetenv("GEMINI_API_KEY")
     }
     if let key = effectiveFirebaseApiKey {
       setenv("FIREBASE_API_KEY", key, 1)

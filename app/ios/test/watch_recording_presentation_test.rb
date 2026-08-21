@@ -178,9 +178,9 @@ class WatchRecordingPresentationTest < Minitest::Test
     block = project.match(/knownRegions = \((.*?)\);/m)&.captures&.first
     refute_nil block, 'Xcode project must declare knownRegions'
 
-    block.lines.filter_map do |line|
+    block.lines.map do |line|
       locale = line.match(/^\s*"?([A-Za-z][A-Za-z0-9_-]*)"?,\s*$/)&.captures&.first
       locale unless locale == 'Base'
-    end
+    end.compact
   end
 end

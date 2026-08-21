@@ -12,6 +12,22 @@ enum BundleEnvironment {
     "FIREBASE_PROJECT_ID",
     "OMI_DESKTOP_LOCAL_PROFILE",
   ]
+  private static let productionSignedDeploymentKeys: Set<String> = [
+    // A production-family bundle's deployment profile is part of its code
+    // signature. Host launch variables must not split one release across two
+    // identity or data planes; the signed Resources/.env is authoritative.
+    "OMI_DEPLOYMENT_PROFILE",
+    "OMI_AUTH_PROVIDER",
+    "OMI_AUTH_SERVER_URL",
+    "OMI_AUTH_API_URL",
+    "OMI_PYTHON_API_URL",
+    "OMI_DESKTOP_API_URL",
+    "OMI_MCP_API_URL",
+    "OMI_SHARE_BASE_URL",
+    "OMI_REALTIME_MODEL_PROVIDER",
+    "OMI_MCP_CHATGPT_OAUTH_CLIENT_ID",
+    "OMI_MCP_CLAUDE_OAUTH_CLIENT_ID",
+  ]
   /// Capture process-provided values before any bundled environment file is
   /// applied. This makes explicit `open`/launchd overrides authoritative while
   /// retaining the existing merge order between bundled, working-directory,
@@ -23,6 +39,7 @@ enum BundleEnvironment {
     launchEnvironment: [String: String] = BundleEnvironment.launchEnvironment,
     bundleIdentifier: String? = AppBuild.bundleIdentifier
   ) -> Bool {
+    if isProductionSignedDeploymentKey(key, bundleIdentifier: bundleIdentifier) { return true }
     guard !isProductionFirebaseOverride(key, bundleIdentifier: bundleIdentifier) else { return false }
     let launchValue = launchEnvironment[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return launchValue.isEmpty
@@ -32,6 +49,12 @@ enum BundleEnvironment {
     guard let bundleIdentifier else { return false }
     return AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier)
       && productionFirebaseOverrideKeys.contains(key)
+  }
+
+  static func isProductionSignedDeploymentKey(_ key: String, bundleIdentifier: String?) -> Bool {
+    guard let bundleIdentifier else { return false }
+    return AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier)
+      && productionSignedDeploymentKeys.contains(key)
   }
 
   static func normalizedKey(from assignmentKey: String) -> String? {
@@ -50,13 +73,16 @@ enum BundleEnvironment {
     // Clear inherited launchd/shell values before reading any local file. The
     // Beta artifact intentionally uses development serving endpoints, but it
     // shares stable's Firebase Auth and Firestore identity.
-    for key in productionFirebaseOverrideKeys
-    where isProductionFirebaseOverride(key, bundleIdentifier: AppBuild.bundleIdentifier) {
+    for key in productionFirebaseOverrideKeys.union(productionSignedDeploymentKeys)
+    where isProductionFirebaseOverride(key, bundleIdentifier: AppBuild.bundleIdentifier)
+      || isProductionSignedDeploymentKey(key, bundleIdentifier: AppBuild.bundleIdentifier)
+    {
       unsetenv(key)
     }
 
+    let bundledEnvironmentPath = Bundle.main.path(forResource: ".env", ofType: nil)
     let envPaths = [
-      Bundle.main.path(forResource: ".env", ofType: nil),
+      bundledEnvironmentPath,
       FileManager.default.currentDirectoryPath + "/.env",
       NSHomeDirectory() + "/.omi.env",
     ].compactMap { $0 }
@@ -69,6 +95,12 @@ enum BundleEnvironment {
         guard parts.count == 2 else { continue }
         guard let key = normalizedKey(from: String(parts[0])) else { continue }
         guard !key.hasPrefix("#") else { continue }
+        if isProductionSignedDeploymentKey(key, bundleIdentifier: AppBuild.bundleIdentifier),
+          path != bundledEnvironmentPath
+        {
+          log("  Skipped \(key) (production deployment values come only from the signed bundle)")
+          continue
+        }
         let backendServedKeys = ["GEMINI_API_KEY", "GOOGLE_CALENDAR_API_KEY"]
         if backendServedKeys.contains(key) {
           log("  Skipped \(key) (fetched from backend via APIKeyService)")

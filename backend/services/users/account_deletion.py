@@ -28,12 +28,23 @@ from utils.other import endpoints as auth
 from utils.memory.canonical_memory_adapter import purge_canonical_derived_user_data
 from utils.memory.memory_service import MemoryService
 from utils.memory.memory_system import delete_canonical_memory_maintenance_registry_entry
-from utils.other.storage import delete_all_conversation_recordings
+from utils.other.storage import delete_all_conversation_recordings, delete_all_user_owned_objects
 from utils.twilio_service import delete_user_caller_ids_strict as delete_user_caller_ids
 from utils.integration_telemetry import emit_posthog_event
 from services.users.agent_vm_account_cleanup import delete_agent_vm_for_account
 
 logger = logging.getLogger(__name__)
+
+
+def _purge_user_conversation_keyword_index(uid: str) -> int:
+    """Load the self-host projection only in deployments that explicitly own it."""
+    from utils.conversations.typesense_index import conversation_keyword_index_provider
+
+    if conversation_keyword_index_provider() != 'typesense':
+        return 0
+    from utils.conversations.typesense_index import purge_user_conversation_index
+
+    return purge_user_conversation_index(uid)
 
 
 class PurgeFailure(TypedDict):
@@ -170,6 +181,30 @@ def purge_derived_user_data(uid: str) -> PurgeResult:
     except Exception as e:
         record_failure('required_failures', 'canonical_derived_data', e)
         logger.error(f'delete_account purge canonical vectors failed for {uid}: {sanitize(str(e))}')
+
+    try:
+        # Close over the metadata owner in every namespace.  This catches
+        # projections (X imports, workstreams, hashed canonical ids, and future
+        # records) that cannot be recovered from remaining Firestore ids.
+        result['vectors_deleted'] += vector_db.delete_all_user_vectors(uid)
+    except Exception as e:
+        record_failure('required_failures', 'vector_reconciliation', e)
+        logger.error(f'delete_account vector reconciliation failed for {uid}: {sanitize(str(e))}')
+
+    try:
+        _purge_user_conversation_keyword_index(uid)
+    except Exception as e:
+        record_failure('required_failures', 'conversation_keyword_index', e)
+        logger.error(f'delete_account conversation keyword purge failed for {uid}: {sanitize(str(e))}')
+
+    try:
+        # Conversation recordings are retained as the historical targeted
+        # purge above; this closure covers all other durable UID namespaces and
+        # performs its own post-delete count.
+        delete_all_user_owned_objects(uid)
+    except Exception as e:
+        record_failure('required_failures', 'object_reconciliation', e)
+        logger.error(f'delete_account object reconciliation failed for {uid}: {sanitize(str(e))}')
 
     return result
 

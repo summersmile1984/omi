@@ -173,13 +173,19 @@ def test_anthropic_messages_rejects_openai_compatible_lane():
     assert 'not an anthropic messages lane' in response.json()['detail']
 
 
-def test_anthropic_messages_rejects_chat_agent_lane_after_luna_migration():
+def test_anthropic_messages_accepts_manifest_selected_chat_agent_lane(_reset_anthropic_client):
+    fake: _FakeAsyncClient = _reset_anthropic_client
+    fake._post_response = httpx.Response(
+        200,
+        json={'id': 'msg_manifest', 'type': 'message', 'role': 'assistant', 'content': [], 'model': 'claude-test'},
+    )
     app.dependency_overrides.pop(get_gateway_config, None)
+    get_gateway_config.cache_clear()
 
     response = TestClient(app).post('/v1/messages', json=_agentic_request(), headers=_auth_headers())
 
-    assert response.status_code == 400
-    assert 'not an anthropic messages lane' in response.json()['detail']
+    assert response.status_code == 200
+    assert fake.post_calls[0]['json']['model'] == 'claude-sonnet-4-6'
 
 
 def test_anthropic_messages_passthrough_preserves_cache_control(_reset_anthropic_client):

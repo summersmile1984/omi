@@ -127,7 +127,12 @@ export type ChatMessage = {
  * See lib/sync/outbox.ts for the transition rules and dedupe strategy.
  */
 export type ConversationSyncState =
-  'local_only' | 'pending' | 'posting' | 'done' | 'failed' | 'unconfirmed'
+  | 'local_only'
+  | 'pending'
+  | 'posting'
+  | 'done'
+  | 'failed'
+  | 'unconfirmed'
 
 /** One transcript segment in the `/v1/conversations/from-segments` request shape
  * (snake_case matches the wire verbatim). `start`/`end` are WALL-CLOCK
@@ -648,6 +653,23 @@ export type UpdateCheckResult = {
 
 /** Result of an in-app Stripe Checkout flow (main/billing/checkoutWindow). */
 export type CheckoutOutcome = 'success' | 'cancel' | 'closed'
+
+/** The two renderer-owned proactive surfaces that may ask main to use the
+ *  operator model capability. Main owns their tool schemas; this is deliberately
+ *  not a generic renderer-supplied model/tool oracle. */
+export type RendererModelCapabilityRequest =
+  | { surface: 'screen_synthesis'; prompt: string }
+  | { surface: 'live_notes'; prompt: string }
+
+export type RendererModelCapabilityResult = {
+  text: string
+  route: {
+    feature: 'desktop_proactive_reasoning'
+    primary: { provider: string; model: string }
+    fallbacks: { provider: string; model: string }[]
+    unavailableFallbacks: { provider: string; model: string; reason: string }[]
+  }
+}
 
 /** A file chosen for chat attachment. Produced in the main process by the native
  *  file picker (`chat:openFiles`, which reads the bytes) or built in the renderer
@@ -1760,7 +1782,13 @@ export type MemoryExportResult = {
 }
 
 export type IndexedFileType =
-  'document' | 'code' | 'image' | 'media' | 'archive' | 'application' | 'other'
+  | 'document'
+  | 'code'
+  | 'image'
+  | 'media'
+  | 'archive'
+  | 'application'
+  | 'other'
 
 export type IndexedFileRecord = {
   path: string
@@ -1854,7 +1882,14 @@ export type RebuildResult = {
 // the macOS-parity local graph synthesized from indexed_files + memories and
 // consumed by the chat pre-step. Never conflate the two mechanisms.
 export type LocalKGNodeType =
-  'project' | 'app' | 'technology' | 'person' | 'org' | 'interest' | 'file_group' | 'card' // background-synthesized natural-language overview served to the chat floor
+  | 'project'
+  | 'app'
+  | 'technology'
+  | 'person'
+  | 'org'
+  | 'interest'
+  | 'file_group'
+  | 'card' // background-synthesized natural-language overview served to the chat floor
 
 export type LocalKGNode = {
   id: string // `${slug(label)}:${nodeType}` — stable across re-synthesis

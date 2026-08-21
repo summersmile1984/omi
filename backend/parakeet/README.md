@@ -72,7 +72,7 @@ Returns `{"total_requests", "total_batches", "total_files", "rejected_requests",
 | Var | Default | Effect |
 |-----|---------|--------|
 | `PARAKEET_INFERENCE_MODE` | `nemo` | Inference backend (`nemo` or `nim`) |
-| `HOSTED_SPEAKER_EMBEDDING_API_URL` | | External diarizer fallback (optional — built-in preferred) |
+| `SPEAKER_EMBEDDING_API_URL` | | HTTP diarizer fallback (optional — built-in preferred) |
 | `HUGGINGFACE_TOKEN` | | For downloading pyannote speaker embedding model |
 
 ## Deploy

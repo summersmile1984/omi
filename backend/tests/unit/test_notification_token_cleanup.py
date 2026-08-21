@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -140,3 +141,76 @@ def test_send_notification_body_is_plain_text() -> None:
         body = sent_messages[0].notification.body
         assert '**' not in body
         assert body == "• 🇺🇸 US President: Donald Trump\n• 🇮🇳 India's President: Droupadi Murmu"
+
+
+def test_disabled_push_provider_never_reads_tokens_or_calls_firebase(monkeypatch) -> None:
+    monkeypatch.setenv('PUSH_PROVIDER', 'disabled')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        notifications.send_notification('user-1', 'omi', 'hello')
+
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()
+
+
+def test_neutral_profile_with_omitted_push_provider_never_reads_tokens_or_calls_firebase(monkeypatch) -> None:
+    """An ambient Firebase credential must not opt a neutral runtime into push."""
+    monkeypatch.delenv('PUSH_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'neutral')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        notifications.send_notification('user-1', 'omi', 'hello')
+
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()
+
+
+def test_webhook_push_provider_uses_operator_bridge_without_firebase(monkeypatch) -> None:
+    """Webhook delivery must not build or submit a Firebase message."""
+    from utils import push_webhook
+
+    monkeypatch.setenv('PUSH_PROVIDER', 'webhook')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        monkeypatch.setattr(notifications, 'selected_push_provider', lambda: 'webhook')
+        monkeypatch.setattr(
+            push_webhook,
+            'send_webhook_notifications',
+            lambda *args, **kwargs: 1,
+        )
+        notifications.send_notification('user-1', 'omi', 'hello')
+
+        notification_db.get_all_tokens.assert_called_once_with('user-1')
+        messaging.send_each.assert_not_called()
+
+
+def test_disabled_push_provider_blocks_direct_data_only_sender(monkeypatch) -> None:
+    """Internal data-only notification paths must share the provider boundary."""
+    monkeypatch.setenv('PUSH_PROVIDER', 'disabled')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        notifications.send_action_item_data_message('user-1', 'item-1', 'Do the thing', '2026-01-01T00:00:00Z')
+
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()
+
+
+def test_disabled_push_provider_blocks_async_data_only_sender(monkeypatch) -> None:
+    """Async reminder sync must not submit a Firebase call when push is disabled."""
+    monkeypatch.setenv('PUSH_PROVIDER', 'disabled')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        result = asyncio.run(
+            notifications.send_apple_reminders_sync_push_async(
+                'user-1', [{'id': 'item-1', 'description': 'Do the thing', 'due_at': None}]
+            )
+        )
+
+        assert result is False
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()
+
+
+def test_disabled_push_provider_blocks_important_conversation_token_read(monkeypatch) -> None:
+    """Every data-only helper must reach the provider gate before reading tokens."""
+    monkeypatch.setenv('PUSH_PROVIDER', 'disabled')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        notifications.send_important_conversation_message('user-1', 'conversation-1')
+
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()

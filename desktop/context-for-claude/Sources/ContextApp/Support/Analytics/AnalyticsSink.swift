@@ -50,6 +50,7 @@ actor AnalyticsSink {
     private var flushTask: Task<Void, Never>?
     private let spoolURL: URL
     private let transport: AnalyticsTransport
+    private let isEnabled: Bool
     /// Injected so a test can drive the *scheduled* path in milliseconds. The scheduled path is not
     /// a faster version of the direct one — it is the only path production ever takes while the app
     /// is running, and it was broken in 1.0.13 precisely because nothing exercised it.
@@ -60,12 +61,14 @@ actor AnalyticsSink {
     init(
         spoolURL: URL = ContextPaths.supportDirectory.appendingPathComponent("analytics-spool.json"),
         transport: AnalyticsTransport = URLSessionAnalyticsTransport(),
-        flushInterval: TimeInterval = AnalyticsSink.flushInterval
+        flushInterval: TimeInterval = AnalyticsSink.flushInterval,
+        isEnabled: Bool = ContextDeploymentProfile.current.mode == .omiCloud
     ) {
         self.spoolURL = spoolURL
         self.transport = transport
         self.flushInterval = flushInterval
-        self.spool = Self.loadSpool(from: spoolURL)
+        self.isEnabled = isEnabled
+        self.spool = isEnabled ? Self.loadSpool(from: spoolURL) : []
     }
 
     /// Queues one event.
@@ -74,6 +77,7 @@ actor AnalyticsSink {
     /// before it ever reaches the spool, because spooling an airgapped event and uploading it when
     /// the switch goes off would be the disclosure the switch exists to prevent, merely delayed.
     func enqueue(_ payload: AnalyticsPayload) {
+        guard isEnabled else { return }
         spool.append(payload)
         if spool.count > Self.spoolCapacity {
             // Oldest first. A spool that has overflowed has already lost the argument about
@@ -107,6 +111,7 @@ actor AnalyticsSink {
     /// Sends everything queued. Assumes any pending timer has already been dealt with by the caller,
     /// which is what keeps the scheduled task from cancelling itself.
     private func drain() async {
+        guard isEnabled else { return }
         // Whoever is draining now owns the queue, so a later `enqueue` is free to schedule again.
         flushTask = nil
 

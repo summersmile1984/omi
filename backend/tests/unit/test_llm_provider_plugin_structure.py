@@ -150,8 +150,11 @@ def test_openai_compatible_provider_applies_base_url_headers_and_google_prefix(m
 
 
 def test_unknown_openai_compatible_provider_fails_loudly():
-    with pytest.raises(ValueError, match="Unknown OpenAI-compatible provider"):
+    with pytest.raises(providers.ModelProviderConfigurationError) as error:
         providers.get_or_create_openai_compatible_llm('missing-provider', 'some-model')
+
+    assert error.value.provider == 'missing-provider'
+    assert error.value.reason == 'direct_transport_not_supported'
 
 
 def test_mimo_requires_explicit_operator_endpoint(monkeypatch):

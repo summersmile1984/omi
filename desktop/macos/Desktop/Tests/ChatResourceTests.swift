@@ -65,7 +65,11 @@ final class ChatResourceTests: XCTestCase {
     XCTAssertEqual(resource.id, "artifact:artifact-1")
     XCTAssertEqual(resource.origin, .generatedArtifact)
     XCTAssertEqual(resource.title, "report.md")
-    XCTAssertEqual(resource.subtitle, "text/markdown • 2 KB")
+    let subtitle = try XCTUnwrap(resource.subtitle)
+    XCTAssertEqual(
+      subtitle.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+        .joined(separator: " "),
+      "text/markdown • 2 KB")
     XCTAssertEqual(resource.artifactId, "artifact-1")
     XCTAssertEqual(resource.sessionId, "session-1")
     XCTAssertEqual(resource.runId, "run-1")

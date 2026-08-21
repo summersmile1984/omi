@@ -114,6 +114,8 @@ enum SuggestionAssistantTelemetry {
           return classifyAPIMessage(message)
         case .missingAPIKey:
           return .other
+        case .capabilityUnavailable:
+          return .other
         }
       }
       let nsError = error as NSError

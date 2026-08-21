@@ -32,6 +32,33 @@ _PUBLIC_TRANSCRIPT_MAX_STORED_BYTES = 256 * 1024
 _PUBLIC_TRANSCRIPT_MAX_DECODED_BYTES = 512 * 1024
 _PUBLIC_TRANSCRIPT_MAX_SEGMENTS = 4096
 _PUBLIC_TRANSCRIPT_MAX_SEGMENT_TEXT_CHARS = 24_000
+_SEARCH_PROJECTION_FIELDS = frozenset(
+    {
+        'created_at',
+        'started_at',
+        'finished_at',
+        'structured',
+        'structured.title',
+        'structured.overview',
+        'user_title',
+        'discarded',
+        'is_locked',
+        'data_protection_level',
+    }
+)
+
+
+def _sync_conversation_search_projection(uid: str, conversation_id: str) -> None:
+    """Synchronously project an authoritative conversation when this deployment owns the index."""
+    from utils.conversations.typesense_index import sync_conversation_document
+
+    sync_conversation_document(uid, conversation_id, firestore_client=db)
+
+
+def _delete_conversation_search_projection(uid: str, conversation_id: str) -> None:
+    from utils.conversations.typesense_index import delete_conversation_document
+
+    delete_conversation_document(uid, conversation_id)
 
 
 def get_conversation_ids(uid: str) -> List[str]:
@@ -407,6 +434,7 @@ def upsert_conversation_with_lifecycle(uid: str, conversation_data: dict):
         transaction.set(conversation_ref, write_data)
 
     _write_processing_result(transaction)
+    _sync_conversation_search_projection(uid, conversation_data['id'])
 
 
 @set_data_protection_level(data_arg_name='conversation_data')
@@ -478,7 +506,10 @@ def persist_processing_result_with_lifecycle(
         transaction.set(conversation_ref, write_data, merge=True)
         return True
 
-    return _persist(transaction)
+    persisted = _persist(transaction)
+    if persisted:
+        _sync_conversation_search_projection(uid, conversation_data['id'])
+    return persisted
 
 
 @set_data_protection_level(data_arg_name='conversation_data')
@@ -499,8 +530,12 @@ def create_conversation_if_absent_with_lifecycle(uid: str, conversation_data: di
     conversation_ref = user_ref.collection(conversations_collection).document(conversation_data['id'])
     try:
         conversation_ref.create(conversation_data)
+        _sync_conversation_search_projection(uid, conversation_data['id'])
         return True
     except (AlreadyExists, Conflict):
+        # A retry after Firestore committed but Typesense failed must heal the
+        # projection instead of acknowledging an unindexed existing document.
+        _sync_conversation_search_projection(uid, conversation_data['id'])
         return False
 
 
@@ -738,7 +773,13 @@ def iter_all_conversations(uid: str, batch_size: int = 400, include_discarded: b
         offset += batch_size
 
 
-def update_conversation(uid: str, conversation_id: str, update_data: dict):
+def update_conversation(uid: str, conversation_id: str, update_data: dict) -> bool:
+    """Apply ``update_data`` to a conversation.
+
+    Returns False when the conversation no longer exists, so callers that keep
+    producing work for it (e.g. the pusher's private-cloud audio sync) can stop
+    instead of writing into a deleted owner.
+    """
     lifecycle_fields = _LIFECYCLE_FIELDS.intersection(update_data)
     if lifecycle_fields:
         raise ValueError(
@@ -748,11 +789,14 @@ def update_conversation(uid: str, conversation_id: str, update_data: dict):
     doc_ref = db.collection('users').document(uid).collection(conversations_collection).document(conversation_id)
     doc_snapshot = doc_ref.get()
     if not doc_snapshot.exists:
-        return
+        return False
 
     doc_level = doc_snapshot.to_dict().get('data_protection_level', 'standard')
     prepared_data = _prepare_conversation_for_write(update_data, uid, doc_level)
     doc_ref.update(prepared_data)
+    if _SEARCH_PROJECTION_FIELDS.intersection(update_data):
+        _sync_conversation_search_projection(uid, conversation_id)
+    return True
 
 
 def try_claim_conversation_memory_analytics(uid: str, conversation_id: str, firestore_client: Any = None) -> bool:
@@ -889,6 +933,7 @@ def update_conversation_title(uid: str, conversation_id: str, title: str):
         return
 
     conversation_ref.update({'structured.title': title, 'user_title': title})
+    _sync_conversation_search_projection(uid, conversation_id)
 
 
 def update_conversation_summary(uid: str, conversation_id: str, app_id: Optional[str], content: str) -> str:
@@ -911,6 +956,7 @@ def update_conversation_summary(uid: str, conversation_id: str, app_id: Optional
 
     if app_id is None:
         conversation_ref.update({'structured.overview': content})
+        _sync_conversation_search_projection(uid, conversation_id)
         return 'ok'
 
     raw = doc_snapshot.to_dict() or {}
@@ -1032,6 +1078,10 @@ def delete_conversation(uid, conversation_id):
     """
     user_ref = db.collection('users').document(uid)
     conversation_ref = user_ref.collection(conversations_collection).document(conversation_id)
+    # Delete the projection first: if Typesense is unavailable, the
+    # authoritative document remains retryable and no stale searchable copy is
+    # left after a successful source deletion.
+    _delete_conversation_search_projection(uid, conversation_id)
     for sub in conversation_ref.collections():
         delete_collection_recursive(sub, client=db)
     conversation_ref.delete()
@@ -1177,6 +1227,11 @@ def migrate_conversations_level_batch(uid: str, conversation_ids: List[str], tar
 
     if batch_count > 0:
         batch.commit()
+    # Protection-level changes alter search eligibility. Sync every requested
+    # id, including already-migrated retry rows, so a retry heals a prior
+    # projection failure and E2EE transitions remove any old searchable copy.
+    for conversation_id in conversation_ids:
+        _sync_conversation_search_projection(uid, conversation_id)
 
 
 # **************************************
@@ -1294,12 +1349,14 @@ def set_conversation_as_discarded(uid: str, conversation_id: str):
     user_ref = db.collection('users').document(uid)
     conversation_ref = user_ref.collection(conversations_collection).document(conversation_id)
     conversation_ref.update({'discarded': True})
+    _sync_conversation_search_projection(uid, conversation_id)
 
 
 def restore_conversation_from_discarded(uid: str, conversation_id: str):
     user_ref = db.collection('users').document(uid)
     conversation_ref = user_ref.collection(conversations_collection).document(conversation_id)
     conversation_ref.update({'discarded': False})
+    _sync_conversation_search_projection(uid, conversation_id)
 
 
 # *********************************
@@ -1434,6 +1491,7 @@ def update_conversation_finished_at(uid: str, conversation_id: str, finished_at:
     user_ref = db.collection('users').document(uid)
     conversation_ref = user_ref.collection(conversations_collection).document(conversation_id)
     conversation_ref.update({'finished_at': finished_at})
+    _sync_conversation_search_projection(uid, conversation_id)
 
 
 def update_conversation_segments(
@@ -1499,9 +1557,11 @@ def unlock_all_conversations(uid: str):
 
     batch = db.batch()
     docs = locked_conversations_query.stream()
+    updated_ids: List[str] = []
     count = 0
     for doc in docs:
         batch.update(doc.reference, {'is_locked': False})
+        updated_ids.append(doc.id)
         count += 1
         if count >= 499:  # Firestore batch limit is 500
             batch.commit()
@@ -1509,6 +1569,8 @@ def unlock_all_conversations(uid: str):
             count = 0
     if count > 0:
         batch.commit()
+    for conversation_id in updated_ids:
+        _sync_conversation_search_projection(uid, conversation_id)
     logger.info(f"Unlocked all conversations for user {uid}")
 
 

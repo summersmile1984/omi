@@ -1502,9 +1502,17 @@ final class DesktopAutomationActionRegistry {
       else {
         return ["error": "missing or unreadable 'pcm' file (expected raw s16le 16k mono)"]
       }
-      let provider =
-        params["provider"].flatMap(RealtimeOmniProvider.init(rawValue:))
-        ?? RealtimeOmniSettings.shared.effectiveProvider
+      let provider: RealtimeOmniProvider?
+      if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+        provider = RealtimeOmniSettings.shared.resolvedRelayProvider
+      } else {
+        provider =
+          params["provider"].flatMap(RealtimeOmniProvider.init(rawValue:))
+          ?? RealtimeOmniSettings.shared.effectiveProvider
+      }
+      guard let provider else {
+        return ["error": "realtime backend capability unavailable"]
+      }
       let base = DesktopBackendEnvironment.pythonBaseURL()
       let authHeader: String
       do {
@@ -2406,6 +2414,31 @@ final class DesktopAutomationActionRegistry {
     }
 
     register(
+      name: "integration_nudge_evaluate",
+      summary:
+        "Read-only: which integration a given frontmost app/window maps to, and whether a nudge would fire",
+      params: ["bundle_id", "window_title"],
+      category: "read",
+      safety: "read_only"
+    ) { params in
+      await IntegrationNudgeAutomation.evaluate(
+        bundleID: params["bundle_id"],
+        windowTitle: params["window_title"]
+      )
+    }
+
+    register(
+      name: "integration_nudge_present",
+      summary: "Present the integration-connect card for one catalog entry (QA of the real card path)",
+      params: ["telemetry_id"],
+      category: "write",
+      surfaces: ["floating_bar"],
+      safety: "presents_ui"
+    ) { params in
+      await MainActor.run { IntegrationNudgeAutomation.present(telemetryID: params["telemetry_id"] ?? "") }
+    }
+
+    register(
       name: "cloud_connector_guidance_probe",
       summary: "Read-only diagnostic of the live Claude Add detection (no overlay, no clicks)"
     ) { _ in
@@ -3059,6 +3092,10 @@ final class DesktopAutomationActionRegistry {
         "cloud_sync": cloudSync.enabled ? "true" : "false",
         "tracking_enabled": trackingEnabled ? "true" : "false",
       ]
+    }
+
+    register(name: "permissions_snapshot", summary: "Every permission row the Permissions page shows") {
+      _ in await PermissionsSnapshot.capture()
     }
 
     register(

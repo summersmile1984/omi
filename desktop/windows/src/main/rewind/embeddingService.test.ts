@@ -9,14 +9,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RewindFrame } from '../../shared/types'
 
 const db = vi.hoisted(() => ({
+  activateRewindEmbeddingProjection: vi.fn(),
   rewindFramesNeedingEmbedding: vi.fn(),
   upsertRewindEmbedding: vi.fn(),
   linkRewindEmbedding: vi.fn()
 }))
-const client = vi.hoisted(() => ({ embedBatch: vi.fn(), embedOne: vi.fn() }))
+const client = vi.hoisted(() => ({
+  embedBatch: vi.fn(),
+  embedOne: vi.fn(),
+  embedCapabilityBatch: vi.fn(),
+  embeddingProjectionKey: (projection: Record<string, unknown>) => JSON.stringify(projection),
+  EmbeddingProjectionResponseFence: class {
+    commit(
+      _responseGeneration: number,
+      _projectionKey: string,
+      _markerMatches: () => boolean,
+      activate: () => boolean
+    ): boolean {
+      return activate()
+    }
+  }
+}))
 
 vi.mock('../ipc/db', () => db)
 vi.mock('./embeddingClient', () => client)
+vi.mock('../../shared/deploymentProfile', () => ({
+  resolveWindowsDeployment: () => ({ profile: 'omi_cloud' })
+}))
 
 import {
   __resetRewindEmbeddingForTests,
@@ -30,8 +49,8 @@ import { EMBED_MODEL } from './embedVector'
 
 const SESSION = { desktopApiBase: 'https://desktop.example', token: 'tok' }
 
-/** A session whose token is a real-shaped Firebase JWT for `uid` — so the service
- *  can tell a user SWITCH from an hourly token refresh. */
+/** A session whose token is a real-shaped identity JWT for `uid` — so the service
+ *  can tell a user switch from an hourly token refresh. */
 function sessionFor(uid: string): { desktopApiBase: string; token: string } {
   const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString('base64url')
   return {
@@ -77,6 +96,7 @@ beforeEach(() => {
   __resetRewindEmbeddingForTests()
   vi.clearAllMocks()
   db.linkRewindEmbedding.mockReturnValue(true) // the vector is there unless a test says otherwise
+  db.activateRewindEmbeddingProjection.mockReturnValue(false)
   client.embedBatch.mockImplementation(async (_s: unknown, texts: string[]) =>
     texts.map((_, i) => vec(i + 1))
   )

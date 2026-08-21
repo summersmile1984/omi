@@ -1010,7 +1010,7 @@ def test_llm_calls_use_omi_qos_tier_system():
 
     # get_transcript_structure should use the conv_structure QoS lane.
     struct_match = re.search(
-        r'def get_transcript_structure.*?get_llm\([\'"](\w+)[\'"]\s*,\s*cache_key=',
+        r'def get_transcript_structure.*?get_llm\(\s*[\'"](\w+)[\'"]\s*,\s*cache_key=',
         conv_proc_source,
         re.DOTALL,
     )
@@ -1021,7 +1021,7 @@ def test_llm_calls_use_omi_qos_tier_system():
 
     # get_app_result should use the conv_app_result QoS lane.
     app_match = re.search(
-        r'def get_app_result.*?get_llm\([\'"](\w+)[\'"]\s*,\s*cache_key=',
+        r'def get_app_result.*?get_llm\(\s*[\'"](\w+)[\'"]\s*,\s*cache_key=',
         conv_proc_source,
         re.DOTALL,
     )
@@ -1032,7 +1032,7 @@ def test_llm_calls_use_omi_qos_tier_system():
 
     # extract_action_items should use the conv_action_items QoS lane.
     action_match = re.search(
-        r'def extract_action_items.*?get_llm\([\'"](\w+)[\'"]\s*,\s*cache_key=',
+        r'def extract_action_items.*?get_llm\(\s*[\'"](\w+)[\'"]\s*,\s*cache_key=',
         conv_proc_source,
         re.DOTALL,
     )
@@ -1054,7 +1054,7 @@ def test_all_callsites_use_get_llm():
 
     # conversation_processing.py: 9 callsites
     conv_proc_source = (backend_dir / "utils" / "llm" / "conversation_processing.py").read_text(encoding="utf-8")
-    conv_proc_calls = re.findall(r"get_llm\('(\w+)'", conv_proc_source)
+    conv_proc_calls = re.findall(r"get_llm\(\s*'(\w+)'", conv_proc_source)
     assert 'conv_action_items' in conv_proc_calls, "Missing get_llm('conv_action_items') in conversation_processing.py"
     assert 'conv_app_result' in conv_proc_calls, "Missing get_llm('conv_app_result') in conversation_processing.py"
     assert 'conv_app_select' in conv_proc_calls, "Missing get_llm('conv_app_select') in conversation_processing.py"
@@ -1068,7 +1068,7 @@ def test_all_callsites_use_get_llm():
 
     # knowledge_graph.py: 2 callsites
     kg_source = (backend_dir / "utils" / "llm" / "knowledge_graph.py").read_text(encoding="utf-8")
-    kg_calls = re.findall(r"get_llm\('(\w+)'", kg_source)
+    kg_calls = re.findall(r"get_llm\(\s*'(\w+)'", kg_source)
     assert (
         kg_calls.count('knowledge_graph') == 2
     ), f"Expected 2 get_llm('knowledge_graph') calls, got {kg_calls.count('knowledge_graph')}"
@@ -1076,15 +1076,18 @@ def test_all_callsites_use_get_llm():
     # memories.py: 6 callsites (memories x3 incl. the memory-log extract SSOT, learnings x1,
     # memory_category x1, memory_conflict x1)
     mem_source = (backend_dir / "utils" / "llm" / "memories.py").read_text(encoding="utf-8")
-    mem_calls = re.findall(r"get_llm\('(\w+)'", mem_source)
+    mem_calls = re.findall(r"get_llm\(\s*'(\w+)'", mem_source)
     assert mem_calls.count('memories') == 3, f"Expected 3 get_llm('memories') calls, got {mem_calls.count('memories')}"
     assert 'learnings' in mem_calls, "Missing get_llm('learnings') in memories.py"
     assert 'memory_category' in mem_calls, "Missing get_llm('memory_category') in memories.py"
     assert 'memory_conflict' in mem_calls, "Missing get_llm('memory_conflict') in memories.py"
 
-    # Total: 10 + 2 + 6 = 18 callsites (notes v2 adds the merged note call).
+    # Total: 11 + 2 + 6 = 19 callsites (notes v2 adds the merged note call). This was 18 while the
+    # pattern above required the feature key on the same line as `get_llm(`: one already-wrapped
+    # conv_app_result callsite was invisible to it, so the count was calibrated against a scan that
+    # silently skipped wrapped calls.
     total = len(conv_proc_calls) + len(kg_calls) + len(mem_calls)
-    assert total == 18, f"Expected 18 total get_llm() callsites, got {total}"
+    assert total == 19, f"Expected 19 total get_llm() callsites, got {total}"
 
 
 def test_no_direct_llm_instance_usage_in_wired_files():
@@ -1537,6 +1540,128 @@ def test_finalization_survives_an_unavailable_memory_extractor(monkeypatch):
     memory_service.replace_conversation_memories.assert_not_called()
     # ... and the effects sequenced after extraction still ran.
     assert '_save_action_items' in {getattr(call.args[1], '__name__', '') for call in submitted.call_args_list}
+
+
+def test_custom_stt_conversation_without_llm_byok_key_skips_llm_work(monkeypatch):
+    """Regression for #7690: a custom-STT conversation with no LLM BYOK key must
+    not run any Omi-paid LLM post-processing (structure, summaries, memories)."""
+    completed_conversation = Conversation(
+        id='conversation-custom-stt',
+        created_at=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        started_at=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 7, 21, 0, 1, tzinfo=timezone.utc),
+        source=ConversationSource.omi,
+        structured=Structured(title='Title', overview='Overview'),
+        transcript_segments=[],
+        status=ConversationStatus.completed,
+        discarded=False,
+        uses_custom_stt=True,
+    )
+
+    structured_calls = []
+    monkeypatch.setattr(
+        process_conversation, '_get_structured', lambda *a, **k: structured_calls.append(1) or (MagicMock(), False)
+    )
+    monkeypatch.setattr(process_conversation, '_get_conversation_obj', lambda *a, **k: completed_conversation)
+    monkeypatch.setattr(process_conversation, '_trigger_apps', lambda *a, **k: None)
+    # No LLM BYOK key on this request, so Omi would pay — the gate must fire.
+    monkeypatch.setattr(process_conversation.users_db, 'is_byok_active', lambda _uid: False)
+    monkeypatch.setattr(process_conversation, 'get_byok_key', lambda _provider: None)
+    # The completed status must be durably persisted, not left in `processing`.
+    persisted = {}
+    monkeypatch.setattr(
+        process_conversation.lifecycle_service,
+        'persist_processed_conversation',
+        lambda uid, data: persisted.update(uid=uid, status=data.get('status')) or True,
+    )
+
+    result = process_conversation.process_conversation('uid', 'en', completed_conversation)
+
+    # The gate returns the conversation with no LLM work, but the completed
+    # status is durably persisted so the record is not stuck in `processing`.
+    assert result is completed_conversation
+    assert structured_calls == [], 'LLM structuring ran for a custom-STT conversation without an LLM key'
+    assert completed_conversation.status == ConversationStatus.completed
+    assert (
+        persisted.get('status') == ConversationStatus.completed
+    ), f'custom-STT skip path did not durably persist the completed status: {persisted}'
+
+
+def test_custom_stt_conversation_with_llm_byok_key_runs_llm_work(monkeypatch):
+    """A custom-STT user who brings their own LLM key pays their own bill, so
+    Omi-paid enrichment must still run (BYOK escape hatch)."""
+    completed_conversation = Conversation(
+        id='conversation-custom-stt-byok',
+        created_at=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        started_at=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 7, 21, 0, 1, tzinfo=timezone.utc),
+        source=ConversationSource.omi,
+        structured=Structured(title='Title', overview='Overview'),
+        transcript_segments=[],
+        status=ConversationStatus.completed,
+        discarded=False,
+        uses_custom_stt=True,
+    )
+
+    input_conversation = MagicMock()
+    input_conversation.source = 'omi'
+    input_conversation.get_person_ids.return_value = []
+    input_conversation.uses_custom_stt = True
+
+    structured_calls = []
+    monkeypatch.setattr(
+        process_conversation, '_get_structured', lambda *a, **k: structured_calls.append(1) or (MagicMock(), False)
+    )
+    monkeypatch.setattr(process_conversation, '_get_conversation_obj', lambda *a, **k: completed_conversation)
+    monkeypatch.setattr(process_conversation, '_trigger_apps', lambda *a, **k: None)
+    monkeypatch.setattr(process_conversation, 'submit_with_context', MagicMock())
+    # The user carries an OpenAI key — enrichment runs on their bill.
+    monkeypatch.setattr(process_conversation.users_db, 'is_byok_active', lambda _uid: True)
+    monkeypatch.setattr(
+        process_conversation, 'get_byok_key', lambda provider: 'sk-test' if provider == 'openai' else None
+    )
+
+    process_conversation.process_conversation('uid', 'en', input_conversation)
+
+    assert structured_calls, 'LLM structuring was skipped despite an LLM BYOK key'
+
+
+def test_omi_stt_conversation_never_reads_byok_state(monkeypatch):
+    """Regression for #7690: the deferred BYOK lookup must not fire a Firestore
+    read on the ordinary Omi-STT hot path. users_db.is_byok_active is an
+    uncached users/... document read; it must only run for custom-STT
+    conversations, whose gate decision actually depends on it."""
+    completed_conversation = Conversation(
+        id='conversation-omi-stt',
+        created_at=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        started_at=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 7, 21, 0, 1, tzinfo=timezone.utc),
+        source=ConversationSource.omi,
+        structured=Structured(title='Title', overview='Overview'),
+        transcript_segments=[],
+        status=ConversationStatus.completed,
+        discarded=False,
+        uses_custom_stt=False,
+    )
+
+    structured_calls = []
+    monkeypatch.setattr(
+        process_conversation, '_get_structured', lambda *a, **k: structured_calls.append(1) or (MagicMock(), False)
+    )
+    monkeypatch.setattr(process_conversation, '_get_conversation_obj', lambda *a, **k: completed_conversation)
+    monkeypatch.setattr(process_conversation, '_trigger_apps', lambda *a, **k: None)
+    byok_calls = []
+    monkeypatch.setattr(
+        process_conversation.users_db,
+        'is_byok_active',
+        lambda _uid: byok_calls.append(_uid) or True,
+    )
+    monkeypatch.setattr(process_conversation, 'get_byok_key', lambda _provider: 'sk-test')
+
+    process_conversation.process_conversation('uid', 'en', completed_conversation)
+
+    assert structured_calls, 'Omi-STT conversation should still run LLM enrichment'
+    assert byok_calls == [], f'BYOK Firestore read fired on the Omi-STT hot path: {byok_calls}'
 
 
 def test_dedup_candidates_exclude_own_and_merge_source_items():

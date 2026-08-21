@@ -55,6 +55,7 @@ _VALID_PATHS = frozenset({PATH_CANONICAL, PATH_LEGACY})
 
 _posthog_client: Optional[Any] = None
 _posthog_disabled = False
+_NEUTRAL_DEPLOYMENT_PROFILES = frozenset({"neutral", "self_hosted", "self-hosted"})
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,11 @@ def _get_posthog_client() -> Optional[Any]:
         return None
     if _posthog_client is not None:
         return _posthog_client
+    # Never let an inherited managed secret turn this optional event into an
+    # Omi-hosted egress path in a neutral/self-hosted deployment.
+    if os.getenv("OMI_DEPLOYMENT_PROFILE", "").strip().lower() in _NEUTRAL_DEPLOYMENT_PROFILES:
+        _posthog_disabled = True
+        return None
 
     api_key = os.getenv("POSTHOG_PROJECT_API_KEY") or os.getenv("POSTHOG_API_KEY")
     if not api_key:

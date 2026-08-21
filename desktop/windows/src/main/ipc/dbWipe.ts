@@ -34,6 +34,10 @@ export const USER_DATA_TABLES = [
   'live_notes',
   'rescue_segments',
   'rewind_embeddings',
+  // Projection authority is account-local state. Keeping the marker while
+  // deleting its vectors can make the next account skip required activation.
+  'task_embedding_projection',
+  'rewind_embedding_projection',
   // The vectors themselves — derived from the user's screen content, so they must
   // go on an account switch just like the frame->content mapping above.
   'rewind_embedding_vectors',

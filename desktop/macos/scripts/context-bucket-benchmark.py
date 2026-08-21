@@ -191,12 +191,13 @@ def invoke_case(case: dict, port: int, include_text: bool = False) -> dict:
             envelope = json.load(response)
     except error.HTTPError as exc:
         stable_error = None
-        try:
-            error_envelope = json.loads(exc.read(4096))
-            match = STABLE_PROACTIVE_ERROR.search(str(error_envelope.get("error", "")))
-            stable_error = match.group(0) if match else None
-        except (AttributeError, json.JSONDecodeError, UnicodeDecodeError):
-            pass
+        if getattr(exc, "fp", None) is not None:
+            try:
+                error_envelope = json.loads(exc.read(4096))
+                match = STABLE_PROACTIVE_ERROR.search(str(error_envelope.get("error", "")))
+                stable_error = match.group(0) if match else None
+            except (AttributeError, json.JSONDecodeError, UnicodeDecodeError):
+                pass
         suffix = f" ({stable_error})" if stable_error else ""
         raise RuntimeError(f"{case['id']}: probe returned HTTP {exc.code}{suffix}") from exc
     if envelope.get("ok") is not True:

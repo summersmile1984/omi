@@ -1,5 +1,5 @@
-"""MiMo-V2.5-ASR official API client: transcribe audio via OpenAI-compatible
-chat completions.
+"""MiMo-V2.5-ASR operator-gateway client: transcribe audio via
+OpenAI-compatible chat completions.
 
 Platform: operator-configured OpenAI-compatible endpoint (the authority is
 never selected implicitly).  The endpoint may be a self-hosted service or an
@@ -27,6 +27,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -35,6 +36,67 @@ from .config import MimoConfigurationError, resolve_mimo_config, timeout_seconds
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 120.0
+
+_MIMO_VENDOR_HOST_SUFFIXES = (".xiaomimimo.com", ".mimo.mi.com")
+MIMO_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def configured_mimo_endpoint(value: str, variable_name: str = "MIMO_API_BASE") -> str:
+    """Validate an explicit operator-owned MiMo-compatible HTTP authority.
+
+    MiMo is an optional provider in this fork.  The official cloud authorities
+    are deliberately rejected so an isolated deployment cannot silently send
+    audio or credentials to the vendor when its own gateway is absent or
+    mistyped.  Private HTTP authorities are allowed for local/container
+    services; public authorities must use HTTPS.
+    """
+
+    endpoint = (value or "").strip().rstrip("/")
+    try:
+        parsed = urlsplit(endpoint)
+        # Accessing ``port`` validates malformed ports (urlsplit is lazy).
+        _ = parsed.port
+    except ValueError as exc:
+        raise MimoAPIError(f"{variable_name} must be an explicit operator HTTP(S) endpoint") from exc
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or is_unsafe_network_hostname(hostname)
+        or any(hostname == suffix.lstrip(".") or hostname.endswith(suffix) for suffix in _MIMO_VENDOR_HOST_SUFFIXES)
+        or (parsed.scheme == "http" and not is_private_operator_hostname(hostname))
+    ):
+        raise MimoAPIError(
+            f"{variable_name} must be an explicit operator HTTP(S) endpoint "
+            "without credentials/query and must not use the MiMo cloud authority"
+        )
+    if not endpoint:
+        raise MimoAPIError(f"{variable_name} environment variable is required")
+    return endpoint
+
+
+def _resolve_base_url() -> str:
+    use_tokenplan = os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in MIMO_TRUE_VALUES
+    variable_name = "MIMO_TOKENPLAN_BASE" if use_tokenplan else "MIMO_API_BASE"
+    value = os.getenv(variable_name, "").strip()
+    if not value:
+        raise MimoAPIError(f"{variable_name} environment variable is required for MiMo")
+    return configured_mimo_endpoint(value, variable_name)
+
+
+def mimo_configuration_ready() -> bool:
+    """Return whether the selected operator endpoint and key are configured."""
+
+    try:
+        _resolve_base_url()
+    except MimoAPIError:
+        return False
+    return bool(os.getenv("MIMO_API_KEY", "").strip())
+
 
 # wav/mp3 <= 10MB per MiMo docs; keep a conservative cap.
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -74,7 +136,7 @@ def _raise_for_error(resp: httpx.Response) -> None:
     raise MimoAPIError(f"MiMo ASR API {resp.status_code}: {detail}")
 
 
-def _guess_format(path_or_name: str, content_type: Optional[str] = None) -> str:
+def infer_audio_format(path_or_name: str, content_type: Optional[str] = None) -> str:
     """Map a file suffix / content type to the MiMo format token."""
     if content_type:
         ct = content_type.lower()
@@ -162,7 +224,13 @@ class MimoClient:
                 f"audio too large for MiMo ASR ({len(audio_bytes)} > {MAX_AUDIO_BYTES} bytes); "
                 "MiMo docs cap audio at 10MB — chunk it upstream"
             )
-        fmt = _guess_format(filename or "", content_type) if audio_format is None else audio_format
+        endpoint = self._endpoint()
+        # This legacy synchronous helper does not use the shared httpx pool.
+        # Enforce the same operator egress policy before encoding or sending
+        # audio, so neutral deployments cannot silently use an undeclared
+        # public authority.
+        assert_http_endpoint_allowed(endpoint)
+        fmt = infer_audio_format(filename or "", content_type) if audio_format is None else audio_format
         audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
         messages = self._build_messages(audio_b64, fmt, language=language, instruction=instruction)
         payload: Dict[str, Any] = {
@@ -174,7 +242,7 @@ class MimoClient:
         if language:
             payload["asr_options"] = {"language": language}
         resp = httpx.post(
-            self._endpoint(),
+            endpoint,
             headers=self._headers(),
             json=payload,
             timeout=self._timeout,

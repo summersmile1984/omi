@@ -92,6 +92,22 @@ final class LocalTranscriptionService: @unchecked Sendable {
     self.onSegments = onSegments
     self.onModelLoadFailed = onModelLoadFailed
 
+    // Self-hosted artifacts do not currently carry a signed local model
+    // authority. Do not let FluidAudio turn a missing cache into an implicit
+    // Hugging Face download; the caller's existing failure seam routes to the
+    // configured backend transcription path instead.
+    guard
+      DesktopBackendEnvironment.allowsImplicitSpeechModelDownload(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile
+      )
+    else {
+      log("LocalTranscriptionService: implicit speech-model download disabled for self-hosted profile")
+      Task { @MainActor [weak self] in
+        self?.onModelLoadFailed?()
+      }
+      return
+    }
+
     Task { [weak self] in
       guard let self else { return }
       do {

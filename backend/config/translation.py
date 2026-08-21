@@ -12,14 +12,20 @@ class TranslationProvider(str, Enum):
     gemini = 'gemini'
     # Internal compatibility alias: this must never produce "google" telemetry.
     google = 'gemini'
+    generic = 'generic'
     nllb = 'nllb'
+    disabled = 'disabled'
 
     @staticmethod
     def get_display_name(value: 'TranslationProvider') -> str:
         if value == TranslationProvider.gemini:
             return 'Gemini 2.5 Flash-Lite via LLM gateway'
+        if value == TranslationProvider.generic:
+            return 'Operator-configured generic LLM'
         if value == TranslationProvider.nllb:
             return 'NLLB-200 (self-hosted)'
+        if value == TranslationProvider.disabled:
+            return 'Disabled by deployment'
         return str(value)
 
 
@@ -46,11 +52,18 @@ def resolve_translation_profile(env: Mapping[str, str] | None = None) -> Transla
     """Resolve mutable environment at the translation call boundary.
 
     The configured list is an ordered provider policy. Unavailable providers
-    are filtered, unsupported tokens are retained as diagnostics, and Gemini is
-    used only when the list is empty or no configured provider is usable.
+    are filtered and unsupported tokens are retained as diagnostics. Managed
+    deployments preserve the historical Gemini default; self-hosted/neutral
+    deployments fail closed unless ``generic``, ``nllb``, or ``disabled`` is
+    explicitly selected.
     """
 
     values = process_environ if env is None else env
+    neutral_deployment = values.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in {
+        'neutral',
+        'self_hosted',
+        'self-hosted',
+    }
     nllb_url = values.get('HOSTED_TRANSLATION_API_URL', '').strip()
     raw_models = values.get('TRANSLATION_SERVICE_MODELS', '').strip()
 
@@ -63,9 +76,17 @@ def resolve_translation_profile(env: Mapping[str, str] | None = None) -> Transla
         if not token:
             continue
         if token in {TranslationProvider.gemini.value, 'google'}:
+            if neutral_deployment:
+                if token not in unsupported_tokens:
+                    unsupported_tokens.append(token)
+                continue
             provider = TranslationProvider.gemini
+        elif token == TranslationProvider.generic.value:
+            provider = TranslationProvider.generic
         elif token == TranslationProvider.nllb.value:
             provider = TranslationProvider.nllb
+        elif token == TranslationProvider.disabled.value:
+            provider = TranslationProvider.disabled
         else:
             if token not in unsupported_tokens:
                 unsupported_tokens.append(token)
@@ -79,7 +100,16 @@ def resolve_translation_profile(env: Mapping[str, str] | None = None) -> Transla
         if provider not in usable_providers:
             usable_providers.append(provider)
 
-    providers = tuple(usable_providers) or (TranslationProvider.gemini,)
+    if TranslationProvider.disabled in usable_providers:
+        providers = (TranslationProvider.disabled,)
+    elif usable_providers:
+        providers = tuple(usable_providers)
+    elif neutral_deployment:
+        providers = (TranslationProvider.disabled,)
+        if not configured_providers and 'translation_not_configured' not in unavailable_tokens:
+            unavailable_tokens.append('translation_not_configured')
+    else:
+        providers = (TranslationProvider.gemini,)
 
     timeout = _positive_float(values.get('TRANSLATION_NLLB_TIMEOUT_SECONDS', '5.0'), 'TRANSLATION_NLLB_TIMEOUT_SECONDS')
     cache_ttl = _positive_int(values.get('TRANSLATION_CACHE_TTL', str(60 * 60 * 24 * 14)), 'TRANSLATION_CACHE_TTL')

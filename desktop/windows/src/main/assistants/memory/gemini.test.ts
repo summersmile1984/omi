@@ -14,6 +14,44 @@ import { extractMemory } from './gemini'
 import type { BackendSession } from '../core/session'
 
 const session = (): BackendSession => ({ apiBase: 'a', desktopApiBase: 'd', token: 't' })
+const selfHostedSession = (): BackendSession => ({
+  apiBase: 'https://api.operator.test',
+  desktopApiBase: 'https://desktop.operator.test',
+  token: 'operator-token'
+})
+
+function selfHostedProfile(): void {
+  vi.stubEnv('VITE_OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+  vi.stubEnv('VITE_OMI_IDENTITY_PROVIDER', 'better_auth')
+  vi.stubEnv('VITE_OMI_API_BASE', 'https://api.operator.test')
+  vi.stubEnv('VITE_OMI_DESKTOP_API_BASE', 'https://desktop.operator.test')
+  vi.stubEnv('VITE_OMI_AUTH_BASE', 'https://auth.operator.test')
+  vi.stubEnv('VITE_OMI_MCP_BASE', 'https://mcp.operator.test')
+}
+
+function capabilityResult(name: string, args: Record<string, unknown>): unknown {
+  return {
+    ok: true,
+    json: async () => ({
+      status: 'ok',
+      capability: 'proactive_tools',
+      outcome: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name, arguments: JSON.stringify(args) } }
+        ]
+      },
+      route: {
+        feature: 'desktop_proactive_reasoning',
+        primary: { provider: 'generic', model: 'operator-model' },
+        fallbacks: [],
+        unavailable_fallbacks: []
+      }
+    })
+  }
+}
 
 // A fetch that never resolves on its own — it only rejects when the signal it was
 // handed aborts, mirroring real fetch abort semantics (rejects with the reason).
@@ -35,9 +73,31 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.unstubAllEnvs()
 })
 
 describe('extractMemory — retry classification', () => {
+  it('routes self-hosted memory through the operator generic capability only', async () => {
+    selfHostedProfile()
+    h.fetch.mockResolvedValue(
+      capabilityResult('submit_memory_extraction', {
+        has_new_memory: true,
+        memories: [{ content: 'm', category: 'system', source_app: 'App', confidence: 0.9 }],
+        context_summary: 's',
+        current_activity: 'a'
+      })
+    )
+
+    await expect(
+      extractMemory(selfHostedSession(), 'sys', 'prompt', 'BASE64')
+    ).resolves.toMatchObject({ hasNewMemory: true, contextSummary: 's' })
+    expect(h.fetch).toHaveBeenCalledTimes(1)
+    expect(h.fetch.mock.calls[0][0]).toBe(
+      'https://api.operator.test/v1/model-capabilities/tool-completions'
+    )
+    expect(JSON.stringify(h.fetch.mock.calls)).not.toMatch(/omi\.me|googleapis|proxy\/gemini/i)
+  })
+
   it('does not replay a per-request timeout after dispatch', async () => {
     vi.useFakeTimers()
     h.abortSignal = undefined // no session abort in flight

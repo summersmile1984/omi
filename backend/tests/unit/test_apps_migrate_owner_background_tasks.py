@@ -48,11 +48,11 @@ def test_migrate_owner_schedules_tracked_background_tasks(monkeypatch, caplog):
     monkeypatch.setattr(apps_mod, 'migrate_memories', fake_migrate_memories)
     monkeypatch.setattr(apps_mod, 'update_omi_persona_connected_accounts', fake_update_persona)
     monkeypatch.setattr(
-        apps_mod.auth.auth,
+        apps_mod.identity,
         'verify_id_token',
         lambda token, check_revoked: {'uid': 'old-uid', 'firebase': {'sign_in_provider': 'anonymous'}},
     )
-    monkeypatch.setattr(apps_mod.auth, 'get_user', lambda _uid: SimpleNamespace(disabled=False, provider_data=[]))
+    monkeypatch.setattr(apps_mod.identity, 'get_user', lambda _uid: SimpleNamespace(disabled=False, provider_data=[]))
     monkeypatch.setattr(apps_mod.auth, 'enforce_account_deletion_http_access', lambda _uid: None)
 
     # Spy on asyncio.create_task (used directly by the buggy code, and internally by
@@ -122,8 +122,8 @@ def test_migrate_owner_schedules_tracked_background_tasks(monkeypatch, caplog):
 def test_migrate_owner_rejects_ineligible_source_before_any_effect(monkeypatch, old_id, source_claims, source_user):
     effects = []
 
-    monkeypatch.setattr(apps_mod.auth.auth, 'verify_id_token', lambda _token, check_revoked: source_claims)
-    monkeypatch.setattr(apps_mod.auth, 'get_user', lambda _uid: source_user)
+    monkeypatch.setattr(apps_mod.identity, 'verify_id_token', lambda _token, check_revoked: source_claims)
+    monkeypatch.setattr(apps_mod.identity, 'get_user', lambda _uid: source_user)
     monkeypatch.setattr(apps_mod, 'migrate_app_owner_id_db', lambda *_args: effects.append('database'))
     monkeypatch.setattr(apps_mod, 'start_background_task', lambda *_args, **_kwargs: effects.append('background'))
 
@@ -142,12 +142,12 @@ def test_migrate_owner_rejects_same_identity_before_any_effect(monkeypatch):
     effects = []
 
     monkeypatch.setattr(
-        apps_mod.auth.auth,
+        apps_mod.identity,
         'verify_id_token',
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('token verification should not run')),
     )
     monkeypatch.setattr(
-        apps_mod.auth, 'get_user', lambda _uid: (_ for _ in ()).throw(AssertionError('lookup should not run'))
+        apps_mod.identity, 'get_user', lambda _uid: (_ for _ in ()).throw(AssertionError('lookup should not run'))
     )
     monkeypatch.setattr(apps_mod, 'migrate_app_owner_id_db', lambda *_args: effects.append('database'))
     monkeypatch.setattr(apps_mod, 'start_background_task', lambda *_args, **_kwargs: effects.append('background'))
@@ -171,11 +171,11 @@ def test_migrate_owner_fails_closed_when_source_identity_lookup_fails(monkeypatc
         raise lookup_error
 
     monkeypatch.setattr(
-        apps_mod.auth.auth,
+        apps_mod.identity,
         'verify_id_token',
         lambda _token, check_revoked: {'uid': 'anonymous-uid', 'firebase': {'sign_in_provider': 'anonymous'}},
     )
-    monkeypatch.setattr(apps_mod.auth, 'get_user', fail_lookup)
+    monkeypatch.setattr(apps_mod.identity, 'get_user', fail_lookup)
     monkeypatch.setattr(apps_mod, 'migrate_app_owner_id_db', lambda *_args: effects.append('database'))
     monkeypatch.setattr(apps_mod, 'start_background_task', lambda *_args, **_kwargs: effects.append('background'))
 
@@ -196,9 +196,9 @@ def test_migrate_owner_fails_closed_when_source_token_verification_fails(monkeyp
     def fail_verification(_token, check_revoked):
         raise RuntimeError('invalid source token')
 
-    monkeypatch.setattr(apps_mod.auth.auth, 'verify_id_token', fail_verification)
+    monkeypatch.setattr(apps_mod.identity, 'verify_id_token', fail_verification)
     monkeypatch.setattr(
-        apps_mod.auth, 'get_user', lambda _uid: (_ for _ in ()).throw(AssertionError('lookup should not run'))
+        apps_mod.identity, 'get_user', lambda _uid: (_ for _ in ()).throw(AssertionError('lookup should not run'))
     )
     monkeypatch.setattr(apps_mod, 'migrate_app_owner_id_db', lambda *_args: effects.append('database'))
     monkeypatch.setattr(apps_mod, 'start_background_task', lambda *_args, **_kwargs: effects.append('background'))
@@ -218,12 +218,12 @@ def test_migrate_owner_rejects_missing_source_token_before_any_effect(monkeypatc
     effects = []
 
     monkeypatch.setattr(
-        apps_mod.auth.auth,
+        apps_mod.identity,
         'verify_id_token',
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('token verification should not run')),
     )
     monkeypatch.setattr(
-        apps_mod.auth, 'get_user', lambda _uid: (_ for _ in ()).throw(AssertionError('lookup should not run'))
+        apps_mod.identity, 'get_user', lambda _uid: (_ for _ in ()).throw(AssertionError('lookup should not run'))
     )
     monkeypatch.setattr(apps_mod, 'migrate_app_owner_id_db', lambda *_args: effects.append('database'))
     monkeypatch.setattr(apps_mod, 'start_background_task', lambda *_args, **_kwargs: effects.append('background'))

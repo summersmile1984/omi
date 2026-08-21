@@ -25,6 +25,11 @@ import tiktoken
 from models.structured_extraction import StructuredExtraction
 from utils.byok import get_byok_key
 from utils.llm.byok_errors import handle_llm_error
+from utils.llm.embedding_providers import (
+    ConfiguredEmbeddingProviderProxy,
+    GeminiEmbeddingProviderAdapter,
+    LangChainEmbeddingProviderAdapter,
+)
 from utils.llm.model_config import (
     MODEL_QOS_PROFILES,
     _ANTHROPIC_ONLY_FEATURES,
@@ -56,6 +61,7 @@ from utils.llm.model_config import (
 from utils.llm.providers import (
     ChatGoogleGenerativeAI,
     GEMINI_OPENAI_BASE_URL,
+    ModelProviderConfigurationError,
     get_default_client,
     get_or_create_gemini_llm as _get_or_create_gemini_llm,
     get_or_create_openai_compatible_llm,
@@ -260,33 +266,6 @@ class _OpenAIEmbeddingsProxy:
             return inst
         return self._default_client()
 
-    @staticmethod
-    def _is_key_failure(e: Exception) -> bool:
-        # A user's BYOK OpenAI key being out of quota / invalid / rate-limited must not
-        # silently break memory search (it would return empty). Detect those and fall
-        # back to Omi's key instead. Heuristic on the error text — embeddings have no
-        # typed error here, and a false positive only means one extra default-key call.
-        s = str(e).lower()
-        return any(
-            k in s
-            for k in (
-                'insufficient_quota',
-                'exceeded your current quota',
-                'invalid_api_key',
-                'incorrect api key',
-                'invalid api key',
-                'model_not_found',
-                'does not have access to model',
-                'permissiondeniederror',
-                'permission denied',
-                '403 forbidden',
-                'error code: 403',
-                'rate_limit',
-                ' 429',
-                ' 401',
-            )
-        )
-
     def embed_query(self, text: str) -> List[float]:
         inst = self._resolve()
         try:
@@ -294,9 +273,6 @@ class _OpenAIEmbeddingsProxy:
         except Exception as e:
             if inst is not self._default:
                 handle_llm_error(e, 'openai', feature='embeddings', model=self._model, operation='embed_query')
-                if self._is_key_failure(e):
-                    logger.warning("BYOK OpenAI embeddings failed (%s); falling back to Omi key", type(e).__name__)
-                    return self._default_client().embed_query(text)
             raise
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
@@ -306,9 +282,6 @@ class _OpenAIEmbeddingsProxy:
         except Exception as e:
             if inst is not self._default:
                 handle_llm_error(e, 'openai', feature='embeddings', model=self._model, operation='embed_documents')
-                if self._is_key_failure(e):
-                    logger.warning("BYOK OpenAI embeddings failed (%s); falling back to Omi key", type(e).__name__)
-                    return self._default_client().embed_documents(texts)
             raise
 
     def __getattr__(self, name: str):
@@ -324,11 +297,6 @@ class _OpenAIEmbeddingsProxy:
                 except Exception as e:
                     if inst is not self._default:
                         handle_llm_error(e, 'openai', feature='embeddings', model=self._model, operation=name)
-                        if self._is_key_failure(e):
-                            logger.warning(
-                                "BYOK OpenAI embeddings failed (%s); falling back to Omi key", type(e).__name__
-                            )
-                            return await getattr(self._default_client(), name)(*args, **kwargs)
                     raise
 
             return _wrapped_async
@@ -339,9 +307,6 @@ class _OpenAIEmbeddingsProxy:
             except Exception as e:
                 if inst is not self._default:
                     handle_llm_error(e, 'openai', feature='embeddings', model=self._model, operation=name)
-                    if self._is_key_failure(e):
-                        logger.warning("BYOK OpenAI embeddings failed (%s); falling back to Omi key", type(e).__name__)
-                        return getattr(self._default_client(), name)(*args, **kwargs)
                 raise
 
         return _wrapped
@@ -379,8 +344,8 @@ def _cached_anthropic(api_key: str) -> anthropic.AsyncAnthropic:
 
 def _create_byok_client(
     model: str, provider: str, byok_key: str, streaming: bool = False, feature: str = ''
-) -> Optional[ChatOpenAI]:
-    """Create a ChatOpenAI using the user's BYOK key. Returns None if BYOK not supported for this provider."""
+) -> ChatOpenAI:
+    """Create the selected BYOK client or fail before any platform client exists."""
     callback_provider = _effective_byok_provider(model, provider)
     kwargs: Dict[str, Any] = _with_llm_callbacks(
         {'request_timeout': 120, 'max_retries': 1}, callback_provider, model=model, feature=feature
@@ -404,9 +369,9 @@ def _create_byok_client(
             if 'temperature' in route_options:
                 kwargs['temperature'] = route_options['temperature']
             return _cached_openai_chat(model, byok_key, {**kwargs, 'base_url': GEMINI_OPENAI_BASE_URL})
-        return None  # Non-Gemini OpenRouter: no BYOK support
+        raise ModelProviderConfigurationError(provider, 'byok_transport_not_supported')
 
-    return None
+    raise ModelProviderConfigurationError(provider, 'byok_transport_not_supported')
 
 
 # Anthropic client for chat agent (module-level, BYOK-aware).
@@ -521,12 +486,7 @@ def get_llm(
             feature=feature,
         )
     elif byok_key:
-        byok_client = _create_byok_client(model, provider, byok_key, streaming, feature)
-        result = (
-            byok_client
-            if byok_client is not None
-            else get_default_client(model, provider, streaming, get_route_options(feature, model, provider))
-        )
+        result = _create_byok_client(model, provider, byok_key, streaming, feature)
     elif gateway_feature_mode:
         gateway_options = {}
         if request_timeout is not None:
@@ -679,8 +639,8 @@ class _LazyClientProxy:
         return other | self._resolve()
 
 
-def _create_legacy_llm_mini() -> ChatOpenAI:
-    return ChatOpenAI(model=get_model('learnings'), callbacks=[_usage_callback], request_timeout=120, max_retries=1)
+def _create_legacy_llm_mini() -> BaseChatModel:
+    return get_llm('learnings', request_timeout=120, max_retries=1)
 
 
 llm_mini = _LazyClientProxy(_create_legacy_llm_mini)
@@ -688,12 +648,22 @@ llm_mini = _LazyClientProxy(_create_legacy_llm_mini)
 # ---------------------------------------------------------------------------
 # Embeddings, parser, utilities
 # ---------------------------------------------------------------------------
-embeddings = _OpenAIEmbeddingsProxy(
+_openai_embeddings_proxy = _OpenAIEmbeddingsProxy(
     model="text-embedding-3-large",
     default=None,
     ctor_kwargs={},
 )
+embeddings = ConfiguredEmbeddingProviderProxy(
+    LangChainEmbeddingProviderAdapter(
+        _openai_embeddings_proxy,
+        provider_id='openai',
+        model_id='text-embedding-3-large',
+        dimension=3072,
+    ),
+    gemini_factory=lambda: GeminiEmbeddingProviderAdapter(_gemini_embed_query_direct),
+)
 parser = PydanticOutputParser(pydantic_object=StructuredExtraction)
+_gemini_screen_embedding_provider: Optional[GeminiEmbeddingProviderAdapter] = None
 
 
 @lru_cache(maxsize=1)
@@ -714,6 +684,15 @@ def generate_embedding(content: str) -> List[float]:
 
 
 def gemini_embed_query(text: str) -> List[float]:
+    """Embed one screen-activity query through the provider-neutral adapter."""
+
+    global _gemini_screen_embedding_provider
+    if _gemini_screen_embedding_provider is None:
+        _gemini_screen_embedding_provider = GeminiEmbeddingProviderAdapter(_gemini_embed_query_direct)
+    return _gemini_screen_embedding_provider.embed_query(text)
+
+
+def _gemini_embed_query_direct(text: str) -> List[float]:
     """Embed a query using Gemini embedding-001 (3072-dim) for screen activity search.
 
     Uses RETRIEVAL_QUERY task type to match the RETRIEVAL_DOCUMENT embeddings
@@ -724,7 +703,13 @@ def gemini_embed_query(text: str) -> List[float]:
     """
     if should_route_features_through_gateway():
         record_direct_exception_surface(surface='gemini_screen_activity_query_embedding', reason='out_of_scope')
-    api_key = get_byok_key('gemini') or os.environ.get('GEMINI_API_KEY', '')
+    api_key = (get_byok_key('gemini') or os.environ.get('GEMINI_API_KEY', '')).strip()
+    if not api_key:
+        raise ModelProviderConfigurationError(
+            'gemini',
+            'credential_not_configured',
+            setting='GEMINI_API_KEY',
+        )
     url = 'https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent'
     payload = {
         'model': 'models/embedding-001',

@@ -270,8 +270,10 @@ enum AppBuild {
       queryItems.append(URLQueryItem(name: "identity", value: "beta"))
     }
     components.queryItems = queryItems
-    // Fixed scheme/host/path always produce a URL; the fallback is unreachable.
-    return components.url ?? URL(fileURLWithPath: "/")
+    guard let url = components.url else {
+      preconditionFailure("desktop download URL could not be constructed")
+    }
+    return url
   }
 
   static var inferredUpdateChannel: String {

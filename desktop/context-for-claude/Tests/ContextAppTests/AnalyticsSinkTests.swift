@@ -45,6 +45,19 @@ final class AnalyticsSinkTests: XCTestCase {
         XCTAssertEqual(sent.count, 3)
     }
 
+    func testDisabledSelfHostedSinkDoesNotSpoolOrSend() async {
+        let transport = RecordingTransport(outcome: .accept)
+        let sink = AnalyticsSink(spoolURL: spoolURL, transport: transport, isEnabled: false)
+
+        await sink.enqueue(payload())
+        await sink.flush()
+
+        let spooled = await sink.spooledCountForTesting
+        let sent = await transport.sentNames
+        XCTAssertEqual(spooled, 0)
+        XCTAssertTrue(sent.isEmpty)
+    }
+
     /// A spool that grew while offline drains over several requests rather than in one implausible
     /// burst — both for the endpoint's sake and because a single enormous POST is the request most
     /// likely to be rejected outright and retried forever.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from utils.llm import model_config
-from utils.llm.gateway_client import is_auto_lane_id
+from utils.llm.gateway_route_ids import is_auto_lane_id
 from utils.llm.model_config import (
     AutoLaneRouteRef,
     ExplicitRouteRef,

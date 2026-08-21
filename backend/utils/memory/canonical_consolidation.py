@@ -947,6 +947,10 @@ Rules:
   change a known source subject_entity_id during promotion.
 - A topic is not enough. Durable memory needs a defensible relationship_to_user
   (self, owned_work, adopted, or genuinely recurring relationship context).
+- A primary user's own preference, habit, identity, or personal fact MUST use
+  relationship_to_user=self and aboutness=primary_user. aboutness=user_relationship
+  is only for facts about another person/entity in the user's relationship
+  context; it MUST NOT be paired with relationship_to_user=self.
 - Merely encountered or ambient media dialogue, quoted characters, and topics
   discussed are not user facts. Route archive/reject unless evidence establishes
   an adopted user preference or commitment.

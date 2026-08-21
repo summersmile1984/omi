@@ -59,6 +59,8 @@ def _build_fakes() -> dict:
     for _sub in [
         '_client',
         'action_items',
+        'account_cutover',
+        'account_deletion_policy',
         'announcements',
         'apps',
         'auth',
@@ -83,6 +85,7 @@ def _build_fakes() -> dict:
         'phone_calls',
         'redis_db',
         'redis_pubsub',
+        'read_boundary',
         'screen_activity',
         'sync_jobs',
         'sync_ledger',
@@ -149,8 +152,12 @@ def _build_fakes() -> dict:
 
     speaker_embedding = ModuleType('utils.stt.speaker_embedding')
     speaker_embedding.extract_embedding_from_bytes = MagicMock()
+    speaker_embedding.async_extract_embedding_from_bytes = MagicMock()
     speaker_embedding.compare_embeddings = _compare_embeddings
     speaker_embedding.SPEAKER_MATCH_THRESHOLD = 0.45
+    speaker_embedding.MIN_EMBEDDING_AUDIO_DURATION = 0.5
+    speaker_embedding.SpeakerEmbeddingUnavailable = RuntimeError
+    speaker_embedding.validate_speaker_embedding_configuration = MagicMock(return_value='disabled')
     fakes['utils.stt.speaker_embedding'] = speaker_embedding
 
     cloud_tasks = ModuleType('utils.cloud_tasks')
@@ -1400,6 +1407,15 @@ class TestDownloadAudioBytes:
 
         result = _download_audio_bytes('http://example.com/audio.wav')
         assert result is None
+
+    @patch('utils.sync.pipeline.httpx')
+    @patch('utils.sync.pipeline.assert_http_endpoint_allowed', side_effect=RuntimeError('egress denied'))
+    def test_download_denies_before_http_request(self, mock_guard, mock_httpx):
+        from utils.sync.pipeline import _download_audio_bytes
+
+        assert _download_audio_bytes('https://api.openai.com/audio.wav') is None
+        mock_guard.assert_called_once_with('https://api.openai.com/audio.wav')
+        mock_httpx.get.assert_not_called()
 
 
 @patch('utils.sync.pipeline.run_blocking', MagicMock())

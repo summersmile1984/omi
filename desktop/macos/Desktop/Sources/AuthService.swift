@@ -103,6 +103,8 @@ class AuthService {
     let refreshToken: String
     let expiryTime: TimeInterval
     let tokenUserId: String
+    /// Missing on every pre-neutrality Keychain payload, which is Firebase.
+    let authProvider: String?
   }
 
   private var cachedStoredTokens: StoredAuthTokens?
@@ -157,6 +159,10 @@ class AuthService {
   }
 
   var tokenRefreshHooks = TokenRefreshHooks.live
+
+  /// Network seam for the Better Auth native client. Nil is the live URLSession
+  /// path; tests inject a hermetic wire server without changing session logic.
+  var betterAuthTransport: BetterAuthClient.Transport?
 
   // Firebase availability is injected for hermetic auth tests and resolves to
   // nil when the default Firebase app was not configured at launch. Keeping
@@ -293,7 +299,7 @@ class AuthService {
         attempt: attempt,
         phase: .needsReauth,
         beforeClearingCredentials: { [self] in
-          if let auth = configuredFirebaseAuth() {
+          if storedAuthProvider == .firebase, let auth = configuredFirebaseAuth() {
             try auth.signOut()
           }
         })
@@ -330,7 +336,7 @@ class AuthService {
     // The listener enriches a configured SDK session, but a REST-backed
     // session can still restore and validate without it. Do not make listener
     // setup a prerequisite for the auth state machine.
-    if configuredFirebaseAuth() != nil {
+    if DesktopBackendEnvironment.identityProvider == .firebase, configuredFirebaseAuth() != nil {
       setupAuthStateListener()
     } else {
       log("AuthService: Firebase SDK unavailable; continuing with REST-backed auth")
@@ -425,6 +431,71 @@ class AuthService {
     return try Self.decodeFirebaseTokenResult(from: data, requireLocalId: true)
   }
 
+  func signInWithBetterAuth(
+    email: String,
+    password: String,
+    displayName: String? = nil,
+    createAccount: Bool = false
+  ) async throws {
+    guard DesktopBackendEnvironment.identityProvider == .betterAuth else {
+      throw BetterAuthClientError.invalidConfiguration
+    }
+    let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedEmail.isEmpty, !password.isEmpty else {
+      throw BetterAuthClientError.credentialsRejected
+    }
+
+    let attempt = beginSessionAttempt()
+    isLoading = true
+    error = nil
+    defer { isLoading = false }
+
+    let client = try makeBetterAuthClient()
+    let credential: BetterAuthCredential
+    if createAccount {
+      let normalizedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard !normalizedName.isEmpty else { throw BetterAuthClientError.credentialsRejected }
+      credential = try await client.signUp(name: normalizedName, email: normalizedEmail, password: password)
+    } else {
+      credential = try await client.signIn(email: normalizedEmail, password: password)
+    }
+    guard isSessionAttemptCurrent(attempt) else { throw CancellationError() }
+
+    let tokens = FirebaseTokenResult(
+      idToken: credential.jwt,
+      refreshToken: credential.sessionToken,
+      expiresIn: credential.expiresIn,
+      localId: credential.userID
+    )
+    guard
+      try await commitSignedInSession(
+        tokens: tokens,
+        email: credential.email ?? normalizedEmail,
+        attempt: attempt,
+        provider: .betterAuth)
+    else {
+      throw CancellationError()
+    }
+    if let displayName, !displayName.isEmpty {
+      let pieces = displayName.split(separator: " ", maxSplits: 1).map(String.init)
+      givenName = pieces.first ?? ""
+      familyName = pieces.count > 1 ? pieces[1] : ""
+      postNameDidUpdate()
+    }
+    loadNameFromBackendIfNeeded()
+    APIKeyService.shared.startFetchingKeys()
+  }
+
+  private func makeBetterAuthClient() throws -> BetterAuthClient {
+    guard let baseURL = URL(string: DesktopBackendEnvironment.authBaseURL()) else {
+      throw BetterAuthClientError.invalidConfiguration
+    }
+    if let betterAuthTransport {
+      return BetterAuthClient(baseURL: baseURL, transport: betterAuthTransport)
+    }
+    return BetterAuthClient(baseURL: baseURL)
+  }
+
   private func selectedLocalUserId(from idToken: String) -> String? {
     Self.localUserId(fromIDToken: idToken)
   }
@@ -437,7 +508,8 @@ class AuthService {
   func commitSignedInSession(
     tokens: FirebaseTokenResult,
     email: String?,
-    attempt: AuthSessionAttempt
+    attempt: AuthSessionAttempt,
+    provider: DesktopIdentityProvider = .firebase
   ) async throws -> Bool {
     let attemptFence = sessionAttemptFence
     // Credentials and their durable owner are one publication boundary.
@@ -459,7 +531,8 @@ class AuthService {
               idToken: tokens.idToken,
               refreshToken: tokens.refreshToken,
               expiresIn: tokens.expiresIn,
-              userId: tokens.localId)
+              userId: tokens.localId,
+              provider: provider)
             let defaults = UserDefaults.standard
             defaults.set(true, forKey: .authIsSignedIn)
             defaults.set(email, forKey: .authUserEmail)
@@ -565,6 +638,15 @@ class AuthService {
 
   private func validateRestoredSessionNow(attempt: AuthSessionAttempt) async {
     guard sessionAttemptFence.isCurrent(attempt) else { return }
+    guard
+      DesktopBackendEnvironment.acceptsStoredIdentityProvider(
+        storedTokens()?.authProvider.flatMap(DesktopIdentityProvider.init(rawValue:)),
+        configuredProvider: DesktopBackendEnvironment.identityProvider)
+    else {
+      NSLog("OMI AUTH: Stored identity provider does not match this deployment profile — invalidating")
+      await invalidateSession(reason: .restoredSessionInvalid)
+      return
+    }
     let hasFirebaseUser = !DesktopLocalProfile.isEnabled && configuredFirebaseAuth()?.currentUser != nil
 
     guard storedRefreshToken != nil || storedIdToken != nil || hasFirebaseUser else {
@@ -696,6 +778,9 @@ class AuthService {
 
   @MainActor
   func signInWithApple() async throws {
+    guard DesktopBackendEnvironment.identityProvider == .firebase else {
+      throw BetterAuthClientError.invalidConfiguration
+    }
     // Use web OAuth directly — native Apple Sign In requires entitlements that
     // don't work reliably across dev/release builds. Web OAuth works everywhere.
     try await signIn(provider: "apple")
@@ -810,7 +895,7 @@ class AuthService {
     // bar read it); without this it stays nil/old until the next app launch.
     Task { await FloatingBarUsageLimiter.shared.fetchPlan() }
 
-    if !AnalyticsManager.isDevBuild {
+    if DesktopBackendEnvironment.allowsOmiManagedServices && !AnalyticsManager.isDevBuild {
       // Keep Sentry correlation opaque; PII remains in the application/backend,
       // not crash and error reports.
       SentrySDK.setUser(User(userId: nativeSignIn.tokens.localId))
@@ -824,6 +909,9 @@ class AuthService {
 
   @MainActor
   func signInWithGoogle() async throws {
+    guard DesktopBackendEnvironment.identityProvider == .firebase else {
+      throw BetterAuthClientError.invalidConfiguration
+    }
     try await signIn(provider: "google")
   }
 
@@ -1113,7 +1201,7 @@ class AuthService {
       Task { await FloatingBarUsageLimiter.shared.fetchPlan() }
 
       // Set opaque Sentry user context for error correlation (skip in dev builds).
-      if !AnalyticsManager.isDevBuild {
+      if DesktopBackendEnvironment.allowsOmiManagedServices && !AnalyticsManager.isDevBuild {
         SentrySDK.setUser(User(userId: userId))
       }
 
@@ -1837,14 +1925,21 @@ class AuthService {
 
   // MARK: - Token Storage
 
-  func saveTokens(idToken: String, refreshToken: String, expiresIn: Int, userId: String) throws {
+  func saveTokens(
+    idToken: String,
+    refreshToken: String,
+    expiresIn: Int,
+    userId: String,
+    provider: DesktopIdentityProvider = .firebase
+  ) throws {
     // Store expiry time (current time + expiresIn seconds, minus 5 min buffer)
     let expiryTime = Date().addingTimeInterval(TimeInterval(expiresIn - 300))
     let tokens = StoredAuthTokens(
       idToken: idToken,
       refreshToken: refreshToken,
       expiryTime: expiryTime.timeIntervalSince1970,
-      tokenUserId: userId
+      tokenUserId: userId,
+      authProvider: provider.rawValue
     )
     if usesKeychainTokenStorage {
       let legacyMigrationSource = loadUserDefaultsTokens()
@@ -1927,7 +2022,8 @@ class AuthService {
         idToken: idToken,
         refreshToken: refreshToken,
         expiresIn: 0,
-        userId: storedTokenUserId ?? ""
+        userId: storedTokenUserId ?? "",
+        provider: storedAuthProvider
       )
       return [
         "expired": "true",
@@ -2064,7 +2160,8 @@ class AuthService {
       idToken: idToken,
       refreshToken: refreshToken,
       expiryTime: expiryTime,
-      tokenUserId: tokenUserId
+      tokenUserId: tokenUserId,
+      authProvider: nil
     )
   }
 
@@ -2119,6 +2216,11 @@ class AuthService {
   private var storedTokenUserId: String? {
     let userId = storedTokens()?.tokenUserId ?? ""
     return userId.isEmpty ? nil : userId
+  }
+
+  private var storedAuthProvider: DesktopIdentityProvider {
+    guard let raw = storedTokens()?.authProvider else { return .firebase }
+    return DesktopIdentityProvider(rawValue: raw) ?? .firebase
   }
 
   private var isTokenExpired: Bool {
@@ -2230,6 +2332,10 @@ class AuthService {
       throw AuthError.notSignedIn
     }
 
+    if storedAuthProvider == .betterAuth {
+      return try await refreshBetterAuthJWT(sessionToken: refreshToken, attempt: attempt)
+    }
+
     let apiKey = try requireFirebaseApiKey()
     let refreshURL: URL
     if let hostPort = DesktopLocalProfile.authEmulatorHost {
@@ -2321,6 +2427,39 @@ class AuthService {
     return newIdToken
   }
 
+  private func refreshBetterAuthJWT(sessionToken: String, attempt: AuthSessionAttempt) async throws -> String {
+    do {
+      let credential = try await makeBetterAuthClient().refresh(
+        sessionToken: sessionToken,
+        expectedUserID: storedTokenUserId
+      )
+      guard sessionAttemptFence.isCurrent(attempt) else { throw AuthError.notSignedIn }
+      let saved =
+        try sessionAttemptFence.commitIfCurrent(attempt) {
+          try saveTokens(
+            idToken: credential.jwt,
+            refreshToken: credential.sessionToken,
+            expiresIn: credential.expiresIn,
+            userId: credential.userID,
+            provider: .betterAuth
+          )
+          return true
+        } ?? false
+      guard saved else { throw AuthError.notSignedIn }
+      if let email = credential.email { AuthState.shared.userEmail = email }
+      NSLog("OMI AUTH: Refreshed Better Auth JWT for user %@", credential.userID)
+      return credential.jwt
+    } catch BetterAuthClientError.sessionRejected {
+      guard sessionAttemptFence.isCurrent(attempt) else { throw AuthError.notSignedIn }
+      DesktopDiagnosticsManager.shared.recordAuthSessionCleared(
+        reason: "better_auth_session_rejected",
+        httpStatusCode: 401
+      )
+      await invalidateSession(reason: .definitiveRefreshFailure)
+      throw AuthError.notSignedIn
+    }
+  }
+
   // MARK: - Get ID Token (for API calls)
 
   func getIdToken(forceRefresh: Bool = false) async throws -> String {
@@ -2394,6 +2533,13 @@ class AuthService {
           }
         }
       }
+    }
+
+    // A self-hosted session never crosses into Firebase as a fallback. Provider
+    // selection is part of the signed deployment profile, not a retry policy.
+    if storedAuthProvider == .betterAuth {
+      if let refreshFailure { throw refreshFailure }
+      throw AuthError.notSignedIn
     }
 
     // Third try: Use Firebase SDK (only if user matches expected user).
@@ -2513,6 +2659,8 @@ class AuthService {
 
   func signOut(acceptedAccountDeletion: Bool = false) async throws {
     let sessionAttempt = beginSessionAttempt()
+    let signingOutProvider = storedAuthProvider
+    let signingOutSessionToken = storedRefreshToken
     let persistedDeletionOwner = UserDefaults.standard.string(forKey: .acceptedAccountDeletionOwnerId)
     let signingOutUserID = UserDefaults.standard.string(forKey: .authUserId) ?? persistedDeletionOwner
     if acceptedAccountDeletion {
@@ -2521,14 +2669,24 @@ class AuthService {
       }
       UserDefaults.standard.set(signingOutUserID, forKey: .acceptedAccountDeletionOwnerId)
     }
+    if signingOutProvider == .betterAuth, let signingOutSessionToken {
+      do {
+        try await makeBetterAuthClient().signOut(sessionToken: signingOutSessionToken)
+      } catch {
+        // User intent is authoritative even while the identity service is
+        // offline. Clear local secrets; the server session expires or can be
+        // revoked centrally without trapping the user in the account.
+        log("AuthService: Better Auth remote sign-out deferred")
+      }
+    }
     guard
       try await commitSignedOutSession(
         attempt: sessionAttempt,
         phase: .signedOut,
         beforeClearingCredentials: { [self] in
-          if let auth = configuredFirebaseAuth() {
+          if signingOutProvider != .betterAuth, let auth = configuredFirebaseAuth() {
             try auth.signOut()
-          } else {
+          } else if signingOutProvider != .betterAuth {
             log("AuthService: Firebase SDK unavailable; signing out the REST-backed session")
           }
         },
@@ -2557,7 +2715,7 @@ class AuthService {
     // a storage failure cannot leave a partially signed-out prior-owner session.
     AnalyticsManager.shared.signedOut()
     AnalyticsManager.shared.reset()
-    if !AnalyticsManager.isDevBuild {
+    if DesktopBackendEnvironment.allowsOmiManagedServices && !AnalyticsManager.isDevBuild {
       SentrySDK.setUser(nil)
     }
     sessionCoordinator.resetAfterNuclearSignOut()

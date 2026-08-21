@@ -13,6 +13,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
+import java.net.URI
 import java.net.URLEncoder
 import java.util.ArrayDeque
 import java.util.Locale
@@ -28,6 +29,35 @@ class OmiBackgroundAudioStreamer(private val context: Context) {
         private const val MAX_CACHED_TRANSCRIPT_MESSAGES = 200
         private val transcriptCacheLock = Any()
         private val cachedTranscriptMessages = ArrayDeque<String>()
+
+        /**
+         * Self-hosted native capture must use an explicit operator origin. The
+         * native foreground service cannot safely inherit the managed-cloud
+         * fallback used by legacy cloud builds.
+         */
+        internal fun isAllowedSelfHostedApiBase(value: String): Boolean {
+            val trimmed = value.trim()
+            if (trimmed.isEmpty()) return false
+
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return false
+            val scheme = uri.scheme?.lowercase(Locale.US) ?: return false
+            if (scheme != "https" && scheme != "wss") return false
+            if (uri.userInfo != null || uri.query != null || uri.fragment != null) return false
+            if (uri.path != null && uri.path != "" && uri.path != "/") return false
+
+            val host = uri.host?.lowercase(Locale.US)?.trimEnd('.') ?: return false
+            return host != "omi.me" &&
+                !host.endsWith(".omi.me") &&
+                host != "omiapi.com" &&
+                !host.endsWith(".omiapi.com") &&
+                host != "identitytoolkit.googleapis.com" &&
+                host != "securetoken.googleapis.com" &&
+                host != "firebase.googleapis.com" &&
+                host != "api.openai.com" &&
+                host != "api.anthropic.com" &&
+                host != "generativelanguage.googleapis.com" &&
+                host != "api.deepgram.com"
+        }
 
         fun drainCachedTranscriptMessages(): List<String> =
             synchronized(transcriptCacheLock) {
@@ -333,7 +363,12 @@ class OmiBackgroundAudioStreamer(private val context: Context) {
         }
         val sttService = stringPref("transcriptionModel3", "soniox").ifEmpty { "soniox" }
         val timeout = intPref("conversationSilenceDuration", 120).takeIf { it > 0 } ?: 120
-        val base = normalizeBaseUrl(config.apiBaseUrl.ifEmpty { DEFAULT_API_BASE_URL })
+        val configuredBase = config.apiBaseUrl.trim()
+        if (BuildConfig.SELF_HOSTED && !isAllowedSelfHostedApiBase(configuredBase)) {
+            Log.w(TAG, "Self-hosted native BLE stream requires an explicit operator API origin")
+            return null
+        }
+        val base = normalizeBaseUrl(configuredBase.ifEmpty { DEFAULT_API_BASE_URL })
 
         val params = mutableListOf(
             "language=${enc(language)}",

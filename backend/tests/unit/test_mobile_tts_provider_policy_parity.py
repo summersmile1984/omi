@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import pytest
+from fastapi import HTTPException
+
+from models.tts import TtsSynthesizeRequest
+
+
+@pytest.mark.asyncio
+async def test_disabled_mobile_tts_never_resolves_vendor_key_or_rate_limit(monkeypatch):
+    import routers.tts as mod
+
+    monkeypatch.setenv('TTS_PROVIDER', 'disabled')
+    monkeypatch.setenv('ELEVENLABS_API_KEY', 'must-not-be-used')
+
+    async def fail_run_blocking(*_args, **_kwargs):
+        raise AssertionError('disabled TTS must fail before rate-limit/provider work')
+
+    monkeypatch.setattr(mod, 'run_blocking', fail_run_blocking)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello'), uid='user-1')
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'tts',
+        'reason': 'disabled',
+        'retryable': False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_neutral_mobile_tts_missing_provider_never_uses_ambient_elevenlabs(monkeypatch):
+    import routers.tts as mod
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('TTS_PROVIDER', raising=False)
+    monkeypatch.setenv('ELEVENLABS_API_KEY', 'must-not-be-used')
+
+    async def fail_run_blocking(*_args, **_kwargs):
+        raise AssertionError('neutral TTS must fail before rate-limit/provider work')
+
+    monkeypatch.setattr(mod, 'run_blocking', fail_run_blocking)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello'), uid='user-1')
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'tts',
+        'reason': 'provider_not_configured',
+        'retryable': False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_neutral_mobile_tts_rejects_explicit_elevenlabs_before_rate_limit_or_request(monkeypatch):
+    import routers.tts as mod
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('TTS_PROVIDER', 'elevenlabs')
+    monkeypatch.setenv('ELEVENLABS_API_KEY', 'must-not-be-used')
+
+    async def fail_run_blocking(*_args, **_kwargs):
+        raise AssertionError('official TTS must fail before rate-limit/provider work')
+
+    monkeypatch.setattr(mod, 'run_blocking', fail_run_blocking)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello'), uid='user-1')
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'tts',
+        'reason': 'official_provider_forbidden',
+        'retryable': False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mimo_obeys_mobile_tts_rate_limit_before_synthesis(monkeypatch):
+    import routers.tts as mod
+    import utils.mimo_pipeline.tts as mimo_mod
+
+    called = False
+
+    class _Client:
+        def synthesize(self, text, **kwargs):
+            nonlocal called
+            called = True
+            return b'audio'
+
+    async def fake_run_blocking(_executor, fn, *args, **kwargs):
+        if fn is mod.redis_db.check_tts_rate_limit:
+            return 1, 60
+        return fn(*args, **kwargs)
+
+    monkeypatch.setenv('TTS_PROVIDER', 'mimo')
+    monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setattr(mimo_mod, 'MimoTTSClient', _Client)
+    monkeypatch.setattr(mod, 'run_blocking', fake_run_blocking)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello'), uid='user-1')
+
+    assert exc_info.value.status_code == 429
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_mimo_mobile_success_uses_same_rate_limit_boundary(monkeypatch):
+    import routers.tts as mod
+    import utils.mimo_pipeline.tts as mimo_mod
+
+    calls = []
+
+    class _Client:
+        def synthesize(self, text, **kwargs):
+            calls.append(('synthesize', text))
+            return b'RIFFaudio'
+
+    async def fake_run_blocking(_executor, fn, *args, **kwargs):
+        if fn is mod.redis_db.check_tts_rate_limit:
+            calls.append(('rate_limit', kwargs['char_count']))
+            return 0, None
+        return fn(*args, **kwargs)
+
+    monkeypatch.setenv('TTS_PROVIDER', 'mimo')
+    monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setattr(mimo_mod, 'MimoTTSClient', _Client)
+    monkeypatch.setattr(mod, 'run_blocking', fake_run_blocking)
+
+    response = await mod.tts_synthesize(TtsSynthesizeRequest(text='hello'), uid='user-1')
+    body = b''.join([chunk async for chunk in response.body_iterator])
+
+    assert response.media_type == 'audio/wav'
+    assert body == b'RIFFaudio'
+    assert calls == [('rate_limit', 5), ('synthesize', 'hello')]

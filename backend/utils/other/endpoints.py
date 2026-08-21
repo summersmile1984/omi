@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, Optional, TypeVar, cast
 from fastapi import Depends, Header, HTTPException, WebSocketException
 from fastapi import Request
 from starlette.websockets import WebSocket
-from firebase_admin import auth
 from firebase_admin.auth import CertificateFetchError, ExpiredIdTokenError, InvalidIdTokenError, RevokedIdTokenError
 import logging
 import redis as redis_pkg
@@ -25,6 +24,8 @@ from utils.api_key_families import FIREBASE_FAMILY, wrong_key_family_detail
 from utils.client_device import resolve_client_device
 from utils.byok import extract_byok_from_websocket, set_byok_keys, validate_byok_request, validate_byok_websocket
 from utils.executors import critical_executor, db_executor, run_blocking
+from utils.identity import IdentityInvalidToken, IdentityProviderUnavailable
+from utils import identity
 from utils.rate_limit_config import RATE_POLICIES, RATE_LIMIT_SHADOW, get_effective_limit
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,12 @@ def enforce_account_deletion_ws_access(uid: str) -> None:
 
 
 def get_user(uid: str) -> Any:
-    return auth.get_user(uid)  # type: ignore[reportUnknownVariableType,reportUnknownMemberType]  # firebase_admin auth untyped
+    return identity.get_user(uid)
+
+
+def _identity_unavailable_compat(error: IdentityProviderUnavailable) -> CertificateFetchError:
+    """Preserve the established transport error taxonomy for WS callers."""
+    return CertificateFetchError(str(error), error)
 
 
 def verify_token(token: str) -> str:
@@ -122,26 +128,15 @@ def verify_token(token: str) -> str:
             logger.warning('ADMIN_KEY auth used to impersonate uid=%s', impersonated_uid)
             return impersonated_uid
 
-    # Verify token. Better Auth shim path when opted in, otherwise Firebase.
-    if os.getenv('AUTH_PROVIDER', '').strip().lower() == 'better_auth':
-        from utils.auth_shim import InvalidIdTokenError as _ShimInvalid, verify_id_token as _shim_verify
-
-        try:
-            decoded_token = cast(Any, _shim_verify(token))
-            return decoded_token['uid']
-        except _ShimInvalid as _exc:
-            # Convert to the firebase_admin InvalidIdTokenError so the caller's
-            # `except InvalidIdTokenError` turns it into a clean 401.
-            raise InvalidIdTokenError(str(_exc)) from _exc
-        except Exception as exc:  # pragma: no cover - unexpected shim failure
-            logger.error('auth_shim verify failed type=%s', type(exc).__name__)
-            raise InvalidIdTokenError(f"auth_shim verify failed: {exc}") from exc
-
-    # Verify Firebase token
+    # All identity providers cross the same boundary. Keep the Firebase-shaped
+    # exceptions here because existing HTTP/WS transports already distinguish
+    # invalid credentials from a provider outage using that taxonomy.
     try:
-        decoded_token = cast(Any, auth.verify_id_token(token))  # type: ignore[reportUnknownMemberType]  # firebase_admin auth untyped
+        decoded_token = identity.verify_id_token(token)
         return decoded_token['uid']
-    except InvalidIdTokenError:
+    except IdentityProviderUnavailable as exc:
+        raise _identity_unavailable_compat(exc) from exc
+    except IdentityInvalidToken as exc:
         # Only honored when no real Firebase credential is configured — every
         # legitimate LOCAL_DEVELOPMENT=true path (hermetic e2e harness, the
         # auth-emulator dev harness) already unsets or never sets these, and
@@ -154,9 +149,13 @@ def verify_token(token: str) -> str:
             or os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
             or os.getenv('FIREBASE_AUTH_CREDENTIALS_PATH')
         )
-        if os.getenv('LOCAL_DEVELOPMENT') == 'true' and no_real_credential:
+        if (
+            identity.identity_provider() == 'firebase'
+            and os.getenv('LOCAL_DEVELOPMENT') == 'true'
+            and no_real_credential
+        ):
             return '123'
-        raise
+        raise InvalidIdTokenError(str(exc)) from exc
 
 
 def _enforce_cutover_http_if_request(uid: str, request: Request | None) -> None:
@@ -208,6 +207,9 @@ def get_current_user_uid(
     except InvalidIdTokenError as e:
         logger.error(e)
         raise HTTPException(status_code=401, detail="Invalid authorization token")
+    except CertificateFetchError as e:
+        logger.error('Identity provider unavailable: %s', type(e).__name__)
+        raise HTTPException(status_code=503, detail="Identity provider unavailable")
 
     enforce_account_deletion_http_access(uid)
     _enforce_cutover_http_if_request(uid, request)
@@ -269,6 +271,9 @@ def get_current_user_uid_no_byok_validation(
     except InvalidIdTokenError as e:
         logger.error(e)
         raise HTTPException(status_code=401, detail="Invalid authorization token")
+    except CertificateFetchError as e:
+        logger.error('Identity provider unavailable: %s', type(e).__name__)
+        raise HTTPException(status_code=503, detail="Identity provider unavailable")
 
     enforce_account_deletion_http_access(uid)
     _enforce_cutover_http_if_request(uid, request)
@@ -672,5 +677,11 @@ def timeit(func: F) -> F:
 
 
 def delete_account(uid: str) -> Dict[str, str]:
-    auth.delete_user(uid)  # type: ignore[reportUnknownMemberType]  # firebase_admin auth untyped
+    identity.delete_user(uid)
     return {"message": "User deleted"}
+
+
+def get_account_residual_counts(uid: str) -> Dict[str, int]:
+    """Return identity-provider rows used by deletion reconciliation."""
+
+    return identity.account_residual_counts(uid)

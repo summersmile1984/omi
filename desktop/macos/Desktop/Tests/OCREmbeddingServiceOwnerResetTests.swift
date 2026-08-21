@@ -74,10 +74,12 @@ final class OCREmbeddingServiceOwnerResetTests: XCTestCase {
         // until the test has run reset() before returning results.
         await flushSuspended.open()
         await releaseEmbed.wait()
-        return texts.map { _ in [Float](repeating: 0, count: dimension) }
+        return ProjectedEmbeddingBatch(
+          vectors: texts.map { _ in [Float](repeating: 0, count: dimension) }, projection: nil)
       },
-      embeddingWriterForTesting: { screenshotId, _ in
+      embeddingWriterForTesting: { screenshotId, _, _ in
         await writes.record(screenshotId)
+        return true
       }
     )
 

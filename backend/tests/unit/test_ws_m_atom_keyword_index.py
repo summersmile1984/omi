@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import types
 import importlib
 from dataclasses import dataclass
@@ -93,8 +94,10 @@ from models.memory_evidence import ArtifactPreservationState, MemoryEvidence, So
 from models.product_memory import MemoryItemStatus, MemoryTier, ProcessingState, MemoryItem
 from utils.memory.atom_keyword_index import (
     AtomKeywordRebuildReport,
+    atom_keyword_index_provider,
     build_atom_keyword_document,
     delete_atom_keyword_doc,
+    ensure_memories_collection,
     is_indexable_long_term_atom,
     keyword_search_memory_ids,
     memories_collection_name,
@@ -104,6 +107,27 @@ from utils.memory.atom_keyword_index import (
     sync_atom_keyword_index_for_item,
     upsert_atom_keyword_doc,
 )
+
+
+def test_keyword_provider_defaults_are_profile_aware():
+    assert atom_keyword_index_provider({}) == "typesense"
+    assert (
+        atom_keyword_index_provider(
+            {
+                "OMI_DEPLOYMENT_PROFILE": "neutral",
+                "MEMORY_KEYWORD_INDEX_PROVIDER": "",
+                "TYPESENSE_HOST": "typesense",
+                "TYPESENSE_API_KEY": "ambient-key",
+            }
+        )
+        == "disabled"
+    )
+    assert (
+        atom_keyword_index_provider({"OMI_DEPLOYMENT_PROFILE": "neutral", "MEMORY_KEYWORD_INDEX_PROVIDER": "typesense"})
+        == "typesense"
+    )
+
+
 from utils.memory.canonical_memory_adapter import (
     purge_canonical_derived_user_data,
     retract_conversation_sourced_memories,
@@ -665,6 +689,58 @@ class TestPurgeAndRebuild:
 
         with pytest.raises(RuntimeError, match="typesense down"):
             purge_user_atom_keyword_index(CANONICAL_UID, force=True, raise_on_failure=True)
+
+    def test_strict_keyword_purge_treats_missing_collection_as_confirmed_absence(self, monkeypatch):
+        class ObjectNotFound(OSError):
+            pass
+
+        exceptions = types.ModuleType("typesense.exceptions")
+        exceptions.ObjectNotFound = ObjectNotFound
+        monkeypatch.setitem(sys.modules, "typesense.exceptions", exceptions)
+
+        documents = MagicMock()
+        documents.delete.side_effect = ObjectNotFound("Collection not found")
+        collection = MagicMock()
+        collection.documents = documents
+        client = MagicMock()
+        client.collections.__getitem__.return_value = collection
+        monkeypatch.setattr("utils.memory.atom_keyword_index._typesense_client", lambda: client)
+
+        assert purge_user_atom_keyword_index(CANONICAL_UID, force=True, raise_on_failure=True) == 0
+        documents.delete.assert_called_once()
+
+    def test_disabled_keyword_provider_confirms_absence_without_typesense(self, monkeypatch):
+        client = MagicMock(side_effect=AssertionError('disabled provider must not construct Typesense'))
+        monkeypatch.setenv('MEMORY_KEYWORD_INDEX_PROVIDER', 'disabled')
+        monkeypatch.delenv('TYPESENSE_HOST', raising=False)
+        monkeypatch.delenv('TYPESENSE_API_KEY', raising=False)
+        monkeypatch.setattr('utils.memory.atom_keyword_index._typesense_client', client)
+
+        assert purge_user_atom_keyword_index(CANONICAL_UID, force=True, raise_on_failure=True) == 0
+        ensure_memories_collection()
+        client.assert_not_called()
+
+    def test_disabled_keyword_provider_skips_upsert_search_and_rebuild_without_typesense(self, monkeypatch):
+        client = MagicMock(side_effect=AssertionError('disabled provider must not construct Typesense'))
+        fetch = MagicMock(side_effect=AssertionError('disabled provider must not scan canonical content'))
+        monkeypatch.setenv('MEMORY_KEYWORD_INDEX_PROVIDER', 'disabled')
+        monkeypatch.delenv('TYPESENSE_HOST', raising=False)
+        monkeypatch.delenv('TYPESENSE_API_KEY', raising=False)
+        monkeypatch.setattr('utils.memory.atom_keyword_index._typesense_client', client)
+        monkeypatch.setattr('utils.memory.atom_keyword_index.fetch_authoritative_product_memory_items', fetch)
+        item = _long_term_item(memory_id='mem-disabled-provider')
+
+        assert upsert_atom_keyword_doc(item) is False
+        assert keyword_search_memory_ids(CANONICAL_UID, NEEDLE) == []
+        assert sync_atom_keyword_index_for_item(item) is True
+        report = rebuild_atom_keyword_index(CANONICAL_UID)
+        assert report == AtomKeywordRebuildReport(
+            uid=CANONICAL_UID,
+            skipped_reason='not_indexable_user',
+            verified=True,
+        )
+        client.assert_not_called()
+        fetch.assert_not_called()
 
     def test_account_delete_purges_keyword_index(self, mock_typesense, monkeypatch):
         collections, docs_store = mock_typesense

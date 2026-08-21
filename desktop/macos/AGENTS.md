@@ -201,11 +201,29 @@ do not hand-edit those paths to match a specific machine.
 ## Key Architecture Notes
 
 ### Authentication
-- Firebase Auth with Apple/Google Sign-In
+- The signed `OMI_DEPLOYMENT_PROFILE` owns the identity path: Omi Cloud uses
+  Firebase Apple/Google Sign-In; self-hosted releases require Better Auth and
+  must not initialize or package Firebase.
 - Desktop apps should use backend OAuth flow: `/v1/auth/authorize`
 - Apple Services ID: `me.omi.web` (shared across all apps)
 - iOS apps use native Sign-In, Desktop uses backend OAuth + custom token
 - Session death is owned by `AuthSessionCoordinator` (`INV-AUTH-1`); use `invalidateSession` for expired/revoked Firebase creds, not nuclear `signOut()`.
+- Self-hosted bundles may sign `OMI_SHARE_BASE_URL`,
+  `OMI_MCP_CHATGPT_OAUTH_CLIENT_ID`, and
+  `OMI_MCP_CLAUDE_OAUTH_CLIENT_ID`. Missing public MCP client IDs disable those
+  OAuth setup paths; they never select an Omi registration from the backend
+  hostname. Missing share config stays on the configured self-hosted backend.
+- Self-hosted realtime selects its frame adapter only from the authenticated
+  backend relay's returned `wire_protocol`; no client-side provider setting is
+  model or dialect authority.
+- Self-hosted model calls use configured backend capability routes. Missing
+  realtime or embedding/tool-loop capabilities fail closed before vendor
+  network; BYOK keys, inherited vendor credentials, Auto/Gemini defaults,
+  client-direct realtime sockets, and local vendor CLI agents are cloud-only
+  behavior.
+- The local agent `/auth` body is provider-neutral:
+  `{accessToken, identityProvider}`. Do not reintroduce `firebaseToken`; both
+  Firebase ID tokens and Better Auth JWTs are backend bearer credentials.
 
 #### Session 401 vs BYOK/provider 401
 
@@ -234,23 +252,10 @@ do not hand-edit those paths to match a specific machine.
 - `users/{uid}/fcm_tokens` - Token ID prefix = platform (ios_, android_, macos_)
 - `users/{uid}/memories` - Extracted memories
 
-### Platform Detection
-- **FCM tokens**: Document ID prefix (e.g., `macos_abc123`)
-- **Conversations**: `source` field
-- **Action items**: No platform tracking
-
 ### Known Limitations
 - Firestore has no collection group indexes for `source` field
 - Counting users by platform requires iterating all users (slow)
 - Apple Sign-In: Only one Services ID per Firebase project
-
-## API Endpoints
-- Production: `https://api.omi.me`
-- Local: `http://localhost:8080`
-
-## Credentials
-Connection details come from your local agent configuration; they are deliberately not
-checked in. Ask the user for anything you are missing rather than guessing an endpoint.
 
 ## Development Workflow
 
@@ -259,7 +264,7 @@ checked in. Ask the user for anything you are missing rather than guessing an en
 - **Build command**: `xcrun swift build -c debug --package-path Desktop` (the `xcrun` prefix is required to match the SDK version)
 - `run.sh` prepends the native Homebrew prefix (`/opt/homebrew/bin` on Apple Silicon or `/usr/local/bin` on Intel), followed by the other prefix when present, because agent and launchd shells may not inherit Homebrew's PATH. This keeps `pkg-config` and other build tools discoverable without requiring a machine-wide shell profile change.
 - **Full dev run**: `./run.sh` — builds Swift app, starts Python backend, starts Cloudflare tunnel, launches app
-- **Fast default dev run**: after one successful full named-bundle launch, ordinary Swift-only `./run.sh` calls reuse the installed bundle. The fast lane runs incremental SwiftPM, atomically replaces the executable and current desktop API URL, re-signs the app, and relaunches without copying/re-signing static agent/framework assets or resetting LaunchServices/auth. Named local profiles are eligible: their current disposable `.env` is refreshed on each patch and is never cached in the bundle fingerprint. Package metadata, resources, agent/runtime inputs, entitlements, persistent launch configuration, and an installed bundle whose agent runtime payload is incomplete (`incomplete_runtime_payload`; `scripts/agent-runtime-payload.sh`) automatically take the full path. Force that path with `./run.sh --full` or `OMI_FORCE_FULL_BUNDLE=1`. `OMI_SCAN_STALE_BUNDLES=1` is an explicit stale-LaunchServices recovery scan; do not enable it in the normal loop.
+- **Fast default dev run**: after one successful full named-bundle launch, ordinary Swift-only `./run.sh` calls reuse the installed bundle. The fast lane runs incremental SwiftPM, atomically replaces the executable and current desktop API URL, re-signs the app, and relaunches without copying/re-signing static agent/framework assets or resetting LaunchServices/auth. It re-syncs the curated Omi Dev settings allowlist before every named-bundle launch so hotkeys and other launch preferences cannot go stale; use `OMI_SKIP_SETTINGS_SEED=1` only when intentionally testing bundle-local settings. Named local profiles are eligible: their current disposable `.env` is refreshed on each patch and is never cached in the bundle fingerprint. Package metadata, resources, agent/runtime inputs, entitlements, persistent launch configuration, and an installed bundle whose agent runtime payload is incomplete (`incomplete_runtime_payload`; `scripts/agent-runtime-payload.sh`) automatically take the full path. Force that path with `./run.sh --full` or `OMI_FORCE_FULL_BUNDLE=1`. `OMI_SCAN_STALE_BUNDLES=1` is an explicit stale-LaunchServices recovery scan; do not enable it in the normal loop.
 - **Focused feedback loop**: `./scripts/dev-feedback.py --once|--watch swift '<XCTest filter>'` or `... python '<pytest path>'` runs exactly the regression you selected and reports each iteration time. It watches only the matching component inputs, keeps watching after a failure, and never replaces the full component suite. A filter that matches no tests fails the iteration (`swift test --filter` exits 0 on zero matches), so a renamed or mistyped filter can never read as PASS. Pre-push deliberately adds only `xcrun swift build -c debug`; never promote it to the full pinned-Xcode suite or release compile, because that push-time budget belongs to CI.
 - **Swift suite throughput**: Local suites default to four workers. CI uses two workers only because each gets a copy-on-write SwiftPM scratch directory and an isolated Foundation runtime home (preferences, Application Support, caches, and temporary files). Do not raise it without evidence that both build and runtime state remain isolated. Set `OMI_SWIFT_TEST_SUITE_WORKERS=1` to diagnose concurrency failures.
 - **Local Python backend**: direct `./run.sh` development reuses a healthy backend that this worktree owns when Python source/config have not changed. Sync dependencies with `cd ../../backend && ./scripts/sync-python-deps.sh` before the first local launch.
@@ -290,7 +295,7 @@ This creates `/Applications/omi-fix-rewind.app` with bundle ID `com.omi.omi-fix-
 - NEVER use the default `./run.sh` (which overwrites "Omi Dev") when testing a specific feature — always set `OMI_APP_NAME`
 - **ALWAYS prefix the name with `omi-`** (e.g., `omi-fix-rewind`, `omi-6512-polling`, `omi-vision-test`) so named bundles are visually grouped in `/Applications/` alongside "Omi Dev" and "Omi Beta"
 - Keep the name short and descriptive (it becomes both the app name and bundle ID suffix)
-- The named bundle gets its own permissions and writable database. `./run.sh` auto-seeds auth/onboarding, curated settings, and a one-time consistent Rewind snapshot from "Omi Dev"; set `OMI_SKIP_REWIND_SEED=1` to start with an empty Rewind profile.
+- The named bundle gets its own permissions and writable database. A full `./run.sh` install auto-seeds auth/onboarding and a one-time consistent Rewind snapshot from "Omi Dev"; every full or fast named-bundle launch mirrors the curated settings allowlist, including both hotkeys. Set `OMI_SKIP_REWIND_SEED=1` to start with an empty Rewind profile or `OMI_SKIP_SETTINGS_SEED=1` to preserve intentional bundle-local settings.
 - To connect agent-swift: `agent-swift connect --bundle-id com.omi.omi-fix-rewind`
 - **Skip the web login:** sign into "Omi Dev" once; named bundles launched by `./run.sh` clone that session before launch.
 - **Jump to a screen without clicking:** the automation bridge auto-enables on non-prod bundles — `./scripts/omi-ctl navigate <screen>` (e.g. `rewind`, `memories`, `settings rewind`). See "Fast-Path for Local Iteration" in `e2e/SKILL.md`.

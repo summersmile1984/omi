@@ -58,7 +58,8 @@ def sa():
         "database.vector_db": _leaf("database.vector_db", []),
         "database.notifications": _leaf("database.notifications", ["get_user_time_zone"]),
         "database._client": _leaf("database._client", ["db"]),
-        "utils.llm.clients": _leaf("utils.llm.clients", ["gemini_embed_query"]),
+        "utils.llm.clients": _leaf("utils.llm.clients", ["embeddings"]),
+        "utils.llm.capabilities": _leaf("utils.llm.capabilities", ["resolve_model_capability"]),
         "utils.retrieval.agentic": _leaf("utils.retrieval.agentic", ["agent_config_context"]),
     }
     with stub_modules(fakes):

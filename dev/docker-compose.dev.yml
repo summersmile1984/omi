@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Omi cloud-neutral local dev stack:
 #   - Firebase emulator suite (Firestore 8080 + Auth 9099 + Storage 9199)
 #   - PostgreSQL 17 for the firestore-pg shim (production target)
@@ -11,30 +9,35 @@ services:
       context: .
       dockerfile: emulators.Dockerfile
     image: "omi-emulators:local"
-    container_name: omi-emulators
+    container_name: ${DEV_FIREBASE_CONTAINER_NAME:-omi-emulators}
     working_dir: /srv/firebase
-    command: ["firebase", "emulators:start", "--only", "firestore,auth,storage", "--project", "demo-omi-local"]
     ports:
-      - "8080:8080"
-      - "9099:9099"
-      - "9199:9199"
+      - "${FIRESTORE_EMULATOR_PORT:-8080}:8080"
+      - "${FIREBASE_AUTH_EMULATOR_PORT:-9099}:9099"
+      - "${FIREBASE_STORAGE_EMULATOR_PORT:-9199}:9199"
     volumes:
       - ./firebase.json:/srv/firebase/firebase.json:ro
       - emulator-data:/root/.cache/firebase
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
 
   postgres:
     image: "postgres:16-alpine"
-    container_name: omi-postgres
+    container_name: ${DEV_POSTGRES_CONTAINER_NAME:-omi-postgres}
     environment:
-      POSTGRES_USER: omi
-      POSTGRES_PASSWORD: omi-dev-password
-      POSTGRES_DB: omi
+      POSTGRES_USER: ${DEV_POSTGRES_USER:-omi}
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-omi-dev-password}
+      POSTGRES_DB: ${DEV_POSTGRES_DB:-omi}
     ports:
-      - "5434:5432"
+      - "${DEV_POSTGRES_PORT:-5434}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U omi"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 10

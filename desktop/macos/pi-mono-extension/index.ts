@@ -73,6 +73,21 @@ export function omiReasoningEffortFromRelayContext(raw: string): string | undefi
   }
 }
 
+/**
+ * Resolve the backend authority injected by the desktop launcher.
+ *
+ * The launcher must always provide this value from the active deployment
+ * profile.  Keeping a managed-cloud fallback here would let a malformed or
+ * out-of-band self-hosted launch send model traffic to api.omi.me instead of
+ * failing closed at the provider boundary.
+ */
+export function resolveOmiProviderBaseUrl(
+  environment: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const value = environment.OMI_API_BASE_URL?.trim();
+  return value || undefined;
+}
+
 async function omiRelayContextRaw(): Promise<string | undefined> {
   const contextFile = process.env.OMI_CONTEXT_FILE;
   if (!contextFile) return undefined;
@@ -810,7 +825,13 @@ export async function __registerOmiToolsForTest(pi: ExtensionAPI): Promise<void>
 // ---------------------------------------------------------------------------
 
 export default function omiProvider(pi: ExtensionAPI): void {
-  const baseUrl = process.env.OMI_API_BASE_URL || "https://api.omi.me/v2";
+  const baseUrl = resolveOmiProviderBaseUrl();
+  if (!baseUrl) {
+    process.stderr.write(
+      "[omi-provider] OMI_API_BASE_URL is required; refusing to register an implicit managed endpoint\n",
+    );
+    return;
+  }
   const apiKey = process.env.OMI_API_KEY || "";
 
   // BYOK: the Swift app sets OMI_BYOK_* env vars (all four, or none) when the user

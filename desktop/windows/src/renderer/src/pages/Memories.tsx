@@ -148,13 +148,12 @@ export function Memories(): React.JSX.Element {
   // swaps the list in place with no spinner, so this isn't a jarring reload; the
   // loading guard skips a redundant fetch while the initial load is still in
   // flight, and auth.currentUser skips it during a sign-out transition.
-  useEffect(() => {
-    const onFocus = (): void => {
-      if (auth.currentUser && !loading) void refresh()
-    }
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [loading, refresh])
+  // Throttled: this refresh is a full `/v3/memories` page-through and the listener is
+  // live even while the user is on another tab, so an unthrottled one made every
+  // alt-tab re-paginate the whole collection. See lib/focusRefetch.ts.
+  useThrottledWindowFocus(() => {
+    if (auth.currentUser && !loading) void refresh()
+  })
 
   // Compose (add memory).
   const [composing, setComposing] = useState(false)

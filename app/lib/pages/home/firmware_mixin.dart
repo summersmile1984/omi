@@ -15,6 +15,7 @@ import 'package:uuid/uuid.dart';
 import 'package:omi/backend/http/api/device.dart';
 import 'package:omi/backend/http/shared.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/env/env.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/device.dart';
 import 'package:omi/utils/firmware_update_build_policy.dart';
@@ -263,7 +264,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   Future downloadFirmware() async {
     final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
     final zipUrl = latestFirmwareDetails['zip_url'];
-    if (zipUrl == null) {
+    if (zipUrl is! String || zipUrl.trim().isEmpty) {
       Logger.debug('Error: zip_url is null in latestFirmwareDetails');
       setState(() {
         isDownloading = false;
@@ -282,7 +283,16 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     });
 
     try {
-      final r = await makeRawApiCall(method: 'GET', url: zipUrl);
+      // The backend route is the release authority, but the returned asset
+      // URL is still an external redirect boundary. Validate it immediately
+      // before sending the update bytes so a self-hosted build cannot follow
+      // a managed Omi/GitHub fallback or an insecure URL.
+      final validatedZipUrl = Env.validateFirmwareDownloadUrl(zipUrl);
+      final r = await makeRawApiCall(method: 'GET', url: validatedZipUrl, followRedirects: false);
+      if (r.statusCode != 200) {
+        await r.stream.drain<void>();
+        throw StateError('Firmware download failed with HTTP ${r.statusCode}.');
+      }
       final completer = Completer<void>();
       final int? totalBytes = r.contentLength;
 

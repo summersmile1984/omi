@@ -31,12 +31,16 @@ else:
 
 from fastapi.websockets import WebSocketDisconnect
 
+import database.users as users_db
 from models.conversation_photo import ConversationPhoto
 from models.message_event import PhotoDescribedEvent, PhotoProcessingEvent
 from utils.aac import AACDecoder
 from utils.llm.openglass import describe_image
 from utils.request_validation import ImageChunkEnvelope
 from utils.speaker_assignment import update_speaker_assignment_maps
+from utils.byok import get_byok_key
+from utils.executors import db_executor, run_blocking
+from utils.transcribe_decisions import should_skip_custom_stt_postprocessing
 from utils.stt.live_failure import (
     flush_live_stt_buffer,
     live_stt_initialization_failure,
@@ -55,6 +59,7 @@ from utils.stt.streaming import (
     process_audio_dg,
     process_audio_modulate,
     process_audio_parakeet,
+    process_audio_sensevoice,
 )
 from utils.stt.vad_gate import GatedSTTSocket, VADStreamingGate, VAD_GATE_MODE, is_gate_enabled
 from utils.transcribe_decisions import (
@@ -202,6 +207,8 @@ class ListenReceiver:
 
     async def _create_stt_socket(self, callback: Any, sample_rate: int, modulate_callback: Any = None) -> Any:
         keywords = self.host.vocabulary[:100] if self.host.vocabulary else []
+        if self.host.stt_service == STTService.sensevoice:
+            return await process_audio_sensevoice(callback, sample_rate)
         if self.host.stt_service == STTService.parakeet:
             socket, actual_service = await connect_stt_socket_with_fallback(
                 primary_service=STTService.parakeet,
@@ -314,20 +321,6 @@ class ListenReceiver:
             elif actual_service == STTService.parakeet:
                 self.host.stt_model = 'parakeet'
             return socket
-        if self.host.stt_service == STTService.sensevoice:
-            from utils.sensevoice.socket import SenseVoiceSocket
-
-            return SenseVoiceSocket(
-                sample_rate=sample_rate,
-                transcript_callback=callback,
-            )
-        if self.host.stt_service == STTService.mimo:
-            from utils.mimo_pipeline.socket import MimoSttSocket
-
-            return MimoSttSocket(
-                sample_rate=sample_rate,
-                transcript_callback=callback,
-            )
         raise RuntimeError(f'Unsupported serving STT provider {self.host.stt_service!r}')
 
     async def _drain_stt_sockets(self) -> None:
@@ -471,12 +464,35 @@ class ListenReceiver:
     async def _process_photo(self, image_b64: str, temporary_id: str) -> None:
         photo_id = str(uuid.uuid4())
         await self.host.asend_event(PhotoProcessingEvent(temp_id=temporary_id, photo_id=photo_id))
-        try:
-            description = await describe_image(self.host.request.uid, image_b64)
-            discarded = not description or not description.strip()
-        except Exception as error:
-            logger.error('Image description failed type=%s', type(error).__name__)
-            description, discarded = 'Could not generate description.', True
+        # Custom-STT sessions without an active LLM BYOK enrollment + request key
+        # must not incur Omi-paid LLM spend (same discriminator as
+        # process_conversation, #7690). WebSocket BYOK headers are copied into
+        # context in _admit without HTTP middleware validation, so a raw
+        # X-BYOK-* header alone is not enough — require users_db.is_byok_active.
+        # Defer both lookups so Omi-STT sessions never pay for them. Offload the
+        # Firestore enrollment read onto db_executor (async blocker gate).
+        if self.host.use_custom_stt:
+            try:
+                byok_active = await run_blocking(db_executor, users_db.is_byok_active, self.host.request.uid)
+            except Exception as error:
+                logger.warning('Custom-STT photo BYOK enrollment lookup failed type=%s', type(error).__name__)
+                byok_active = False
+            has_llm_byok_key = bool(byok_active and (get_byok_key('openai') or get_byok_key('anthropic')))
+            skip_photo_description = should_skip_custom_stt_postprocessing(
+                uses_custom_stt=True,
+                has_llm_byok_key=has_llm_byok_key,
+            )
+        else:
+            skip_photo_description = False
+        if skip_photo_description:
+            description, discarded = 'Custom STT: photo description skipped (no LLM BYOK key).', False
+        else:
+            try:
+                description = await describe_image(self.host.request.uid, image_b64)
+                discarded = not description or not description.strip()
+            except Exception as error:
+                logger.error('Image description failed type=%s', type(error).__name__)
+                description, discarded = 'Could not generate description.', True
         self.host.transcripts.photo_buffer.append(
             ConversationPhoto(id=photo_id, base64=image_b64, description=description, discarded=discarded)
         )

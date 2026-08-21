@@ -59,6 +59,24 @@ def test_missing_google_application_credentials_path_fails_fast(monkeypatch, tmp
         google_credentials.prepare_google_credentials()
 
 
+def test_google_application_credentials_path_rejects_weak_permissions_and_symlinks(monkeypatch, tmp_path):
+    credentials_path = tmp_path / 'google-credentials.json'
+    credentials_path.write_text('{}', encoding='utf-8')
+    credentials_path.chmod(0o644)
+    monkeypatch.delenv('SERVICE_ACCOUNT_JSON', raising=False)
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', str(credentials_path))
+
+    with pytest.raises(RuntimeError, match='GOOGLE_APPLICATION_CREDENTIALS.*mode 0600'):
+        google_credentials.prepare_google_credentials()
+
+    credentials_path.chmod(0o600)
+    link = tmp_path / 'google-credentials-link.json'
+    link.symlink_to(credentials_path)
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', str(link))
+    with pytest.raises(RuntimeError, match='GOOGLE_APPLICATION_CREDENTIALS.*regular file'):
+        google_credentials.prepare_google_credentials()
+
+
 @requires_owner_only_permissions
 def test_existing_credentials_file_is_replaced_with_private_permissions(monkeypatch, tmp_path):
     credentials_path = tmp_path / 'google-credentials.json'
@@ -128,6 +146,7 @@ def test_customer_entitlement_service_account_reads_auth_file_without_adc(monkey
         '{"type":"service_account","project_id":"based-hardware","client_email":"nik-164@based-hardware.iam.gserviceaccount.com"}',
         encoding='utf-8',
     )
+    credentials_path.chmod(0o600)
     monkeypatch.delenv('SERVICE_ACCOUNT_JSON', raising=False)
     monkeypatch.delenv('GOOGLE_APPLICATION_CREDENTIALS', raising=False)
     monkeypatch.setenv('FIREBASE_AUTH_CREDENTIALS_PATH', str(credentials_path))
@@ -150,3 +169,25 @@ def test_customer_entitlement_service_account_reads_auth_file_without_adc(monkey
     assert credentials is fake_credentials
     assert 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ
     assert google_credentials.customer_data_service_account() is None
+
+
+def test_customer_entitlement_service_account_rejects_weak_permissions_and_symlinks(monkeypatch, tmp_path):
+    credentials_path = tmp_path / 'firebase-auth.json'
+    credentials_path.write_text(
+        '{"type":"service_account","project_id":"based-hardware"}',
+        encoding='utf-8',
+    )
+    credentials_path.chmod(0o644)
+    monkeypatch.delenv('SERVICE_ACCOUNT_JSON', raising=False)
+    monkeypatch.delenv('GOOGLE_APPLICATION_CREDENTIALS', raising=False)
+    monkeypatch.setenv('FIREBASE_AUTH_CREDENTIALS_PATH', str(credentials_path))
+
+    with pytest.raises(RuntimeError, match='FIREBASE_AUTH_CREDENTIALS_PATH.*mode 0600'):
+        google_credentials.customer_entitlement_service_account()
+
+    credentials_path.chmod(0o600)
+    link = tmp_path / 'firebase-auth-link.json'
+    link.symlink_to(credentials_path)
+    monkeypatch.setenv('FIREBASE_AUTH_CREDENTIALS_PATH', str(link))
+    with pytest.raises(RuntimeError, match='FIREBASE_AUTH_CREDENTIALS_PATH.*regular file'):
+        google_credentials.customer_entitlement_service_account()

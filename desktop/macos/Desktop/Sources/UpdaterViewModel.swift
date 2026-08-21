@@ -815,7 +815,7 @@ final class UpdaterViewModel: ObservableObject {
   private var isInitialized = false
 
   var usesManagedUpdatePolicy: Bool {
-    AppBuild.allowsSparkleUpdates && !AnalyticsManager.isDevBuild
+    Self.allowsSparkleUpdates && !AnalyticsManager.isDevBuild
   }
 
   /// Whether automatic update checks are enabled
@@ -916,7 +916,7 @@ final class UpdaterViewModel: ObservableObject {
     // Preview builds must not use the shared update feed. Do not start Sparkle for those
     // artifacts; its manual and background entry points are guarded below as well.
     updaterController = SPUStandardUpdaterController(
-      startingUpdater: AppBuild.allowsSparkleUpdates,
+      startingUpdater: Self.allowsSparkleUpdates,
       updaterDelegate: updaterDelegate,
       userDriverDelegate: nil
     )
@@ -938,7 +938,7 @@ final class UpdaterViewModel: ObservableObject {
     // the only lever left for delivery latency after a build publishes.)
     updaterController.updater.updateCheckInterval = (updateChannel == .beta) ? 120 : 600
 
-    if AppBuild.allowsSparkleUpdates {
+    if Self.allowsSparkleUpdates {
       // Observe updater state changes only when Sparkle is active. In particular, do not let
       // its initial KVO value re-enable the update UI for a published preview app.
       updaterController.updater.publisher(for: \.canCheckForUpdates)
@@ -951,7 +951,7 @@ final class UpdaterViewModel: ObservableObject {
     }
 
     applyManagedUpdatePolicy()
-    if !AppBuild.allowsSparkleUpdates {
+    if !Self.allowsSparkleUpdates {
       canCheckForUpdates = false
     }
     isInitialized = true
@@ -960,6 +960,10 @@ final class UpdaterViewModel: ObservableObject {
   /// Quick check if Sparkle is mid-update (safe to call from anywhere)
   nonisolated static var isUpdateInProgress: Bool {
     _isUpdateInProgress
+  }
+
+  private static var allowsSparkleUpdates: Bool {
+    AppBuild.allowsSparkleUpdates && DesktopBackendEnvironment.allowsOmiManagedServices
   }
 
   nonisolated static func allowsManualCheck(
@@ -971,14 +975,14 @@ final class UpdaterViewModel: ObservableObject {
 
   /// Manually check for updates
   func checkForUpdates() {
-    guard AppBuild.allowsSparkleUpdates else { return }
+    guard Self.allowsSparkleUpdates else { return }
     userInitiatedCheckInProgress = true
     updaterController.checkForUpdates(nil)
   }
 
   /// Background update check (no UI). Used after channel changes.
   func checkForUpdatesInBackground() {
-    guard AppBuild.allowsSparkleUpdates else { return }
+    guard Self.allowsSparkleUpdates else { return }
     // Background polls must not inherit a stale user-initiated "Checking…" chip.
     userInitiatedCheckInProgress = false
     updaterController.updater.checkForUpdatesInBackground()
@@ -988,7 +992,7 @@ final class UpdaterViewModel: ObservableObject {
   /// - release builds: always auto-check + auto-install
   /// - dev builds: keep both disabled to avoid replacing the local app
   func applyManagedUpdatePolicy() {
-    let shouldAutoUpdate = AppBuild.allowsSparkleUpdates && !AnalyticsManager.isDevBuild
+    let shouldAutoUpdate = Self.allowsSparkleUpdates && !AnalyticsManager.isDevBuild
     automaticallyChecksForUpdates = shouldAutoUpdate
     automaticallyDownloadsUpdates = shouldAutoUpdate
     updaterController.updater.automaticallyChecksForUpdates = shouldAutoUpdate
@@ -1001,7 +1005,7 @@ final class UpdaterViewModel: ObservableObject {
   /// Trigger one immediate silent update check right after launch.
   /// Sparkle recommends calling this only immediately after starting the updater.
   func checkForUpdatesImmediatelyAfterLaunchIfNeeded() {
-    guard AppBuild.allowsSparkleUpdates else { return }
+    guard Self.allowsSparkleUpdates else { return }
     guard usesManagedUpdatePolicy else { return }
     guard automaticallyChecksForUpdates else { return }
     guard canCheckForUpdates else { return }

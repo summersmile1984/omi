@@ -6,7 +6,7 @@ names poorly — so "when did I talk to Steph?" returned the k nearest (wrong) c
 even when "Steph" was literally in a conversation summary. The fix merges the existing
 Typesense keyword search (titles/overviews) with the vector results, keyword hits first.
 
-These tests cover the merge ordering/dedup, the fail-open behavior of the keyword helper,
+These tests cover the merge ordering/dedup, the typed-unavailable behavior of the keyword helper,
 and structurally guard that both chat retrieval call sites use the hybrid path.
 """
 
@@ -77,6 +77,7 @@ _restore_real_backend_package("utils.conversations")
 
 import utils.conversations.search as search_module
 from utils.conversations.search import (
+    ConversationSearchUnavailableError,
     keyword_search_conversation_ids,
     merge_conversation_search_ids,
     search_conversations,
@@ -116,10 +117,13 @@ class TestKeywordSearchConversationIds:
             mock_search.return_value = {'items': [{'id': 'c1'}, {'foo': 'bar'}, {'id': None}]}
             assert keyword_search_conversation_ids('uid1', 'Steph') == ['c1']
 
-    def test_fails_open_to_empty_list_on_search_error(self):
+    def test_provider_failure_is_not_silently_reported_as_no_hits(self):
         with patch.object(search_module, 'search_conversations') as mock_search:
-            mock_search.side_effect = Exception('typesense unreachable')
-            assert keyword_search_conversation_ids('uid1', 'Steph') == []
+            mock_search.side_effect = ConversationSearchUnavailableError(
+                'typesense unreachable', retryable=True, provider='typesense'
+            )
+            with pytest.raises(ConversationSearchUnavailableError):
+                keyword_search_conversation_ids('uid1', 'Steph')
 
     def test_empty_query_returns_no_keyword_hits(self):
         with patch.object(search_module, 'search_conversations') as mock_search:
@@ -192,6 +196,39 @@ class TestSpeakerFilteredConversationSearch:
         params = search.call_args.args[0]
         assert params['q'] == 'planning'
         assert params['filter_by'] == 'userId:=uid1'
+
+    def test_self_host_schema_filters_locked_rows_and_returns_canonical_id(self, monkeypatch):
+        monkeypatch.setenv('CONVERSATION_KEYWORD_INDEX_PROVIDER', 'typesense')
+        monkeypatch.setenv('CONVERSATION_TYPESENSE_COLLECTION', 'omi_conversations')
+        search = MagicMock(
+            return_value={
+                'found': 1,
+                'hits': [
+                    {
+                        'document': {
+                            'id': 'provider-hash',
+                            'conversation_id': 'conversation-1',
+                            'created_at': 100,
+                            'started_at': 100,
+                            'finished_at': 101,
+                            'is_locked': False,
+                        }
+                    }
+                ],
+            }
+        )
+        collection = MagicMock()
+        collection.documents.search = search
+        with (
+            patch.object(search_module, 'ensure_conversations_collection'),
+            patch.object(search_module.client, 'collections', {'omi_conversations': collection}, create=True),
+        ):
+            result = search_conversations(uid='uid1', query='planning', include_discarded=False)
+
+        params = search.call_args.args[0]
+        assert params['query_by'] == 'overview,title'
+        assert params['filter_by'] == ('userId:=`uid1` && discarded:=false && is_locked:=false && schema_version:=1')
+        assert result['items'][0]['id'] == 'conversation-1'
 
 
 class TestCallSitesUseHybridSearch:

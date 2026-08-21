@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ContextCore
 import SwiftUI
 
 // MARK: - The flow
@@ -294,6 +295,9 @@ struct OnboardingView: View {
     /// Whatever the sign-in attempt threw, shown as-is. A preamble in front of it would be a
     /// sentence that says nothing the error does not.
     @State private var signInError: String?
+    @State private var authEmail = ""
+    @State private var authPassword = ""
+    @State private var authName = ""
     /// The user pressed Cancel while the browser round trip was still open. There is no way to
     /// call the round trip off — the browser has it — so this only puts the buttons back.
     @State private var abandonedWait = false
@@ -508,7 +512,32 @@ struct OnboardingView: View {
                 style: .stepHeadline,
                 aside: "It all lands in your Omi account.")
 
-            if isWaitingForBrowser {
+            if ContextDeploymentProfile.current.identityProvider == .betterAuth {
+                VStack(spacing: 10) {
+                    TextField("Email", text: $authEmail)
+                        .textContentType(.emailAddress)
+                    SecureField("Password", text: $authPassword)
+                        .textContentType(.password)
+                    TextField("Name (for a new account)", text: $authName)
+                        .textContentType(.name)
+
+                    if let signInError {
+                        Text(signInError)
+                            .inkStyle(.rowCopy)
+                            .foregroundStyle(Ink.errorRed)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    HStack(spacing: 12) {
+                        InkButton("Sign in") { beginBetterAuthSignIn(createAccount: false) }
+                        InkButton("Create account", kind: .secondary) {
+                            beginBetterAuthSignIn(createAccount: true)
+                        }
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 340)
+            } else if isWaitingForBrowser {
                 VStack(spacing: 12) {
                     Text("Waiting for your browser…")
                         .inkStyle(.statusLabel)
@@ -553,6 +582,25 @@ struct OnboardingView: View {
         Task { @MainActor in
             do {
                 try await auth.signIn(provider: provider)
+                guard step == .signIn else { return }
+                advance()
+            } catch {
+                guard step == .signIn else { return }
+                signInError = error.localizedDescription
+            }
+        }
+    }
+
+    private func beginBetterAuthSignIn(createAccount: Bool) {
+        signInError = nil
+        guard !auth.isSigningIn else { return }
+        Task { @MainActor in
+            do {
+                try await auth.signIn(
+                    email: authEmail.trimmingCharacters(in: .whitespacesAndNewlines),
+                    password: authPassword,
+                    name: authName,
+                    createAccount: createAccount)
                 guard step == .signIn else { return }
                 advance()
             } catch {

@@ -93,6 +93,10 @@ def _loaded_oauth_router() -> Iterator[tuple[ModuleType, ModuleType, ModuleType]
     endpoints = _module(
         'utils.other.endpoints',
         enforce_account_deletion_http_access=lambda _uid: None,
+        rate_limit_dependency=lambda *_args, **_kwargs: (lambda: None),
+        verify_token=lambda token: firebase_auth.verify_id_token(token)['uid'],
+        InvalidIdTokenError=_InvalidIdTokenError,
+        CertificateFetchError=type('CertificateFetchError', (Exception,), {}),
     )
 
     with stub_modules(
@@ -137,7 +141,7 @@ def test_oauth_token_routes_auth_and_app_reads_to_owned_executors() -> None:
             'state': 'opaque',
         }
         assert [(executor, func) for executor, func, _args in calls] == [
-            (oauth.critical_executor, firebase_auth.verify_id_token),
+            (oauth.critical_executor, oauth.verify_token),
             (oauth.db_executor, oauth.enforce_account_deletion_http_access),
             (oauth.db_executor, apps_db.get_app_by_id_db),
             (oauth.db_executor, oauth.is_user_app_enabled),
@@ -195,4 +199,4 @@ def test_oauth_token_preserves_invalid_token_status() -> None:
             )
 
         assert exc.value.status_code == 401
-        assert 'Invalid Firebase ID token' in exc.value.detail
+        assert 'Invalid identity token' in exc.value.detail

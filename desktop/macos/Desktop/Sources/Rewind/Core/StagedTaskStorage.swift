@@ -809,6 +809,24 @@ actor StagedTaskStorage {
     }
   }
 
+  /// Persist a self-hosted embedding only if the task projection has not
+  /// changed since the backend produced it.
+  func updateEmbeddingIfProjectionMatches(
+    id: Int64,
+    embedding: Data,
+    projectionKey: String
+  ) async throws -> Bool {
+    let db = try await ensureInitialized()
+    return try await db.write { database in
+      try RewindDatabase.writeEmbeddingIfProjectionMatches(
+        in: database,
+        surface: .task,
+        projectionKey: projectionKey,
+        updateSQL: "UPDATE staged_tasks SET embedding = ? WHERE id = ?",
+        arguments: [embedding, id])
+    }
+  }
+
   func getAllEmbeddings() async throws -> [(id: Int64, embedding: Data)] {
     let db = try await ensureInitialized()
 

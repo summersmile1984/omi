@@ -1365,7 +1365,7 @@ class _DeveloperSettingsPageState extends State<_DeveloperSettingsPageView> {
                         const SizedBox(height: 8),
                         Builder(
                           builder: (context) {
-                            final mcpUrl = '${Env.apiBaseUrl}v1/mcp/sse';
+                            final mcpUrl = Env.mcpSseUrl;
                             return GestureDetector(
                               onTap: () {
                                 Clipboard.setData(ClipboardData(text: mcpUrl));

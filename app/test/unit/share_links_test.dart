@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:omi/env/environment_profile.dart';
 import 'package:omi/utils/share_links.dart';
 
 void main() {
@@ -27,6 +28,19 @@ void main() {
         conversationShareUrl('c1', raw: 'https://share.example.com/omi/'),
         'https://share.example.com/omi/conversations/c1',
       );
+    });
+
+    test('self-hosted profile requires an explicit non-Omi HTTPS origin', () {
+      expect(
+        shareBaseUrlForProfile('https://share.example.com', AppEnvironmentProfile.selfHosted),
+        'https://share.example.com',
+      );
+      for (final invalid in ['', 'http://share.example.com', 'https://h.omi.me']) {
+        expect(
+          () => shareBaseUrlForProfile(invalid, AppEnvironmentProfile.selfHosted),
+          throwsStateError,
+        );
+      }
     });
   });
 

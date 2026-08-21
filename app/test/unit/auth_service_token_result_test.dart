@@ -13,6 +13,12 @@ import 'package:omi/services/auth_service.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('optional Firebase profile lookup is safe before Firebase initialization', () {
+    // Self-hosted/Better Auth startup intentionally skips Firebase.initializeApp.
+    // The settings profile still renders before any managed Firebase app exists.
+    expect(AuthService.instance.getFirebaseUser(), isNull);
+  });
+
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     await SharedPreferencesUtil.init();

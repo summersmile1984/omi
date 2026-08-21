@@ -7,7 +7,7 @@ No mocking — real audio → real embeddings → real cosine matching.
 Prerequisites:
   - Local backend running:
     LOCAL_DEVELOPMENT=true HOSTED_PUSHER_API_URL=http://localhost:10152 \
-    HOSTED_SPEAKER_EMBEDDING_API_URL=http://localhost:18881 \
+    SPEAKER_EMBEDDING_PROVIDER=http SPEAKER_EMBEDDING_API_URL=http://localhost:18881 \
       uvicorn main:app --port 10151
   - Pusher service running:
     PYTHONPATH=. uvicorn pusher.main:app --port 10152

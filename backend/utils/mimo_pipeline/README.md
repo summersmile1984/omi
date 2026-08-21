@@ -1,4 +1,4 @@
-# MiMo-V2.5-ASR: 实时 STT(无 GPU)
+# MiMo-V2.5-ASR: 可选的 operator-gateway STT(无 GPU)
 
 `backend/utils/mimo_pipeline/` — 用显式配置的 OpenAI-compatible MiMo-V2.5-ASR authority
 做**实时(流式)STT**,服务器无需 GPU。中文质量第一梯队(普通话+英语+方言+语码混合+歌词+嘈杂/多说话人),
@@ -30,7 +30,7 @@ transcript_callback(text, duration) → 下游(与上游 STT socket 契约一致
 
 | env | 默认 | 说明 |
 |---|---|---|
-| `MIMO_API_KEY` | — | **必需**。小米 MiMo 开放平台 key |
+| `MIMO_API_KEY` | — | **必需**。operator gateway credential |
 | `STT_SERVICE_MODELS` | (上游默认) | 含 `mimo` 即启用本 provider(需 key) |
 | `MIMO_API_BASE` | — | 必须显式配置的 operator/self-host API 根；没有 vendor 默认 |
 | `MIMO_TOKENPLAN_BASE` | — | 仅在显式选择 TokenPlan 时使用的 operator-approved API 根 |

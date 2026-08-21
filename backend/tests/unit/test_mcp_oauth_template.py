@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from jinja2 import Environment, FileSystemLoader
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
@@ -9,7 +10,7 @@ def _render_mcp_template() -> str:
     return _render_mcp_template_for_client("ChatGPT")
 
 
-def _render_mcp_template_for_client(client_name: str) -> str:
+def _render_mcp_template_for_client(client_name: str, auth_provider: str = 'firebase') -> str:
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
     return env.get_template("mcp_oauth_authorize.html").render(
         client_name=client_name,
@@ -32,10 +33,12 @@ def _render_mcp_template_for_client(client_name: str) -> str:
             "authDomain": "test.firebaseapp.com",
             "projectId": "test-project",
         },
+        auth_provider=auth_provider,
+        identity_csrf_token='identity-csrf',
     )
 
 
-def _render_oauth_authenticate_template() -> str:
+def _render_oauth_authenticate_template(auth_provider: str = 'firebase') -> str:
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
     return env.get_template("oauth_authenticate.html").render(
         app_name="Test App",
@@ -45,6 +48,8 @@ def _render_oauth_authenticate_template() -> str:
         firebase_api_key="test-api-key",
         firebase_auth_domain="test.firebaseapp.com",
         firebase_project_id="test-project",
+        auth_provider=auth_provider,
+        identity_csrf_token='identity-csrf',
         permissions=[
             {"text": "Read your memories"},
         ],
@@ -124,3 +129,20 @@ def test_app_oauth_template_terms_and_privacy_links_are_distinct():
 
     assert 'href="https://www.omi.me/pages/terms-of-service">Terms of Service</a>' in html
     assert 'href="https://www.omi.me/pages/privacy">Privacy Policy</a>' in html
+
+
+@pytest.mark.parametrize(
+    'renderer',
+    [
+        lambda: _render_mcp_template_for_client('Claude', 'better_auth'),
+        lambda: _render_oauth_authenticate_template('better_auth'),
+    ],
+)
+def test_better_auth_oauth_pages_have_no_firebase_runtime_dependency(renderer):
+    html = renderer()
+
+    assert 'www.gstatic.com/firebasejs' not in html
+    assert 'firebase.initializeApp' not in html
+    assert 'id="firebaseui-auth-container"' not in html
+    assert "fetch('/v1/identity/email-token'" in html
+    assert "identityForm.append('csrf_token', identityCsrfToken)" in html

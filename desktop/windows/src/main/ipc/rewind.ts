@@ -115,7 +115,7 @@ export function registerRewindHandlers(): void {
   // query embedder are inert without it (the token only exists in the renderer).
   ipcMain.handle(
     'rewind:setEmbedSession',
-    async (_e, s: { desktopApiBase: string; token: string } | null) =>
+    async (_e, s: { apiBase: string; desktopApiBase: string; token: string } | null) =>
       configureRewindEmbedSession(s)
   )
   // --- Track 4 --- Per-line OCR bounding boxes for the search highlight overlay.

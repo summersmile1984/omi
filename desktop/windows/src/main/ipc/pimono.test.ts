@@ -57,12 +57,12 @@ vi.mock('../codingAgent/piMono', () => ({
 }))
 // The token verifier: mocked so the wiring test controls "genuine vs forged"
 // without real crypto/cert fetches. Its own suite proves it rejects bad tokens.
-vi.mock('../auth/firebaseIdToken', () => ({
-  verifyFirebaseIdToken: vi.fn(() => Promise.resolve(null))
+vi.mock('../auth/identityToken', () => ({
+  verifyIdentityToken: vi.fn(() => Promise.resolve(null))
 }))
 
 import { registerPiMonoHandlers } from './pimono'
-import { verifyFirebaseIdToken } from '../auth/firebaseIdToken'
+import { verifyIdentityToken } from '../auth/identityToken'
 import {
   controlPlaneOwnerId,
   hasKnownControlPlaneOwner,
@@ -75,7 +75,7 @@ import {
 } from '../codingAgent/piMonoSession'
 import type { ByokKeyStore } from '../agentKernel/byokStore'
 
-const verify = vi.mocked(verifyFirebaseIdToken)
+const verify = vi.mocked(verifyIdentityToken)
 const noByok = { getAllKeys: () => ({}) } as unknown as ByokKeyStore
 
 async function setSession(payload: unknown): Promise<void> {

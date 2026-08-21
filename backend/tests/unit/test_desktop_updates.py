@@ -23,7 +23,7 @@ from routers.updates import (
     _xml_attr,
     router as updates_router,
 )
-from database.desktop_update_policy import get_desktop_update_policy
+from database.desktop_update_policy import default_desktop_update_policy, get_desktop_update_policy
 
 # Minimal test app mounting only the updates router
 _test_app = FastAPI()
@@ -461,6 +461,42 @@ def test_legacy_download_fallback_selects_only_lowercase_canonical_omi_dmg():
 
 
 class TestResolveDesktopReleases:
+    def test_neutral_profile_defaults_legacy_fallback_to_disabled(self, monkeypatch):
+        from routers.updates import _legacy_desktop_updates_disabled
+
+        monkeypatch.delenv("DESKTOP_UPDATE_LEGACY_FALLBACK", raising=False)
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+
+        assert _legacy_desktop_updates_disabled() is True
+
+    def test_managed_profile_keeps_legacy_fallback_enabled_by_default(self, monkeypatch):
+        from routers.updates import _legacy_desktop_updates_disabled
+
+        monkeypatch.delenv("DESKTOP_UPDATE_LEGACY_FALLBACK", raising=False)
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "omi_cloud")
+
+        assert _legacy_desktop_updates_disabled() is False
+
+    @pytest.mark.asyncio
+    async def test_self_host_disables_legacy_vendor_update_fallback(self):
+        from routers.updates import _get_live_desktop_releases
+
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "OMI_DEPLOYMENT_PROFILE": "self_hosted",
+                    "DESKTOP_UPDATE_LEGACY_FALLBACK": "disabled",
+                    "DESKTOP_UPDATE_POINTERS_MODE": "legacy",
+                },
+            ),
+            patch("routers.updates._get_legacy_live_desktop_releases", new_callable=AsyncMock) as legacy,
+        ):
+            result = await _get_live_desktop_releases("windows")
+
+        assert result == []
+        legacy.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_legacy_kill_switch_records_degraded_mode(self):
         from routers.updates import _get_live_desktop_releases
@@ -472,7 +508,10 @@ class TestResolveDesktopReleases:
             "metadata": {"edSignature": "legacy"},
         }
         with (
-            patch.dict("os.environ", {"DESKTOP_UPDATE_POINTERS_MODE": "legacy"}),
+            patch.dict(
+                "os.environ",
+                {"DESKTOP_UPDATE_POINTERS_MODE": "legacy", "DESKTOP_UPDATE_LEGACY_FALLBACK": "enabled"},
+            ),
             patch(
                 "routers.updates._get_legacy_live_desktop_releases",
                 new_callable=AsyncMock,
@@ -532,6 +571,7 @@ class TestResolveDesktopReleases:
             "metadata": {"edSignature": "older-legacy"},
         }
         with (
+            patch.dict("os.environ", {"DESKTOP_UPDATE_LEGACY_FALLBACK": "enabled"}),
             patch("routers.updates.resolve_pointer_release", side_effect=resolve),
             patch(
                 "routers.updates._get_legacy_live_desktop_releases",
@@ -1600,6 +1640,21 @@ class TestDesktopUpdatePolicyEndpoint:
             log=ANY,
         )
 
+    @pytest.mark.asyncio
+    async def test_neutral_firestore_failure_is_typed_disabled_without_omi_url(self, monkeypatch):
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+        monkeypatch.delenv("DESKTOP_UPDATE_DOWNLOAD_URL", raising=False)
+        with patch("routers.updates.get_desktop_update_policy", side_effect=RuntimeError("unavailable")):
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as client:
+                resp = await client.get("/v2/desktop/update-policy?platform=macos&current_build=11400")
+
+        assert resp.status_code == 200
+        assert resp.json()["active"] is False
+        assert resp.json()["availability"] == "disabled"
+        assert resp.json()["reason"] == "operator_download_url_not_configured"
+        assert resp.json()["download_url"] is None
+        assert "omi.me" not in resp.text
+
 
 class TestDesktopUpdatePolicyDatabase:
     def _mock_doc(self, exists=True, data=None):
@@ -1618,6 +1673,48 @@ class TestDesktopUpdatePolicyDatabase:
         assert policy["severity"] == "none"
         assert policy["download_url"].endswith("/v2/desktop/download/latest?channel=stable")
 
+    def test_managed_default_retains_historical_download_url(self, monkeypatch):
+        monkeypatch.delenv("OMI_DEPLOYMENT_PROFILE", raising=False)
+        monkeypatch.delenv("DESKTOP_UPDATE_DOWNLOAD_URL", raising=False)
+
+        policy = default_desktop_update_policy()
+
+        assert policy["download_url"] == "https://api.omi.me/v2/desktop/download/latest?channel=stable"
+        assert policy["availability"] == "configured"
+        assert policy["reason"] is None
+
+    def test_neutral_default_is_typed_disabled_without_omi_url(self, monkeypatch):
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "neutral")
+        monkeypatch.delenv("DESKTOP_UPDATE_DOWNLOAD_URL", raising=False)
+
+        policy = default_desktop_update_policy()
+
+        assert policy["active"] is False
+        assert policy["severity"] == "none"
+        assert policy["download_url"] is None
+        assert policy["availability"] == "disabled"
+        assert policy["reason"] == "operator_download_url_not_configured"
+
+    def test_neutral_default_accepts_explicit_operator_download_url(self, monkeypatch):
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self-hosted")
+        monkeypatch.setenv("DESKTOP_UPDATE_DOWNLOAD_URL", "https://objects.example.com/desktop/stable.html")
+
+        policy = default_desktop_update_policy()
+
+        assert policy["download_url"] == "https://objects.example.com/desktop/stable.html"
+        assert policy["availability"] == "configured"
+        assert policy["reason"] is None
+
+    def test_neutral_default_rejects_omi_download_url(self, monkeypatch):
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+        monkeypatch.setenv("DESKTOP_UPDATE_DOWNLOAD_URL", "https://api.omi.me/v2/desktop/download/latest")
+
+        policy = default_desktop_update_policy()
+
+        assert policy["download_url"] is None
+        assert policy["availability"] == "disabled"
+        assert policy["reason"] == "operator_download_url_not_configured"
+
     def test_invalid_policy_download_url_uses_stable_manual_download_path(self):
         doc = self._mock_doc(
             data={
@@ -1633,6 +1730,45 @@ class TestDesktopUpdatePolicyDatabase:
 
         assert policy["active"] is True
         assert policy["download_url"].endswith("/v2/desktop/download/latest?channel=stable")
+
+    def test_neutral_policy_uses_explicit_firestore_operator_url(self, monkeypatch):
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+        monkeypatch.delenv("DESKTOP_UPDATE_DOWNLOAD_URL", raising=False)
+        doc = self._mock_doc(
+            data={
+                "active": True,
+                "severity": "required",
+                "download_url": "https://objects.example.com/desktop/stable.html",
+            }
+        )
+        mock_db = MagicMock()
+        mock_db.collection.return_value.document.return_value.get.return_value = doc
+
+        policy = get_desktop_update_policy(current_build=11400, firestore_client=mock_db)
+
+        assert policy["active"] is True
+        assert policy["availability"] == "configured"
+        assert policy["download_url"] == "https://objects.example.com/desktop/stable.html"
+
+    def test_neutral_policy_rejects_firestore_omi_url(self, monkeypatch):
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+        monkeypatch.delenv("DESKTOP_UPDATE_DOWNLOAD_URL", raising=False)
+        doc = self._mock_doc(
+            data={
+                "active": True,
+                "severity": "required",
+                "download_url": "https://api.omi.me/v2/desktop/download/latest?channel=stable",
+            }
+        )
+        mock_db = MagicMock()
+        mock_db.collection.return_value.document.return_value.get.return_value = doc
+
+        policy = get_desktop_update_policy(current_build=11400, firestore_client=mock_db)
+
+        assert policy["active"] is False
+        assert policy["severity"] == "none"
+        assert policy["download_url"] is None
+        assert policy["availability"] == "disabled"
 
     def test_required_policy_applies_through_maximum_build(self):
         doc = self._mock_doc(

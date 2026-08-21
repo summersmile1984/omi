@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from fastapi.responses import HTMLResponse
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.apps import _clamp_review_score, fetch_app_chat_tools_from_manifest
+from utils import identity
 from utils.executors import (
     critical_executor,
     db_executor,
@@ -118,7 +120,8 @@ from utils.apps import (
 from database.memories import migrate_memories
 
 from utils.llm.persona import generate_persona_intro_message
-from utils.llm.app_generator import generate_description, generate_description_and_emoji
+from utils.llm.app_generator import generate_app_icon, generate_description, generate_description_and_emoji
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.llm.app_generation_prompts import app_generation_prompts_from_llm_payload, app_generation_prompts_response
 from utils.subscription import enforce_chat_quota
 from utils.llm.usage_tracker import track_usage, Features
@@ -138,7 +141,13 @@ from models.app import (
     AppReview,
     AppCatalogItem,
 )
-from utils.other.storage import upload_app_logo, delete_app_logo, upload_app_thumbnail, get_app_thumbnail_url
+from utils.other.storage import (
+    delete_app_logo,
+    get_app_thumbnail_url,
+    is_app_logo_url,
+    upload_app_logo,
+    upload_app_thumbnail,
+)
 from utils.social import (
     get_twitter_profile,
     verify_latest_tweet,
@@ -950,11 +959,7 @@ async def update_persona(
 
     # Image
     if file:
-        if (
-            'image' in persona
-            and len(persona['image']) > 0
-            and persona['image'].startswith('https://storage.googleapis.com/')
-        ):
+        if 'image' in persona and len(persona['image']) > 0 and is_app_logo_url(persona['image']):
             await run_blocking(storage_executor, delete_app_logo, persona['image'])
         os.makedirs('_temp/apps', exist_ok=True)
         file_path = f"_temp/apps/{file.filename}"
@@ -963,8 +968,21 @@ async def update_persona(
         img_url = await run_blocking(storage_executor, upload_app_logo, file_path, persona_id)
         data['image'] = img_url
 
-    await run_blocking(db_executor, save_username, data['username'], uid)
-    data['description'] = await run_blocking(llm_executor, generate_persona_desc, uid, data['name'])
+    # Partial update: released clients PATCH the whole persona, but a client that
+    # sends only the fields it changed must not have the rest silently rewritten.
+    # `username` claims the handle, and `name` drives an LLM description rewrite —
+    # both are destructive to do on a field the caller never mentioned.
+    if 'username' in data and data['username'] and data['username'] != persona.get('username'):
+        await run_blocking(db_executor, save_username, data['username'], uid)
+
+    if 'name' in data and data['name'] and data['name'] != persona.get('name'):
+        # The name changed, so the generated description no longer matches it,
+        # unless the caller supplied its own.
+        if 'description' not in data:
+            data['description'] = await run_blocking(llm_executor, generate_persona_desc, uid, data['name'])
+
+    # AppUpdate needs the identity fields even when the caller omitted them.
+    data['id'] = persona_id
     data['updated_at'] = datetime.now(timezone.utc)
 
     # Update 'omi' connected_accounts
@@ -981,7 +999,8 @@ async def update_persona(
     if persona['approved'] and (persona['private'] is None or persona['private'] is False):
         await run_blocking(db_executor, invalidate_approved_apps_cache)
     await run_blocking(db_executor, delete_app_cache_by_id, persona_id)
-    return {'status': 'ok', 'app_id': persona_id, 'username': data['username']}
+    username = data.get('username', persona.get('username'))
+    return {'status': 'ok', 'app_id': persona_id, 'username': username}
 
 
 @router.get('/v1/personas', tags=['v1'], response_model=App)
@@ -1069,7 +1088,7 @@ def update_app(
     if app['uid'] != uid:
         raise HTTPException(status_code=403, detail='You are not authorized to perform this action')
     if file:
-        if 'image' in app and len(app['image']) > 0 and app['image'].startswith('https://storage.googleapis.com/'):
+        if 'image' in app and len(app['image']) > 0 and is_app_logo_url(app['image']):
             delete_app_logo(app['image'])
         os.makedirs('_temp/apps', exist_ok=True)
         file_path = f"_temp/apps/{file.filename}"
@@ -1611,9 +1630,6 @@ async def generate_app_icon_endpoint(data: GenerateAppIconRequest, uid: str = De
     Generate an app icon using AI (DALL-E).
     Returns the icon as a base64 encoded PNG image.
     """
-    from utils.llm.app_generator import generate_app_icon
-    import base64
-
     app_name = data.name.strip()
     app_description = data.description.strip()
     category = data.category.strip()
@@ -1633,6 +1649,8 @@ async def generate_app_icon_endpoint(data: GenerateAppIconRequest, uid: str = De
         icon_base64 = base64.b64encode(icon_bytes).decode('utf-8')
 
         return {'status': 'ok', 'icon_base64': icon_base64, 'mime_type': 'image/png'}
+    except ModelCapabilityUnavailableError as error:
+        raise HTTPException(status_code=503, detail=error.as_dict()) from error
     except Exception as e:
         logger.error(f"Error generating icon: {e}")
         raise HTTPException(status_code=500, detail=f'Failed to generate icon: {str(e)}')
@@ -1738,9 +1756,9 @@ async def migrate_app_owner(
 
     try:
         source_claims = await run_blocking(
-            critical_executor, auth.auth.verify_id_token, source_token, check_revoked=True
+            critical_executor, identity.verify_id_token, source_token, check_revoked=True
         )
-        source_user = await run_blocking(critical_executor, auth.get_user, old_id)
+        source_user = await run_blocking(critical_executor, identity.get_user, old_id)
     except Exception:
         # Invalid/revoked tokens, missing/deleted users, and Admin lookup failures
         # are deliberately indistinguishable to callers. Neither may mutate state.
@@ -1748,7 +1766,11 @@ async def migrate_app_owner(
 
     source_uid = source_claims.get('uid')
     firebase_claims = source_claims.get('firebase')
-    source_provider = firebase_claims.get('sign_in_provider') if isinstance(firebase_claims, dict) else None
+    source_provider = (
+        firebase_claims.get('sign_in_provider')
+        if isinstance(firebase_claims, dict)
+        else source_claims.get('sign_in_provider')
+    )
     if source_uid != old_id or source_provider != 'anonymous' or source_user.disabled or source_user.provider_data:
         raise HTTPException(status_code=403, detail='Source identity is not eligible for migration')
 

@@ -410,24 +410,156 @@ async def test_app_icon_generation_always_uses_gateway(monkeypatch):
         return {'data': [{'b64_json': 'aWNvbg=='}]}
 
     monkeypatch.setattr(app_generator, 'generate_image_via_gateway', gateway)
+    monkeypatch.setattr(app_generator, '_validated_icon_png', lambda raw: raw)
 
     assert await app_generator.generate_app_icon('Name', 'Description', 'other') == b'icon'
-    assert captured['model'] == 'dall-e-3'
+    # The images API rejects `response_format` (400 unknown_parameter) and no longer serves
+    # dall-e-3 (400 invalid_value), which made every app-icon generation a 500. Ask for a model
+    # and size/quality pair the gateway rate card prices, and let it return base64 by default.
+    assert captured['model'] == 'gpt-image-1'
+    assert captured['quality'] == 'medium'
+    assert captured['size'] == '1024x1024'
+    assert 'response_format' not in captured
 
 
 @pytest.mark.asyncio
-async def test_perplexity_tool_always_uses_gateway(monkeypatch):
-    perplexity_tools = _load_perplexity_tools()
+async def test_app_icon_generation_uses_explicit_compatible_transport(monkeypatch):
+    from utils.llm import app_generator
 
-    monkeypatch.setattr(perplexity_tools, '_perplexity_gateway_search', lambda _query: _async_return('gateway-search'))
+    captured = {}
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'openai_compatible')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', 'http://image.internal/v1')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY', 'operator-key')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL', 'local-image-model')
 
-    assert await perplexity_tools.perplexity_web_search_tool.coroutine('query') == 'gateway-search'
+    def compatible(**kwargs):
+        captured.update(kwargs)
+        return {'data': [{'b64_json': 'aWNvbg=='}]}
+
+    monkeypatch.setattr(app_generator, 'generate_image_via_openai_compatible', compatible)
+    monkeypatch.setattr(app_generator, '_validated_icon_png', lambda raw: raw)
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_gateway',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not be called')),
+    )
+
+    assert await app_generator.generate_app_icon('Name', 'Description', 'other') == b'icon'
+    assert captured == {
+        'prompt': captured['prompt'],
+        'size': '1024x1024',
+        'quality': 'medium',
+        'n': 1,
+    }
+    assert 'Name' in captured['prompt']
 
 
-def test_perplexity_gateway_response_preserves_top_level_citations():
-    perplexity_tools = _load_perplexity_tools()
+@pytest.mark.asyncio
+async def test_app_icon_generation_uses_local_template_without_managed_provider(monkeypatch):
+    from utils.llm import app_generator
 
-    formatted = perplexity_tools._format_perplexity_response(
+    captured = {}
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'local_template')
+
+    def local_template(**kwargs):
+        captured.update(kwargs)
+        return {'data': [{'b64_json': 'aWNvbg=='}]}
+
+    monkeypatch.setattr(app_generator, 'generate_image_via_local_template', local_template)
+    monkeypatch.setattr(app_generator, '_validated_icon_png', lambda raw: raw)
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_openai_compatible',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('compatible provider must not be called')),
+    )
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_gateway',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not be called')),
+    )
+
+    assert await app_generator.generate_app_icon('Name', 'Description', 'other') == b'icon'
+    assert captured['size'] == '1024x1024'
+    assert 'Name' in captured['prompt']
+
+
+@pytest.mark.asyncio
+async def test_app_icon_compatible_transport_fails_before_provider_call_when_unconfigured(monkeypatch):
+    from utils.llm import app_generator
+    from utils.llm.capabilities import ModelCapabilityUnavailableError
+
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'openai_compatible')
+    monkeypatch.delenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', raising=False)
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY', 'operator-key')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL', 'local-image-model')
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_openai_compatible',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('provider must not be called')),
+    )
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        await app_generator.generate_app_icon('Name', 'Description', 'other')
+
+    assert error.value.as_dict()['reason'] == 'compatible_endpoint_not_configured'
+
+
+@pytest.mark.asyncio
+async def test_app_icon_generation_is_typed_unavailable_when_deployment_disables_it(monkeypatch):
+    from utils.llm import app_generator
+    from utils.llm.capabilities import ModelCapabilityUnavailableError
+
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'disabled')
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_gateway',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not be called')),
+    )
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        await app_generator.generate_app_icon('Name', 'Description', 'other')
+
+    assert error.value.as_dict()['reason'] == 'disabled_by_deployment'
+
+
+@pytest.mark.asyncio
+async def test_neutral_app_icon_gateway_rejects_official_endpoint_before_provider_call(monkeypatch):
+    from utils.llm import app_generator
+    from utils.llm.capabilities import ModelCapabilityUnavailableError
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'gateway')
+    monkeypatch.setenv('OMI_LLM_GATEWAY_URL', 'https://api.openai.com')
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_gateway',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not be called')),
+    )
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        await app_generator.generate_app_icon('Name', 'Description', 'other')
+
+    assert error.value.as_dict() == {
+        'code': 'model_capability_unavailable',
+        'capability': 'app_icon_generation',
+        'reason': 'official_endpoint_forbidden',
+        'retryable': False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_managed_web_search_tool_uses_gateway(monkeypatch):
+    web_search_tools = _load_web_search_tools()
+
+    monkeypatch.setattr(web_search_tools, '_gateway_search', lambda _query: _async_return('gateway-search'))
+
+    assert await web_search_tools.web_search_tool.coroutine('query') == 'gateway-search'
+
+
+def test_managed_web_search_response_preserves_top_level_citations():
+    web_search_tools = _load_web_search_tools()
+
+    formatted = web_search_tools._format_gateway_response(
         {
             'choices': [{'message': {'content': 'answer'}}],
             'citations': [{'title': 'Source title', 'url': 'https://example.com/source'}],
@@ -481,13 +613,13 @@ def test_chat_agent_route_invalid_raises(monkeypatch):
         raise AssertionError('expected invalid chat agent route to raise')
 
 
-def _load_perplexity_tools():
-    module_path = Path(__file__).parents[2] / 'utils' / 'retrieval' / 'tools' / 'perplexity_tools.py'
-    spec = importlib.util.spec_from_file_location('perplexity_tools_under_test', module_path)
+def _load_web_search_tools():
+    module_path = Path(__file__).parents[2] / 'utils' / 'retrieval' / 'tools' / 'web_search_tools.py'
+    spec = importlib.util.spec_from_file_location('web_search_tools_under_test', module_path)
     assert spec is not None and spec.loader is not None
-    perplexity_tools = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(perplexity_tools)
-    return perplexity_tools
+    web_search_tools = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(web_search_tools)
+    return web_search_tools
 
 
 async def _async_return(value):

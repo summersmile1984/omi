@@ -29,7 +29,41 @@ class Logger {
   final TalkerObserver? crashlyticsTalkerObserver = FirebaseServicesPolicy.enabled ? CrashlyticsTalkerObserver() : null;
   late final talker = TalkerFlutter.init(observer: crashlyticsTalkerObserver);
 
-  Logger._();
+class Logger {
+  late final Talker talker;
+
+  Logger._() {
+    talker = TalkerFlutter.init(
+      observer: FirebaseServicesPolicy.enabled ? CrashlyticsTalkerObserver() : null,
+    );
+  }
+
+  @visibleForTesting
+  Logger.forTesting({
+    required AppEnvironmentProfile profile,
+    required bool firebaseServicesEnabled,
+    required TalkerObserverFactory createCrashObserver,
+  }) {
+    talker = _createTalker(
+      profile: profile,
+      firebaseServicesEnabled: firebaseServicesEnabled,
+      createCrashObserver: createCrashObserver,
+    );
+  }
+
+  static Talker _createTalker({
+    required AppEnvironmentProfile profile,
+    required bool firebaseServicesEnabled,
+    required TalkerObserverFactory createCrashObserver,
+  }) {
+    final observer = FirebaseServicesPolicy.allowsFor(
+      profile: profile,
+      configuredEnabled: firebaseServicesEnabled,
+    )
+        ? createCrashObserver()
+        : null;
+    return TalkerFlutter.init(observer: observer);
+  }
 
   static final Logger _instance = Logger._();
 
@@ -87,7 +121,7 @@ class LoggerSnackbar extends StatelessWidget {
           icon: const Icon(Icons.share, color: Colors.white),
           onPressed: () async {
             // TODO: Have a custom form which can be prefilled with the error stack trace instead of opening the Gleap Homepage
-            await Intercom.instance.displayMessenger();
+            await IntercomManager.instance.displayMessenger();
           },
         ),
       ),

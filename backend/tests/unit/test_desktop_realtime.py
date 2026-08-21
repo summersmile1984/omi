@@ -50,6 +50,37 @@ async def test_openai_mint_returns_ephemeral_token_and_persists_no_secret(monkey
 
 
 @pytest.mark.asyncio
+async def test_openai_mint_uses_the_selected_realtime_model(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "platform-key")
+    monkeypatch.setenv("REALTIME_PROVIDER", "openai")
+    monkeypatch.setenv("REALTIME_MODEL", "local-realtime-route")
+    requests = []
+
+    async def post_json(url, provider, headers, body, params=None):
+        requests.append((url, provider, headers, body, params))
+        return {"value": "ek_secret"}, None
+
+    async def run(_executor, function, *_args):
+        assert function is desktop_realtime.enforce_desktop_chat_quota
+        return False
+
+    persisted = []
+    monkeypatch.setattr(desktop_realtime, "_post_json", post_json)
+    monkeypatch.setattr(desktop_realtime, "run_blocking", run)
+    monkeypatch.setattr(desktop_realtime, "_persist_session", lambda *args: _append_async(persisted, args))
+
+    response = await desktop_realtime.mint_session(desktop_realtime.MintRequest(provider="openai"), "user-1")
+
+    assert response.status_code == 200
+    assert requests[0][3] == {"session": {"type": "realtime", "model": "local-realtime-route"}}
+    assert persisted == [("user-1", "ek_secret", "openai", "local-realtime-route", "")]
+
+
+async def _append_async(target, value):
+    target.append(value)
+
+
+@pytest.mark.asyncio
 async def test_mint_classifies_provider_quota_error(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "platform-key")
     monkeypatch.setattr(

@@ -111,11 +111,10 @@ class LiveNotesMonitor: ObservableObject {
     // Initialize AI generator if not already done
     if noteGenerator == nil {
       do {
-        // Use Gemini Flash for note generation (text-only, no tool loop — Flash-safe)
         noteGenerator = try noteGeneratorFactory()
-        log("LiveNotesMonitor: GeminiClient initialized with default model (Flash)")
+        log("LiveNotesMonitor: backend note-generation capability initialized")
       } catch {
-        logError("LiveNotesMonitor: Failed to initialize GeminiClient", error: error)
+        logError("LiveNotesMonitor: Failed to initialize note-generation capability", error: error)
       }
     }
 

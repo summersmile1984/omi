@@ -367,16 +367,22 @@ PY
 assert_bundle_identity() {
   [[ -d "$APP_BUNDLE/Contents" ]] || fail "app bundle not found: $APP_BUNDLE"
 
-  local bundle_id version build executable url_scheme feed_url external_preview_marker automatic_checks
+  local bundle_id version build executable url_scheme feed_url public_key external_preview_marker automatic_checks
+  local deployment_profile
   local app_bundle_name required_app_bundle_name
   bundle_id="$(plist_read CFBundleIdentifier)"
   version="$(plist_read CFBundleShortVersionString)"
   build="$(plist_read CFBundleVersion)"
   executable="$(plist_read CFBundleExecutable)"
   feed_url="$(plist_read SUFeedURL)"
+  public_key="$(plist_read SUPublicEDKey)"
   url_scheme="$(/usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes:0:CFBundleURLSchemes:0" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
   external_preview_marker="$(plist_read OMIExternalPreview)"
   automatic_checks="$(plist_read SUEnableAutomaticChecks)"
+  deployment_profile=""
+  if [[ -f "$APP_BUNDLE/Contents/Resources/.env" ]]; then
+    deployment_profile="$(sed -n 's/^OMI_DEPLOYMENT_PROFILE=//p' "$APP_BUNDLE/Contents/Resources/.env" | tail -1)"
+  fi
 
   [[ "$bundle_id" == "$EXPECTED_BUNDLE_ID" ]] || fail "bundle id must be $EXPECTED_BUNDLE_ID, got ${bundle_id:-missing}"
   app_bundle_name="$(basename "$APP_BUNDLE")"
@@ -384,7 +390,12 @@ assert_bundle_identity() {
   [[ "$app_bundle_name" == "$required_app_bundle_name" ]] \
     || fail "app bundle name for $EXPECTED_BUNDLE_ID must be $required_app_bundle_name, got $app_bundle_name"
   [[ "$url_scheme" == "$EXPECTED_URL_SCHEME" ]] || fail "URL scheme must be $EXPECTED_URL_SCHEME, got ${url_scheme:-missing}"
-  if [[ "$IS_EXTERNAL_PREVIEW" == true ]]; then
+  if [[ "$deployment_profile" == "self_hosted" ]]; then
+    [[ -z "$feed_url" ]] || fail "self-hosted artifact must not carry a Sparkle feed"
+    [[ -z "$public_key" ]] || fail "self-hosted artifact must not carry a Sparkle update public key"
+    [[ "$automatic_checks" == "false" || "$automatic_checks" == "0" ]] \
+      || fail "self-hosted artifact must disable automatic update checks"
+  elif [[ "$IS_EXTERNAL_PREVIEW" == true ]]; then
     [[ "$bundle_id" =~ ^com[.]omi[.]preview[.][a-z0-9-]+$ ]] \
       || fail "external preview bundle id must use the preview namespace"
     [[ "$url_scheme" =~ ^omi-preview-[a-z0-9-]+$ ]] \
@@ -469,12 +480,23 @@ assert_backend_routing_config() {
     || fail "artifact .env contains a local/dev tunnel backend reference"
 
   if [[ "$IS_EXTERNAL_PREVIEW" != true ]]; then
-    local firebase_plist firebase_project
+    local firebase_plist firebase_project deployment_profile auth_provider
     firebase_plist="$APP_BUNDLE/Contents/Resources/GoogleService-Info.plist"
-    [[ -f "$firebase_plist" ]] || fail "production-family artifact is missing GoogleService-Info.plist"
-    firebase_project="$(/usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "$firebase_plist" 2>/dev/null || true)"
-    [[ "$firebase_project" == "based-hardware" ]] \
-      || fail "production-family artifact Firebase project must be based-hardware"
+    deployment_profile="$(sed -n 's/^OMI_DEPLOYMENT_PROFILE=//p' "$env_file" | tail -1)"
+    auth_provider="$(sed -n 's/^OMI_AUTH_PROVIDER=//p' "$env_file" | tail -1)"
+    if [[ "$deployment_profile" == "self_hosted" ]]; then
+      [[ "$auth_provider" == "better_auth" ]] \
+        || fail "self-hosted production artifact must select Better Auth"
+      [[ ! -f "$firebase_plist" ]] \
+        || fail "self-hosted production artifact must not bundle GoogleService-Info.plist"
+      ! grep -Eq '^(FIREBASE_API_KEY|FIREBASE_AUTH_EMULATOR_HOST|FIREBASE_PROJECT_ID)=' "$env_file" \
+        || fail "self-hosted production artifact must not bundle Firebase configuration"
+    else
+      [[ -f "$firebase_plist" ]] || fail "production-family artifact is missing GoogleService-Info.plist"
+      firebase_project="$(/usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "$firebase_plist" 2>/dev/null || true)"
+      [[ "$firebase_project" == "based-hardware" ]] \
+        || fail "production-family artifact Firebase project must be based-hardware"
+    fi
     ! grep -q '^OMI_AUTH_API_URL=' "$env_file" \
       || fail "production-family artifact must not bundle an OMI_AUTH_API_URL override"
     ! grep -Eq '^(FIREBASE_AUTH_EMULATOR_HOST|FIREBASE_PROJECT_ID|OMI_DESKTOP_LOCAL_PROFILE)=' "$env_file" \

@@ -32,6 +32,7 @@ except ImportError:
 
 
 from utils.byok import get_byok_key, get_byok_uid
+from config.push_provider import selected_push_provider
 from utils.executors import storage_executor, submit_with_context
 from utils.log_sanitizer import sanitize
 
@@ -137,6 +138,15 @@ def _release_byok_llm_error_lock(uid: str, provider: str, reason: str) -> None:
 
 
 def _send_byok_llm_error_notification(uid: str, provider: str, reason: str) -> None:
+    # Keep this error-path notification on the same deployment boundary as the
+    # ordinary notification helpers.  In particular, an omitted provider in a
+    # neutral/self-hosted profile must not inherit the managed Firebase default.
+    if selected_push_provider() != 'firebase':
+        logger.info(
+            'push notification unavailable operation=byok_llm_error code=deployment_capability_unavailable '
+            'capability=push_notifications reason=disabled_by_deployment retryable=False'
+        )
+        return
     if notification_db is None or messaging is None:
         logger.error(
             'BYOK LLM notification dependencies unavailable uid=%s provider=%s reason=%s', uid, provider, reason

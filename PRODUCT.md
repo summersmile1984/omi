@@ -23,6 +23,11 @@ landing PRs that change product behavior. Engineering standards live in
 5. **Taste floor.** Stay on-brand. Prefer deleting dual paths over
    feature-flagging them forever.
 
+6. **Deployment choice is not product policy.** A self-hosted release preserves
+   the complete product loop and privacy contract. Infrastructure and model
+   providers are capabilities selected by deployment, never hidden product
+   modes. See proposed invariant `INV-DEPLOY-1`.
+
 ## Proposed universal memory lifecycle
 
 The enforceable design note is

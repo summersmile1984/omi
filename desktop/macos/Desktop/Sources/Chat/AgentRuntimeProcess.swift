@@ -2530,6 +2530,7 @@ actor AgentRuntimeProcess {
       throw BridgeError.agentError("Unknown AI runtime mode: \(preferredHarnessMode)")
     }
     let preferredAdapterId = AgentRuntimeRouting.adapterId(for: preferredHarness)
+    try Self.assertModelEgressAllowed(preferredAdapterId: preferredAdapterId)
 
     process = nil
     closePipes()
@@ -2601,6 +2602,9 @@ actor AgentRuntimeProcess {
     }
 
     Self.removeInheritedBYOKEnvironment(from: &env)
+    Self.removeInheritedModelVendorEnvironment(
+      from: &env,
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
     let byok = await Self.usableBYOKEnvironment()
     try assertStartupAuthority(
       authorizationSnapshot,
@@ -2792,17 +2796,6 @@ actor AgentRuntimeProcess {
       ).status
     {
       env["OMI_OPENCLAW_ADAPTER_COMMAND"] = Self.openClawAdapterCommand(openClawPath: openClaw)
-    }
-  }
-
-  static func byokEnvironmentKey(for provider: BYOKProvider) -> String {
-    "OMI_BYOK_\(provider.rawValue.uppercased())"
-  }
-
-  static func removeInheritedBYOKEnvironment(from env: inout [String: String]) {
-    let inheritedBYOKKeys = env.keys.filter { $0.uppercased().hasPrefix("OMI_BYOK_") }
-    for key in inheritedBYOKKeys {
-      env.removeValue(forKey: key)
     }
   }
 

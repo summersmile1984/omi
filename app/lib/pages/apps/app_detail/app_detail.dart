@@ -36,6 +36,7 @@ import 'package:omi/widgets/extensions/string.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/backend/http/api/payment.dart';
 import 'package:omi/backend/schema/app.dart';
+import 'package:omi/env/env.dart';
 import 'package:omi/pages/apps/widgets/show_app_options_sheet.dart';
 import 'widgets/capabilities_card.dart';
 import 'widgets/info_card_widget.dart';
@@ -226,7 +227,8 @@ class _AppDetailPageState extends State<AppDetailPage> {
     if (app.worksExternally()) {
       checkSetupCompleted();
       if (app.externalIntegration!.setupInstructionsFilePath?.isNotEmpty == true) {
-        if (app.externalIntegration!.setupInstructionsFilePath?.contains('raw.githubusercontent.com') == true) {
+        if (Env.supportsAppInstructions(raw: app.externalIntegration!.setupInstructionsFilePath) &&
+            Env.isManagedAppInstructionsPath(app.externalIntegration!.setupInstructionsFilePath)) {
           getAppMarkdown(app.externalIntegration!.setupInstructionsFilePath ?? '').then((value) {
             value = value.replaceAll(
               '](assets/',
@@ -559,8 +561,9 @@ class _AppDetailPageState extends State<AppDetailPage> {
         }
 
         bool isIntegration = app.worksExternally();
-        bool hasSetupInstructions =
-            isIntegration && app.externalIntegration?.setupInstructionsFilePath?.isNotEmpty == true;
+        bool hasSetupInstructions = isIntegration &&
+            app.externalIntegration?.setupInstructionsFilePath?.isNotEmpty == true &&
+            Env.supportsAppInstructions(raw: app.externalIntegration?.setupInstructionsFilePath);
         bool hasAuthSteps = isIntegration && app.externalIntegration?.authSteps.isNotEmpty == true;
         return Scaffold(
           appBar: AppBar(
@@ -792,11 +795,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
                                       ),
                                       if (app.official) ...[
                                         const SizedBox(width: 4),
-                                        const FaIcon(
-                                          FontAwesomeIcons.solidCircleCheck,
-                                          size: 14,
-                                          color: Colors.white,
-                                        ),
+                                        const FaIcon(FontAwesomeIcons.solidCircleCheck, size: 14, color: Colors.white),
                                       ],
                                     ],
                                   ),
@@ -1150,10 +1149,9 @@ class _AppDetailPageState extends State<AppDetailPage> {
                       ? ListTile(
                           onTap: () async {
                             if (app.externalIntegration != null) {
-                              if (app.externalIntegration!.setupInstructionsFilePath?.contains(
-                                    'raw.githubusercontent.com',
-                                  ) ==
-                                  true) {
+                              if (Env.isManagedAppInstructionsPath(
+                                app.externalIntegration!.setupInstructionsFilePath,
+                              )) {
                                 await routeToPage(
                                   context,
                                   MarkdownViewer(
@@ -1442,7 +1440,9 @@ class _AppDetailPageState extends State<AppDetailPage> {
 
   Future<void> _navigateToSetup() async {
     bool isIntegration = app.worksExternally();
-    bool hasSetupInstructions = isIntegration && app.externalIntegration?.setupInstructionsFilePath?.isNotEmpty == true;
+    bool hasSetupInstructions = isIntegration &&
+        app.externalIntegration?.setupInstructionsFilePath?.isNotEmpty == true &&
+        Env.supportsAppInstructions(raw: app.externalIntegration?.setupInstructionsFilePath);
     bool hasAuthSteps = isIntegration && app.externalIntegration?.authSteps.isNotEmpty == true;
 
     if (hasAuthSteps && app.externalIntegration!.authSteps.isNotEmpty) {
@@ -1457,7 +1457,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
       }
       await _launchUrlSafely(uri);
     } else if (hasSetupInstructions) {
-      if (app.externalIntegration!.setupInstructionsFilePath?.contains('raw.githubusercontent.com') == true) {
+      if (Env.isManagedAppInstructionsPath(app.externalIntegration!.setupInstructionsFilePath)) {
         await routeToPage(
           context,
           MarkdownViewer(title: context.l10n.setupInstructions, markdown: instructionsMarkdown ?? ''),

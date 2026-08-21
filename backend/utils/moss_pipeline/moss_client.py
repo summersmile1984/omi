@@ -22,6 +22,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -44,6 +45,31 @@ POLL_INTERVAL = 3.0
 
 class MossAPIError(RuntimeError):
     """Raised for MOSS API failures (auth, validation, transport)."""
+
+
+def _configured_timeout() -> float:
+    try:
+        timeout = float(os.getenv("MOSS_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT)))
+    except ValueError as error:
+        raise MossAPIError("MOSS_TIMEOUT_SECONDS must be a number") from error
+    if timeout <= 0:
+        raise MossAPIError("MOSS_TIMEOUT_SECONDS must be positive")
+    return timeout
+
+
+def _configured_endpoint(value: str) -> str:
+    endpoint = value.strip().rstrip("/")
+    parsed = urlsplit(endpoint)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise MossAPIError("MOSS_API_BASE must be an explicit HTTP(S) endpoint without credentials or query")
+    return endpoint
 
 
 @dataclass

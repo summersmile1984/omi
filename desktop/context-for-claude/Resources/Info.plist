@@ -43,6 +43,27 @@
 	<false/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!-- Signed deployment contract. Release builds ignore process environment
+	     overrides; scripts/build.sh replaces these values for a self-hosted
+	     artifact before the enclosing code signature is created. -->
+	<key>OmiDeploymentProfile</key>
+	<string>omi_cloud</string>
+	<key>OmiAuthProvider</key>
+	<string>firebase</string>
+	<key>OmiBackendBaseURL</key>
+	<string>https://api.omi.me/</string>
+	<key>OmiDesktopBaseURL</key>
+	<string>https://desktop-backend-hhibjajaja-uc.a.run.app/</string>
+	<key>OmiAuthBaseURL</key>
+	<string>https://api.omi.me/</string>
+	<key>OmiMCPBaseURL</key>
+	<string>https://api.omi.me/</string>
+	<key>OmiSpeechModelMode</key>
+	<string>managed_download</string>
+	<key>OmiSpeechModelPath</key>
+	<string></string>
+	<key>OmiAllowsInsecureLocalEndpoints</key>
+	<false/>
 	<!-- macOS shows these verbatim in the TCC prompt, so they are written as the app speaking. -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>I listen to your microphone so I can hear what you talk about and give Claude that context later.</string>

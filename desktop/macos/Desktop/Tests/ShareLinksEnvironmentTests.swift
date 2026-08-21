@@ -42,4 +42,32 @@ final class ShareLinksEnvironmentTests: XCTestCase {
       "https://h.omi.me"
     )
   }
+
+  func testSelfHostedShareDefaultsToConfiguredBackendInsteadOfOmi() {
+    XCTAssertEqual(
+      DesktopBackendEnvironment.shareBaseURL(
+        environmentValue: nil,
+        deploymentProfile: .selfHosted,
+        selfHostedBackendURL: "https://backend.fork.example/"),
+      "https://backend.fork.example"
+    )
+    XCTAssertEqual(
+      DesktopBackendEnvironment.conversationShareURL(
+        id: "abc",
+        environmentValue: nil,
+        deploymentProfile: .selfHosted,
+        selfHostedBackendURL: "https://backend.fork.example/"),
+      "https://backend.fork.example/conversations/abc"
+    )
+  }
+
+  func testSelfHostedShareCanonicalizesOperatorOrigin() {
+    XCTAssertEqual(
+      DesktopBackendEnvironment.shareBaseURL(
+        environmentValue: "HTTPS://SHARE.Fork.Example:443/",
+        deploymentProfile: .selfHosted,
+        selfHostedBackendURL: "https://backend.fork.example/"),
+      "https://share.fork.example"
+    )
+  }
 }

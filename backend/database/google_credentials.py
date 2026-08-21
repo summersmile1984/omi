@@ -1,10 +1,25 @@
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
 
 RUNTIME_GOOGLE_CREDENTIALS_PATH = Path('/tmp/omi-google-credentials.json')
+
+
+def _require_private_credentials_file(path: Path, label: str) -> Path:
+    """Return a credential file only when its bytes are owner-readable."""
+
+    if path.is_symlink():
+        raise RuntimeError(f'{label} must be a regular file, not a symlink: {path}')
+    if not path.exists():
+        raise RuntimeError(f'{label} points to missing file: {path}')
+    if not path.is_file():
+        raise RuntimeError(f'{label} must be a regular file, not a symlink: {path}')
+    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise RuntimeError(f'{label} must be mode 0600 or stricter: {path}')
+    return path
 
 
 def prepare_google_credentials() -> None:
@@ -22,8 +37,7 @@ def prepare_google_credentials() -> None:
         return
 
     credentials_path = Path(credentials)
-    if not credentials_path.exists():
-        raise RuntimeError(f'GOOGLE_APPLICATION_CREDENTIALS points to missing file: {credentials_path}')
+    _require_private_credentials_file(credentials_path, 'GOOGLE_APPLICATION_CREDENTIALS')
 
 
 def customer_data_service_account() -> tuple[Any, str] | None:
@@ -78,9 +92,7 @@ def customer_entitlement_service_account() -> tuple[Any, str] | None:
     if not credentials_path:
         return None
 
-    path = Path(credentials_path)
-    if not path.is_file():
-        raise RuntimeError(f'FIREBASE_AUTH_CREDENTIALS_PATH points to missing file: {path}')
+    path = _require_private_credentials_file(Path(credentials_path), 'FIREBASE_AUTH_CREDENTIALS_PATH')
 
     try:
         service_account_info = json.loads(path.read_text(encoding='utf-8'))

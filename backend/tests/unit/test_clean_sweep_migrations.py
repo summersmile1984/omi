@@ -26,7 +26,7 @@ Covers round 3:
 - utils/other/storage.py: ad-hoc ThreadPoolExecutor → storage_executor
 - utils/retrieval/tools/calendar_tools.py: requests → httpx, time.sleep → asyncio.sleep
 - utils/retrieval/tools/google_utils.py: requests → httpx for OAuth refresh
-- utils/retrieval/tools/perplexity_tools.py: requests → httpx async for web search
+- utils/retrieval/tools/web_search_tools.py: httpx async for provider-neutral web search
 """
 
 import inspect
@@ -400,11 +400,11 @@ class TestGoogleUtilsHttpxMigration:
         assert 'import requests' not in src
 
 
-class TestPerplexityHttpxMigration:
-    """Verify perplexity_tools uses httpx, not requests."""
+class TestWebSearchHttpxMigration:
+    """Verify provider-neutral web search uses httpx, not requests."""
 
     def test_uses_httpx(self):
-        src = _read_source('utils/retrieval/tools/perplexity_tools.py')
+        src = _read_source('utils/retrieval/tools/web_search_tools.py')
         assert 'import httpx' in src
         assert 'import requests' not in src
 

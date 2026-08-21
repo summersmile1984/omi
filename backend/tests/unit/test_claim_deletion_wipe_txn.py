@@ -17,7 +17,7 @@ import types
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-os.environ.setdefault('ENCRYPTION_SECRET', 'test-secret-for-ci')
+os.environ.setdefault('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
 
 # ---------------------------------------------------------------------------
 # Module stubbing with cleanup
@@ -105,11 +105,14 @@ def _make_txn():
     """Create a mock transaction that records update calls."""
     updates = []
     sets = []
+    deletes = []
     txn = types.SimpleNamespace()
     txn._updates = updates
     txn._sets = sets
+    txn._deletes = deletes
     txn.update = lambda ref, fields: updates.append((ref, fields))
     txn.set = lambda ref, fields, **kwargs: sets.append((ref, fields, kwargs))
+    txn.delete = lambda ref: deletes.append(ref)
     return txn
 
 
@@ -147,33 +150,48 @@ def _run_mark_billing_failed(data):
     return result, txn._sets
 
 
-def _run_mark_completed(data):
+def _run_mark_completed(data, receipt_data=None):
     txn = _make_txn()
     txn_obj = users_db._mark_user_deletion_wipe_completed_txn
     raw_fn = getattr(txn_obj, 'to_wrap', txn_obj)
-    snapshot = _make_snapshot(data)
+    active_snapshot = _make_snapshot(data)
+    receipt_snapshot = _make_snapshot(receipt_data)
 
     class FakeDocRef:
+        def __init__(self, snapshot, name):
+            self.snapshot = snapshot
+            self.name = name
+
         def get(self, transaction=None):
-            return snapshot
+            return self.snapshot
 
-    result = raw_fn(txn, FakeDocRef())
-    return result, txn._sets
+    active_ref = FakeDocRef(active_snapshot, 'active')
+    receipt_ref = FakeDocRef(receipt_snapshot, 'receipt')
+    result = raw_fn(txn, active_ref, receipt_ref, 'generated-job-id')
+    return result, txn._sets, txn._deletes
 
 
-def _run_record_late_cleanup(data, expected_instance_id='707'):
+def _run_record_late_cleanup(data, expected_instance_id='707', receipt_data=None):
     txn = _make_txn()
     txn_obj = users_db._record_late_agent_vm_cleanup_txn
     raw_fn = getattr(txn_obj, 'to_wrap', txn_obj)
-    snapshot = _make_snapshot(data)
+    active_snapshot = _make_snapshot(data)
+    receipt_snapshot = _make_snapshot(receipt_data)
 
     class FakeDocRef:
-        def get(self, transaction=None):
-            return snapshot
+        def __init__(self, snapshot, name):
+            self.snapshot = snapshot
+            self.name = name
 
+        def get(self, transaction=None):
+            return self.snapshot
+
+    active_ref = FakeDocRef(active_snapshot, 'active')
+    receipt_ref = FakeDocRef(receipt_snapshot, 'receipt')
     result = raw_fn(
         txn,
-        FakeDocRef(),
+        active_ref,
+        receipt_ref,
         'omi-agent-late',
         'us-central1-a',
         expected_instance_id,
@@ -202,19 +220,56 @@ def _run_adopt_legacy_late_cleanup(data, expected_instance_id='808'):
 
 
 def test_mark_completed_refuses_outstanding_late_vm_cleanup():
-    result, sets = _run_mark_completed(
+    result, sets, deletes = _run_mark_completed(
         {'wipe_status': 'running', 'late_agent_vm_cleanup': {'vmName': 'omi-agent-uid', 'zone': 'us-central1-a'}}
     )
 
     assert result is False
     assert sets[0][1]['wipe_status'] == 'failed'
+    assert deletes == []
 
 
-def test_mark_completed_commits_without_late_vm_cleanup():
-    result, sets = _run_mark_completed({'wipe_status': 'running'})
+def test_mark_completed_atomically_replaces_uid_marker_with_opaque_receipt():
+    result, sets, deletes = _run_mark_completed(
+        {
+            'uid': 'private-user-id',
+            'reason': 'private reason',
+            'reason_details': 'private details',
+            'wipe_status': 'running',
+            'wipe_job_id': 'opaque-job-id',
+        }
+    )
 
     assert result is True
-    assert sets[0][1]['wipe_status'] == 'completed'
+    assert sets == [
+        (
+            sets[0][0],
+            {
+                'schema_version': 1,
+                'wipe_status': 'completed',
+                'wipe_job_id': 'opaque-job-id',
+                'wipe_completed_at': sets[0][1]['wipe_completed_at'],
+            },
+            {},
+        )
+    ]
+    assert sets[0][0].name == 'receipt'
+    assert deletes and deletes[0].name == 'active'
+    serialized = repr(sets[0][1])
+    assert 'private-user-id' not in serialized
+    assert 'private reason' not in serialized
+    assert 'private details' not in serialized
+
+
+def test_completed_receipt_is_idempotent_without_recreating_uid_marker():
+    result, sets, deletes = _run_mark_completed(
+        None,
+        receipt_data={'schema_version': 1, 'wipe_status': 'completed', 'wipe_job_id': 'opaque-job-id'},
+    )
+
+    assert result is True
+    assert sets == []
+    assert deletes == []
 
 
 def test_record_late_cleanup_persists_numeric_instance_fence():
@@ -226,6 +281,46 @@ def test_record_late_cleanup_persists_numeric_instance_fence():
         'zone': 'us-central1-a',
         'expectedInstanceId': '707',
     }
+
+
+def test_record_late_cleanup_reopens_opaque_receipt_without_feedback_content():
+    result, sets = _run_record_late_cleanup(
+        None,
+        receipt_data={'schema_version': 1, 'wipe_status': 'completed', 'wipe_job_id': 'opaque-job-id'},
+    )
+
+    assert result is True
+    assert sets[0][0].name == 'active'
+    assert sets[0][1]['wipe_status'] == 'failed'
+    assert sets[0][1]['wipe_job_id'] == 'opaque-job-id'
+    assert sets[0][1]['late_agent_vm_cleanup']['expectedInstanceId'] == '707'
+    assert 'uid' not in sets[0][1]
+    assert 'reason' not in sets[0][1]
+    assert 'reason_details' not in sets[0][1]
+
+
+def test_opaque_receipt_acks_job_and_legacy_uid_redelivery_without_revealing_uid():
+    uid = 'deleted-private-user'
+    active_collection = MagicMock()
+    active_collection.where.return_value.limit.return_value.stream.return_value = []
+    active_collection.document.return_value.get.return_value = _make_snapshot(None)
+    receipt_snapshot = _make_snapshot({'schema_version': 1, 'wipe_status': 'completed', 'wipe_job_id': 'opaque-job-id'})
+    receipt_collection = MagicMock()
+    receipt_collection.where.return_value.limit.return_value.stream.return_value = [receipt_snapshot]
+    receipt_collection.document.return_value.get.return_value = receipt_snapshot
+    fake_db = MagicMock()
+    fake_db.collection.side_effect = lambda name: {
+        'account_deletions': active_collection,
+        'account_deletion_receipts': receipt_collection,
+    }[name]
+
+    with patch.object(users_db, 'db', fake_db):
+        assert users_db.resolve_deletion_wipe_job_id('opaque-job-id') == {'outcome': 'completed', 'uid': None}
+        assert users_db.resolve_legacy_deletion_wipe_uid(uid) == {'outcome': 'completed', 'uid': None}
+
+    receipt_id = receipt_collection.document.call_args.args[0]
+    assert receipt_id != uid
+    assert uid not in repr(receipt_snapshot.to_dict())
 
 
 def test_record_late_cleanup_rejects_malformed_instance_fence():

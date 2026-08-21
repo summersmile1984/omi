@@ -7,13 +7,19 @@ from fastapi import APIRouter, Cookie, Request, HTTPException, Form
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-import firebase_admin.auth
 import httpx
 
 from database.apps import get_app_by_id_db
 from utils.executors import critical_executor, db_executor, run_blocking
-from utils.other.endpoints import enforce_account_deletion_http_access
+from utils.other.endpoints import (
+    CertificateFetchError,
+    InvalidIdTokenError,
+    enforce_account_deletion_http_access,
+    verify_token,
+)
 from utils.http_client import safe_request_target, get_auth_client, UnsafeWebhookURLError
+from utils.identity import identity_provider
+from routers.identity_browser import new_browser_identity_csrf, set_browser_identity_csrf
 from database.redis_db import enable_app, increase_app_installs_count
 from utils.apps import is_user_app_enabled, get_is_user_paid_app, is_tester
 from models.app import App as AppModel, ActionType
@@ -125,6 +131,7 @@ def oauth_authorize(
     permissions = unique_permissions
 
     csrf_token = secrets.token_urlsafe(32)
+    identity_csrf_token = new_browser_identity_csrf()
     response = templates.TemplateResponse(
         request,
         "oauth_authenticate.html",
@@ -134,6 +141,8 @@ def oauth_authorize(
             "app_image": app.image,
             "state": state,
             "csrf_token": csrf_token,
+            "identity_csrf_token": identity_csrf_token,
+            "auth_provider": identity_provider(),
             "permissions": permissions,
             "firebase_api_key": os.getenv("FIREBASE_API_KEY"),
             "firebase_auth_domain": os.getenv("FIREBASE_AUTH_DOMAIN"),
@@ -148,6 +157,7 @@ def oauth_authorize(
         secure=True,
         samesite='strict',
     )
+    set_browser_identity_csrf(response, identity_csrf_token)
     return response
 
 
@@ -177,16 +187,15 @@ async def oauth_token(
             detail='This authorization request is invalid or expired. Please restart the connection from the app.',
         )
     try:
-        decoded_token = await run_blocking(
-            critical_executor,
-            firebase_admin.auth.verify_id_token,
-            firebase_id_token,
-        )
-        uid = decoded_token['uid']
-    except firebase_admin.auth.InvalidIdTokenError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid Firebase ID token: {e}")
+        # ``firebase_id_token`` is a released wire field name. Its value is the
+        # selected deployment's identity token, verified by the shared boundary.
+        uid = await run_blocking(critical_executor, verify_token, firebase_id_token)
+    except InvalidIdTokenError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid identity token: {e}")
+    except CertificateFetchError as e:
+        raise HTTPException(status_code=503, detail="Identity provider unavailable") from e
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Error verifying Firebase ID token: {e}")
+        raise HTTPException(status_code=503, detail="Identity provider unavailable") from e
 
     await run_blocking(db_executor, enforce_account_deletion_http_access, uid)
 

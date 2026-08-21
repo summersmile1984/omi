@@ -9,6 +9,18 @@ from llm_gateway.gateway.providers import (
     OpenAICompatibleChatCompletionProvider,
     VertexGeminiProvider,
 )
+from utils.llm.providers import get_openai_compatible_provider_config
+
+
+def _openai_compatible_provider(name: str) -> OpenAICompatibleChatCompletionProvider:
+    config = get_openai_compatible_provider_config(name)
+    return OpenAICompatibleChatCompletionProvider(
+        api_key_env=config.api_key_env,
+        base_url=config.base_url,
+        base_url_env=config.base_url_env,
+        require_base_url=config.require_base_url,
+        default_headers=config.default_headers,
+    )
 
 
 @lru_cache(maxsize=1)

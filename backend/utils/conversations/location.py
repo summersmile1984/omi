@@ -7,6 +7,7 @@ import httpx
 
 from database.redis_db import r
 from models.geolocation import Geolocation
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.http_client import get_maps_client, get_maps_semaphore
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,10 @@ def get_google_maps_location(latitude: float, longitude: float) -> Optional[Geol
     key = os.getenv('GOOGLE_MAPS_API_KEY')
     url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={latitude},{longitude}&key={key}"
     try:
+        # This sync compatibility path uses the module-level httpx helper and
+        # therefore bypasses the shared client's neutral-profile request hook.
+        # Check before handing coordinates or the API key to the vendor.
+        assert_http_endpoint_allowed(url)
         response = httpx.get(url, timeout=10.0)
         data = response.json()
     except Exception as e:

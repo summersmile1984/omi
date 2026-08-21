@@ -532,6 +532,33 @@ class TestChatToolCircuitBreaker:
         assert "temporarily disabled" in result
 
     @pytest.mark.asyncio
+    async def test_neutral_profile_rejects_forbidden_endpoint_before_client(self, monkeypatch):
+        """A user-configured app tool cannot bypass the process egress policy."""
+        from models.app import ChatTool
+
+        tool = ChatTool(
+            name="managed_tool",
+            description="test",
+            endpoint="https://api.openai.com/v1/tool",
+            method="POST",
+        )
+        config = {'configurable': {'user_id': 'uid-1'}}
+        mod = self._app_tools
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+        monkeypatch.delenv("SELF_HOST_EGRESS_ALLOWLIST", raising=False)
+
+        with (
+            patch.object(mod, "is_app_webhook_disabled", return_value=False),
+            patch.object(mod, "get_webhook_circuit_breaker") as get_cb,
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            result = await mod._call_tool_endpoint({}, config, tool, "app-1")
+
+        assert "deployment_capability_unavailable/official_endpoint_forbidden" in result
+        get_cb.assert_not_called()
+        mock_client_cls.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_circuit_breaker_open_returns_early(self):
         """Chat tool calls should return early if circuit breaker is open."""
         from models.app import ChatTool

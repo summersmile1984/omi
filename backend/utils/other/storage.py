@@ -3,6 +3,8 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
+import re
 import struct
 import threading
 import time
@@ -84,6 +86,34 @@ def _get_storage_client() -> Any:
     return storage_client
 
 
+def get_storage_client() -> Any:
+    """Return the configured object-storage provider client."""
+    return _get_storage_client()
+
+
+def _public_object_url(bucket_name: Optional[str], path: str) -> str:
+    if not bucket_name:
+        raise RuntimeError('Object storage bucket is not configured')
+    client = _get_storage_client()
+    if os.environ.get('STORAGE_BACKEND', '').strip().lower() == 'minio':
+        return client.public_url(bucket_name, path)
+    return f'https://storage.googleapis.com/{bucket_name}/{path}'
+
+
+def _object_name_from_public_url(bucket_name: Optional[str], url: str) -> Optional[str]:
+    if not bucket_name:
+        return None
+    client = _get_storage_client()
+    if os.environ.get('STORAGE_BACKEND', '').strip().lower() == 'minio':
+        return client.object_name_from_url(bucket_name, url)
+    prefix = f'https://storage.googleapis.com/{bucket_name}/'
+    return url[len(prefix) :] if url.startswith(prefix) else None
+
+
+def is_app_logo_url(url: str) -> bool:
+    return bool(omi_apps_bucket and _object_name_from_public_url(omi_apps_bucket, url) is not None)
+
+
 speech_profiles_bucket = (os.getenv('BUCKET_SPEECH_PROFILES') or '').strip() or None
 postprocessing_audio_bucket = os.getenv('BUCKET_POSTPROCESSING')
 memories_recordings_bucket = (os.getenv('BUCKET_MEMORIES_RECORDINGS') or '').strip() or None
@@ -131,7 +161,7 @@ def upload_profile_audio(file_path: str, uid: str) -> str:
     path = f'{uid}/speech_profile.wav'
     blob = bucket.blob(path)
     blob.upload_from_filename(file_path)
-    return f'https://storage.googleapis.com/{speech_profiles_bucket}/{path}'
+    return _public_object_url(speech_profiles_bucket, path)
 
 
 def get_user_has_speech_profile(uid: str) -> bool:
@@ -298,7 +328,7 @@ def upload_postprocessing_audio(file_path: str) -> str:
     bucket = _get_storage_client().bucket(postprocessing_audio_bucket)
     blob = bucket.blob(file_path)
     blob.upload_from_filename(file_path)
-    return f'https://storage.googleapis.com/{postprocessing_audio_bucket}/{file_path}'
+    return _public_object_url(postprocessing_audio_bucket, file_path)
 
 
 def delete_postprocessing_audio(file_path: str) -> None:
@@ -316,7 +346,7 @@ def upload_sdcard_audio(file_path: str) -> str:
     bucket = _get_storage_client().bucket(postprocessing_audio_bucket)
     blob = bucket.blob(file_path)
     blob.upload_from_filename(file_path)
-    return f'https://storage.googleapis.com/{postprocessing_audio_bucket}/sdcard/{file_path}'
+    return _public_object_url(postprocessing_audio_bucket, f'sdcard/{file_path}')
 
 
 def download_postprocessing_audio(file_path: str, destination_file_path: str) -> None:
@@ -335,7 +365,7 @@ def upload_conversation_recording(file_path: str, uid: str, conversation_id: str
     path = f'{uid}/{conversation_id}.wav'
     blob = bucket.blob(path)
     blob.upload_from_filename(file_path)
-    return f'https://storage.googleapis.com/{memories_recordings_bucket}/{path}'
+    return _public_object_url(memories_recordings_bucket, path)
 
 
 def get_conversation_recording_if_exists(uid: str, memory_id: str) -> Optional[str]:
@@ -369,6 +399,64 @@ def delete_all_conversation_recordings(uid: str) -> int:
     return deleted
 
 
+def _user_owned_object_prefixes(uid: str) -> List[Tuple[str, str]]:
+    """Return every durable product-object namespace owned by one account.
+
+    Prefixes include their trailing separator so deleting ``abc`` can never
+    match ``abcd``.  Global assets (application logos, thumbnails and desktop
+    updates) are intentionally absent because their lifecycle is not owned by
+    an end-user account.
+    """
+
+    if not uid.strip():
+        raise ValueError('uid is required')
+    candidates: List[Tuple[Optional[str], str]] = [
+        (speech_profiles_bucket, f'{uid}/'),
+        # Post-processing and temporal staging preserve the local relative
+        # ``syncing/{uid}/...`` path as their object name.
+        (postprocessing_audio_bucket, f'syncing/{uid}/'),
+        (memories_recordings_bucket, f'{uid}/'),
+        (chat_files_bucket, f'{uid}/'),
+        (private_cloud_sync_bucket, f'chunks/{uid}/'),
+        (private_cloud_sync_bucket, f'audio/{uid}/'),
+        (private_cloud_sync_bucket, f'merged/{uid}/'),
+        (private_cloud_sync_bucket, f'{PLAYBACK_ARTIFACT_PREFIX}/{uid}/'),
+        # Sync staging mirrors the local ``_temp/{uid}/...`` path.  It is
+        # normally short-lived, but deletion must not rely on its TTL.  The
+        # current sync pipeline uses ``syncing/{uid}/...``; retain both shapes
+        # so pre-migration objects are closed over too.
+        (syncing_local_bucket, f'_temp/{uid}/'),
+        (syncing_local_bucket, f'syncing/{uid}/'),
+    ]
+    return list(dict.fromkeys((bucket, prefix) for bucket, prefix in candidates if bucket))
+
+
+def count_user_owned_objects(uid: str) -> int:
+    """Count all account-owned objects across configured storage buckets."""
+
+    client = _get_storage_client()
+    return sum(
+        1
+        for bucket_name, prefix in _user_owned_object_prefixes(uid)
+        for _blob in client.bucket(bucket_name).list_blobs(prefix=prefix)
+    )
+
+
+def delete_all_user_owned_objects(uid: str) -> int:
+    """Delete every known account-owned object and prove the residual is zero."""
+
+    client = _get_storage_client()
+    deleted = 0
+    for bucket_name, prefix in _user_owned_object_prefixes(uid):
+        for blob in client.bucket(bucket_name).list_blobs(prefix=prefix):
+            blob.delete()
+            deleted += 1
+    residual = count_user_owned_objects(uid)
+    if residual:
+        raise RuntimeError(f'object reconciliation found {residual} residual records')
+    return deleted
+
+
 # ********************************************
 # ************* SYNCING FILES **************
 # ********************************************
@@ -376,7 +464,7 @@ def get_syncing_file_temporal_url(file_path: str):
     bucket = _get_storage_client().bucket(syncing_local_bucket)
     blob = bucket.blob(file_path)
     blob.upload_from_filename(file_path)
-    return f'https://storage.googleapis.com/{syncing_local_bucket}/{file_path}'
+    return _public_object_url(syncing_local_bucket, file_path)
 
 
 def get_syncing_file_temporal_signed_url(file_path: str):
@@ -1521,13 +1609,16 @@ def delete_speech_profile_blob(path: str) -> bool:
 
 
 def _get_signed_url(blob: Any, minutes: int) -> str:
-    if cached := get_cached_signed_url(blob.name):
+    provider = os.environ.get('STORAGE_BACKEND', '').strip().lower() or 'gcs'
+    bucket = getattr(getattr(blob, 'bucket', None), 'name', None) or getattr(blob, 'bucket_name', '')
+    cache_key = f'{provider}:{bucket}:{blob.name}'
+    if cached := get_cached_signed_url(cache_key):
         return cached
 
     signed_url: str = blob.generate_signed_url(
         version="v4", expiration=datetime.timedelta(minutes=minutes), method="GET"
     )
-    cache_signed_url(blob.name, signed_url, minutes * 60)
+    cache_signed_url(cache_key, signed_url, minutes * 60)
     return signed_url
 
 
@@ -1537,18 +1628,15 @@ def upload_app_logo(file_path: str, app_id: str):
     blob = bucket.blob(path)
     blob.cache_control = 'public, no-cache'
     blob.upload_from_filename(file_path)
-    return f'https://storage.googleapis.com/{omi_apps_bucket}/{path}'
+    return _public_object_url(omi_apps_bucket, path)
 
 
 def delete_app_logo(img_url: str):
-    prefix = f'https://storage.googleapis.com/{omi_apps_bucket}/'
-    # Require the URL to START WITH the app-logo prefix, not merely contain it: a foreign-bucket URL
-    # embedding the prefix later could otherwise delete an unrelated object (this is a deletion path).
-    if not img_url.startswith(prefix):
+    path = _object_name_from_public_url(omi_apps_bucket, img_url)
+    if path is None:
         logger.warning(f'delete_app_logo: url not in {omi_apps_bucket}, skipping')
         return
     bucket = _get_storage_client().bucket(omi_apps_bucket)
-    path = img_url[len(prefix) :]
     logger.info(f'delete_app_logo {path}')
     blob = bucket.blob(path)
     blob.delete()
@@ -1560,18 +1648,88 @@ def upload_app_thumbnail(file_path: str, thumbnail_id: str) -> str:
     blob = bucket.blob(path)
     blob.cache_control = 'public, no-cache'
     blob.upload_from_filename(file_path)
-    public_url = f'https://storage.googleapis.com/{app_thumbnails_bucket}/{path}'
-    return public_url
+    return _public_object_url(app_thumbnails_bucket, path)
 
 
 def get_app_thumbnail_url(thumbnail_id: str) -> str:
     path = f'{thumbnail_id}.jpg'
-    return f'https://storage.googleapis.com/{app_thumbnails_bucket}/{path}'
+    return _public_object_url(app_thumbnails_bucket, path)
 
 
 # **********************************
 # ************* CHAT FILES **************
 # **********************************
+_LOCAL_CHAT_FILE_ID = re.compile(r'local_[0-9a-f]{32}\Z')
+
+
+def _private_chat_file_object_name(uid: str, storage_id: str, file_name: str) -> str:
+    if not uid.strip():
+        raise ValueError('uid is required')
+    if not _LOCAL_CHAT_FILE_ID.fullmatch(storage_id):
+        raise ValueError('invalid local chat attachment id')
+    safe_name = Path(file_name).name
+    if safe_name in {'', '.', '..'}:
+        raise ValueError('chat attachment filename is required')
+    return f'{uid}/attachments/{storage_id}/{safe_name}'
+
+
+def upload_private_chat_file(
+    file_path: str | Path,
+    uid: str,
+    storage_id: str,
+    file_name: str,
+    *,
+    content_type: str,
+) -> None:
+    """Upload one original chat attachment without granting public access."""
+
+    if not chat_files_bucket:
+        raise RuntimeError('BUCKET_CHAT_FILES is not configured')
+    object_name = _private_chat_file_object_name(uid, storage_id, file_name)
+    blob = _get_storage_client().bucket(chat_files_bucket).blob(object_name)
+    blob.cache_control = 'private, no-store'
+    blob.upload_from_filename(str(file_path), content_type=content_type)
+
+
+def download_private_chat_file(
+    uid: str,
+    storage_id: str,
+    file_name: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Download one UID-owned original after enforcing its stored-size bound."""
+
+    if not chat_files_bucket:
+        raise RuntimeError('BUCKET_CHAT_FILES is not configured')
+    if max_bytes < 1:
+        raise ValueError('max_bytes must be positive')
+    object_name = _private_chat_file_object_name(uid, storage_id, file_name)
+    blob = _get_storage_client().bucket(chat_files_bucket).blob(object_name)
+    blob.reload()
+    size = int(blob.size or 0)
+    if size > max_bytes:
+        raise ValueError('private chat attachment exceeds the download limit')
+    payload = blob.download_as_bytes()
+    if len(payload) > max_bytes:
+        raise ValueError('private chat attachment exceeds the download limit')
+    return payload
+
+
+def delete_private_chat_file(uid: str, storage_id: str, file_name: str) -> bool:
+    """Delete one UID-owned original, treating an absent object as reconciled."""
+
+    if not chat_files_bucket:
+        raise RuntimeError('BUCKET_CHAT_FILES is not configured')
+    object_name = _private_chat_file_object_name(uid, storage_id, file_name)
+    blob = _get_storage_client().bucket(chat_files_bucket).blob(object_name)
+    try:
+        blob.delete()
+        return True
+    except NotFound:
+        return False
+
+
 def upload_multi_chat_files(files_name: List[str], uid: str) -> Dict[str, str]:
     """
     Upload multiple files to Google Cloud Storage in the chat files bucket.
@@ -1594,7 +1752,7 @@ def upload_multi_chat_files(files_name: List[str], uid: str) -> Dict[str, str]:
                 blob.make_public()
             except Exception as e:
                 logger.warning(f"Could not make blob public (may need bucket-level IAM): {e}")
-            dictFiles[name] = f'https://storage.googleapis.com/{chat_files_bucket}/{uid}/{name}'
+            dictFiles[name] = _public_object_url(chat_files_bucket, f'{uid}/{name}')
         except Exception as e:
             logger.error("Failed to upload {} due to exception: {}".format(name, e))
     return dictFiles

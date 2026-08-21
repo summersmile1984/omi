@@ -200,6 +200,7 @@ def wire_common_stubs(install) -> SimpleNamespace:
     prerecorded.get_prerecorded_service = MagicMock(return_value=('parakeet', 'en', 'parakeet'))
 
     usage_tracker = install('utils.llm.usage_tracker', ModuleType('utils.llm.usage_tracker'))
+    usage_tracker.get_current_context = MagicMock(return_value=None)
     usage_tracker.set_usage_context = MagicMock(return_value='usage-token')
     usage_tracker.reset_usage_context = MagicMock()
 
@@ -207,6 +208,12 @@ def wire_common_stubs(install) -> SimpleNamespace:
         CHAT = 'chat'
 
     usage_tracker.Features = Features
+
+    capabilities = install('utils.llm.capabilities', ModuleType('utils.llm.capabilities'))
+    capabilities.ModelCapabilityUnavailableError = type('ModelCapabilityUnavailableError', (RuntimeError,), {})
+    capabilities.resolve_model_capability = MagicMock(
+        return_value=SimpleNamespace(selected=True, reason=None, retryable=False)
+    )
 
     limiter = install('utils.voice_duration_limiter', ModuleType('utils.voice_duration_limiter'))
     limiter.compute_pcm_duration_ms = MagicMock(return_value=1000)

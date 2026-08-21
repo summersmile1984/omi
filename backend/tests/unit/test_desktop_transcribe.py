@@ -377,6 +377,12 @@ def _desktop_transcribe_isolation():
         ]:
             sys.modules.setdefault(_ufull, MagicMock())
 
+        _model_capabilities = ModuleType('utils.llm.capabilities')
+        _model_capabilities.ModelCapabilityUnavailableError = type(
+            'ModelCapabilityUnavailableError', (RuntimeError,), {}
+        )
+        sys.modules['utils.llm.capabilities'] = _model_capabilities
+
         _utils_conversations_pkg = ModuleType('utils.conversations')
         _utils_conversations_pkg.__path__ = []
         _utils_conversations_pkg.__package__ = 'utils.conversations'

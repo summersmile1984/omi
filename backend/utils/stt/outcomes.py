@@ -12,6 +12,10 @@ _KNOWN_PROVIDERS = {
     PrerecordedSTTService.DEEPGRAM,
     PrerecordedSTTService.MODULATE,
     PrerecordedSTTService.PARAKEET,
+    PrerecordedSTTService.SENSEVOICE,
+    PrerecordedSTTService.MIMO,
+    PrerecordedSTTService.MOSS,
+    PrerecordedSTTService.MLX_MOSS_DIARIZE,
 }
 
 _PUBLIC_FAILURES: dict[TranscriptionOutcome, tuple[int, str, str]] = {

@@ -16,21 +16,31 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from database._client import get_customer_firestore_client
 from database import redis_db, users as users_db
-from models.users import PlanType, Subscription
+from models.users import Subscription
 from utils.env_loader import EnvStage, resolve_stage_from_env
-from utils.executors import critical_executor, db_executor, run_blocking
+from utils.executors import run_blocking
 from utils.http_client import get_llm_gateway_client, get_llm_gateway_semaphore
 from utils.llm.desktop_llm_stub import llm_stub_enabled
 from utils.llm.gateway_client import llm_gateway_headers
 from utils.llm.gateway_observability import record_direct_exception_surface
 from utils.llm.prompt_cache import EXPLICIT_CACHE_OPTIONS, has_cacheable_prefix
+from utils.llm.openai_compatible_wire import (
+    OpenAICompatibleRouteConfigurationError,
+    OpenAICompatibleWireTarget,
+    post_with_bounded_openai_fallback,
+    resolve_openai_compatible_wire_targets,
+)
 from utils.llm.providers import get_openai_api_key
 from utils.observability.fallback import record_fallback
 from utils.other.endpoints import get_current_user_uid
+from utils.model_capability_policy import (
+    DESKTOP_PROACTIVE_DAILY_LIMITS,
+    DESKTOP_PROACTIVE_QUOTA_WINDOW_SECONDS,
+    enforce_desktop_model_access,
+    release_desktop_proactive_quota,
+    reserve_desktop_proactive_quota,
+)
 from utils.subscription import (
-    DESKTOP_ACCESS_TIER_ARCHITECT,
-    DESKTOP_ACCESS_TIER_FREE,
-    DESKTOP_ACCESS_TIER_FULL,
     effective_desktop_access_tier,
     is_desktop_trial_paywalled,
 )
@@ -39,7 +49,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _MAX_REQUEST_BYTES = 5 * 1024 * 1024
-_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
+_QUOTA_WINDOW_SECONDS = DESKTOP_PROACTIVE_QUOTA_WINDOW_SECONDS
 # Explicit per-tier ceilings. These are deliberately not a constant multiple of
 # a shared base row: measured desktop dogfooding runs ~37 extraction calls per
 # hour of active use, so the architect extraction ceiling is sized for a genuine
@@ -47,11 +57,7 @@ _QUOTA_WINDOW_SECONDS = 24 * 60 * 60
 # background reconciler that batches ~2 calls per pass on top of the per-visit
 # gate and director calls. Lower tiers are sized for a partial day and stay
 # governed by the device-side frequency gate.
-_TIER_DAILY_LIMITS: dict[str, dict[str, int]] = {
-    DESKTOP_ACCESS_TIER_FREE: {"proactive_extraction": 150, "proactive_reasoning": 60},
-    DESKTOP_ACCESS_TIER_FULL: {"proactive_extraction": 1000, "proactive_reasoning": 500},
-    DESKTOP_ACCESS_TIER_ARCHITECT: {"proactive_extraction": 2000, "proactive_reasoning": 1000},
-}
+_TIER_DAILY_LIMITS = DESKTOP_PROACTIVE_DAILY_LIMITS
 _OPERATION_LANES = {
     "proactive_extraction": "omi:auto:desktop-proactive-extraction",
     "proactive_reasoning": "omi:auto:desktop-proactive-reasoning",
@@ -85,6 +91,8 @@ class _ProviderRequest:
     headers: dict[str, str]
     payload: dict[str, Any]
     fallback_class: str
+    max_tokens_field: str = "max_completion_tokens"
+    wire_targets: tuple[OpenAICompatibleWireTarget, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -139,6 +147,36 @@ def _proactive_provider_request(request: "ProactiveCompletionRequest", uid: str,
             fallback_class="none",
         )
 
+    feature = f"desktop_{request.operation.value}"
+    try:
+        wire_targets = resolve_openai_compatible_wire_targets(feature, require_explicit=True)
+    except OpenAICompatibleRouteConfigurationError as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "model_capability_unavailable",
+                "capability": feature,
+                "reason": f"{error.provider}_{error.reason}",
+                "retryable": False,
+            },
+        ) from error
+    if wire_targets:
+        primary = wire_targets[0]
+        payload["model"] = primary.api_model
+        payload["max_tokens"] = payload.pop("max_completion_tokens")
+        payload.pop("metadata", None)
+        payload.pop("prompt_cache_key", None)
+        payload.pop("prompt_cache_options", None)
+        payload["messages"] = _strip_cache_extensions(payload["messages"])
+        return _ProviderRequest(
+            url=primary.url,
+            headers=dict(primary.headers),
+            payload=payload,
+            fallback_class=f"direct_{primary.route.provider}",
+            max_tokens_field="max_tokens",
+            wire_targets=wire_targets,
+        )
+
     if not _dev_direct_provider_allowed():
         raise HTTPException(status_code=503, detail="Proactive model gateway is not configured")
     api_key = get_openai_api_key()
@@ -176,16 +214,6 @@ def _proactive_provider_request(request: "ProactiveCompletionRequest", uid: str,
         payload=payload,
         fallback_class="dev_direct_openai",
     )
-
-
-def _quota_limit_for_subscription(operation: ProactiveOperation, subscription: Subscription | None) -> int:
-    """Return the server-authoritative proactive ceiling for a verified plan."""
-    plan = subscription.plan if subscription is not None else PlanType.basic
-    tier = effective_desktop_access_tier(plan, subscription)
-    # Keep the lookup total: an unrecognised tier resolves to the free row
-    # rather than raising, so a new tier string can never 500 the lane.
-    limits = _TIER_DAILY_LIMITS.get(tier, _TIER_DAILY_LIMITS[DESKTOP_ACCESS_TIER_FREE])
-    return limits[operation.value]
 
 
 class ProactiveOperation(str, Enum):
@@ -246,9 +274,11 @@ class ProactiveCompletionEnvelope(BaseModel):
 
 
 async def _authorized_desktop_user(uid: str = Depends(get_current_user_uid)) -> str:
-    if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop"):
-        raise HTTPException(status_code=402, detail="trial_expired")
-    return uid
+    return await enforce_desktop_model_access(
+        uid,
+        runner=run_blocking,
+        paywall_checker=is_desktop_trial_paywalled,
+    )
 
 
 def _customer_subscription(uid: str) -> Subscription | None:
@@ -260,44 +290,28 @@ def _customer_subscription(uid: str) -> Subscription | None:
 
 
 async def _consume_quota(uid: str, operation: ProactiveOperation) -> ProactiveQuotaState:
-    operation_value = operation.value
-    try:
-        subscription = await run_blocking(
-            db_executor,
-            _customer_subscription,
-            uid,
-        )
-        limit = _quota_limit_for_subscription(operation, subscription)
-        allowed, remaining, reset_seconds = await run_blocking(
-            critical_executor,
-            redis_db.reserve_rate_limit,
-            uid,
-            f"desktop_{operation_value}",
-            limit,
-            _QUOTA_WINDOW_SECONDS,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Proactive metering is temporarily unavailable") from exc
-    state = ProactiveQuotaState(limit=limit, remaining=remaining, reset_seconds=reset_seconds)
-    if not allowed:
-        raise HTTPException(
-            status_code=429,
-            detail="Proactive request limit exceeded",
-            headers=_quota_headers(state, include_retry_after=True),
-        )
-    return state
+    reservation = await reserve_desktop_proactive_quota(
+        uid,
+        operation.value,
+        runner=run_blocking,
+        subscription_loader=_customer_subscription,
+        reserve=redis_db.reserve_rate_limit,
+        tier_resolver=effective_desktop_access_tier,
+    )
+    return ProactiveQuotaState(
+        limit=reservation.limit,
+        remaining=reservation.remaining,
+        reset_seconds=reservation.reset_seconds,
+    )
 
 
 async def _release_quota(uid: str, operation: ProactiveOperation) -> None:
-    try:
-        await run_blocking(
-            critical_executor,
-            redis_db.release_rate_limit,
-            uid,
-            f"desktop_{operation.value}",
-        )
-    except Exception:
-        logger.exception("Failed to release proactive quota reservation uid=%s operation=%s", uid, operation.value)
+    await release_desktop_proactive_quota(
+        uid,
+        operation.value,
+        runner=run_blocking,
+        release=redis_db.release_rate_limit,
+    )
 
 
 def _stub_value_for_schema(schema: Mapping[str, Any]) -> Any:
@@ -430,6 +444,29 @@ def _add_explicit_cache_breakpoint(messages: list[dict[str, Any]]) -> list[dict[
     return copied
 
 
+def _strip_cache_extensions(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove gateway/OpenAI cache markers before a generic compatible call."""
+
+    cleaned: list[dict[str, Any]] = []
+    for raw_message in messages:
+        message = dict(raw_message)
+        content = message.get("content")
+        if isinstance(content, list):
+            parts = []
+            for raw_part in content:
+                if not isinstance(raw_part, Mapping):
+                    parts.append(raw_part)
+                    continue
+                part = dict(raw_part)
+                marker = part.pop("prompt_cache_breakpoint", None)
+                if marker is not None and part.get("type") == "text" and not part.get("text"):
+                    continue
+                parts.append(part)
+            message["content"] = parts
+        cleaned.append(message)
+    return cleaned
+
+
 def _usage_envelope(response: Mapping[str, Any]) -> ProactiveUsageEnvelope:
     usage = response.get("usage")
     if not isinstance(usage, Mapping):
@@ -525,7 +562,9 @@ def _should_retry_truncated_structured_output(
 
 def _record_length_retry_outcome(provider_request: _ProviderRequest, outcome: str) -> None:
     """Record one terminal event for the bounded structured-output length retry."""
-    direct = provider_request.fallback_class == "dev_direct_openai"
+    direct = (
+        provider_request.fallback_class.startswith("direct_") or provider_request.fallback_class == "dev_direct_openai"
+    )
     record_fallback(
         component="llm_gateway",
         from_mode="direct_openai" if direct else "gateway",
@@ -540,10 +579,27 @@ async def _post_provider_completion(
     provider_request: _ProviderRequest,
     *,
     max_completion_tokens: int | None = None,
-) -> Any:
+) -> tuple[Any, OpenAICompatibleWireTarget | None]:
     payload = provider_request.payload
     if max_completion_tokens is not None:
-        payload = {**payload, "max_completion_tokens": max_completion_tokens}
+        payload = {**payload, provider_request.max_tokens_field: max_completion_tokens}
+
+    if provider_request.wire_targets:
+
+        async def post(target: OpenAICompatibleWireTarget, target_payload: Mapping[str, object]) -> httpx.Response:
+            async with get_llm_gateway_semaphore():
+                return await get_llm_gateway_client().post(
+                    target.url,
+                    headers=target.headers,
+                    json=target_payload,
+                )
+
+        response, selected = await post_with_bounded_openai_fallback(
+            provider_request.wire_targets,
+            lambda target: {**payload, "model": target.api_model},
+            post,
+        )
+        return response.json(), selected
     async with get_llm_gateway_semaphore():
         response = await get_llm_gateway_client().post(
             provider_request.url,
@@ -551,7 +607,7 @@ async def _post_provider_completion(
             json=payload,
         )
     response.raise_for_status()
-    return response.json()
+    return response.json(), None
 
 
 @router.post("/v1/desktop/proactivity/completions", response_model=ProactiveCompletionEnvelope)
@@ -581,8 +637,8 @@ async def proactive_completion(
     length_retry_attempted = False
     try:
         provider_request = _proactive_provider_request(request, uid, request_id)
-        attempted_max_completion_tokens = provider_request.payload["max_completion_tokens"]
-        response_body = await _post_provider_completion(provider_request)
+        attempted_max_completion_tokens = provider_request.payload[provider_request.max_tokens_field]
+        response_body, selected_target = await _post_provider_completion(provider_request)
         if _should_retry_truncated_structured_output(
             response_body,
             request,
@@ -605,8 +661,18 @@ async def proactive_completion(
                 attempted_max_completion_tokens,
                 retry_max,
             )
-            response_body = await _post_provider_completion(
-                provider_request,
+            retry_request = provider_request
+            if selected_target is not None:
+                retry_request = _ProviderRequest(
+                    url=selected_target.url,
+                    headers=dict(selected_target.headers),
+                    payload={**provider_request.payload, "model": selected_target.api_model},
+                    fallback_class=f"direct_{selected_target.route.provider}",
+                    max_tokens_field=provider_request.max_tokens_field,
+                    wire_targets=(selected_target,),
+                )
+            response_body, _ = await _post_provider_completion(
+                retry_request,
                 max_completion_tokens=retry_max,
             )
     except HTTPException:
@@ -659,13 +725,16 @@ async def proactive_completion(
     usage = _usage_envelope(response_body)
     provider_model = response_body.get("model")
     assert provider_request is not None
+    effective_fallback_class = provider_request.fallback_class
+    if selected_target is not None:
+        effective_fallback_class = f"direct_{selected_target.route.provider}"
     return ProactiveCompletionEnvelope(
         operation=request.operation,
         lane=lane,
         provider_model=provider_model if isinstance(provider_model, str) else "unknown",
         usage=usage,
         cache_write=usage.cache_write_tokens > 0,
-        fallback_class=provider_request.fallback_class,
+        fallback_class=effective_fallback_class,
         response=response_body,
     )
 

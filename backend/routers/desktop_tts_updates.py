@@ -18,6 +18,13 @@ from utils.log_sanitizer import sanitize
 from utils.mimo_pipeline.config import mimo_is_configured
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_desktop_trial_paywalled
+from utils.tts_policy import (
+    TTS_DISABLED_DETAIL,
+    tts_explicitly_disabled,
+    tts_official_provider_forbidden_in_neutral,
+    tts_provider_missing_in_neutral_deployment,
+)
+from utils.tts_provider import selected_tts_provider, synthesize_openai_compatible_tts, synthesize_sherpa_tts
 
 logger = logging.getLogger(__name__)
 
@@ -217,15 +224,17 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
             raise HTTPException(status_code=502, detail="TTS upstream unavailable")
         return Response(content=audio, media_type="audio/wav")
 
-    voice_id = request.voice_id.strip()
-    if not _is_allowed_openai_voice(voice_id):
-        raise HTTPException(status_code=400, detail="voice_id is not supported")
     if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop"):
         raise HTTPException(status_code=403, detail="A paid subscription is required")
-    api_key = get_byok_key("openai") or os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise HTTPException(status_code=503, detail="OpenAI TTS is not configured")
-    if not get_byok_key("openai"):
+
+    provider_is_mimo = selected_provider == 'mimo' and mimo_tts_enabled()
+    provider_is_compatible = selected_provider == 'openai_compatible'
+    provider_is_sherpa = selected_provider == 'sherpa_onnx'
+    if selected_provider == 'mimo' and not provider_is_mimo:
+        error = ModelCapabilityUnavailableError('tts', 'mimo_credential_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+    openai_byok = get_byok_key("openai") if selected_provider in {'', 'openai'} else None
+    if not openai_byok:
         status, _ = await run_blocking(
             critical_executor,
             redis_db.check_tts_rate_limit,
@@ -240,6 +249,41 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
             raise HTTPException(status_code=429, detail="TTS burst rate limit exceeded")
         if status == 2:
             raise HTTPException(status_code=429, detail="TTS daily character limit exceeded")
+
+    # Cloud-neutral override: MiMo-TTS (self-hosted) when TTS_PROVIDER=mimo.
+    if provider_is_mimo:
+        try:
+            audio = await _mimo_tts_synthesize(text)
+        except Exception as exc:
+            logger.error("tts_synthesize: MiMo TTS failed uid=%s: %s", uid, sanitize(str(exc)))
+            raise HTTPException(status_code=502, detail="TTS upstream unavailable")
+        return Response(content=audio, media_type="audio/wav")
+
+    if provider_is_compatible:
+        try:
+            audio = await synthesize_openai_compatible_tts(
+                text,
+                voice=request.voice_id,
+                audio_format='mp3',
+                instructions=request.instructions,
+            )
+        except ModelCapabilityUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.as_dict()) from error
+        return Response(content=audio.content, media_type=audio.media_type)
+
+    if provider_is_sherpa:
+        try:
+            audio = await synthesize_sherpa_tts(text, audio_format='mp3')
+        except ModelCapabilityUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.as_dict()) from error
+        return Response(content=audio.content, media_type=audio.media_type)
+
+    voice_id = request.voice_id.strip()
+    if not _is_allowed_openai_voice(voice_id):
+        raise HTTPException(status_code=400, detail="voice_id is not supported")
+    api_key = openai_byok or os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OpenAI TTS is not configured")
     payload = {"model": _OPENAI_TTS_MODEL, "input": text, "voice": voice_id, "response_format": "mp3"}
     if request.instructions and request.instructions.strip():
         payload["instructions"] = request.instructions.strip()

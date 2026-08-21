@@ -4,8 +4,8 @@ import json
 import math
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
-from firebase_admin import messaging, auth
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, Union, cast
+from firebase_admin import messaging
 import database.notifications as notification_db
 from utils.executors import db_executor, postprocess_executor, run_blocking
 from database.redis_db import (
@@ -16,6 +16,8 @@ from database.redis_db import (
 )
 from database.auth import get_user_from_uid
 from utils.notification_text import to_plain_text
+from utils import identity
+from config.push_provider import selected_push_provider
 from .llm.notifications import (
     generate_notification_message,
     generate_credit_limit_notification,
@@ -26,8 +28,59 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def push_notifications_enabled() -> bool:
+    """Return whether this deployment opted into a push adapter.
+
+    Neutral profiles default to disabled when the provider is omitted; this
+    mirrors the startup boundary in ``main.py`` and prevents accidental vendor
+    egress from low-level notification helpers.
+    """
+
+    return selected_push_provider() in {'firebase', 'webhook'}
+
+
+class PushCapabilityUnavailablePayload(TypedDict):
+    """Stable, JSON-serializable response for an unconfigured push channel."""
+
+    code: Literal['deployment_capability_unavailable']
+    capability: Literal['push_notifications']
+    reason: Literal['disabled_by_deployment']
+    retryable: Literal[False]
+
+
+def push_capability_unavailable() -> PushCapabilityUnavailablePayload:
+    """Return the stable public error for a deployment without push delivery.
+
+    Internal notification call sites intentionally remain no-ops when push is
+    disabled so a missing optional channel cannot fail durable product work.
+    HTTP notification entrypoints use this payload instead of reporting a
+    successful send that never happened.
+    """
+
+    return {
+        'code': 'deployment_capability_unavailable',
+        'capability': 'push_notifications',
+        'reason': 'disabled_by_deployment',
+        'retryable': False,
+    }
+
+
+def _log_push_unavailable(operation: str) -> None:
+    """Record an explicit, non-sensitive outcome for an optional push operation."""
+
+    payload = push_capability_unavailable()
+    logger.info(
+        'push notification unavailable operation=%s code=%s capability=%s reason=%s retryable=%s',
+        operation,
+        payload['code'],
+        payload['capability'],
+        payload['reason'],
+        payload['retryable'],
+    )
+
+
 def _get_user(uid: str) -> Any:
-    return auth.get_user(uid)  # type: ignore[reportUnknownMemberType]  # firebase_admin auth untyped
+    return identity.get_user(uid)
 
 
 # iOS bundle ID for APNs
@@ -179,6 +232,34 @@ def _send_to_user(
     tokens: Optional[List[str]] = None,
 ) -> int:
     """Send a message to all user's devices using batch send. Returns count of successful sends."""
+    provider = selected_push_provider()
+    if provider == 'webhook':
+        # Keep the operator-owned bridge entirely separate from Firebase's
+        # message builders. The receiver owns the final mobile adapter and
+        # returns a typed receipt; no Firebase SDK call occurs on this path.
+        from utils.push_webhook import send_webhook_notifications
+
+        return send_webhook_notifications(
+            user_id,
+            tag,
+            title=getattr(notification, 'title', None) if notification is not None else None,
+            body=getattr(notification, 'body', None) if notification is not None else None,
+            data=data,
+            is_background=is_background,
+            priority=priority,
+            tokens=tokens if tokens is not None else notification_db.get_all_tokens(user_id),
+        )
+
+    # Keep the provider boundary here as well as at the public notification
+    # helpers. Several internal data-only paths (action-item sync, merge
+    # completion, and reminder reconciliation) call this low-level helper
+    # directly. Without this guard a self-host deployment with
+    # ``PUSH_PROVIDER=disabled`` could still read device tokens and invoke the
+    # Firebase Admin SDK, creating an implicit vendor egress path.
+    if not push_notifications_enabled():
+        _log_push_unavailable('send_to_user')
+        return 0
+
     if tokens is None:
         tokens = notification_db.get_all_tokens(user_id)
     if not tokens:
@@ -214,6 +295,30 @@ async def _send_to_user_async(
     tokens: Optional[List[str]] = None,
 ) -> int:
     """Async boundary for the synchronous token store and Firebase Admin SDK."""
+    provider = selected_push_provider()
+    if provider == 'webhook':
+        from utils.push_webhook import send_webhook_notifications_async
+
+        resolved_tokens = tokens
+        if resolved_tokens is None:
+            resolved_tokens = await run_blocking(db_executor, notification_db.get_all_tokens, user_id)
+        return await send_webhook_notifications_async(
+            user_id,
+            tag,
+            title=getattr(notification, 'title', None) if notification is not None else None,
+            body=getattr(notification, 'body', None) if notification is not None else None,
+            data=data,
+            is_background=is_background,
+            priority=priority,
+            tokens=resolved_tokens,
+        )
+
+    # Mirror the synchronous boundary guard. This must run before the token
+    # lookup or executor submission so disabled deployments never touch FCM.
+    if not push_notifications_enabled():
+        _log_push_unavailable('send_to_user_async')
+        return 0
+
     if tokens is None:
         tokens = await run_blocking(db_executor, notification_db.get_all_tokens, user_id)
     if not tokens:
@@ -240,6 +345,9 @@ def send_notification(
     user_id: str, title: str, body: str, data: Optional[Dict[str, Any]] = None, tokens: Optional[List[str]] = None
 ) -> None:
     """Send notification to all user's devices. Optionally pass pre-fetched tokens to avoid DB lookup."""
+    if not push_notifications_enabled():
+        _log_push_unavailable('send_notification')
+        return
     logger.info(f'send_notification to user {user_id}')
     body = to_plain_text(body)
     tag = _generate_notification_tag(user_id, title, body, data)
@@ -251,6 +359,9 @@ async def send_notification_async(
     user_id: str, title: str, body: str, data: Optional[Dict[str, Any]] = None, tokens: Optional[List[str]] = None
 ) -> None:
     """Async counterpart used by event-loop callers while preserving the sync public API."""
+    if not push_notifications_enabled():
+        _log_push_unavailable('send_notification_async')
+        return
     logger.info(f'send_notification to user {user_id}')
     body = to_plain_text(body)
     tag = _generate_notification_tag(user_id, title, body, data)
@@ -260,6 +371,10 @@ async def send_notification_async(
 
 async def send_subscription_paid_personalized_notification(user_id: str, data: Optional[Dict[str, Any]] = None) -> None:
     """Send a personalized notification to all user's devices when unlimited subscription is purchased"""
+    if not push_notifications_enabled():
+        _log_push_unavailable('subscription_paid_personalized')
+        return
+
     # Get user name from Firebase Auth
     name: str = "there"
     try:
@@ -281,6 +396,10 @@ async def send_subscription_paid_personalized_notification(user_id: str, data: O
 
 async def send_credit_limit_notification(user_id: str) -> None:
     """Send a personalized credit limit notification if not sent recently"""
+    if not push_notifications_enabled():
+        _log_push_unavailable('credit_limit')
+        return
+
     # Check if notification was sent recently (within 6 hours). Offloaded: the Redis read is sync
     # and blocks the event loop in this async path.
     if await run_blocking(db_executor, has_credit_limit_notification_been_sent, user_id):
@@ -313,6 +432,10 @@ async def send_credit_limit_notification(user_id: str) -> None:
 
 async def send_silent_user_notification(user_id: str) -> None:
     """Send a notification if a basic-plan user is silent for too long."""
+    if not push_notifications_enabled():
+        _log_push_unavailable('silent_user')
+        return
+
     # Check if notification was sent recently (within 24 hours). Offloaded: the Redis read is sync
     # and blocks the event loop in this async path.
     if await run_blocking(db_executor, has_silent_user_notification_been_sent, user_id):
@@ -345,6 +468,10 @@ async def send_silent_user_notification(user_id: str) -> None:
 
 def send_training_data_submitted_notification(user_id: str) -> None:
     """Send a notification when user submits their training data opt-in request."""
+    if not push_notifications_enabled():
+        _log_push_unavailable('training_data_submitted')
+        return
+
     # Get user name from Firebase Auth
     name: str = "there"
     try:
@@ -367,11 +494,33 @@ def send_training_data_submitted_notification(user_id: str) -> None:
 
 async def send_bulk_notification(user_tokens: List[str], title: str, body: str) -> None:
     """Send notification to multiple users in batches."""
+    if not push_notifications_enabled():
+        _log_push_unavailable('bulk')
+        return
     try:
         batch_size = 500
         num_batches = math.ceil(len(user_tokens) / batch_size)
         body = to_plain_text(body)
         tag = _generate_tag(f"bulk:{title}:{body}")
+
+        # The operator-owned webhook is the selected delivery authority for
+        # every notification shape, including this legacy broadcast helper.
+        # Keep it out of the Firebase message builder: otherwise a neutral
+        # deployment that explicitly selects ``webhook`` would still create
+        # an implicit Firebase egress path for daily/bulk notifications.
+        if selected_push_provider() == 'webhook':
+            from utils.push_webhook import send_webhook_notifications_async
+
+            for start in range(0, len(user_tokens), batch_size):
+                await send_webhook_notifications_async(
+                    'bulk',
+                    tag,
+                    title=title,
+                    body=body,
+                    tokens=user_tokens[start : start + batch_size],
+                )
+            return
+
         notification = messaging.Notification(title=title, body=body)
 
         def send_batch(batch_tokens: List[str]) -> Tuple[Any, List[str]]:
@@ -409,6 +558,10 @@ def send_app_review_reply_notification(
     reviewer_uid: str, app_owner_uid: str, reply_body: str, app_id: str, app_name: str
 ):
     """Sends a notification to a user when their app review receives a reply."""
+    if not push_notifications_enabled():
+        _log_push_unavailable('app_review_reply')
+        return
+
     app_owner = get_user_from_uid(app_owner_uid)
     owner_name = (app_owner or {}).get('display_name') or 'The developer'
     title = f'{owner_name} ({app_name})'
@@ -421,6 +574,10 @@ def send_new_app_review_notification(
     app_owner_uid: str, reviewer_uid: str, app_id: str, app_name: str, review_body: str
 ):
     """Sends a notification to the app owner when a new review is submitted."""
+    if not push_notifications_enabled():
+        _log_push_unavailable('new_app_review')
+        return
+
     reviewer = get_user_from_uid(reviewer_uid)
     reviewer_name = (reviewer or {}).get('display_name') or 'A user'
     title = f'{reviewer_name} reviewed {app_name}'
@@ -560,11 +717,6 @@ def send_important_conversation_message(user_id: str, conversation_id: str):
         user_id: The user's Firebase UID
         conversation_id: ID of the completed conversation
     """
-    tokens = notification_db.get_all_tokens(user_id)
-    if not tokens:
-        logger.info(f"No notification tokens found for user {user_id} for important conversation notification")
-        return
-
     # FCM data values must be strings
     data = {
         'type': 'important_conversation',

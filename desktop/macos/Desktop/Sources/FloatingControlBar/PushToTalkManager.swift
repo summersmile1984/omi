@@ -1255,7 +1255,9 @@ class PushToTalkManager: ObservableObject {
     // phrase from it. Applies to the omni and batch paths, which retain the
     // raw turn audio; live-Deepgram streams without buffering and already
     // returns empty on silence.
-    let isBatch = ShortcutSettings.shared.effectivePTTTranscriptionMode == .batch
+    let isBatch =
+      ShortcutSettings.shared.effectivePTTTranscriptionMode == .batch
+      || activeVoiceRoute == .deepgramBatch
     if isOmniSTT || isBatch {
       batchAudioLock.lock()
       let turnAudio = batchAudioBuffer
@@ -1327,7 +1329,8 @@ class PushToTalkManager: ObservableObject {
       // QueryTracer: the omni provider's post-commit finalization (VAD close +
       // final STT inference + round-trip) — closed at the top of sendTranscript().
       activeTracer?.begin(
-        "omni_transcribe", metadata: ["provider": RealtimeOmniSettings.shared.effectiveProvider.displayName])
+        "omni_transcribe",
+        metadata: ["provider": RealtimeOmniSettings.shared.resolvedRelayProvider?.displayName ?? "unavailable"])
       realtimeOmniService?.commitInputTurn()
       log("PushToTalkManager: finalizing (omni STT) — waiting for final transcript")
       voiceTurnCoordinator.publish(
@@ -1335,7 +1338,9 @@ class PushToTalkManager: ObservableObject {
       return
     }
 
-    let isBatchMode = ShortcutSettings.shared.effectivePTTTranscriptionMode == .batch
+    let isBatchMode =
+      ShortcutSettings.shared.effectivePTTTranscriptionMode == .batch
+      || activeVoiceRoute == .deepgramBatch
 
     if isBatchMode {
       // Batch mode: send accumulated audio to pre-recorded API
@@ -1719,6 +1724,25 @@ class PushToTalkManager: ObservableObject {
   /// kernel context. Capture starts in either case; only an exact binding earns
   /// direct ingress, otherwise the controller buffers through its one handoff.
   private func startRealtimePTTRoute(startMicrophoneCapture: Bool) {
+    if !DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    {
+      if RealtimeOmniSettings.shared.resolvedRelayProvider != nil {
+        _ = startOmniTranscription(captureAlreadyRunning: !startMicrophoneCapture)
+      } else {
+        if let turnID = currentVoiceTurnID {
+          voiceTurnCoordinator.publish(.selectRoute(turnID: turnID, route: .deepgramBatch))
+        }
+        batchAudioLock.lock()
+        batchAudioBuffer = Data()
+        batchAudioLock.unlock()
+        if startMicrophoneCapture {
+          startMicCapture(batchMode: true, overrideDeviceID: preferredPTTInputOverrideDeviceID())
+        }
+        log("PushToTalkManager: realtime capability unavailable; using configured backend batch STT")
+      }
+      return
+    }
     switch RealtimeHubController.shared.pttAdmission {
     case .immediate:
       if let turnID = currentVoiceTurnID {
@@ -2494,6 +2518,10 @@ extension PushToTalkManager {
   @discardableResult
   fileprivate func startOmniTranscription(captureAlreadyRunning: Bool = false) -> Bool {
     guard let startingTurnID = currentVoiceTurnID else { return false }
+    guard let provider = RealtimeOmniSettings.shared.resolvedRelayProvider else {
+      log("PushToTalkManager: realtime relay capability unavailable before network")
+      return false
+    }
     guard let identity = voiceTurnCoordinator.reserveEffectIdentity() else { return false }
     voiceTurnCoordinator.publish(
       .transcriptionProviderStartedScoped(turnID: startingTurnID, identity: identity))
@@ -2502,7 +2530,6 @@ extension PushToTalkManager {
     }
     let delegateProxy = VoiceTurnOmniDelegateProxy(owner: self, identity: identity)
     omniDelegateProxy = delegateProxy
-    let provider = RealtimeOmniSettings.shared.effectiveProvider
     if let turnID = currentVoiceTurnID {
       voiceTurnCoordinator.publish(.selectRoute(turnID: turnID, route: .omniSTT))
     }
@@ -2556,18 +2583,6 @@ extension PushToTalkManager {
       }
     }
     return true
-  }
-
-  // Phase 1 key resolution: env (dev) → TODO BYOK / backend-minted token.
-  fileprivate func resolveOmniKey(for provider: RealtimeOmniProvider) -> String? {
-    let env = ProcessInfo.processInfo.environment
-    let raw: String?
-    switch provider {
-    case .gptRealtime2: raw = env["OPENAI_API_KEY"]
-    case .geminiFlashLive, .auto: raw = env["GEMINI_API_KEY"] ?? env["GOOGLE_API_KEY"]
-    }
-    guard let raw, !raw.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-    return raw
   }
 
   // Mic is 16kHz PCM16; OpenAI realtime requires ≥24kHz, Gemini wants 16kHz.

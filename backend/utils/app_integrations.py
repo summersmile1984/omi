@@ -17,6 +17,7 @@ from utils.http_client import (
 )
 from utils.executors import db_executor, postprocess_executor, run_blocking
 from utils.async_tasks import gather_safe
+from utils.egress_policy import assert_http_endpoint_allowed
 import utils.dev_cache as dev_cache
 
 import database.notifications as notification_db
@@ -87,6 +88,26 @@ def _delivery_failure_is_retryable(status_code: int) -> bool:
     return status_code >= 500 or status_code in _RETRYABLE_DELIVERY_STATUSES
 
 
+def _drop_exhausted_delivery(app_id: str, reason: str) -> None:
+    """Give up on a delivery whose finalization job has no attempt left.
+
+    On the terminal attempt the job dead-letters no matter what this delivery
+    does, so keeping it retryable buys the webhook nothing and costs the user
+    the whole conversation: fanout never completes and the capture journey ends
+    in `failure`. An app endpoint answering 5xx for days (Cloudflare 530) took
+    every conversation of every user who installed it down with it, because
+    webhook health only auto-disables after 72h.
+    """
+    logger.info('durable webhook delivery dropped on final attempt app=%s reason=%s', app_id, reason)
+    record_fallback(
+        component='webhook',
+        from_mode='durable_delivery',
+        to_mode='dropped',
+        reason=reason,
+        outcome='exhausted',
+    )
+
+
 def _notify_app_owner(app_id: str, title: str, body: str):
     """Send a push notification to the app owner about webhook health."""
     try:
@@ -140,6 +161,11 @@ def get_github_docs_content(repo="BasedHardware/omi", path="docs/doc"):
     If cached, returns cached content. (24 hours)
     So any changes to the docs will take 24 hours to be reflected.
     """
+    # Check the authority before consulting cache as well: a neutral process
+    # must not treat a previously cached managed-only document as an implicit
+    # product capability.  The product-tool boundary can then return its
+    # typed/unavailable response without touching the network.
+    assert_http_endpoint_allowed(f"https://api.github.com/repos/{repo}/contents/{path}")
     if cached := get_generic_cache(f'get_github_docs_content_{repo}_{path}'):
         return cached
     docs_content = {}
@@ -147,6 +173,11 @@ def get_github_docs_content(repo="BasedHardware/omi", path="docs/doc"):
 
     def get_contents(path):
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
+        # This synchronous helper predates the shared AsyncClient pools, so it
+        # does not inherit their request hook.  Product-doc retrieval is a
+        # managed convenience, not an implicit authority for neutral/self-host
+        # deployments: reject the GitHub API before DNS/transport there.
+        assert_http_endpoint_allowed(url)
         response = httpx.get(url, headers=headers, timeout=30.0)
 
         if response.status_code != 200:
@@ -161,7 +192,11 @@ def get_github_docs_content(repo="BasedHardware/omi", path="docs/doc"):
         for item in contents:
             if item["type"] == "file" and (item["name"].endswith(".md") or item["name"].endswith(".mdx")):
                 # Get raw content for documentation files
-                raw_response = httpx.get(item["download_url"], headers=headers, timeout=30.0)
+                download_url = item.get("download_url")
+                if not isinstance(download_url, str) or not download_url:
+                    continue
+                assert_http_endpoint_allowed(download_url)
+                raw_response = httpx.get(download_url, headers=headers, timeout=30.0)
                 if raw_response.status_code == 200:
                     docs_content[item["path"]] = raw_response.text
 
@@ -185,6 +220,7 @@ async def trigger_external_integrations(
     *,
     idempotency_key: str | None = None,
     require_delivery: bool = False,
+    last_delivery_attempt: bool = False,
 ) -> list:
     """ON CONVERSATION CREATED — uses asyncio.gather + httpx (Lane 1).
 
@@ -192,6 +228,10 @@ async def trigger_external_integrations(
     retry an interrupted external fanout without creating a second effect.
     They also require a delivery acknowledgement, preserving the existing
     best-effort behavior for non-finalization callers.
+
+    `last_delivery_attempt` marks the finalization job's terminal attempt: the
+    retry budget is spent, so a failed delivery is dropped with telemetry
+    instead of failing the conversation's fanout one final time.
     """
     if not conversation or conversation.discarded:
         return []
@@ -241,7 +281,10 @@ async def trigger_external_integrations(
         if not cb.allow_request():
             logger.info(f'trigger_external_integrations: circuit breaker open for {app.id}')
             if require_delivery:
-                failed_deliveries.append(app.id)
+                if last_delivery_attempt:
+                    _drop_exhausted_delivery(app.id, 'circuit_open')
+                else:
+                    failed_deliveries.append(app.id)
             return
 
         try:
@@ -270,7 +313,13 @@ async def trigger_external_integrations(
                 )
                 if require_delivery:
                     if _delivery_failure_is_retryable(response.status_code):
-                        failed_deliveries.append(app.id)
+                        if last_delivery_attempt:
+                            _drop_exhausted_delivery(
+                                app.id,
+                                'provider_429' if response.status_code == 429 else 'provider_5xx',
+                            )
+                        else:
+                            failed_deliveries.append(app.id)
                     else:
                         # The destination rejected this payload permanently (expired
                         # OAuth token, deleted target, malformed for that app). Every
@@ -321,7 +370,10 @@ async def trigger_external_integrations(
             await run_blocking(db_executor, _handle_webhook_health_action, app.id, action, error_str)
             logger.error('Plugin integration request failed app=%s error=%s', app.id, type(e).__name__)
             if require_delivery:
-                failed_deliveries.append(app.id)
+                if last_delivery_attempt:
+                    _drop_exhausted_delivery(app.id, 'timeout' if isinstance(e, TimeoutError) else 'other')
+                else:
+                    failed_deliveries.append(app.id)
             return
 
     await gather_safe(*[_single(app) for app in filtered_apps], label="trigger_integrations", max_concurrency=10)

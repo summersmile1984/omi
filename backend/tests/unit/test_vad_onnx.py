@@ -233,6 +233,25 @@ class TestVadIsEmptyHostedSuccess:
 class TestVadIsEmptyFallback:
     """vad_is_empty() falls back to local ONNX when hosted VAD fails."""
 
+    @patch.dict(
+        os.environ,
+        {
+            'OMI_DEPLOYMENT_PROFILE': 'self_hosted',
+            'HOSTED_VAD_API_URL': 'https://api.pyannote.ai/v1/vad',
+        },
+    )
+    @patch('utils.stt.vad.requests.post')
+    @patch('utils.stt.vad._run_file_vad', return_value=[])
+    @patch.object(vad, 'redis_db')
+    def test_neutral_profile_rejects_vendor_host_before_upload(self, mock_redis, mock_local, mock_post, tmp_wav_dir):
+        """Self-hosted VAD must not upload audio to an unreviewed vendor host."""
+        wav_path = str(tmp_wav_dir / 'test.wav')
+        _write_wav_file(wav_path, 1.0)
+
+        assert vad_is_empty(wav_path) is True
+        mock_post.assert_not_called()
+        mock_local.assert_called_once_with(wav_path)
+
     @patch.dict(os.environ, {'HOSTED_VAD_API_URL': 'http://vad.test/v1/vad'})
     @patch('utils.stt.vad.requests.post', side_effect=Exception('connection refused'))
     @patch('utils.stt.vad._run_file_vad')

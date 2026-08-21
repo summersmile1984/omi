@@ -1170,7 +1170,7 @@ class CaptureController extends ChangeNotifier
         'codec': codec.toString(),
         'sampleRate': mapCodecToSampleRate(codec),
         'source': _getConversationSourceFromDevice(),
-        'apiBaseUrl': Env.apiBaseUrl ?? 'https://api.omiapi.com/',
+        'apiBaseUrl': Env.requireConfiguredApiBaseUrl(),
         'serviceUuid': audioTarget.key,
         'characteristicUuid': audioTarget.value,
         'deviceType': device.type.name,
@@ -1184,10 +1184,7 @@ class CaptureController extends ChangeNotifier
     await SharedPreferencesUtil().saveString('batchAudioDir', docsDir.path);
 
     await SharedPreferencesUtil().saveBool('nativeBleForegroundReady', false);
-    await SharedPreferencesUtil().saveBool(
-      'nativeBleStreamingEnabled',
-      _shouldEnableNativeBackgroundStreaming,
-    );
+    await SharedPreferencesUtil().saveBool('nativeBleStreamingEnabled', _shouldEnableNativeBackgroundStreaming);
     Logger.debug(
       '[batch] config saved: batchMode=$batchMode dir=${docsDir.path} '
       'deviceId=${device.id} svc=${audioTarget.key} char=${audioTarget.value} type=${device.type.name}',
@@ -1244,10 +1241,7 @@ class CaptureController extends ChangeNotifier
       _nativeOmiRawAudioAllowed;
 
   Future<void> _reconcileNativeBackgroundStreamingPolicy() async {
-    await SharedPreferencesUtil().saveBool(
-      'nativeBleStreamingEnabled',
-      _shouldEnableNativeBackgroundStreaming,
-    );
+    await SharedPreferencesUtil().saveBool('nativeBleStreamingEnabled', _shouldEnableNativeBackgroundStreaming);
   }
 
   /// Enable or disable Background Mode through CaptureProvider so the provider

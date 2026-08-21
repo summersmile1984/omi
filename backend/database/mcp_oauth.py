@@ -6,20 +6,152 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, TypedDict, cast
 import re
 from urllib.parse import unquote, urlsplit
 
 from google.cloud import firestore
 
 from database._client import db
-from database.account_deletion_policy import account_deletion_blocks_access, normalize_account_deletion_status
+from database.account_deletion_policy import (
+    ACCOUNT_DELETION_ACTIVE_COLLECTION,
+    ACCOUNT_DELETION_RECEIPT_COLLECTION,
+    account_deletion_blocks_access,
+    account_deletion_receipt_id,
+    normalize_account_deletion_status,
+)
+from database.memory_app_key_grants import (
+    APP_KEY_MEMORY_GRANT_DOC_ID,
+    APP_KEY_MEMORY_GRANTS_COLLECTION,
+    MCP_CONSUMER,
+    build_app_key_scope_grant_contract_state,
+)
 
 PRODUCTION_MCP_RESOURCE_URL = "https://api.omi.me/v1/mcp/sse"
 # Omi Beta intentionally serves MCP data from dev while retaining the production
 # OAuth authority and its production Firestore grants.
 BETA_MCP_RESOURCE_URL = "https://api.omiapi.com/v1/mcp/sse"
-MCP_RESOURCE_URL = os.getenv("MCP_RESOURCE_URL", PRODUCTION_MCP_RESOURCE_URL)
+MCP_RESOURCE_URL_ENV = "MCP_RESOURCE_URL"
+PUBLIC_MCP_URL_ENV = "PUBLIC_MCP_URL"
+NEUTRAL_DEPLOYMENT_PROFILES = frozenset({"neutral", "self_hosted", "self-hosted"})
+
+
+class MCPResourceUnavailable(RuntimeError):
+    """Raised when this deployment has no safe OAuth resource authority."""
+
+    def __init__(self, reason: str = "mcp_resource_url_not_configured"):
+        super().__init__(reason)
+        self.reason = reason
+        self.retryable = False
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "code": "deployment_capability_unavailable",
+            "capability": "mcp_oauth",
+            "reason": self.reason,
+            "retryable": self.retryable,
+        }
+
+
+def _is_neutral_deployment(values: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if values is None else values
+    return (env.get("OMI_DEPLOYMENT_PROFILE") or "").strip().lower() in NEUTRAL_DEPLOYMENT_PROFILES
+
+
+def _is_omi_operated_host(host: str) -> bool:
+    normalized = host.lower().rstrip(".")
+    return (
+        normalized == "omi.me"
+        or normalized.endswith(".omi.me")
+        or normalized == "omiapi.com"
+        or normalized.endswith(".omiapi.com")
+    )
+
+
+def _operator_mcp_resource(value: str, *, setting: str, append_path: bool = False) -> tuple[str | None, str | None]:
+    """Validate an operator MCP URL without making any network request.
+
+    ``PUBLIC_MCP_URL`` is an origin and is converted to the resource endpoint;
+    ``MCP_RESOURCE_URL`` is already the endpoint. Neutral profiles reject Omi
+    operated hosts even when a stale environment explicitly supplies one.
+    """
+
+    raw = value.strip()
+    if not raw:
+        return None, "mcp_resource_url_not_configured"
+    try:
+        parsed = urlsplit(raw)
+        host = parsed.hostname or ""
+        _ = parsed.port
+    except ValueError:
+        return None, f"invalid_{setting.lower()}"
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or _is_omi_operated_host(host)
+    ):
+        return None, f"invalid_{setting.lower()}"
+    if append_path:
+        if parsed.path not in {"", "/"}:
+            return None, f"invalid_{setting.lower()}"
+        return f"{raw.rstrip('/')}/v1/mcp/sse", None
+    if not parsed.path or parsed.path == "/":
+        return None, f"invalid_{setting.lower()}"
+    return raw.rstrip("/"), None
+
+
+def resolve_mcp_resource_url(values: Mapping[str, str] | None = None) -> tuple[str, str | None]:
+    """Resolve MCP authority while keeping managed compatibility.
+
+    Managed deployments retain the historic ``api.omi.me`` default. A neutral
+    or self-hosted process must use an explicit endpoint, or an explicit
+    operator public origin from which the endpoint is derived. Missing or
+    invalid configuration returns an empty URL plus a typed reason; callers
+    must expose the capability as unavailable rather than inventing a URL.
+    """
+
+    env = os.environ if values is None else values
+    configured = (env.get(MCP_RESOURCE_URL_ENV) or "").strip()
+    if not _is_neutral_deployment(env):
+        return configured or PRODUCTION_MCP_RESOURCE_URL, None
+    if configured:
+        resolved, reason = _operator_mcp_resource(configured, setting=MCP_RESOURCE_URL_ENV)
+        return resolved or "", reason
+    public_url = (env.get(PUBLIC_MCP_URL_ENV) or "").strip()
+    if public_url:
+        resolved, reason = _operator_mcp_resource(public_url, setting=PUBLIC_MCP_URL_ENV, append_path=True)
+        return resolved or "", reason
+    return "", "mcp_resource_url_not_configured"
+
+
+MCP_RESOURCE_URL, _MCP_RESOURCE_UNAVAILABLE_REASON = resolve_mcp_resource_url()
+
+
+def require_mcp_resource_url() -> str:
+    """Return the current authority or raise a typed unavailable error.
+
+    Resolve at the call boundary so a long-lived process cannot retain a
+    managed URL after its deployment profile or operator env is changed.
+    """
+
+    resource_url, reason = resolve_mcp_resource_url()
+    if not resource_url:
+        raise MCPResourceUnavailable(reason or "mcp_resource_url_not_configured")
+    return resource_url
+
+
+def _current_mcp_resource_url() -> str:
+    """Return the current URL for internal optional-resource decisions."""
+
+    resource_url, _ = resolve_mcp_resource_url()
+    return resource_url
+
+
 DEFAULT_CLIENT_ID = os.getenv("MCP_OAUTH_CHATGPT_CLIENT_ID", "omi-chatgpt-prod")
 DEFAULT_CLIENT_NAME = os.getenv("MCP_OAUTH_CHATGPT_CLIENT_NAME", "ChatGPT")
 DEFAULT_CLAUDE_CLIENT_ID = os.getenv("MCP_OAUTH_CLAUDE_CLIENT_ID", "omi-claude-prod")
@@ -126,6 +258,13 @@ def _csv_values(value: object) -> List[str]:
     return []
 
 
+def _default_allowed_resources() -> List[str]:
+    """Return the local authority, or no authority when MCP is unavailable."""
+
+    resource_url = _current_mcp_resource_url()
+    return [resource_url] if resource_url else []
+
+
 def _secret_hash_from_config(config: Dict[str, Any]) -> str:
     secret_hash: Any = config.get("client_secret_hash") or config.get("secret_hash") or ""
     secret_hash_env = config.get("client_secret_hash_env") or config.get("secret_hash_env")
@@ -161,7 +300,7 @@ def _client_from_config(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             config.get("allowed_redirect_uri_prefixes") or config.get("redirect_uri_prefixes")
         ),
         "allowed_resources": _csv_values(config.get("allowed_resources") or config.get("resources"))
-        or [MCP_RESOURCE_URL],
+        or _default_allowed_resources(),
         "allowed_scopes": _csv_values(config.get("allowed_scopes") or config.get("scopes")) or SUPPORTED_SCOPES,
         "token_endpoint_auth_method": auth_method,
         "client_secret_hash": _secret_hash_from_config(config) if auth_method == "client_secret_post" else "",
@@ -213,7 +352,7 @@ def _legacy_chatgpt_client(client_id: Optional[str] = None) -> Dict[str, Any]:
         "allowed_redirect_uri_prefixes": (
             [CHATGPT_CONNECTOR_REDIRECT_URI_PREFIX] if resolved_client_id in PUBLIC_CHATGPT_CLIENT_IDS else []
         ),
-        "allowed_resources": [MCP_RESOURCE_URL],
+        "allowed_resources": _default_allowed_resources(),
         "allowed_scopes": SUPPORTED_SCOPES,
         "token_endpoint_auth_method": auth_method,
         "client_secret_hash": secret_hash
@@ -229,7 +368,7 @@ def _default_claude_client() -> Dict[str, Any]:
         "registration_mode": "claude_env",
         "allowed_redirect_uris": _csv_env("MCP_OAUTH_CLAUDE_REDIRECT_URIS") or [CLAUDE_CONNECTOR_REDIRECT_URI],
         "allowed_redirect_uri_prefixes": [],
-        "allowed_resources": [MCP_RESOURCE_URL],
+        "allowed_resources": _default_allowed_resources(),
         "allowed_scopes": SUPPORTED_SCOPES,
         "token_endpoint_auth_method": "none",
         "client_secret_hash": "",
@@ -253,7 +392,7 @@ def _builtin_public_chatgpt_client(client_id: str) -> Optional[Dict[str, Any]]:
         "name": DEFAULT_CLIENT_NAME,
         "registration_mode": "builtin_public_chatgpt",
         "allowed_redirect_uris": redirect_uris,
-        "allowed_resources": [MCP_RESOURCE_URL],
+        "allowed_resources": _default_allowed_resources(),
         "allowed_scopes": SUPPORTED_SCOPES,
         "token_endpoint_auth_method": "none",
         "client_secret_hash": "",
@@ -272,8 +411,9 @@ def _finalize_client(client: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         if CHATGPT_CONNECTOR_REDIRECT_URI_PREFIX not in prefixes:
             prefixes.append(CHATGPT_CONNECTOR_REDIRECT_URI_PREFIX)
         finalized["allowed_redirect_uri_prefixes"] = prefixes
-    if client_id in PRODUCTION_CROSS_PLANE_CLIENT_IDS and MCP_RESOURCE_URL == PRODUCTION_MCP_RESOURCE_URL:
-        resources = _csv_values(finalized.get("allowed_resources")) or [MCP_RESOURCE_URL]
+    resource_url = _current_mcp_resource_url()
+    if client_id in PRODUCTION_CROSS_PLANE_CLIENT_IDS and resource_url == PRODUCTION_MCP_RESOURCE_URL:
+        resources = _csv_values(finalized.get("allowed_resources")) or _default_allowed_resources()
         if BETA_MCP_RESOURCE_URL not in resources:
             resources.append(BETA_MCP_RESOURCE_URL)
         finalized["allowed_resources"] = resources
@@ -289,7 +429,7 @@ def _default_public_client() -> Optional[Dict[str, Any]]:
         "name": DEFAULT_PUBLIC_CLIENT_NAME,
         "registration_mode": "public_env",
         "allowed_redirect_uris": redirect_uris,
-        "allowed_resources": [MCP_RESOURCE_URL],
+        "allowed_resources": _default_allowed_resources(),
         "allowed_scopes": SUPPORTED_SCOPES,
         "token_endpoint_auth_method": "none",
         "client_secret_hash": "",
@@ -303,7 +443,7 @@ def get_client(client_id: str) -> Optional[Dict[str, Any]]:
     if doc.exists:
         data: Dict[str, Any] = _typed_doc(doc)
         data.setdefault("id", client_id)
-        data.setdefault("allowed_resources", [MCP_RESOURCE_URL])
+        data.setdefault("allowed_resources", _default_allowed_resources())
         data.setdefault("allowed_scopes", SUPPORTED_SCOPES)
         data.setdefault("token_endpoint_auth_method", "client_secret_post")
         data.setdefault("allowed_redirect_uri_prefixes", [])
@@ -394,7 +534,14 @@ def validate_redirect_uri(client: Dict[str, Any], redirect_uri: str) -> bool:
 
 
 def validate_resource(client: Dict[str, Any], resource: str) -> bool:
-    return resource in set(client.get("allowed_resources") or [])
+    # An omitted neutral/self-host authority is an unavailable capability, not
+    # an empty resource that can be authorized or persisted accidentally.
+    resource_url = _current_mcp_resource_url()
+    if not resource_url or resource not in set(client.get("allowed_resources") or []):
+        return False
+    # Managed production clients intentionally retain the beta cross-plane
+    # resource. Neutral profiles may authorize only their current operator URL.
+    return resource == resource_url or not _is_neutral_deployment()
 
 
 def normalize_scopes(scope: Optional[str], client: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -442,13 +589,76 @@ def _grant_write(
     return ref, existing, data
 
 
+def _oauth_memory_grant_ref(uid: str) -> Any:
+    return db.collection(f"users/{uid}/{APP_KEY_MEMORY_GRANTS_COLLECTION}").document(APP_KEY_MEMORY_GRANT_DOC_ID)
+
+
+def _oauth_memory_grant_contract(grant: Dict[str, Any]) -> Dict[str, Any]:
+    scopes = [scope for scope in grant.get("scopes") or [] if scope in {"memories.read", "memories.write"}]
+    return build_app_key_scope_grant_contract_state(
+        consumer=MCP_CONSUMER,
+        app_id=cast(str, grant["client_id"]),
+        key_id=cast(str, grant["id"]),
+        scopes=scopes,
+        default_read="memories.read" in scopes,
+        archive_read=False,
+        write="memories.write" in scopes,
+        enabled=True,
+    )
+
+
+def _oauth_memory_grant_entry_is_absent(state: object, grant: Dict[str, Any]) -> bool:
+    current = state
+    for field in (
+        "grants",
+        MCP_CONSUMER,
+        "apps",
+        grant["client_id"],
+        "keys",
+        grant["id"],
+    ):
+        if not isinstance(current, dict):
+            return False
+        if field not in current:
+            return True
+        current = current[field]
+    return False
+
+
+def _create_oauth_memory_grant_if_absent(
+    transaction: Any, grant_ref: Any, snapshot: Any, grant: Dict[str, Any]
+) -> bool:
+    if getattr(snapshot, "exists", False):
+        state: object = snapshot.to_dict()
+        if not _oauth_memory_grant_entry_is_absent(state, grant):
+            return False
+    transaction.set(grant_ref, _oauth_memory_grant_contract(grant), merge=True)
+    return True
+
+
+def _ensure_oauth_memory_grant(grant: Dict[str, Any]) -> bool:
+    """Create a missing OAuth memory grant without changing control-plane state."""
+    grant_ref = _oauth_memory_grant_ref(cast(str, grant["uid"]))
+    transaction = db.transaction()
+
+    @_typed_transactional
+    def _create(transaction: Any) -> bool:
+        snapshot = grant_ref.get(transaction=transaction)
+        return _create_oauth_memory_grant_if_absent(transaction, grant_ref, snapshot, grant)
+
+    return _create(transaction)
+
+
 def create_or_update_grant(uid: str, client_id: str, resource: str, scopes: List[str]) -> Dict[str, Any]:
+    require_mcp_resource_url()
     deterministic_grant_id = f"{uid}:{client_id}:{hash_secret(resource)[:16]}"
     now = _now()
     ref = db.collection("mcp_oauth_grants").document(deterministic_grant_id)
     ref, existing, data = _grant_write(uid, client_id, resource, scopes, ref=ref, doc=ref.get(), now=now)
     ref.set(data, merge=True)
-    return {**existing, **data}
+    grant = {**existing, **data}
+    _ensure_oauth_memory_grant(grant)
+    return grant
 
 
 def _authorization_code_write(
@@ -486,6 +696,7 @@ def issue_authorization_code(
     scopes: List[str],
     code_challenge: str,
 ) -> str:
+    require_mcp_resource_url()
     raw_code = "omi_code_" + secrets.token_urlsafe(32)
     now = _now()
     db.collection("mcp_oauth_authorization_codes").document(hash_secret(raw_code)).set(
@@ -503,8 +714,10 @@ def create_grant_and_authorization_code_if_allowed(
     code_challenge: str,
 ) -> Tuple[Dict[str, Any], str]:
     """Atomically fence deletion admission with both OAuth consent writes."""
+    require_mcp_resource_url()
     deterministic_grant_id = f"{uid}:{client_id}:{hash_secret(resource)[:16]}"
-    deletion_ref = db.collection("account_deletions").document(uid)
+    deletion_ref = db.collection(ACCOUNT_DELETION_ACTIVE_COLLECTION).document(uid)
+    deletion_receipt_ref = db.collection(ACCOUNT_DELETION_RECEIPT_COLLECTION).document(account_deletion_receipt_id(uid))
     grant_ref = db.collection("mcp_oauth_grants").document(deterministic_grant_id)
     raw_code = "omi_code_" + secrets.token_urlsafe(32)
     code_ref = db.collection("mcp_oauth_authorization_codes").document(hash_secret(raw_code))
@@ -513,9 +726,11 @@ def create_grant_and_authorization_code_if_allowed(
     @_typed_transactional
     def _create(transaction: Any) -> Tuple[Dict[str, Any], str]:
         deletion_doc = deletion_ref.get(transaction=transaction)
-        deletion_data = _typed_doc(deletion_doc) if deletion_doc.exists else {}
+        deletion_receipt_doc = deletion_receipt_ref.get(transaction=transaction)
+        deletion_authority = deletion_doc if deletion_doc.exists else deletion_receipt_doc
+        deletion_data = _typed_doc(deletion_authority) if deletion_authority.exists else {}
         deletion_status = normalize_account_deletion_status(
-            marker_exists=deletion_doc.exists,
+            marker_exists=deletion_authority.exists,
             raw_status=deletion_data.get("wipe_status"),
         )
         if account_deletion_blocks_access(deletion_status):
@@ -526,6 +741,8 @@ def create_grant_and_authorization_code_if_allowed(
         current_grant_ref, existing, grant_data = _grant_write(
             uid, client_id, resource, scopes, ref=grant_ref, doc=grant_doc, now=now
         )
+        memory_grant_ref = _oauth_memory_grant_ref(uid)
+        memory_grant_doc = memory_grant_ref.get(transaction=transaction)
         code_data = _authorization_code_write(
             uid,
             current_grant_ref.id,
@@ -537,6 +754,7 @@ def create_grant_and_authorization_code_if_allowed(
             now=now,
         )
         transaction.set(current_grant_ref, grant_data, merge=True)
+        _create_oauth_memory_grant_if_absent(transaction, memory_grant_ref, memory_grant_doc, grant_data)
         transaction.set(code_ref, code_data)
         return {**existing, **grant_data}, raw_code
 
@@ -709,36 +927,113 @@ def _token_pair_response(access_token: str, refresh_token: str, scopes: List[str
 
 
 def get_active_grant(grant_id: str) -> Optional[Dict[str, Any]]:
+    if not grant_id.strip():
+        return None
     doc = db.collection("mcp_oauth_grants").document(grant_id).get()
     if not doc.exists:
         return None
     data: Dict[str, Any] = _typed_doc(doc)
     if data.get("revoked_at") or data.get("status") == "revoked":
         return None
-    data.setdefault("id", grant_id)
     return data
 
 
-def validate_access_token(access_token: str, resource: str = MCP_RESOURCE_URL) -> Optional[Dict[str, Any]]:
+def _valid_oauth_scopes(value: object) -> Optional[List[str]]:
+    if not isinstance(value, list) or not value:
+        return None
+    scopes = cast(List[Any], value)
+    if any(not isinstance(scope, str) or not scope or scope not in SUPPORTED_SCOPES for scope in scopes):
+        return None
+    if len(scopes) != len(set(scopes)):
+        return None
+    return cast(List[str], scopes)
+
+
+def _nonempty_string(data: Dict[str, Any], field: str) -> Optional[str]:
+    value = data.get(field)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _is_unexpired(value: object, now: datetime) -> bool:
+    if not isinstance(value, datetime):
+        return False
+    try:
+        return value > now
+    except (TypeError, ValueError):
+        return False
+
+
+def _validated_access_token_identity(
+    data: Dict[str, Any], grant: Dict[str, Any], resource: str, *, now: datetime
+) -> Optional[Dict[str, Any]]:
+    uid = _nonempty_string(data, "uid")
+    client_id = _nonempty_string(data, "client_id")
+    grant_id = _nonempty_string(data, "grant_id")
+    token_resource = _nonempty_string(data, "resource")
+    token_scopes = _valid_oauth_scopes(data.get("scopes"))
+    grant_uid = _nonempty_string(grant, "uid")
+    grant_client_id = _nonempty_string(grant, "client_id")
+    persisted_grant_id = _nonempty_string(grant, "id")
+    grant_resource = _nonempty_string(grant, "resource")
+    grant_scopes = _valid_oauth_scopes(grant.get("scopes"))
+    grant_expires_at = grant.get("expires_at")
+    if (
+        uid is None
+        or client_id is None
+        or grant_id is None
+        or token_resource is None
+        or token_scopes is None
+        or grant_uid is None
+        or grant_client_id is None
+        or persisted_grant_id is None
+        or grant_resource is None
+        or grant_scopes is None
+        or "revoked_at" not in data
+        or data.get("revoked_at") is not None
+        or not _is_unexpired(data.get("expires_at"), now)
+        or grant.get("status") != "active"
+        or "revoked_at" not in grant
+        or grant.get("revoked_at") is not None
+        or (grant_expires_at is not None and not _is_unexpired(grant_expires_at, now))
+        or token_resource != resource
+        or uid != grant_uid
+        or client_id != grant_client_id
+        or grant_id != persisted_grant_id
+        or token_resource != grant_resource
+        or not set(token_scopes).issubset(grant_scopes)
+    ):
+        return None
+    return {
+        "uid": uid,
+        "auth_type": "oauth",
+        "client_id": client_id,
+        "resource": token_resource,
+        "scopes": token_scopes,
+        "grant_id": grant_id,
+    }
+
+
+def validate_access_token(access_token: str, resource: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    resource_url = _current_mcp_resource_url()
+    if not resource_url or (resource is not None and resource != resource_url):
+        return None
+    resource = resource_url
     doc = db.collection("mcp_oauth_access_tokens").document(hash_secret(access_token)).get()
     if not doc.exists:
         return None
     data: Dict[str, Any] = _typed_doc(doc)
-    expires_at = data.get("expires_at")
-    if data.get("revoked_at") or data.get("resource") != resource or (expires_at and expires_at <= _now()):
+    grant_id = _nonempty_string(data, "grant_id")
+    if grant_id is None:
         return None
-    grant = get_active_grant(cast(str, data.get("grant_id")))
+    grant = get_active_grant(grant_id)
     if not grant:
         return None
-    db.collection("mcp_oauth_grants").document(data["grant_id"]).set({"last_used_at": _now()}, merge=True)
-    return {
-        "uid": data.get("uid"),
-        "auth_type": "oauth",
-        "client_id": data.get("client_id"),
-        "resource": data.get("resource"),
-        "scopes": data.get("scopes") or [],
-        "grant_id": data.get("grant_id"),
-    }
+    identity = _validated_access_token_identity(data, grant, resource, now=_now())
+    if identity is None:
+        return None
+    _ensure_oauth_memory_grant(grant)
+    db.collection("mcp_oauth_grants").document(grant_id).set({"last_used_at": _now()}, merge=True)
+    return identity
 
 
 def rotate_refresh_token(

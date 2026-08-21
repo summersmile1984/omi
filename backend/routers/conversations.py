@@ -47,6 +47,7 @@ from models.shared import StatusResponse
 
 from utils.conversations.process_conversation import process_conversation, retrieve_in_progress_conversation
 from utils.conversations import lifecycle as lifecycle_service
+from utils.conversations.meeting_receipt import record_and_persist_finalized_meeting_receipt
 from utils.executors import db_executor, llm_executor, postprocess_executor, run_blocking, submit_with_context
 from utils.memory.memory_service import MemoryService
 from utils.memory.retraction_scope import retraction_can_be_skipped
@@ -60,6 +61,7 @@ from utils.conversations.search import (
     parse_exact_conversation_reference,
     search_conversations,
 )
+from utils.conversations.typesense_index import ConversationIndexUnavailableError
 from utils.llm.conversation_processing import SummaryProviderError, generate_summary_with_prompt
 from utils.speaker_identification import extract_speaker_samples
 from utils.other import endpoints as auth
@@ -153,8 +155,6 @@ def _enrich_deferred_conversation(uid: str, conversation: dict) -> dict:
 
     def _run_enrichment():
         try:
-            from utils.task_intelligence.proactive_engine import persist_desktop_meeting_arrival_best_effort
-
             conv_obj = deserialize_conversation(conversation)
             conv_obj.deferred = False
             with lifecycle_service.processing_admission_guard(uid, conversation_id, rollback_on_failure=False):
@@ -166,7 +166,7 @@ def _enrich_deferred_conversation(uid: str, conversation: dict) -> dict:
             # initial lazy row deliberately skipped this adapter, so doing it
             # here closes the gap without waking Chat for processing rows.
             if enriched is not None:
-                persist_desktop_meeting_arrival_best_effort(uid, enriched)
+                record_and_persist_finalized_meeting_receipt(uid, enriched)
             logger.info(f"lazy enrich complete uid={uid} conv={conversation_id}")
         except Exception as e:
             logger.error(f"lazy enrich failed uid={uid} conv={conversation_id}: {e}")
@@ -263,14 +263,19 @@ def process_in_progress_conversation(
     # a processing failure must return the admission to in_progress — otherwise
     # the conversation is stranded on "processing" forever and the client shows
     # a stuck Processing card it can never resolve.
-    with lifecycle_service.processing_admission_guard(uid, conversation.id):
-        conversation = process_conversation(
-            uid,
-            conversation.language,
-            conversation,
-            force_process=True,
-            persistence_observer=record_persistence,
-        )
+    try:
+        with lifecycle_service.processing_admission_guard(uid, conversation.id):
+            conversation = process_conversation(
+                uid,
+                conversation.language,
+                conversation,
+                force_process=True,
+                persistence_observer=record_persistence,
+            )
+    except ConversationIndexUnavailableError as error:
+        raise HTTPException(
+            status_code=503, detail='Conversation search projection is temporarily unavailable'
+        ) from error
     if not persisted:
         latest = _get_valid_conversation_by_id(uid, conversation.id)
         return CreateConversationResponse(conversation=deserialize_conversation(latest), messages=[])
@@ -595,7 +600,12 @@ def get_conversation_by_id(
 )
 def patch_conversation_title(conversation_id: str, title: str, uid: str = Depends(auth.get_current_user_uid)):
     _get_valid_conversation_by_id(uid, conversation_id)
-    conversations_db.update_conversation_title(uid, conversation_id, title)
+    try:
+        conversations_db.update_conversation_title(uid, conversation_id, title)
+    except ConversationIndexUnavailableError as error:
+        raise HTTPException(
+            status_code=503, detail='Conversation search projection is temporarily unavailable'
+        ) from error
     return {'status': 'Ok', 'conversation': _get_valid_conversation_by_id(uid, conversation_id)}
 
 
@@ -768,7 +778,12 @@ async def auto_link_calendar_event(conversation_id: str, uid: str = Depends(auth
 def patch_conversation_summary(
     conversation_id: str, data: UpdateSummaryRequest, uid: str = Depends(auth.get_current_user_uid)
 ):
-    result = conversations_db.update_conversation_summary(uid, conversation_id, data.app_id, data.content)
+    try:
+        result = conversations_db.update_conversation_summary(uid, conversation_id, data.app_id, data.content)
+    except ConversationIndexUnavailableError as error:
+        raise HTTPException(
+            status_code=503, detail='Conversation search projection is temporarily unavailable'
+        ) from error
     if result == 'not_found':
         raise HTTPException(status_code=404, detail="Conversation not found")
     if result == 'app_result_not_found':
@@ -850,7 +865,12 @@ def delete_conversation(
         action_items_db.delete_action_items_for_conversation(uid, conversation_id)
         background_tasks.add_task(delete_conversation_audio_files, uid, conversation_id)
 
-    conversations_db.delete_conversation(uid, conversation_id)
+    try:
+        conversations_db.delete_conversation(uid, conversation_id)
+    except ConversationIndexUnavailableError as error:
+        raise HTTPException(
+            status_code=503, detail='Conversation search projection is temporarily unavailable'
+        ) from error
     delete_vector(uid, conversation_id)
     delete_transcript_chunk_vectors(uid, conversation_id)
 

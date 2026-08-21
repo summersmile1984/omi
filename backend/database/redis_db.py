@@ -353,7 +353,10 @@ def cache_user_geolocation(uid: str, geolocation: Dict[str, Any]) -> None:
     # optional fields already default to ``None`` when absent.
     present_fields = {key: value for key, value in geolocation.items() if value is not None}
     r.set(f'users:{uid}:geolocation', _serialize_cache_value(present_fields))
-    r.expire(f'users:{uid}:geolocation', 60 * 30)  # FIXME: too much?
+    # 30m: conversation/tool place tagging does not need second-level freshness;
+    # clients re-upload on significant moves and at recording start. Keeps the
+    # last-known coords available without inventing a tighter freshness policy.
+    r.expire(f'users:{uid}:geolocation', 60 * 30)
 
 
 def get_cached_user_geolocation(uid: str) -> Optional[Dict[str, Any]]:
@@ -956,6 +959,20 @@ def try_acquire_realtime_relay_lease(uid: str, token: str, ttl: int) -> bool:
 def release_realtime_relay_lease(uid: str, token: str) -> bool:
     """Release only the relay lease still owned by ``token``."""
 
+    if not uid or not token:
+        return False
+    return bool(_REALTIME_RELAY_LEASE_RELEASE_LUA(keys=[f'realtime_relay:lease:{uid}'], args=[token]))
+
+
+def try_acquire_realtime_relay_lease(uid: str, token: str, ttl: int) -> bool:
+    """Claim the single cross-instance realtime relay slot for one user."""
+    if not uid or not token or ttl < 1:
+        raise ValueError('uid, token, and a positive ttl are required')
+    return r.set(f'realtime_relay:lease:{uid}', token, ex=ttl, nx=True) is not None
+
+
+def release_realtime_relay_lease(uid: str, token: str) -> bool:
+    """Release only the realtime relay lease still owned by ``token``."""
     if not uid or not token:
         return False
     return bool(_REALTIME_RELAY_LEASE_RELEASE_LUA(keys=[f'realtime_relay:lease:{uid}'], args=[token]))

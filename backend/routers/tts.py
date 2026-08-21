@@ -25,6 +25,13 @@ from utils.log_sanitizer import sanitize
 from utils.mimo_pipeline.config import mimo_is_configured
 from utils.other import endpoints as auth
 from utils.executors import run_blocking, critical_executor
+from utils.tts_policy import (
+    TTS_DISABLED_DETAIL,
+    tts_explicitly_disabled,
+    tts_official_provider_forbidden_in_neutral,
+    tts_provider_missing_in_neutral_deployment,
+)
+from utils.tts_provider import selected_tts_provider, synthesize_openai_compatible_tts, synthesize_sherpa_tts
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,12 @@ def _is_valid_voice_id(voice_id: str) -> bool:
     ElevenLabs URL template (e.g. `../../history` retargeting `xi-api-key`).
     """
     return 1 <= len(voice_id) <= 128 and voice_id.isalnum()
+
+
+def _is_safe_voice_label(voice_id: str) -> bool:
+    """Bound a provider voice label without imposing ElevenLabs path rules."""
+
+    return 1 <= len(voice_id) <= 128 and not any(ord(character) < 32 for character in voice_id)
 
 
 def _is_mimo_enabled() -> bool:
@@ -88,6 +101,66 @@ async def tts_synthesize(
         raise HTTPException(status_code=503, detail="TTS service not configured")
 
     text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text must not be empty")
+    if not _is_safe_voice_label(req.voice_id):
+        raise HTTPException(status_code=400, detail="invalid voice_id")
+    char_count = len(text)
+    if char_count > _TTS_REQUEST_CHAR_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"text exceeds maximum length of {_TTS_REQUEST_CHAR_LIMIT} characters",
+        )
+
+    if tts_explicitly_disabled():
+        raise HTTPException(status_code=503, detail=TTS_DISABLED_DETAIL)
+    if tts_provider_missing_in_neutral_deployment():
+        error = ModelCapabilityUnavailableError('tts', 'provider_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+
+    selected_provider = selected_tts_provider()
+    if selected_provider not in {'', 'elevenlabs', 'mimo', 'openai_compatible', 'sherpa_onnx'}:
+        error = ModelCapabilityUnavailableError('tts', 'unsupported_provider', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+    if tts_official_provider_forbidden_in_neutral(selected_provider):
+        error = ModelCapabilityUnavailableError('tts', 'official_provider_forbidden', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+
+    api_key = os.getenv('ELEVENLABS_API_KEY')
+    mimo_enabled = selected_provider == 'mimo' and _is_mimo_enabled()
+    compatible_enabled = selected_provider == 'openai_compatible'
+    sherpa_enabled = selected_provider == 'sherpa_onnx'
+    if selected_provider == 'mimo' and not mimo_enabled:
+        error = ModelCapabilityUnavailableError('tts', 'mimo_credential_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+    if selected_provider in {'', 'elevenlabs'} and not api_key:
+        error = ModelCapabilityUnavailableError('tts', 'elevenlabs_credential_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+
+    status, retry_after = await run_blocking(
+        critical_executor,
+        redis_db.check_tts_rate_limit,
+        uid,
+        char_count=char_count,
+        burst_limit=_TTS_BURST_PER_MINUTE,
+        burst_window_secs=_TTS_BURST_WINDOW_SECS,
+        daily_char_limit=_TTS_DAILY_CHAR_LIMIT,
+    )
+    if status == 1:
+        logger.warning(f"tts_synthesize: burst rate limit exceeded uid={uid}")
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded: too many TTS requests. Try again in 60 seconds.",
+            headers={"Retry-After": str(retry_after or _TTS_BURST_WINDOW_SECS)},
+        )
+    if status == 2:
+        logger.warning(f"tts_synthesize: daily character limit exceeded uid={uid}")
+        raise HTTPException(
+            status_code=429,
+            detail="Daily TTS character limit exceeded. Resets at midnight UTC.",
+            headers={"Retry-After": str(retry_after or 3600)},
+        )
+    # status == -1 (Redis error): fail-open intentionally — TTS is best-effort.
 
     if mimo_enabled:
         # MiMo-TTS: one-shot chat-completions request returning audio bytes.
@@ -120,8 +193,41 @@ async def tts_synthesize(
             headers={"Content-Length": str(len(audio))},
         )
 
-    assert api_key is not None
+    if compatible_enabled:
+        try:
+            audio = await synthesize_openai_compatible_tts(
+                text,
+                voice=req.voice_id,
+                audio_format=req.output_format,
+            )
+        except ModelCapabilityUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.as_dict()) from error
 
+        async def compatible_stream():
+            yield audio.content
+
+        return StreamingResponse(
+            compatible_stream(),
+            media_type=audio.media_type,
+            headers={"Content-Length": str(len(audio.content))},
+        )
+
+    if sherpa_enabled:
+        try:
+            audio = await synthesize_sherpa_tts(text, audio_format=req.output_format)
+        except ModelCapabilityUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.as_dict()) from error
+
+        async def sherpa_stream():
+            yield audio.content
+
+        return StreamingResponse(
+            sherpa_stream(),
+            media_type=audio.media_type,
+            headers={"Content-Length": str(len(audio.content))},
+        )
+
+    assert api_key is not None
     if not _is_valid_voice_id(req.voice_id):
         raise HTTPException(status_code=400, detail="invalid voice_id")
 

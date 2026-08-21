@@ -1,8 +1,10 @@
 import base64
+from dataclasses import dataclass
 import mimetypes
+import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import openai
 from openai import AsyncOpenAI, AssistantEventHandler
@@ -17,13 +19,52 @@ from pydantic import ValidationError
 import database.chat as chat_db
 from models.chat import ChatSession, FileChat
 from utils.executors import db_executor, llm_executor, run_blocking
+from utils.llm.capabilities import ModelCapabilityUnavailableError, resolve_model_capability
 from utils.llm.gateway_client import should_route_features_through_gateway
 from utils.llm.gateway_observability import record_direct_exception_surface
+from utils.other.local_file_chat import (
+    LocalFileChatError,
+    answer_local_file_chat,
+    delete_local_attachment_record,
+    is_local_attachment_id,
+    prepare_local_file_chat,
+    prepare_local_file_chat_sync,
+    require_local_file_records,
+    run_local_file_chat_stream,
+    upload_local_attachment,
+    validate_local_file_selection,
+)
 import logging
 
 logger = logging.getLogger(__name__)
 
 _FILE_SEARCH_ASSISTANT_MODEL = "gpt-4.1"
+
+
+@dataclass(frozen=True)
+class FileChatCleanupReceipt:
+    """Bounded cleanup result; provider identifiers never leave this process."""
+
+    deleted_records: int
+    pending_records: int
+    pending_session_objects: int
+
+
+class FileChatCleanupError(LocalFileChatError):
+    """Retryable cleanup failure that preserves every unresolved authority."""
+
+    def __init__(self, reason: str, receipt: FileChatCleanupReceipt) -> None:
+        self.receipt = receipt
+        super().__init__(reason, retryable=True, status_code=503)
+
+    def as_dict(self) -> dict[str, object]:
+        detail = super().as_dict()
+        detail['cleanup'] = {
+            'deleted_records': self.receipt.deleted_records,
+            'pending_records': self.receipt.pending_records,
+            'pending_session_objects': self.receipt.pending_session_objects,
+        }
+        return detail
 
 
 class UnsupportedChatFileError(Exception):
@@ -61,18 +102,41 @@ def _safe_file_chats(files_data: List[Dict[str, Any]]) -> List[FileChat]:
     return files
 
 
-def _openai_file_ids(files_data: List[Dict[str, Any]]) -> List[str]:
-    """Collect openai_file_id values from raw file docs without Pydantic validation.
+def _file_record_transport(record: Dict[str, Any]) -> str:
+    """Resolve cleanup authority from the immutable record id/prefix.
 
-    Cleanup must delete provider objects even when a legacy doc fails FileChat validation
-    (e.g. missing mime_type/created_at) — otherwise Firestore wipe orphans the OpenAI file.
+    Newer records may carry an explicit transport, but the server-generated
+    ``local_`` prefix remains authoritative for records written before that
+    field existed. A claimed local transport with a non-local id is retained
+    for operator repair rather than being sent to OpenAI.
     """
-    ids: List[str] = []
-    for f in files_data:
-        openai_file_id = f.get('openai_file_id')
-        if isinstance(openai_file_id, str) and openai_file_id:
-            ids.append(openai_file_id)
-    return ids
+
+    file_id = record.get('openai_file_id')
+    declared = record.get('transport')
+    if is_local_attachment_id(file_id):
+        return 'local_extraction'
+    if isinstance(file_id, str) and file_id.startswith('local_'):
+        return 'invalid'
+    if declared == 'local_extraction':
+        return 'invalid'
+    if isinstance(file_id, str) and file_id:
+        return 'openai_assistants'
+    return 'none'
+
+
+def _managed_openai_cleanup_is_configured() -> bool:
+    """Require an explicit platform credential before constructing vendor egress."""
+
+    # An explicit deployment disable is a stronger boundary than merely lacking
+    # credentials.  Legacy provider-owned objects remain pending for an
+    # operator migration/retry; they must never be deleted through the vendor
+    # SDK just because an unrelated OpenAI key leaked into the process.
+    if os.getenv('FILE_CHAT_TRANSPORT', '').strip().lower() == 'disabled':
+        return False
+    if not os.getenv('OPENAI_API_KEY', '').strip():
+        return False
+    configured_base = os.getenv('OPENAI_BASE_URL', '').strip().rstrip('/')
+    return configured_base in {'', 'https://api.openai.com/v1'}
 
 
 _async_openai: AsyncOpenAI | None = None
@@ -85,17 +149,23 @@ def _get_async_openai() -> AsyncOpenAI:
     return _async_openai
 
 
-def _record_direct_file_chat_surface() -> None:
-    """File chat has no gateway lane (OpenAI Files/Assistants/vision), so under gateway
-    feature mode it stays an acknowledged direct surface: counted, never blocked.
-    A misconfigured gateway rollout (should_route_features_through_gateway raising) must
-    not block it either."""
+def _selected_file_chat_transport() -> str:
+    """Resolve deployment authority before any provider client or object call."""
+
+    capability = resolve_model_capability('file_chat')
+    if not capability.selected:
+        raise ModelCapabilityUnavailableError(
+            'file_chat', capability.reason or 'not_configured', retryable=capability.retryable
+        )
+    if capability.transport == 'local_extraction':
+        return capability.transport
     try:
         routed = should_route_features_through_gateway()
     except RuntimeError:
         routed = True
     if routed:
         record_direct_exception_surface(surface='file_chat.openai_files_assistants_vision')
+    return 'openai_files_assistants'
 
 
 class _StreamingCallbackProtocol:
@@ -166,8 +236,17 @@ class FileChatTool:
         self.assistant_id = self.chat_session.openai_assistant_id
 
     @staticmethod
-    def upload(file_path: Union[str, Path]) -> Dict[str, Any]:
-        _record_direct_file_chat_surface()
+    def upload(
+        file_path: Union[str, Path],
+        *,
+        uid: str | None = None,
+        file_name: str | None = None,
+    ) -> Dict[str, Any]:
+        transport = _selected_file_chat_transport()
+        if transport == 'local_extraction':
+            if not uid:
+                raise LocalFileChatError('authenticated_uid_required', retryable=False, status_code=400)
+            return upload_local_attachment(file_path, uid=uid, file_name=file_name or Path(file_path).name)
         result: Dict[str, Any] = {}
         file = File(file_path)
         file.get_mime_type()
@@ -199,9 +278,22 @@ class FileChatTool:
                     result["thumbnail_name"] = file.thumbnail_name
         return result
 
+    @staticmethod
+    def cleanup_uploaded_local_files(uid: str, files: Sequence[FileChat]) -> None:
+        """Reconcile originals uploaded before the file records were committed."""
+
+        for file in files:
+            delete_local_attachment_record(uid, {'openai_file_id': file.openai_file_id, 'name': file.name})
+
     def process_chat_with_file(self, question: str, file_ids: List[str]) -> str:
         """Process chat with file attachments"""
-        _record_direct_file_chat_surface()
+        transport = _selected_file_chat_transport()
+        if transport == 'local_extraction':
+            validate_local_file_selection(file_ids)
+            files_data = chat_db.get_chat_files_desc(self.uid, files_id=file_ids, limit=9)
+            files = require_local_file_records(files_data, file_ids)
+            prepared = prepare_local_file_chat_sync(self.uid, question, files)
+            return answer_local_file_chat(prepared)
         self._ensure_thread_and_assistant()
         answer = self.ask(self.uid, question, file_ids, self.thread_id, self.assistant_id)
         return answer
@@ -213,20 +305,32 @@ class FileChatTool:
         callback: Optional[_StreamingCallbackProtocol] = None,
     ) -> str:
         """Process chat with file attachments (streaming)"""
-        _record_direct_file_chat_surface()
+        transport = _selected_file_chat_transport()
         # Offloaded: the Firestore read is sync and blocks the event loop in this async path.
         # If this pre-stream setup fails, signal the streaming callback's end before propagating
         # (mirrors the _ensure_thread_and_assistant failure path below) so it is not left dangling.
         assert callback is not None  # streaming path always supplies a callback
+        prepared = None
         try:
+            if transport == 'local_extraction':
+                validate_local_file_selection(file_ids)
             files_data = await run_blocking(
                 db_executor, chat_db.get_chat_files_desc, self.uid, files_id=file_ids, limit=9
             )
-            files = _safe_file_chats(files_data)
-            all_images = all(f.is_image() for f in files) if files else False
+            if transport == 'local_extraction':
+                files = require_local_file_records(files_data, file_ids)
+                prepared = await prepare_local_file_chat(self.uid, question, files)
+            else:
+                files = _safe_file_chats(files_data)
         except Exception:
             callback.end_nowait()
             raise
+
+        if transport == 'local_extraction':
+            assert prepared is not None
+            return await run_local_file_chat_stream(prepared, callback)
+
+        all_images = all(f.is_image() for f in files) if files else False
 
         if all_images and files:
             logger.info(f"[FileChat] All {len(files)} files are images, using Chat Completions vision API")
@@ -455,27 +559,86 @@ class FileChatTool:
 
         return ''.join(output_list)
 
-    def cleanup(self) -> None:
-        """Cleanup chat session files, thread, and assistant"""
+    def cleanup(self) -> FileChatCleanupReceipt:
+        """Cleanup per-record provider objects without dropping retry authority."""
         logger.info("start cleanup thread chat with file")
         files = chat_db.get_chat_files(self.uid)
+        deleted_records: List[Dict[str, Any]] = []
+        pending_records: List[Dict[str, Any]] = []
         if files:
-            # Delete OpenAI objects from raw docs first — do not gate on FileChat validation,
-            # or a malformed doc with openai_file_id leaks after Firestore delete (#9608 follow-up).
-            for openai_file_id in _openai_file_ids(files):
-                try:
-                    openai.files.delete(openai_file_id, timeout=30.0)
-                except Exception as error:
-                    logger.error('file chat file deletion failed error_type=%s', type(error).__name__)
-            chat_db.delete_multi_files(self.uid, files)
+            for file_record in files:
+                transport = _file_record_transport(file_record)
+                if transport == 'local_extraction':
+                    try:
+                        delete_local_attachment_record(self.uid, file_record)
+                    except Exception as error:
+                        logger.error('local file chat deletion pending error_type=%s', type(error).__name__)
+                        pending_records.append(file_record)
+                    else:
+                        deleted_records.append(file_record)
+                elif transport == 'openai_assistants':
+                    openai_file_id = file_record.get('openai_file_id')
+                    assert isinstance(openai_file_id, str)
+                    if not _managed_openai_cleanup_is_configured():
+                        pending_records.append(file_record)
+                        continue
+                    try:
+                        response = openai.files.delete(openai_file_id, timeout=30.0)
+                        if getattr(response, 'deleted', True) is False:
+                            pending_records.append(file_record)
+                        else:
+                            deleted_records.append(file_record)
+                    except openai.NotFoundError:
+                        deleted_records.append(file_record)
+                    except Exception as error:
+                        logger.error('file chat file deletion pending error_type=%s', type(error).__name__)
+                        pending_records.append(file_record)
+                elif transport == 'none':
+                    # No provider/object authority exists on this malformed
+                    # legacy record, so only its database row needs deletion.
+                    deleted_records.append(file_record)
+                else:
+                    pending_records.append(file_record)
 
-        if self.thread_id:
+            if deleted_records:
+                try:
+                    chat_db.delete_multi_files(self.uid, deleted_records)
+                except Exception as error:
+                    logger.error('file chat cleanup receipt persist failed error_type=%s', type(error).__name__)
+                    pending_records.extend(deleted_records)
+                    deleted_records = []
+
+        pending_session_objects = 0
+        for object_kind, object_id in (
+            ('thread', self.thread_id),
+            ('assistant', self.assistant_id),
+        ):
+            if not object_id:
+                continue
+            if not _managed_openai_cleanup_is_configured():
+                pending_session_objects += 1
+                continue
             try:
-                openai.beta.threads.delete(self.thread_id, timeout=30.0)  # type: ignore[reportDeprecated]  # Assistants API still in use
+                if object_kind == 'thread':
+                    openai.beta.threads.delete(object_id, timeout=30.0)  # type: ignore[reportDeprecated]  # Assistants API still in use
+                else:
+                    openai.beta.assistants.delete(object_id, timeout=30.0)  # type: ignore[reportDeprecated]  # Assistants API still in use
+            except openai.NotFoundError:
+                pass
             except Exception as error:
-                logger.error('file chat thread deletion failed error_type=%s', type(error).__name__)
-        if self.assistant_id:
-            try:
-                openai.beta.assistants.delete(self.assistant_id, timeout=30.0)  # type: ignore[reportDeprecated]  # Assistants API still in use
-            except Exception as error:
-                logger.error('file chat assistant deletion failed error_type=%s', type(error).__name__)
+                pending_session_objects += 1
+                logger.error('file chat session object deletion pending error_type=%s', type(error).__name__)
+
+        receipt = FileChatCleanupReceipt(
+            deleted_records=len(deleted_records),
+            pending_records=len(pending_records),
+            pending_session_objects=pending_session_objects,
+        )
+        if pending_records or pending_session_objects:
+            reason = (
+                'managed_cleanup_credential_required'
+                if not _managed_openai_cleanup_is_configured()
+                else 'attachment_cleanup_pending'
+            )
+            raise FileChatCleanupError(reason, receipt)
+        return receipt

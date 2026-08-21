@@ -117,4 +117,4 @@ def test_mcp_key_on_a_firebase_endpoint_points_at_the_mcp_endpoints() -> None:
 
     assert raised.value.status_code == 401
     assert '/v1/mcp/' in raised.value.detail
-    assert 'Firebase ID token' in raised.value.detail
+    assert 'identity token' in raised.value.detail

@@ -14,6 +14,7 @@ import type { AxiosRequestConfig } from 'axios'
 import { omiApi } from '../apiClient'
 import { getPreferences } from '../preferences'
 import type { VoiceProvider } from './sessionMachine'
+import { resolveWindowsDeployment } from '../../../../shared/deploymentProfile'
 
 // Backend provider ids — the PROXY keys in routers/auto_model.py, identical to
 // Mac's RealtimeOmniProvider rawValues. The pick is ALWAYS one of these two
@@ -89,6 +90,7 @@ function store(id: AutoModelProviderId): void {
  *  pick already exists — age < 24h AND a valid cached pick. Fire-and-forget,
  *  never awaited: effectiveProvider resolves synchronously from the cache. */
 export function refreshIfStale(): void {
+  if (!resolveWindowsDeployment().allowDirectModelProviders) return
   const last = lastRefresh()
   if (last !== null && Date.now() - last < REFRESH_INTERVAL_MS && currentPick() !== null) return
   void refresh()
@@ -100,6 +102,7 @@ export function refreshIfStale(): void {
  *  Gemini default when we have never had a pick — never clobber a good cache with
  *  a transient failure. */
 export async function refresh(): Promise<void> {
+  if (!resolveWindowsDeployment().allowDirectModelProviders) return
   try {
     const res = await omiApi.get<{ provider?: unknown }>('/v1/auto/model-pick', POLL_CONFIG)
     const raw = res.data?.provider

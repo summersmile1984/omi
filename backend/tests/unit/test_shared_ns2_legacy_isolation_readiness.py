@@ -3,6 +3,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 REQUIRED_ARTIFACT_TERMS = [
     "NOT_RUN",
     "read_only",
@@ -86,7 +88,8 @@ def test_shared_ns2_readiness_execute_is_read_only_and_requires_provider_config(
     assert ready_artifact["mutation_allowed"] is False
 
 
-def test_legacy_memory_vector_filters_exclude_memory_schema_records():
+@pytest.fixture(scope="module")
+def vector_db_module():
     pinecone_module = types.ModuleType("pinecone")
     setattr(pinecone_module, "Pinecone", lambda api_key: None)
     sys.modules["pinecone"] = pinecone_module
@@ -98,6 +101,12 @@ def test_legacy_memory_vector_filters_exclude_memory_schema_records():
     sys.modules["database.projection_repair"] = projection_repair_module
 
     from database import vector_db
+
+    return vector_db
+
+
+def test_legacy_memory_vector_filters_exclude_memory_schema_records(vector_db_module):
+    vector_db = vector_db_module
 
     legacy_filter = vector_db.build_legacy_memory_vector_filter("uid-1")
     subject_filter = vector_db.build_legacy_memory_vector_filter("uid-1", subject_entity_id="person-1")

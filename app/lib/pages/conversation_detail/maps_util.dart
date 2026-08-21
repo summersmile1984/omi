@@ -6,7 +6,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:omi/env/env.dart';
 
 class MapsUtil {
-  static String getMapImageUrl(double lat, double lng) {
+  static String? getMapImageUrl(double lat, double lng, {String? apiKey}) {
+    final configuredApiKey = (apiKey ?? Env.googleMapsApiKey)?.trim();
+    if (configuredApiKey == null || configuredApiKey.isEmpty) return null;
     // Dark theme Google Maps with minimal labels
     const String baseUrl = "https://maps.googleapis.com/maps/api/staticmap";
     final String center = "center=$lat,$lng";
@@ -62,7 +64,7 @@ class MapsUtil {
       "style=feature:water%7Celement:labels.text%7Cvisibility:simplified",
     ].join("&");
 
-    final String key = "key=${Env.googleMapsApiKey}";
+    final String key = "key=$configuredApiKey";
 
     return "$baseUrl?$center&$zoom&$size&$scale&$format&$marker&$styles&$key";
   }

@@ -1602,6 +1602,31 @@ actor ActionItemStorage {
     }
   }
 
+  /// Persist a self-hosted embedding only if the task projection has not
+  /// changed since the backend produced it.
+  func updateEmbeddingIfProjectionMatches(
+    id: Int64,
+    embedding: Data,
+    projectionKey: String,
+    authorization: LocalMutationAuthorization
+  ) async throws -> Bool {
+    try authorization.require()
+    let db = try await ensureInitialized()
+    return try await authorization.withCommitLease {
+      try await db.write { database in
+        try authorization.require()
+        let written = try RewindDatabase.writeEmbeddingIfProjectionMatches(
+          in: database,
+          surface: .task,
+          projectionKey: projectionKey,
+          updateSQL: "UPDATE action_items SET embedding = ? WHERE id = ?",
+          arguments: [embedding, id])
+        try authorization.require()
+        return written
+      }
+    }
+  }
+
   // MARK: - Relevance Scores
 
   /// Get ALL incomplete AI tasks regardless of score status (for full rescore)

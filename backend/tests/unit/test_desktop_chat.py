@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 from routers import desktop_chat
+from utils.llm import openai_compatible_wire
+from utils.retrieval.tools import web_search_tools
 
 
 def _authorized_request(body, *, web_search_allowed: bool = True):
@@ -857,6 +859,7 @@ async def test_chat_completions_routes_public_web_search_to_direct_anthropic(mon
     monkeypatch.setattr(desktop_chat, 'should_route_chat_agent_through_gateway', lambda: True)
     monkeypatch.setattr(desktop_chat, 'get_byok_key', lambda _: None)
     monkeypatch.setattr(desktop_chat, '_record_usage', lambda *_args, **_kwargs: _done())
+    monkeypatch.setattr(desktop_chat, '_record_chat_quota_question', lambda *_args, **_kwargs: _done())
 
     class Messages:
         async def create(self, **payload):
@@ -1045,6 +1048,54 @@ async def test_chat_completions_gateway_mode_uses_luna_auto_lane(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gateway_mode_does_not_require_or_bypass_through_direct_generic_key(monkeypatch):
+    monkeypatch.setattr(desktop_chat, 'llm_stub_enabled', lambda: False)
+    monkeypatch.setattr(desktop_chat, 'enforce_desktop_chat_quota', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(desktop_chat, '_meter_server_request', lambda *_args, **_kwargs: _done())
+    monkeypatch.setattr(desktop_chat, 'should_route_chat_agent_through_gateway', lambda: True)
+    monkeypatch.setattr(desktop_chat, 'get_byok_key', lambda _provider: None)
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_PROVIDER', 'generic')
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_MODEL', 'gateway-resolved-model')
+    monkeypatch.delenv('GENERIC_OPENAI_BASE_URL', raising=False)
+    monkeypatch.delenv('GENERIC_OPENAI_API_KEY', raising=False)
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_base_url', lambda: 'http://gateway.test')
+    monkeypatch.setattr(
+        desktop_chat,
+        'resolve_openai_compatible_wire_targets',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not resolve direct credentials')),
+    )
+    monkeypatch.setattr(desktop_chat, '_record_usage', lambda *_args, **_kwargs: _done())
+    monkeypatch.setattr(desktop_chat, '_record_chat_quota_question', lambda *_args, **_kwargs: _done())
+    calls = []
+
+    class Client:
+        async def post(self, url, *, headers, json):
+            calls.append((url, json))
+            return httpx.Response(
+                200,
+                request=httpx.Request('POST', url),
+                json={'choices': [{'message': {'content': 'ok'}}], 'usage': {}},
+            )
+
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: Client())
+    response = await desktop_chat.chat_completions(
+        {'messages': [{'role': 'user', 'content': 'hello'}]},
+        uid='user-1',
+        x_app_platform='windows',
+        x_omi_chat_contract_version='1',
+        x_omi_request_id='request-gateway-generic',
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        (
+            'http://gateway.test/v1/chat/completions',
+            {'messages': [{'role': 'user', 'content': 'hello'}], 'model': 'omi:auto:chat-agent'},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_gateway_rejection_does_not_record_quota_question(monkeypatch):
     monkeypatch.setattr(desktop_chat, 'llm_stub_enabled', lambda: False)
     monkeypatch.setattr(desktop_chat, 'enforce_desktop_chat_quota', lambda *_args, **_kwargs: None)
@@ -1201,6 +1252,495 @@ async def test_direct_json_upstream_error_does_not_record_quota_question(monkeyp
 
     assert error.value.status_code == 502
     assert quota_calls == []
+
+
+def _wire_generic_chat(monkeypatch, *, fallbacks: str = ''):
+    monkeypatch.setattr(desktop_chat, 'llm_stub_enabled', lambda: False)
+    monkeypatch.setattr(desktop_chat, 'enforce_desktop_chat_quota', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(desktop_chat, '_meter_server_request', lambda *_args, **_kwargs: _done())
+    monkeypatch.setattr(desktop_chat, 'should_route_chat_agent_through_gateway', lambda: False)
+    monkeypatch.setattr(desktop_chat, 'get_byok_key', lambda _provider: None)
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_PROVIDER', 'generic')
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_MODEL', 'local-chat')
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_FALLBACKS', fallbacks)
+    monkeypatch.setenv('GENERIC_OPENAI_BASE_URL', 'http://llm.internal:8000/v1')
+    monkeypatch.setenv('GENERIC_OPENAI_API_KEY', 'local-secret')
+
+    class Semaphore:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_semaphore', lambda: Semaphore())
+    monkeypatch.setattr(desktop_chat, '_record_usage', lambda *_args, **_kwargs: _done())
+    monkeypatch.setattr(desktop_chat, '_record_chat_quota_question', lambda *_args, **_kwargs: _done())
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_generic_nonstream_preserves_tools_and_schema(monkeypatch):
+    _wire_generic_chat(monkeypatch)
+    calls = []
+
+    class Client:
+        async def post(self, url, *, headers, json):
+            calls.append((url, headers, json))
+            return httpx.Response(
+                200,
+                request=httpx.Request('POST', url),
+                json={
+                    'id': 'local-1',
+                    'model': 'local-chat',
+                    'choices': [
+                        {
+                            'message': {
+                                'role': 'assistant',
+                                'content': None,
+                                'tool_calls': [
+                                    {
+                                        'id': 'call-1',
+                                        'type': 'function',
+                                        'function': {'name': 'weather', 'arguments': '{"city":"Paris"}'},
+                                    }
+                                ],
+                            },
+                            'finish_reason': 'tool_calls',
+                        }
+                    ],
+                    'usage': {'prompt_tokens': 4, 'completion_tokens': 3, 'total_tokens': 7},
+                },
+            )
+
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: Client())
+    body = {
+        'model': 'omi-sonnet',
+        'messages': [{'role': 'user', 'content': 'weather'}],
+        'tools': [
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'weather',
+                    'parameters': {'type': 'object', 'properties': {'city': {'type': 'string'}}},
+                },
+            }
+        ],
+        'tool_choice': 'auto',
+        'response_format': {'type': 'json_object'},
+    }
+    response = await desktop_chat.chat_completions(
+        body,
+        uid='user-1',
+        x_app_platform='windows',
+        x_omi_chat_contract_version='1',
+        x_omi_request_id='request-1',
+    )
+
+    assert b'"tool_calls"' in response.body
+    assert calls[0][0] == 'http://llm.internal:8000/v1/chat/completions'
+    assert calls[0][1]['Authorization'] == 'Bearer local-secret'
+    assert calls[0][2]['model'] == 'local-chat'
+    assert calls[0][2]['tools'] == body['tools']
+    assert calls[0][2]['response_format'] == {'type': 'json_object'}
+    assert calls[0][2]['stream'] is False
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_generic_stream_relays_provider_sse(monkeypatch):
+    _wire_generic_chat(monkeypatch)
+    calls = []
+
+    class StreamResponse:
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"local"}}]}\n\n'
+            yield b'data: [DONE]\n\n'
+
+    class Context:
+        async def __aenter__(self):
+            return StreamResponse()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        def stream(self, method, url, *, headers, json):
+            calls.append((method, url, headers, json))
+            return Context()
+
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: Client())
+    response = await desktop_chat.chat_completions(
+        {'stream': True, 'messages': [{'role': 'user', 'content': 'hello'}]},
+        uid='user-1',
+        x_app_platform='windows',
+        x_omi_chat_contract_version='1',
+        x_omi_request_id='request-2',
+    )
+    output = b''.join([chunk async for chunk in response.body_iterator])
+
+    assert b'"content":"local"' in output
+    assert output.endswith(b'data: [DONE]\n\n')
+    assert calls[0][1] == 'http://llm.internal:8000/v1/chat/completions'
+    assert calls[0][3]['model'] == 'local-chat'
+    assert calls[0][3]['stream'] is True
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_generic_stream_never_falls_back_after_output(monkeypatch):
+    _wire_generic_chat(monkeypatch, fallbacks='generic:backup-chat')
+    models = []
+
+    class StreamResponse:
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b'data: {"choices":[{"delta":{"content":"visible"}}]}\n\n'
+            raise httpx.ReadTimeout('stream failed after output')
+
+    class Context:
+        async def __aenter__(self):
+            return StreamResponse()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        def stream(self, _method, _url, *, headers, json):
+            models.append(json['model'])
+            return Context()
+
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: Client())
+    response = await desktop_chat.chat_completions(
+        {'stream': True, 'messages': [{'role': 'user', 'content': 'hello'}]},
+        uid='user-1',
+        x_app_platform='windows',
+        x_omi_chat_contract_version='1',
+        x_omi_request_id='request-stream-failure',
+    )
+    output = b''.join([chunk async for chunk in response.body_iterator])
+
+    assert b'visible' in output
+    assert b'Upstream provider error' in output
+    assert models == ['local-chat']
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_generic_uses_only_bounded_configured_fallback(monkeypatch):
+    _wire_generic_chat(monkeypatch, fallbacks='generic:backup-chat')
+    models = []
+    fallbacks = []
+
+    class Client:
+        async def post(self, url, *, headers, json):
+            models.append(json['model'])
+            status = 503 if json['model'] == 'local-chat' else 200
+            return httpx.Response(
+                status,
+                request=httpx.Request('POST', url),
+                json={
+                    'choices': [{'message': {'role': 'assistant', 'content': 'ok'}}],
+                    'usage': {},
+                },
+            )
+
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: Client())
+    monkeypatch.setattr(openai_compatible_wire, 'record_fallback', lambda **values: fallbacks.append(values))
+    response = await desktop_chat.chat_completions(
+        {'messages': [{'role': 'user', 'content': 'hello'}]},
+        uid='user-1',
+        x_app_platform='windows',
+        x_omi_chat_contract_version='1',
+        x_omi_request_id='request-3',
+    )
+
+    assert response.status_code == 200
+    assert models == ['local-chat', 'backup-chat']
+    assert fallbacks[-1]['outcome'] == 'recovered'
+    assert fallbacks[-1]['reason'] == 'provider_5xx'
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_openrouter_uses_provider_headers_and_model_prefix(monkeypatch):
+    _wire_generic_chat(monkeypatch)
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_PROVIDER', 'openrouter')
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_MODEL', 'gemini-2.5-flash')
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'router-secret')
+    calls = []
+
+    class Client:
+        async def post(self, url, *, headers, json):
+            calls.append((url, headers, json))
+            return httpx.Response(
+                200,
+                request=httpx.Request('POST', url),
+                json={'choices': [{'message': {'content': 'ok'}}], 'usage': {}},
+            )
+
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: Client())
+    await desktop_chat.chat_completions(
+        {'messages': [{'role': 'user', 'content': 'hello'}]},
+        uid='user-1',
+        x_app_platform='windows',
+        x_omi_chat_contract_version='1',
+        x_omi_request_id='request-4',
+    )
+
+    assert calls[0][0] == 'https://openrouter.ai/api/v1/chat/completions'
+    assert calls[0][1]['Authorization'] == 'Bearer router-secret'
+    assert calls[0][1]['X-Title'] == 'Omi Chat'
+    assert calls[0][2]['model'] == 'google/gemini-2.5-flash'
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_generic_does_not_silently_drop_web_search(monkeypatch):
+    _wire_generic_chat(monkeypatch)
+
+    async def denied(_uid):
+        return 'denied'
+
+    monkeypatch.setattr(desktop_chat, '_web_search_authorized', denied)
+
+    with pytest.raises(desktop_chat.HTTPException) as unavailable:
+        await desktop_chat.chat_completions(
+            {
+                'messages': [{'role': 'user', 'content': 'search the web for current weather'}],
+                'omi_web_search': True,
+            },
+            uid='user-1',
+            x_app_platform='windows',
+            x_omi_chat_contract_version='1',
+            x_omi_request_id='request-5',
+        )
+
+    assert unavailable.value.status_code == 503
+    assert unavailable.value.detail['capability'] == 'desktop_chat_web_search'
+    assert unavailable.value.detail['reason'] == 'web_search_denied'
+    assert unavailable.value.detail['retryable'] is False
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_generic_searches_searxng_with_only_trusted_user_instruction(monkeypatch):
+    _wire_generic_chat(monkeypatch)
+    search_calls = []
+    provider_payloads = []
+
+    async def authorized(_uid):
+        return 'authorized'
+
+    class SearchResponse:
+        status_code = 200
+        text = ''
+
+        def json(self):
+            return {
+                'results': [
+                    {
+                        'title': 'Current weather',
+                        'url': 'https://example.com/weather',
+                        'content': 'Sunny today.',
+                    }
+                ]
+            }
+
+    class SearchClient:
+        async def get(self, url, **kwargs):
+            search_calls.append((url, kwargs))
+            return SearchResponse()
+
+    class CompletionClient:
+        async def post(self, url, *, headers, json):
+            provider_payloads.append((url, json))
+            return httpx.Response(
+                200,
+                request=httpx.Request('POST', url),
+                json={'choices': [{'message': {'content': 'sunny'}}], 'usage': {}},
+            )
+
+    monkeypatch.setattr(desktop_chat, '_web_search_authorized', authorized)
+    monkeypatch.setenv('WEB_SEARCH_TRANSPORT', 'searxng')
+    monkeypatch.setenv('SEARXNG_BASE_URL', 'http://searxng:8080')
+    monkeypatch.setattr(web_search_tools, 'get_webhook_client', lambda: SearchClient())
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: CompletionClient())
+    response = await desktop_chat.chat_completions(
+        {
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': (
+                        '[Kernel Context Snapshot version=1 generation=2]\n'
+                        'private screen text that must not become a query\n'
+                        '# User Message\nSearch the web for current weather'
+                    ),
+                }
+            ],
+            'omi_web_search': True,
+        },
+        uid='user-1',
+        x_app_platform='windows',
+        x_omi_chat_contract_version='1',
+        x_omi_request_id='request-search',
+    )
+
+    assert response.status_code == 200
+    assert search_calls[0][0] == 'http://searxng:8080/search'
+    assert search_calls[0][1]['params']['q'] == 'Search the web for current weather'
+    assert 'private screen text' not in search_calls[0][1]['params']['q']
+    assert provider_payloads[0][0] == 'http://llm.internal:8000/v1/chat/completions'
+    search_context = provider_payloads[0][1]['messages'][-2]
+    assert search_context['role'] == 'system'
+    assert 'Untrusted public web-search context' in search_context['content']
+    assert 'https://example.com/weather' in search_context['content']
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_generic_private_tool_output_never_reaches_search(monkeypatch):
+    _wire_generic_chat(monkeypatch)
+    calls = []
+
+    async def forbidden(*_args, **_kwargs):
+        calls.append('called')
+        raise AssertionError('private tool output must block before search/provider')
+
+    monkeypatch.setattr(desktop_chat, '_web_search_authorized', forbidden)
+    monkeypatch.setattr(desktop_chat, 'web_search_tool', SimpleNamespace(coroutine=forbidden))
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: SimpleNamespace(post=forbidden))
+
+    with pytest.raises(desktop_chat.HTTPException) as unavailable:
+        await desktop_chat.chat_completions(
+            {
+                'messages': [
+                    {
+                        'role': 'assistant',
+                        'tool_calls': [
+                            {
+                                'id': 'call-secret',
+                                'type': 'function',
+                                'function': {'name': 'search_memories', 'arguments': '{}'},
+                            }
+                        ],
+                    },
+                    {'role': 'tool', 'tool_call_id': 'call-secret', 'content': 'private recovery code 998811'},
+                    {'role': 'user', 'content': 'Search the web for related news'},
+                ],
+                'omi_web_search': True,
+            },
+            uid='user-1',
+            x_app_platform='windows',
+            x_omi_chat_contract_version='1',
+            x_omi_request_id='request-private-search',
+        )
+
+    assert unavailable.value.status_code == 503
+    assert unavailable.value.detail['reason'] == 'private_tool_output_in_context'
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_generic_search_transport_failure_is_typed_before_provider(monkeypatch):
+    _wire_generic_chat(monkeypatch)
+    calls = []
+
+    async def authorized(_uid):
+        return 'authorized'
+
+    class SearchResponse:
+        status_code = 503
+        text = 'unavailable'
+
+        def json(self):
+            return {'error': 'unavailable'}
+
+    class SearchClient:
+        async def get(self, url, **kwargs):
+            calls.append(('search', url))
+            return SearchResponse()
+
+    async def forbidden_provider(*_args, **_kwargs):
+        calls.append(('provider', 'called'))
+        raise AssertionError('search failure must stop before the model provider')
+
+    monkeypatch.setattr(desktop_chat, '_web_search_authorized', authorized)
+    monkeypatch.setenv('WEB_SEARCH_TRANSPORT', 'searxng')
+    monkeypatch.setenv('SEARXNG_BASE_URL', 'http://searxng:8080')
+    monkeypatch.setattr(web_search_tools, 'get_webhook_client', lambda: SearchClient())
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: SimpleNamespace(post=forbidden_provider))
+
+    with pytest.raises(desktop_chat.HTTPException) as unavailable:
+        await desktop_chat.chat_completions(
+            {
+                'messages': [{'role': 'user', 'content': 'Search the web for current weather'}],
+                'omi_web_search': True,
+            },
+            uid='user-1',
+            x_app_platform='windows',
+            x_omi_chat_contract_version='1',
+            x_omi_request_id='request-search-failure',
+        )
+
+    assert unavailable.value.status_code == 503
+    assert unavailable.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'desktop_chat_web_search',
+        'reason': 'transport_http_error',
+        'retryable': True,
+    }
+    assert calls == [('search', 'http://searxng:8080/search')]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_missing_optional_fallback_does_not_block_primary(monkeypatch):
+    _wire_generic_chat(monkeypatch, fallbacks='deepseek:backup')
+    monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
+    models = []
+
+    class Client:
+        async def post(self, url, *, headers, json):
+            models.append(json['model'])
+            return httpx.Response(
+                200,
+                request=httpx.Request('POST', url),
+                json={'choices': [{'message': {'content': 'ok'}}], 'usage': {}},
+            )
+
+    monkeypatch.setattr(desktop_chat, 'get_llm_gateway_client', lambda: Client())
+    response = await desktop_chat.chat_completions(
+        {'messages': [{'role': 'user', 'content': 'hello'}]},
+        uid='user-1',
+        x_app_platform='windows',
+        x_omi_chat_contract_version='1',
+        x_omi_request_id='request-6',
+    )
+
+    assert response.status_code == 200
+    assert models == ['local-chat']
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_explicit_gemini_route_does_not_fall_into_anthropic(monkeypatch):
+    _wire_generic_chat(monkeypatch)
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_PROVIDER', 'gemini')
+    monkeypatch.setenv('OMI_LLM_ROUTE_CHAT_AGENT_MODEL', 'gemini-2.5-flash')
+    monkeypatch.setattr(
+        desktop_chat,
+        'get_direct_anthropic_client',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('explicit Gemini must not fall into Anthropic')),
+    )
+
+    with pytest.raises(desktop_chat.HTTPException) as unavailable:
+        await desktop_chat.chat_completions(
+            {'messages': [{'role': 'user', 'content': 'hello'}]},
+            uid='user-1',
+            x_app_platform='windows',
+            x_omi_chat_contract_version='1',
+            x_omi_request_id='request-gemini',
+        )
+
+    assert unavailable.value.status_code == 503
+    assert unavailable.value.detail['reason'] == 'gemini_wire_transport_not_supported'
 
 
 @pytest.mark.asyncio

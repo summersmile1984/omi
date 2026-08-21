@@ -53,7 +53,11 @@ class DesktopUpdatePolicyResponse(BaseModel):
     title: Optional[str] = Field(default=None, description='Banner title.')
     message: Optional[str] = Field(default=None, description='Banner message body.')
     cta_text: str = Field(default='Download latest', description='Call-to-action button text.')
-    download_url: str = Field(description='Download URL for the latest release.')
+    download_url: Optional[str] = Field(default=None, description='Operator or managed download URL, when configured.')
+    availability: Literal['configured', 'disabled'] = Field(
+        default='disabled', description='Whether a safe download target is configured.'
+    )
+    reason: Optional[str] = Field(default=None, description='Typed reason when the download capability is disabled.')
     can_dismiss: bool = Field(default=True, description='Whether the user can dismiss the banner.')
     platforms: Optional[List[str]] = Field(
         default=None, description='Platforms this policy applies to (empty/None = all).'
@@ -493,6 +497,21 @@ def _newest_release_by_channel(entries: List[Dict]) -> Dict[str, Dict]:
     return newest
 
 
+def _legacy_desktop_updates_disabled() -> bool:
+    """Keep the managed release scan opt-in for neutral deployments.
+
+    The self-host Compose profile binds this setting explicitly, but the
+    request boundary also has to be safe for direct launches and stale
+    containers. Managed profiles retain the historical enabled default.
+    """
+
+    configured = os.getenv("DESKTOP_UPDATE_LEGACY_FALLBACK", "").strip().lower()
+    if configured:
+        return configured == "disabled"
+    profile = os.getenv("OMI_DEPLOYMENT_PROFILE", "").strip().lower()
+    return profile in {"neutral", "self_hosted", "self-hosted"}
+
+
 def _record_pointer_mismatches(platform: str, pointer_entries: List[Dict], legacy_entries: List[Dict]) -> None:
     legacy_by_channel = _newest_release_by_channel(legacy_entries)
     for pointer in pointer_entries:
@@ -527,7 +546,10 @@ async def _get_live_desktop_releases(platform: str) -> List[Dict]:
     falls through to beta. Set DESKTOP_UPDATE_POINTERS_MODE=legacy as a kill
     switch while the dual-path rollout is being observed.
     """
+    legacy_updates_disabled = _legacy_desktop_updates_disabled()
     if os.getenv("DESKTOP_UPDATE_POINTERS_MODE", "primary").lower() == "legacy":
+        if legacy_updates_disabled:
+            return []
         releases = await _get_legacy_live_desktop_releases(platform)
         record_fallback(
             component='other',
@@ -554,6 +576,8 @@ async def _get_live_desktop_releases(platform: str) -> List[Dict]:
         pointer_entries.append(_pointer_release_to_entry(release, channel, source))
 
     legacy_entries: List[Dict] = []
+    if legacy_updates_disabled:
+        return sorted(pointer_entries, key=lambda entry: entry["release"].get("published_at", ""), reverse=True)
     should_reconcile = bool(pointer_entries) and random.random() < _reconciliation_sample_rate()
     if missing or should_reconcile:
         legacy_entries = await _get_legacy_live_desktop_releases(platform)

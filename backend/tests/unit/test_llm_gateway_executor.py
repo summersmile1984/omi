@@ -31,6 +31,7 @@ from llm_gateway.gateway.schemas import (
     RolloutPolicy,
     RolloutStage,
     RouteServingClass,
+    Surface,
 )
 
 LANE_ID = 'omi:auto:chat-structured'
@@ -87,7 +88,7 @@ async def test_executor_forwards_prompt_parser_request_without_response_format()
 
 
 def test_chat_agent_provider_request_includes_omi_luna_personality():
-    config = gateway_config()
+    config = openai_chat_agent_config()
     request = {
         'model': CHAT_AGENT_LANE_ID,
         'messages': [
@@ -107,7 +108,7 @@ def test_chat_agent_provider_request_includes_omi_luna_personality():
 
 
 def test_chat_agent_personality_preserves_array_system_text():
-    config = gateway_config()
+    config = openai_chat_agent_config()
     request = {
         'model': CHAT_AGENT_LANE_ID,
         'messages': [
@@ -128,7 +129,7 @@ def test_chat_agent_personality_preserves_array_system_text():
 
 def test_chat_agent_tools_force_reasoning_effort_none_for_luna_chat_completions():
     """gpt-5.6-luna rejects function tools when reasoning_effort != none on chat/completions."""
-    config = gateway_config()
+    config = openai_chat_agent_config()
     # Mutate the serving route the way a bad override would: medium effort + tools.
     route = config.route_artifacts['route.chat_agent.model_config.001']
     config.route_artifacts['route.chat_agent.model_config.001'] = route.model_copy(
@@ -163,7 +164,7 @@ def test_chat_agent_tools_force_reasoning_effort_none_for_luna_chat_completions(
 
 
 def test_chat_agent_default_route_reasoning_effort_is_none():
-    config = gateway_config()
+    config = openai_chat_agent_config()
     request = {
         'model': CHAT_AGENT_LANE_ID,
         'messages': [{'role': 'user', 'content': 'Hello.'}],
@@ -185,7 +186,7 @@ def test_chat_agent_default_route_reasoning_effort_is_none():
 
 def test_gpt56_tools_strip_bool_temperature():
     """True==1 must not bypass the temperature sanitize (OpenAI rejects non-default)."""
-    config = gateway_config()
+    config = openai_chat_agent_config()
     route = config.route_artifacts['route.chat_agent.model_config.001']
     config.route_artifacts['route.chat_agent.model_config.001'] = route.model_copy(
         update={'provider_options': {**dict(route.provider_options), 'temperature': True}}
@@ -797,6 +798,33 @@ def omi_credentials():
 def gateway_config() -> GatewayConfig:
     """Load the immutable checked-in gateway config once per test module."""
     return load_gateway_config(prod_mode=True)
+
+
+def openai_chat_agent_config() -> GatewayConfig:
+    """Exercise Luna request shaping without making it the deployment route."""
+
+    base = gateway_config()
+    route_id = 'route.chat_agent.model_config.001'
+    route = base.route_artifacts[route_id].model_copy(
+        update={
+            'surface': Surface.OPENAI_CHAT_COMPLETIONS,
+            'primary': ProviderRef(provider='openai', model='gpt-5.6-luna'),
+            'provider_options': {'reasoning_effort': 'none'},
+        }
+    )
+    lane = base.lanes[CHAT_AGENT_LANE_ID].model_copy(
+        update={
+            'surface': Surface.OPENAI_CHAT_COMPLETIONS,
+            'active_route': route_id,
+            'last_known_good': route_id,
+        }
+    )
+    return base.model_copy(
+        update={
+            'lanes': {**base.lanes, CHAT_AGENT_LANE_ID: lane},
+            'route_artifacts': {**base.route_artifacts, route_id: route},
+        }
+    )
 
 
 def active_route_with_fallbacks(fallbacks: list[ProviderRef]):

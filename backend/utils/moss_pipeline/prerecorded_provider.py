@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import wave
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from utils.stt.pre_recorded import PrerecordedSTTProvider

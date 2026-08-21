@@ -2583,6 +2583,10 @@ actor RewindDatabase {
       try Self.installScreenActivitySyncStateSchema(db)
     }
 
+    migrator.registerMigration("createEmbeddingProjectionState") { db in
+      try Self.installEmbeddingProjectionStateSchema(db)
+    }
+
     try migrator.migrate(queue)
     try ContextBucketSchema.removeMigratedLegacyDefaults(
       afterMigrating: queue,
@@ -2602,6 +2606,14 @@ actor RewindDatabase {
         ON screenshots(screenActivitySyncState, id)
         WHERE screenActivitySyncState IN (0, 1)
         """)
+  }
+
+  static func installEmbeddingProjectionStateSchema(_ db: Database) throws {
+    try db.create(table: "embedding_projection_state", ifNotExists: true) { table in
+      table.column("surface", .text).primaryKey()
+      table.column("projectionKey", .text).notNull()
+      table.column("dimension", .integer).notNull()
+    }
   }
 
   // MARK: - OCR Precision Reduction Migration

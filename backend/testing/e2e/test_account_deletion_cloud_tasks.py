@@ -82,22 +82,25 @@ class _CapturedCloudTasksClient:
 def account_deletion_identity(monkeypatch, fake_firestore, fresh_uid):
     """Authenticate as an isolated user and clean its durable deletion record."""
 
+    from database.account_deletion_policy import account_deletion_receipt_id
     from fakes.firestore import clear_user_data
 
     admin_key = "account-deletion-e2e-admin:"
     marker = fake_firestore.collection("account_deletions").document(fresh_uid)
+    receipt = fake_firestore.collection("account_deletion_receipts").document(account_deletion_receipt_id(fresh_uid))
 
-    def clear_marker() -> None:
-        if marker.get().exists:
-            marker.delete()
+    def clear_deletion_authority() -> None:
+        for reference in (marker, receipt):
+            if reference.get().exists:
+                reference.delete()
 
     monkeypatch.setenv("ADMIN_KEY", admin_key)
-    clear_marker()
+    clear_deletion_authority()
     try:
         yield fresh_uid, {"Authorization": f"Bearer {admin_key}{fresh_uid}"}
     finally:
         clear_user_data(fresh_uid)
-        clear_marker()
+        clear_deletion_authority()
 
 
 @pytest.fixture()
@@ -190,6 +193,27 @@ def _read_marker(fake_firestore, test_uid: str) -> dict[str, Any]:
     return snapshot.to_dict()
 
 
+def _read_completed_receipt(fake_firestore, test_uid: str, wipe_job_id: str) -> dict[str, Any]:
+    """Prove completion removed UID/feedback content but kept an idempotency fence."""
+
+    from database.account_deletion_policy import account_deletion_receipt_id
+
+    assert not fake_firestore.collection("account_deletions").document(test_uid).get().exists
+    snapshot = (
+        fake_firestore.collection("account_deletion_receipts").document(account_deletion_receipt_id(test_uid)).get()
+    )
+    assert snapshot.exists
+    receipt = snapshot.to_dict()
+    assert set(receipt) == {"schema_version", "wipe_status", "wipe_job_id", "wipe_completed_at"}
+    assert receipt["schema_version"] == 1
+    assert receipt["wipe_status"] == "completed"
+    assert receipt["wipe_job_id"] == wipe_job_id
+    serialized = json.dumps(receipt, default=str, sort_keys=True)
+    assert test_uid not in serialized
+    assert {"uid", "reason", "reason_details"}.isdisjoint(receipt)
+    return receipt
+
+
 def _observe_claim_transitions(monkeypatch, fake_firestore, test_uid: str) -> list[dict[str, Any]]:
     """Observe the real transaction's durable claim state without replacing it."""
 
@@ -255,19 +279,30 @@ def test_account_deletion_cloud_task_completes_once_and_redelivery_is_acked(
     )
     assert completed.status_code == 200, completed.text
     assert completed.json() == {"status": "done"}
-    assert _read_marker(fake_firestore, test_uid)["wipe_status"] == "completed"
+    _read_completed_receipt(fake_firestore, test_uid, wipe_job_id)
     _assert_user_data_deleted(fake_firestore, test_uid)
     assert len(claimed_markers) == 1
     assert claimed_markers[0]["wipe_status"] == "retrying"
     assert "wipe_claimed_at" in claimed_markers[0]
     assert purge_calls == [test_uid]
 
+    repeated_completed = client.delete("/v1/users/delete-account", headers=auth_headers)
+    assert repeated_completed.status_code == 403, repeated_completed.text
+    assert repeated_completed.json() == {
+        "detail": {
+            "code": "account_deletion_in_progress",
+            "status": "completed",
+            "retryable": False,
+        }
+    }
+    assert len(cloud_tasks_client.create_calls) == 1
+
     redelivery = client.post(
         "/v1/users/account-deletion-wipes/run", json=payload, headers=_worker_headers(retry_count=1)
     )
     assert redelivery.status_code == 200, redelivery.text
     assert redelivery.json() == {"status": "dropped", "reason": "completed"}
-    assert _read_marker(fake_firestore, test_uid)["wipe_status"] == "completed"
+    _read_completed_receipt(fake_firestore, test_uid, wipe_job_id)
     assert len(claimed_markers) == 1
     assert purge_calls == [test_uid]
 
@@ -330,7 +365,7 @@ def test_account_deletion_cloud_task_retries_required_purge_failure_without_losi
     )
     assert retried_delivery.status_code == 200, retried_delivery.text
     assert retried_delivery.json() == {"status": "done"}
-    assert _read_marker(fake_firestore, test_uid)["wipe_status"] == "completed"
+    _read_completed_receipt(fake_firestore, test_uid, wipe_job_id)
     _assert_user_data_deleted(fake_firestore, test_uid)
     assert len(claimed_markers) == 2
     assert all(marker["wipe_status"] == "retrying" and "wipe_claimed_at" in marker for marker in claimed_markers)
@@ -391,7 +426,7 @@ def test_queue_not_found_preserves_auth_and_reconciles_from_the_marker(
     )
     assert completed.status_code == 200, completed.text
     assert auth_deletions == [test_uid]
-    assert _read_marker(fake_firestore, test_uid)["wipe_status"] == "completed"
+    _read_completed_receipt(fake_firestore, test_uid, wipe_job_id)
     _assert_user_data_deleted(fake_firestore, test_uid)
 
 
@@ -481,5 +516,5 @@ def test_missing_root_document_does_not_hide_immediate_child_data(
         "/v1/users/account-deletion-wipes/run", json=payload, headers=_worker_headers(retry_count=0)
     )
     assert completed.status_code == 200, completed.text
-    assert _read_marker(fake_firestore, test_uid)["wipe_status"] == "completed"
+    _read_completed_receipt(fake_firestore, test_uid, wipe_job_id)
     assert not orphan_child.get().exists

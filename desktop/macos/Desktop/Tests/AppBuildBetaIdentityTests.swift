@@ -75,6 +75,18 @@ final class AppBuildBetaIdentityTests: XCTestCase {
       "https://api.omi.me/v2/desktop/download/latest?channel=stable")
   }
 
+  func testSelfHostedManualDownloadUsesConfiguredBackend() {
+    XCTAssertEqual(
+      AppBuild.manualDownloadURL(
+        channel: "stable",
+        isBetaIdentity: false,
+        deploymentProfile: .selfHosted,
+        backendBaseURL: "https://backend.fork.example/"
+      ).absoluteString,
+      "https://backend.fork.example/v2/desktop/download/latest?channel=stable"
+    )
+  }
+
   func testProductionLogPathsAreSeparatePerIdentity() {
     XCTAssertEqual(
       OmiLogPathResolver.logPath(

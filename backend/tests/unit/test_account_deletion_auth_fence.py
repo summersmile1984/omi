@@ -1,4 +1,6 @@
-"""The durable account-deletion marker is an authentication access barrier."""
+"""The active marker and opaque completion receipt are auth barriers."""
+
+import os
 
 from unittest.mock import MagicMock
 
@@ -7,6 +9,9 @@ from fastapi import HTTPException, WebSocketException
 
 from utils.other import endpoints
 from database import users
+from database.account_deletion_policy import account_deletion_receipt_id
+
+os.environ.setdefault('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
 
 
 @pytest.fixture(autouse=True)
@@ -80,3 +85,38 @@ def test_deletion_status_reads_the_injected_firestore_client():
 
     assert users.get_user_deletion_wipe_status("old-uid", firestore_client=client) == "running"
     client.collection.assert_called_once_with("account_deletions")
+
+
+def test_deletion_status_reads_opaque_receipt_after_uid_marker_is_removed():
+    uid = 'deleted-private-user'
+    active = MagicMock(exists=False)
+    receipt = MagicMock(exists=True)
+    receipt.to_dict.return_value = {'schema_version': 1, 'wipe_status': 'completed', 'wipe_job_id': 'job'}
+    client = MagicMock()
+
+    def collection(name):
+        ref = MagicMock()
+        if name == 'account_deletions':
+            ref.document.return_value.get.return_value = active
+        elif name == 'account_deletion_receipts':
+            receipt_ref = MagicMock()
+            receipt_ref.get.return_value = receipt
+            ref.document.return_value = receipt_ref
+        else:
+            raise AssertionError(name)
+        return ref
+
+    client.collection.side_effect = collection
+
+    assert users.get_user_deletion_wipe_status(uid, firestore_client=client) == 'completed'
+    receipt_payload = receipt.to_dict()
+    assert account_deletion_receipt_id(uid) not in repr(receipt_payload)
+    assert uid not in repr(receipt_payload)
+    assert {'uid', 'reason', 'reason_details'}.isdisjoint(receipt_payload)
+
+
+def test_opaque_receipt_lookup_fails_closed_without_a_durable_secret(monkeypatch):
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'too-short')
+
+    with pytest.raises(RuntimeError, match='at least 32 bytes'):
+        account_deletion_receipt_id('deleted-private-user')

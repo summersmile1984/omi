@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EMBED_DIM } from '../rewind/embedVector'
 
 const h = vi.hoisted(() => ({
+  profile: 'omi_cloud' as 'omi_cloud' | 'self_hosted',
   epoch: 1,
   session: { apiBase: 'a', desktopApiBase: 'd', token: 't' } as {
     apiBase: string
@@ -17,6 +18,10 @@ const h = vi.hoisted(() => ({
   getBackendSession: vi.fn(),
   embedOne: vi.fn(),
   embedBatch: vi.fn(),
+  embedCapabilityBatch: vi.fn(),
+  activateTaskEmbeddingProjection: vi.fn(),
+  taskEmbeddingProjectionMatches: vi.fn(),
+  updateTaskEmbeddingIfProjection: vi.fn(),
   getAllActionItemEmbeddings: vi.fn(),
   getAllStagedTaskEmbeddings: vi.fn(),
   getActionItemsMissingEmbeddings: vi.fn(),
@@ -31,9 +36,27 @@ vi.mock('../assistants/core/session', () => ({
 }))
 vi.mock('../rewind/embeddingClient', () => ({
   embedOne: h.embedOne,
-  embedBatch: h.embedBatch
+  embedBatch: h.embedBatch,
+  embedCapabilityBatch: h.embedCapabilityBatch,
+  EmbeddingProjectionResponseFence: class {
+    commit(
+      _responseGeneration: number,
+      _projectionKey: string,
+      _markerMatches: () => boolean,
+      activate: () => boolean
+    ): boolean {
+      return activate()
+    }
+  },
+  embeddingProjectionKey: (projection: Record<string, unknown>) => JSON.stringify(projection)
+}))
+vi.mock('../../shared/deploymentProfile', () => ({
+  resolveWindowsDeployment: () => ({ profile: h.profile })
 }))
 vi.mock('../ipc/db', () => ({
+  activateTaskEmbeddingProjection: h.activateTaskEmbeddingProjection,
+  taskEmbeddingProjectionMatches: h.taskEmbeddingProjectionMatches,
+  updateTaskEmbeddingIfProjection: h.updateTaskEmbeddingIfProjection,
   getAllActionItemEmbeddings: h.getAllActionItemEmbeddings,
   getAllStagedTaskEmbeddings: h.getAllStagedTaskEmbeddings,
   getActionItemsMissingEmbeddings: h.getActionItemsMissingEmbeddings,
@@ -68,6 +91,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   h.epoch = 1
+  h.profile = 'omi_cloud'
   h.session = { apiBase: 'a', desktopApiBase: 'd', token: 't' }
   h.getSessionEpoch.mockImplementation(() => h.epoch)
   h.getBackendSession.mockImplementation(() => h.session)
@@ -75,6 +99,9 @@ beforeEach(() => {
   h.getAllStagedTaskEmbeddings.mockReturnValue([])
   h.getActionItemsMissingEmbeddings.mockReturnValue([])
   h.getStagedTasksMissingEmbeddings.mockReturnValue([])
+  h.activateTaskEmbeddingProjection.mockReturnValue(false)
+  h.taskEmbeddingProjectionMatches.mockReturnValue(true)
+  h.updateTaskEmbeddingIfProjection.mockReturnValue(true)
   // Reset the module-level index to a clean, loaded state for every test.
   loadIndex()
 })
@@ -142,7 +169,7 @@ describe('embedQuery', () => {
     const out = await embedQuery('where did I put the keys')
     expect(out).toBe(vec)
     expect(h.embedOne).toHaveBeenCalledWith(
-      { desktopApiBase: 'd', token: 't' },
+      { apiBase: 'a', desktopApiBase: 'd', token: 't' },
       'where did I put the keys',
       'RETRIEVAL_QUERY'
     )
@@ -154,6 +181,33 @@ describe('embedQuery', () => {
     expect(await embedQuery('real text')).toBeNull()
     expect(h.embedOne).not.toHaveBeenCalled()
   })
+
+  it('uses the provider-neutral capability and accepts its dynamic dimension in self-hosted', async () => {
+    h.profile = 'self_hosted'
+    const vector = short(1, 2)
+    h.embedCapabilityBatch.mockResolvedValue({
+      vectors: [vector],
+      projection: {
+        provider: 'generic',
+        model: 'operator-model',
+        dimension: 2,
+        schemaVersion: 1,
+        namespaceVersion: 'v1',
+        logicalNamespace: 'ns4'
+      }
+    })
+
+    await expect(embedQuery('operator query')).resolves.toBe(vector)
+    expect(h.embedCapabilityBatch).toHaveBeenCalledWith(
+      { apiBase: 'a', desktopApiBase: 'd', token: 't' },
+      ['operator query'],
+      'task',
+      'query',
+      'ns4'
+    )
+    expect(h.embedOne).not.toHaveBeenCalled()
+    expect(h.activateTaskEmbeddingProjection).toHaveBeenCalledOnce()
+  })
 })
 
 describe('generateEmbeddingForTask', () => {
@@ -164,7 +218,7 @@ describe('generateEmbeddingForTask', () => {
     await generateEmbeddingForTask('action_item', 7, 'buy milk')
 
     expect(h.embedOne).toHaveBeenCalledWith(
-      { desktopApiBase: 'd', token: 't' },
+      { apiBase: 'a', desktopApiBase: 'd', token: 't' },
       'buy milk',
       'RETRIEVAL_DOCUMENT'
     )
@@ -200,7 +254,7 @@ describe('backfillMissing', () => {
     await backfillMissing()
 
     expect(h.embedBatch).toHaveBeenCalledWith(
-      { desktopApiBase: 'd', token: 't' },
+      { apiBase: 'a', desktopApiBase: 'd', token: 't' },
       ['a', 'b'],
       'RETRIEVAL_DOCUMENT'
     )

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _posthog_client: Optional[Any] = None
 _posthog_disabled = False
+_NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
 
 
 def emit_product_event(*, uid: str, event: str, properties: Mapping[str, Any]) -> None:
@@ -51,6 +52,12 @@ def _get_posthog_client() -> Optional[Any]:
         return None
     if _posthog_client is not None:
         return _posthog_client
+    # A self-hosted process may inherit a managed environment or secret mount.
+    # Profile selection owns egress: never even import/construct the optional
+    # PostHog SDK in a neutral deployment, regardless of ambient credentials.
+    if os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in _NEUTRAL_DEPLOYMENT_PROFILES:
+        _posthog_disabled = True
+        return None
     api_key = os.getenv('POSTHOG_PROJECT_API_KEY') or os.getenv('POSTHOG_API_KEY')
     if not api_key:
         _posthog_disabled = True

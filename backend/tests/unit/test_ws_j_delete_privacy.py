@@ -467,6 +467,7 @@ def test_external_projection_id_is_deterministic_and_user_scoped():
 
 
 def test_canonical_account_delete_purge_emits_user_scoped_vector_outbox(monkeypatch, canonical_db):
+    monkeypatch.setenv("MEMORY_KEYWORD_INDEX_PROVIDER", "disabled")
     uid = "uid-canonical-ws-j"
     conversation_id = "conv-acct"
     content = "Canonical fact for account delete"
@@ -519,6 +520,7 @@ def test_canonical_account_delete_purge_emits_user_scoped_vector_outbox(monkeypa
 
 
 def test_canonical_account_delete_purge_raises_when_provider_is_unavailable(monkeypatch, canonical_db):
+    monkeypatch.setenv("MEMORY_KEYWORD_INDEX_PROVIDER", "disabled")
     uid = "uid-canonical-ws-j"
     conversation_id = "conv-acct-partial"
     content = "Canonical fact for partial account delete"

@@ -21,6 +21,7 @@ from utils.log_sanitizer import sanitize
 from utils.llm.gateway_error_contract import BYOK_RATE_LIMIT_ERROR_DETAIL, is_byok_rate_limit_gateway_error
 from utils.subscription import is_trial_paywalled
 from utils.executors import run_blocking, db_executor, llm_executor
+from utils.egress_policy import EgressPolicyUnavailable, assert_http_endpoint_allowed
 from utils.integrations_registry import oauth_authorization_query, resolve_integration_provider
 from utils.retrieval.tools.google_utils import (
     GMAIL_READONLY_SCOPE,
@@ -442,6 +443,18 @@ def get_oauth_url(app_key: str, uid: str = Depends(auth.get_current_user_uid)):
     provider_key, provider = resolved
     oauth = cast(Dict[str, Any], provider['oauth'])
 
+    # Managed OAuth authorities are not an implicit self-host dependency.  In
+    # neutral profiles this fails before creating Redis state or returning a
+    # browser URL; an operator-owned integration can be added later through
+    # the same explicit egress allowlist contract.
+    try:
+        assert_http_endpoint_allowed(cast(str, oauth['auth_base']))
+    except EgressPolicyUnavailable as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f'deployment_capability_unavailable/{error.reason}',
+        ) from error
+
     # Generate cryptographically secure random state token
     state_token = secrets.token_urlsafe(32)
 
@@ -534,6 +547,7 @@ async def handle_oauth_callback(
         return render_oauth_response(request, app_key, success=False, error_type='invalid_state')
 
     try:
+        assert_http_endpoint_allowed(provider_config.token_endpoint)
         client = get_http_client()
 
         if provider_config.token_request_type == "form":

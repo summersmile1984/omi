@@ -47,8 +47,8 @@ def test_whitespace_only_provider_binding_is_missing():
         )
 
 
-def test_explicit_moss_route_requires_only_its_api_key():
-    assert required_env_for_model_config('moss') == ('MOSS_API_KEY',)
+def test_explicit_moss_route_requires_key_and_explicit_endpoint():
+    assert required_env_for_model_config('moss') == ('MOSS_API_KEY', 'MOSS_API_BASE')
     with pytest.raises(PrerecordedSTTConfigurationError) as exc_info:
         require_provider_environment(PrerecordedSTTService.MOSS, {})
     assert exc_info.value.provider == PrerecordedSTTService.MOSS

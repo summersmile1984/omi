@@ -54,6 +54,7 @@ from models.memory_search_gateway import SearchDecision, SearchMode, SearchVecto
 from models.product_memory import MemoryAccessPolicy, MemoryItemStatus, MemoryTier, ProcessingState, MemoryItem
 
 _FIXTURE_NOW = datetime(2026, 6, 24, 12, 0, tzinfo=timezone.utc)
+_WARM_VECTOR_DB = None
 
 
 def _item(
@@ -193,6 +194,10 @@ class _FailingIndex:
 
 
 def _load_vector_db_with_stubs():
+    global _WARM_VECTOR_DB
+    if _WARM_VECTOR_DB is not None:
+        return _WARM_VECTOR_DB
+
     pinecone_module = types.ModuleType("pinecone")
     setattr(pinecone_module, "Pinecone", lambda api_key: None)
     sys.modules.setdefault("pinecone", pinecone_module)
@@ -211,7 +216,14 @@ def _load_vector_db_with_stubs():
     # before executing it.
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    _WARM_VECTOR_DB = module
     return module
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _warm_vector_db_outside_test_call():
+    """Pay the synthetic vector module import once in pytest's setup phase."""
+    _load_vector_db_with_stubs()
 
 
 def _install_recording_vector_db(monkeypatch):

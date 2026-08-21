@@ -179,7 +179,8 @@ def get_memories_tool(
                 break
         memories = visible[max(offset, 0) : target_end]
     except Exception as e:
-        logger.error(e)
+        logger.error("get_memories_tool unavailable: %s", type(e).__name__)
+        return f"Error retrieving memories: {type(e).__name__}"
 
     # Bound how many memories are formatted for the chat model so a broad question cannot flood
     # its context and freeze it (#4927). The DB returns newest-first, so this keeps the most recent.

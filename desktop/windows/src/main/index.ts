@@ -105,6 +105,7 @@ import {
   stopAutomationTargetTracker
 } from './automation/foregroundTarget'
 import { registerScreenSynthHandlers } from './ipc/screenSynth'
+import { registerRendererModelCapabilityHandlers } from './ipc/modelCapability'
 import { registerAiUserProfileHandlers } from './ipc/aiUserProfile'
 import { registerTaskHandlers } from './ipc/tasks'
 import { registerBackendDegradedIpc, resetBackendDegraded } from './observability/backendDegraded'
@@ -927,6 +928,7 @@ app.whenReady().then(async () => {
   // Screen-activity synthesis IPC (cheap handler registration; the renderer drives
   // cadence). Rewind handlers/services are already registered/deferred above + below.
   registerScreenSynthHandlers()
+  registerRendererModelCapabilityHandlers()
   // Isolate the Claude coding agent's credentials from the user's real ~/.claude
   // by pinning CLAUDE_CONFIG_DIR to an Omi-owned dir BEFORE the coding-agent IPC
   // (sign-in / sign-out) or any agent spawn can touch it. userData is already
@@ -952,17 +954,17 @@ app.whenReady().then(async () => {
   registerByokHandlers()
   // "Use omi memory anywhere" MCP export connectors (hosted key + config writers).
   registerMcpExportsHandlers()
-  // Firebase auth token store IPC (encrypted-at-rest ID/refresh tokens). Backs the
-  // renderer's custom Firebase Persistence so the session never sits in plaintext
-  // localStorage. Cheap handler registration; the store is constructed lazily.
+  // Identity token store IPC (encrypted-at-rest ID/refresh tokens). Backs the
+  // configured provider's renderer persistence so the session never sits in
+  // plaintext localStorage. Cheap handler registration; the store is constructed lazily.
   registerAuthStoreHandlers()
   // pi-mono managed-cloud chat session relay (cheap handler registration). The
-  // renderer pushes the Firebase session (token lives renderer-side); the store
+  // renderer pushes the configured identity session (token lives renderer-side); the store
   // is inert until then and nothing spawns pi-mono until PR-D registers it.
   registerPiMonoHandlers()
   // Track 3 (AI user profile): once-daily synthesized "about the user" doc that
   // grounds other AI pipelines. Cheap handler registration; the renderer pushes
-  // a session (Firebase token + base URLs) and drives generation. The background
+  // a session (configured identity token + base URLs) and drives generation. The background
   // startup check + daily timer are wired at ready-to-show below.
   registerAiUserProfileHandlers()
   // Track 3 (task sync engine): local-first Tasks list. Cheap handler registration;
