@@ -211,6 +211,12 @@ python scripts/firestore_pg_migrate.py import \
   --checkpoint /secure/change-record/firestore-import.json
 ```
 
+`--source-endpoint` is passed to the Firestore SDK as the actual API target,
+then recorded and checked in the checkpoint. It may identify the managed
+Firestore authority or an operator-owned Firestore-compatible endpoint; the
+importer never connects to a default authority and merely compares it after
+the fact.
+
 The checkpoint and adjacent JSONL document manifest are mode `0600`. The
 checkpoint binds every resume to the source project, database, resolved API
 endpoint, and emulator authority (when present); any authority change fails

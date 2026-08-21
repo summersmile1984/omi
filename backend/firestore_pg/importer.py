@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -189,7 +190,15 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _require_private_file(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ImportReconciliationError(f'{label} is missing or is not a regular file: {path}')
+    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise ImportReconciliationError(f'{label} must be mode 0600 or stricter: {path}')
+
+
 def _read_checkpoint(path: Path) -> dict[str, Any]:
+    _require_private_file(path, 'import checkpoint')
     raw = json.loads(path.read_text(encoding='utf-8'))
     if raw.get('schema_version') != IMPORT_SCHEMA_VERSION:
         raise ImportReconciliationError(f'unsupported import checkpoint schema at {path}')
@@ -350,7 +359,8 @@ def run_import(
         )
 
     manifest_path = Path(str(checkpoint['manifest']))
-    if not manifest_path.is_file() or _file_hash(manifest_path) != checkpoint.get('manifest_sha256'):
+    _require_private_file(manifest_path, 'import manifest')
+    if _file_hash(manifest_path) != checkpoint.get('manifest_sha256'):
         raise ImportReconciliationError('import manifest is missing or changed; refusing resume')
     provision_collections((str(item) for item in checkpoint['collections']), engine)
     collection_tables = _collection_tables(engine)

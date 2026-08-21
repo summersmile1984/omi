@@ -33,6 +33,7 @@ from firestore_pg.migrations import (
     collection_table_name,
     validate_collection_id,
 )
+from scripts import firestore_pg_migrate
 from scripts.validate_migration_test_targets import UnsafeMigrationTarget, validate_external_targets
 
 
@@ -93,6 +94,27 @@ def _source():
         ],
     )
     return _Source([roots])
+
+
+def test_firestore_import_client_uses_declared_source_endpoint(monkeypatch):
+    observed = {}
+
+    def fake_client(**kwargs):
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(firestore_pg_migrate.cloud_firestore, 'Client', fake_client)
+    args = SimpleNamespace(
+        source_project='operator-firestore',
+        source_database='(default)',
+        source_credentials=None,
+        source_endpoint='https://FIRESTORE.OPERATOR.EXAMPLE:8443/',
+    )
+
+    assert firestore_pg_migrate._source_client(args) is not None
+    assert observed['project'] == 'operator-firestore'
+    assert observed['client_options'].api_endpoint == 'firestore.operator.example:8443'
+    assert observed['database'] == '(default)'
 
 
 def test_walk_source_keeps_missing_parent_nested_document_path():
@@ -218,6 +240,24 @@ def test_import_resume_rejects_endpoint_or_emulator_authority_change(monkeypatch
 
     with pytest.raises(importer.ImportReconciliationError, match='endpoint/emulator authority'):
         importer.run_import(redirected, checkpoint_path, engine=object())
+
+
+def test_import_resume_rejects_non_private_checkpoint_and_manifest(monkeypatch, tmp_path):
+    checkpoint_path = tmp_path / 'checkpoint.json'
+    importer.capture_source(_source(), checkpoint_path)
+    monkeypatch.setattr(importer, 'check_schema', lambda _engine=None: None)
+    monkeypatch.setattr(importer, 'target_inventory', lambda _engine=None: importer.Inventory(0, '', ()))
+    source = _source()
+
+    checkpoint_path.chmod(0o644)
+    with pytest.raises(importer.ImportReconciliationError, match='checkpoint.*0600'):
+        importer.run_import(source, checkpoint_path, engine=object())
+
+    checkpoint_path.chmod(0o600)
+    manifest_path = Path(json.loads(checkpoint_path.read_text(encoding='utf-8'))['manifest'])
+    manifest_path.chmod(0o644)
+    with pytest.raises(importer.ImportReconciliationError, match='manifest.*0600'):
+        importer.run_import(source, checkpoint_path, engine=object())
 
 
 def test_runtime_client_checks_schema_instead_of_running_ddl(monkeypatch):
