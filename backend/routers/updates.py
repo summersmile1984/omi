@@ -527,7 +527,10 @@ async def _get_live_desktop_releases(platform: str) -> List[Dict]:
     falls through to beta. Set DESKTOP_UPDATE_POINTERS_MODE=legacy as a kill
     switch while the dual-path rollout is being observed.
     """
+    legacy_updates_disabled = os.getenv("DESKTOP_UPDATE_LEGACY_FALLBACK", "enabled").lower() == "disabled"
     if os.getenv("DESKTOP_UPDATE_POINTERS_MODE", "primary").lower() == "legacy":
+        if legacy_updates_disabled:
+            return []
         releases = await _get_legacy_live_desktop_releases(platform)
         record_fallback(
             component='other',
@@ -554,6 +557,8 @@ async def _get_live_desktop_releases(platform: str) -> List[Dict]:
         pointer_entries.append(_pointer_release_to_entry(release, channel, source))
 
     legacy_entries: List[Dict] = []
+    if legacy_updates_disabled:
+        return sorted(pointer_entries, key=lambda entry: entry["release"].get("published_at", ""), reverse=True)
     should_reconcile = bool(pointer_entries) and random.random() < _reconciliation_sample_rate()
     if missing or should_reconcile:
         legacy_entries = await _get_legacy_live_desktop_releases(platform)

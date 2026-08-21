@@ -243,6 +243,7 @@ services:
       - BUCKET_APP_THUMBNAILS=omi-app-thumbnails
       - BUCKET_CHAT_FILES=omi-chat-files
       - BUCKET_DESKTOP_UPDATES=omi-desktop-updates
+      - DESKTOP_UPDATE_LEGACY_FALLBACK=disabled
       - OMI_LLM_DEFAULT_PROVIDER=generic
       - OMI_LLM_DEFAULT_MODEL=${GENERIC_OPENAI_MODEL:?GENERIC_OPENAI_MODEL is required}
       - OMI_LLM_DEFAULT_FALLBACKS=

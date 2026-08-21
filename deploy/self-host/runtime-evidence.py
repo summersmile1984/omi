@@ -281,6 +281,7 @@ PROVIDER_CONFIGURATION_KEYS = frozenset(
         'firmware_release_transport',
         'firmware_release_manifest_origin',
         'firmware_release_asset_origin',
+        'desktop_update_legacy_fallback',
         'push_provider',
         'push_model',
         'push_transport',
@@ -420,6 +421,8 @@ def _validate_provider_configuration(configuration: dict[str, Any]) -> None:
     _validate_origin_value(
         configuration['firmware_release_asset_origin'], 'firmware_release_asset_origin', schemes={'https'}
     )
+    if configuration['desktop_update_legacy_fallback'] != 'disabled':
+        raise ValueError('self-host desktop updates must disable the legacy vendor fallback')
     if configuration['memory_keyword_provider'] != 'typesense':
         raise ValueError('memory keyword provider must be typesense')
     if configuration['conversation_keyword_provider'] != 'typesense':
@@ -582,6 +585,7 @@ def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any
         'firmware_release_asset_origin': _safe_endpoint_origin(
             environment, 'FIRMWARE_RELEASE_ASSET_ORIGIN', schemes={'https'}
         ),
+        'desktop_update_legacy_fallback': _safe_identifier(environment, 'DESKTOP_UPDATE_LEGACY_FALLBACK'),
         'push_provider': _safe_identifier(environment, 'PUSH_PROVIDER'),
         'push_model': 'disabled',
         'push_transport': 'disabled',
