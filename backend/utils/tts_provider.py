@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from io import BytesIO
+import importlib
 import math
 import os
 from pathlib import Path
 import threading
+from typing import Any
 import wave
 import weakref
 from urllib.parse import urlparse
@@ -22,7 +24,6 @@ from urllib.parse import urlparse
 import httpx
 import numpy as np
 from pydub import AudioSegment
-import sherpa_onnx
 
 from utils.executors import llm_executor, run_blocking
 from utils.http_client import get_tts_client, get_tts_semaphore, get_webhook_circuit_breaker
@@ -146,6 +147,10 @@ def _get_sherpa_engine(config: SherpaTtsConfig) -> object:
     with _sherpa_lock:
         if _sherpa_engine is not None and _sherpa_identity == identity:
             return _sherpa_engine
+        try:
+            sherpa_onnx: Any = importlib.import_module('sherpa_onnx')
+        except (ImportError, OSError) as exc:
+            raise ModelCapabilityUnavailableError('tts', 'sherpa_runtime_unavailable', retryable=False) from exc
         vits: object = sherpa_onnx.OfflineTtsVitsModelConfig(  # type: ignore[reportUnknownMemberType]
             model=config.model,
             tokens=config.tokens,

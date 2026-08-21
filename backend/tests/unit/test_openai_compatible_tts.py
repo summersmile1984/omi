@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import httpx
 import numpy as np
+from pathlib import Path
 import pytest
+import subprocess
+import sys
 from types import SimpleNamespace
 from fastapi import HTTPException
 
@@ -42,6 +45,33 @@ def _compatible_env(monkeypatch) -> None:
     monkeypatch.setenv('TTS_OPENAI_COMPATIBLE_API_KEY', 'operator-key')
     monkeypatch.setenv('TTS_OPENAI_COMPATIBLE_MODEL', 'local-voice-model')
     monkeypatch.setenv('TTS_OPENAI_COMPATIBLE_VOICE', 'local-voice')
+
+
+def test_tts_provider_import_does_not_load_optional_sherpa_runtime():
+    backend_dir = Path(__file__).resolve().parents[2]
+    script = """
+import builtins
+
+real_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name == 'sherpa_onnx':
+        raise AssertionError('optional Sherpa runtime loaded during module import')
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+import utils.tts_provider
+"""
+
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        cwd=backend_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio
