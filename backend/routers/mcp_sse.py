@@ -104,6 +104,7 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 MCP_RESOURCE_URL = mcp_oauth_db.MCP_RESOURCE_URL
 MCP_AUTHORIZATION_SERVER_URL = (
     os.getenv('MCP_AUTHORIZATION_SERVER_URL')
+    or os.getenv('PUBLIC_MCP_URL')
     or os.getenv('API_BASE_URL')
     or os.getenv('BASE_API_URL')
     or 'http://127.0.0.1:8000'
