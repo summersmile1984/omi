@@ -96,6 +96,7 @@ import { registerPiMonoHandlers } from './ipc/pimono'
 import { probeAgentStoreRuntimeAtStartup } from './agentKernel/startup'
 import { registerAgentControlIpc } from './ipc/agentControl'
 import { registerAudioMuteHandlers } from './ipc/audioMute'
+import { registerRendererModelCapabilityHandlers } from './ipc/modelCapability'
 import { systemAudioMuteBridge } from './audio/systemAudioMute'
 import { registerVoicePlaneIpc } from './voice/voicePlaneIpc'
 import { automationBridge } from './automation/bridge'
@@ -994,6 +995,7 @@ app.whenReady().then(async () => {
   // PTT system-audio mute IPC (Track 2 A4). Handler registration only — the
   // native helper is warm-spawned below, off the first-paint critical path.
   registerAudioMuteHandlers()
+  registerRendererModelCapabilityHandlers()
 
   // `win` is this launch's instance for one-shot wiring below (ready-to-show,
   // bench); long-lived consumers read the module-level `mainWindow` instead.

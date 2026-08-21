@@ -1426,6 +1426,26 @@ export type OmiBridgeApi = {
   >
 }
 
+/** Provider-neutral renderer model capability requests handled by the main process.
+ *  The renderer never receives provider credentials; the main process refreshes the
+ *  operator session and calls the signed backend capability route. */
+export type RendererModelCapabilityRequest = {
+  surface: 'screen_synthesis' | 'live_notes'
+  prompt: string
+}
+
+export type RendererModelCapabilityRoute = {
+  feature: 'desktop_proactive_reasoning'
+  primary: { provider: string; model: string }
+  fallbacks: { provider: string; model: string }[]
+  unavailableFallbacks: { provider: string; model: string; reason: string }[]
+}
+
+export type RendererModelCapabilityResult = {
+  text: string
+  route: RendererModelCapabilityRoute
+}
+
 // --- Coding agents ---
 
 export type CodingAgentId = 'acp' | 'openclaw' | 'hermes' | 'codex'
