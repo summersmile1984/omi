@@ -104,11 +104,11 @@ def main() -> int:
         raise RuntimeError('live acceptance SenseVoice mount is missing model.int8.onnx or tokens.txt')
     decode_program = """
 import json
-from utils.sensevoice.socket import _decode_pcm, get_sensevoice_recognizer
+from utils.sensevoice.socket import decode_pcm, get_sensevoice_recognizer
 
 sample_rate = 16000
 pcm = b'\\x00\\x00' * (sample_rate // 4)
-text = _decode_pcm(get_sensevoice_recognizer(), sample_rate, pcm)
+text = decode_pcm(get_sensevoice_recognizer(), sample_rate, pcm)
 print(json.dumps({'pcm_milliseconds': 250, 'result_text_characters': len(text)}))
 """
     try:
