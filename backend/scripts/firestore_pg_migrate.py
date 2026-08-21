@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from google.api_core.client_options import ClientOptions
+
 # The production one-shot invokes this file directly as
 # ``python scripts/firestore_pg_migrate.py``. In that mode Python places only
 # ``/app/scripts`` on sys.path, so make the backend package root authoritative
@@ -40,7 +42,16 @@ def _schema_payload(status: Any) -> dict[str, Any]:
 def _source_client(args: argparse.Namespace) -> Any:
     if args.source_credentials:
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(Path(args.source_credentials).resolve())
-    kwargs: dict[str, str] = {'project': args.source_project}
+    # The endpoint is part of the migration authority, not merely a value to
+    # compare after the SDK has already connected.  Passing it through here is
+    # required for operator-owned Firestore-compatible deployments and local
+    # emulators; otherwise the client silently targets the managed default and
+    # the authority check either rejects a valid source or verifies the wrong
+    # service.
+    kwargs: dict[str, Any] = {
+        'project': args.source_project,
+        'client_options': ClientOptions(api_endpoint=canonical_endpoint(args.source_endpoint)),
+    }
     if args.source_database:
         kwargs['database'] = args.source_database
     return cloud_firestore.Client(**kwargs)

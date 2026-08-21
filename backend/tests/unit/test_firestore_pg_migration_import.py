@@ -36,6 +36,7 @@ from firestore_pg.migrations import (
     collection_table_name,
     validate_collection_id,
 )
+from scripts import firestore_pg_migrate
 from scripts.validate_migration_test_targets import UnsafeMigrationTarget, validate_external_targets
 
 
@@ -63,6 +64,27 @@ def test_migration_entrypoint_resolves_backend_packages_from_any_working_directo
     assert import_help.returncode == 0, import_help.stderr
     assert '--source-endpoint' in import_help.stdout
     assert '--freeze-lease' in import_help.stdout
+
+
+def test_firestore_import_client_uses_the_declared_source_endpoint(monkeypatch):
+    observed = {}
+
+    def fake_client(**kwargs):
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(firestore_pg_migrate.cloud_firestore, 'Client', fake_client)
+    args = SimpleNamespace(
+        source_project='operator-firestore',
+        source_database='(default)',
+        source_credentials=None,
+        source_endpoint='https://FIRESTORE.OPERATOR.EXAMPLE:8443/',
+    )
+
+    assert firestore_pg_migrate._source_client(args) is not None
+    assert observed['project'] == 'operator-firestore'
+    assert observed['client_options'].api_endpoint == 'firestore.operator.example:8443'
+    assert observed['database'] == '(default)'
 
 
 class _Snapshot:
