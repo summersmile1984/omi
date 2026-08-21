@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[3] / 'deploy' / 'self-host' / 'cutover-live-smoke.py'
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location('cutover_live_smoke', SCRIPT)
 assert SPEC and SPEC.loader
 SMOKE = importlib.util.module_from_spec(SPEC)
@@ -116,3 +118,39 @@ def test_listen_wire_heartbeat_is_not_parsed_as_json():
     }
     with pytest.raises(RuntimeError, match='malformed non-heartbeat'):
         SMOKE.parse_ws_event('not-json')
+
+
+def test_mlx_moss_catalog_and_segments_require_exact_model_two_speakers_and_multiple_transitions():
+    model = 'kuotient/MOSS-Transcribe-Diarize-MLX-8bit'
+    catalog = {
+        'object': 'list',
+        'data': [{'id': model, 'object': 'model', 'created': 1, 'owned_by': 'system'}],
+    }
+    assert SMOKE._require_mlx_moss_model_catalog(catalog, model) == [model]
+    summary = SMOKE._summarize_mlx_moss_segments(
+        [
+            {'timestamp': [0.0, 1.0], 'speaker': 'SPEAKER_01', 'text': 'first'},
+            {'timestamp': [1.0, 2.0], 'speaker': 'SPEAKER_02', 'text': 'second'},
+            {'timestamp': [2.0, 3.0], 'speaker': 'SPEAKER_01', 'text': 'third'},
+        ],
+        audio_duration_seconds=3.0,
+    )
+    assert summary['speaker_count'] == 2
+    assert summary['speaker_transition_count'] == 2
+    assert summary['last_segment_end_seconds'] == 3.0
+
+    with pytest.raises(RuntimeError, match='exact configured diarization model id'):
+        SMOKE._require_mlx_moss_model_catalog(catalog, 'another-model')
+    with pytest.raises(RuntimeError, match='at least two speakers'):
+        SMOKE._summarize_mlx_moss_segments(
+            [{'timestamp': [0.0, 1.0], 'speaker': 'SPEAKER_01', 'text': 'only'}],
+            audio_duration_seconds=1.0,
+        )
+    with pytest.raises(RuntimeError, match='multiple speaker transitions'):
+        SMOKE._summarize_mlx_moss_segments(
+            [
+                {'timestamp': [0.0, 1.0], 'speaker': 'SPEAKER_01', 'text': 'first'},
+                {'timestamp': [1.0, 2.0], 'speaker': 'SPEAKER_02', 'text': 'second'},
+            ],
+            audio_duration_seconds=2.0,
+        )

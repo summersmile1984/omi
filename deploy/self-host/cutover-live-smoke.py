@@ -13,19 +13,25 @@ import asyncio
 import atexit
 import base64
 import hashlib
+import io
 import json
+import math
 import os
 import re
 import ssl
+import struct
 import sys
 import time
 import uuid
 import wave
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
 import websockets
+
+from public_object_evidence import public_signed_object_crud
 
 BACKEND_ROOT = os.getenv('SELF_HOST_BACKEND_ROOT', '/app')
 if BACKEND_ROOT not in sys.path:
@@ -37,6 +43,30 @@ def require_environment(name: str) -> str:
     if not value:
         raise RuntimeError(f'{name} is required')
     return value
+
+
+def mounted_model_artifact_identity() -> dict[str, Any]:
+    artifacts = {
+        'sensevoice_model': Path('/models/sensevoice/model.int8.onnx'),
+        'sensevoice_tokens': Path('/models/sensevoice/tokens.txt'),
+        'speaker_embedding_model': Path('/models/speaker/speaker.onnx'),
+        'tts_model': Path('/models/tts/model.onnx'),
+        'tts_tokens': Path('/models/tts/tokens.txt'),
+    }
+    evidence: dict[str, dict[str, Any]] = {}
+    for name, path in artifacts.items():
+        if not path.is_file():
+            raise RuntimeError(f'mounted model artifact is missing: {name}')
+        digest = hashlib.sha256()
+        size = 0
+        with path.open('rb') as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        if size <= 0:
+            raise RuntimeError(f'mounted model artifact is empty: {name}')
+        evidence[name] = {'sha256': digest.hexdigest(), 'bytes': size}
+    return {'status': 'passed', 'paths_recorded': False, 'artifacts': evidence}
 
 
 def require_object(response: httpx.Response, operation: str) -> dict[str, Any]:
@@ -81,6 +111,129 @@ def transcript_text(payload: dict[str, Any]) -> str:
     return ' '.join(str(segment.get('text') or '') for segment in segments if isinstance(segment, dict)).strip()
 
 
+def _require_mlx_moss_model_catalog(payload: Any, configured_model: str) -> list[str]:
+    if not isinstance(payload, dict) or payload.get('object') != 'list' or not isinstance(payload.get('data'), list):
+        raise RuntimeError('mlx-audio /v1/models response did not use the reviewed OpenAI list wire')
+    model_ids = [
+        str(item.get('id') or '')
+        for item in payload['data']
+        if isinstance(item, dict) and item.get('object') == 'model' and item.get('id')
+    ]
+    if configured_model not in model_ids:
+        raise RuntimeError('mlx-audio /v1/models did not report the exact configured diarization model id')
+    return model_ids
+
+
+def _summarize_mlx_moss_segments(segments: Any, *, audio_duration_seconds: float) -> dict[str, Any]:
+    if not isinstance(segments, list) or not segments:
+        raise RuntimeError('mlx-audio MOSS diarization returned no transcript segments')
+    speakers: list[str] = []
+    last_speaker = ''
+    transitions = 0
+    last_end = 0.0
+    for segment in segments:
+        if not isinstance(segment, dict):
+            raise RuntimeError('mlx-audio MOSS diarization returned a non-object segment')
+        timestamp = segment.get('timestamp')
+        speaker = str(segment.get('speaker') or '')
+        text = str(segment.get('text') or '').strip()
+        if (
+            not isinstance(timestamp, (list, tuple))
+            or len(timestamp) != 2
+            or not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in timestamp)
+        ):
+            raise RuntimeError('mlx-audio MOSS diarization returned an invalid segment timestamp')
+        start, end = float(timestamp[0]), float(timestamp[1])
+        if start < 0 or end <= start or start < last_end - 0.25:
+            raise RuntimeError('mlx-audio MOSS diarization returned incoherent segment timing')
+        if not re.fullmatch(r'SPEAKER_\d+', speaker) or not text:
+            raise RuntimeError('mlx-audio MOSS diarization returned invalid speaker/text evidence')
+        if last_speaker and speaker != last_speaker:
+            transitions += 1
+        if speaker not in speakers:
+            speakers.append(speaker)
+        last_speaker = speaker
+        last_end = end
+    if len(speakers) < 2:
+        raise RuntimeError('mlx-audio MOSS diarization did not identify at least two speakers')
+    if transitions < 2:
+        raise RuntimeError('mlx-audio MOSS diarization did not produce multiple speaker transitions')
+    if last_end > audio_duration_seconds + 1.0:
+        raise RuntimeError('mlx-audio MOSS segment timing exceeded the WAV duration')
+    return {
+        'segment_count': len(segments),
+        'speaker_ids': speakers,
+        'speaker_count': len(speakers),
+        'speaker_transition_count': transitions,
+        'last_segment_end_seconds': round(last_end, 3),
+    }
+
+
+def probe_mlx_moss_diarization(wav_path: Path) -> dict[str, Any]:
+    """Exercise the selected production adapter against the operator service."""
+
+    selector = require_environment('STT_PRERECORDED_MODEL')
+    if selector != 'mlx_moss_diarize':
+        raise RuntimeError('assembled live loop requires STT_PRERECORDED_MODEL=mlx_moss_diarize')
+    endpoint = require_environment('MLX_MOSS_DIARIZE_ENDPOINT')
+    configured_model = require_environment('MLX_MOSS_DIARIZE_MODEL')
+    api_key = os.getenv('MLX_MOSS_DIARIZE_API_KEY', '').strip()
+    parsed = urlsplit(endpoint)
+    if parsed.path != '/v1/audio/transcriptions' or parsed.query or parsed.fragment or parsed.username is not None:
+        raise RuntimeError('mlx-audio MOSS endpoint did not use the exact reviewed transcription path')
+    models_url = urlunsplit((parsed.scheme, parsed.netloc, '/v1/models', '', ''))
+    headers = {'authorization': f'Bearer {api_key}'} if api_key else {}
+    with httpx.Client(timeout=30, trust_env=False) as client:
+        response = client.get(models_url, headers=headers)
+        catalog = require_object(response, 'mlx-audio model catalog')
+    catalog_model_ids = _require_mlx_moss_model_catalog(catalog, configured_model)
+
+    with wave.open(str(wav_path), 'rb') as source:
+        channels = source.getnchannels()
+        sample_width = source.getsampwidth()
+        sample_rate = source.getframerate()
+        frames = source.getnframes()
+    if (channels, sample_width, sample_rate) != (1, 2, 16000) or frames <= 0:
+        raise RuntimeError('mlx-audio MOSS acceptance fixture must be non-empty mono PCM16 at 16kHz')
+    audio_duration_seconds = frames / sample_rate
+    audio_bytes = wav_path.read_bytes()
+
+    from utils.stt.pre_recorded import prerecorded_from_bytes
+
+    segments = prerecorded_from_bytes(
+        audio_bytes,
+        sample_rate=sample_rate,
+        channels=channels,
+        diarize=True,
+        language='multi',
+        return_language=False,
+    )
+    segment_evidence = _summarize_mlx_moss_segments(segments, audio_duration_seconds=audio_duration_seconds)
+    return {
+        'status': 'passed',
+        'provider': 'mlx_moss_diarize',
+        'route': {
+            'endpoint_origin': f'{parsed.scheme}://{parsed.netloc}',
+            'transcription_path': parsed.path,
+            'models_catalog_path': '/v1/models',
+            'multipart_model': configured_model,
+            'response_format': 'verbose_json',
+            'authorization': 'bearer' if api_key else 'none',
+        },
+        'configured_model': configured_model,
+        'model_catalog_exact_id_match': configured_model in catalog_model_ids,
+        'real_transcription_route_exercised': True,
+        'audio_sha256': hashlib.sha256(audio_bytes).hexdigest(),
+        'audio_duration_seconds': round(audio_duration_seconds, 3),
+        'audio_duration_source': 'wav_header_frames_divided_by_sample_rate',
+        **segment_evidence,
+        # mlx-audio exposes no model revision/cache provenance. Those remain
+        # operator responsibilities and are intentionally not source-attested.
+        'service_revision_reported': False,
+        'operator_model_source_attested_by_gate': False,
+    }
+
+
 def parse_ws_event(raw: str | bytes) -> Any:
     """Parse a product event while ignoring the listen wire heartbeat."""
 
@@ -98,6 +251,7 @@ def public_agent_turn(
     backend_url: str,
     headers: dict[str, str],
     prompt: str,
+    file_ids: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     """Execute an authenticated agent turn and return its public SSE evidence."""
 
@@ -107,7 +261,7 @@ def public_agent_turn(
         'POST',
         f'{backend_url}/v2/messages',
         headers=headers,
-        json={'text': prompt, 'file_ids': []},
+        json={'text': prompt, 'file_ids': file_ids or []},
         timeout=120,
     ) as response:
         if response.status_code >= 400:
@@ -128,6 +282,272 @@ def public_agent_turn(
     if not answer:
         raise RuntimeError('public agent returned no terminal answer')
     return answer, thoughts
+
+
+async def public_realtime_relay_roundtrip(
+    *,
+    client: httpx.Client,
+    backend_url: str,
+    origin: str,
+    token: str,
+    ca_file: str,
+    marker: str,
+) -> dict[str, Any]:
+    mint = require_object(
+        client.post(
+            f'{backend_url}/v2/realtime/session',
+            headers={'authorization': f'Bearer {token}'},
+            json={'provider': 'relay'},
+        ),
+        'public realtime relay session mint',
+    )
+    if (
+        mint.get('transport') != 'websocket_relay'
+        or mint.get('protocol') != 'omi.realtime.v1'
+        or mint.get('wire_protocol') != 'openai_realtime_v1'
+    ):
+        raise RuntimeError('public realtime mint did not select the reviewed relay wire contract')
+    path = str(mint.get('websocket_url') or '')
+    if not path.startswith('/'):
+        raise RuntimeError('public realtime mint omitted its backend-relative WebSocket path')
+    context = ssl.create_default_context(cafile=ca_file)
+    event = {
+        'type': 'session.update',
+        'session': {'modalities': ['text']},
+        'acceptance_marker': marker,
+    }
+    async with websockets.connect(
+        backend_url.replace('https://', 'wss://', 1) + path,
+        ssl=context,
+        origin=origin,
+        extra_headers={'Authorization': f'Bearer {token}'},
+        subprotocols=['omi.realtime.v1'],
+        open_timeout=20,
+        close_timeout=10,
+    ) as socket:
+        if socket.subprotocol != 'omi.realtime.v1':
+            raise RuntimeError('public realtime relay did not negotiate omi.realtime.v1')
+        await socket.send(json.dumps(event, separators=(',', ':')))
+        raw = await asyncio.wait_for(socket.recv(), timeout=20)
+        try:
+            response = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError('public realtime relay returned a malformed upstream event') from error
+        if response != {'type': 'session.updated', 'acceptance_marker': marker}:
+            raise RuntimeError('public realtime relay response did not preserve the client marker')
+    return {
+        'status': 'passed',
+        'mint_route_selected': True,
+        'wire_protocol': 'openai_realtime_v1',
+        'client_event_forwarded': True,
+        'upstream_response_forwarded': True,
+    }
+
+
+def public_local_tts(client: httpx.Client, *, backend_url: str, headers: dict[str, str], marker: str) -> dict[str, Any]:
+    started = time.monotonic()
+    response = client.post(
+        f'{backend_url}/v2/tts/synthesize',
+        headers=headers,
+        json={'text': f'Local speech acceptance {marker}.', 'output_format': 'wav'},
+        timeout=120,
+    )
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    if response.status_code != 200 or response.headers.get('content-type', '').split(';', 1)[0] != 'audio/wav':
+        raise RuntimeError(f'public local TTS returned HTTP {response.status_code} or a non-WAV content type')
+    audio = response.content
+    if not audio.startswith(b'RIFF') or audio[8:12] != b'WAVE':
+        raise RuntimeError('public local TTS returned invalid WAV bytes')
+    try:
+        with wave.open(io.BytesIO(audio), 'rb') as source:
+            channels = source.getnchannels()
+            rate = source.getframerate()
+            frames = source.getnframes()
+            width = source.getsampwidth()
+            pcm = source.readframes(frames)
+    except (EOFError, wave.Error) as error:
+        raise RuntimeError('public local TTS WAV could not be decoded') from error
+    if channels < 1 or rate < 8000 or frames < 1 or width not in {1, 2, 3, 4} or not any(pcm):
+        raise RuntimeError('public local TTS WAV was empty, invalid, or silent')
+    return {
+        'status': 'passed',
+        'provider': 'sherpa_onnx',
+        'public_route_exercised': True,
+        'wav_decode_exercised': True,
+        'non_silent_pcm': True,
+        'bytes': len(audio),
+        'sample_rate': rate,
+        'generation_duration_ms': elapsed_ms,
+    }
+
+
+def public_local_app_icon(
+    client: httpx.Client, *, backend_url: str, headers: dict[str, str], marker: str
+) -> dict[str, Any]:
+    payload = require_object(
+        client.post(
+            f'{backend_url}/v1/app/generate-icon',
+            headers=headers,
+            json={
+                'name': f'Acceptance {marker}',
+                'description': 'A deterministic local deployment acceptance icon',
+                'category': 'productivity',
+            },
+        ),
+        'public local app-icon generation',
+    )
+    try:
+        png = base64.b64decode(str(payload.get('icon_base64') or ''), validate=True)
+    except ValueError as error:
+        raise RuntimeError('public local app-icon response was not valid base64') from error
+    if payload.get('mime_type') != 'image/png' or not png.startswith(b'\x89PNG\r\n\x1a\n') or len(png) < 24:
+        raise RuntimeError('public local app-icon response was not a real PNG')
+    width, height = struct.unpack('>II', png[16:24])
+    if (width, height) != (1024, 1024):
+        raise RuntimeError('public local app-icon PNG was not 1024x1024')
+    return {
+        'status': 'passed',
+        'transport': 'local_template',
+        'public_route_exercised': True,
+        'png_decode_exercised': True,
+        'dimensions': [width, height],
+        'bytes': len(png),
+    }
+
+
+def public_local_file_chat(
+    client: httpx.Client,
+    *,
+    backend_url: str,
+    headers: dict[str, str],
+    marker: str,
+    uid: str,
+    db_client: Any,
+    storage_client: Any,
+) -> dict[str, Any]:
+    file_name = 'cutover-acceptance.txt'
+    file_content = f'The operator-owned attachment codeword is {marker}.'.encode()
+    response = client.post(
+        f'{backend_url}/v2/files',
+        headers=headers,
+        files={'files': (file_name, file_content, 'text/plain')},
+        timeout=60,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f'public local file-chat upload returned HTTP {response.status_code}')
+    payload = response.json()
+    if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+        raise RuntimeError('public local file-chat upload did not return one file record')
+    file_record = payload[0]
+    file_id = str(file_record.get('id') or '')
+    storage_id = str(file_record.get('openai_file_id') or '')
+    if not file_id or not storage_id.startswith('local_'):
+        raise RuntimeError('public local file-chat upload did not select local_extraction')
+    bucket_name = require_environment('BUCKET_CHAT_FILES')
+    object_name = f'{uid}/attachments/{storage_id}/{file_name}'
+    blob = storage_client.bucket(bucket_name).blob(object_name)
+    if not blob.exists():
+        raise RuntimeError('public local file-chat upload did not persist the private original')
+    answer, _ = public_agent_turn(
+        client,
+        backend_url=backend_url,
+        headers=headers,
+        file_ids=[file_id],
+        prompt='Read the attached file and return only its exact operator-owned attachment codeword.',
+    )
+    if marker not in answer:
+        raise RuntimeError('public local file-chat answer did not use the uploaded attachment')
+    cleanup = client.delete(f'{backend_url}/v1/messages', headers=headers, timeout=60)
+    if cleanup.status_code >= 400:
+        raise RuntimeError(f'public local file-chat cleanup returned HTTP {cleanup.status_code}')
+    if db_client.document(f'users/{uid}/files/{file_id}').get().exists or blob.exists():
+        raise RuntimeError('public local file-chat cleanup left a private row or object')
+    return {
+        'status': 'passed',
+        'transport': 'local_extraction',
+        'public_upload_route_exercised': True,
+        'generic_answer_used_attachment': True,
+        'private_object_persisted_before_answer': True,
+        'private_object_cleanup_confirmed': True,
+        'private_row_cleanup_confirmed': True,
+    }
+
+
+def public_firmware_manifest(
+    client: httpx.Client,
+    *,
+    backend_url: str,
+    objects_url: str,
+    storage_client: Any,
+) -> dict[str, Any]:
+    manifest_url = require_environment('FIRMWARE_RELEASE_MANIFEST_URL')
+    parsed_manifest = urlsplit(manifest_url)
+    parsed_objects = urlsplit(objects_url)
+    if (parsed_manifest.scheme, parsed_manifest.netloc) != (parsed_objects.scheme, parsed_objects.netloc):
+        raise RuntimeError('firmware manifest is not on PUBLIC_OBJECTS_URL')
+    path_parts = unquote(parsed_manifest.path).strip('/').split('/', 1)
+    if len(path_parts) != 2 or not all(path_parts):
+        raise RuntimeError('firmware manifest URL must identify a MinIO bucket and object')
+    bucket_name, manifest_name = path_parts
+    bucket = storage_client.bucket(bucket_name)
+    manifest_blob = bucket.blob(manifest_name)
+    asset_name = f'{Path(manifest_name).parent.as_posix()}/cutover-omi-cv1-9.9.9.zip'.lstrip('./')
+    asset_blob = bucket.blob(asset_name)
+    asset_payload = b'PK\x03\x04omi-cutover-firmware-fixture'
+    release = {
+        'tag_name': 'Omi_CV1_v9.9.9',
+        'body': (
+            '<!-- KEY_VALUE_START\n'
+            'release_firmware_version: 9.9.9\n'
+            'minimum_firmware_required: 0.0.1\n'
+            'is_legacy_secure_dfu: true\n'
+            'KEY_VALUE_END -->'
+        ),
+        'published_at': '2026-08-21T00:00:00Z',
+        'draft': False,
+        'prerelease': False,
+        'assets': [
+            {
+                'name': 'Omi_CV1_OTA_v9.9.9.zip',
+                'browser_download_url': asset_blob.public_url,
+            }
+        ],
+    }
+    try:
+        asset_blob.upload_from_string(asset_payload, content_type='application/zip')
+        asset_blob.make_public()
+        manifest_blob.upload_from_string(json.dumps([release], separators=(',', ':')), content_type='application/json')
+        manifest_blob.make_public()
+        firmware = require_object(
+            client.get(
+                f'{backend_url}/v2/firmware/stable',
+                params={'device_model': 'Omi CV 1'},
+                timeout=60,
+            ),
+            'public operator firmware manifest route',
+        )
+        if firmware.get('version') != '9.9.9' or firmware.get('zip_url') != asset_blob.public_url:
+            raise RuntimeError('public firmware route did not return the operator manifest release')
+        asset_response = client.get(str(firmware['zip_url']), timeout=60)
+        if asset_response.status_code != 200 or asset_response.content != asset_payload:
+            raise RuntimeError('public firmware asset did not roundtrip through PUBLIC_OBJECTS_URL')
+    finally:
+        for blob in (manifest_blob, asset_blob):
+            try:
+                if blob.exists():
+                    blob.delete()
+            except Exception:
+                pass
+    return {
+        'status': 'passed',
+        'transport': 'manifest',
+        'public_backend_route_exercised': True,
+        'manifest_origin_exact': True,
+        'asset_origin_exact': True,
+        'asset_payload_match': True,
+        'github_transport_used': False,
+        'fixture_cleanup_confirmed': not manifest_blob.exists() and not asset_blob.exists(),
+    }
 
 
 def public_understand(
@@ -264,6 +684,7 @@ def main() -> int:
     backend_url = require_environment('PUBLIC_BACKEND_URL').rstrip('/')
     auth_url = require_environment('PUBLIC_AUTH_URL').rstrip('/')
     mcp_url = require_environment('PUBLIC_MCP_URL').rstrip('/')
+    objects_url = require_environment('PUBLIC_OBJECTS_URL').rstrip('/')
     origin = require_environment('SELF_HOST_AUTH_ORIGIN')
     ca_file = require_environment('SELF_HOST_CUTOVER_CA_FILE')
     live_egress_evidence = json.loads(require_environment('SELF_HOST_LIVE_EGRESS_EVIDENCE_JSON'))
@@ -277,9 +698,10 @@ def main() -> int:
     ):
         raise RuntimeError('SearXNG runtime secret evidence is missing or unsafe')
     wav_path = Path(require_environment('SELF_HOST_CAPTURE_WAV'))
+    diarization_wav_path = Path(require_environment('SELF_HOST_DIARIZATION_WAV'))
     manifest_path = Path(require_environment('SELF_HOST_CAPTURE_MANIFEST'))
-    if os.getenv('SPEAKER_EMBEDDING_PROVIDER') != 'disabled':
-        raise RuntimeError('this acceptance profile expects the explicitly disabled speaker-identity capability')
+    if os.getenv('SPEAKER_EMBEDDING_PROVIDER') != 'sherpa_onnx':
+        raise RuntimeError('assembled live loop requires the local sherpa_onnx speaker-embedding provider')
     if os.getenv('WEB_SEARCH_TRANSPORT') != 'searxng':
         raise RuntimeError('assembled live loop requires the SearXNG production transport')
 
@@ -292,15 +714,18 @@ def main() -> int:
     uid = ''
 
     from database import users as users_db
+    from database import redis_db
     from database import vector_db
     from database._client import db
     from langchain_core.output_parsers import PydanticOutputParser
     from utils import identity
     from utils.llm.clients import get_llm
     from utils.memory.canonical_consolidation import ConsolidationAgentBatch
+    from utils.memory.atom_keyword_index import keyword_search_memory_ids, purge_user_atom_keyword_index
     from utils.memory.canonical_required_processing import invoke_required_memory_processor
     from utils.memory.short_term_promotion import run_canonical_short_term_maintenance
     from utils.other import storage
+    from utils.stt import speaker_embedding
 
     global_gate_ref = db.document('memory_control/global_read_gate')
     global_gate_before = global_gate_ref.get()
@@ -335,6 +760,21 @@ def main() -> int:
         health = require_object(client.get(f'{backend_url}/v1/health'), 'public backend health')
         if not health:
             raise RuntimeError('public backend health returned no evidence')
+        signed_object_crud = public_signed_object_crud(
+            client,
+            objects_url=objects_url,
+            marker=marker,
+            storage_client=storage.get_storage_client(),
+        )
+        speaker_vector = speaker_embedding.extract_embedding(str(wav_path))
+        speaker_dimension = int(speaker_vector.shape[-1]) if speaker_vector.ndim == 2 else 0
+        speaker_norm = float((speaker_vector.astype('float64') ** 2).sum() ** 0.5)
+        if speaker_vector.shape[0] != 1 or speaker_dimension <= 0 or not math.isfinite(speaker_norm):
+            raise RuntimeError('local speaker embedding returned an invalid vector shape or norm')
+        if not 0.999 <= speaker_norm <= 1.001:
+            raise RuntimeError('local speaker embedding was not L2 normalized')
+        model_artifact_identity = mounted_model_artifact_identity()
+        speaker_diarization = probe_mlx_moss_diarization(diarization_wav_path)
 
         email = f'assembled-{uuid.uuid4().hex}@example.invalid'
         password = f'Assembled-{uuid.uuid4().hex}-Aa1!'
@@ -406,6 +846,31 @@ def main() -> int:
         )
         if profile.get('uid') != uid:
             raise RuntimeError('public backend profile did not provision the Better Auth principal')
+        realtime_relay = asyncio.run(
+            public_realtime_relay_roundtrip(
+                client=client,
+                backend_url=backend_url,
+                origin=origin,
+                token=token,
+                ca_file=ca_file,
+                marker=marker,
+            )
+        )
+        relay_lease_key = f'realtime_relay:lease:{uid}'
+        relay_deadline = time.monotonic() + 5
+        while time.monotonic() < relay_deadline and redis_db.r.get(relay_lease_key) is not None:
+            time.sleep(0.1)
+        if redis_db.r.get(relay_lease_key) is not None:
+            raise RuntimeError('public realtime relay did not release its cross-instance lease')
+        realtime_relay['lease_released'] = True
+        local_tts = public_local_tts(client, backend_url=backend_url, headers=auth_headers, marker=marker)
+        local_app_icon = public_local_app_icon(client, backend_url=backend_url, headers=auth_headers, marker=marker)
+        firmware_manifest = public_firmware_manifest(
+            client,
+            backend_url=backend_url,
+            objects_url=objects_url,
+            storage_client=storage.get_storage_client(),
+        )
         capture = asyncio.run(
             capture_over_public_wss(
                 backend_url=backend_url,
@@ -444,6 +909,15 @@ def main() -> int:
             backend_url=backend_url,
             headers=auth_headers,
             marker=marker,
+        )
+        local_file_chat = public_local_file_chat(
+            client,
+            backend_url=backend_url,
+            headers=auth_headers,
+            marker=marker,
+            uid=uid,
+            db_client=db,
+            storage_client=storage.get_storage_client(),
         )
         # The per-run marker reached this point through the authenticated
         # Understand turn above. Keep the durable proposition concise so the
@@ -566,6 +1040,9 @@ def main() -> int:
                 f'commit_present={bool(commit_id)}, '
                 f'returned_ids={[row.get("memory_id") for row in retrieved_items if isinstance(row, dict)]!r}'
             )
+        keyword_ids = keyword_search_memory_ids(uid, marker, limit=10, db_client=db)
+        if memory_id not in keyword_ids:
+            raise RuntimeError('Typesense keyword search did not return the promoted canonical memory')
 
         excerpt_hash = hashlib.sha256(persisted_transcript.encode('utf-8')).hexdigest()
         action = require_object(
@@ -604,6 +1081,17 @@ def main() -> int:
             or len(action_readback.get('provenance') or []) != 2
         ):
             raise RuntimeError('Act readback lost the retrieved-memory/conversation provenance chain')
+        keyword_deleted = purge_user_atom_keyword_index(uid, db_client=db, force=True, raise_on_failure=True)
+        if keyword_deleted < 1 or keyword_search_memory_ids(uid, marker, limit=10, db_client=db):
+            raise RuntimeError('Typesense keyword deletion did not prove authoritative absence')
+        typesense_keyword = {
+            'status': 'passed',
+            'provider': 'typesense',
+            'production_projection_upserted': True,
+            'keyword_query_returned_memory_id': True,
+            'authoritative_delete_count': keyword_deleted,
+            'post_delete_search_empty': True,
+        }
 
         result = {
             'status': 'passed',
@@ -611,6 +1099,7 @@ def main() -> int:
                 'public_backend_url': backend_url,
                 'public_auth_url': auth_url,
                 'public_mcp_url': mcp_url,
+                'public_objects_url': objects_url,
                 'temporary_ca_verified': True,
                 'jwt_issuer_audience_exact': True,
                 'public_jwks_kid_present': True,
@@ -619,6 +1108,8 @@ def main() -> int:
                 'mcp_metadata_exact': True,
                 'backend_principal_provisioned_via_public_profile': True,
                 'wss_public_origin_exercised': True,
+                'public_object_signed_crud': signed_object_crud,
+                'realtime_relay_public_wss_exercised': True,
             },
             'live_egress': {
                 **live_egress_evidence,
@@ -630,10 +1121,26 @@ def main() -> int:
                     'conversation_id': conversation_id,
                     'fixture_manifest_match': True,
                     'persisted_transcript_characters': len(persisted_transcript),
-                    'speaker_identity_capability': 'disabled_not_exercised',
+                    'speaker_identity_capability': 'sherpa_onnx',
+                    'speaker_embedding': {
+                        'status': 'passed',
+                        'mounted_model_readable': True,
+                        'real_wav_decode_exercised': True,
+                        'dimension': speaker_dimension,
+                        'finite_nonzero_l2_normalized': True,
+                    },
+                    'speaker_diarization': speaker_diarization,
+                    'mounted_model_artifact_identity': model_artifact_identity,
+                    'speaker_identity_product_match_exercised': False,
                     'speaker_identity_functional_equivalence_claimed': False,
                 },
                 'understand': {'generic_model_response_marker': True},
+                'realtime_relay': realtime_relay,
+                'tts': local_tts,
+                'app_icon': local_app_icon,
+                'file_chat': local_file_chat,
+                'firmware': firmware_manifest,
+                'typesense_keyword': typesense_keyword,
                 'web_search': {
                     'transport': 'searxng',
                     'public_product_agent_route_exercised': True,

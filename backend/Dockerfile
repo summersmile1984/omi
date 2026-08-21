@@ -41,6 +41,11 @@ RUN uv pip sync /tmp/pylock.runtime.toml --python /opt/venv/bin/python --compile
 
 FROM ${PYTHON_BASE_IMAGE}
 
+ARG OMI_SOURCE_GIT_COMMIT=unattributed
+ARG OMI_SOURCE_GIT_TREE=unattributed
+LABEL com.omi.source.git-commit="${OMI_SOURCE_GIT_COMMIT}" \
+      com.omi.source.git-tree="${OMI_SOURCE_GIT_TREE}"
+
 WORKDIR /app
 ENV PATH="/opt/venv/bin:$PATH"
 ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH

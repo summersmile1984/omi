@@ -26,6 +26,16 @@
 - A production self-hosted deployment fails fast when required secrets,
   migrations, origins, or provider capabilities are absent. Development
   defaults and arbitrary-UID token issuers are forbidden in that profile.
+- Client-side on-device models are deployment inputs too: a self-hosted signed
+  artifact packages an operator-provided model or explicitly disables that
+  capability before a library can invoke its managed download fallback.
+- Public MCP OAuth clients are operator-owned deployment inputs. Missing
+  provider-specific client IDs omit that provider's setup surface; self-hosted
+  clients never borrow an Omi-registered OAuth client.
+- An external speech/diarization prerequisite is selected by an explicit
+  operator endpoint and exact model id, with no implicit download or hosted
+  fallback. Cutover evidence calls the real provider and proves multi-speaker
+  transitions; a model catalog or speaker embedding alone is insufficient.
 
 ## MUST NOT
 
@@ -74,10 +84,16 @@
 - `desktop/windows/src/shared/deploymentProfile.test.ts`
 - `desktop/windows/src/main/auth/betterAuthClient.test.ts`
 - `desktop/windows/src/main/rewind/embeddingClient.capability.test.ts`
+- `desktop/windows/src/main/assistants/core/modelCapabilityClient.test.ts`
+- `desktop/windows/src/main/ipc/modelCapability.test.ts`
+- `desktop/windows/src/renderer/src/lib/geminiClient.test.ts`
+- `desktop/windows/src/main/mcp/cloudConnectors.test.ts`
+- `desktop/windows/src/main/assistants/{focus,memory,insight,tasks,goals}/*.test.ts`
 - `desktop/windows/src/renderer/src/lib/identity.selfhost.test.ts`
 - `desktop/windows/scripts/check-self-host-artifact.test.mjs`
 - `desktop/context-for-claude/Tests/ContextCoreTests/DeploymentProfileTests.swift`
 - `desktop/context-for-claude/Tests/ContextAppTests/ContextBetterAuthClientTests.swift`
+- `desktop/context-for-claude/Tests/ContextAppTests/AirgapEgressTests.swift`
 
 These paths are the required target guard surfaces. The invariant remains
 proposed until the implementation and guards are green and unchanged for seven

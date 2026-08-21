@@ -72,6 +72,10 @@ def main() -> int:
         raise RuntimeError('live acceptance requires QUEUE_BACKEND=redis')
     if os.getenv('STT_SERVICE_MODELS', '').strip().lower() != 'sensevoice':
         raise RuntimeError('live acceptance requires STT_SERVICE_MODELS=sensevoice')
+    if os.getenv('STT_PRERECORDED_MODEL', '').strip().lower() != 'mlx_moss_diarize':
+        raise RuntimeError('live acceptance requires STT_PRERECORDED_MODEL=mlx_moss_diarize')
+    require_environment('MLX_MOSS_DIARIZE_ENDPOINT')
+    require_environment('MLX_MOSS_DIARIZE_MODEL')
     require_environment('FIRESTORE_PG_DSN')
 
     auth_url = require_environment('AUTH_SERVER_INTERNAL_URL').rstrip('/')
@@ -128,10 +132,13 @@ print(json.dumps({'pcm_milliseconds': 250, 'result_text_characters': len(text)})
     ):
         raise RuntimeError('SenseVoice recognizer/decode evidence is malformed')
     stt_readiness = {
-        'selected': 'sensevoice',
+        'streaming_selected': 'sensevoice',
+        'prerecorded_selected': 'mlx_moss_diarize',
         'sherpa_onnx_importable': True,
         'model_and_tokens_ready': True,
         'audio_decode_exercised': True,
+        'operator_diarization_configuration_present': True,
+        'operator_diarization_live_call_exercised': False,
         **decode_evidence,
     }
     model_reply = get_llm('chat_responses', request_timeout=30, max_retries=0).invoke(

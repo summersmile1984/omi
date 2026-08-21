@@ -161,12 +161,15 @@ class _MinioBlob:
     ) -> str:
         del version
         expires_in = int(expiration.total_seconds()) if isinstance(expiration, datetime.timedelta) else int(expiration)
-        operation = "put_object" if method.upper() == "PUT" else "get_object"
+        normalized_method = method.upper()
+        operations = {"GET": "get_object", "PUT": "put_object", "DELETE": "delete_object"}
+        if normalized_method not in operations:
+            raise ValueError(f"unsupported signed URL method: {normalized_method}")
         return self._public_s3.generate_presigned_url(
-            operation,
+            operations[normalized_method],
             Params={"Bucket": self._bucket, "Key": self._name},
             ExpiresIn=expires_in,
-            HttpMethod=method.upper(),
+            HttpMethod=normalized_method,
         )
 
     def make_public(self) -> None:

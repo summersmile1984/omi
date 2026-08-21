@@ -42,6 +42,23 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
     def test_checked_in_profile_is_complete_and_zero_vendor(self) -> None:
         self.assertEqual(CHECK.validate(CHECK.DEFAULT_COMPOSE, CHECK.DEFAULT_EXAMPLE_ENV), [])
 
+    def test_firestore_schema_migration_is_an_explicit_startup_dependency(self) -> None:
+        errors = self.validate_mutation(
+            compose_replace=(
+                'command: ["python", "scripts/firestore_pg_migrate.py", "migrate"]',
+                'command: ["python", "-c", "print(\'skip\')"]',
+            )
+        )
+        self.assertIn('firestore-pg-migrate must run the explicit forward-only schema owner', errors)
+
+        errors = self.validate_mutation(
+            compose_replace=(
+                '      firestore-pg-migrate:\n        condition: service_completed_successfully\n      postgres:',
+                '      postgres:',
+            )
+        )
+        self.assertIn('backend must fail closed behind successful firestore-pg-migrate completion', errors)
+
     def test_runtime_env_rejects_example_placeholders_and_missing_model(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             env_path = Path(directory) / '.env.production'
@@ -51,6 +68,10 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         self.assertTrue(any('unreplaced placeholders' in error for error in errors))
         self.assertIn('PUBLIC_AUTH_URL must not use the reserved example.com deployment host', errors)
         self.assertIn('SENSEVOICE_MODEL_HOST_PATH must be an existing absolute directory', errors)
+        self.assertIn(
+            'MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH must be an existing absolute WAV file',
+            errors,
+        )
 
     def test_macos_client_model_egress_requires_pre_transport_guards(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -91,6 +112,7 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
             root = Path(directory)
             requirements = {
                 **CHECK.WINDOWS_MODEL_BOUNDARY_REQUIREMENTS,
+                **CHECK.CONTEXT_CLIENT_BOUNDARY_REQUIREMENTS,
                 **CHECK.FLUTTER_MODEL_BOUNDARY_REQUIREMENTS,
             }
             for relative in requirements:
@@ -123,13 +145,31 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
                 encoding='utf-8',
             )
             errors = CHECK.validate_release_client_model_egress(root)
-            self.assertTrue(any('transcription_service.dart missing self-hosted model boundary' in error for error in errors))
+            self.assertTrue(
+                any('transcription_service.dart missing self-hosted model boundary' in error for error in errors)
+            )
+
+            context_uploader = root / (
+                'desktop/context-for-claude/Sources/ContextApp/Backend/ScreenActivityUploader.swift'
+            )
+            context_uploader.write_text(
+                context_uploader.read_text(encoding='utf-8').replace(
+                    'ContextDeploymentProfile.current.desktopBaseURL',
+                    'URL(string: "https://managed.invalid")!',
+                ),
+                encoding='utf-8',
+            )
+            errors = CHECK.validate_release_client_model_egress(root)
+            self.assertTrue(
+                any('ScreenActivityUploader.swift missing self-hosted model boundary' in error for error in errors)
+            )
 
     def test_windows_self_host_example_rejects_firebase_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for relative in {
                 **CHECK.WINDOWS_MODEL_BOUNDARY_REQUIREMENTS,
+                **CHECK.CONTEXT_CLIENT_BOUNDARY_REQUIREMENTS,
                 **CHECK.FLUTTER_MODEL_BOUNDARY_REQUIREMENTS,
             }:
                 source = CHECK.ROOT / relative
@@ -218,6 +258,23 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn('auth-migrate must run the explicit Better Auth schema migrator', errors)
 
+    def test_rejects_missing_runtime_source_or_config_identity(self) -> None:
+        errors = self.validate_mutation(
+            compose_replace=(
+                'com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}',
+                'com.omi.runtime.config-sha256: unattributed',
+            )
+        )
+        self.assertIn('auth-server must bind the reviewed runtime config hash to the exact container', errors)
+
+        errors = self.validate_mutation(
+            compose_replace=(
+                'OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}',
+                'OMI_SOURCE_GIT_TREE: unattributed',
+            )
+        )
+        self.assertIn('auth-migrate must pass the attributed OMI_SOURCE_GIT_TREE image build argument', errors)
+
         errors = self.validate_mutation(
             compose_replace=(
                 '        condition: service_completed_successfully',
@@ -293,17 +350,26 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         self.assertIn('REALTIME_RELAY_ALLOWED_HOSTS must contain the exact REALTIME_RELAY_URL host', errors)
 
         errors = self.validate_mutation(
-            compose_replace=('MEMORY_KEYWORD_INDEX_PROVIDER=disabled', 'MEMORY_KEYWORD_INDEX_PROVIDER=typesense')
+            compose_replace=('MEMORY_KEYWORD_INDEX_PROVIDER=typesense', 'MEMORY_KEYWORD_INDEX_PROVIDER=disabled')
         )
-        self.assertIn("backend MEMORY_KEYWORD_INDEX_PROVIDER must be literal 'disabled'", errors)
+        self.assertIn("backend MEMORY_KEYWORD_INDEX_PROVIDER must be literal 'typesense'", errors)
+
+    def test_backend_and_auth_images_must_use_distinct_tags(self) -> None:
+        errors = self.validate_mutation(
+            env_replace=(
+                'AUTH_SERVER_IMAGE=omi-auth-server:self-host-production',
+                'AUTH_SERVER_IMAGE=omi-backend:self-host-production',
+            )
+        )
+        self.assertIn('BACKEND_IMAGE and AUTH_SERVER_IMAGE must be distinct tags', errors)
 
         errors = self.validate_mutation(
-            compose_replace=('SPEAKER_EMBEDDING_PROVIDER=disabled', 'SPEAKER_EMBEDDING_PROVIDER=hosted')
+            compose_replace=('SPEAKER_EMBEDDING_PROVIDER=sherpa_onnx', 'SPEAKER_EMBEDDING_PROVIDER=hosted')
         )
-        self.assertIn("backend SPEAKER_EMBEDDING_PROVIDER must be literal 'disabled'", errors)
+        self.assertIn("backend SPEAKER_EMBEDDING_PROVIDER must be literal 'sherpa_onnx'", errors)
 
-        errors = self.validate_mutation(compose_replace=('TTS_PROVIDER=disabled', 'TTS_PROVIDER=openai'))
-        self.assertIn("backend TTS_PROVIDER must be literal 'disabled'", errors)
+        errors = self.validate_mutation(env_append='\nTTS_PROVIDER=openai\n')
+        self.assertIn('TTS_PROVIDER must be sherpa_onnx or openai_compatible', errors)
 
         errors = self.validate_mutation(
             env_replace=(
@@ -317,6 +383,110 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
             compose_replace=('WEB_SEARCH_TRANSPORT=searxng', 'WEB_SEARCH_TRANSPORT=disabled')
         )
         self.assertIn("backend WEB_SEARCH_TRANSPORT must be literal 'searxng'", errors)
+
+    def test_optional_tts_and_icon_transports_require_explicit_non_vendor_endpoints(self) -> None:
+        configured = self.validate_mutation(
+            env_append=(
+                '\nTTS_PROVIDER=openai_compatible'
+                '\nTTS_OPENAI_COMPATIBLE_BASE_URL=http://tts.internal/v1'
+                '\nTTS_OPENAI_COMPATIBLE_API_KEY=operator-tts-key'
+                '\nTTS_OPENAI_COMPATIBLE_MODEL=local-voice'
+                '\nTTS_OPENAI_COMPATIBLE_VOICE=neutral'
+                '\nAPP_ICON_GENERATION_TRANSPORT=openai_compatible'
+                '\nIMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL=http://images.internal/v1'
+                '\nIMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY=operator-image-key'
+                '\nIMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL=local-image\n'
+            )
+        )
+        self.assertFalse(any('openai_compatible TTS requires' in error for error in configured))
+        self.assertFalse(any('openai_compatible app-icon generation requires' in error for error in configured))
+        self.assertFalse(any('TTS_OPENAI_COMPATIBLE_BASE_URL must' in error for error in configured))
+        self.assertFalse(any('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL must' in error for error in configured))
+
+        official = self.validate_mutation(
+            env_append=(
+                '\nTTS_PROVIDER=openai_compatible'
+                '\nTTS_OPENAI_COMPATIBLE_BASE_URL=https://api.openai.com/v1'
+                '\nTTS_OPENAI_COMPATIBLE_API_KEY=operator-tts-key'
+                '\nTTS_OPENAI_COMPATIBLE_MODEL=voice'
+                '\nTTS_OPENAI_COMPATIBLE_VOICE=neutral\n'
+            )
+        )
+        self.assertIn('TTS_OPENAI_COMPATIBLE_BASE_URL must not use official endpoint host api.openai.com', official)
+
+    def test_local_speaker_embedding_requires_mounted_model_and_bounded_threads(self) -> None:
+        errors = self.validate_mutation(
+            compose_replace=(
+                '${SPEAKER_MODEL_HOST_DIR:?SPEAKER_MODEL_HOST_DIR is required}/speaker.onnx:/models/speaker/speaker.onnx:ro',
+                '${SPEAKER_MODEL_HOST_DIR:?SPEAKER_MODEL_HOST_DIR is required}/speaker.onnx:/tmp/speaker.onnx:ro',
+            )
+        )
+        self.assertIn('backend must mount the explicit speaker model read-only', errors)
+
+        errors = self.validate_mutation(
+            env_replace=('SPEAKER_EMBEDDING_NUM_THREADS=2', 'SPEAKER_EMBEDDING_NUM_THREADS=0')
+        )
+        self.assertIn('SPEAKER_EMBEDDING_NUM_THREADS must be between 1 and 64', errors)
+
+    def test_mlx_moss_diarization_is_explicit_operator_owned_and_host_reachable(self) -> None:
+        errors = self.validate_mutation(
+            compose_replace=('STT_PRERECORDED_MODEL=mlx_moss_diarize', 'STT_PRERECORDED_MODEL=sensevoice')
+        )
+        self.assertIn("backend STT_PRERECORDED_MODEL must be literal 'mlx_moss_diarize'", errors)
+
+        errors = self.validate_mutation(
+            compose_replace=('host.docker.internal:host-gateway', 'host.docker.internal:127.0.0.1')
+        )
+        self.assertIn('backend must map host.docker.internal through the Linux host-gateway boundary', errors)
+
+        wrong_path = self.validate_mutation(
+            env_replace=(
+                'http://host.docker.internal:5002/v1/audio/transcriptions',
+                'http://host.docker.internal:5002/v1/transcribe',
+            )
+        )
+        self.assertIn('MLX_MOSS_DIARIZE_ENDPOINT must use exact path /v1/audio/transcriptions', wrong_path)
+
+        public_http = self.validate_mutation(
+            env_replace=(
+                'http://host.docker.internal:5002/v1/audio/transcriptions',
+                'http://diarization.operator.example.org/v1/audio/transcriptions',
+            )
+        )
+        self.assertIn('MLX_MOSS_DIARIZE_ENDPOINT must use https for a public target host', public_http)
+
+        omi_host = self.validate_mutation(
+            env_replace=(
+                'http://host.docker.internal:5002/v1/audio/transcriptions',
+                'https://diarization.omi.me/v1/audio/transcriptions',
+            )
+        )
+        self.assertIn(
+            'MLX_MOSS_DIARIZE_ENDPOINT must not use Omi-operated host diarization.omi.me',
+            omi_host,
+        )
+
+        hosted_moss = self.validate_mutation(
+            env_replace=(
+                'http://host.docker.internal:5002/v1/audio/transcriptions',
+                'https://api.mosi.cn/v1/audio/transcriptions',
+            )
+        )
+        self.assertIn(
+            'MLX_MOSS_DIARIZE_ENDPOINT must not use official hosted MOSS host api.mosi.cn',
+            hosted_moss,
+        )
+
+        public_without_bearer = self.validate_mutation(
+            env_replace=(
+                'http://host.docker.internal:5002/v1/audio/transcriptions',
+                'https://diarization.operator.example.org/v1/audio/transcriptions',
+            )
+        )
+        self.assertIn(
+            'public HTTPS MLX_MOSS_DIARIZE_ENDPOINT requires MLX_MOSS_DIARIZE_API_KEY',
+            public_without_bearer,
+        )
 
     def test_rejects_incoherent_projection_version_state(self) -> None:
         errors = self.validate_mutation(

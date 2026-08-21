@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_COMPOSE = ROOT / 'deploy' / 'self-host' / 'compose.production.yml'
 DEFAULT_EXAMPLE_ENV = ROOT / 'deploy' / 'self-host' / '.env.production.example'
 DEFAULT_BACKEND_DOCKERFILE = ROOT / 'backend' / 'Dockerfile'
+DEFAULT_AUTH_DOCKERFILE = ROOT / 'auth-server' / 'Dockerfile'
 DEFAULT_SEARXNG_SETTINGS = ROOT / 'deploy' / 'self-host' / 'searxng-settings.yml'
 
 REQUIRED_SERVICES = {
@@ -22,19 +23,22 @@ REQUIRED_SERVICES = {
     'redis',
     'minio',
     'qdrant',
+    'typesense',
     'searxng',
     'auth-migrate',
+    'firestore-pg-migrate',
     'auth-server',
     'backend',
     'queue-worker',
 }
-ONE_SHOT_SERVICES = {'auth-migrate'}
-PINNED_REMOTE_SERVICES = {'postgres', 'redis', 'minio', 'qdrant', 'searxng'}
+ONE_SHOT_SERVICES = {'auth-migrate', 'firestore-pg-migrate'}
+PINNED_REMOTE_SERVICES = {'postgres', 'redis', 'minio', 'qdrant', 'typesense', 'searxng'}
 STATEFUL_MOUNTS = {
     'postgres': '/var/lib/postgresql/data',
     'redis': '/data',
     'minio': '/data',
     'qdrant': '/qdrant/storage',
+    'typesense': '/data',
     'searxng': '/var/cache/searxng',
     'backend': '/app/syncing',
 }
@@ -45,23 +49,31 @@ REQUIRED_FIXED_BACKEND_ENV = {
     'QUEUE_BACKEND': 'redis',
     'STORAGE_BACKEND': 'minio',
     'VECTOR_STORE_PROVIDER': 'qdrant',
-    'MEMORY_KEYWORD_INDEX_PROVIDER': 'disabled',
+    'MEMORY_KEYWORD_INDEX_PROVIDER': 'typesense',
+    'TYPESENSE_HOST': 'typesense',
+    'TYPESENSE_HOST_PORT': '8108',
+    'TYPESENSE_PROTOCOL': 'http',
+    'MEMORY_TYPESENSE_COLLECTION': 'canonical_memory_atoms',
     'OMI_LLM_DEFAULT_PROVIDER': 'generic',
     'OMI_LLM_DEFAULT_FALLBACKS': '',
     'EMBEDDING_PROVIDER': 'generic',
-    'APP_ICON_GENERATION_TRANSPORT': 'disabled',
-    'FILE_CHAT_TRANSPORT': 'disabled',
+    'FILE_CHAT_TRANSPORT': 'local_extraction',
+    'PUSH_PROVIDER': 'disabled',
     'DESKTOP_VENDOR_PROXY_TRANSPORT': 'disabled',
     'EMBEDDING_CAPABILITY_TRANSPORT': 'direct',
     'PROACTIVE_TOOL_TRANSPORT': 'completion',
-    'SPEAKER_EMBEDDING_PROVIDER': 'disabled',
-    'TTS_PROVIDER': 'disabled',
+    'SPEAKER_EMBEDDING_PROVIDER': 'sherpa_onnx',
+    'SPEAKER_EMBEDDING_MODEL': '/models/speaker/speaker.onnx',
+    'TTS_SHERPA_MODEL': '/models/tts/model.onnx',
+    'TTS_SHERPA_TOKENS': '/models/tts/tokens.txt',
+    'TTS_SHERPA_DATA_DIR': '/models/tts/espeak-ng-data',
     'STT_SERVICE_MODELS': 'sensevoice',
     'STT_ROUTE_FALLBACK_TO_DEFAULT': 'false',
-    'STT_PRERECORDED_MODEL': 'sensevoice',
+    'STT_PRERECORDED_MODEL': 'mlx_moss_diarize',
     'REALTIME_PROVIDER': 'relay',
     'WEB_SEARCH_TRANSPORT': 'searxng',
     'SEARXNG_BASE_URL': 'http://searxng:8080',
+    'FIRMWARE_RELEASE_TRANSPORT': 'manifest',
     'MEMORY_ENABLED': 'on',
     'ADMIN_KEY_AUTH_ENABLED': 'false',
 }
@@ -83,6 +95,13 @@ REQUIRED_INTERPOLATED_ENV = {
         'MINIO_PUBLIC_ENDPOINT',
         'MINIO_ACCESS_KEY',
         'MINIO_SECRET_KEY',
+        'APP_ICON_GENERATION_TRANSPORT',
+        'TTS_PROVIDER',
+        'TTS_SHERPA_NUM_THREADS',
+        'TTS_SHERPA_SPEAKER_ID',
+        'SPEAKER_EMBEDDING_NUM_THREADS',
+        'MLX_MOSS_DIARIZE_ENDPOINT',
+        'MLX_MOSS_DIARIZE_MODEL',
         'GENERIC_OPENAI_BASE_URL',
         'GENERIC_OPENAI_API_KEY',
         'GENERIC_OPENAI_MODEL',
@@ -102,10 +121,14 @@ REQUIRED_INTERPOLATED_ENV = {
         'VECTOR_PROJECTION_SCHEMA_VERSION',
         'VECTOR_PROJECTION_DELETE_VERSIONS',
         'QDRANT_API_KEY',
+        'TYPESENSE_API_KEY',
+        'FIRMWARE_RELEASE_MANIFEST_URL',
+        'FIRMWARE_RELEASE_ASSET_ORIGIN',
         'MCP_AUTHORIZATION_SERVER_URL',
         'MCP_RESOURCE_URL',
     },
     'searxng': {'SEARXNG_SECRET'},
+    'typesense': {'TYPESENSE_API_KEY'},
     'auth-server': {
         'DATABASE_URL',
         'BETTER_AUTH_SECRET',
@@ -130,6 +153,7 @@ REQUIRED_INTERPOLATED_ENV = {
         'AUTH_JWKS_ROTATION_SECONDS',
         'AUTH_JWKS_GRACE_SECONDS',
     },
+    'firestore-pg-migrate': {'FIRESTORE_PG_DSN'},
 }
 REQUIRED_ENV_FILE_KEYS = {
     'SELF_HOST_BIND_ADDRESS',
@@ -157,8 +181,15 @@ REQUIRED_ENV_FILE_KEYS = {
     'MINIO_REGION',
     'QDRANT_API_KEY',
     'QDRANT_COLLECTION_PREFIX',
+    'TYPESENSE_API_KEY',
     'SEARXNG_SECRET',
     'TTS_PROVIDER',
+    'TTS_MODEL_HOST_DIR',
+    'TTS_SHERPA_NUM_THREADS',
+    'TTS_SHERPA_SPEAKER_ID',
+    'APP_ICON_GENERATION_TRANSPORT',
+    'FIRMWARE_RELEASE_MANIFEST_URL',
+    'FIRMWARE_RELEASE_ASSET_ORIGIN',
     'BETTER_AUTH_SECRET',
     'AUTH_INTERNAL_ADMIN_SECRET',
     'AUTH_JWKS_ROTATION_SECONDS',
@@ -188,7 +219,24 @@ REQUIRED_ENV_FILE_KEYS = {
     'VECTOR_PROJECTION_DELETE_VERSIONS',
     'VECTOR_PROJECTION_REQUIRED_NAMESPACES',
     'SENSEVOICE_MODEL_HOST_PATH',
+    'MLX_MOSS_DIARIZE_ENDPOINT',
+    'MLX_MOSS_DIARIZE_MODEL',
+    'MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH',
+    'SPEAKER_MODEL_HOST_DIR',
+    'SPEAKER_EMBEDDING_NUM_THREADS',
 }
+DECLARED_OPTIONAL_ENV_FILE_KEYS = {
+    'TTS_OPENAI_COMPATIBLE_BASE_URL',
+    'TTS_OPENAI_COMPATIBLE_API_KEY',
+    'TTS_OPENAI_COMPATIBLE_MODEL',
+    'TTS_OPENAI_COMPATIBLE_VOICE',
+    'IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL',
+    'IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY',
+    'IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL',
+    'FIRMWARE_RELEASE_MANIFEST_BEARER_TOKEN',
+    'MLX_MOSS_DIARIZE_API_KEY',
+}
+OPTIONAL_BACKEND_ENV_BINDINGS = {name: f'${{{name}-}}' for name in DECLARED_OPTIONAL_ENV_FILE_KEYS}
 REQUIRED_PROJECTION_NAMESPACES = {
     'ns1',
     'ns2',
@@ -235,7 +283,38 @@ def _unsafe_endpoint_host(host: str) -> bool:
     except ValueError:
         return False
     return address.is_link_local or address.is_unspecified or address.is_multicast or address.is_reserved
+
+
+def _validate_operator_http_endpoint(name: str, value: str, errors: list[str]) -> None:
+    parsed = urlsplit(value)
+    host = (parsed.hostname or '').lower()
+    if (
+        parsed.scheme not in {'http', 'https'}
+        or not parsed.netloc
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        errors.append(f'{name} must be an explicit credential-free http(s) base URL')
+        return
+    if _unsafe_endpoint_host(host):
+        errors.append(f'{name} must not target link-local, metadata, or reserved hosts')
+    if parsed.scheme == 'http' and not _private_endpoint_host(host):
+        errors.append(f'{name} must use https for a public target host')
+    if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
+        errors.append(f'{name} must not use official endpoint host {host}')
+
+
 MACOS_MODEL_BOUNDARY_REQUIREMENTS = {
+    'desktop/macos/Desktop/Sources/DesktopBackendEnvironment.swift': (
+        'canonicalSelfHostedOrigin(',
+        'components.user == nil',
+        'host.hasSuffix(".omi.me")',
+        'desktop-backend-hhibjajaja-uc.a.run.app',
+        'desktop-backend-dt5lrfkkoa-uc.a.run.app',
+    ),
     'desktop/macos/Desktop/Sources/ProactiveAssistants/Core/GeminiClient.swift': (
         'providerNeutralBackendCapability',
         'ProactiveLaneClient.shared.complete',
@@ -299,6 +378,9 @@ WINDOWS_MODEL_BOUNDARY_REQUIREMENTS = {
         "profile === 'self_hosted'",
         'allowDirectModelProviders: profile === \'omi_cloud\'',
         'allowByok: profile === \'omi_cloud\'',
+        'desktop-backend-dt5lrfkkoa-uc.a.run.app',
+        'VITE_OMI_MCP_CHATGPT_OAUTH_CLIENT_ID',
+        'VITE_OMI_MCP_CLAUDE_OAUTH_CLIENT_ID',
     ),
     'desktop/windows/scripts/ensure-env.mjs': (
         "requestedProfile === 'self_hosted'",
@@ -322,13 +404,9 @@ WINDOWS_MODEL_BOUNDARY_REQUIREMENTS = {
         'candidate.hostname !== websocketBase.hostname',
     ),
     'desktop/windows/src/main/ipc/byok.ts': ('requireByok()',),
-    'desktop/windows/src/main/agentKernel/byokValidator.ts': (
-        'resolveWindowsDeployment().allowByok',
-    ),
+    'desktop/windows/src/main/agentKernel/byokValidator.ts': ('resolveWindowsDeployment().allowByok',),
     'desktop/windows/src/main/ipc/codingAgent.ts': ('allowExternalCodingAgents()',),
-    'desktop/windows/src/main/agentKernel/controlPlane.ts': (
-        "resolveWindowsDeployment().profile === 'self_hosted'",
-    ),
+    'desktop/windows/src/main/agentKernel/controlPlane.ts': ("resolveWindowsDeployment().profile === 'self_hosted'",),
     'desktop/windows/src/renderer/src/lib/voice/voiceController.ts': (
         'resolveWindowsDeployment().allowDirectModelProviders',
     ),
@@ -357,12 +435,91 @@ WINDOWS_MODEL_BOUNDARY_REQUIREMENTS = {
         'renderer artifact contains forbidden CSP/vendor host',
         'exactly one connect-src directive',
         'connect-src contains unsigned source',
+        'VITE_OMI_MCP_CHATGPT_OAUTH_CLIENT_ID',
+        'VITE_OMI_MCP_CLAUDE_OAUTH_CLIENT_ID',
+    ),
+    'desktop/windows/src/main/assistants/core/modelCapabilityClient.ts': (
+        '/v1/model-capabilities/tool-completions',
+        "feature: 'desktop_proactive_reasoning'",
+        'model capability returned an undeclared tool call',
+    ),
+    'desktop/windows/src/main/assistants/focus/gemini.ts': (
+        "profile === 'self_hosted'",
+        'completeStructuredCapability',
+    ),
+    'desktop/windows/src/main/assistants/memory/gemini.ts': (
+        "profile === 'self_hosted'",
+        'completeStructuredCapability',
+    ),
+    'desktop/windows/src/main/assistants/goals/generate.ts': (
+        "profile === 'self_hosted'",
+        'completeStructuredCapability',
+    ),
+    'desktop/windows/src/main/assistants/insight/gemini.ts': (
+        "profile === 'self_hosted'",
+        'completeToolCapability',
+    ),
+    'desktop/windows/src/main/assistants/tasks/geminiWire.ts': (
+        "profile === 'self_hosted'",
+        'completeToolCapability',
+    ),
+    'desktop/windows/src/main/ipc/modelCapability.ts': (
+        "surface === 'live_notes'",
+        'completeStructuredCapability',
+        'identity session missing',
+    ),
+    'desktop/windows/src/renderer/src/lib/geminiClient.ts': (
+        "profile === 'self_hosted'",
+        'window.omi.modelCapabilityGenerate',
+    ),
+    'desktop/windows/src/preload/index.ts': ("ipcRenderer.invoke('modelCapability:generate'",),
+    'desktop/windows/src/main/mcp/cloudConnectors.ts': (
+        'if (clients.chatgpt)',
+        'if (clients.claude)',
+    ),
+    'desktop/windows/src/main/ipc/mcpExports.ts': (
+        'deployment.mcpChatgptOAuthClientId',
+        'deployment.mcpClaudeOAuthClientId',
+    ),
+}
+CONTEXT_CLIENT_BOUNDARY_REQUIREMENTS = {
+    'desktop/context-for-claude/Sources/ContextCore/DeploymentProfile.swift': (
+        'OmiDesktopBaseURL',
+        'OMI_DESKTOP_API_URL',
+        'rejectsManagedOrigin: true',
+        'desktop-backend-hhibjajaja-uc.a.run.app',
+        'desktop-backend-dt5lrfkkoa-uc.a.run.app',
+        'OmiSpeechModelMode',
+        'invalidSpeechModelAuthority',
+    ),
+    'desktop/context-for-claude/Sources/ContextApp/Backend/ScreenActivityUploader.swift': (
+        'ContextDeploymentProfile.current.desktopBaseURL',
+        'appendingPathComponent("v1/screen-activity/sync")',
+    ),
+    'desktop/context-for-claude/scripts/build.sh': (
+        'CONTEXT_DESKTOP_BASE_URL',
+        'self_hosted requires CONTEXT_DESKTOP_BASE_URL',
+        'Set :OmiDesktopBaseURL',
+        'CONTEXT_SPEECH_MODEL_MODE=local or disabled',
+        'Contents/Resources/$SPEECH_MODEL_BUNDLE_PATH',
+    ),
+    'desktop/context-for-claude/Sources/ContextApp/Transcribe/Transcriber.swift': (
+        'speechModelAuthority',
+        'ModelHub.offlineMode = true',
+        'obtainOperatorProvisioned',
+        'SpeechModelError.capabilityUnavailable',
     ),
 }
 FLUTTER_MODEL_BOUNDARY_REQUIREMENTS = {
     'app/lib/env/env.dart': (
         'OMI_MCP_BASE_URL',
         'resolveMcpBaseUrl',
+        'canonicalSelfHostedOrigin',
+        "uri.userInfo.isNotEmpty",
+    ),
+    'app/lib/services/auth_service.dart': (
+        'Env.canonicalSelfHostedOrigin(',
+        "key: 'OMI_AUTH_SERVER_URL'",
     ),
     'app/lib/models/stt_provider.dart': (
         'isSelfHostedClientSafe',
@@ -392,7 +549,11 @@ FLUTTER_MODEL_BOUNDARY_REQUIREMENTS = {
 def validate_release_client_model_egress(root: Path = ROOT) -> list[str]:
     """Static tripwire for Windows/Flutter pre-transport self-host boundaries."""
     errors: list[str] = []
-    requirements = {**WINDOWS_MODEL_BOUNDARY_REQUIREMENTS, **FLUTTER_MODEL_BOUNDARY_REQUIREMENTS}
+    requirements = {
+        **WINDOWS_MODEL_BOUNDARY_REQUIREMENTS,
+        **CONTEXT_CLIENT_BOUNDARY_REQUIREMENTS,
+        **FLUTTER_MODEL_BOUNDARY_REQUIREMENTS,
+    }
     for relative, required_tokens in requirements.items():
         path = root / relative
         if not path.is_file():
@@ -522,10 +683,15 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     ):
         errors.append('SearXNG outbound engine allowlist must keep only wikipedia')
     backend_dockerfile = DEFAULT_BACKEND_DOCKERFILE.read_text(encoding='utf-8')
+    auth_dockerfile = DEFAULT_AUTH_DOCKERFILE.read_text(encoding='utf-8')
     if 'mkdir -p /app/syncing' not in backend_dockerfile:
         errors.append(
             'backend image must pre-create /app/syncing before dropping privileges so its named volume is writable'
         )
+    for name, dockerfile in (('backend', backend_dockerfile), ('auth-server', auth_dockerfile)):
+        for label in ('com.omi.source.git-commit', 'com.omi.source.git-tree'):
+            if label not in dockerfile:
+                errors.append(f'{name} image must embed the attributed {label} label')
     services = _service_blocks(text)
     missing_services = sorted(REQUIRED_SERVICES - services.keys())
     if missing_services:
@@ -559,14 +725,33 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     for service in ('auth-migrate', 'auth-server', 'backend', 'queue-worker'):
         if '\n    build:' not in services.get(service, ''):
             errors.append(f'{service} must be buildable from this checkout')
+        for build_arg in ('OMI_SOURCE_GIT_COMMIT', 'OMI_SOURCE_GIT_TREE'):
+            if f'{build_arg}: ${{{build_arg}:-unattributed}}' not in services.get(service, ''):
+                errors.append(f'{service} must pass the attributed {build_arg} image build argument')
+    for service in ('auth-server', 'backend', 'queue-worker'):
+        if 'com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}' not in services.get(service, ''):
+            errors.append(f'{service} must bind the reviewed runtime config hash to the exact container')
     for service in ('backend', 'queue-worker'):
         if 'platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}' not in services.get(service, ''):
             errors.append(f'{service} must require an explicit runtime platform')
+
+    if (
+        '${SPEAKER_MODEL_HOST_DIR:?SPEAKER_MODEL_HOST_DIR is required}/speaker.onnx:'
+        '/models/speaker/speaker.onnx:ro' not in services.get('backend', '')
+    ):
+        errors.append('backend must mount the explicit speaker model read-only')
+    if '${TTS_MODEL_HOST_DIR:?TTS_MODEL_HOST_DIR is required}:/models/tts:ro' not in services.get('backend', ''):
+        errors.append('backend must mount the explicit local TTS model directory read-only')
+    if 'host.docker.internal:host-gateway' not in services.get('backend', ''):
+        errors.append('backend must map host.docker.internal through the Linux host-gateway boundary')
 
     backend_env = _environment(services.get('backend', ''))
     for name, expected in REQUIRED_FIXED_BACKEND_ENV.items():
         if backend_env.get(name) != expected:
             errors.append(f'backend {name} must be literal {expected!r}')
+    for name, expected in OPTIONAL_BACKEND_ENV_BINDINGS.items():
+        if backend_env.get(name) != expected:
+            errors.append(f'backend {name} must use exact optional binding {expected!r}')
     if backend_env.get('AUTH_JWKS_URL') != 'http://auth-server:3000/api/auth/jwks':
         errors.append('backend AUTH_JWKS_URL must use the private auth-server service endpoint')
     if backend_env.get('AUTH_SERVER_INTERNAL_URL') != 'http://auth-server:3000':
@@ -578,6 +763,12 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     for name, expected in {
         'WEB_SEARCH_TRANSPORT': 'searxng',
         'SEARXNG_BASE_URL': 'http://searxng:8080',
+        'MEMORY_KEYWORD_INDEX_PROVIDER': 'typesense',
+        'TYPESENSE_HOST': 'typesense',
+        'TYPESENSE_HOST_PORT': '8108',
+        'TYPESENSE_PROTOCOL': 'http',
+        'MEMORY_TYPESENSE_COLLECTION': 'canonical_memory_atoms',
+        'PUSH_PROVIDER': 'disabled',
     }.items():
         if queue_worker_env.get(name) != expected:
             errors.append(f'queue-worker {name} must be literal {expected!r}')
@@ -614,6 +805,17 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     ):
         errors.append('auth-server must fail closed behind successful auth-migrate completion')
 
+    firestore_migrate_block = services.get('firestore-pg-migrate', '')
+    if 'command: ["python", "scripts/firestore_pg_migrate.py", "migrate"]' not in firestore_migrate_block:
+        errors.append('firestore-pg-migrate must run the explicit forward-only schema owner')
+    for service in ('backend', 'queue-worker'):
+        if not re.search(
+            r'(?ms)^    depends_on:\s*\n(?:.*?\n)*?      firestore-pg-migrate:\s*\n'
+            r'        condition: service_completed_successfully',
+            services.get(service, ''),
+        ):
+            errors.append(f'{service} must fail closed behind successful firestore-pg-migrate completion')
+
     for service, required_names in REQUIRED_INTERPOLATED_ENV.items():
         env = _environment(services.get(service, ''))
         for name in sorted(required_names):
@@ -641,9 +843,14 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
 
     env = _dotenv(env_path)
     example_mode = env_path.name.endswith('.example')
+    if env.get('BACKEND_IMAGE') and env.get('BACKEND_IMAGE') == env.get('AUTH_SERVER_IMAGE'):
+        errors.append('BACKEND_IMAGE and AUTH_SERVER_IMAGE must be distinct tags')
     missing_env = sorted(name for name in REQUIRED_ENV_FILE_KEYS if not env.get(name))
     if missing_env:
         errors.append(f'{env_path.name} missing required values: {", ".join(missing_env)}')
+    missing_declarations = sorted(name for name in DECLARED_OPTIONAL_ENV_FILE_KEYS if name not in env)
+    if missing_declarations:
+        errors.append(f'{env_path.name} missing optional capability declarations: {", ".join(missing_declarations)}')
     if 'VECTOR_PROJECTION_TARGET_VERSION' not in env:
         errors.append(f'{env_path.name} must declare VECTOR_PROJECTION_TARGET_VERSION, blank in single mode')
     forbidden_env = sorted(
@@ -672,6 +879,25 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
         if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
             errors.append(f'GENERIC_OPENAI_BASE_URL must not use official endpoint host {host}')
 
+    mlx_moss_endpoint = env.get('MLX_MOSS_DIARIZE_ENDPOINT', '')
+    if mlx_moss_endpoint:
+        _validate_operator_http_endpoint('MLX_MOSS_DIARIZE_ENDPOINT', mlx_moss_endpoint, errors)
+        parsed = urlsplit(mlx_moss_endpoint)
+        host = (parsed.hostname or '').lower()
+        if parsed.path != '/v1/audio/transcriptions':
+            errors.append('MLX_MOSS_DIARIZE_ENDPOINT must use exact path /v1/audio/transcriptions')
+        if host == 'mosi.cn' or host.endswith('.mosi.cn'):
+            errors.append(f'MLX_MOSS_DIARIZE_ENDPOINT must not use official hosted MOSS host {host}')
+        if host == 'omi.me' or host.endswith('.omi.me'):
+            errors.append(f'MLX_MOSS_DIARIZE_ENDPOINT must not use Omi-operated host {host}')
+        if (
+            parsed.scheme == 'https'
+            and host
+            and not _private_endpoint_host(host)
+            and not env.get('MLX_MOSS_DIARIZE_API_KEY')
+        ):
+            errors.append('public HTTPS MLX_MOSS_DIARIZE_ENDPOINT requires MLX_MOSS_DIARIZE_API_KEY')
+
     realtime_url = env.get('REALTIME_RELAY_URL', '')
     if realtime_url:
         parsed = urlsplit(realtime_url)
@@ -696,8 +922,57 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
         errors.append('REALTIME_RELAY_PROVIDER_ID must be a lowercase provider identifier')
     if env.get('REALTIME_RELAY_WIRE_PROTOCOL', '') != 'openai_realtime_v1':
         errors.append('REALTIME_RELAY_WIRE_PROTOCOL must be openai_realtime_v1')
-    if env.get('TTS_PROVIDER', '') != 'disabled':
-        errors.append('TTS_PROVIDER must be disabled until a self-host TTS service is declared')
+    tts_provider = env.get('TTS_PROVIDER', '')
+    tts_settings = (
+        'TTS_OPENAI_COMPATIBLE_BASE_URL',
+        'TTS_OPENAI_COMPATIBLE_API_KEY',
+        'TTS_OPENAI_COMPATIBLE_MODEL',
+        'TTS_OPENAI_COMPATIBLE_VOICE',
+    )
+    if tts_provider not in {'sherpa_onnx', 'openai_compatible'}:
+        errors.append('TTS_PROVIDER must be sherpa_onnx or openai_compatible')
+    elif tts_provider == 'openai_compatible':
+        missing_tts = sorted(name for name in tts_settings if not env.get(name))
+        if missing_tts:
+            errors.append(f'openai_compatible TTS requires: {", ".join(missing_tts)}')
+        elif env.get('TTS_OPENAI_COMPATIBLE_BASE_URL'):
+            _validate_operator_http_endpoint(
+                'TTS_OPENAI_COMPATIBLE_BASE_URL', env['TTS_OPENAI_COMPATIBLE_BASE_URL'], errors
+            )
+    elif any(env.get(name) for name in tts_settings):
+        errors.append('sherpa_onnx TTS must not retain openai_compatible endpoint or credentials')
+
+    icon_transport = env.get('APP_ICON_GENERATION_TRANSPORT', '')
+    icon_settings = (
+        'IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL',
+        'IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY',
+        'IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL',
+    )
+    if icon_transport not in {'local_template', 'openai_compatible'}:
+        errors.append('APP_ICON_GENERATION_TRANSPORT must be local_template or openai_compatible')
+    elif icon_transport == 'openai_compatible':
+        missing_icon = sorted(name for name in icon_settings if not env.get(name))
+        if missing_icon:
+            errors.append(f'openai_compatible app-icon generation requires: {", ".join(missing_icon)}')
+        elif env.get('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL'):
+            _validate_operator_http_endpoint(
+                'IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL',
+                env['IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL'],
+                errors,
+            )
+    elif any(env.get(name) for name in icon_settings):
+        errors.append('local_template app-icon generation must not retain openai_compatible endpoint or credentials')
+
+    public_objects = urlsplit(env.get('PUBLIC_OBJECTS_URL', ''))
+    public_objects_origin = f'{public_objects.scheme}://{public_objects.netloc}' if public_objects.netloc else ''
+    firmware_manifest = urlsplit(env.get('FIRMWARE_RELEASE_MANIFEST_URL', ''))
+    firmware_asset_origin = env.get('FIRMWARE_RELEASE_ASSET_ORIGIN', '').rstrip('/')
+    if firmware_manifest.scheme != 'https' or not firmware_manifest.netloc or not firmware_manifest.path.strip('/'):
+        errors.append('FIRMWARE_RELEASE_MANIFEST_URL must be an explicit public HTTPS object URL')
+    elif f'{firmware_manifest.scheme}://{firmware_manifest.netloc}' != public_objects_origin:
+        errors.append('FIRMWARE_RELEASE_MANIFEST_URL must use the exact PUBLIC_OBJECTS_URL origin')
+    if firmware_asset_origin != public_objects_origin:
+        errors.append('FIRMWARE_RELEASE_ASSET_ORIGIN must equal the exact PUBLIC_OBJECTS_URL origin')
     for name, minimum, maximum in (
         ('REALTIME_RELAY_MAX_MESSAGE_BYTES', 1024, 8_388_608),
         ('REALTIME_RELAY_MAX_SESSION_SECONDS', 1, 3600),
@@ -765,6 +1040,43 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
             ]
             if missing_model_files:
                 errors.append('SENSEVOICE_MODEL_HOST_PATH is missing required files: ' + ', '.join(missing_model_files))
+        speaker_model_dir = Path(env.get('SPEAKER_MODEL_HOST_DIR', ''))
+        if not speaker_model_dir.is_absolute() or not speaker_model_dir.is_dir():
+            errors.append('SPEAKER_MODEL_HOST_DIR must be an existing absolute directory')
+        elif not (speaker_model_dir / 'speaker.onnx').is_file():
+            errors.append('SPEAKER_MODEL_HOST_DIR is missing required file: speaker.onnx')
+        diarization_audio = Path(env.get('MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH', ''))
+        if not diarization_audio.is_absolute() or not diarization_audio.is_file():
+            errors.append('MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH must be an existing absolute WAV file')
+        elif diarization_audio.suffix.lower() != '.wav':
+            errors.append('MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH must name a WAV file')
+        if tts_provider == 'sherpa_onnx':
+            tts_model_dir = Path(env.get('TTS_MODEL_HOST_DIR', ''))
+            if not tts_model_dir.is_absolute() or not tts_model_dir.is_dir():
+                errors.append('TTS_MODEL_HOST_DIR must be an existing absolute directory for sherpa_onnx')
+            else:
+                missing_tts_files = [
+                    name
+                    for name in ('model.onnx', 'tokens.txt', 'espeak-ng-data')
+                    if not (tts_model_dir / name).exists()
+                ]
+                if missing_tts_files:
+                    errors.append('TTS_MODEL_HOST_DIR is missing required paths: ' + ', '.join(missing_tts_files))
+    try:
+        speaker_threads = int(env.get('SPEAKER_EMBEDDING_NUM_THREADS', ''))
+    except ValueError:
+        speaker_threads = 0
+    if not 1 <= speaker_threads <= 64:
+        errors.append('SPEAKER_EMBEDDING_NUM_THREADS must be between 1 and 64')
+    try:
+        tts_threads = int(env.get('TTS_SHERPA_NUM_THREADS', ''))
+        tts_speaker_id = int(env.get('TTS_SHERPA_SPEAKER_ID', ''))
+    except ValueError:
+        tts_threads, tts_speaker_id = 0, -1
+    if not 1 <= tts_threads <= 64:
+        errors.append('TTS_SHERPA_NUM_THREADS must be between 1 and 64')
+    if tts_speaker_id < 0:
+        errors.append('TTS_SHERPA_SPEAKER_ID must be a non-negative integer')
 
     return errors
 

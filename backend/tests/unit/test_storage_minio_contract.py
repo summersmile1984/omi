@@ -81,6 +81,24 @@ def test_signed_url_accepts_gcs_signature_and_uses_public_endpoint_client():
     )
 
 
+def test_signed_url_supports_public_delete_and_rejects_unknown_methods():
+    public_s3 = MagicMock()
+    public_s3.generate_presigned_url.return_value = 'https://objects.example.test/signed-delete'
+    blob = _blob(public_s3=public_s3)
+
+    result = blob.generate_signed_url(expiration=60, method='DELETE')
+
+    assert result == 'https://objects.example.test/signed-delete'
+    public_s3.generate_presigned_url.assert_called_once_with(
+        'delete_object',
+        Params={'Bucket': 'bucket', 'Key': 'folder/a b.json'},
+        ExpiresIn=60,
+        HttpMethod='DELETE',
+    )
+    with pytest.raises(ValueError, match='unsupported signed URL method'):
+        blob.generate_signed_url(expiration=60, method='PATCH')
+
+
 def test_public_url_and_supported_acl_use_minio_endpoint_without_gcs_hostname():
     s3 = MagicMock()
     blob = _blob(s3=s3)

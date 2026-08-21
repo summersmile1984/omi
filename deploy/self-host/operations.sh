@@ -10,18 +10,24 @@ COMPOSE_FILE="$OPS_DIR/compose.production.yml"
 ENV_FILE="${SELF_HOST_ENV:-$OPS_DIR/.env.production}"
 PY="${PYTHON:-python3}"
 SNAPSHOT_TOOL="$OPS_DIR/volume-snapshot.py"
+RUNTIME_EVIDENCE_TOOL="$OPS_DIR/runtime-evidence.py"
+COMPOSE_WRAPPER="$OPS_DIR/compose-clean-env.sh"
 CONFIG_CHECKER="$REPO_ROOT/.github/scripts/check_self_host_deployment.py"
 APPLICATION_SERVICES=(queue-worker backend auth-server)
-STATE_SERVICES=(postgres redis minio qdrant searxng)
-STATE_ARCHIVES=(redis minio qdrant backend)
-ARCHIVE_FILES=(postgres.dump redis.tar.gz minio.tar.gz qdrant.tar.gz backend.tar.gz)
+STATE_SERVICES=(postgres redis minio qdrant typesense searxng)
+STATE_ARCHIVES=(redis minio qdrant typesense backend)
+ARCHIVE_FILES=(postgres.dump redis.tar.gz minio.tar.gz qdrant.tar.gz typesense.tar.gz backend.tar.gz)
 
 usage() {
-  echo "usage: SELF_HOST_ENV=... $0 <self-check|start|status|metrics|backup DIR|verify-backup DIR|restore DIR|rollback-plan DIR>" >&2
+  echo "usage: SELF_HOST_ENV=... $0 <self-check|start|status|runtime-evidence|metrics|backup DIR|verify-backup DIR|restore DIR|rollback-plan DIR>" >&2
 }
 
 compose() {
-  docker compose --env-file "$ENV_FILE" --file "$COMPOSE_FILE" "$@"
+  bash "$COMPOSE_WRAPPER" "$ENV_FILE" "$COMPOSE_FILE" "$@"
+}
+
+effective_config_sha256() {
+  "$PY" -c 'import runpy,sys; from pathlib import Path; m=runpy.run_path(sys.argv[1]); print(m["effective_compose_config_sha256"](compose_file=Path(sys.argv[2]),env_file=Path(sys.argv[3])))' "$RUNTIME_EVIDENCE_TOOL" "$COMPOSE_FILE" "$ENV_FILE"
 }
 
 require_runtime() {
@@ -72,6 +78,30 @@ snapshot_volume() {
 }
 
 start_profile() {
+  if [[ "${SELF_HOST_REQUIRE_ATTESTED_BUILD:-false}" == true ]]; then
+    [[ "${OMI_SOURCE_GIT_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]] || {
+      echo "error: attributed start requires OMI_SOURCE_GIT_COMMIT" >&2
+      exit 1
+    }
+    [[ "${OMI_SOURCE_GIT_TREE:-}" =~ ^[0-9a-f]{40}$ ]] || {
+      echo "error: attributed start requires OMI_SOURCE_GIT_TREE" >&2
+      exit 1
+    }
+    [[ "${OMI_RUNTIME_CONFIG_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || {
+      echo "error: attributed start requires OMI_RUNTIME_CONFIG_SHA256" >&2
+      exit 1
+    }
+    local actual_config_sha256
+    actual_config_sha256="$(effective_config_sha256)"
+    [[ "$actual_config_sha256" == "$OMI_RUNTIME_CONFIG_SHA256" ]] || {
+      echo "error: reviewed environment changed before attributed build" >&2
+      exit 1
+    }
+    # Build from this checkout before any migration or serving container starts.
+    # Content-addressed image IDs and embedded source labels are verified again
+    # after the complete acceptance run, so a mutable old tag cannot be reused.
+    compose build --pull auth-server backend
+  fi
   # A previously successful one-shot container is not proof that the current
   # database is migrated: restore may have replaced PostgreSQL underneath it.
   # Quiesce callers, admit state services, and execute a fresh disposable
@@ -79,7 +109,18 @@ start_profile() {
   compose stop "${APPLICATION_SERVICES[@]}" >/dev/null 2>&1 || true
   compose up --detach --wait "${STATE_SERVICES[@]}"
   compose run --rm --no-deps -T auth-migrate
+  compose run --rm --no-deps -T firestore-pg-migrate
   compose up --detach --wait --no-deps "${APPLICATION_SERVICES[@]}"
+}
+
+runtime_evidence() {
+  require_runtime
+  "$PY" "$RUNTIME_EVIDENCE_TOOL" \
+    --compose-file "$COMPOSE_FILE" \
+    --env-file "$ENV_FILE" \
+    --expected-git-commit "${OMI_SOURCE_GIT_COMMIT:?OMI_SOURCE_GIT_COMMIT is required}" \
+    --expected-git-tree "${OMI_SOURCE_GIT_TREE:?OMI_SOURCE_GIT_TREE is required}" \
+    --expected-config-sha256 "${OMI_RUNTIME_CONFIG_SHA256:?OMI_RUNTIME_CONFIG_SHA256 is required}"
 }
 
 backup_state() {
@@ -96,10 +137,11 @@ backup_state() {
 
   compose exec -T postgres sh -ec 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner' >"$directory/postgres.dump"
   compose exec -T redis redis-cli SAVE >/dev/null
-  compose stop redis minio qdrant
+  compose stop redis minio qdrant typesense
   snapshot_volume backup redis /data "$directory/redis.tar.gz"
   snapshot_volume backup minio /data "$directory/minio.tar.gz"
   snapshot_volume backup qdrant /qdrant/storage "$directory/qdrant.tar.gz"
+  snapshot_volume backup typesense /data "$directory/typesense.tar.gz"
   snapshot_volume backup backend /app/syncing "$directory/backend.tar.gz"
 
   git_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
@@ -118,10 +160,11 @@ restore_state() {
   }
   "$PY" "$SNAPSHOT_TOOL" verify "$directory"
   require_runtime
-  compose stop queue-worker backend auth-server auth-migrate searxng redis minio qdrant postgres || true
+  compose stop queue-worker backend auth-server auth-migrate firestore-pg-migrate searxng typesense redis minio qdrant postgres || true
   snapshot_volume restore redis /data "$directory/redis.tar.gz"
   snapshot_volume restore minio /data "$directory/minio.tar.gz"
   snapshot_volume restore qdrant /qdrant/storage "$directory/qdrant.tar.gz"
+  snapshot_volume restore typesense /data "$directory/typesense.tar.gz"
   snapshot_volume restore backend /app/syncing "$directory/backend.tar.gz"
   compose up --detach --wait postgres
   # pg_restore --clean only drops objects named in the archive. Recreate the
@@ -176,13 +219,16 @@ metrics() {
 
 case "${1:-}" in
   self-check)
-    [[ -f "$COMPOSE_FILE" && -f "$SNAPSHOT_TOOL" && -f "$CONFIG_CHECKER" ]] || exit 1
-    "$PY" -m py_compile "$SNAPSHOT_TOOL"
-    bash -n "$0"
+    [[ -f "$COMPOSE_FILE" && -f "$COMPOSE_WRAPPER" && -f "$SNAPSHOT_TOOL" && -f "$RUNTIME_EVIDENCE_TOOL" && -f "$CONFIG_CHECKER" ]] || exit 1
+    "$PY" -m py_compile "$SNAPSHOT_TOOL" "$RUNTIME_EVIDENCE_TOOL"
+    bash -n "$0" "$COMPOSE_WRAPPER"
     echo "self-host operations self-check OK"
     ;;
   status)
     status
+    ;;
+  runtime-evidence)
+    runtime_evidence
     ;;
   start)
     require_runtime

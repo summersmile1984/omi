@@ -9,6 +9,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PY="${PYTHON:-$ROOT/backend/.venv/bin/python}"
 CHECKER="$ROOT/.github/scripts/check_self_host_deployment.py"
 OPS="$ROOT/deploy/self-host/operations.sh"
+COMPOSE_WRAPPER="$ROOT/deploy/self-host/compose-clean-env.sh"
 E2E_RUNNER="$ROOT/backend/testing/e2e/run.sh"
 E2E_GUARD="$ROOT/backend/testing/e2e/conftest.py"
 AUTH_SMOKE="$ROOT/deploy/self-host/auth-flow-smoke.py"
@@ -17,11 +18,15 @@ CUTOVER_GATE="$ROOT/deploy/self-host/cutover-https-gate.sh"
 CUTOVER_SMOKE="$ROOT/deploy/self-host/cutover-live-smoke.py"
 CUTOVER_OVERLAY="$ROOT/deploy/self-host/compose.cutover-acceptance.yml"
 CUTOVER_PROXY="$ROOT/deploy/self-host/nginx.cutover-acceptance.conf"
+REALTIME_RELAY_FIXTURE="$ROOT/deploy/self-host/realtime-relay-fixture.py"
 EVIDENCE_BUILDER="$ROOT/deploy/self-host/acceptance_evidence.py"
+RUNTIME_EVIDENCE_TOOL="$ROOT/deploy/self-host/runtime-evidence.py"
+PUBLIC_OBJECT_EVIDENCE_TOOL="$ROOT/deploy/self-host/public_object_evidence.py"
 EVIDENCE="${SELF_HOST_ACCEPTANCE_EVIDENCE:-${TMPDIR:-/tmp}/omi-zero-vendor-acceptance-evidence.json}"
 MODE=contracts
 LIVE_REPLACEMENT_JSON=''
 ASSEMBLED_LOOP_JSON=''
+RUNTIME_EVIDENCE_JSON=''
 
 LOOP_TESTS=(
   testing/e2e/test_listen_stt.py
@@ -34,10 +39,10 @@ LOOP_TESTS=(
 
 self_check() {
   local path
-  for path in "$CHECKER" "$OPS" "$E2E_RUNNER" "$E2E_GUARD" "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_GATE" "$CUTOVER_SMOKE" "$CUTOVER_OVERLAY" "$CUTOVER_PROXY" "$EVIDENCE_BUILDER"; do
+  for path in "$CHECKER" "$OPS" "$COMPOSE_WRAPPER" "$E2E_RUNNER" "$E2E_GUARD" "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_GATE" "$CUTOVER_SMOKE" "$CUTOVER_OVERLAY" "$CUTOVER_PROXY" "$REALTIME_RELAY_FIXTURE" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$PUBLIC_OBJECT_EVIDENCE_TOOL"; do
     [[ -f "$path" ]] || { echo "error: acceptance dependency missing: $path" >&2; return 1; }
   done
-  "$PY" -m py_compile "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_SMOKE" "$EVIDENCE_BUILDER"
+  "$PY" -m py_compile "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_SMOKE" "$REALTIME_RELAY_FIXTURE" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$PUBLIC_OBJECT_EVIDENCE_TOOL"
   grep -q 'blocked outbound network connection' "$E2E_GUARD"
   grep -q 'blocked DNS lookup' "$E2E_GUARD"
   for path in "${LOOP_TESTS[@]}"; do
@@ -72,14 +77,16 @@ self_check
 
 if [[ "$MODE" != contracts ]]; then
   : "${SELF_HOST_ENV:?live modes require SELF_HOST_ENV pointing to production configuration}"
-  SELF_HOST_ENV="$SELF_HOST_ENV" "$OPS" start
+  export OMI_SOURCE_GIT_COMMIT OMI_SOURCE_GIT_TREE OMI_RUNTIME_CONFIG_SHA256
+  OMI_SOURCE_GIT_COMMIT="$(printf '%s' "$SOURCE_ATTRIBUTION_JSON" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["git_commit"])')"
+  OMI_SOURCE_GIT_TREE="$(printf '%s' "$SOURCE_ATTRIBUTION_JSON" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["git_tree"])')"
+  OMI_RUNTIME_CONFIG_SHA256="$("$PY" -c 'import runpy,sys; from pathlib import Path; m=runpy.run_path(sys.argv[1]); print(m["effective_compose_config_sha256"](compose_file=Path(sys.argv[2]),env_file=Path(sys.argv[3])))' "$RUNTIME_EVIDENCE_TOOL" "$ROOT/deploy/self-host/compose.production.yml" "$SELF_HOST_ENV")"
+  SELF_HOST_ENV="$SELF_HOST_ENV" SELF_HOST_REQUIRE_ATTESTED_BUILD=true "$OPS" start
   dotenv_value() {
     "$PY" -c 'import sys; key=sys.argv[1]; values=dict(line.strip().split("=",1) for line in open(sys.argv[2], encoding="utf-8") if line.strip() and not line.lstrip().startswith("#") and "=" in line); print(values[key])' "$1" "$SELF_HOST_ENV"
   }
   AUTH_ORIGIN="$(dotenv_value BETTER_AUTH_TRUSTED_ORIGINS)"
-  LIVE_OUTPUT="$(docker compose \
-    --env-file "$SELF_HOST_ENV" \
-    --file "$ROOT/deploy/self-host/compose.production.yml" \
+  LIVE_OUTPUT="$(bash "$COMPOSE_WRAPPER" "$SELF_HOST_ENV" "$ROOT/deploy/self-host/compose.production.yml" \
     run --rm --no-deps -T \
     --volume "$LIVE_REPLACEMENT_SMOKE:/tmp/live-replacement-smoke.py:ro" \
     --env "SELF_HOST_AUTH_ORIGIN=${AUTH_ORIGIN%%,*}" \
@@ -150,9 +157,15 @@ PY
   )
 fi
 
+if [[ "$MODE" != contracts ]]; then
+  RUNTIME_EVIDENCE_JSON="$(SELF_HOST_ENV="$SELF_HOST_ENV" "$OPS" runtime-evidence)"
+  printf '%s\n' "$RUNTIME_EVIDENCE_JSON"
+fi
+
 ACCEPTANCE_MODE="$MODE" \
 ACCEPTANCE_EVIDENCE="$EVIDENCE" \
 SOURCE_ATTRIBUTION_JSON="$SOURCE_ATTRIBUTION_JSON" \
 LIVE_REPLACEMENT_JSON="$LIVE_REPLACEMENT_JSON" \
 ASSEMBLED_LOOP_JSON="$ASSEMBLED_LOOP_JSON" \
+RUNTIME_EVIDENCE_JSON="$RUNTIME_EVIDENCE_JSON" \
 "$PY" "$EVIDENCE_BUILDER"

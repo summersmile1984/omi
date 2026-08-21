@@ -185,6 +185,67 @@ class RepositoryDeploymentSettingPolicyTest(unittest.TestCase):
         self.assertIn("SPEAKER_EMBEDDING_API_URL", config_names)
         self.assertIn("SPEAKER_EMBEDDING_PROVIDER", config_names)
 
+    def test_self_host_capability_bindings_have_explicit_secret_or_config_ownership(self) -> None:
+        policy = CHECKER.load_policy(REPO_ROOT / "config/deployment-setting-classification.json")
+        kinds = CHECKER._policy_kinds(policy)
+
+        expected_secrets = {
+            "FIRMWARE_RELEASE_MANIFEST_BEARER_TOKEN",
+            "IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY",
+            "MLX_MOSS_DIARIZE_API_KEY",
+            "REALTIME_RELAY_API_KEY",
+            "TTS_OPENAI_COMPATIBLE_API_KEY",
+            "TYPESENSE_API_KEY",
+        }
+        expected_config = {
+            "APP_ICON_GENERATION_TRANSPORT",
+            "FILE_CHAT_LOCAL_MAX_CONTEXT_CHARACTERS",
+            "FILE_CHAT_LOCAL_MAX_FILE_BYTES",
+            "FILE_CHAT_LOCAL_MAX_IMAGE_PIXELS",
+            "FILE_CHAT_LOCAL_MAX_INLINE_IMAGE_BYTES",
+            "FILE_CHAT_LOCAL_MAX_TOTAL_BYTES",
+            "FILE_CHAT_LOCAL_MAX_TOTAL_INLINE_IMAGE_BYTES",
+            "FILE_CHAT_TRANSPORT",
+            "FIRMWARE_RELEASE_ASSET_ORIGIN",
+            "FIRMWARE_RELEASE_MANIFEST_URL",
+            "FIRMWARE_RELEASE_TRANSPORT",
+            "IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL",
+            "IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL",
+            "MEMORY_KEYWORD_INDEX_PROVIDER",
+            "MEMORY_TYPESENSE_COLLECTION",
+            "MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH",
+            "MLX_MOSS_DIARIZE_ENDPOINT",
+            "MLX_MOSS_DIARIZE_MODEL",
+            "PUSH_PROVIDER",
+            "REALTIME_RELAY_ALLOWED_HOSTS",
+            "REALTIME_RELAY_MAX_MESSAGE_BYTES",
+            "REALTIME_RELAY_MAX_SESSION_SECONDS",
+            "REALTIME_RELAY_PROVIDER_ID",
+            "REALTIME_RELAY_URL",
+            "REALTIME_RELAY_WIRE_PROTOCOL",
+            "SPEAKER_EMBEDDING_MODEL",
+            "SPEAKER_EMBEDDING_NUM_THREADS",
+            "SPEAKER_MODEL_HOST_DIR",
+            "TTS_MODEL_HOST_DIR",
+            "TTS_OPENAI_COMPATIBLE_BASE_URL",
+            "TTS_OPENAI_COMPATIBLE_MODEL",
+            "TTS_OPENAI_COMPATIBLE_VOICE",
+            "TTS_PROVIDER",
+            "TTS_SHERPA_DATA_DIR",
+            "TTS_SHERPA_MODEL",
+            "TTS_SHERPA_NUM_THREADS",
+            "TTS_SHERPA_SPEAKER_ID",
+            "TTS_SHERPA_TOKENS",
+            "TYPESENSE_HOST",
+            "TYPESENSE_HOST_PORT",
+            "TYPESENSE_PROTOCOL",
+        }
+
+        self.assertTrue(expected_secrets.issubset(kinds["secret"]))
+        self.assertTrue(expected_config.issubset(kinds["config"]))
+        self.assertFalse(expected_secrets & kinds["config"])
+        self.assertFalse(expected_config & kinds["secret"])
+
 
 if __name__ == "__main__":
     unittest.main()

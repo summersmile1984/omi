@@ -8,9 +8,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/dev/docker-compose.dev.yml"
 CHECKER="$REPO_ROOT/.github/scripts/check_self_host_deployment.py"
 INTEGRATION_TESTS=(
+  "$REPO_ROOT/backend/firestore_pg/tests/test_migration_import.py"
   "$REPO_ROOT/backend/firestore_pg/tests/test_transaction_semantics.py"
   "$REPO_ROOT/backend/firestore_pg/tests/test_composite_indexes.py"
 )
+FIRESTORE_PG_MIGRATOR="$REPO_ROOT/backend/scripts/firestore_pg_migrate.py"
+TARGET_SAFETY_CHECK="$REPO_ROOT/backend/scripts/validate_migration_test_targets.py"
 SHADOW_DIFF="$REPO_ROOT/dev/shadow-diff.sh"
 AUTH_FLOW_SMOKE="$REPO_ROOT/deploy/self-host/auth-flow-smoke.py"
 LEGACY_JWKS_FIXTURE="$REPO_ROOT/auth-server/src/seed-legacy-jwk.js"
@@ -25,7 +28,7 @@ usage() {
 
 self_check() {
   local missing=0 path
-  for path in "$COMPOSE_FILE" "$CHECKER" "$SHADOW_DIFF" "$AUTH_FLOW_SMOKE" "$LEGACY_JWKS_FIXTURE" "${INTEGRATION_TESTS[@]}"; do
+  for path in "$COMPOSE_FILE" "$CHECKER" "$SHADOW_DIFF" "$AUTH_FLOW_SMOKE" "$LEGACY_JWKS_FIXTURE" "$FIRESTORE_PG_MIGRATOR" "$TARGET_SAFETY_CHECK" "${INTEGRATION_TESTS[@]}"; do
     if [[ ! -f "$path" ]]; then
       echo "error: migration gate dependency missing: $path" >&2
       missing=1
@@ -116,10 +119,7 @@ else
   : "${FIRESTORE_PG_DSN:?--external requires FIRESTORE_PG_DSN for a disposable non-production PostgreSQL database}"
   : "${FIRESTORE_EMULATOR_HOST:?--external requires FIRESTORE_EMULATOR_HOST}"
   : "${AUTH_MIGRATION_DATABASE_URL:?--external requires a PostgreSQL URL reachable from a Docker container (use host.docker.internal for a host database)}"
-  if [[ "$FIRESTORE_PG_DSN" != *"localhost"* && "$FIRESTORE_PG_DSN" != *"127.0.0.1"* && "${ALLOW_REMOTE_MIGRATION_TEST_TARGET:-}" != "I_ACKNOWLEDGE_THIS_IS_DISPOSABLE" ]]; then
-    echo "error: refusing a remote PG target without ALLOW_REMOTE_MIGRATION_TEST_TARGET=I_ACKNOWLEDGE_THIS_IS_DISPOSABLE" >&2
-    exit 1
-  fi
+  "$PY" "$TARGET_SAFETY_CHECK"
 fi
 
 AUTH_GATE_IMAGE="${PROJECT}-auth-server"
@@ -167,6 +167,9 @@ export FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-demo-omi-local}"
 export PYTHONPATH="$REPO_ROOT/backend${PYTHONPATH:+:$PYTHONPATH}"
 
 "$PY" "$CHECKER"
+"$PY" "$FIRESTORE_PG_MIGRATOR" migrate
+"$PY" "$FIRESTORE_PG_MIGRATOR" migrate
+"$PY" "$FIRESTORE_PG_MIGRATOR" check
 "$PY" -m pytest -q "${INTEGRATION_TESTS[@]}"
 
 SHADOW_DIR="$(mktemp -d)"
@@ -205,6 +208,8 @@ path.write_text(
                 'zero_vendor_static_config': 'passed',
                 'better_auth_schema_migration': 'passed',
                 'better_auth_session_jwt_jwks_backend_verification': 'passed',
+                'firestore_pg_versioned_schema_migration': 'passed',
+                'firestore_to_pg_full_path_import_reconciliation': 'passed',
                 'firestore_pg_live_integration': 'passed',
                 'firestore_emulator_shadow_diff': 'passed',
             },

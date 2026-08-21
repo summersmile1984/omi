@@ -13,11 +13,16 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'deploy' / 'self-host' / 'volume-snapshot.py'
 OPERATIONS = SCRIPT.with_name('operations.sh')
 CUTOVER_GATE = SCRIPT.with_name('cutover-https-gate.sh')
+COMPOSE_WRAPPER = SCRIPT.with_name('compose-clean-env.sh')
+ZERO_VENDOR_ACCEPTANCE = SCRIPT.with_name('zero-vendor-acceptance.sh')
 EVIDENCE_SCRIPT = SCRIPT.with_name('acceptance_evidence.py')
+RUNTIME_EVIDENCE_SCRIPT = SCRIPT.with_name('runtime-evidence.py')
+PUBLIC_OBJECT_EVIDENCE_SCRIPT = SCRIPT.with_name('public_object_evidence.py')
 SPEC = importlib.util.spec_from_file_location('self_host_volume_snapshot', SCRIPT)
 assert SPEC and SPEC.loader
 SNAPSHOT = importlib.util.module_from_spec(SPEC)
@@ -26,14 +31,373 @@ EVIDENCE_SPEC = importlib.util.spec_from_file_location('self_host_acceptance_evi
 assert EVIDENCE_SPEC and EVIDENCE_SPEC.loader
 EVIDENCE = importlib.util.module_from_spec(EVIDENCE_SPEC)
 EVIDENCE_SPEC.loader.exec_module(EVIDENCE)
+RUNTIME_EVIDENCE_SPEC = importlib.util.spec_from_file_location('self_host_runtime_evidence', RUNTIME_EVIDENCE_SCRIPT)
+assert RUNTIME_EVIDENCE_SPEC and RUNTIME_EVIDENCE_SPEC.loader
+RUNTIME_EVIDENCE = importlib.util.module_from_spec(RUNTIME_EVIDENCE_SPEC)
+RUNTIME_EVIDENCE_SPEC.loader.exec_module(RUNTIME_EVIDENCE)
+PUBLIC_OBJECT_EVIDENCE_SPEC = importlib.util.spec_from_file_location(
+    'self_host_public_object_evidence', PUBLIC_OBJECT_EVIDENCE_SCRIPT
+)
+assert PUBLIC_OBJECT_EVIDENCE_SPEC and PUBLIC_OBJECT_EVIDENCE_SPEC.loader
+PUBLIC_OBJECT_EVIDENCE = importlib.util.module_from_spec(PUBLIC_OBJECT_EVIDENCE_SPEC)
+PUBLIC_OBJECT_EVIDENCE_SPEC.loader.exec_module(PUBLIC_OBJECT_EVIDENCE)
 CLEAN_SOURCE_ATTRIBUTION = {
     'git_commit': 'd' * 40,
     'git_tree': 'e' * 40,
     'worktree_clean': True,
 }
+EFFECTIVE_PROVIDER_CONFIGURATION = {
+    'stt_prerecorded_model': 'mlx_moss_diarize',
+    'mlx_moss_diarize_endpoint': 'http://host.docker.internal:5002/v1/audio/transcriptions',
+    'mlx_moss_diarize_model': 'operator-model',
+}
+PASSED_RUNTIME_EVIDENCE = {
+    'status': 'passed',
+    'all_required_services_healthy': True,
+    'runtime_identity': {
+        'expected_git_commit': 'd' * 40,
+        'expected_git_tree': 'e' * 40,
+        'expected_config_sha256': 'c' * 64,
+        'effective_provider_configuration': EFFECTIVE_PROVIDER_CONFIGURATION,
+        'source_and_config_match': True,
+    },
+}
 
 
 class SelfHostOperationsTest(unittest.TestCase):
+    def test_all_acceptance_compose_commands_use_the_clean_environment_wrapper(self) -> None:
+        for script in (OPERATIONS, CUTOVER_GATE, ZERO_VENDOR_ACCEPTANCE):
+            source = script.read_text(encoding='utf-8')
+            self.assertIn('compose-clean-env.sh', source, script.name)
+            self.assertNotIn('docker compose', source, script.name)
+        runtime_source = RUNTIME_EVIDENCE_SCRIPT.read_text(encoding='utf-8')
+        self.assertIn("with_name('compose-clean-env.sh')", runtime_source)
+        self.assertNotIn("['docker', 'compose'", runtime_source)
+
+    def test_clean_compose_wrapper_removes_deployment_overrides_and_preserves_only_gate_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env_file = root / 'production.env'
+            env_file.write_text(
+                '\n'.join(
+                    (
+                        'MLX_MOSS_DIARIZE_ENDPOINT=http://reviewed.internal/v1/audio/transcriptions',
+                        'MLX_MOSS_DIARIZE_MODEL=reviewed-model',
+                        'SENSEVOICE_MODEL_HOST_PATH=/reviewed/sensevoice',
+                        'TTS_MODEL_HOST_DIR=/reviewed/tts',
+                        'GENERIC_OPENAI_BASE_URL=https://reviewed.example.org/v1',
+                    )
+                )
+                + '\n',
+                encoding='utf-8',
+            )
+            compose_file = root / 'compose.yml'
+            compose_file.write_text('services: {}\n', encoding='utf-8')
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            call_log = root / 'docker.calls'
+            docker = bin_dir / 'docker'
+            docker.write_text(
+                '#!/bin/sh\n'
+                'printf "%s|mlx_endpoint=%s|mlx_model=%s|sensevoice=%s|tts=%s|llm=%s|commit=%s|cutover=%s\\n" '
+                '"$*" "${MLX_MOSS_DIARIZE_ENDPOINT-unset}" "${MLX_MOSS_DIARIZE_MODEL-unset}" '
+                '"${SENSEVOICE_MODEL_HOST_PATH-unset}" "${TTS_MODEL_HOST_DIR-unset}" '
+                '"${GENERIC_OPENAI_BASE_URL-unset}" "${OMI_SOURCE_GIT_COMMIT-unset}" '
+                '"${CUTOVER_HTTPS_PORT-unset}" > "$FAKE_DOCKER_CALLS"\n',
+                encoding='utf-8',
+            )
+            docker.chmod(0o755)
+            environment = {
+                **os.environ,
+                'PATH': f'{bin_dir}:{os.environ["PATH"]}',
+                'FAKE_DOCKER_CALLS': str(call_log),
+                'MLX_MOSS_DIARIZE_ENDPOINT': 'https://host-injected.example/v1/audio/transcriptions',
+                'MLX_MOSS_DIARIZE_MODEL': 'host-injected-model',
+                'SENSEVOICE_MODEL_HOST_PATH': '/host-injected/sensevoice',
+                'TTS_MODEL_HOST_DIR': '/host-injected/tts',
+                'GENERIC_OPENAI_BASE_URL': 'https://host-injected.example/v1',
+                'OMI_SOURCE_GIT_COMMIT': 'd' * 40,
+                'CUTOVER_HTTPS_PORT': '18443',
+            }
+            result = subprocess.run(
+                ['bash', str(COMPOSE_WRAPPER), str(env_file), str(compose_file), 'config', '--quiet'],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            call = call_log.read_text(encoding='utf-8')
+            self.assertIn(f'compose --env-file {env_file} --file {compose_file} config --quiet', call)
+            for key in ('mlx_endpoint', 'mlx_model', 'sensevoice', 'tts', 'llm'):
+                self.assertIn(f'{key}=unset', call)
+            self.assertIn(f'commit={"d" * 40}', call)
+            self.assertIn('cutover=18443', call)
+
+    def test_public_object_acceptance_uses_signed_put_get_delete_on_exact_origin(self) -> None:
+        payload = b'public-object-cutover:marker'
+
+        class Blob:
+            present = False
+
+            def generate_signed_url(self, *, expiration, method):
+                self.last_method = method
+                return f'https://objects.example.org/private/item?method={method}'
+
+            def exists(self):
+                return self.present
+
+            def delete(self):
+                self.present = False
+
+        blob = Blob()
+        storage_client = SimpleNamespace(
+            bucket=lambda name: SimpleNamespace(blob=lambda path: blob),
+        )
+
+        class Client:
+            def put(self, url, *, content, headers):
+                self.put_url = url
+                blob.present = True
+                self.content = content
+                return SimpleNamespace(status_code=200)
+
+            def get(self, url):
+                self.get_url = url
+                return SimpleNamespace(status_code=200, content=self.content)
+
+            def delete(self, url):
+                self.delete_url = url
+                blob.present = False
+                return SimpleNamespace(status_code=204)
+
+        client = Client()
+        previous_bucket = os.environ.get('BUCKET_TEMPORAL_SYNC_LOCAL')
+        os.environ['BUCKET_TEMPORAL_SYNC_LOCAL'] = 'private'
+        try:
+            result = PUBLIC_OBJECT_EVIDENCE.public_signed_object_crud(
+                client,
+                objects_url='https://objects.example.org',
+                marker='marker',
+                storage_client=storage_client,
+            )
+        finally:
+            if previous_bucket is None:
+                os.environ.pop('BUCKET_TEMPORAL_SYNC_LOCAL', None)
+            else:
+                os.environ['BUCKET_TEMPORAL_SYNC_LOCAL'] = previous_bucket
+        self.assertEqual(result['status'], 'passed')
+        self.assertIn('method=PUT', client.put_url)
+        self.assertIn('method=GET', client.get_url)
+        self.assertIn('method=DELETE', client.delete_url)
+        self.assertFalse(blob.present)
+
+        blob.generate_signed_url = lambda **kwargs: 'https://wrong.example.org/private/item?signature=x'
+        os.environ['BUCKET_TEMPORAL_SYNC_LOCAL'] = 'private'
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'did not use PUBLIC_OBJECTS_URL'):
+                PUBLIC_OBJECT_EVIDENCE.public_signed_object_crud(
+                    client,
+                    objects_url='https://objects.example.org',
+                    marker='wrong-origin',
+                    storage_client=storage_client,
+                )
+        finally:
+            if previous_bucket is None:
+                os.environ.pop('BUCKET_TEMPORAL_SYNC_LOCAL', None)
+            else:
+                os.environ['BUCKET_TEMPORAL_SYNC_LOCAL'] = previous_bucket
+
+    def test_runtime_evidence_rejects_stale_images_config_and_unhealthy_services(self) -> None:
+        services = {
+            service: {'state': 'running', 'health': 'healthy'} for service in RUNTIME_EVIDENCE.REQUIRED_SERVICES
+        }
+        for service in RUNTIME_EVIDENCE.SOURCE_WORKLOADS:
+            services[service].update(
+                {
+                    'image_id': f'sha256:{service.encode().hex():0<64}'[:71],
+                    'source_git_commit': 'd' * 40,
+                    'source_git_tree': 'e' * 40,
+                    'runtime_config_sha256': 'c' * 64,
+                    'environment_matches_effective_config': True,
+                }
+            )
+
+        result = RUNTIME_EVIDENCE.validate_runtime_snapshot(
+            services=services,
+            expected_git_commit='d' * 40,
+            expected_git_tree='e' * 40,
+            expected_config_sha256='c' * 64,
+            effective_provider_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+        )
+        self.assertEqual(result['status'], 'passed')
+        self.assertTrue(result['all_required_services_healthy'])
+        self.assertEqual(set(result['runtime_identity']['workloads']), set(RUNTIME_EVIDENCE.SOURCE_WORKLOADS))
+        self.assertEqual(
+            result['runtime_identity']['effective_provider_configuration'], EFFECTIVE_PROVIDER_CONFIGURATION
+        )
+
+        with self.assertRaisesRegex(ValueError, 'effective provider configuration'):
+            RUNTIME_EVIDENCE.validate_runtime_snapshot(
+                services=services,
+                expected_git_commit='d' * 40,
+                expected_git_tree='e' * 40,
+                expected_config_sha256='c' * 64,
+                effective_provider_configuration={
+                    **EFFECTIVE_PROVIDER_CONFIGURATION,
+                    'mlx_moss_diarize_model': '',
+                },
+            )
+
+        stale = json.loads(json.dumps(services))
+        stale['backend']['source_git_tree'] = 'f' * 40
+        with self.assertRaisesRegex(ValueError, 'source identity'):
+            RUNTIME_EVIDENCE.validate_runtime_snapshot(
+                services=stale,
+                expected_git_commit='d' * 40,
+                expected_git_tree='e' * 40,
+                expected_config_sha256='c' * 64,
+                effective_provider_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            )
+
+        wrong_config = json.loads(json.dumps(services))
+        wrong_config['queue-worker']['runtime_config_sha256'] = 'a' * 64
+        with self.assertRaisesRegex(ValueError, 'runtime config identity'):
+            RUNTIME_EVIDENCE.validate_runtime_snapshot(
+                services=wrong_config,
+                expected_git_commit='d' * 40,
+                expected_git_tree='e' * 40,
+                expected_config_sha256='c' * 64,
+                effective_provider_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            )
+
+        unhealthy = json.loads(json.dumps(services))
+        unhealthy['redis']['health'] = 'unhealthy'
+        with self.assertRaisesRegex(ValueError, 'redis is not running and healthy'):
+            RUNTIME_EVIDENCE.validate_runtime_snapshot(
+                services=unhealthy,
+                expected_git_commit='d' * 40,
+                expected_git_tree='e' * 40,
+                expected_config_sha256='c' * 64,
+                effective_provider_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            )
+
+    def test_attributed_start_builds_current_images_before_service_admission(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model_dir = root / 'sensevoice'
+            model_dir.mkdir()
+            (model_dir / 'model.int8.onnx').write_bytes(b'fixture')
+            (model_dir / 'tokens.txt').write_text('fixture\n', encoding='utf-8')
+            speaker_model_dir = root / 'speaker'
+            speaker_model_dir.mkdir()
+            (speaker_model_dir / 'speaker.onnx').write_bytes(b'fixture')
+            diarization_audio = root / 'two-speaker.wav'
+            diarization_audio.write_bytes(b'RIFF-fixture')
+            tts_model_dir = root / 'tts'
+            tts_model_dir.mkdir()
+            (tts_model_dir / 'model.onnx').write_bytes(b'fixture')
+            (tts_model_dir / 'tokens.txt').write_text('fixture\n', encoding='utf-8')
+            (tts_model_dir / 'espeak-ng-data').mkdir()
+            env_lines = []
+            for line in (SCRIPT.parent / '.env.production.example').read_text(encoding='utf-8').splitlines():
+                if '=REPLACE_' in line:
+                    key = line.split('=', 1)[0]
+                    line = f'{key}=test-{key.lower()}-value-with-sufficient-length'
+                line = line.replace('example.com', 'operator.example.org')
+                if line.startswith('SENSEVOICE_MODEL_HOST_PATH='):
+                    line = f'SENSEVOICE_MODEL_HOST_PATH={model_dir}'
+                if line.startswith('SPEAKER_MODEL_HOST_DIR='):
+                    line = f'SPEAKER_MODEL_HOST_DIR={speaker_model_dir}'
+                if line.startswith('MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH='):
+                    line = f'MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH={diarization_audio}'
+                if line.startswith('TTS_MODEL_HOST_DIR='):
+                    line = f'TTS_MODEL_HOST_DIR={tts_model_dir}'
+                env_lines.append(line)
+            env_file = root / 'production.env'
+            env_file.write_text('\n'.join(env_lines) + '\n', encoding='utf-8')
+            effective_fixture = {
+                'services': {
+                    service: {'labels': {'com.omi.runtime.config-sha256': '0' * 64}}
+                    for service in RUNTIME_EVIDENCE.SOURCE_WORKLOADS
+                }
+            }
+            effective_fixture_json = json.dumps(effective_fixture, separators=(',', ':'))
+            config_sha256 = RUNTIME_EVIDENCE.canonical_effective_config_sha256(effective_fixture)
+
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            call_log = root / 'docker.calls'
+            docker = bin_dir / 'docker'
+            docker.write_text(
+                '#!/bin/sh\nprintf "%s|TTS_PROVIDER=%s|MLX_ENDPOINT=%s|MLX_MODEL=%s|SENSEVOICE_PATH=%s|SPEAKER_PATH=%s|TTS_PATH=%s|LLM_URL=%s\\n" '
+                '"$*" "${TTS_PROVIDER-unset}" "${MLX_MOSS_DIARIZE_ENDPOINT-unset}" '
+                '"${MLX_MOSS_DIARIZE_MODEL-unset}" "${SENSEVOICE_MODEL_HOST_PATH-unset}" '
+                '"${SPEAKER_MODEL_HOST_DIR-unset}" "${TTS_MODEL_HOST_DIR-unset}" '
+                '"${GENERIC_OPENAI_BASE_URL-unset}" >> "$FAKE_DOCKER_CALLS"\n'
+                'if [ "$1" = "compose" ]; then\n'
+                f'  case "$*" in *" config --format json"*) printf "%s\\n" \'{effective_fixture_json}\'; exit 0;; esac\n'
+                '  case "$*" in *" ps --quiet "*) for last in "$@"; do :; done; printf "container-%s\\n" "$last";; esac\n'
+                'elif [ "$1" = "inspect" ]; then printf "running healthy\\n"; fi\n'
+                'exit 0\n',
+                encoding='utf-8',
+            )
+            docker.chmod(0o755)
+            environment = {
+                **os.environ,
+                'PATH': f'{bin_dir}:{os.environ["PATH"]}',
+                'SELF_HOST_ENV': str(env_file),
+                'SELF_HOST_REQUIRE_ATTESTED_BUILD': 'true',
+                'OMI_SOURCE_GIT_COMMIT': 'd' * 40,
+                'OMI_SOURCE_GIT_TREE': 'e' * 40,
+                'OMI_RUNTIME_CONFIG_SHA256': config_sha256,
+                'FAKE_DOCKER_CALLS': str(call_log),
+                'PYTHON': sys.executable,
+                # Compose normally lets this shell binding override --env-file.
+                # The attributed wrapper must remove it before config/build/up.
+                'TTS_PROVIDER': 'openai_compatible',
+                'MLX_MOSS_DIARIZE_ENDPOINT': 'https://host-injected.example/v1/audio/transcriptions',
+                'MLX_MOSS_DIARIZE_MODEL': 'host-injected-model',
+                'SENSEVOICE_MODEL_HOST_PATH': '/host-injected/sensevoice',
+                'SPEAKER_MODEL_HOST_DIR': '/host-injected/speaker',
+                'TTS_MODEL_HOST_DIR': '/host-injected/tts',
+                'GENERIC_OPENAI_BASE_URL': 'https://host-injected.example/v1',
+            }
+            started = subprocess.run(
+                ['bash', str(OPERATIONS), 'start'],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            self.assertEqual(started.returncode, 0, started.stderr)
+            calls = call_log.read_text(encoding='utf-8')
+            compose_calls = [line for line in calls.splitlines() if line.startswith('compose ')]
+            self.assertTrue(compose_calls)
+            for key in (
+                'TTS_PROVIDER',
+                'MLX_ENDPOINT',
+                'MLX_MODEL',
+                'SENSEVOICE_PATH',
+                'SPEAKER_PATH',
+                'TTS_PATH',
+                'LLM_URL',
+            ):
+                self.assertTrue(all(f'{key}=unset' in line for line in compose_calls), key)
+            build = calls.index(' build --pull auth-server backend')
+            first_up = calls.index(' up --detach --wait postgres')
+            self.assertLess(build, first_up)
+
+            rejected = subprocess.run(
+                ['bash', str(OPERATIONS), 'start'],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**environment, 'OMI_RUNTIME_CONFIG_SHA256': 'a' * 64},
+            )
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn('reviewed environment changed before attributed build', rejected.stderr)
+
     def test_source_attribution_rejects_dirty_cutover_without_mutating_real_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
@@ -108,6 +472,8 @@ class SelfHostOperationsTest(unittest.TestCase):
             root = Path(directory)
             searxng_secret = 'acceptance-test-secret'
             searxng_secret_sha256 = hashlib.sha256(searxng_secret.encode()).hexdigest()
+            diarization_audio = root / 'two-speaker.wav'
+            diarization_audio.write_bytes(b'RIFF-fixture')
             env_file = root / 'production.env'
             env_file.write_text(
                 '\n'.join(
@@ -116,6 +482,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                         'PUBLIC_BACKEND_URL=https://api.omi.test',
                         'PUBLIC_AUTH_URL=https://auth.omi.test',
                         'PUBLIC_MCP_URL=https://mcp.omi.test',
+                        'PUBLIC_OBJECTS_URL=https://objects.omi.test',
+                        f'MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH={diarization_audio}',
                         f'SEARXNG_SECRET={searxng_secret}',
                     )
                 )
@@ -127,7 +495,9 @@ class SelfHostOperationsTest(unittest.TestCase):
             call_log = root / 'docker.calls'
             docker = bin_dir / 'docker'
             docker.write_text(
-                '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_DOCKER_CALLS"\n'
+                '#!/bin/sh\nprintf "%s|CUTOVER_PORT=%s|CUTOVER_CERT=%s|CUTOVER_KEY=%s\\n" '
+                '"$*" "${CUTOVER_HTTPS_PORT-unset}" "${CUTOVER_TLS_CERT_PATH-unset}" '
+                '"${CUTOVER_TLS_KEY_PATH-unset}" >> "$FAKE_DOCKER_CALLS"\n'
                 'case "$*" in *"exec -T searxng"*) '
                 f'printf \'%s\\n\' \'{{"effective_secret_nonempty":true,"effective_secret_not_known_default":true,"effective_secret_sha256":"{searxng_secret_sha256}"}}\';; esac\n'
                 'exit 0\n',
@@ -140,6 +510,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'SELF_HOST_ENV': str(env_file),
                 'FAKE_DOCKER_CALLS': str(call_log),
                 'CUTOVER_HTTPS_PORT': '18443',
+                'CUTOVER_TLS_CERT_PATH': '/host-injected/cert.pem',
+                'CUTOVER_TLS_KEY_PATH': '/host-injected/key.pem',
             }
             accepted = subprocess.run(
                 ['bash', str(CUTOVER_GATE), '--local'],
@@ -151,7 +523,18 @@ class SelfHostOperationsTest(unittest.TestCase):
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
             calls = call_log.read_text(encoding='utf-8')
             self.assertIn('--env PUBLIC_AUTH_URL=https://auth.omi.test', calls)
+            self.assertIn('--env PUBLIC_OBJECTS_URL=https://objects.omi.test', calls)
             self.assertNotIn('PUBLIC_AUTH_URL=https://auth.omi.test:18443', calls)
+            overlay_calls = [
+                line
+                for line in calls.splitlines()
+                if f'--file {SCRIPT.parent / "compose.cutover-acceptance.yml"}' in line
+            ]
+            self.assertTrue(overlay_calls)
+            self.assertTrue(all('CUTOVER_PORT=18443' in line for line in overlay_calls))
+            self.assertTrue(all('omi-cutover-tls.' in line and '/server.crt' in line for line in overlay_calls))
+            self.assertTrue(all('omi-cutover-tls.' in line and '/server.key' in line for line in overlay_calls))
+            self.assertTrue(all('/host-injected/' not in line for line in overlay_calls))
 
             env_file.write_text(
                 env_file.read_text(encoding='utf-8').replace(
@@ -190,8 +573,55 @@ class SelfHostOperationsTest(unittest.TestCase):
     def test_cutover_evidence_requires_external_edge_and_live_socket_denial(self) -> None:
         assembled = {
             'status': 'passed',
+            'https_origin_and_hairpin': {'public_object_signed_crud': {'status': 'passed'}},
             'assembled_product_loop': {
-                'capture': {'fixture_manifest_match': True},
+                'capture': {
+                    'fixture_manifest_match': True,
+                    'speaker_embedding': {'status': 'passed'},
+                    'speaker_diarization': {
+                        'status': 'passed',
+                        'provider': 'mlx_moss_diarize',
+                        'route': {
+                            'endpoint_origin': 'http://host.docker.internal:5002',
+                            'transcription_path': '/v1/audio/transcriptions',
+                            'models_catalog_path': '/v1/models',
+                            'multipart_model': 'operator-model',
+                            'response_format': 'verbose_json',
+                            'authorization': 'none',
+                        },
+                        'configured_model': 'operator-model',
+                        'model_catalog_exact_id_match': True,
+                        'real_transcription_route_exercised': True,
+                        'audio_sha256': 'b' * 64,
+                        'audio_duration_seconds': 111.5,
+                        'segment_count': 27,
+                        'speaker_count': 2,
+                        'speaker_transition_count': 3,
+                        'audio_duration_source': 'wav_header_frames_divided_by_sample_rate',
+                        'service_revision_reported': False,
+                        'operator_model_source_attested_by_gate': False,
+                    },
+                    'mounted_model_artifact_identity': {
+                        'status': 'passed',
+                        'paths_recorded': False,
+                        'artifacts': {
+                            name: {'sha256': 'a' * 64, 'bytes': 1}
+                            for name in (
+                                'sensevoice_model',
+                                'sensevoice_tokens',
+                                'speaker_embedding_model',
+                                'tts_model',
+                                'tts_tokens',
+                            )
+                        },
+                    },
+                },
+                'realtime_relay': {'status': 'passed'},
+                'tts': {'status': 'passed'},
+                'app_icon': {'status': 'passed'},
+                'file_chat': {'status': 'passed'},
+                'typesense_keyword': {'status': 'passed'},
+                'firmware': {'status': 'passed'},
                 'remember': {'long_term_admission': 'passed'},
             },
             'live_egress': {
@@ -207,6 +637,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             live_replacement={'status': 'passed'},
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
         )
         self.assertTrue(local['authorizes_tested_configuration_cutover'])
         self.assertFalse(local['authorizes_production_cutover'])
@@ -221,6 +652,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             live_replacement={'status': 'passed'},
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
         )
         self.assertFalse(external_without_policy['authorizes_production_cutover'])
         self.assertEqual(
@@ -247,9 +679,132 @@ class SelfHostOperationsTest(unittest.TestCase):
             live_replacement={'status': 'passed'},
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
         )
         self.assertTrue(external_with_policy['authorizes_production_cutover'])
         self.assertIsNone(external_with_policy['remaining_cutover_reason'])
+
+        without_objects = json.loads(json.dumps(assembled))
+        without_objects['https_origin_and_hairpin']['public_object_signed_crud']['status'] = 'failed'
+        missing_object_edge = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=without_objects,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(missing_object_edge['authorizes_tested_configuration_cutover'])
+        self.assertEqual(missing_object_edge['remaining_cutover_reason'], 'public_object_signed_crud_not_passed')
+
+        unhealthy_runtime = {**PASSED_RUNTIME_EVIDENCE, 'all_required_services_healthy': False}
+        missing_runtime_health = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=assembled,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=unhealthy_runtime,
+        )
+        self.assertFalse(missing_runtime_health['authorizes_tested_configuration_cutover'])
+        self.assertEqual(
+            missing_runtime_health['remaining_cutover_reason'],
+            'production_service_health_or_runtime_identity_not_passed',
+        )
+
+        without_speaker = json.loads(json.dumps(assembled))
+        without_speaker['assembled_product_loop']['capture']['speaker_embedding']['status'] = 'failed'
+        missing_speaker = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=without_speaker,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(missing_speaker['authorizes_tested_configuration_cutover'])
+        self.assertEqual(missing_speaker['remaining_cutover_reason'], 'speaker_embedding_not_passed')
+
+        without_diarization = json.loads(json.dumps(assembled))
+        without_diarization['assembled_product_loop']['capture'].pop('speaker_diarization')
+        missing_diarization = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=without_diarization,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(missing_diarization['authorizes_tested_configuration_cutover'])
+        self.assertEqual(missing_diarization['remaining_cutover_reason'], 'speaker_diarization_not_passed')
+
+        missing_diarization_hard_field = json.loads(json.dumps(assembled))
+        missing_diarization_hard_field['assembled_product_loop']['capture']['speaker_diarization']['route'].pop(
+            'multipart_model'
+        )
+        rejected_diarization_hard_field = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=missing_diarization_hard_field,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(rejected_diarization_hard_field['authorizes_tested_configuration_cutover'])
+        self.assertEqual(
+            rejected_diarization_hard_field['remaining_cutover_reason'],
+            'speaker_diarization_not_passed',
+        )
+
+        for key, injected_value in (
+            ('mlx_moss_diarize_model', 'host-injected-model'),
+            ('mlx_moss_diarize_endpoint', 'https://host-injected.example/v1/audio/transcriptions'),
+        ):
+            mismatched_runtime = json.loads(json.dumps(PASSED_RUNTIME_EVIDENCE))
+            mismatched_runtime['runtime_identity']['effective_provider_configuration'][key] = injected_value
+            rejected_runtime_binding = EVIDENCE.build_evidence(
+                mode='external-cutover-live',
+                source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+                live_replacement={'status': 'passed'},
+                assembled_loop=assembled,
+                checked_at='2026-08-20T00:00:00+00:00',
+                runtime_evidence=mismatched_runtime,
+            )
+            self.assertFalse(rejected_runtime_binding['authorizes_tested_configuration_cutover'], key)
+            self.assertEqual(
+                rejected_runtime_binding['remaining_cutover_reason'],
+                'speaker_diarization_runtime_config_binding_not_passed',
+            )
+
+        without_model_artifact_identity = json.loads(json.dumps(assembled))
+        without_model_artifact_identity['assembled_product_loop']['capture'].pop('mounted_model_artifact_identity')
+        missing_model_artifact_identity = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=without_model_artifact_identity,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(missing_model_artifact_identity['authorizes_tested_configuration_cutover'])
+        self.assertEqual(
+            missing_model_artifact_identity['remaining_cutover_reason'],
+            'mounted_model_artifact_identity_not_passed',
+        )
+
+        for capability in ('realtime_relay', 'tts', 'app_icon', 'file_chat', 'typesense_keyword', 'firmware'):
+            missing_status_field = json.loads(json.dumps(assembled))
+            missing_status_field['assembled_product_loop'][capability].pop('status')
+            rejected_hard_field = EVIDENCE.build_evidence(
+                mode='external-cutover-live',
+                source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+                live_replacement={'status': 'passed'},
+                assembled_loop=missing_status_field,
+                checked_at='2026-08-20T00:00:00+00:00',
+                runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+            )
+            self.assertFalse(rejected_hard_field['authorizes_tested_configuration_cutover'], capability)
+            self.assertEqual(rejected_hard_field['remaining_cutover_reason'], f'{capability}_not_passed')
 
         dirty_source = {**CLEAN_SOURCE_ATTRIBUTION, 'git_tree': 'f' * 40, 'worktree_clean': False}
         dirty_external = EVIDENCE.build_evidence(
@@ -258,6 +813,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             live_replacement={'status': 'passed'},
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
         )
         self.assertFalse(dirty_external['authorizes_tested_configuration_cutover'])
         self.assertFalse(dirty_external['authorizes_production_cutover'])
@@ -270,6 +826,7 @@ class SelfHostOperationsTest(unittest.TestCase):
                 live_replacement=replacement,
                 assembled_loop=assembled,
                 checked_at='2026-08-20T00:00:00+00:00',
+                runtime_evidence=PASSED_RUNTIME_EVIDENCE,
             )
             self.assertFalse(external_without_replacements['authorizes_tested_configuration_cutover'])
             self.assertFalse(external_without_replacements['authorizes_production_cutover'])
@@ -284,6 +841,7 @@ class SelfHostOperationsTest(unittest.TestCase):
                 live_replacement=replacement,
                 assembled_loop=assembled,
                 checked_at='2026-08-20T00:00:00+00:00',
+                runtime_evidence=PASSED_RUNTIME_EVIDENCE,
             )
             self.assertFalse(local_without_replacements['authorizes_tested_configuration_cutover'])
             self.assertEqual(
@@ -298,6 +856,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             live_replacement={'status': 'passed'},
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
         )
         self.assertFalse(external_without_long_term_admission['authorizes_tested_configuration_cutover'])
         self.assertFalse(external_without_long_term_admission['authorizes_production_cutover'])
@@ -318,6 +877,7 @@ class SelfHostOperationsTest(unittest.TestCase):
                 },
             },
             checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
         )
         self.assertFalse(non_cutover_mode['authorizes_tested_configuration_cutover'])
         self.assertFalse(non_cutover_mode['authorizes_production_cutover'])
@@ -327,6 +887,8 @@ class SelfHostOperationsTest(unittest.TestCase):
             root = Path(directory)
             searxng_secret = 'acceptance-test-secret'
             searxng_secret_sha256 = hashlib.sha256(searxng_secret.encode()).hexdigest()
+            diarization_audio = root / 'two-speaker.wav'
+            diarization_audio.write_bytes(b'RIFF-fixture')
             env_file = root / 'production.env'
             env_file.write_text(
                 '\n'.join(
@@ -335,6 +897,14 @@ class SelfHostOperationsTest(unittest.TestCase):
                         'PUBLIC_BACKEND_URL=https://api.example.org',
                         'PUBLIC_AUTH_URL=https://auth.example.org',
                         'PUBLIC_MCP_URL=https://mcp.example.org',
+                        'PUBLIC_OBJECTS_URL=https://objects.example.org',
+                        f'MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH={diarization_audio}',
+                        'MLX_MOSS_DIARIZE_ENDPOINT=http://reviewed.internal/v1/audio/transcriptions',
+                        'MLX_MOSS_DIARIZE_MODEL=reviewed-model',
+                        'SENSEVOICE_MODEL_HOST_PATH=/reviewed/sensevoice',
+                        'SPEAKER_MODEL_HOST_DIR=/reviewed/speaker',
+                        'TTS_MODEL_HOST_DIR=/reviewed/tts',
+                        'GENERIC_OPENAI_BASE_URL=https://reviewed.example.org/v1',
                         f'SEARXNG_SECRET={searxng_secret}',
                     )
                 )
@@ -348,7 +918,10 @@ class SelfHostOperationsTest(unittest.TestCase):
             call_log = root / 'docker.calls'
             docker = bin_dir / 'docker'
             docker.write_text(
-                '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_DOCKER_CALLS"\n'
+                '#!/bin/sh\nprintf "%s|MLX_ENDPOINT=%s|MLX_MODEL=%s|SENSEVOICE_PATH=%s|SPEAKER_PATH=%s|TTS_PATH=%s|LLM_URL=%s\\n" '
+                '"$*" "${MLX_MOSS_DIARIZE_ENDPOINT-unset}" "${MLX_MOSS_DIARIZE_MODEL-unset}" '
+                '"${SENSEVOICE_MODEL_HOST_PATH-unset}" "${SPEAKER_MODEL_HOST_DIR-unset}" '
+                '"${TTS_MODEL_HOST_DIR-unset}" "${GENERIC_OPENAI_BASE_URL-unset}" >> "$FAKE_DOCKER_CALLS"\n'
                 'case "$*" in *"ps --format json backend queue-worker auth-server"*) '
                 'printf \'%s\\n\' \'{"Service":"backend","State":"running","Health":"healthy"}\' '
                 '\'{"Service":"queue-worker","State":"running","Health":"healthy"}\' '
@@ -364,6 +937,12 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'PATH': f'{bin_dir}:{os.environ["PATH"]}',
                 'SELF_HOST_ENV': str(env_file),
                 'FAKE_DOCKER_CALLS': str(call_log),
+                'MLX_MOSS_DIARIZE_ENDPOINT': 'https://host-injected.example/v1/audio/transcriptions',
+                'MLX_MOSS_DIARIZE_MODEL': 'host-injected-model',
+                'SENSEVOICE_MODEL_HOST_PATH': '/host-injected/sensevoice',
+                'SPEAKER_MODEL_HOST_DIR': '/host-injected/speaker',
+                'TTS_MODEL_HOST_DIR': '/host-injected/tts',
+                'GENERIC_OPENAI_BASE_URL': 'https://host-injected.example/v1',
             }
             base_environment.pop('SELF_HOST_EGRESS_POLICY_ARTIFACT', None)
             missing_policy = subprocess.run(
@@ -396,6 +975,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                 '1.1.1.1',
             ):
                 self.assertIn(target, calls)
+            for key in ('MLX_ENDPOINT', 'MLX_MODEL', 'SENSEVOICE_PATH', 'SPEAKER_PATH', 'TTS_PATH', 'LLM_URL'):
+                self.assertGreaterEqual(calls.count(f'{key}=unset'), 5, key)
+            self.assertNotIn('host-injected', calls)
 
             docker.write_text(
                 docker.read_text(encoding='utf-8').replace(
@@ -480,9 +1062,11 @@ class SelfHostOperationsTest(unittest.TestCase):
         recreate = script.index('dropdb -U "$POSTGRES_USER" --force --if-exists')
         restore = script.index("pg_restore -U \"$POSTGRES_USER\"")
         migration = script.index('compose run --rm --no-deps -T auth-migrate')
+        firestore_migration = script.index('compose run --rm --no-deps -T firestore-pg-migrate')
         application_start = script.index('compose up --detach --wait --no-deps "${APPLICATION_SERVICES[@]}"')
         self.assertLess(recreate, restore)
-        self.assertLess(migration, application_start)
+        self.assertLess(migration, firestore_migration)
+        self.assertLess(firestore_migration, application_start)
 
 
 if __name__ == '__main__':

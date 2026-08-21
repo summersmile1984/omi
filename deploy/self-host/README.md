@@ -9,11 +9,14 @@ the dev file remains the emulator harness and is reused by the migration gate.
 
 `compose.production.yml` runs the backend, Better Auth server, PostgreSQL,
 password-protected Redis plus its durable queue worker, MinIO, Qdrant, and a
-reviewed SearXNG search boundary. Every
-service has a health check. PostgreSQL, Redis, MinIO, Qdrant, and backend sync
-staging use named persistent volumes. The SenseVoice model directory is an
-explicit read-only host mount. Remote base/state images are pinned by immutable
-multi-architecture digest as well as a human-readable version tag.
+reviewed SearXNG search boundary. Every service has a health check. PostgreSQL,
+Redis, MinIO, Qdrant, and backend sync staging use named persistent volumes. The
+SenseVoice model directory is an explicit read-only host mount. Remote
+base/state images are pinned by immutable multi-architecture digest as well as
+a human-readable version tag. Every live acceptance start rebuilds backend and
+Auth from the attributed checkout, embeds the exact Git commit/tree in each
+image, binds a hash of the reviewed environment file to the running containers,
+and rejects stale image/config identity after the full run.
 
 `auth-migrate` is an explicit one-shot schema owner. It runs Better Auth's
 Kysely migration plan, re-reads the schema, and fails unless the plan converges
@@ -21,14 +24,27 @@ to zero pending tables/columns. `auth-server` is admitted only after that
 container exits successfully. This avoids relying on application startup to
 silently create or update identity tables.
 
+`firestore-pg-migrate` independently owns the forward-only Firestore shim
+schema. It takes the PostgreSQL advisory migration lock, applies the version
+ledger and collection registry, and performs a read-only current-schema check
+before exit. Backend and queue-worker are admitted only after it succeeds;
+their runtime Firestore clients contain no lazy DDL path.
+
 The profile deliberately does not ship a default inference vendor. Set
 `GENERIC_OPENAI_BASE_URL` to an operator-selected OpenAI-compatible endpoint and
 set its explicit model/key. Embeddings use that same generic provider boundary.
-Both incremental live STT and pre-recorded STT are pinned to the mounted
-SenseVoice model. The live adapter decodes bounded five-second PCM windows (and
-VAD utterance boundaries) in the sync executor, so it emits before a recording
-ends without blocking the WebSocket loop. `model.int8.onnx`, `tokens.txt`, and
-the locked `sherpa-onnx` runtime are all required before a session is admitted.
+Incremental live STT is pinned to the mounted SenseVoice model. Its adapter
+decodes bounded five-second PCM windows (and VAD utterance boundaries) in the
+sync executor, so it emits before a recording ends without blocking the
+WebSocket loop. `model.int8.onnx`, `tokens.txt`, and the locked `sherpa-onnx`
+runtime are all required before a session is admitted. Pre-recorded
+transcription and diarization are independently selected with
+`STT_PRERECORDED_MODEL=mlx_moss_diarize`. The required
+`MLX_MOSS_DIARIZE_ENDPOINT` is an operator-owned mlx-audio
+`/v1/audio/transcriptions` route and `MLX_MOSS_DIARIZE_MODEL` is its exact model
+id. Private targets may use HTTP; public targets require HTTPS plus
+`MLX_MOSS_DIARIZE_API_KEY`. Official hosted MOSS and Omi hosts are rejected,
+and there is no default URL, model, download, or hosted-MOSS fallback.
 `STT_ROUTE_FALLBACK_TO_DEFAULT=false` prevents a missing local model from
 falling through to any managed STT policy default.
 Realtime multimodal sessions use the authenticated provider-neutral relay.
@@ -69,13 +85,15 @@ declares that those opaque frames use the currently implemented
 `wire_protocol`, not from `provider_id`. Configure the public reverse proxy to
 support WebSocket upgrades on that path.
 
-App-icon image generation and the legacy OpenAI Files/Assistants file-chat
-pipeline do not yet have generic equivalents. The self-host profile pins
-`APP_ICON_GENERATION_TRANSPORT=disabled`, `FILE_CHAT_TRANSPORT=disabled`, and
-`DESKTOP_VENDOR_PROXY_TRANSPORT=disabled`; legacy clients therefore receive a
-typed unavailable response before any OpenAI/Gemini endpoint or credential is
-resolved.
-This is an explicit optional-feature gap, not credential-driven behavior.
+App-icon image generation is deployment-selected:
+the checked-in profile uses deterministic `local_template`, while
+`openai_compatible` requires the operator-owned
+`IMAGE_GENERATION_OPENAI_COMPATIBLE_{BASE_URL,API_KEY,MODEL}` contract. Public
+endpoints require HTTPS, private endpoints may use HTTP, and official vendor
+hosts are rejected. `FILE_CHAT_TRANSPORT=local_extraction` keeps originals in
+the configured UID-scoped object store, extracts bounded supported documents
+locally, and routes the answer through the generic chat capability.
+`DESKTOP_VENDOR_PROXY_TRANSPORT=disabled` remains fail closed.
 
 Web search uses `WEB_SEARCH_TRANSPORT=searxng` and the private
 `http://searxng:8080` service origin. `searxng-settings.yml` enables JSON output
@@ -89,17 +107,41 @@ current-user instruction, labels returned snippets as untrusted public context,
 and refuses search when private tool output is present or user authorization is
 denied.
 
-Speaker identification is a separately declared capability. The production
-profile sets `SPEAKER_EMBEDDING_PROVIDER=disabled`, so Capture remains correct
-but does not claim managed speaker-identification parity. A reviewed deployment
-may select `http` and set `SPEAKER_EMBEDDING_API_URL` to a private compatible
-`/v2/embedding` service. There is no hosted-vendor alias or endpoint fallback.
+Speaker embeddings run locally with
+`SPEAKER_EMBEDDING_PROVIDER=sherpa_onnx`. The operator must provision
+`${SPEAKER_MODEL_HOST_DIR}/speaker.onnx`; Compose mounts only that file read-only
+and the backend never downloads a model or constructs an HTTP request. The
+cutover lane decodes the real checked-in PCM WAV with this mounted model and
+requires one finite, nonzero, L2-normalized embedding before authorization.
+This proves the local embedding capability, not full speaker enrollment/match
+product parity; the evidence keeps that stronger claim false.
 
-The profile fixes `TTS_PROVIDER=disabled` until an operator deploys and reviews
-a neutral TTS service. Both mobile and desktop TTS routes return a typed
-`model_capability_unavailable` response before resolving any residual
-ElevenLabs/OpenAI key, rate-limit side effect, or upstream client; disabled can
-never mean an implicit vendor fallback.
+Speaker diarization is a separate hard cutover capability. Docker Desktop can
+reach a host mlx-audio service at `host.docker.internal`; Compose also binds
+that name to `host-gateway` for Linux compatibility. Production may instead
+point at private HTTP or public HTTPS. The cutover gate mounts the
+operator-provided `MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH` read-only, calls
+`/v1/models`, requires the exact configured model id, then invokes the selected
+production pre-recorded adapter on that real WAV. Authorization requires at
+least two speaker IDs and at least two label transitions, in addition to the
+independent enrollment embedding probe above. The mlx-audio API exposes no
+model revision/cache provenance, so evidence explicitly does not source-attest
+the external service. Pinning the model revision and maintaining its offline
+cache are operator responsibilities; a production operator may bind those to
+a separately reviewed policy artifact rather than infer them from this gate.
+The same evidence records SHA-256 plus byte length (never host paths) for the
+mounted SenseVoice model/tokens, Sherpa speaker model, and TTS model/tokens so
+the local artifacts in the exact tested configuration remain independently
+reproducible.
+
+TTS is also deployment-selected. The checked-in example keeps
+`TTS_PROVIDER=sherpa_onnx` and requires an explicitly provisioned, read-only
+model/tokens/espeak data directory; no model is downloaded. The cutover gate
+requires a real WAV synthesis through the public route.
+`TTS_PROVIDER=openai_compatible` requires the operator-owned
+`TTS_OPENAI_COMPATIBLE_{BASE_URL,API_KEY,MODEL,VOICE}` contract. Public targets
+must use HTTPS, private HTTP is allowed, and official vendor hosts are rejected;
+there is no implicit endpoint or credential fallback.
 
 The checked-in example sets `BACKEND_PLATFORM=linux/amd64` because the pinned
 runtime lock includes `onnxruntime==1.19.0`, which has no Linux ARM64 wheel.
@@ -132,15 +174,21 @@ isolation. Only client-facing DNS and TLS need hairpin reachability.
 cp deploy/self-host/.env.production.example deploy/self-host/.env.production
 # Replace every REPLACE_* value. URL-encode the PostgreSQL password separately.
 make self-host-config-check SELF_HOST_ENV=deploy/self-host/.env.production
-docker compose \
-  --env-file deploy/self-host/.env.production \
-  --file deploy/self-host/compose.production.yml \
+deploy/self-host/compose-clean-env.sh \
+  deploy/self-host/.env.production deploy/self-host/compose.production.yml \
   config --quiet
-docker compose \
-  --env-file deploy/self-host/.env.production \
-  --file deploy/self-host/compose.production.yml \
-  up --detach --build --wait
+SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
+  deploy/self-host/operations.sh start
 ```
+
+Every operational and acceptance Compose command goes through
+`compose-clean-env.sh`. It removes every key declared by the reviewed env file
+from the ambient host environment before invoking Compose, because shell values
+otherwise override `--env-file`. Only the attributed source commit/tree/config
+hash and the disposable cutover TLS overlay controls are explicitly preserved.
+This prevents a host-exported model endpoint, model id, model mount, LLM setting,
+or secret from making the assembled acceptance exercise a different effective
+configuration than the final long-running containers.
 
 Do not use the checked-in example as a runtime secret file. Back up the four
 state-service volumes and the backend syncing volume before upgrades. Preserve
@@ -152,9 +200,19 @@ without migrating those opaque receipt keys would also reopen old tokens; the
 backend therefore fails closed when the secret is missing or too short.
 
 Runtime validation rejects every `REPLACE_*` value, reserved `example.com`
-public origins, and a SenseVoice host directory missing `model.int8.onnx` or
-`tokens.txt`. `operations.sh` refuses the checked-in example file outright and
-reruns this validation before every state or health operation.
+public origins, a SenseVoice host directory missing `model.int8.onnx` or
+`tokens.txt`, an unsafe/official mlx-audio endpoint, a missing MOSS model id,
+and a missing real diarization acceptance WAV. `operations.sh` refuses the
+checked-in example file outright and reruns this validation before every state
+or health operation.
+Cutover acceptance additionally sets `SELF_HOST_REQUIRE_ATTESTED_BUILD=true`:
+it cannot start from an existing mutable application-image tag. The final
+`runtime-evidence` check reads the content-addressed image ID, embedded source
+labels, config-hash label, state, and health from each exact running container,
+and records the exact effective mlx-audio endpoint/model selection. The JSON
+evidence schema (v3) consumes that structured result rather than a hard-coded
+health claim. Authorization also requires the assembled diarization endpoint
+and model to equal that final effective provider configuration.
 
 ## Operations: health, metrics, backup, restore and rollback
 
@@ -169,14 +227,19 @@ up/health/restart state, per-queue ready/pending/DLQ depth, and PostgreSQL size.
 ```bash
 SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
   deploy/self-host/operations.sh status
+OMI_SOURCE_GIT_COMMIT=<40-hex> OMI_SOURCE_GIT_TREE=<40-hex> \
+OMI_RUNTIME_CONFIG_SHA256=<64-hex> \
+SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
+  deploy/self-host/operations.sh runtime-evidence
 SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
   deploy/self-host/operations.sh metrics > /var/lib/node_exporter/textfile_collector/omi-self-host.prom
 ```
 
 Every managed `operations.sh start`, including the post-restore start, stops
-application callers and runs a fresh disposable `auth-migrate` container before
-Auth, backend, or worker admission. An old successful one-shot container is
-never treated as migration evidence for a newly restored database.
+application callers and runs fresh disposable `auth-migrate` and
+`firestore-pg-migrate` containers before Auth, backend, or worker admission. An
+old successful one-shot container is never treated as migration evidence for a
+newly restored database.
 
 Backups quiesce backend/auth/worker traffic, create a PostgreSQL custom-format
 logical dump, issue a synchronous Redis save, and archive the stopped
@@ -241,22 +304,22 @@ bytes and count to the generated vectors, provider, model, dimension, schema,
 namespace, and target version:
 
 ```bash
-docker compose --env-file deploy/self-host/.env.production \
-  --file deploy/self-host/compose.production.yml run --rm \
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py validate \
   --records /migration/ns2.jsonl
 
-docker compose --env-file deploy/self-host/.env.production \
-  --file deploy/self-host/compose.production.yml run --rm \
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py backfill \
   --records /migration/ns2.jsonl \
   --receipt /migration/ns2-v2.receipt.jsonl \
   --namespace ns2 --target-version v2
 
-docker compose --env-file deploy/self-host/.env.production \
-  --file deploy/self-host/compose.production.yml run --rm \
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py verify \
   --records /migration/ns2.jsonl \
@@ -292,8 +355,8 @@ resolved relative to the plan file:
 Only the all-namespace plan can emit the global switch overlay:
 
 ```bash
-docker compose --env-file deploy/self-host/.env.production \
-  --file deploy/self-host/compose.production.yml run --rm \
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py switch \
   --plan /migration/switch-plan.json \
@@ -311,8 +374,8 @@ Rollback generates another reviewed overlay; it does not mutate Compose or the
 vector store automatically:
 
 ```bash
-docker compose --env-file deploy/self-host/.env.production \
-  --file deploy/self-host/compose.production.yml run --rm \
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py rollback \
   --previous-version v1 --abandoned-version v2 \
@@ -335,12 +398,13 @@ make self-host-config-check SELF_HOST_ENV=deploy/self-host/.env.production
 The static gate verifies required services, pinned images, health checks,
 persistent state, required secret/public URL interpolation, HTTPS Auth origin
 consistency, and the selected PostgreSQL/Redis/MinIO/Qdrant/generic/SenseVoice
-providers. It rejects Firebase, OpenAI, Pinecone, GCP/Google credentials and
+streaming/operator-owned mlx-audio MOSS batch providers. It rejects Firebase,
+OpenAI, Pinecone, GCP/Google credentials and
 official endpoint defaults. It does not make an availability claim about the
-operator-provided generic inference endpoint. The profile explicitly disables
-the unbundled Typesense keyword projection; canonical memory retrieval remains
-on PostgreSQL/Qdrant, and account deletion treats that explicit absence as a
-verified zero rather than attempting an undeclared Typesense connection.
+operator-provided generic inference or mlx-audio endpoints. Typesense is an
+explicit pinned service for canonical keyword projection; cutover acceptance
+requires real upsert/query/authoritative-delete behavior in addition to the
+PostgreSQL/Qdrant vector path.
 
 The executable hermetic contract lane installs a hard DNS/socket denial in the
 FastAPI E2E process and runs the selected Capture → Understand → Remember →
@@ -391,18 +455,27 @@ tested changes are committed. Evidence keeps three lanes distinct:
 - the default hermetic contract denies DNS and sockets but uses fake provider
   boundaries;
 - `--live` proves the selected replacement services, real SenseVoice PCM
-  decode, generic model/embedding adapters, and account-deletion reconciliation,
-  but it is not an assembled product loop;
+  decode, mlx-audio configuration presence, generic model/embedding adapters,
+  and account-deletion reconciliation, but it is not an assembled product loop
+  and does not claim a diarization provider call;
 - `--cutover-live` additionally creates a one-day `.omi.test` CA and HTTPS
   proxy, then drives one disposable principal through public product routes.
 
 The local cutover lane uses `https://api.omi.test`,
-`https://auth.omi.test`, and `https://mcp.omi.test` with no port. Inside the
+`https://auth.omi.test`, `https://mcp.omi.test`, and
+`https://objects.omi.test` with no port. Inside the
 Compose network those names resolve to the proxy's real TLS listener on 443;
 `CUTOVER_HTTPS_PORT` only publishes an optional loopback diagnostic port on the
 host. The lane proves public Better Auth signup/token/JWKS, exact JWT
-issuer/audience, private JWKS backend verification, MCP metadata, and public
-WSS Capture with the checked-in LibriSpeech fixture. It then uses authenticated
+issuer/audience, private JWKS backend verification, MCP metadata, public signed
+object PUT/GET/DELETE with payload and authoritative-absence checks, and public
+WSS Capture with the checked-in LibriSpeech fixture. Separately, it asks the
+operator mlx-audio service for `/v1/models`, requires the configured model id,
+and runs the production pre-recorded adapter against the real two-speaker WAV
+mounted from `MLX_MOSS_DIARIZE_ACCEPTANCE_WAV_HOST_PATH`. The hard evidence
+requires at least two speakers and at least two transitions. Audio duration is
+computed from WAV frames/sample rate; mlx-audio `total_time` is processing time
+and is never treated as media duration. It then uses authenticated
 `/v2/messages` turns to understand that transcript and invoke
 `web_search_tool`; the latter must emit the public SSE tool event and return a
 Wikipedia source from SearXNG. Remember uses public `/v3/memories`, the normal
@@ -426,11 +499,16 @@ Local Compose does not impose a network-level application egress policy, so its
 evidence says `live_sentinel_egress_policy.enforcement=not_enforced_by_compose`
 and never claims live DNS denial. It can authorize only the exact tested
 configuration, and only when the assembled loop, replacement-service smoke,
-Long-term admission, and clean source attribution all pass; it cannot authorize
-production traffic. On the intended host, first isolate
+signed object CRUD, a real local speaker embedding, Long-term admission, clean
+source attribution, a real mlx-audio MOSS transcription with exact model-catalog
+match and multi-speaker transitions, SHA-256 identity for every required mounted
+SenseVoice/speaker/TTS model and token artifact, exact running image/config
+identity, and a final all-service health snapshot all pass; it
+cannot authorize production traffic. On the intended host, first isolate
 backend, queue-worker, and auth-server from arbitrary public sockets while
 allowing SearXNG's reviewed Wikipedia egress and the explicitly selected
-private model/realtime services. Save the applied network policy manifest or
+model/realtime authorities (including an explicitly selected public HTTPS
+provider when used). Save the applied network policy manifest or
 firewall export as the non-secret `SELF_HOST_EGRESS_POLICY_ARTIFACT`, then run
 the same public edge lane:
 
@@ -449,20 +527,28 @@ these `sentinel_targets_denied` and explicitly limits the claim to those
 targets; it does not claim DNS denial or universal Internet isolation. Only an
 assembled-loop pass through the intended public certificate/edge plus the
 operator policy artifact and all sentinel denials sets
-`authorizes_production_cutover=true`. Every cutover live mode also loads
+`authorizes_production_cutover=true`. Authorization additionally requires all
+four public origins, the signed object CRUD proof, exact running image/config
+identity, the hard diarization provider proof, and the final service-health snapshot. Every cutover live mode also loads
 SearXNG's effective in-container settings, compares its secret hash to the
 reviewed env-file value in constant time, and records only the resulting
-booleans, rejecting an empty, known-default, or mismatched runtime secret. Speaker
-identity remains recorded as `disabled_not_exercised` with functional
-equivalence false; the typed realtime relay is configured but is not part of
-this assembled loop.
+booleans, rejecting an empty, known-default, or mismatched runtime secret. The
+local Sherpa speaker embedding is exercised, while speaker enrollment/matching
+functional equivalence remains explicitly false. mlx-audio model revision and
+offline-cache provenance remain explicitly operator-owned and unattested by the
+service response. The typed realtime relay is exercised through its authenticated
+public relay route as a separate hard capability.
 
 ## Firestore-to-PostgreSQL cutover gate
 
 The gate is a pre-cutover proof, not a traffic switch. By default it starts the
 existing dev PostgreSQL + Firestore emulator definitions under an isolated
 Compose project and new volume, runs all live `firestore_pg` transaction/index
-integration tests, runs the Better Auth migration twice plus a no-drift check,
+integration tests, applies the Firestore PG migration twice and checks its
+ledger, captures a real emulator fixture containing a nested collection below
+a missing parent, resumes it through the executable importer, and requires
+live-source/manifest/target count plus content-hash reconciliation. It also
+runs the Better Auth migration twice plus a no-drift check,
 runs a real Better Auth sign-up/sign-in/session-token/JWT/JWKS/backend-verifier
 chain, seeds a legacy Ed25519 JWKS row, proves that it breaks ES256 signing,
 migrates it into the verification grace window, proves both the legacy and new
@@ -488,8 +574,25 @@ the operator additionally sets
 write and delete fixed regression namespaces, so production is never an
 acceptable target.
 
-Only after this gate is green should the operator execute their independently
-reviewed export/import, reconcile application-level document counts and backup
-IDs, deploy with `FIRESTORE_PG_DSN`, and move traffic. Rollback means restoring
-the pre-cutover traffic route and retained source-of-truth backup; this script
-does neither operation automatically.
+The production import uses the same image and explicit owner. Quiesce Firestore
+writes for the final reconciliation and mount an encrypted operator directory;
+the checkpoint and adjacent mode-0600 JSONL contain customer data and must be
+retained together for resume:
+
+```bash
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm \
+  --volume /secure/firestore-migration:/migration:rw \
+  firestore-pg-migrate python scripts/firestore_pg_migrate.py import \
+  --source-project SOURCE_PROJECT \
+  --source-credentials /migration/firestore-reader.json \
+  --checkpoint /migration/firestore-import.json
+```
+
+An import without its checkpoint refuses a non-empty target. Unsupported value
+types or collection IDs, an edited/missing manifest, source drift, or any count
+or content-hash mismatch exits nonzero and does not authorize cutover. Only
+after this gate and the production import are green should the operator bind
+the evidence to backup IDs and move traffic. Rollback means restoring the
+pre-cutover traffic route and retained source-of-truth backup; this script does
+neither operation automatically.

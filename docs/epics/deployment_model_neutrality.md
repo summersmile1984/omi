@@ -57,6 +57,8 @@ self-host: BetterAuth/Postgres/MinIO/Redis/generic routes
       DLQ and per-queue authentication match handler contracts.
 - [x] MinIO supports every object operation used by product code and returns an
       externally reachable configured origin; provider errors are not “missing”.
+      Cutover acceptance requires signed PUT/GET/DELETE through that exact
+      public HTTPS origin and verifies authoritative absence after deletion.
 
 ### Identity and clients
 
@@ -89,8 +91,8 @@ self-host: BetterAuth/Postgres/MinIO/Redis/generic routes
 - [ ] Migrations, backup/restore, secrets, TLS/public origins, readiness,
       metrics, worker supervision and rollback are documented and exercised.
       Migration, real volume backup/restore, readiness and worker supervision
-      passed locally. A temporary-CA HTTPS reverse proxy exercised exact public
-      backend/Auth/MCP origins and the container hairpin path; the intended
+      passed locally. A temporary-CA HTTPS reverse proxy can exercise exact public
+      backend/Auth/MCP/object origins and the container hairpin path; the intended
       host's certificate, DNS and edge have not been exercised.
 - [ ] A zero-vendor egress gate starts with all managed-vendor credentials
       removed, denies undeclared public origins, and exercises the complete
@@ -109,12 +111,22 @@ configuration without recording that secret or its hash. That functional run
 used a dirty worktree while its artifact named only the older `HEAD`, so it is
 not valid source-attributed cutover evidence. The gate now rejects dirty
 cutover runs before service startup and records the full commit, tree, and
-clean-worktree state. A clean-tree combined rerun remains required before the
-exact tested local configuration can be authorized.
+clean-worktree state. It now also rebuilds and verifies the application image
+source labels/config hash against the exact running containers, requires signed
+object CRUD through the public object edge, and records a final service-health
+snapshot. A clean-tree combined rerun remains required before the exact tested
+local configuration can be authorized.
 
-That local run cannot authorize production: Compose does not deny application
-egress, the intended public edge has not run, and speaker identity is explicitly
-disabled. An initial local Qwen 7B run exposed an ambiguous primary-user
+That historical local run cannot authorize production: Compose does not deny
+application egress and the intended public edge has not run. The current gate
+also requires a real mounted Sherpa speaker-model decode/embedding and an
+operator-owned mlx-audio MOSS pre-recorded call. The latter must expose the
+exact configured model through `/v1/models` and return at least two speakers
+with multiple transitions for the real operator-mounted fixture; a vector or
+SenseVoice window-clustering check is insufficient. The mlx-audio service does
+not expose revision/cache provenance, so those remain explicit operator
+responsibilities rather than source-attested evidence. The gate still does not
+claim full speaker enrollment/match parity. An initial local Qwen 7B run exposed an ambiguous primary-user
 aboutness instruction and was correctly blocked by the unchanged subject-safety
 validator. After the production prompt made the `self + primary_user` mapping
 explicit, two consecutive full HTTPS runs reached validated Long-term admission,
@@ -135,11 +147,14 @@ The remaining paths are deployment-neutral because they fail closed before
 vendor egress, but they do not yet have feature parity with the managed
 deployment:
 
-- app-icon image generation is gateway/DALL-E-specific and is explicitly
-  disabled in the self-host profile;
-- legacy attached-file chat uses OpenAI Files/Assistants/vision and is
-  explicitly disabled; the generic tool-completion image lane does not replace
-  indexed document search;
+- app-icon image generation can use an explicit operator-owned
+  OpenAI-compatible image endpoint, but remains disabled in the checked-in
+  profile until the operator configures it;
+- attached-file chat can use `FILE_CHAT_TRANSPORT=local_extraction`: originals
+  remain private in the configured UID-scoped object store, bounded local
+  extraction handles text/Markdown/JSON/CSV/PDF/DOCX and restricted inline
+  images, and answers execute the `chat_responses` manifest route. Managed
+  deployments may retain the explicit `openai_assistants` transport;
 - legacy Gemini REST proxy and provider-native omni WebSocket relay are
   explicitly disabled by the self-host deployment authority before vendor URL
   or credential resolution; the primary `/v2/chat/completions` path and signed
