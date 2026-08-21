@@ -460,6 +460,9 @@
         "backend/utils/conversations/finalization_decision.py",
         "backend/utils/conversations/lifecycle.py",
         "backend/utils/conversations/finalizer.py",
+        "backend/utils/conversations/search.py",
+        "backend/utils/conversations/typesense_index.py",
+        "backend/scripts/rebuild_conversation_typesense.py",
         "backend/utils/conversations/meeting_receipt.py",
         "backend/routers/transcribe.py",
         "backend/routers/conversation_finalization.py",
@@ -476,6 +479,8 @@
       ],
       "tests": [
         "tests/unit/test_conversation_lifecycle_contract.py",
+        "tests/unit/test_conversation_typesense_index.py",
+        "tests/unit/test_conversation_hybrid_search.py",
         "tests/unit/test_finalization_decision.py",
         "tests/unit/test_check_conversation_lifecycle_writes.py",
         "tests/unit/test_conversation_finalization_jobs.py",
@@ -494,6 +499,9 @@
         "only utils.conversations.lifecycle may invoke lifecycle persistence primitives",
         "a recording session binds exactly one user-scoped conversation and emits only monotonic lifecycle envelopes",
         "merge rejects sources that are still processing",
+        "self-host conversation create, update, finalization, and delete synchronously maintain an independently owned Typesense projection",
+        "keyword provider failures are typed unavailable and never silently reported as empty results",
+        "bulk rebuild is accepted only when authoritative count and content hashes reconcile",
         "discard and generic status-write escape hatches remain characterized until the lifecycle service replaces them"
       ]
     },

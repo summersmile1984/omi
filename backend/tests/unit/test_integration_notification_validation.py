@@ -109,6 +109,32 @@ def test_missing_message_returns_400():
     assert e.value.status_code == 400
 
 
+def test_self_host_push_disabled_is_typed_unavailable(monkeypatch):
+    monkeypatch.setattr(notif_mod, 'push_notifications_enabled', lambda: False)
+    monkeypatch.setattr(
+        notif_mod,
+        'push_capability_unavailable',
+        lambda: {
+            'code': 'deployment_capability_unavailable',
+            'capability': 'push_notifications',
+            'reason': 'disabled_by_deployment',
+            'retryable': False,
+        },
+    )
+    with pytest.raises(HTTPException) as e:
+        notif_mod.save_token(
+            data=MagicMock(model_dump=lambda: {'token': 'opaque'}),
+            uid='uid1',
+        )
+    assert e.value.status_code == 503
+    assert e.value.detail == {
+        'code': 'deployment_capability_unavailable',
+        'capability': 'push_notifications',
+        'reason': 'disabled_by_deployment',
+        'retryable': False,
+    }
+
+
 class _FakeRedis:
     """Minimal in-memory redis with integer counter semantics for check_rate_limit."""
 

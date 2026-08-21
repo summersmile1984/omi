@@ -199,6 +199,7 @@ def build_evidence(
             'app_icon',
             'file_chat',
             'typesense_keyword',
+            'conversation_typesense',
             'firmware',
         )
     }

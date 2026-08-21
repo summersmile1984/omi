@@ -19,6 +19,7 @@ from utils.conversations.location import async_resolve_geolocation
 from utils.conversations.meeting_receipt import record_and_persist_finalized_meeting_receipt
 from utils.conversations.process_conversation import extract_memories, process_conversation
 from utils.conversations import lifecycle as lifecycle_service
+from utils.conversations.typesense_index import sync_conversation_document
 from utils.executors import db_executor, postprocess_executor, run_blocking
 from utils.log_sanitizer import sanitize_pii
 from utils.task_intelligence.proactive_engine import persist_capture_arrival_intent
@@ -194,6 +195,11 @@ async def finalize_persisted_conversation(
                     sanitize_pii(uid),
                     type(error).__name__,
                 )
+        # The finalization acknowledgement is also the durable search-
+        # visibility boundary. A self-host job remains retryable until the
+        # authoritative completed document is present in its local Typesense
+        # projection; managed deployments retain their extension-owned no-op.
+        await run_blocking(db_executor, sync_conversation_document, uid, conversation_id)
         fanout_completed = await run_blocking(
             db_executor,
             lifecycle_service.complete_finalization_fanout,

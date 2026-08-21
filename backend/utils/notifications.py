@@ -34,6 +34,23 @@ def push_notifications_enabled() -> bool:
     return os.getenv('PUSH_PROVIDER', 'firebase').strip().lower() == 'firebase'
 
 
+def push_capability_unavailable() -> dict[str, object]:
+    """Return the stable public error for a deployment without push delivery.
+
+    Internal notification call sites intentionally remain no-ops when push is
+    disabled so a missing optional channel cannot fail durable product work.
+    HTTP notification entrypoints use this payload instead of reporting a
+    successful send that never happened.
+    """
+
+    return {
+        'code': 'deployment_capability_unavailable',
+        'capability': 'push_notifications',
+        'reason': 'disabled_by_deployment',
+        'retryable': False,
+    }
+
+
 def _get_user(uid: str) -> Any:
     return identity.get_user(uid)
 

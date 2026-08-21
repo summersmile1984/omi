@@ -280,6 +280,62 @@ owns the source documents. Each non-empty line must contain exactly `id`,
 `content`, and optional `metadata`; do not export vectors or any
 `projection_*` metadata:
 
+The repository supplies the read-only authority exporter used for both the
+managed Firestore source and the self-host PostgreSQL-backed Firestore facade.
+It enumerates `users/{uid}` and reads only the seven source collections; it
+never imports Pinecone/Qdrant records and has no write operation. Use explicit
+UIDs for a bounded migration, or `--all-users` for a complete source inventory:
+
+```bash
+mkdir -m 700 migration/authority
+FIRESTORE_PG_DSN="$FIRESTORE_PG_DSN" \
+  backend/.venv/bin/python backend/scripts/export_authoritative_vectors.py \
+  --all-users \
+  --output-dir migration/authority \
+  --allow-empty
+```
+
+The default is fail-closed when any selected namespace has no rows. Keep
+`--allow-empty` only when the operator has recorded that the namespace is
+intentionally unused; the resulting `manifest.json` records the explicit
+acknowledgement. The exporter writes `ns1.jsonl`, `ns2.jsonl`,
+`workstream_association_v1.jsonl`, `ns_x.jsonl`, `ns3.jsonl`, `ns4.jsonl`, and
+`ns_tchunks.jsonl`, plus a SHA-256/count sidecar. Every JSONL line is strict
+and has no vector values. Transcript rows are decoded at the authority
+boundary; encrypted or malformed transcript data fails the export instead of
+silently producing an incomplete transcript projection.
+
+Conversation keyword search is likewise a rebuildable projection, but it has a
+separate, backend-owned Typesense schema (`omi_conversations`). The self-host
+profile sets `CONVERSATION_KEYWORD_INDEX_PROVIDER=typesense`; it never waits for
+or invokes the Firebase Typesense extension. Create/update/finalization/delete
+paths synchronously maintain this projection. A selected but unreachable
+Typesense service is surfaced as an unavailable search capability rather than
+an empty result set.
+
+After restore or before cutover, rebuild and then independently reconcile the
+authoritative Firestore-shim rows against Typesense count and content hashes:
+
+```bash
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm backend \
+  python scripts/rebuild_conversation_typesense.py rebuild
+
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm backend \
+  python scripts/rebuild_conversation_typesense.py reconcile
+```
+
+Both commands print JSON. Reconciliation exits `2` on missing, unexpected, or
+content-mismatched documents; E2EE conversations are intentionally absent from
+both the expected and actual searchable set.
+
+Self-host Compose also sets `AGENT_VM_PROVIDER=disabled`. It never discovers
+GCP ADC or calls `compute.googleapis.com`. Account deletion fails closed when an
+imported account still has an `agent_vm` pointer or migration journal; reconcile
+retired GCE resources before cutover and rerun the inventory rather than treating
+missing GCP credentials as a successful deletion.
+
 ```json
 {"id":"memory-01","content":"authoritative text to embed","metadata":{"uid":"user-01"}}
 ```
@@ -402,9 +458,10 @@ streaming/operator-owned mlx-audio MOSS batch providers. It rejects Firebase,
 OpenAI, Pinecone, GCP/Google credentials and
 official endpoint defaults. It does not make an availability claim about the
 operator-provided generic inference or mlx-audio endpoints. Typesense is an
-explicit pinned service for canonical keyword projection; cutover acceptance
-requires real upsert/query/authoritative-delete behavior in addition to the
-PostgreSQL/Qdrant vector path.
+explicit pinned service for canonical memory and conversation keyword
+projections; cutover acceptance requires real schema validation,
+upsert/query/update/delete and count/hash reconciliation behavior in addition
+to the PostgreSQL/Qdrant vector path.
 
 The executable hermetic contract lane installs a hard DNS/socket denial in the
 FastAPI E2E process and runs the selected Capture → Understand → Remember →
@@ -596,3 +653,124 @@ after this gate and the production import are green should the operator bind
 the evidence to backup IDs and move traffic. Rollback means restoring the
 pre-cutover traffic route and retained source-of-truth backup; this script does
 neither operation automatically.
+
+## GCS/Firebase Storage-to-MinIO cutover
+
+Firestore documents do not contain the object bytes they reference. Migrate
+every production GCS/Firebase Storage bucket before traffic changes, while the
+same source-write freeze used for the final Firestore reconciliation remains in
+force. The storage importer reads each source object at an exact GCS generation
+and writes a mode-0600 inventory containing bucket/name, generation, byte size,
+SHA-256, custom metadata, content type, and the deterministic target mapping.
+The dry run therefore reads all source bytes once; apply streams them to MinIO,
+and verify performs a fresh source scan plus an independent target read.
+
+Create a mode-0600 `/secure/storage-migration/plan.json`. Prefixes are explicit
+tenant boundaries: they are either empty for a whole bucket or end in `/`, and
+the relative path below the source prefix is preserved below the target prefix.
+Overlapping source or target scopes, `.`/`..`, repeated separators, control
+characters, unsafe metadata, and target-key collisions are rejected.
+
+```json
+{
+  "schema_version": 1,
+  "scopes": [
+    {
+      "id": "speech-profiles",
+      "source_bucket": "omi-production-speech-profiles",
+      "source_prefix": "",
+      "target_bucket": "omi-speech-profiles",
+      "target_prefix": ""
+    },
+    {
+      "id": "one-tenant-chat-files",
+      "source_bucket": "omi-production-chat-files",
+      "source_prefix": "TENANT_UID/",
+      "target_bucket": "omi-chat-files",
+      "target_prefix": "TENANT_UID/"
+    }
+  ]
+}
+```
+
+Include every configured self-host object bucket as either a whole-bucket scope
+or a set of non-overlapping tenant scopes: speech profiles, postprocessing,
+memory recordings, private/temporal sync, plugin logos, app thumbnails, chat
+files, and desktop updates. Source and target bucket names may differ; object
+paths are never inferred from environment-variable names.
+
+Mount an encrypted operator directory containing the plan and a read-only GCS
+service account scoped to only the declared source buckets. First run the
+source-only dry run to create the immutable inventory; this command does not
+connect to or mutate MinIO:
+
+```bash
+chmod 600 /secure/storage-migration/plan.json \
+  /secure/storage-migration/gcs-reader.json
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm --no-deps \
+  --volume /secure/storage-migration:/migration:rw \
+  backend python scripts/storage_gcs_minio_migration.py dry-run \
+  --plan /migration/plan.json \
+  --manifest /migration/gcs-inventory.jsonl \
+  --source-project SOURCE_PROJECT \
+  --source-credentials /migration/gcs-reader.json
+```
+
+Then start MinIO and apply the resumable streaming copy. The policy must be an
+explicit operator choice and must remain identical for apply and verify:
+
+- `create-only` requires empty target scopes on the first run and never
+  overwrites an object. It is the preferred policy for a fresh MinIO volume.
+- `same-hash` adopts or resumes only an object whose size, content type,
+  metadata, migration receipt, and independently re-read bytes exactly match
+  the inventory. It never treats an ETag as a content proof.
+
+```bash
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml up --detach --wait minio
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm --no-deps \
+  --volume /secure/storage-migration:/migration:rw \
+  backend python scripts/storage_gcs_minio_migration.py apply \
+  --plan /migration/plan.json \
+  --manifest /migration/gcs-inventory.jsonl \
+  --checkpoint /migration/gcs-minio-checkpoint.json \
+  --source-project SOURCE_PROJECT \
+  --source-credentials /migration/gcs-reader.json \
+  --target-endpoint http://minio:9000 \
+  --existing-policy create-only
+```
+
+The checkpoint binds the exact plan bytes, manifest bytes, GCS project and
+endpoint, MinIO endpoint, and existing-object policy. Resume with the identical
+apply command until it reports `status=applied`. While the source-write freeze
+is still active, run the independent cutover gate:
+
+```bash
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm --no-deps \
+  --volume /secure/storage-migration:/migration:rw \
+  backend python scripts/storage_gcs_minio_migration.py verify \
+  --plan /migration/plan.json \
+  --manifest /migration/gcs-inventory.jsonl \
+  --checkpoint /migration/gcs-minio-checkpoint.json \
+  --source-project SOURCE_PROJECT \
+  --source-credentials /migration/gcs-reader.json \
+  --target-endpoint http://minio:9000 \
+  --existing-policy create-only
+```
+
+Only verify can emit `status=passed`. It requires the complete apply checkpoint
+and authorizes cutover only when the immutable manifest, a fresh
+generation-pinned GCS scan, and an independent MinIO list/head/byte scan have
+the same count and order-independent content hash. Extra target objects, source
+generation drift, metadata/content-type loss, corrupt bytes, an incomplete or
+changed checkpoint, and authority changes fail closed. CLI output contains only
+counts and hashes; object names and metadata remain in the private inventory.
+
+Preserve the plan, inventory, checkpoint, source credential audit record,
+command output, and the pre-cutover `operations.sh backup` ID in the change
+record. The importer never deletes source objects or changes traffic. Rollback
+uses the retained GCS route plus the pre-cutover MinIO backup; do not delete the
+source buckets until the rollback window and restore drill are complete.

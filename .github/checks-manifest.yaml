@@ -19,6 +19,16 @@ checks:
     triggers: ["backend/scripts/vector_projection_migration.py", "backend/scripts/test-vector-projection-migration.sh", "backend/database/vector_projection.py", "backend/database/vector_store.py", "backend/database/vector_db.py", "backend/tests/unit/test_vector_projection_migration_cli.py", "backend/tests/unit/test_embedding_vector_adapters.py", "deploy/self-host/**", "backend/AGENTS.md", ".github/checks-manifest.yaml"]
     lanes: ["local", "ci"]
     reason: "a projection cutover must remain executable from an authoritative export and must fail closed before emitting switch or rollback artifacts"
+  - id: authoritative-vector-export-cli
+    command: ["bash", "backend/scripts/test-authoritative-vector-export.sh"]
+    triggers: ["backend/scripts/export_authoritative_vectors.py", "backend/scripts/test-authoritative-vector-export.sh", "backend/tests/unit/test_authoritative_vector_export.py", "deploy/self-host/**", "backend/AGENTS.md", ".github/checks-manifest.yaml"]
+    lanes: ["local", "ci"]
+    reason: "vector migration must begin from a read-only Firestore/PG authority inventory with strict JSONL, source hashing, and an explicit empty-export acknowledgement"
+  - id: storage-gcs-minio-migration-cli
+    command: ["bash", "backend/scripts/test-storage-gcs-minio-migration.sh"]
+    triggers: ["backend/scripts/storage_gcs_minio_migration.py", "backend/scripts/test-storage-gcs-minio-migration.sh", "backend/tests/unit/test_storage_gcs_minio_migration.py", "deploy/self-host/**", "backend/AGENTS.md", ".github/checks-manifest.yaml"]
+    lanes: ["local", "ci"]
+    reason: "fork PR #1 added the MinIO runtime without a GCS/Firebase Storage inventory, resumable copy, or reconciliation path; this behavioral gate prevents production object migration from becoming an undocumented manual copy again"
   - id: self-host-auth-runtime-contract
     command: ["npm", "--prefix", "auth-server", "test"]
     triggers: ["auth-server/src/**", "auth-server/test/**", "auth-server/package.json", "auth-server/package-lock.json", ".github/checks-manifest.yaml"]

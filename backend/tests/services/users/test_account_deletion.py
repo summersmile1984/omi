@@ -207,6 +207,31 @@ def _stub_new_external_cleanup_boundaries(monkeypatch):
     monkeypatch.setattr(account_deletion, '_delete_memory_maintenance_registry', MagicMock())
 
 
+def test_self_hosted_disabled_agent_vm_provider_never_discovers_gce(monkeypatch):
+    monkeypatch.setenv('AGENT_VM_PROVIDER', 'disabled')
+    monkeypatch.setattr(agent_vm_account_cleanup, 'read_agent_vm_migration_journals', lambda _uid: [])
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_agent_vm', lambda _uid: None)
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_late_agent_vm_cleanup', lambda _uid: None)
+    auth_default = MagicMock(side_effect=AssertionError('self-hosted cleanup must not discover ADC'))
+    monkeypatch.setattr(agent_vm_account_cleanup.google.auth, 'default', auth_default)
+
+    agent_vm_account_cleanup.delete_agent_vm_for_account('self-hosted-user')
+
+    auth_default.assert_not_called()
+
+
+def test_self_hosted_disabled_agent_vm_provider_fails_closed_on_legacy_state(monkeypatch):
+    monkeypatch.setenv('AGENT_VM_PROVIDER', 'disabled')
+    monkeypatch.setattr(
+        agent_vm_account_cleanup, 'read_agent_vm_migration_journals', lambda _uid: [_migration_journal()]
+    )
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_agent_vm', lambda _uid: None)
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_late_agent_vm_cleanup', lambda _uid: None)
+
+    with pytest.raises(RuntimeError, match='legacy Agent VM state exists'):
+        agent_vm_account_cleanup.delete_agent_vm_for_account('self-hosted-user')
+
+
 def test_agent_vm_account_cleanup_deletes_mid_migration_candidate_and_reused_state_disk(monkeypatch):
     uid = 'migration-owner'
     journal = _migration_journal()

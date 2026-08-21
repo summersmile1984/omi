@@ -68,10 +68,11 @@ self-host: BetterAuth/Postgres/MinIO/Redis/generic routes
       session revoke and complete account deletion.
 - [x] Flutter, macOS and Context release entrypoints use one deployment profile
       for login, refresh, API, WebSocket and MCP; no Firebase session is present.
-- [ ] Fresh signed Flutter artifacts have been exercised on both mobile
-      platforms. The iOS Release artifact and native resource contract were
-      exercised without codesigning; macOS and Context signed artifacts were
-      exercised end-to-end.
+- [ ] Fresh operator-signed Flutter artifacts have been exercised on both
+      mobile platforms. The self-host build, Firebase-runtime boundary and
+      unsigned/local artifact scans are green; a real operator certificate,
+      device install, sign-in, capture and MCP session are still external
+      evidence requirements.
 
 ### Models and projections
 
@@ -164,8 +165,21 @@ deployment:
   instruction and injects results as untrusted context;
 - macOS chat permits the backend `pi-mono` adapter only; direct vendor adapters
   and the local Claude task-agent process are unavailable;
-- the self-host profile explicitly disables its unbundled Typesense keyword
-  projection and retains PostgreSQL/Qdrant memory retrieval.
+- the self-host profile uses explicit, operator-owned Typesense projections for
+  canonical memory and conversation keyword search. The projection schema,
+  rebuild/reconcile commands and account-deletion ordering are independent of
+  the retired Firebase Typesense extension; an unavailable selected service is
+  a typed search failure, never an empty vector-only result.
+- push delivery is explicitly `PUSH_PROVIDER=disabled` until an operator push
+  service is configured; notification requests return a typed unavailable
+  capability rather than silently calling Firebase.
+- Agent VM cleanup is explicitly `AGENT_VM_PROVIDER=disabled`; legacy GCE
+  state blocks deletion until it is imported/reconciled, so missing ADC cannot
+  be mistaken for successful cleanup.
+- Firebase Auth users and Firebase Storage objects have generation-pinned,
+  checkpointed import tools. These are safe to run against production exports,
+  but the repository contains no production credentials and therefore does not
+  claim that an operator's historical export has been migrated.
 
 ## Delivery order
 

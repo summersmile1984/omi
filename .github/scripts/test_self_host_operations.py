@@ -637,6 +637,7 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'app_icon': {'status': 'passed'},
                 'file_chat': {'status': 'passed'},
                 'typesense_keyword': {'status': 'passed'},
+                'conversation_typesense': {'status': 'passed'},
                 'firmware': {'status': 'passed'},
                 'remember': {'long_term_admission': 'passed'},
             },
@@ -808,7 +809,15 @@ class SelfHostOperationsTest(unittest.TestCase):
             'mounted_model_artifact_identity_not_passed',
         )
 
-        for capability in ('realtime_relay', 'tts', 'app_icon', 'file_chat', 'typesense_keyword', 'firmware'):
+        for capability in (
+            'realtime_relay',
+            'tts',
+            'app_icon',
+            'file_chat',
+            'typesense_keyword',
+            'conversation_typesense',
+            'firmware',
+        ):
             missing_status_field = json.loads(json.dumps(assembled))
             missing_status_field['assembled_product_loop'][capability].pop('status')
             rejected_hard_field = EVIDENCE.build_evidence(

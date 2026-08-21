@@ -220,6 +220,7 @@ services:
       - SYNC_DISPATCH_MODE=cloud_tasks
       - AUDIO_MERGE_DISPATCH_MODE=cloud_tasks
       - ACCOUNT_DELETION_DISPATCH_MODE=cloud_tasks
+      - AGENT_VM_PROVIDER=disabled
       - LISTEN_FINALIZATION_DISPATCH_MODE=cloud_tasks
       - SYNC_TASKS_HANDLER_URL=http://backend:8080/v2/sync-jobs/run
       - AUDIO_MERGE_HANDLER_URL=http://backend:8080/v2/audio-merge-jobs/run
@@ -280,11 +281,13 @@ services:
       - VECTOR_PROJECTION_REQUIRED_NAMESPACES=${VECTOR_PROJECTION_REQUIRED_NAMESPACES:?VECTOR_PROJECTION_REQUIRED_NAMESPACES is required}
       - VECTOR_STORE_PROVIDER=qdrant
       - MEMORY_KEYWORD_INDEX_PROVIDER=typesense
+      - CONVERSATION_KEYWORD_INDEX_PROVIDER=typesense
       - TYPESENSE_HOST=typesense
       - TYPESENSE_HOST_PORT=8108
       - TYPESENSE_PROTOCOL=http
       - TYPESENSE_API_KEY=${TYPESENSE_API_KEY:?TYPESENSE_API_KEY is required}
       - MEMORY_TYPESENSE_COLLECTION=canonical_memory_atoms
+      - CONVERSATION_TYPESENSE_COLLECTION=omi_conversations
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
       - QDRANT_COLLECTION_PREFIX=${QDRANT_COLLECTION_PREFIX:?QDRANT_COLLECTION_PREFIX is required}
@@ -381,11 +384,13 @@ services:
       - WEB_SEARCH_TRANSPORT=searxng
       - SEARXNG_BASE_URL=http://searxng:8080
       - MEMORY_KEYWORD_INDEX_PROVIDER=typesense
+      - CONVERSATION_KEYWORD_INDEX_PROVIDER=typesense
       - TYPESENSE_HOST=typesense
       - TYPESENSE_HOST_PORT=8108
       - TYPESENSE_PROTOCOL=http
       - TYPESENSE_API_KEY=${TYPESENSE_API_KEY:?TYPESENSE_API_KEY is required}
       - MEMORY_TYPESENSE_COLLECTION=canonical_memory_atoms
+      - CONVERSATION_TYPESENSE_COLLECTION=omi_conversations
       - PUSH_PROVIDER=disabled
     depends_on:
       firestore-pg-migrate:

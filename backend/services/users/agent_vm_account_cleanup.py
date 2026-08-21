@@ -24,6 +24,25 @@ def _gce_project_id() -> str | None:
     )
 
 
+_AGENT_VM_PROVIDER_ENV = 'AGENT_VM_PROVIDER'
+_AGENT_VM_PROVIDERS = frozenset({'gce', 'disabled'})
+
+
+def _agent_vm_provider() -> str:
+    """Resolve the explicit owner of retired Agent VM resources.
+
+    ``gce`` is retained for the managed deployment. A self-hosted profile must
+    set ``disabled``: it never discovers ADC or contacts the Compute API. If
+    legacy VM state is still present, deletion fails closed and the operator
+    must migrate/reconcile that state before cutover.
+    """
+
+    provider = os.getenv(_AGENT_VM_PROVIDER_ENV, 'gce').strip().lower()
+    if provider not in _AGENT_VM_PROVIDERS:
+        raise RuntimeError(f'unsupported Agent VM provider {provider!r}')
+    return provider
+
+
 _GCE_NAME = re.compile(r'[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?')
 _GCE_NUMERIC_ID = re.compile(r'[0-9]+')
 _AGENT_VM_MIGRATION_ID = re.compile(r'[0-9a-f]{24}')
@@ -803,6 +822,14 @@ def _delete_agent_vm_for_account_impl(uid: str) -> None:
     vm = active_vm or late_vm
     if not isinstance(vm, Mapping) or not vm.get('vmName'):
         vm = None
+    provider = _agent_vm_provider()
+    if provider == 'disabled':
+        if vm is not None or journals:
+            raise RuntimeError(
+                'Agent VM provider is disabled but legacy Agent VM state exists; '
+                'migrate/reconcile those resources before self-hosted cutover'
+            )
+        return
     if _migration_reconcile_lease_active(vm, journals):
         raise RuntimeError('Agent VM migration reconcile lease is active')
     if vm is None and not journals:

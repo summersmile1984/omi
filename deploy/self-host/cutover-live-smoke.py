@@ -78,6 +78,71 @@ def require_object(response: httpx.Response, operation: str) -> dict[str, Any]:
     return payload
 
 
+def public_conversation_typesense_probe(
+    client: httpx.Client,
+    *,
+    backend_url: str,
+    headers: dict[str, str],
+    conversation_id: str,
+    marker: str,
+) -> dict[str, Any]:
+    """Prove public create/finalize, update, query and delete projection behavior."""
+
+    def search(query: str) -> list[dict[str, Any]]:
+        payload = require_object(
+            client.post(
+                f'{backend_url}/v1/conversations/search',
+                headers=headers,
+                json={'query': query, 'page': 1, 'per_page': 20, 'include_discarded': False},
+            ),
+            'public conversation Typesense search',
+        )
+        items = payload.get('items')
+        if not isinstance(items, list):
+            raise RuntimeError('public conversation Typesense search omitted items')
+        return [item for item in items if isinstance(item, dict)]
+
+    first_title = f'{marker}-conversation-index-created'
+    require_object(
+        client.patch(
+            f'{backend_url}/v1/conversations/{conversation_id}/title',
+            headers=headers,
+            params={'title': first_title},
+        ),
+        'public conversation title projection create',
+    )
+    if conversation_id not in {str(item.get('id') or '') for item in search(first_title)}:
+        raise RuntimeError('conversation Typesense create/finalization projection was not publicly searchable')
+
+    second_title = f'{marker}-conversation-index-updated'
+    require_object(
+        client.patch(
+            f'{backend_url}/v1/conversations/{conversation_id}/title',
+            headers=headers,
+            params={'title': second_title},
+        ),
+        'public conversation title projection update',
+    )
+    if conversation_id in {str(item.get('id') or '') for item in search(first_title)}:
+        raise RuntimeError('conversation Typesense update retained the replaced title')
+    if conversation_id not in {str(item.get('id') or '') for item in search(second_title)}:
+        raise RuntimeError('conversation Typesense update was not publicly searchable')
+
+    require_object(
+        client.delete(f'{backend_url}/v1/conversations/{conversation_id}', headers=headers),
+        'public conversation projection delete',
+    )
+    if conversation_id in {str(item.get('id') or '') for item in search(second_title)}:
+        raise RuntimeError('conversation Typesense delete did not prove authoritative absence')
+    return {
+        'status': 'passed',
+        'provider': 'typesense',
+        'public_create_finalization_search': True,
+        'public_update_replaced_document': True,
+        'public_delete_authoritative_absence': True,
+    }
+
+
 def jwt_payload(token: str) -> dict[str, Any]:
     parts = token.split('.')
     if len(parts) != 3:
@@ -726,6 +791,7 @@ def main() -> int:
     from utils.memory.short_term_promotion import run_canonical_short_term_maintenance
     from utils.other import storage
     from utils.stt import speaker_embedding
+    from utils.conversations.typesense_index import reconcile_conversation_index
 
     global_gate_ref = db.document('memory_control/global_read_gate')
     global_gate_before = global_gate_ref.get()
@@ -1092,6 +1158,24 @@ def main() -> int:
             'authoritative_delete_count': keyword_deleted,
             'post_delete_search_empty': True,
         }
+        conversation_typesense = public_conversation_typesense_probe(
+            client,
+            backend_url=backend_url,
+            headers=auth_headers,
+            conversation_id=conversation_id,
+            marker=marker,
+        )
+        conversation_reconciliation = reconcile_conversation_index(firestore_client=db)
+        if not conversation_reconciliation.matches:
+            raise RuntimeError('conversation Typesense count/hash reconciliation did not match Firestore')
+        conversation_typesense.update(
+            {
+                'schema_validated_by_production_mutations': True,
+                'reconciled_expected_count': conversation_reconciliation.expected_count,
+                'reconciled_actual_count': conversation_reconciliation.actual_count,
+                'count_hash_reconciliation': True,
+            }
+        )
 
         result = {
             'status': 'passed',
@@ -1141,6 +1225,7 @@ def main() -> int:
                 'file_chat': local_file_chat,
                 'firmware': firmware_manifest,
                 'typesense_keyword': typesense_keyword,
+                'conversation_typesense': conversation_typesense,
                 'web_search': {
                     'transport': 'searxng',
                     'public_product_agent_route_exercised': True,

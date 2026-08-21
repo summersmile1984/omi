@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Callable, Literal, TypedDict, cast
 
@@ -34,6 +35,15 @@ from utils.integration_telemetry import emit_posthog_event
 from services.users.agent_vm_account_cleanup import delete_agent_vm_for_account
 
 logger = logging.getLogger(__name__)
+
+
+def _purge_user_conversation_keyword_index(uid: str) -> int:
+    """Load the self-host projection only in deployments that explicitly own it."""
+    if os.getenv('CONVERSATION_KEYWORD_INDEX_PROVIDER', 'firebase_extension').strip().lower() != 'typesense':
+        return 0
+    from utils.conversations.typesense_index import purge_user_conversation_index
+
+    return purge_user_conversation_index(uid)
 
 
 class PurgeFailure(TypedDict):
@@ -179,6 +189,12 @@ def purge_derived_user_data(uid: str) -> PurgeResult:
     except Exception as e:
         record_failure('required_failures', 'vector_reconciliation', e)
         logger.error(f'delete_account vector reconciliation failed for {uid}: {sanitize(str(e))}')
+
+    try:
+        _purge_user_conversation_keyword_index(uid)
+    except Exception as e:
+        record_failure('required_failures', 'conversation_keyword_index', e)
+        logger.error(f'delete_account conversation keyword purge failed for {uid}: {sanitize(str(e))}')
 
     try:
         # Conversation recordings are retained as the historical targeted

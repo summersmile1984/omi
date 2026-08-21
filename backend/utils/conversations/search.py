@@ -8,12 +8,25 @@ from uuid import UUID
 import typesense
 
 from utils.share_links import accepted_share_hosts, share_base_url
+from utils.conversations.typesense_index import (
+    ConversationIndexUnavailableError,
+    conversation_keyword_index_provider,
+    conversations_collection_name,
+    ensure_conversations_collection,
+    require_typesense_projection,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ConversationSearchUnavailableError(Exception):
-    """Raised when Typesense is unreachable or times out (transient upstream failure)."""
+    """Typed public boundary for a missing or failed keyword-search capability."""
+
+    def __init__(self, reason: str, *, retryable: bool, provider: str):
+        super().__init__(reason)
+        self.reason = reason
+        self.retryable = retryable
+        self.provider = provider
 
 
 _EXACT_CONVERSATION_PATH_PREFIX = '/conversations/'
@@ -200,6 +213,11 @@ def _utc_iso(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _typesense_filter_literal(value: str) -> str:
+    escaped = value.replace('\\', '\\\\').replace('`', '\\`')
+    return f'`{escaped}`'
+
+
 def conversation_matches_speaker(conversation: Dict[str, Any], speaker_id: Optional[str]) -> bool:
     """Whether a hydrated Firestore conversation has at least one segment from the requested speaker.
 
@@ -248,9 +266,26 @@ def search_conversations(
                 'per_page': per_page,
             }
 
-        filter_by = f'userId:={uid}'
+        provider = conversation_keyword_index_provider()
+        if provider == 'disabled':
+            raise ConversationSearchUnavailableError(
+                'Conversation keyword search is disabled', retryable=False, provider=provider
+            )
+        if provider == 'typesense':
+            try:
+                require_typesense_projection()
+                ensure_conversations_collection()
+            except ConversationIndexUnavailableError as exc:
+                cause = exc.__cause__ if exc.__cause__ is not None else exc
+                raise ConversationSearchUnavailableError(
+                    str(exc), retryable=_is_typesense_transient_error(cause), provider=provider
+                ) from exc
+
+        filter_by = f'userId:={_typesense_filter_literal(uid)}' if provider == 'typesense' else f'userId:={uid}'
         if not include_discarded:
             filter_by = filter_by + ' && discarded:=false'
+        if provider == 'typesense':
+            filter_by = filter_by + ' && is_locked:=false && schema_version:=1'
 
         # Add date range filters if provided
         if start_date is not None:
@@ -259,8 +294,7 @@ def search_conversations(
             filter_by = filter_by + f' && created_at:<={end_date}'
 
         # No speaker clause is added to filter_by on purpose. transcript_segments is not part of the
-        # Typesense `conversations` schema (the Firestore -> Typesense sync only carries
-        # userId/created_at/discarded/started_at/finished_at/structured.*), so
+        # Typesense conversation projection, so
         # `transcript_segments.is_user` / `.person_id` made Typesense reject the whole query with
         # 400 "Could not find a filter field named ... in the schema" and 500 every speaker-filtered
         # search. The filter is applied by conversation_matches_speaker after the router hydrates the
@@ -269,7 +303,7 @@ def search_conversations(
 
         search_parameters = {
             'q': stripped_query or '*',
-            'query_by': 'structured.overview, structured.title',
+            'query_by': 'overview,title' if provider == 'typesense' else 'structured.overview, structured.title',
             'filter_by': filter_by,
             'sort_by': 'created_at:desc',
             'per_page': per_page,
@@ -278,11 +312,13 @@ def search_conversations(
 
         results: Dict[str, Any] = cast(
             Dict[str, Any],
-            client.collections['conversations'].documents.search(search_parameters),
+            client.collections[
+                conversations_collection_name() if provider == 'typesense' else 'conversations'
+            ].documents.search(search_parameters),
         )  # type: ignore[reportUnknownMemberType]  # typesense client untyped
         memories: List[Dict[str, Any]] = []
         for item in results.get('hits', []):
-            doc: Dict[str, Any] = item.get('document', {})
+            doc: Dict[str, Any] = dict(item.get('document', {}))
             # Exclude locked conversations entirely to prevent inference leaks
             if doc.get('is_locked', False):
                 continue
@@ -298,19 +334,34 @@ def search_conversations(
                 # routers/memories.py get_memories).
                 logger.warning("search_conversations skipping malformed hit uid=%s id=%s: %s", uid, doc.get('id'), e)
                 continue
+            if provider == 'typesense':
+                doc['id'] = doc.get('conversation_id')
             doc['created_at'] = created_at
             doc['started_at'] = started_at
             doc['finished_at'] = finished_at
             memories.append(doc)
-        # Derive total_pages only from visible (unlocked) items to prevent inference leaks.
-        # is_locked is not a Typesense filter field, so exact global count is unavailable.
+        # Self-hosted schema filters locked rows inside Typesense, so its exact
+        # count cannot leak their existence. The legacy extension schema still
+        # uses the conservative page-only approximation below.
+        found = int(results.get('found') or 0) if provider == 'typesense' else 0
         has_more = len(memories) >= per_page
         return {
             'items': memories,
-            'total_pages': page + 1 if has_more else page,
+            'total_pages': (
+                max(1, (found + per_page - 1) // per_page)
+                if provider == 'typesense'
+                else page + 1 if has_more else page
+            ),
             'current_page': page,
             'per_page': per_page,
         }
+    except ConversationSearchUnavailableError:
+        raise
+    except ConversationIndexUnavailableError as e:
+        configured_provider = os.getenv('CONVERSATION_KEYWORD_INDEX_PROVIDER', 'firebase_extension').strip().lower()
+        raise ConversationSearchUnavailableError(
+            str(e), retryable=False, provider=configured_provider or 'invalid'
+        ) from e
     except Exception as e:
         if _is_typesense_transient_error(e):
             logger.warning(
@@ -319,8 +370,17 @@ def search_conversations(
                 len(query or ''),
                 e,
             )
-            raise ConversationSearchUnavailableError('Typesense search temporarily unavailable') from e
-        raise Exception(f"Failed to search conversations: {str(e)}") from e
+            raise ConversationSearchUnavailableError(
+                'Typesense search temporarily unavailable',
+                retryable=True,
+                provider=conversation_keyword_index_provider(),
+            ) from e
+        logger.warning('search_conversations provider failure uid=%s error_type=%s', uid, type(e).__name__)
+        raise ConversationSearchUnavailableError(
+            'Conversation keyword search unavailable',
+            retryable=False,
+            provider=conversation_keyword_index_provider(),
+        ) from e
 
 
 def keyword_search_conversation_ids(
@@ -330,27 +390,24 @@ def keyword_search_conversation_ids(
     start_date: Optional[int] = None,
     end_date: Optional[int] = None,
 ) -> List[str]:
-    """Typesense keyword search returning only conversation ids, for hybrid (keyword + vector) retrieval.
+    """Typesense keyword search returning conversation ids for hybrid retrieval.
 
-    Fail-open: any search error returns [] so callers can fall back to vector-only results.
+    Provider failures remain typed; returning an empty list would falsely report
+    "no keyword matches" and hide loss of a product capability.
     """
     if not query.strip():
         return []
 
-    try:
-        results = search_conversations(
-            uid=uid,
-            query=query,
-            per_page=limit,
-            include_discarded=False,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        items: List[Dict[str, Any]] = results.get('items', [])
-        return [str(item['id']) for item in items if item.get('id')]
-    except Exception as e:
-        logger.warning("keyword_search_conversation_ids failed for uid=%s, falling back to vector-only: %s", uid, e)
-        return []
+    results = search_conversations(
+        uid=uid,
+        query=query,
+        per_page=limit,
+        include_discarded=False,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    items: List[Dict[str, Any]] = results.get('items', [])
+    return [str(item['id']) for item in items if item.get('id')]
 
 
 def merge_conversation_search_ids(keyword_ids: List[str], vector_ids: List[str]) -> List[str]:

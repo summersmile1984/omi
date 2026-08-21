@@ -42,9 +42,57 @@ class _Client:
         return _Stream(self.lines)
 
 
+class _Response:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+class _ConversationSearchClient:
+    def __init__(self, conversation_id):
+        self.conversation_id = conversation_id
+        self.title = ''
+        self.deleted = False
+
+    def patch(self, _url, *, params, **_kwargs):
+        self.title = params['title']
+        return _Response({'status': 'Ok', 'conversation': {'id': self.conversation_id}})
+
+    def post(self, _url, *, json, **_kwargs):
+        matches = not self.deleted and json['query'] == self.title
+        return _Response({'items': [{'id': self.conversation_id}] if matches else []})
+
+    def delete(self, _url, **_kwargs):
+        self.deleted = True
+        return _Response({'status': 'Ok'})
+
+
 def _done(text: str) -> str:
     encoded = base64.b64encode(json.dumps({'text': text}).encode()).decode()
     return f'done: {encoded}'
+
+
+def test_public_conversation_typesense_probe_requires_create_update_and_delete_visibility():
+    client = _ConversationSearchClient('conversation-1')
+
+    evidence = SMOKE.public_conversation_typesense_probe(
+        client,
+        backend_url='https://api.omi.test',
+        headers={'authorization': 'Bearer token'},
+        conversation_id='conversation-1',
+        marker='cutover-marker',
+    )
+
+    assert evidence == {
+        'status': 'passed',
+        'provider': 'typesense',
+        'public_create_finalization_search': True,
+        'public_update_replaced_document': True,
+        'public_delete_authoritative_absence': True,
+    }
 
 
 def test_public_agent_web_search_requires_product_sse_tool_event_and_wikipedia_source():

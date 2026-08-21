@@ -61,6 +61,7 @@ from utils.conversations.search import (
     parse_exact_conversation_reference,
     search_conversations,
 )
+from utils.conversations.typesense_index import ConversationIndexUnavailableError
 from utils.llm.conversation_processing import SummaryProviderError, generate_summary_with_prompt
 from utils.speaker_identification import extract_speaker_samples
 from utils.other import endpoints as auth
@@ -262,14 +263,19 @@ def process_in_progress_conversation(
     # a processing failure must return the admission to in_progress — otherwise
     # the conversation is stranded on "processing" forever and the client shows
     # a stuck Processing card it can never resolve.
-    with lifecycle_service.processing_admission_guard(uid, conversation.id):
-        conversation = process_conversation(
-            uid,
-            conversation.language,
-            conversation,
-            force_process=True,
-            persistence_observer=record_persistence,
-        )
+    try:
+        with lifecycle_service.processing_admission_guard(uid, conversation.id):
+            conversation = process_conversation(
+                uid,
+                conversation.language,
+                conversation,
+                force_process=True,
+                persistence_observer=record_persistence,
+            )
+    except ConversationIndexUnavailableError as error:
+        raise HTTPException(
+            status_code=503, detail='Conversation search projection is temporarily unavailable'
+        ) from error
     if not persisted:
         latest = _get_valid_conversation_by_id(uid, conversation.id)
         return CreateConversationResponse(conversation=deserialize_conversation(latest), messages=[])
@@ -594,7 +600,12 @@ def get_conversation_by_id(
 )
 def patch_conversation_title(conversation_id: str, title: str, uid: str = Depends(auth.get_current_user_uid)):
     _get_valid_conversation_by_id(uid, conversation_id)
-    conversations_db.update_conversation_title(uid, conversation_id, title)
+    try:
+        conversations_db.update_conversation_title(uid, conversation_id, title)
+    except ConversationIndexUnavailableError as error:
+        raise HTTPException(
+            status_code=503, detail='Conversation search projection is temporarily unavailable'
+        ) from error
     return {'status': 'Ok', 'conversation': _get_valid_conversation_by_id(uid, conversation_id)}
 
 
@@ -767,7 +778,12 @@ async def auto_link_calendar_event(conversation_id: str, uid: str = Depends(auth
 def patch_conversation_summary(
     conversation_id: str, data: UpdateSummaryRequest, uid: str = Depends(auth.get_current_user_uid)
 ):
-    result = conversations_db.update_conversation_summary(uid, conversation_id, data.app_id, data.content)
+    try:
+        result = conversations_db.update_conversation_summary(uid, conversation_id, data.app_id, data.content)
+    except ConversationIndexUnavailableError as error:
+        raise HTTPException(
+            status_code=503, detail='Conversation search projection is temporarily unavailable'
+        ) from error
     if result == 'not_found':
         raise HTTPException(status_code=404, detail="Conversation not found")
     if result == 'app_result_not_found':
@@ -849,7 +865,12 @@ def delete_conversation(
         action_items_db.delete_action_items_for_conversation(uid, conversation_id)
         background_tasks.add_task(delete_conversation_audio_files, uid, conversation_id)
 
-    conversations_db.delete_conversation(uid, conversation_id)
+    try:
+        conversations_db.delete_conversation(uid, conversation_id)
+    except ConversationIndexUnavailableError as error:
+        raise HTTPException(
+            status_code=503, detail='Conversation search projection is temporarily unavailable'
+        ) from error
     delete_vector(uid, conversation_id)
     delete_transcript_chunk_vectors(uid, conversation_id)
 
