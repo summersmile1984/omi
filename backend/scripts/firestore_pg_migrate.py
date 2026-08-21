@@ -39,9 +39,18 @@ def _schema_payload(status: Any) -> dict[str, Any]:
     }
 
 
+def _require_private_credentials(path: Path) -> Path:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f'Firestore source credentials are missing or are not a regular file: {path}')
+    if path.stat().st_mode & 0o077:
+        raise ValueError(f'Firestore source credentials must be mode 0600 or stricter: {path}')
+    return path
+
+
 def _source_client(args: argparse.Namespace) -> Any:
     if args.source_credentials:
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(Path(args.source_credentials).resolve())
+        credentials = _require_private_credentials(Path(args.source_credentials))
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(credentials.resolve())
     # The endpoint is part of the migration authority, not merely a value to
     # compare after the SDK has already connected.  Passing it through here is
     # required for operator-owned Firestore-compatible deployments and local
@@ -84,7 +93,11 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == 'import':
-        source = _source_client(args)
+        try:
+            source = _source_client(args)
+        except (OSError, ValueError) as error:
+            print(f'ERROR: {error}', file=sys.stderr)
+            return 1
         source_endpoint = canonical_endpoint(str(getattr(source, '_target', '') or ''))
         requested_endpoint = canonical_endpoint(args.source_endpoint)
         if source_endpoint != requested_endpoint:
