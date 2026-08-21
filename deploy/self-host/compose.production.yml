@@ -1,0 +1,436 @@
+name: omi-self-host
+
+services:
+  postgres:
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER is required}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_DB=${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
+    environment:
+      - REDISCLI_AUTH=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+    ports:
+      - "${SELF_HOST_BIND_ADDRESS:?SELF_HOST_BIND_ADDRESS is required}:${MINIO_API_PORT:?MINIO_API_PORT is required}:9000"
+      - "${SELF_HOST_BIND_ADDRESS:?SELF_HOST_BIND_ADDRESS is required}:${MINIO_CONSOLE_PORT:?MINIO_CONSOLE_PORT is required}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4@sha256:6ac4807063bbecddca0250bfbcff52acf18c22263b904d12919349e6d0a408f1
+    restart: unless-stopped
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/6333; printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  typesense:
+    image: typesense/typesense:29.0@sha256:316b7e71c21f7e5e5caa8daa150e1b3f2be8c876081ee1f77bc2d92cd7f137d0
+    restart: unless-stopped
+    command: ["--data-dir", "/data", "--api-key", "${TYPESENSE_API_KEY:?TYPESENSE_API_KEY is required}", "--enable-cors", "false"]
+    environment:
+      - TYPESENSE_API_KEY=${TYPESENSE_API_KEY:?TYPESENSE_API_KEY is required}
+    volumes:
+      - typesense-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8108; printf \"GET /health HTTP/1.0\\r\\nX-TYPESENSE-API-KEY: $$TYPESENSE_API_KEY\\r\\n\\r\\n\" >&3; grep -Eq \"\\\"ok\\\"[[:space:]]*:[[:space:]]*true\" <&3' "]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  searxng:
+    image: searxng/searxng:latest@sha256:2344ab06b942db1dd6f73ba7f443c8672c6f0c543dac77415c6fd4696cbfe045
+    restart: unless-stopped
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?SEARXNG_SECRET is required}
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_LIMITER=false
+      - SEARXNG_PUBLIC_INSTANCE=false
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  auth-migrate:
+    build:
+      context: ../..
+      dockerfile: auth-server/Dockerfile
+      args:
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    image: ${AUTH_SERVER_IMAGE:?AUTH_SERVER_IMAGE is required}
+    restart: "no"
+    command: ["node", "src/migrate.js"]
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
+      - BETTER_AUTH_URL=${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}
+      - BETTER_AUTH_TRUSTED_ORIGINS=${BETTER_AUTH_TRUSTED_ORIGINS:?BETTER_AUTH_TRUSTED_ORIGINS is required}
+      - BETTER_AUTH_IP_HEADERS=${BETTER_AUTH_IP_HEADERS:?BETTER_AUTH_IP_HEADERS is required}
+      - AUTH_INTERNAL_ADMIN_SECRET=${AUTH_INTERNAL_ADMIN_SECRET:?AUTH_INTERNAL_ADMIN_SECRET is required}
+      - AUTH_JWT_ISSUER=${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}
+      - AUTH_JWT_AUDIENCE=${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}
+      - AUTH_JWKS_ROTATION_SECONDS=${AUTH_JWKS_ROTATION_SECONDS:?AUTH_JWKS_ROTATION_SECONDS is required}
+      - AUTH_JWKS_GRACE_SECONDS=${AUTH_JWKS_GRACE_SECONDS:?AUTH_JWKS_GRACE_SECONDS is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  firestore-pg-migrate:
+    platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: "no"
+    command: ["python", "scripts/firestore_pg_migrate.py", "migrate"]
+    environment:
+      - FIRESTORE_PG_DSN=postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  auth-server:
+    build:
+      context: ../..
+      dockerfile: auth-server/Dockerfile
+      args:
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    image: ${AUTH_SERVER_IMAGE:?AUTH_SERVER_IMAGE is required}
+    restart: unless-stopped
+    labels:
+      com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
+      - BETTER_AUTH_URL=${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}
+      - BETTER_AUTH_TRUSTED_ORIGINS=${BETTER_AUTH_TRUSTED_ORIGINS:?BETTER_AUTH_TRUSTED_ORIGINS is required}
+      - BETTER_AUTH_IP_HEADERS=${BETTER_AUTH_IP_HEADERS:?BETTER_AUTH_IP_HEADERS is required}
+      - AUTH_INTERNAL_ADMIN_SECRET=${AUTH_INTERNAL_ADMIN_SECRET:?AUTH_INTERNAL_ADMIN_SECRET is required}
+      - AUTH_JWT_ISSUER=${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}
+      - AUTH_JWT_AUDIENCE=${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}
+      - AUTH_JWKS_ROTATION_SECONDS=${AUTH_JWKS_ROTATION_SECONDS:?AUTH_JWKS_ROTATION_SECONDS is required}
+      - AUTH_JWKS_GRACE_SECONDS=${AUTH_JWKS_GRACE_SECONDS:?AUTH_JWKS_GRACE_SECONDS is required}
+    ports:
+      - "${SELF_HOST_BIND_ADDRESS:?SELF_HOST_BIND_ADDRESS is required}:${AUTH_SERVER_PORT:?AUTH_SERVER_PORT is required}:3000"
+    depends_on:
+      auth-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  backend:
+    platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: unless-stopped
+    labels:
+      com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}
+    environment:
+      - OMI_ENV_STAGE=prod
+      - OMI_DEPLOYMENT_PROFILE=self_hosted
+      - ENVIRONMENT=production
+      - BASE_API_URL=${PUBLIC_BACKEND_URL:?PUBLIC_BACKEND_URL is required}
+      - API_BASE_URL=${PUBLIC_BACKEND_URL:?PUBLIC_BACKEND_URL is required}
+      - OMI_SHARE_BASE_URL=${OMI_SHARE_BASE_URL:?OMI_SHARE_BASE_URL is required}
+      - SELF_HOST_EGRESS_ALLOWLIST=${SELF_HOST_EGRESS_ALLOWLIST:?SELF_HOST_EGRESS_ALLOWLIST is required}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:?CORS_ALLOWED_ORIGINS is required}
+      - ADMIN_KEY_AUTH_ENABLED=false
+      - ENCRYPTION_SECRET=${ENCRYPTION_SECRET:?ENCRYPTION_SECRET is required}
+      - AUTH_PROVIDER=better_auth
+      - AUTH_JWKS_URL=http://auth-server:3000/api/auth/jwks
+      - AUTH_JWT_ISSUER=${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}
+      - AUTH_JWT_AUDIENCE=${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}
+      - AUTH_SERVER_INTERNAL_URL=http://auth-server:3000
+      - AUTH_INTERNAL_ALLOW_HTTP=true
+      - AUTH_INTERNAL_ADMIN_SECRET=${AUTH_INTERNAL_ADMIN_SECRET:?AUTH_INTERNAL_ADMIN_SECRET is required}
+      - FIRESTORE_PG_DSN=postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      - REDIS_DB_HOST=redis
+      - REDIS_DB_PORT=6379
+      - REDIS_DB_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - QUEUE_BACKEND=redis
+      - QUEUE_REDIS_DB=0
+      - QUEUE_REDIS_SYNC_WORKER_SECRET=${QUEUE_REDIS_SYNC_WORKER_SECRET:?QUEUE_REDIS_SYNC_WORKER_SECRET is required}
+      - QUEUE_REDIS_AUDIO_MERGE_WORKER_SECRET=${QUEUE_REDIS_AUDIO_MERGE_WORKER_SECRET:?QUEUE_REDIS_AUDIO_MERGE_WORKER_SECRET is required}
+      - QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET=${QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET:?QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET is required}
+      - QUEUE_REDIS_FINALIZATION_WORKER_SECRET=${QUEUE_REDIS_FINALIZATION_WORKER_SECRET:?QUEUE_REDIS_FINALIZATION_WORKER_SECRET is required}
+      - SYNC_DISPATCH_MODE=cloud_tasks
+      - AUDIO_MERGE_DISPATCH_MODE=cloud_tasks
+      - ACCOUNT_DELETION_DISPATCH_MODE=cloud_tasks
+      - AGENT_VM_PROVIDER=disabled
+      - LISTEN_FINALIZATION_DISPATCH_MODE=cloud_tasks
+      - SYNC_TASKS_HANDLER_URL=http://backend:8080/v2/sync-jobs/run
+      - AUDIO_MERGE_HANDLER_URL=http://backend:8080/v2/audio-merge-jobs/run
+      - ACCOUNT_DELETION_HANDLER_URL=http://backend:8080/v1/users/account-deletion-wipes/run
+      - LISTEN_FINALIZATION_TASKS_HANDLER_URL=http://backend:8080/v1/conversation-finalization-jobs/run
+      - STORAGE_BACKEND=minio
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_PUBLIC_ENDPOINT=${PUBLIC_OBJECTS_URL:?PUBLIC_OBJECTS_URL is required}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      - MINIO_REGION=${MINIO_REGION:?MINIO_REGION is required}
+      - MINIO_SECURE=0
+      - BUCKET_SPEECH_PROFILES=omi-speech-profiles
+      - BUCKET_POSTPROCESSING=omi-postprocessing
+      - BUCKET_MEMORIES_RECORDINGS=omi-memory-recordings
+      - BUCKET_PRIVATE_CLOUD_SYNC=omi-private-cloud-sync
+      - BUCKET_TEMPORAL_SYNC_LOCAL=omi-temporal-sync
+      - BUCKET_PLUGINS_LOGOS=omi-plugin-logos
+      - BUCKET_APP_THUMBNAILS=omi-app-thumbnails
+      - BUCKET_CHAT_FILES=omi-chat-files
+      - BUCKET_DESKTOP_UPDATES=omi-desktop-updates
+      - DESKTOP_UPDATE_LEGACY_FALLBACK=disabled
+      - DESKTOP_UPDATE_DOWNLOAD_URL=${DESKTOP_UPDATE_DOWNLOAD_URL-}
+      - OMI_LLM_DEFAULT_PROVIDER=generic
+      - OMI_LLM_DEFAULT_MODEL=${GENERIC_OPENAI_MODEL:?GENERIC_OPENAI_MODEL is required}
+      - OMI_LLM_DEFAULT_FALLBACKS=
+      - TRANSLATION_PROVIDER=generic
+      - TRANSLATION_MODEL=${GENERIC_OPENAI_MODEL:?GENERIC_OPENAI_MODEL is required}
+      - TRANSLATION_FALLBACKS=
+      - GENERIC_OPENAI_BASE_URL=${GENERIC_OPENAI_BASE_URL:?GENERIC_OPENAI_BASE_URL is required}
+      - GENERIC_OPENAI_API_KEY=${GENERIC_OPENAI_API_KEY:?GENERIC_OPENAI_API_KEY is required}
+      - GENERIC_OPENAI_MODEL=${GENERIC_OPENAI_MODEL:?GENERIC_OPENAI_MODEL is required}
+      - EMBEDDING_PROVIDER=generic
+      - EMBEDDING_CAPABILITY_TRANSPORT=direct
+      - PROACTIVE_TOOL_TRANSPORT=completion
+      - APP_ICON_GENERATION_TRANSPORT=${APP_ICON_GENERATION_TRANSPORT:?APP_ICON_GENERATION_TRANSPORT is required}
+      - IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL=${IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL-}
+      - IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY=${IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY-}
+      - IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL=${IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL-}
+      - FILE_CHAT_TRANSPORT=local_extraction
+      - PUSH_PROVIDER=${PUSH_PROVIDER:-disabled}
+      - PUSH_WEBHOOK_URL=${PUSH_WEBHOOK_URL-}
+      - PUSH_WEBHOOK_SECRET_FILE=${PUSH_WEBHOOK_SECRET_FILE-}
+      - PUSH_WEBHOOK_TIMEOUT_SECONDS=${PUSH_WEBHOOK_TIMEOUT_SECONDS:-5}
+      - PUSH_WEBHOOK_MAX_ATTEMPTS=${PUSH_WEBHOOK_MAX_ATTEMPTS:-3}
+      - DESKTOP_VENDOR_PROXY_TRANSPORT=disabled
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:?EMBEDDING_MODEL is required}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:?EMBEDDING_DIMENSION is required}
+      - SPEAKER_EMBEDDING_PROVIDER=sherpa_onnx
+      - SPEAKER_EMBEDDING_MODEL=/models/speaker/speaker.onnx
+      - SPEAKER_EMBEDDING_NUM_THREADS=${SPEAKER_EMBEDDING_NUM_THREADS:?SPEAKER_EMBEDDING_NUM_THREADS is required}
+      - TTS_PROVIDER=${TTS_PROVIDER:?TTS_PROVIDER is required}
+      - TTS_SHERPA_MODEL=/models/tts/model.onnx
+      - TTS_SHERPA_TOKENS=/models/tts/tokens.txt
+      - TTS_SHERPA_DATA_DIR=/models/tts/espeak-ng-data
+      - TTS_SHERPA_NUM_THREADS=${TTS_SHERPA_NUM_THREADS:?TTS_SHERPA_NUM_THREADS is required}
+      - TTS_SHERPA_SPEAKER_ID=${TTS_SHERPA_SPEAKER_ID:?TTS_SHERPA_SPEAKER_ID is required}
+      - TTS_OPENAI_COMPATIBLE_BASE_URL=${TTS_OPENAI_COMPATIBLE_BASE_URL-}
+      - TTS_OPENAI_COMPATIBLE_API_KEY=${TTS_OPENAI_COMPATIBLE_API_KEY-}
+      - TTS_OPENAI_COMPATIBLE_MODEL=${TTS_OPENAI_COMPATIBLE_MODEL-}
+      - TTS_OPENAI_COMPATIBLE_VOICE=${TTS_OPENAI_COMPATIBLE_VOICE-}
+      - VECTOR_PROJECTION_MODE=${VECTOR_PROJECTION_MODE:?VECTOR_PROJECTION_MODE is required}
+      - VECTOR_PROJECTION_ACTIVE_VERSION=${VECTOR_PROJECTION_ACTIVE_VERSION:?VECTOR_PROJECTION_ACTIVE_VERSION is required}
+      - VECTOR_PROJECTION_TARGET_VERSION=${VECTOR_PROJECTION_TARGET_VERSION-}
+      - VECTOR_PROJECTION_SCHEMA_VERSION=${VECTOR_PROJECTION_SCHEMA_VERSION:?VECTOR_PROJECTION_SCHEMA_VERSION is required}
+      - VECTOR_PROJECTION_DELETE_VERSIONS=${VECTOR_PROJECTION_DELETE_VERSIONS:?VECTOR_PROJECTION_DELETE_VERSIONS is required}
+      - VECTOR_PROJECTION_REQUIRED_NAMESPACES=${VECTOR_PROJECTION_REQUIRED_NAMESPACES:?VECTOR_PROJECTION_REQUIRED_NAMESPACES is required}
+      - VECTOR_STORE_PROVIDER=qdrant
+      - MEMORY_KEYWORD_INDEX_PROVIDER=typesense
+      - CONVERSATION_KEYWORD_INDEX_PROVIDER=typesense
+      - TYPESENSE_HOST=typesense
+      - TYPESENSE_HOST_PORT=8108
+      - TYPESENSE_PROTOCOL=http
+      - TYPESENSE_API_KEY=${TYPESENSE_API_KEY:?TYPESENSE_API_KEY is required}
+      - MEMORY_TYPESENSE_COLLECTION=canonical_memory_atoms
+      - CONVERSATION_TYPESENSE_COLLECTION=omi_conversations
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
+      - QDRANT_COLLECTION_PREFIX=${QDRANT_COLLECTION_PREFIX:?QDRANT_COLLECTION_PREFIX is required}
+      - STT_SERVICE_MODELS=sensevoice
+      - STT_ROUTE_FALLBACK_TO_DEFAULT=false
+      - STT_PRERECORDED_MODEL=mlx_moss_diarize
+      - SENSEVOICE_MODEL_DIR=/models/sensevoice
+      - MLX_MOSS_DIARIZE_ENDPOINT=${MLX_MOSS_DIARIZE_ENDPOINT:?MLX_MOSS_DIARIZE_ENDPOINT is required}
+      - MLX_MOSS_DIARIZE_MODEL=${MLX_MOSS_DIARIZE_MODEL:?MLX_MOSS_DIARIZE_MODEL is required}
+      - MLX_MOSS_DIARIZE_API_KEY=${MLX_MOSS_DIARIZE_API_KEY-}
+      - REALTIME_PROVIDER=relay
+      - REALTIME_MODEL=${REALTIME_MODEL:?REALTIME_MODEL is required}
+      - REALTIME_RELAY_URL=${REALTIME_RELAY_URL:?REALTIME_RELAY_URL is required}
+      - REALTIME_RELAY_API_KEY=${REALTIME_RELAY_API_KEY:?REALTIME_RELAY_API_KEY is required}
+      - REALTIME_RELAY_PROVIDER_ID=${REALTIME_RELAY_PROVIDER_ID:?REALTIME_RELAY_PROVIDER_ID is required}
+      - REALTIME_RELAY_WIRE_PROTOCOL=${REALTIME_RELAY_WIRE_PROTOCOL:?REALTIME_RELAY_WIRE_PROTOCOL is required}
+      - REALTIME_RELAY_ALLOWED_HOSTS=${REALTIME_RELAY_ALLOWED_HOSTS:?REALTIME_RELAY_ALLOWED_HOSTS is required}
+      - REALTIME_RELAY_MAX_MESSAGE_BYTES=${REALTIME_RELAY_MAX_MESSAGE_BYTES:?REALTIME_RELAY_MAX_MESSAGE_BYTES is required}
+      - REALTIME_RELAY_MAX_SESSION_SECONDS=${REALTIME_RELAY_MAX_SESSION_SECONDS:?REALTIME_RELAY_MAX_SESSION_SECONDS is required}
+      - WEB_SEARCH_TRANSPORT=searxng
+      - SEARXNG_BASE_URL=http://searxng:8080
+      - FIRMWARE_RELEASE_TRANSPORT=manifest
+      - FIRMWARE_RELEASE_MANIFEST_URL=${FIRMWARE_RELEASE_MANIFEST_URL:?FIRMWARE_RELEASE_MANIFEST_URL is required}
+      - FIRMWARE_RELEASE_ASSET_ORIGIN=${FIRMWARE_RELEASE_ASSET_ORIGIN:?FIRMWARE_RELEASE_ASSET_ORIGIN is required}
+      - FIRMWARE_RELEASE_MANIFEST_BEARER_TOKEN=${FIRMWARE_RELEASE_MANIFEST_BEARER_TOKEN-}
+      - MEMORY_ENABLED=on
+      - MEMORY_V3_CURSOR_SECRET=${MEMORY_V3_CURSOR_SECRET:?MEMORY_V3_CURSOR_SECRET is required}
+      - MEMORY_CANONICAL_CONSOLIDATION_BATCH_THRESHOLD=1
+      - MCP_AUTHORIZATION_SERVER_URL=${PUBLIC_MCP_URL:?PUBLIC_MCP_URL is required}
+      - MCP_RESOURCE_URL=${PUBLIC_MCP_URL:?PUBLIC_MCP_URL is required}/v1/mcp/sse
+    ports:
+      - "${SELF_HOST_BIND_ADDRESS:?SELF_HOST_BIND_ADDRESS is required}:${BACKEND_PORT:?BACKEND_PORT is required}:8080"
+    volumes:
+      - backend-syncing:/app/syncing
+      - ${SENSEVOICE_MODEL_HOST_PATH:?SENSEVOICE_MODEL_HOST_PATH is required}:/models/sensevoice:ro
+      - ${SPEAKER_MODEL_HOST_DIR:?SPEAKER_MODEL_HOST_DIR is required}/speaker.onnx:/models/speaker/speaker.onnx:ro
+      - ${TTS_MODEL_HOST_DIR:?TTS_MODEL_HOST_DIR is required}:/models/tts:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      firestore-pg-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      typesense:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+      auth-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8080/ready >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  queue-worker:
+    platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: unless-stopped
+    labels:
+      com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}
+    command: ["python", "-m", "utils.cloud_tasks_redis", "--all"]
+    environment:
+      - OMI_ENV_STAGE=prod
+      - OMI_DEPLOYMENT_PROFILE=self_hosted
+      - SELF_HOST_EGRESS_ALLOWLIST=${SELF_HOST_EGRESS_ALLOWLIST:?SELF_HOST_EGRESS_ALLOWLIST is required}
+      - FIRESTORE_PG_DSN=postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      - REDIS_DB_HOST=redis
+      - REDIS_DB_PORT=6379
+      - REDIS_DB_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - QUEUE_BACKEND=redis
+      - QUEUE_REDIS_DB=0
+      - QUEUE_REDIS_SYNC_WORKER_SECRET=${QUEUE_REDIS_SYNC_WORKER_SECRET:?QUEUE_REDIS_SYNC_WORKER_SECRET is required}
+      - QUEUE_REDIS_AUDIO_MERGE_WORKER_SECRET=${QUEUE_REDIS_AUDIO_MERGE_WORKER_SECRET:?QUEUE_REDIS_AUDIO_MERGE_WORKER_SECRET is required}
+      - QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET=${QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET:?QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET is required}
+      - QUEUE_REDIS_FINALIZATION_WORKER_SECRET=${QUEUE_REDIS_FINALIZATION_WORKER_SECRET:?QUEUE_REDIS_FINALIZATION_WORKER_SECRET is required}
+      - SYNC_TASKS_HANDLER_URL=http://backend:8080/v2/sync-jobs/run
+      - AUDIO_MERGE_HANDLER_URL=http://backend:8080/v2/audio-merge-jobs/run
+      - ACCOUNT_DELETION_HANDLER_URL=http://backend:8080/v1/users/account-deletion-wipes/run
+      - LISTEN_FINALIZATION_TASKS_HANDLER_URL=http://backend:8080/v1/conversation-finalization-jobs/run
+      - WEB_SEARCH_TRANSPORT=searxng
+      - SEARXNG_BASE_URL=http://searxng:8080
+      - MEMORY_KEYWORD_INDEX_PROVIDER=typesense
+      - CONVERSATION_KEYWORD_INDEX_PROVIDER=typesense
+      - TYPESENSE_HOST=typesense
+      - TYPESENSE_HOST_PORT=8108
+      - TYPESENSE_PROTOCOL=http
+      - TYPESENSE_API_KEY=${TYPESENSE_API_KEY:?TYPESENSE_API_KEY is required}
+      - MEMORY_TYPESENSE_COLLECTION=canonical_memory_atoms
+      - CONVERSATION_TYPESENSE_COLLECTION=omi_conversations
+      - PUSH_PROVIDER=${PUSH_PROVIDER:-disabled}
+      - PUSH_WEBHOOK_URL=${PUSH_WEBHOOK_URL-}
+      - PUSH_WEBHOOK_SECRET_FILE=${PUSH_WEBHOOK_SECRET_FILE-}
+      - PUSH_WEBHOOK_TIMEOUT_SECONDS=${PUSH_WEBHOOK_TIMEOUT_SECONDS:-5}
+      - PUSH_WEBHOOK_MAX_ATTEMPTS=${PUSH_WEBHOOK_MAX_ATTEMPTS:-3}
+    depends_on:
+      firestore-pg-migrate:
+        condition: service_completed_successfully
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      typesense:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  qdrant-data:
+  typesense-data:
+  searxng-cache:
+  backend-syncing:

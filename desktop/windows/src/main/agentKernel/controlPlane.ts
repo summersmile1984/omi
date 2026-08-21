@@ -56,6 +56,7 @@ import {
 } from '../codingAgent/adapterRegistry'
 import { claudeAuthStatus } from '../codingAgent/claudeOAuth'
 import { PRODUCTION_ADAPTER_IDS } from '../codingAgent/interface'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 import {
   DEFAULT_LOCAL_OWNER_ID,
   handleAgentControlToolCall,
@@ -220,6 +221,7 @@ export function ensurePiMonoAdapterRegistered(): boolean {
  * to the next connected agent.
  */
 export function ensureCodingAgentAdapterRegistered(adapterId: CodingAgentAdapterId): boolean {
+  if (resolveWindowsDeployment().profile === 'self_hosted') return false
   try {
     const registry = getAgentAdapterRegistry()
     if (registry.has(adapterId)) return true

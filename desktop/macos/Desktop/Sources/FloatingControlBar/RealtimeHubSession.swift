@@ -74,6 +74,7 @@ enum RealtimeHubBargeInStrategy: Equatable {
 final class RealtimeHubSession: NSObject, @unchecked Sendable {
   private let provider: RealtimeHubProvider
   private let auth: HubAuth
+  private let relay: RealtimeRelaySession?
   private let instructions: String
   private let availableDirectedProviders: [String]
   /// Opaque cache-plan fields only; never raw conversation material.
@@ -111,7 +112,7 @@ final class RealtimeHubSession: NSObject, @unchecked Sendable {
   // hand-rolled RFC 6455 client (RawWebSocket). OpenAI uses URLSession.
   var rawWS: RealtimeRawWebSocketTransport?
   private let rawWebSocketFactory: (URL, DispatchQueue) -> RealtimeRawWebSocketTransport
-  private var usesRawWS: Bool { provider == .gemini }
+  private var usesRawWS: Bool { provider == .gemini && relay == nil }
 
   private var isOpen = false
   private var terminated = false
@@ -193,6 +194,7 @@ final class RealtimeHubSession: NSObject, @unchecked Sendable {
   init(
     provider: RealtimeHubProvider,
     auth: HubAuth,
+    relay: RealtimeRelaySession? = nil,
     instructions: String,
     availableDirectedProviders: [String] = [],
     contextPlanID: String = "",
@@ -206,6 +208,7 @@ final class RealtimeHubSession: NSObject, @unchecked Sendable {
   ) {
     self.provider = provider
     self.auth = auth
+    self.relay = relay
     self.instructions = instructions
     self.availableDirectedProviders = availableDirectedProviders
     self.contextPlanID = contextPlanID
@@ -226,14 +229,14 @@ final class RealtimeHubSession: NSObject, @unchecked Sendable {
   private func _start() {
     guard !terminated else { return }
     guard
-      DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
-        deploymentProfile: DesktopBackendEnvironment.deploymentProfile
-      )
+      relay != nil
+        || DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
+          deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
     else {
       notifyError(
         RealtimeHubTransportFailure(
           kind: .configuration,
-          message: "Realtime provider connections are disabled by the deployment profile",
+          message: "Realtime model capability is unavailable for this deployment",
           systemDomain: nil,
           systemCode: nil))
       return
@@ -247,7 +250,9 @@ final class RealtimeHubSession: NSObject, @unchecked Sendable {
           systemCode: nil))
       return
     }
-    log("RealtimeHub: connecting \(provider.displayName) → \(url.host ?? "?") (client-direct)")
+    log(
+      "RealtimeHub: connecting \(provider.displayName) → \(url.host ?? "?") "
+        + (relay == nil ? "(client-direct)" : "(backend-relay)"))
     if usesRawWS {
       let ws = rawWebSocketFactory(url, q)
       rawWS = ws
@@ -957,6 +962,12 @@ final class RealtimeHubSession: NSObject, @unchecked Sendable {
   // MARK: - Request / setup
 
   private func makeRequest() -> URLRequest? {
+    if let relay {
+      var request = URLRequest(url: relay.websocketURL)
+      request.setValue(relay.authorization, forHTTPHeaderField: "Authorization")
+      request.setValue(relay.protocolName, forHTTPHeaderField: "Sec-WebSocket-Protocol")
+      return request
+    }
     switch provider {
     case .openai:
       // BYOK key and ephemeral token both ride the Bearer header (verified). GA: no

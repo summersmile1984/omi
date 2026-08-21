@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:app_links/app_links.dart';
 import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
@@ -129,6 +130,7 @@ class AuthService {
 
   AuthService._internal()
       : _tokenGateway = _defaultAuthTokenGateway(),
+        _refreshAttemptTimeout = _defaultRefreshAttemptTimeout,
         _refreshDelay = _defaultRefreshDelay,
         _recordTelemetry = _recordProductionTelemetry,
         _telemetryContextProvider = _productionTelemetryContext;
@@ -137,9 +139,11 @@ class AuthService {
   AuthService.forTesting({
     required AuthTokenGateway tokenGateway,
     AuthRefreshDelay? refreshDelay,
+    Duration? refreshAttemptTimeout,
     AuthTelemetryRecorder? recordTelemetry,
     AuthTelemetryContextProvider? telemetryContextProvider,
   })  : _tokenGateway = tokenGateway,
+        _refreshAttemptTimeout = refreshAttemptTimeout ?? _defaultRefreshAttemptTimeout,
         _refreshDelay = refreshDelay ?? _defaultRefreshDelay,
         _recordTelemetry = recordTelemetry ?? ((eventName, properties) {}),
         _telemetryContextProvider = telemetryContextProvider ?? (() => const {});
@@ -147,7 +151,6 @@ class AuthService {
   static const int _maxRefreshAttempts = 3;
   static const identityProvider = String.fromEnvironment('OMI_AUTH_PROVIDER', defaultValue: 'firebase');
   static const betterAuthServerUrl = String.fromEnvironment('OMI_AUTH_SERVER_URL');
-  static bool get firebaseServicesEnabled => Env.firebaseServicesEnabled;
   static String get normalizedIdentityProvider => identityProvider.trim().toLowerCase().replaceAll('-', '_');
   static bool get betterAuthEnabled => normalizedIdentityProvider == 'better_auth';
 
@@ -167,34 +170,43 @@ class AuthService {
     }
     if (provider == 'firebase') {
       if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
-        throw StateError('self_hosted builds require OMI_AUTH_PROVIDER=better_auth');
+        throw StateError('Profile self_hosted requires OMI_AUTH_PROVIDER=better_auth');
       }
       if (!firebaseServicesEnabled) {
         throw StateError('Firebase identity requires OMI_FIREBASE_SERVICES_ENABLED=true');
       }
       return;
     }
-    if (serverUrl.isEmpty) throw StateError('Better Auth requires an explicit OMI_AUTH_SERVER_URL');
     final uri = Uri.tryParse(serverUrl);
-    if (uri == null ||
-        uri.host.isEmpty ||
-        (uri.scheme != 'http' && uri.scheme != 'https') ||
-        uri.userInfo.isNotEmpty ||
-        uri.hasQuery ||
-        uri.hasFragment ||
-        (uri.path.isNotEmpty && uri.path != '/')) {
-      throw StateError('Better Auth requires an absolute OMI_AUTH_SERVER_URL origin');
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      throw StateError('Better Auth requires an absolute OMI_AUTH_SERVER_URL');
+    }
+    if (isRelease && uri.scheme != 'https') {
+      throw StateError('Better Auth release builds require an HTTPS OMI_AUTH_SERVER_URL');
     }
     if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
-      Env.canonicalSelfHostedOrigin(serverUrl, key: 'OMI_AUTH_SERVER_URL', releaseBuild: isRelease);
-    } else if (isRelease && uri.scheme != 'https') {
-      throw StateError('Better Auth release builds require an HTTPS OMI_AUTH_SERVER_URL');
+      Env.canonicalSelfHostedOrigin(
+        serverUrl,
+        key: 'OMI_AUTH_SERVER_URL',
+        releaseBuild: isRelease,
+      );
     }
     if (firebaseServicesEnabled) {
       throw StateError('Better Auth builds require OMI_FIREBASE_SERVICES_ENABLED=false');
     }
   }
 
+  /// Per-attempt ceiling on the Firebase forced token refresh.
+  ///
+  /// `forceRefresh()` can hang indefinitely rather than fail: measured on
+  /// iPhone 17 Pro / iOS 27.0 against a Firebase Auth emulator on a non-loopback
+  /// host, it never returned at all. Because `shared.dart` refreshes on the way
+  /// into *every* authenticated request, an unbounded stall here silently freezes
+  /// all backend traffic app-wide — no error, no timeout, nothing to report.
+  ///
+  /// A timed-out attempt is reported as a transient failure, which the retry loop
+  /// below and every existing caller already handle.
+  static const Duration _defaultRefreshAttemptTimeout = Duration(seconds: 8);
   static const List<Duration> _refreshRetryDelays = [Duration(milliseconds: 200), Duration(milliseconds: 500)];
   static const Set<String> _terminalTokenErrorCodes = {
     'invalid-user-token',
@@ -206,6 +218,7 @@ class AuthService {
   static Future<void> _defaultRefreshDelay(Duration duration) => Future<void>.delayed(duration);
 
   final AuthTokenGateway _tokenGateway;
+  final Duration _refreshAttemptTimeout;
   final AuthRefreshDelay _refreshDelay;
   final AuthTelemetryRecorder _recordTelemetry;
   final AuthTelemetryContextProvider _telemetryContextProvider;
@@ -238,8 +251,14 @@ class AuthService {
   static const _pkceCodeVerifierLength = 64;
   static const _pkceCharset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
 
-  getFirebaseUser() {
-    if (!firebaseServicesEnabled) return null;
+  /// Returns the managed Firebase user when that SDK is actually available.
+  ///
+  /// Better Auth/self-hosted builds deliberately do not initialize Firebase.
+  /// Calling `FirebaseAuth.instance` in those builds throws `core/no-app`, so
+  /// callers that only need an optional managed profile must use this guarded
+  /// accessor rather than touching the SDK directly.
+  User? getFirebaseUser() {
+    if (betterAuthEnabled || Firebase.apps.isEmpty) return null;
     return FirebaseAuth.instance.currentUser;
   }
 
@@ -495,7 +514,7 @@ class AuthService {
 
   Future<AuthTokenResult> _refreshIdTokenOnce(int generation, String expectedUid) async {
     try {
-      final refreshed = await _tokenGateway.forceRefresh();
+      final refreshed = await _tokenGateway.forceRefresh().timeout(_refreshAttemptTimeout);
       if (generation != _sessionGeneration || _tokenGateway.currentUser?.uid != expectedUid) {
         return const AuthTokenMissingUser();
       }
@@ -524,6 +543,12 @@ class AuthService {
       }
       _sessionExpired = false;
       return AuthTokenSuccess(token: token, expirationTime: refreshed?.expirationTime);
+    } on TimeoutException {
+      if (generation != _sessionGeneration) return const AuthTokenMissingUser();
+      Logger.debug('refreshIdToken: forceRefresh timed out after $_refreshAttemptTimeout');
+      // Distinct class so a stalled refresh is distinguishable in telemetry from
+      // one that actually failed — they have very different causes.
+      return const AuthTokenTransientFailure(failureClass: 'refresh_timeout');
     } on FirebaseAuthException catch (e) {
       if (generation != _sessionGeneration) return const AuthTokenMissingUser();
       Logger.debug('refreshIdToken: FirebaseAuthException: ${e.code}');
@@ -536,9 +561,8 @@ class AuthService {
       if (generation != _sessionGeneration) return const AuthTokenMissingUser();
       if (e.code == 'session_expired') {
         _clearCachedAuth();
-        return const AuthTokenTerminalFailure(code: 'session_expired');
+        return AuthTokenTerminalFailure(code: e.code);
       }
-      Logger.debug('refreshIdToken: Better Auth refresh failed: ${e.code}');
       return AuthTokenTransientFailure(failureClass: 'better_auth_transient', code: e.code);
     } catch (e) {
       if (generation != _sessionGeneration) return const AuthTokenMissingUser();
@@ -873,7 +897,9 @@ class AuthService {
 
   Future<void> updateGivenName(String fullName) async {
     try {
-      var user = FirebaseAuth.instance.currentUser;
+      // Better Auth/self-hosted releases have no Firebase app. Keep the local
+      // profile update useful without constructing the managed SDK singleton.
+      var user = getFirebaseUser();
 
       SharedPreferencesUtil().givenName = fullName.split(' ')[0];
       if (fullName.split(' ').length > 1) {
@@ -904,7 +930,7 @@ class AuthService {
           await user.updateProfile(displayName: fullName);
         }
         await user.reload();
-        user = FirebaseAuth.instance.currentUser;
+        user = getFirebaseUser();
       } catch (updateError) {
         Logger.debug('Firebase updateProfile failed: $updateError');
       }
@@ -944,6 +970,7 @@ class AuthService {
   }
 
   Future<ProviderLinkResult?> linkWithProvider(String provider) async {
+    ensureProviderLinkAllowed(Env.profile);
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) {
@@ -1050,6 +1077,12 @@ class AuthService {
       Logger.debug('OAuth linking error: $e');
       Logger.handle(e, StackTrace.current, message: 'Account linking failed');
       rethrow;
+    }
+  }
+
+  static void ensureProviderLinkAllowed(AppEnvironmentProfile profile) {
+    if (profile == AppEnvironmentProfile.selfHosted || betterAuthEnabled) {
+      throw StateError('Firebase provider linking is unavailable for Better Auth deployments.');
     }
   }
 

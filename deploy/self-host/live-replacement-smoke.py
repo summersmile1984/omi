@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -37,6 +38,36 @@ def require_response(response: httpx.Response, operation: str) -> dict[str, Any]
     if not isinstance(payload, dict):
         raise RuntimeError(f'{operation} response was not an object')
     return payload
+
+
+def provider_endpoint_origin(name: str) -> str:
+    """Return a credential-free origin for an operator provider binding.
+
+    The acceptance record must describe the route that the live adapter used,
+    while never copying its API key or path into evidence.  Compose/runtime
+    validation performs the same authority checks before this smoke is
+    admitted; keeping this check here also prevents a malformed binding from
+    being reported as a successful provider exercise.
+    """
+
+    value = require_environment(name)
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+    except ValueError as error:
+        raise RuntimeError(f'{name} is not a safe provider endpoint') from error
+    if (
+        parsed.scheme not in {'http', 'https'}
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in parsed.netloc)
+    ):
+        raise RuntimeError(f'{name} is not a safe provider endpoint')
+    return f'{parsed.scheme}://{parsed.netloc}'
 
 
 def stop_exact_deletion_task(queue: Any, queue_key: str, task_token: str, task_key: str) -> bool:
@@ -141,6 +172,11 @@ print(json.dumps({'pcm_milliseconds': 250, 'result_text_characters': len(text)})
         'operator_diarization_live_call_exercised': False,
         **decode_evidence,
     }
+    generic_llm_provider = require_environment('OMI_LLM_DEFAULT_PROVIDER')
+    generic_llm_model = require_environment('OMI_LLM_DEFAULT_MODEL')
+    generic_llm_endpoint_origin = provider_endpoint_origin('GENERIC_OPENAI_BASE_URL')
+    if generic_llm_provider != 'generic':
+        raise RuntimeError('live acceptance requires the generic OpenAI-compatible LLM provider')
     model_reply = get_llm('chat_responses', request_timeout=30, max_retries=0).invoke(
         'Output exactly this token: neutral-route-ok'
     )
@@ -151,10 +187,27 @@ print(json.dumps({'pcm_milliseconds': 250, 'result_text_characters': len(text)})
     configured_dimension = int(require_environment('EMBEDDING_DIMENSION'))
     if len(embedding) != configured_dimension or not any(float(value) != 0.0 for value in embedding):
         raise RuntimeError('generic embedding adapter returned an invalid vector')
+    embedding_provider = require_environment('EMBEDDING_PROVIDER')
+    embedding_model = require_environment('EMBEDDING_MODEL')
+    if embedding_provider != 'generic':
+        raise RuntimeError('live acceptance requires the generic OpenAI-compatible embedding provider')
     generic_model_adapter = {
         'chat_response_marker_observed': True,
         'embedding_dimension': len(embedding),
         'embedding_nonzero': True,
+        'chat': {
+            'provider': generic_llm_provider,
+            'model': generic_llm_model,
+            'endpoint_origin': generic_llm_endpoint_origin,
+            'transport': 'openai_compatible_http',
+        },
+        'embedding': {
+            'provider': embedding_provider,
+            'model': embedding_model,
+            'endpoint_origin': generic_llm_endpoint_origin,
+            'transport': 'direct',
+            'dimension': len(embedding),
+        },
     }
 
     try:

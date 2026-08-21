@@ -65,7 +65,9 @@ REQUIRED_FIXED_BACKEND_ENV = {
     'TRANSLATION_PROVIDER': 'generic',
     'EMBEDDING_PROVIDER': 'generic',
     'FILE_CHAT_TRANSPORT': 'local_extraction',
-    'PUSH_PROVIDER': 'disabled',
+    # The checked-in profile remains disabled, while an operator may opt into
+    # the separately validated HTTPS webhook through the reviewed env file.
+    'PUSH_PROVIDER': '${PUSH_PROVIDER:-disabled}',
     'DESKTOP_VENDOR_PROXY_TRANSPORT': 'disabled',
     'EMBEDDING_CAPABILITY_TRANSPORT': 'direct',
     'PROACTIVE_TOOL_TRANSPORT': 'completion',
@@ -81,6 +83,7 @@ REQUIRED_FIXED_BACKEND_ENV = {
     'WEB_SEARCH_TRANSPORT': 'searxng',
     'SEARXNG_BASE_URL': 'http://searxng:8080',
     'FIRMWARE_RELEASE_TRANSPORT': 'manifest',
+    'DESKTOP_UPDATE_LEGACY_FALLBACK': 'disabled',
     'MEMORY_ENABLED': 'on',
     'ADMIN_KEY_AUTH_ENABLED': 'false',
 }
@@ -88,6 +91,8 @@ REQUIRED_INTERPOLATED_ENV = {
     'backend': {
         'BASE_API_URL',
         'API_BASE_URL',
+        'OMI_SHARE_BASE_URL',
+        'SELF_HOST_EGRESS_ALLOWLIST',
         'CORS_ALLOWED_ORIGINS',
         'ENCRYPTION_SECRET',
         'AUTH_JWT_ISSUER',
@@ -136,6 +141,7 @@ REQUIRED_INTERPOLATED_ENV = {
     },
     'searxng': {'SEARXNG_SECRET'},
     'typesense': {'TYPESENSE_API_KEY'},
+    'queue-worker': {'SELF_HOST_EGRESS_ALLOWLIST'},
     'auth-server': {
         'DATABASE_URL',
         'BETTER_AUTH_SECRET',
@@ -172,6 +178,8 @@ REQUIRED_ENV_FILE_KEYS = {
     'PUBLIC_AUTH_URL',
     'PUBLIC_MCP_URL',
     'PUBLIC_OBJECTS_URL',
+    'OMI_SHARE_BASE_URL',
+    'SELF_HOST_EGRESS_ALLOWLIST',
     'CORS_ALLOWED_ORIGINS',
     'BETTER_AUTH_TRUSTED_ORIGINS',
     'BETTER_AUTH_IP_HEADERS',
@@ -233,6 +241,7 @@ REQUIRED_ENV_FILE_KEYS = {
     'SPEAKER_EMBEDDING_NUM_THREADS',
 }
 DECLARED_OPTIONAL_ENV_FILE_KEYS = {
+    'DESKTOP_UPDATE_DOWNLOAD_URL',
     'TTS_OPENAI_COMPATIBLE_BASE_URL',
     'TTS_OPENAI_COMPATIBLE_API_KEY',
     'TTS_OPENAI_COMPATIBLE_MODEL',
@@ -261,6 +270,15 @@ FORBIDDEN_ENDPOINT_HOSTS = (
     'googleapis.com',
     'firebaseio.com',
     'pinecone.io',
+    'anthropic.com',
+    'deepgram.com',
+    'hume.ai',
+    'langchain.com',
+    'langsmith.com',
+    'posthog.com',
+    'sentry.io',
+    'xiaomimimo.com',
+    'mosi.cn',
 )
 
 
@@ -312,6 +330,72 @@ def _validate_operator_http_endpoint(name: str, value: str, errors: list[str]) -
         errors.append(f'{name} must use https for a public target host')
     if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
         errors.append(f'{name} must not use official endpoint host {host}')
+
+
+def _validate_operator_download_url(name: str, value: str, errors: list[str]) -> None:
+    """Validate a manual installer URL without requiring a base-URL shape."""
+
+    parsed = urlsplit(value)
+    host = (parsed.hostname or '').lower()
+    if (
+        parsed.scheme not in {'http', 'https'}
+        or not parsed.netloc
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        errors.append(f'{name} must be an explicit credential-free http(s) URL')
+        return
+    if _unsafe_endpoint_host(host):
+        errors.append(f'{name} must not target link-local, metadata, or reserved hosts')
+    if parsed.scheme == 'http' and not _private_endpoint_host(host):
+        errors.append(f'{name} must use https for a public target host')
+    if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
+        errors.append(f'{name} must not use official endpoint host {host}')
+
+
+def _egress_allowlist_contains(host: str, allowlist: set[str]) -> bool:
+    normalized = host.lower().rstrip('.')
+    return normalized in allowlist or any(
+        value.startswith('*.') and normalized.endswith(f'.{value[2:]}') for value in allowlist
+    )
+
+
+def _validate_egress_allowlist(env: dict[str, str], errors: list[str]) -> None:
+    """Validate the runtime HTTP authority declaration and known targets."""
+
+    raw = env.get('SELF_HOST_EGRESS_ALLOWLIST', '')
+    allowlist = {value.strip().lower().rstrip('.') for value in raw.split(',') if value.strip()}
+    if not allowlist:
+        errors.append('SELF_HOST_EGRESS_ALLOWLIST must declare at least one external host')
+        return
+    for value in sorted(allowlist):
+        host = value[2:] if value.startswith('*.') else value
+        if value == '*' or not host or '/' in host or ':' in host or '://' in host:
+            errors.append(f'SELF_HOST_EGRESS_ALLOWLIST contains an invalid host token: {value}')
+        if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
+            errors.append(f'SELF_HOST_EGRESS_ALLOWLIST must not contain official endpoint host {host}')
+
+    known_targets = {
+        name: (urlsplit(value).hostname or '').lower()
+        for name, value in (
+            ('GENERIC_OPENAI_BASE_URL', env.get('GENERIC_OPENAI_BASE_URL', '')),
+            ('REALTIME_RELAY_URL', env.get('REALTIME_RELAY_URL', '')),
+            ('FIRMWARE_RELEASE_MANIFEST_URL', env.get('FIRMWARE_RELEASE_MANIFEST_URL', '')),
+            ('TTS_OPENAI_COMPATIBLE_BASE_URL', env.get('TTS_OPENAI_COMPATIBLE_BASE_URL', '')),
+            ('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', env.get('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', '')),
+            ('PUSH_WEBHOOK_URL', env.get('PUSH_WEBHOOK_URL', '')),
+            ('MLX_MOSS_DIARIZE_ENDPOINT', env.get('MLX_MOSS_DIARIZE_ENDPOINT', '')),
+        )
+        if value
+    }
+    internal_hosts = {'localhost', '127.0.0.1', '::1', 'host.docker.internal'}
+    for name, host in known_targets.items():
+        if host and host in internal_hosts:
+            continue
+        if host and not _egress_allowlist_contains(host, allowlist):
+            errors.append(f'SELF_HOST_EGRESS_ALLOWLIST must contain {name} host {host}')
 
 
 MACOS_MODEL_BOUNDARY_REQUIREMENTS = {
@@ -733,6 +817,8 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
             errors.append(f'{service} contains duplicate environment: {", ".join(duplicate_environment_names)}')
         if service not in ONE_SHOT_SERVICES and '\n    healthcheck:' not in block:
             errors.append(f'{service} must define a healthcheck')
+        if service == 'backend' and not re.search(r'(?s)\n    healthcheck:.*?127\.0\.0\.1:8080/ready(?:["\s]|$)', block):
+            errors.append('backend healthcheck must probe the dependency-aware /ready endpoint')
         image_match = re.search(r'(?m)^    image:\s*(\S+)', block)
         if image_match and image_match.group(1).endswith(':latest'):
             errors.append(f'{service} image must be pinned, not :latest')
@@ -778,6 +864,11 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     for name, expected in OPTIONAL_BACKEND_ENV_BINDINGS.items():
         if backend_env.get(name) != expected:
             errors.append(f'backend {name} must use exact optional binding {expected!r}')
+    if (
+        backend_env.get('SELF_HOST_EGRESS_ALLOWLIST')
+        != '${SELF_HOST_EGRESS_ALLOWLIST:?SELF_HOST_EGRESS_ALLOWLIST is required}'
+    ):
+        errors.append('backend SELF_HOST_EGRESS_ALLOWLIST must use the required runtime binding')
     if backend_env.get('AUTH_JWKS_URL') != 'http://auth-server:3000/api/auth/jwks':
         errors.append('backend AUTH_JWKS_URL must use the private auth-server service endpoint')
     if backend_env.get('AUTH_SERVER_INTERNAL_URL') != 'http://auth-server:3000':
@@ -796,10 +887,28 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
         'TYPESENSE_PROTOCOL': 'http',
         'MEMORY_TYPESENSE_COLLECTION': 'canonical_memory_atoms',
         'CONVERSATION_TYPESENSE_COLLECTION': 'omi_conversations',
-        'PUSH_PROVIDER': 'disabled',
+        'PUSH_PROVIDER': '${PUSH_PROVIDER:-disabled}',
     }.items():
         if queue_worker_env.get(name) != expected:
             errors.append(f'queue-worker {name} must be literal {expected!r}')
+    if (
+        queue_worker_env.get('SELF_HOST_EGRESS_ALLOWLIST')
+        != '${SELF_HOST_EGRESS_ALLOWLIST:?SELF_HOST_EGRESS_ALLOWLIST is required}'
+    ):
+        errors.append('queue-worker SELF_HOST_EGRESS_ALLOWLIST must use the required runtime binding')
+    push_webhook_bindings = {
+        'PUSH_WEBHOOK_URL': '${PUSH_WEBHOOK_URL-}',
+        'PUSH_WEBHOOK_SECRET_FILE': '${PUSH_WEBHOOK_SECRET_FILE-}',
+        'PUSH_WEBHOOK_TIMEOUT_SECONDS': '${PUSH_WEBHOOK_TIMEOUT_SECONDS:-5}',
+        'PUSH_WEBHOOK_MAX_ATTEMPTS': '${PUSH_WEBHOOK_MAX_ATTEMPTS:-3}',
+    }
+    for service in ('backend', 'queue-worker'):
+        service_env = _environment(services.get(service, ''))
+        for name, expected in push_webhook_bindings.items():
+            if service_env.get(name) != expected:
+                errors.append(f'{service} {name} must use exact optional binding {expected!r}')
+        if 'PUSH_WEBHOOK_SECRET=' in services.get(service, ''):
+            errors.append(f'{service} must not accept an inline PUSH_WEBHOOK_SECRET')
     for name in ('AUTH_JWT_ISSUER', 'AUTH_JWT_AUDIENCE'):
         if backend_env.get(name) != '${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}':
             errors.append(f'backend {name} must use the same PUBLIC_AUTH_URL origin')
@@ -871,6 +980,7 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
 
     env = _dotenv(env_path)
     example_mode = env_path.name.endswith('.example')
+    _validate_egress_allowlist(env, errors)
     if 'SELF_HOST_BACKUP_KEY_FILE' in env:
         errors.append('SELF_HOST_BACKUP_KEY_FILE is operations-only and must not be stored in the Compose env file')
     if env.get('BACKEND_IMAGE') and env.get('BACKEND_IMAGE') == env.get('AUTH_SERVER_IMAGE'):
@@ -900,6 +1010,19 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
             host = (urlsplit(env[name]).hostname or '').lower()
             if not example_mode and (host == 'example.com' or host.endswith('.example.com')):
                 errors.append(f'{name} must not use the reserved example.com deployment host')
+    share_origin = env.get('OMI_SHARE_BASE_URL', '')
+    if share_origin:
+        _validate_url('OMI_SHARE_BASE_URL', share_origin, errors)
+        share_host = (urlsplit(share_origin).hostname or '').lower().rstrip('.')
+        if (
+            share_host == 'omi.me'
+            or share_host.endswith('.omi.me')
+            or share_host == 'omiapi.com'
+            or share_host.endswith('.omiapi.com')
+        ):
+            errors.append('OMI_SHARE_BASE_URL must use an operator-owned host, not an Omi-operated host')
+        if not example_mode and (share_host == 'example.com' or share_host.endswith('.example.com')):
+            errors.append('OMI_SHARE_BASE_URL must not use the reserved example.com deployment host')
     generic_url = env.get('GENERIC_OPENAI_BASE_URL', '')
     if generic_url:
         parsed = urlsplit(generic_url)
@@ -908,6 +1031,10 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
         host = (parsed.hostname or '').lower()
         if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
             errors.append(f'GENERIC_OPENAI_BASE_URL must not use official endpoint host {host}')
+
+    desktop_download_url = env.get('DESKTOP_UPDATE_DOWNLOAD_URL', '')
+    if desktop_download_url:
+        _validate_operator_download_url('DESKTOP_UPDATE_DOWNLOAD_URL', desktop_download_url, errors)
 
     mlx_moss_endpoint = env.get('MLX_MOSS_DIARIZE_ENDPOINT', '')
     if mlx_moss_endpoint:

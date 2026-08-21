@@ -22,7 +22,12 @@ CUTOVER_GATE = SCRIPT.with_name('cutover-https-gate.sh')
 CUTOVER_OVERLAY = SCRIPT.with_name('compose.cutover-acceptance.yml')
 COMPOSE_WRAPPER = SCRIPT.with_name('compose-clean-env.sh')
 ZERO_VENDOR_ACCEPTANCE = SCRIPT.with_name('zero-vendor-acceptance.sh')
+EGRESS_POLICY_CONTRACT = SCRIPT.with_name('egress-policy-contract.py')
 EVIDENCE_SCRIPT = SCRIPT.with_name('acceptance_evidence.py')
+EGRESS_POLICY_SPEC = importlib.util.spec_from_file_location('self_host_egress_policy_contract', EGRESS_POLICY_CONTRACT)
+assert EGRESS_POLICY_SPEC and EGRESS_POLICY_SPEC.loader
+EGRESS_POLICY = importlib.util.module_from_spec(EGRESS_POLICY_SPEC)
+EGRESS_POLICY_SPEC.loader.exec_module(EGRESS_POLICY)
 RUNTIME_EVIDENCE_SCRIPT = SCRIPT.with_name('runtime-evidence.py')
 PUBLIC_OBJECT_EVIDENCE_SCRIPT = SCRIPT.with_name('public_object_evidence.py')
 SPEC = importlib.util.spec_from_file_location('self_host_volume_snapshot', SCRIPT)
@@ -91,9 +96,12 @@ EFFECTIVE_PROVIDER_CONFIGURATION = {
     'vector_store_provider': 'qdrant',
     'auth_provider': 'better_auth',
     'firmware_release_transport': 'manifest',
+    'firmware_release_manifest_url': 'https://objects.example.org/omi-firmware/releases.json',
     'firmware_release_manifest_origin': 'https://objects.example.org',
     'firmware_release_asset_origin': 'https://objects.example.org',
+    'desktop_update_legacy_fallback': 'disabled',
     'push_provider': 'disabled',
+    'push_endpoint_origin': '',
     'push_model': 'disabled',
     'push_transport': 'disabled',
     'memory_keyword_provider': 'typesense',
@@ -138,6 +146,7 @@ EFFECTIVE_BACKEND_ENVIRONMENT = {
     'FIRMWARE_RELEASE_TRANSPORT': 'manifest',
     'FIRMWARE_RELEASE_MANIFEST_URL': 'https://objects.example.org/omi-firmware/releases.json',
     'FIRMWARE_RELEASE_ASSET_ORIGIN': 'https://objects.example.org',
+    'DESKTOP_UPDATE_LEGACY_FALLBACK': 'disabled',
     'PUSH_PROVIDER': 'disabled',
     'MEMORY_KEYWORD_INDEX_PROVIDER': 'typesense',
     'CONVERSATION_KEYWORD_INDEX_PROVIDER': 'typesense',
@@ -156,7 +165,66 @@ PASSED_RUNTIME_EVIDENCE = {
         'expected_config_sha256': 'c' * 64,
         'effective_provider_configuration': EFFECTIVE_PROVIDER_CONFIGURATION,
         'source_and_config_match': True,
+        'workloads': {
+            service: {
+                'image_id': f'sha256:{service.encode().hex():0<64}'[:71],
+                'source_git_commit': 'd' * 40,
+                'source_git_tree': 'e' * 40,
+                'runtime_config_sha256': 'c' * 64,
+                'environment_matches_effective_config': True,
+            }
+            for service in ('auth-server', 'backend', 'queue-worker')
+        },
     },
+}
+PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation'] = RUNTIME_EVIDENCE.build_provider_attestation(
+    expected_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+    runtime_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+    source={
+        'image_id': PASSED_RUNTIME_EVIDENCE['runtime_identity']['workloads']['backend']['image_id'],
+        'git_commit': 'd' * 40,
+        'git_tree': 'e' * 40,
+        'runtime_config_sha256': 'c' * 64,
+    },
+)
+PASSED_LIVE_REPLACEMENT = {
+    'status': 'passed',
+    'generic_model_adapter': {
+        'chat_response_marker_observed': True,
+        'embedding_dimension': 1536,
+        'embedding_nonzero': True,
+        'chat': {
+            'provider': 'generic',
+            'model': 'operator-llm',
+            'endpoint_origin': 'https://llm.example.org',
+            'transport': 'openai_compatible_http',
+        },
+        'embedding': {
+            'provider': 'generic',
+            'model': 'operator-embedding',
+            'endpoint_origin': 'https://llm.example.org',
+            'transport': 'direct',
+            'dimension': 1536,
+        },
+    },
+}
+PASSED_RECOVERY_EVIDENCE = {
+    'schema_version': 1,
+    'status': 'passed',
+    'scope': 'isolated_restore_host',
+    'backup_manifest_sha256': 'f' * 64,
+    'source_git_commit': 'd' * 40,
+    'source_git_tree': 'e' * 40,
+    'runtime_config_sha256': 'c' * 64,
+    'backup_verified': True,
+    'restore_completed': True,
+    'post_restore_migration_passed': True,
+    'post_restore_auth_smoke_passed': True,
+    'post_restore_projection_checks_passed': True,
+    'isolated_restore_host': True,
+    'key_material_outside_backup': True,
+    'production_kms_attested': True,
+    'key_custody_reference': 'change-ticket/recovery-2026-08-20',
 }
 
 
@@ -203,6 +271,135 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertNotIn('operator-realtime-secret', serialized)
         self.assertNotIn('operator-typesense-secret', serialized)
         self.assertNotIn('api_key', serialized.lower())
+
+    def test_runtime_provider_attestation_records_models_and_effective_origins(self) -> None:
+        source = {
+            'image_id': 'sha256:' + 'a' * 64,
+            'git_commit': 'd' * 40,
+            'git_tree': 'e' * 40,
+            'runtime_config_sha256': 'c' * 64,
+        }
+        attestation = RUNTIME_EVIDENCE.build_provider_attestation(
+            expected_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            runtime_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            source=source,
+        )
+        self.assertEqual(attestation['schema_version'], 1)
+        self.assertEqual(attestation['status'], 'passed')
+        self.assertEqual(attestation['source'], source)
+        self.assertEqual(attestation['providers']['generic_llm']['model'], 'operator-llm')
+        self.assertEqual(attestation['providers']['generic_llm']['endpoint_origin'], 'https://llm.example.org')
+        self.assertEqual(attestation['providers']['embedding']['model'], 'operator-embedding')
+        self.assertEqual(attestation['providers']['embedding']['endpoint_origin'], 'https://llm.example.org')
+        self.assertEqual(attestation['providers']['realtime']['model'], 'operator-realtime')
+        self.assertEqual(attestation['providers']['realtime']['endpoint_origin'], 'wss://realtime.example.org')
+        self.assertEqual(attestation['providers']['pre_recorded_stt']['model'], 'operator-model')
+        self.assertEqual(attestation['providers']['pre_recorded_stt']['endpoint_path'], '/v1/audio/transcriptions')
+        self.assertIsNone(attestation['external_service_revision'])
+        self.assertIsNone(attestation['external_model_revision'])
+        self.assertFalse(attestation['external_revision_attested'])
+        RUNTIME_EVIDENCE.validate_provider_attestation(
+            attestation,
+            expected_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            expected_source=source,
+        )
+
+    def test_runtime_provider_attestation_rejects_missing_model_official_host_and_fake_revision(self) -> None:
+        source = {
+            'image_id': 'sha256:' + 'a' * 64,
+            'git_commit': 'd' * 40,
+            'git_tree': 'e' * 40,
+            'runtime_config_sha256': 'c' * 64,
+        }
+        missing_model = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
+        missing_model['generic_llm_model'] = ''
+        with self.assertRaisesRegex(ValueError, 'missing generic_llm_model'):
+            RUNTIME_EVIDENCE.build_provider_attestation(
+                expected_configuration=missing_model,
+                runtime_configuration=missing_model,
+                source=source,
+            )
+
+        official = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
+        official['generic_llm_endpoint_origin'] = 'https://api.openai.com'
+        with self.assertRaisesRegex(ValueError, 'forbidden official endpoint host'):
+            RUNTIME_EVIDENCE.build_provider_attestation(
+                expected_configuration=official,
+                runtime_configuration=official,
+                source=source,
+            )
+
+        attestation = RUNTIME_EVIDENCE.build_provider_attestation(
+            expected_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            runtime_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            source=source,
+        )
+        attestation['external_service_revision'] = 'guessed-from-git'
+        with self.assertRaisesRegex(ValueError, 'must not invent'):
+            RUNTIME_EVIDENCE.validate_provider_attestation(attestation)
+
+    def test_realtime_probe_identity_is_bound_to_runtime_provider_configuration(self) -> None:
+        probe = {
+            'status': 'passed',
+            'provider': 'relay',
+            'model': 'operator-realtime',
+            'endpoint_origin': 'wss://realtime.example.org',
+            'transport': 'websocket_relay',
+            'wire_protocol': 'openai_realtime_v1',
+        }
+        RUNTIME_EVIDENCE.validate_realtime_probe_identity(probe, EFFECTIVE_PROVIDER_CONFIGURATION)
+        mismatched = dict(probe)
+        mismatched['endpoint_origin'] = 'wss://wrong.example.org'
+        with self.assertRaisesRegex(ValueError, 'does not match reviewed configuration'):
+            RUNTIME_EVIDENCE.validate_realtime_probe_identity(mismatched, EFFECTIVE_PROVIDER_CONFIGURATION)
+
+    def test_live_generic_model_and_embedding_identity_is_bound_to_attestation(self) -> None:
+        attestation = PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation']
+        self.assertTrue(EVIDENCE._live_generic_model_runtime_binding(PASSED_LIVE_REPLACEMENT, attestation))
+
+        mismatched = json.loads(json.dumps(PASSED_LIVE_REPLACEMENT))
+        mismatched['generic_model_adapter']['chat']['endpoint_origin'] = 'https://wrong.example.org'
+        self.assertFalse(EVIDENCE._live_generic_model_runtime_binding(mismatched, attestation))
+
+        missing_identity = {'status': 'passed', 'generic_model_adapter': {'chat_response_marker_observed': True}}
+        self.assertFalse(EVIDENCE._live_generic_model_runtime_binding(missing_identity, attestation))
+
+    def test_tts_probe_identity_is_bound_to_runtime_provider_configuration(self) -> None:
+        probe = {
+            'status': 'passed',
+            'provider': 'sherpa_onnx',
+            'model': 'model.onnx',
+            'transport': 'local',
+            'endpoint_origin': '',
+        }
+        RUNTIME_EVIDENCE.validate_tts_probe_identity(probe, EFFECTIVE_PROVIDER_CONFIGURATION)
+        mismatched = dict(probe)
+        mismatched['model'] = 'operator-tts'
+        with self.assertRaisesRegex(ValueError, 'does not match reviewed configuration'):
+            RUNTIME_EVIDENCE.validate_tts_probe_identity(mismatched, EFFECTIVE_PROVIDER_CONFIGURATION)
+
+    def test_runtime_evidence_records_operator_webhook_without_secret_material(self) -> None:
+        webhook_environment = {
+            **EFFECTIVE_BACKEND_ENVIRONMENT,
+            'PUSH_PROVIDER': 'webhook',
+            'PUSH_WEBHOOK_URL': 'https://push.example.org/v1/omi/push',
+            'PUSH_WEBHOOK_SECRET_FILE': '/run/secrets/omi-push-webhook',
+        }
+        configuration = RUNTIME_EVIDENCE.effective_provider_configuration(
+            {'services': {'backend': {'environment': webhook_environment}}}
+        )
+        self.assertEqual(configuration['push_provider'], 'webhook')
+        self.assertEqual(configuration['push_endpoint_origin'], 'https://push.example.org')
+        self.assertEqual(configuration['push_model'], 'operator_webhook')
+        self.assertEqual(configuration['push_transport'], 'https_json_hmac')
+        RUNTIME_EVIDENCE._validate_provider_configuration(configuration)
+        self.assertNotIn('secret', json.dumps(configuration).lower())
+
+        webhook_environment['PUSH_WEBHOOK_URL'] = 'http://push.example.org/v1/omi/push'
+        with self.assertRaisesRegex(ValueError, 'credential-free endpoint'):
+            RUNTIME_EVIDENCE.effective_provider_configuration(
+                {'services': {'backend': {'environment': webhook_environment}}}
+            )
 
     def test_clean_compose_wrapper_removes_deployment_overrides_and_preserves_only_gate_controls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -428,6 +625,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             ('vector_store_provider', 'pinecone', 'Qdrant'),
             ('auth_provider', 'firebase', 'Better Auth'),
             ('firmware_release_transport', 'gcs', 'manifest transport'),
+            ('desktop_update_legacy_fallback', 'enabled', 'legacy vendor fallback'),
         ):
             unsafe_provider_config = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
             unsafe_provider_config[key] = value
@@ -483,6 +681,22 @@ class SelfHostOperationsTest(unittest.TestCase):
                 expected_config_sha256='c' * 64,
                 effective_provider_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
             )
+
+    def test_runtime_evidence_rejects_vendor_bindings_in_running_workload(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, 'OPENAI_API_KEY'):
+            RUNTIME_EVIDENCE.validate_runtime_environment({'OPENAI_API_KEY': 'redacted'})
+
+        with self.assertRaisesRegex(RuntimeError, 'ANTHROPIC_API_KEY'):
+            RUNTIME_EVIDENCE.validate_runtime_environment({'ANTHROPIC_API_KEY': 'redacted'})
+
+        with self.assertRaisesRegex(RuntimeError, 'official endpoint host'):
+            RUNTIME_EVIDENCE.validate_runtime_environment({'GENERIC_OPENAI_BASE_URL': 'https://api.openai.com/v1'})
+
+        # Runtime evidence diagnostics must identify only the binding class,
+        # not leak an operator credential from the container environment.
+        with self.assertRaisesRegex(RuntimeError, 'official endpoint host') as context:
+            RUNTIME_EVIDENCE.validate_runtime_environment({'LLM_ENDPOINT': 'https://api.openai.com/v1?key=secret'})
+        self.assertNotIn('secret', str(context.exception))
 
     def test_attributed_start_builds_current_images_before_service_admission(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -775,7 +989,21 @@ class SelfHostOperationsTest(unittest.TestCase):
     def test_cutover_evidence_requires_external_edge_and_live_socket_denial(self) -> None:
         assembled = {
             'status': 'passed',
-            'https_origin_and_hairpin': {'public_object_signed_crud': {'status': 'passed'}},
+            'https_origin_and_hairpin': {
+                'mode': 'external',
+                'trust_source': 'system_ca',
+                'certificate_chain_verified': True,
+                'public_backend_url': 'https://api.example.org',
+                'public_auth_url': 'https://auth.example.org',
+                'public_mcp_url': 'https://mcp.example.org',
+                'public_objects_url': 'https://objects.example.org',
+                'jwt_issuer_audience_exact': True,
+                'public_jwks_kid_present': True,
+                'backend_private_jwks_verification': True,
+                'auth_private_lifecycle_blocked_at_edge': True,
+                'wss_public_origin_exercised': True,
+                'public_object_signed_crud': {'status': 'passed'},
+            },
             'assembled_product_loop': {
                 'capture': {
                     'fixture_manifest_match': True,
@@ -818,13 +1046,51 @@ class SelfHostOperationsTest(unittest.TestCase):
                         },
                     },
                 },
-                'realtime_relay': {'status': 'passed'},
-                'tts': {'status': 'passed'},
+                'realtime_relay': {
+                    'status': 'passed',
+                    'provider': 'relay',
+                    'model': 'operator-realtime',
+                    'endpoint_origin': 'wss://realtime.example.org',
+                    'transport': 'websocket_relay',
+                    'wire_protocol': 'openai_realtime_v1',
+                },
+                'tts': {
+                    'status': 'passed',
+                    'provider': 'sherpa_onnx',
+                    'model': 'model.onnx',
+                    'transport': 'local',
+                    'endpoint_origin': '',
+                },
                 'app_icon': {'status': 'passed'},
                 'file_chat': {'status': 'passed'},
                 'typesense_keyword': {'status': 'passed'},
                 'conversation_typesense': {'status': 'passed'},
-                'firmware': {'status': 'passed'},
+                'firmware': {
+                    'status': 'passed',
+                    'transport': 'manifest',
+                    'manifest': {
+                        'url': 'https://objects.example.org/omi-firmware/releases.json',
+                        'origin': 'https://objects.example.org',
+                        'sha256': 'b' * 64,
+                        'bytes': 128,
+                        'release_tag': 'Omi_CV1_v9.9.9',
+                        'version': '9.9.9',
+                        'asset_name': 'Omi_CV1_OTA_v9.9.9.zip',
+                        'asset_url': 'https://objects.example.org/omi-firmware/cutover-omi-cv1-9.9.9.zip',
+                    },
+                    'asset': {
+                        'url': 'https://objects.example.org/omi-firmware/cutover-omi-cv1-9.9.9.zip',
+                        'origin': 'https://objects.example.org',
+                        'sha256': 'c' * 64,
+                        'bytes': 64,
+                        'name': 'Omi_CV1_OTA_v9.9.9.zip',
+                    },
+                    'route': {
+                        'version': '9.9.9',
+                        'asset_url': 'https://objects.example.org/omi-firmware/cutover-omi-cv1-9.9.9.zip',
+                    },
+                    'fixture_cleanup_confirmed': True,
+                },
                 'remember': {'long_term_admission': 'passed'},
             },
             'live_egress': {
@@ -832,12 +1098,15 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'sentinel_targets_denied': [],
                 'workloads': [],
                 'operator_policy_artifact_sha256': None,
+                'operator_policy_schema_version': None,
+                'operator_policy_workloads': [],
+                'operator_policy_denied_targets': [],
             },
         }
         local = EVIDENCE.build_evidence(
             mode='cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -847,12 +1116,59 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertEqual(local['remaining_cutover_reason'], 'intended_public_dns_certificate_and_edge_not_exercised')
         self.assertEqual(local['gates']['live_sentinel_egress_policy']['enforcement'], 'not_enforced_by_compose')
         self.assertEqual(local['gates']['hermetic_undeclared_dns_and_socket_egress'], 'denied')
+
+        for path, value in (
+            (('manifest', 'url'), 'https://other.example.org/omi-firmware/releases.json'),
+            (('asset', 'url'), 'https://other.example.org/omi-firmware/asset.zip'),
+            (('route', 'asset_url'), 'https://other.example.org/omi-firmware/asset.zip'),
+        ):
+            tampered = json.loads(json.dumps(assembled))
+            tampered['assembled_product_loop']['firmware'][path[0]][path[1]] = value
+            rejected = EVIDENCE.build_evidence(
+                mode='cutover-live',
+                source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+                live_replacement=PASSED_LIVE_REPLACEMENT,
+                assembled_loop=tampered,
+                checked_at='2026-08-20T00:00:00+00:00',
+                runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+            )
+            self.assertFalse(rejected['authorizes_tested_configuration_cutover'], path)
+            self.assertEqual(rejected['remaining_cutover_reason'], 'firmware_runtime_config_binding_not_passed')
         self.assertFalse(local['gates']['live_dns_denial_claimed'])
+
+        mismatched_realtime = json.loads(json.dumps(assembled))
+        mismatched_realtime['assembled_product_loop']['realtime_relay']['model'] = 'wrong-model'
+        rejected_realtime = EVIDENCE.build_evidence(
+            mode='cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement=PASSED_LIVE_REPLACEMENT,
+            assembled_loop=mismatched_realtime,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(rejected_realtime['authorizes_tested_configuration_cutover'])
+        self.assertEqual(
+            rejected_realtime['remaining_cutover_reason'],
+            'realtime_relay_runtime_config_binding_not_passed',
+        )
+
+        mismatched_tts = json.loads(json.dumps(assembled))
+        mismatched_tts['assembled_product_loop']['tts']['model'] = 'wrong-model'
+        rejected_tts = EVIDENCE.build_evidence(
+            mode='cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement=PASSED_LIVE_REPLACEMENT,
+            assembled_loop=mismatched_tts,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(rejected_tts['authorizes_tested_configuration_cutover'])
+        self.assertEqual(rejected_tts['remaining_cutover_reason'], 'tts_runtime_config_binding_not_passed')
 
         external_without_policy = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -874,25 +1190,85 @@ class SelfHostOperationsTest(unittest.TestCase):
             ],
             'workloads': ['backend', 'queue-worker', 'auth-server'],
             'operator_policy_artifact_sha256': 'a' * 64,
+            'operator_policy_schema_version': 2,
+            'operator_policy_workloads': ['auth-server', 'backend', 'queue-worker'],
+            'operator_policy_denied_targets': [
+                '1.1.1.1',
+                'api.openai.com',
+                'api.omi.me',
+                'api.anthropic.com',
+                'generativelanguage.googleapis.com',
+            ],
+            'operator_policy_source_git_commit': 'd' * 40,
+            'operator_policy_source_git_tree': 'e' * 40,
+            'operator_policy_runtime_config_sha256': 'c' * 64,
             'scope': 'sentinel_targets_only',
         }
         external_with_policy = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
+            assembled_loop=assembled,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+            recovery_evidence=PASSED_RECOVERY_EVIDENCE,
+        )
+        self.assertTrue(external_with_policy['authorizes_production_cutover'])
+        self.assertIsNone(external_with_policy['remaining_cutover_reason'])
+
+        without_external_edge = json.loads(json.dumps(assembled))
+        without_external_edge['https_origin_and_hairpin']['mode'] = 'local'
+        rejected_local_edge = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement=PASSED_LIVE_REPLACEMENT,
+            assembled_loop=without_external_edge,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+            recovery_evidence=PASSED_RECOVERY_EVIDENCE,
+        )
+        self.assertFalse(rejected_local_edge['authorizes_production_cutover'])
+        self.assertEqual(
+            rejected_local_edge['remaining_cutover_reason'],
+            'external_public_edge_certificate_or_origin_not_verified',
+        )
+
+        missing_recovery = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
         )
-        self.assertTrue(external_with_policy['authorizes_production_cutover'])
-        self.assertIsNone(external_with_policy['remaining_cutover_reason'])
+        self.assertFalse(missing_recovery['authorizes_production_cutover'])
+        self.assertEqual(
+            missing_recovery['remaining_cutover_reason'], 'external_backup_restore_or_kms_evidence_missing'
+        )
+
+        partial_runtime = json.loads(json.dumps(PASSED_RUNTIME_EVIDENCE))
+        del partial_runtime['runtime_identity']['workloads']['queue-worker']
+        rejected_partial_runtime = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement=PASSED_LIVE_REPLACEMENT,
+            assembled_loop=assembled,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=partial_runtime,
+            recovery_evidence=PASSED_RECOVERY_EVIDENCE,
+        )
+        self.assertFalse(rejected_partial_runtime['authorizes_tested_configuration_cutover'])
+        self.assertEqual(
+            rejected_partial_runtime['remaining_cutover_reason'],
+            'production_service_health_or_runtime_identity_not_passed',
+        )
 
         without_objects = json.loads(json.dumps(assembled))
         without_objects['https_origin_and_hairpin']['public_object_signed_crud']['status'] = 'failed'
         missing_object_edge = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_objects,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -904,7 +1280,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_runtime_health = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=unhealthy_runtime,
@@ -920,7 +1296,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_speaker = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_speaker,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -933,7 +1309,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_diarization = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_diarization,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -948,7 +1324,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         rejected_diarization_hard_field = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=missing_diarization_hard_field,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -968,7 +1344,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             rejected_runtime_binding = EVIDENCE.build_evidence(
                 mode='external-cutover-live',
                 source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-                live_replacement={'status': 'passed'},
+                live_replacement=PASSED_LIVE_REPLACEMENT,
                 assembled_loop=assembled,
                 checked_at='2026-08-20T00:00:00+00:00',
                 runtime_evidence=mismatched_runtime,
@@ -984,7 +1360,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_model_artifact_identity = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_model_artifact_identity,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1009,7 +1385,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             rejected_hard_field = EVIDENCE.build_evidence(
                 mode='external-cutover-live',
                 source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-                live_replacement={'status': 'passed'},
+                live_replacement=PASSED_LIVE_REPLACEMENT,
                 assembled_loop=missing_status_field,
                 checked_at='2026-08-20T00:00:00+00:00',
                 runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1021,7 +1397,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         dirty_external = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=dirty_source,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1064,7 +1440,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         external_without_long_term_admission = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1079,7 +1455,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         non_cutover_mode = EVIDENCE.build_evidence(
             mode='live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop={
                 **assembled,
                 'assembled_product_loop': {
@@ -1122,8 +1498,28 @@ class SelfHostOperationsTest(unittest.TestCase):
                 + '\n',
                 encoding='utf-8',
             )
-            policy = root / 'egress-policy.yaml'
-            policy.write_text('policy: deny application public egress\n', encoding='utf-8')
+            policy = root / 'egress-policy.json'
+            policy.write_text(
+                json.dumps(
+                    {
+                        'schema_version': 2,
+                        'enforcement': 'network_default_deny',
+                        'workloads': ['auth-server', 'backend', 'queue-worker'],
+                        'denied_targets': [
+                            '1.1.1.1',
+                            'api.openai.com',
+                            'api.omi.me',
+                            'api.anthropic.com',
+                            'generativelanguage.googleapis.com',
+                        ],
+                        'source_git_commit': 'd' * 40,
+                        'source_git_tree': 'e' * 40,
+                        'runtime_config_sha256': 'c' * 64,
+                    }
+                )
+                + '\n',
+                encoding='utf-8',
+            )
             freeze_lease = root / 'source-freeze.json'
             SOURCE_FREEZE.issue_lease(
                 freeze_lease,
@@ -1170,6 +1566,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'SELF_HOST_SOURCE_DATABASE': '(default)',
                 'SELF_HOST_SOURCE_ENDPOINT': 'https://firestore.googleapis.com',
                 'OMI_SOURCE_WRITE_FREEZE_SECRET': 'test-source-freeze-secret',
+                'OMI_SOURCE_GIT_COMMIT': 'd' * 40,
+                'OMI_SOURCE_GIT_TREE': 'e' * 40,
+                'OMI_RUNTIME_CONFIG_SHA256': 'c' * 64,
             }
             base_environment.pop('SELF_HOST_EGRESS_POLICY_ARTIFACT', None)
             missing_policy = subprocess.run(
@@ -1206,6 +1605,39 @@ class SelfHostOperationsTest(unittest.TestCase):
                 self.assertGreaterEqual(calls.count(f'{key}=unset'), 5, key)
             self.assertNotIn('host-injected', calls)
 
+            policy.write_text('{"schema_version":1,"enforcement":"network_default_deny"}\n', encoding='utf-8')
+            invalid_policy = subprocess.run(
+                ['bash', str(CUTOVER_GATE), '--external'],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**base_environment, 'SELF_HOST_EGRESS_POLICY_ARTIFACT': str(policy)},
+            )
+            self.assertEqual(invalid_policy.returncode, 1)
+            self.assertIn('does not satisfy the reviewed JSON contract', invalid_policy.stderr)
+
+            policy.write_text(
+                json.dumps(
+                    {
+                        'schema_version': 2,
+                        'enforcement': 'network_default_deny',
+                        'workloads': ['auth-server', 'backend', 'queue-worker'],
+                        'denied_targets': [
+                            '1.1.1.1',
+                            'api.openai.com',
+                            'api.omi.me',
+                            'api.anthropic.com',
+                            'generativelanguage.googleapis.com',
+                        ],
+                        'source_git_commit': 'd' * 40,
+                        'source_git_tree': 'e' * 40,
+                        'runtime_config_sha256': 'c' * 64,
+                    }
+                )
+                + '\n',
+                encoding='utf-8',
+            )
+
             docker.write_text(
                 docker.read_text(encoding='utf-8').replace(
                     '{"Service":"backend","State":"running","Health":"healthy"}',
@@ -1222,6 +1654,38 @@ class SelfHostOperationsTest(unittest.TestCase):
             )
             self.assertEqual(unhealthy.returncode, 1)
             self.assertIn('must be the running healthy workloads', unhealthy.stderr)
+
+    def test_external_policy_contract_rejects_partial_or_unknown_scope(self) -> None:
+        valid = {
+            'schema_version': 2,
+            'enforcement': 'network_default_deny',
+            'workloads': ['auth-server', 'backend', 'queue-worker'],
+            'denied_targets': [
+                '1.1.1.1',
+                'api.openai.com',
+                'api.omi.me',
+                'api.anthropic.com',
+                'generativelanguage.googleapis.com',
+            ],
+            'source_git_commit': 'd' * 40,
+            'source_git_tree': 'e' * 40,
+            'runtime_config_sha256': 'c' * 64,
+        }
+        self.assertEqual(EGRESS_POLICY.validate_policy(valid), valid)
+        for field, value in (
+            ('schema_version', True),
+            ('schema_version', 1),
+            ('workloads', ['backend']),
+            ('denied_targets', valid['denied_targets'][:-1]),
+            ('enforcement', 'document_only'),
+        ):
+            candidate = dict(valid)
+            candidate[field] = value
+            with self.assertRaisesRegex(ValueError, 'egress policy'):
+                EGRESS_POLICY.validate_policy(candidate)
+        unknown = {**valid, 'operator': 'ticket-123'}
+        with self.assertRaisesRegex(ValueError, 'keys must be exactly'):
+            EGRESS_POLICY.validate_policy(unknown)
 
     def test_operations_entrypoint_self_check(self) -> None:
         result = subprocess.run(
@@ -1271,6 +1735,28 @@ class SelfHostOperationsTest(unittest.TestCase):
                     dict(zip(('runtime_fingerprint', 'config_fingerprint', 'migration_fingerprint'), fingerprints)),
                     key_file,
                 )
+
+    def test_restore_works_with_read_only_backup_directory(self) -> None:
+        """The operations restore container mounts the operator backup read-only."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = self._key_file(root)
+            source = root / 'state'
+            source.mkdir()
+            (source / 'record.json').write_text('{"version":1}\n', encoding='utf-8')
+            backup_directory = root / 'backup'
+            backup_directory.mkdir()
+            archive = backup_directory / 'state.tar.gz.enc'
+            SNAPSHOT.backup(source, archive, key_file)
+
+            source.joinpath('record.json').write_text('corrupt\n', encoding='utf-8')
+            backup_directory.chmod(0o500)
+            try:
+                SNAPSHOT.restore(source, archive, key_file)
+            finally:
+                backup_directory.chmod(0o700)
+            self.assertEqual((source / 'record.json').read_text(encoding='utf-8'), '{"version":1}\n')
 
     def test_restore_rejects_archive_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1623,6 +2109,8 @@ class SelfHostOperationsTest(unittest.TestCase):
             'external evidence',
             'SELF_HOST_RECOVERY_EVIDENCE',
             'production_kms_attested',
+            'schema_version": 2',
+            'source_git_commit',
         ):
             self.assertIn(required, readme)
 
@@ -1637,6 +2125,21 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertIn('--key-file /backup-key/key', script)
         self.assertIn('postgres.dump.enc', script)
         self.assertIn('verify /backup \\\n      --expected-files "${ARCHIVE_FILES[@]}"', script)
+
+    def test_restore_stages_postgres_plaintext_outside_read_only_backup_mount(self) -> None:
+        script = OPERATIONS.read_text(encoding='utf-8')
+        open_source = script[
+            script.index('open_snapshot() {') : script.index(
+                '\n}\n\nstart_profile()', script.index('open_snapshot() {')
+            )
+        ]
+        self.assertIn('--volume "$archive_dir:/backup:ro"', open_source)
+        self.assertIn('--volume "$plaintext_dir:/restore:rw"', open_source)
+        self.assertIn('"/restore/$(basename "$plaintext")"', open_source)
+        self.assertIn('restore_staging="$(mktemp -d /tmp/omi-self-host-restore.XXXXXX)"', script)
+        self.assertIn('postgres_restore="$restore_staging/postgres.dump"', script)
+        self.assertIn("trap 'rm -rf -- \"$restore_staging\"' EXIT INT TERM", script)
+        self.assertNotIn('postgres_restore="$directory/.postgres.dump.restore"', script)
 
     def test_restore_and_start_static_contract_is_fail_closed(self) -> None:
         """Tripwire for the destructive ordering; live Compose proves behavior."""

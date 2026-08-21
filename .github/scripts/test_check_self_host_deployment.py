@@ -202,6 +202,31 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn('PUBLIC_AUTH_URL must be an explicit https URL', errors)
 
+    def test_self_host_share_origin_is_required_and_operator_owned(self) -> None:
+        errors = self.validate_mutation(
+            env_replace=(
+                'OMI_SHARE_BASE_URL=https://share.example.com',
+                'OMI_SHARE_BASE_URL=',
+            )
+        )
+        self.assertTrue(any('missing required values' in error and 'OMI_SHARE_BASE_URL' in error for error in errors))
+
+        errors = self.validate_mutation(
+            env_replace=(
+                'OMI_SHARE_BASE_URL=https://share.example.com',
+                'OMI_SHARE_BASE_URL=https://h.omi.me',
+            )
+        )
+        self.assertIn('OMI_SHARE_BASE_URL must use an operator-owned host, not an Omi-operated host', errors)
+
+        errors = self.validate_mutation(
+            env_replace=(
+                'OMI_SHARE_BASE_URL=https://share.example.com',
+                'OMI_SHARE_BASE_URL=http://share.example.com',
+            )
+        )
+        self.assertIn('OMI_SHARE_BASE_URL must be an explicit https URL', errors)
+
     def test_public_origins_are_not_path_prefixed_or_credentialed(self) -> None:
         for replacement in (
             'https://objects.example.com/objects',
@@ -240,6 +265,14 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn('FIRMWARE_RELEASE_MANIFEST_URL must be an explicit public HTTPS object URL', errors)
 
+        errors = self.validate_mutation(
+            env_replace=(
+                'FIRMWARE_RELEASE_ASSET_ORIGIN=https://objects.example.com',
+                'FIRMWARE_RELEASE_ASSET_ORIGIN=https://downloads.example.com',
+            )
+        )
+        self.assertIn('FIRMWARE_RELEASE_ASSET_ORIGIN must equal the exact PUBLIC_OBJECTS_URL origin', errors)
+
     def test_private_auth_control_plane_is_explicit_and_cannot_fall_back_public(self) -> None:
         errors = self.validate_mutation(
             compose_replace=(
@@ -269,6 +302,9 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
             )
         )
         self.assertIn('redis must define a healthcheck', errors)
+
+        errors = self.validate_mutation(compose_replace=('127.0.0.1:8080/ready', '127.0.0.1:8080/v1/health'))
+        self.assertIn('backend healthcheck must probe the dependency-aware /ready endpoint', errors)
 
         errors = self.validate_mutation(
             compose_replace=(
@@ -465,6 +501,44 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
             )
         )
         self.assertIn('TTS_OPENAI_COMPATIBLE_BASE_URL must not use official endpoint host api.openai.com', official)
+
+    def test_desktop_updates_must_disable_legacy_vendor_fallback(self) -> None:
+        errors = self.validate_mutation(
+            compose_replace=(
+                'DESKTOP_UPDATE_LEGACY_FALLBACK=disabled',
+                'DESKTOP_UPDATE_LEGACY_FALLBACK=enabled',
+            )
+        )
+        self.assertIn("backend DESKTOP_UPDATE_LEGACY_FALLBACK must be literal 'disabled'", errors)
+
+    def test_desktop_updates_bind_optional_operator_download_url(self) -> None:
+        errors = self.validate_mutation(
+            compose_replace=(
+                '      - DESKTOP_UPDATE_DOWNLOAD_URL=${DESKTOP_UPDATE_DOWNLOAD_URL-}\n',
+                '',
+            )
+        )
+        self.assertIn(
+            "backend DESKTOP_UPDATE_DOWNLOAD_URL must use exact optional binding '${DESKTOP_UPDATE_DOWNLOAD_URL-}'",
+            errors,
+        )
+
+    def test_desktop_updates_reject_vendor_or_insecure_operator_download_url(self) -> None:
+        official = self.validate_mutation(
+            env_replace=(
+                'DESKTOP_UPDATE_DOWNLOAD_URL=\n',
+                'DESKTOP_UPDATE_DOWNLOAD_URL=https://api.omi.me/v2/desktop/stable.dmg\n',
+            )
+        )
+        self.assertIn('DESKTOP_UPDATE_DOWNLOAD_URL must not use official endpoint host api.omi.me', official)
+
+        insecure = self.validate_mutation(
+            env_replace=(
+                'DESKTOP_UPDATE_DOWNLOAD_URL=\n',
+                'DESKTOP_UPDATE_DOWNLOAD_URL=http://downloads.example.com/stable.dmg\n',
+            )
+        )
+        self.assertIn('DESKTOP_UPDATE_DOWNLOAD_URL must use https for a public target host', insecure)
 
     def test_local_speaker_embedding_requires_mounted_model_and_bounded_threads(self) -> None:
         errors = self.validate_mutation(

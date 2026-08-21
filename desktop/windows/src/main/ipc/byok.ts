@@ -11,6 +11,7 @@ import { ipcMain, webContents } from 'electron'
 import { ByokKeyStore } from '../agentKernel/byokStore'
 import { deactivateByok, enrollByok, type ByokEnrollResult } from '../agentKernel/byokEnroll'
 import type { ByokKeys, ByokProvider } from '../../shared/byok'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
 let store: ByokKeyStore | null = null
 
@@ -22,7 +23,13 @@ function getStore(): ByokKeyStore {
 }
 
 function apiBase(): string {
-  return import.meta.env.VITE_OMI_API_BASE || 'https://api.omi.me'
+  return resolveWindowsDeployment().apiBase
+}
+
+function requireByok(): void {
+  if (!resolveWindowsDeployment().allowByok) {
+    throw new Error('Direct model-provider keys are disabled by this deployment profile')
+  }
 }
 
 /**
@@ -38,12 +45,17 @@ function broadcastByokChanged(): void {
 
 /** Registers the `byok:*` IPC handlers backing the ByokKeyStore. */
 export function registerByokHandlers(): void {
-  ipcMain.handle('byok:getAll', (): ByokKeys => getStore().getAllKeys())
+  ipcMain.handle('byok:getAll', (): ByokKeys => {
+    if (!resolveWindowsDeployment().allowByok) return {}
+    return getStore().getAllKeys()
+  })
   ipcMain.handle('byok:set', (_e, provider: ByokProvider, key: string): void => {
+    requireByok()
     getStore().setKey(provider, key)
     broadcastByokChanged()
   })
   ipcMain.handle('byok:clear', (_e, provider: ByokProvider): void => {
+    requireByok()
     getStore().clearKey(provider)
     broadcastByokChanged()
   })
@@ -51,12 +63,15 @@ export function registerByokHandlers(): void {
     getStore().clearAll()
     broadcastByokChanged()
   })
-  ipcMain.handle('byok:isActive', (): boolean => getStore().isActive())
+  ipcMain.handle('byok:isActive', (): boolean =>
+    resolveWindowsDeployment().allowByok ? getStore().isActive() : false
+  )
 
   // Validate the stored keys live and reconcile the backend BYOK activation.
   // The Firebase bearer token is relayed from the renderer (same pattern as the
   // listen WebSocket) since the token lives in the renderer's Firebase session.
   ipcMain.handle('byok:enroll', async (_e, token: string): Promise<ByokEnrollResult> => {
+    requireByok()
     const result = await enrollByok({
       keys: getStore().getAllKeys(),
       apiBase: apiBase(),
@@ -70,6 +85,7 @@ export function registerByokHandlers(): void {
   // by the teardown path). Best-effort; the token is relayed from the renderer
   // while the session is still valid.
   ipcMain.handle('byok:deactivate', async (_e, token: string): Promise<void> => {
+    if (!resolveWindowsDeployment().allowByok) return
     await deactivateByok({ apiBase: apiBase(), token })
   })
 }

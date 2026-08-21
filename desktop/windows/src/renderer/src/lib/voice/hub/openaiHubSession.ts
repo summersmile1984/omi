@@ -27,6 +27,7 @@ import {
   type HubSessionOptions
 } from './hubSession'
 import { OPENAI_REALTIME_MODEL } from '../tokenMint'
+import { resolveWindowsDeployment } from '../../../../../shared/deploymentProfile'
 
 export class OpenAiHubSession extends BaseHubSession {
   readonly provider: HubProvider = 'openai'
@@ -57,9 +58,13 @@ export class OpenAiHubSession extends BaseHubSession {
 
   constructor(opts: HubSessionOptions) {
     super(opts)
+    if (!resolveWindowsDeployment().allowDirectModelProviders && !opts.backendRelayConnectionId) {
+      throw new Error('Direct OpenAI realtime is disabled by this deployment profile')
+    }
   }
 
   protected connectSpec(): { url: string; protocols?: string[] } {
+    if (!resolveWindowsDeployment().allowDirectModelProviders) return { url: 'omi-relay://backend' }
     return {
       url: `wss://api.openai.com/v1/realtime?model=${OPENAI_REALTIME_MODEL}`,
       protocols: ['realtime', `openai-insecure-api-key.${this.token}`]

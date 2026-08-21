@@ -1,19 +1,27 @@
-// The Gemini vision call for memory extraction — single-shot (image + prompt →
-// structured JSON), NOT a tool loop. Byte-for-byte the same transport machinery
+// The memory vision call — single-shot (image + prompt → structured JSON), NOT a
+// tool loop. Cloud keeps Gemini's wire; self-hosted uses the generic backend capability. The same transport machinery
 // as focus/gemini.ts (the retry/timeout/abort composition is identical); only the
 // response schema, the parser, and the return type differ.
 //
-// It goes through the Rust desktop backend's proxy, never Gemini directly: the
-// API key lives on the server and never touches the device.
+// The cloud adapter goes through the Rust desktop backend's proxy, never Gemini
+// directly: the API key lives on the server and never touches the device.
 import { net } from 'electron'
+import { resolveWindowsDeployment } from '../../../shared/deploymentProfile'
 import { getAbortSignal, type BackendSession } from '../core/session'
+import {
+  completeStructuredCapability,
+  ModelCapabilityUnavailableError
+} from '../core/modelCapabilityClient'
 import {
   MEMORY_RESPONSE_SCHEMA,
   parseMemoryExtraction,
   type MemoryExtractionResult
 } from './models'
 
-const MODEL = 'gemini-2.5-flash'
+// Flash-Lite, deliberately: vision-capable, `shared`/on-demand on Vertex (never burns
+// the saturated Flash PT reservation), and measurably more prompt-compliant than Flash
+// on this lane (2026-08-17 overflow bakeoff). Mirrors Mac's ModelQoS.Gemini.lightweight.
+export const MODEL = 'gemini-2.5-flash-lite'
 const REQUEST_TIMEOUT_MS = 30_000
 /** 3 attempts total. Mac's backoff, exactly: 2s then 8s. */
 const RETRY_DELAYS_MS = [2_000, 8_000]
@@ -32,7 +40,8 @@ export class GeminiHttpError extends Error {
 
 /** Replay only when the backend explicitly marks the response retryable. */
 function isTransient(e: unknown): boolean {
-  if (e instanceof GeminiHttpError) return e.retryable
+  if (e instanceof GeminiHttpError || e instanceof ModelCapabilityUnavailableError)
+    return e.retryable
   // Local timeouts, bare network failures, and session cancellation are
   // ambiguous after dispatch, so they fail closed instead of replaying.
   return false
@@ -107,6 +116,19 @@ async function attempt(
   return withTimeout(
     REQUEST_TIMEOUT_MS,
     async (signal) => {
+      if (resolveWindowsDeployment().profile === 'self_hosted') {
+        return (
+          await completeStructuredCapability({
+            session,
+            systemPrompt,
+            prompt,
+            imageBase64,
+            responseToolName: 'submit_memory_extraction',
+            responseSchema: MEMORY_RESPONSE_SCHEMA,
+            signal
+          })
+        ).text
+      }
       const res = await net.fetch(
         `${session.desktopApiBase}/v1/proxy/gemini/models/${MODEL}:generateContent`,
         {

@@ -7,9 +7,9 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/schema/message_event.dart';
 import 'package:omi/backend/schema/transcript_segment.dart';
 import 'package:omi/env/env.dart';
-import 'package:omi/env/environment_profile.dart';
 import 'package:omi/models/custom_stt_config.dart';
 import 'package:omi/models/stt_provider.dart';
+import 'package:omi/env/environment_profile.dart';
 import 'package:omi/services/sockets/on_device_apple_provider.dart';
 import 'package:omi/services/sockets/on_device_whisper_provider.dart';
 import 'package:omi/services/sockets/pure_socket.dart';
@@ -188,6 +188,10 @@ class TranscriptSegmentSocketService implements IPureSocketListener {
     return;
   }
 
+  Future requestFirstOnboardingQuestion() async {
+    await sendText(jsonEncode({'type': 'start_onboarding'}));
+  }
+
   @override
   void onClosed([int? closeCode]) {
     _listeners.forEach((k, v) {
@@ -301,6 +305,10 @@ class TranscriptSocketServiceFactory {
     return _customSttSupportedCodecs.contains(codec);
   }
 
+  static bool shouldBlockUnsupportedCodecFallback(BleAudioCodec codec, CustomSttConfig config) {
+    return config.isEnabled && !isCodecSupportedForCustomStt(codec) && !config.sendRawAudioToOmi;
+  }
+
   /// Create default Omi transcription service
   static TranscriptSegmentSocketService createDefault(
     int sampleRate,
@@ -343,15 +351,6 @@ class TranscriptSocketServiceFactory {
       return createDefault(sampleRate, codec, language, source: source);
     }
 
-    final primarySocket = createTransportForProfile<IPureSocket>(
-      profile: Env.profile,
-      provider: config.provider,
-      config: config,
-      createTransport: () => config.isLive
-          ? _createStreamingSocket(sampleRate, codec, config)
-          : _createPollingSocket(sampleRate, codec, config),
-    );
-
     final sttConfigId = config.sttConfigId;
     final effectiveLang = config.effectiveLanguage;
     final effectiveModel = config.effectiveModel;
@@ -360,6 +359,15 @@ class TranscriptSocketServiceFactory {
     );
 
     // Create primary socket based on isLive/isPolling
+    final primarySocket = createTransportForProfile(
+      profile: Env.profile,
+      provider: config.provider,
+      config: config,
+      createTransport: () => config.isLive
+          ? _createStreamingSocket(sampleRate, codec, config)
+          : _createPollingSocket(sampleRate, codec, config),
+    );
+
     // Wrap with composite service (primary STT + Omi backend)
     return _createCompositeService(
       sampleRate,
@@ -369,6 +377,7 @@ class TranscriptSocketServiceFactory {
       source: source,
       sttConfigId: sttConfigId,
       sttProvider: config.provider.name,
+      forwardRawAudioToSecondary: config.sendRawAudioToOmi,
     );
   }
 
@@ -378,6 +387,7 @@ class TranscriptSocketServiceFactory {
     CustomSttConfig? config,
   }) {
     if (profile != AppEnvironmentProfile.selfHosted) return;
+
     if (!provider.isSelfHostedClientSafe) {
       throw StateError(
         'Profile self_hosted routes network transcription through its configured backend; '
@@ -385,6 +395,10 @@ class TranscriptSocketServiceFactory {
       );
     }
 
+    // The provider enum alone is not an authority boundary: an imported or
+    // persisted config can override request_type/url. Keep the two client-safe
+    // providers on their intended local transports before any URL/HTTP/WS
+    // object is constructed.
     if (provider == SttProvider.onDeviceWhisper &&
         config?.requestType != null &&
         config!.requestType != SttRequestType.multipartForm) {
@@ -405,6 +419,9 @@ class TranscriptSocketServiceFactory {
     }
   }
 
+  /// Compiler-visible network-object construction boundary. Production passes
+  /// the socket/provider constructor as [createTransport]; self-hosted rejection
+  /// happens before that closure can read a URL or instantiate an HTTP/WS client.
   static T createTransportForProfile<T>({
     required AppEnvironmentProfile profile,
     required SttProvider provider,
@@ -415,11 +432,16 @@ class TranscriptSocketServiceFactory {
     return createTransport();
   }
 
+  /// A self-hosted mobile client may use a Whisper process on the device or a
+  /// private operator network, but must not turn the "local" provider into a
+  /// public vendor egress path. Public operator STT belongs behind the
+  /// configured backend provider route and is therefore not accepted here.
   static bool _isPrivateLocalHost(String rawHost) {
     var host = rawHost.trim().toLowerCase();
     if (host.isEmpty || host.contains(RegExp(r'[/:?#@\s]'))) return false;
     host = host.replaceFirst(RegExp(r'\.+$'), '');
     if (host == 'localhost' || host == 'host.docker.internal' || host.endsWith('.local')) return true;
+
     final address = InternetAddress.tryParse(host);
     if (address == null) return false;
     if (address.type == InternetAddressType.IPv4) {
@@ -433,6 +455,10 @@ class TranscriptSocketServiceFactory {
           first == 127 ||
           (first == 100 && second >= 64 && second <= 127);
     }
+
+    // IPv6 loopback, link-local, and unique-local addresses are private to
+    // the device/operator network. InternetAddress normalizes neither textual
+    // form here, so use the canonical address string for the prefix check.
     final normalized = address.address.toLowerCase();
     return address.isLoopback ||
         normalized.startsWith('fe8') ||
@@ -566,6 +592,7 @@ class TranscriptSocketServiceFactory {
     String? source,
     String? sttConfigId,
     String? sttProvider,
+    required bool forwardRawAudioToSecondary,
   }) {
     final secondaryService = CustomSttTranscriptSegmentSocketService.create(
       sampleRate,
@@ -577,6 +604,7 @@ class TranscriptSocketServiceFactory {
       primarySocket: primarySocket,
       secondarySocket: secondaryService.socket,
       sttProvider: sttProvider,
+      forwardRawAudioToSecondary: forwardRawAudioToSecondary,
     );
     return TranscriptSegmentSocketService.withSocket(
       sampleRate,

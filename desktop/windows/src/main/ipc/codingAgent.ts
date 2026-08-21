@@ -33,6 +33,11 @@ import type {
   CodingAgentRunArgs,
   CodingAgentStartAuthResult
 } from '../../shared/types'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
+
+function allowExternalCodingAgents(): boolean {
+  return resolveWindowsDeployment().allowDirectModelProviders
+}
 
 function broadcast(event: CodingAgentEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -46,6 +51,7 @@ export function registerCodingAgentHandlers(): void {
   ipcMain.handle(
     'codingAgent:list',
     (_e, commandOverrides?: AdapterCommandOverrides): CodingAgentInfo[] => {
+      if (!allowExternalCodingAgents()) return []
       const overrides = commandOverrides ?? {}
       return PRODUCTION_ADAPTER_IDS.map((id) => {
         const connected = adapterIsActivated(id, overrides)
@@ -61,34 +67,66 @@ export function registerCodingAgentHandlers(): void {
 
   ipcMain.handle(
     'codingAgent:run',
-    (_e, args: CodingAgentRunArgs): Promise<CodingAgentResult> =>
-      runCodingAgentTask(args, broadcast, (message) => console.log(`[codingAgent] ${message}`))
+    (_e, args: CodingAgentRunArgs): Promise<CodingAgentResult> => {
+      if (!allowExternalCodingAgents()) {
+        return Promise.resolve({
+          taskId: args.taskId,
+          ok: false,
+          adapterId: null,
+          text: '',
+          error: 'External coding-agent processes are disabled by this deployment profile.'
+        })
+      }
+      return runCodingAgentTask(args, broadcast, (message) => console.log(`[codingAgent] ${message}`))
+    }
   )
 
-  ipcMain.handle('codingAgent:cancel', (_e, taskId: string): boolean => cancelTask(taskId))
+  ipcMain.handle('codingAgent:cancel', (_e, taskId: string): boolean =>
+    allowExternalCodingAgents() ? cancelTask(taskId) : false
+  )
 
   ipcMain.handle(
     'codingAgent:test',
     (_e, agentId: ProductionAdapterId, commandOverrides?: AdapterCommandOverrides) =>
-      testAgentConnection(agentId, commandOverrides ?? {}, (message) =>
-        console.log(`[codingAgent] ${message}`)
-      )
+      allowExternalCodingAgents()
+        ? testAgentConnection(agentId, commandOverrides ?? {}, (message) =>
+            console.log(`[codingAgent] ${message}`)
+          )
+        : Promise.resolve({ ok: false, error: 'External coding agents are disabled.' })
   )
 
-  ipcMain.handle('codingAgent:authStatus', (): CodingAgentAuthStatus => claudeAuthStatus())
+  ipcMain.handle('codingAgent:authStatus', (): CodingAgentAuthStatus =>
+    allowExternalCodingAgents() ? claudeAuthStatus() : { connected: false, expiresAt: null }
+  )
 
   ipcMain.handle(
     'codingAgent:startAuth',
-    (): Promise<CodingAgentStartAuthResult> => startClaudeAuth()
+    (): Promise<CodingAgentStartAuthResult> =>
+      allowExternalCodingAgents()
+        ? startClaudeAuth()
+        : Promise.resolve({
+            ok: false,
+            error: 'External coding-agent authentication is disabled.',
+            status: { connected: false, expiresAt: null }
+          })
   )
 
   ipcMain.handle('codingAgent:signOut', (): CodingAgentAuthStatus => {
+    if (!allowExternalCodingAgents()) return { connected: false, expiresAt: null }
     removeClaudeCredentials()
     return claudeAuthStatus()
   })
 
   // PATH auto-detection for the external agent CLIs (Codex / Hermes / OpenClaw).
-  ipcMain.handle('codingAgent:detect', (): Promise<AgentDetectionMap> => detectAgents())
+  ipcMain.handle('codingAgent:detect', (): Promise<AgentDetectionMap> =>
+    allowExternalCodingAgents()
+      ? detectAgents()
+      : Promise.resolve({
+          openclaw: { installed: false },
+          hermes: { installed: false },
+          codex: { installed: false }
+        })
+  )
 
   // Codex OpenAI API-key lane (encrypted store, boolean-only status to renderer).
   ipcMain.handle('codingAgent:codexKeyStatus', (): CodexKeyStatus => codexApiKeyStatus())

@@ -50,13 +50,21 @@ import type { VoiceToolDeclaration } from '../../../../../shared/types'
 import type { VoiceSessionID, VoiceTurnID, VoiceResponseID } from '../turn/voiceTurnMachine'
 import { GeminiHubSession } from './geminiHubSession'
 import { OpenAiHubSession } from './openaiHubSession'
-import type { HubEventIdentity, HubSession, HubSessionEvents } from './hubSession'
+import {
+  backendRelaySocketFactory,
+  type HubEventIdentity,
+  type HubSession,
+  type HubSessionEvents,
+  type HubSocketFactory
+} from './hubSession'
+import type { VoiceHubRelayContract } from '../../../../../shared/types'
 import {
   classifyHubClose,
   consumesStrike,
   HUB_IDLE_TEARDOWN_THRESHOLD_MS,
   type HubCloseCategory
 } from './hubClose'
+import { resolveWindowsDeployment } from '../../../../../shared/deploymentProfile'
 
 // MARK: - Language resolution
 
@@ -116,6 +124,8 @@ export type HubSessionSpec = {
   /** The provider-neutral tool catalog this session advertises (PR-C). Empty when
    *  no `fetchTools` seam is wired or no signed-in owner exists yet. */
   tools: VoiceToolDeclaration[]
+  backendRelayConnectionId?: string
+  socketFactory?: HubSocketFactory
 }
 
 export type HubControllerOptions = {
@@ -149,6 +159,12 @@ export type HubControllerOptions = {
    *  Defaults to `setTimeout`/`clearTimeout`. */
   setTimer?: (ms: number, fire: () => void) => unknown
   clearTimer?: (handle: unknown) => void
+  /** Signed deployment policy. False rejects before provider resolution, token
+   *  minting, session construction, or any vendor URL is touched. */
+  allowsDirectModelProviders?: () => boolean
+  /** Self-hosted authenticated relay mint. Its returned wire_protocol is the
+   * sole authority for selecting the OpenAI/Gemini frame adapter. */
+  createBackendRelay?: () => Promise<VoiceHubRelayContract>
 }
 
 // MARK: - Controller
@@ -186,6 +202,8 @@ export class HubController {
   private readonly now: () => number
   private readonly setTimer: (ms: number, fire: () => void) => unknown
   private readonly clearTimer: (handle: unknown) => void
+  private readonly allowsDirectModelProviders: () => boolean
+  private readonly createBackendRelay?: () => Promise<VoiceHubRelayContract>
 
   private session: HubSession | null = null
   private sessionProvider: VoiceProvider | null = null
@@ -299,7 +317,9 @@ export class HubController {
           instructions: spec.instructions,
           events: spec.events,
           tools: spec.tools,
-          sinkId: sinkId?.()
+          sinkId: sinkId?.(),
+          socketFactory: spec.socketFactory,
+          backendRelayConnectionId: spec.backendRelayConnectionId
         }
         return spec.provider === 'openai' ? new OpenAiHubSession(opts) : new GeminiHubSession(opts)
       })
@@ -307,6 +327,13 @@ export class HubController {
     this.setTimer = options.setTimer ?? ((ms, fire) => setTimeout(fire, ms))
     this.clearTimer =
       options.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
+    this.allowsDirectModelProviders =
+      options.allowsDirectModelProviders ?? (() => resolveWindowsDeployment().allowDirectModelProviders)
+    this.createBackendRelay =
+      options.createBackendRelay ??
+      (typeof window !== 'undefined' && window.omi?.voiceHubRelayCreate
+        ? () => window.omi.voiceHubRelayCreate()
+        : undefined)
   }
 
   // MARK: Warm (idempotent, eager-callable)
@@ -315,8 +342,17 @@ export class HubController {
    *  Idempotent: a no-op that resolves to the live session id when already warm on
    *  the same provider, and coalesces with an in-flight warm. */
   ensureWarm(): Promise<VoiceSessionID> {
+    const directProvidersAllowed = this.allowsDirectModelProviders()
+    if (!directProvidersAllowed && !this.createBackendRelay) {
+      return Promise.reject(
+        new Error('Realtime hub is unavailable until the configured backend relay capability is active.')
+      )
+    }
     if (this.warming) return this.warming
-    const provider = this.effectiveProvider()
+    if (!directProvidersAllowed && this.session?.isWarm() && this.sessionID) {
+      return Promise.resolve(this.sessionID)
+    }
+    const provider = directProvidersAllowed ? this.effectiveProvider() : 'openai'
     if (
       this.session &&
       this.sessionProvider === provider &&
@@ -376,14 +412,22 @@ export class HubController {
       // the null→alternate transition, so the once-per-chain guard bounds it.
       let activeProvider = provider
       let token: string
-      for (;;) {
-        try {
-          token = await this.mintToken(activeProvider)
-          break
-        } catch (e) {
-          const alternate = this.failoverOnMintFailure(e, activeProvider)
-          if (alternate === null) throw e // not provider-scoped, or already failed over
-          activeProvider = alternate
+      let backendRelayConnectionId: string | undefined
+      if (!this.allowsDirectModelProviders()) {
+        const relay = await this.createBackendRelay!()
+        activeProvider = 'openai'
+        token = relay.connectionId
+        backendRelayConnectionId = relay.connectionId
+      } else {
+        for (;;) {
+          try {
+            token = await this.mintToken(activeProvider)
+            break
+          } catch (e) {
+            const alternate = this.failoverOnMintFailure(e, activeProvider)
+            if (alternate === null) throw e // not provider-scoped, or already failed over
+            activeProvider = alternate
+          }
         }
       }
       // A teardownSession() straddled the mint (e.g. the wake-deferred refresh kicked
@@ -406,7 +450,11 @@ export class HubController {
         token,
         instructions,
         events: this.sessionEvents(),
-        tools
+        tools,
+        backendRelayConnectionId,
+        socketFactory: backendRelayConnectionId
+          ? backendRelaySocketFactory(backendRelayConnectionId)
+          : undefined
       })
       this.session = session
       this.sessionProvider = activeProvider

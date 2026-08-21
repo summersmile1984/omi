@@ -176,15 +176,18 @@ verify_snapshot() {
 }
 
 open_snapshot() {
-  local archive="$1" plaintext="$2" key_file="$3" image
+  local archive="$1" plaintext="$2" key_file="$3" image archive_dir plaintext_dir
   image="$(helper_image)"
+  archive_dir="$(dirname "$archive")"
+  plaintext_dir="$(dirname "$plaintext")"
   docker run --rm --user 0 \
     --volume "$OPS_DIR:/ops:ro" \
     --volume "$key_file:/backup-key/key:ro" \
-    --volume "$(dirname "$archive"):/backup:rw" \
+    --volume "$archive_dir:/backup:ro" \
+    --volume "$plaintext_dir:/restore:rw" \
     "$image" python /ops/volume-snapshot.py open \
       "/backup/$(basename "$archive")" \
-      "/backup/$(basename "$plaintext")" \
+      "/restore/$(basename "$plaintext")" \
       --key-file /backup-key/key
 }
 
@@ -276,7 +279,7 @@ backup_state() {
 }
 
 restore_state() {
-  local directory key_file postgres_restore
+  local directory key_file postgres_restore restore_staging
   directory="$(absolute_directory "$1")"
   [[ "${SELF_HOST_RESTORE_ACK:-}" == "I_ACKNOWLEDGE_THIS_OVERWRITES_STATE" ]] || {
     echo "error: restore requires SELF_HOST_RESTORE_ACK=I_ACKNOWLEDGE_THIS_OVERWRITES_STATE" >&2
@@ -294,11 +297,16 @@ restore_state() {
   # pg_restore --clean only drops objects named in the archive. Recreate the
   # database so objects created after the backup cannot survive the rollback.
   compose exec -T postgres sh -ec 'dropdb -U "$POSTGRES_USER" --force --if-exists -- "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O "$POSTGRES_USER" -- "$POSTGRES_DB"'
-  postgres_restore="$directory/.postgres.dump.restore"
-  trap 'rm -f "$postgres_restore"' EXIT INT TERM
+  # Keep authenticated plaintext outside the operator backup directory.  The
+  # archive mount stays read-only; the helper writes only into this private,
+  # disposable staging directory and the trap removes it on every exit path.
+  restore_staging="$(mktemp -d /tmp/omi-self-host-restore.XXXXXX)"
+  chmod 700 "$restore_staging"
+  postgres_restore="$restore_staging/postgres.dump"
+  trap 'rm -rf -- "$restore_staging"' EXIT INT TERM
   open_snapshot "$directory/postgres.dump.enc" "$postgres_restore" "$key_file"
   compose exec -T postgres sh -ec 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner' <"$postgres_restore"
-  rm -f "$postgres_restore"
+  rm -rf -- "$restore_staging"
   trap - EXIT INT TERM
   start_profile
   echo "restore OK: $directory"

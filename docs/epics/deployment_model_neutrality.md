@@ -68,9 +68,13 @@ self-host: BetterAuth/Postgres/MinIO/Redis/generic routes
       session revoke and complete account deletion.
 - [x] Flutter, macOS and Context release entrypoints use one deployment profile
       for login, refresh, API, WebSocket and MCP; no Firebase session is present.
+- [x] Self-hosted share links require an explicit operator-owned HTTPS origin;
+      missing configuration is unavailable and managed `h.omi.me` links are
+      not accepted by the neutral backend.
 - [ ] Fresh operator-signed Flutter artifacts have been exercised on both
       mobile platforms. The self-host build, Firebase-runtime boundary and
-      unsigned/local artifact scans are green; a real operator certificate,
+      unsigned/local artifact scans are green, and the mobile artifact smoke
+      gates reject embedded official `*.omi.me` origins; a real operator certificate,
       device install, sign-in, capture and MCP session are still external
       evidence requirements.
 
@@ -136,10 +140,13 @@ aboutness instruction and was correctly blocked by the unchanged subject-safety
 validator. After the production prompt made the `self + primary_user` mapping
 explicit, two consecutive full HTTPS runs reached validated Long-term admission,
 projection and public retrieval. External mode now
-requires an operator policy artifact plus exact-workload denials for OpenAI,
+requires a checked-in schema-v2 JSON policy contract bound to the tested source
+commit/tree/config plus exact-workload denials for OpenAI,
 Google, Anthropic, Omi and an arbitrary public-IP sentinel; no such production
 run has been claimed. Valid source-attributed evidence therefore continues to record
-`authorizes_production_cutover=false`.
+`authorizes_production_cutover=false`. The contract validates the exact
+artifact shape, scope, and source/config binding; it is not a cryptographic
+signature and cannot replace host firewall or change-record evidence.
 
 ## Explicit self-hosted capability gaps
 
@@ -152,9 +159,13 @@ The remaining paths are deployment-neutral because they fail closed before
 vendor egress, but they do not yet have feature parity with the managed
 deployment:
 
-- app-icon image generation can use an explicit operator-owned
-  OpenAI-compatible image endpoint, but remains disabled in the checked-in
-  profile until the operator configures it;
+- app-icon generation uses a deterministic local template in the checked-in
+  profile; it can be switched to an explicit operator-owned
+  OpenAI-compatible image endpoint, but never discovers a vendor endpoint or
+  key implicitly. Both the compatible image client and the optional gateway
+  image path preflight the process egress policy before constructing a client;
+  fixed OpenAI/Gemini/ElevenLabs routes are unavailable in neutral mode even
+  when ambient credentials exist;
 - attached-file chat can use `FILE_CHAT_TRANSPORT=local_extraction`: originals
   remain private in the configured UID-scoped object store, bounded local
   extraction handles text/Markdown/JSON/CSV/PDF/DOCX and restricted inline
@@ -172,13 +183,28 @@ deployment:
 - the self-host profile uses explicit, operator-owned Typesense projections for
   canonical memory and conversation keyword search. The projection schema,
   rebuild/reconcile commands and account-deletion ordering are independent of
-  the retired Firebase Typesense extension; an unavailable selected service is
-  a typed search failure, never an empty vector-only result.
-- push delivery is explicitly `PUSH_PROVIDER=disabled` until an operator push
-  service is configured; notification requests return a typed unavailable
-  capability rather than silently calling Firebase. Omitting `PUSH_PROVIDER`
-  in a neutral/self-hosted profile has the same fail-closed result before the
-  Firebase SDK is initialized; managed profiles retain their Firebase default.
+  the retired Firebase Typesense extension; neutral/self-hosted omission of
+  either provider setting resolves to `disabled` before ambient credentials
+  are inspected, and an unavailable selected service is a typed search
+  failure, never an empty vector-only result.
+- push delivery defaults to `PUSH_PROVIDER=disabled` in the checked-in
+  self-host profile, so notification requests return a typed unavailable
+  capability rather than silently calling Firebase. An operator may opt into
+  `PUSH_PROVIDER=webhook` with an HTTPS, HMAC-signed
+  `omi.push.webhook.v1`/`omi.push.receipt.v1` bridge; the bridge is bounded,
+  retryable-only, and never falls through to Firebase. Omitting
+  `PUSH_PROVIDER` in a neutral/self-hosted profile has the same fail-closed
+  result before the Firebase SDK is initialized; managed profiles retain
+  their Firebase default. A real receiver/mobile delivery drill remains an
+  external evidence requirement.
+- Firmware and desktop update authorities are also profile-aware at the
+  request boundary: neutral/self-hosted direct launches default to typed
+  unavailability rather than GitHub/Omi release scans when their explicit
+  manifest/pointer bindings are omitted. The desktop recovery policy accepts
+  only an explicit operator-owned `DESKTOP_UPDATE_DOWNLOAD_URL` or Firestore
+  `download_url`; with neither configured it returns `availability=disabled`
+  and `download_url=null`, never the managed `api.omi.me` URL. Managed
+  profiles retain their historical release defaults.
 - macOS FluidAudio speech-model loading is managed-only: self-hosted local STT
   and optional PTT language identification fail through their existing
   backend/auto-detect seams instead of implicitly downloading missing weights.
@@ -188,9 +214,14 @@ deployment:
   surface cannot download Hugging Face weights and accepts only a user/operator
   selected local `.bin` model. Managed profiles retain their existing download
   flow.
-- Agent VM cleanup is explicitly `AGENT_VM_PROVIDER=disabled`; legacy GCE
-  state blocks deletion until it is imported/reconciled, so missing ADC cannot
-  be mistaken for successful cleanup.
+- Agent VM cleanup is explicitly `AGENT_VM_PROVIDER=disabled`; neutral and
+  self-hosted direct launches apply the same default when the binding is
+  omitted. Legacy GCE state blocks deletion until it is imported/reconciled,
+  so missing ADC cannot be mistaken for successful cleanup.
+- Vector-store selection is likewise profile-aware at the import boundary:
+  neutral/self-hosted launches without an explicit store binding remain typed
+  unavailable instead of inheriting Pinecone; the reviewed profile selects
+  operator-owned Qdrant explicitly.
 - Firebase Auth users and Firebase Storage objects have generation-pinned,
   checkpointed import tools. These are safe to run against production exports,
   but the repository contains no production credentials and therefore does not

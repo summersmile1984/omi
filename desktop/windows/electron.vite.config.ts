@@ -1,7 +1,9 @@
 import { resolve } from 'path'
 import { defineConfig } from 'electron-vite'
+import { loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { resolveDevInstance } from './src/main/devInstance'
+import { rewriteSelfHostedCsp } from './src/shared/selfHostedCsp'
 
 // Resolve THIS checkout's dev instance from the worktree it lives in. The primary
 // checkout stays on 5179 with the default profile (zero change). A linked worktree
@@ -10,6 +12,13 @@ import { resolveDevInstance } from './src/main/devInstance'
 // matching CDP port + window-title suffix + userData profile; the main process
 // re-derives from its own cwd as a fallback, so correctness never depends on this.
 const devInstance = resolveDevInstance()
+const signedBuildEnv = { ...loadEnv('production', __dirname, ''), ...process.env }
+const selfHostedRenderer = signedBuildEnv.VITE_OMI_DEPLOYMENT_PROFILE === 'self_hosted'
+
+function selfHostedCsp(html: string): string {
+  if (!selfHostedRenderer) return html
+  return rewriteSelfHostedCsp(html, signedBuildEnv)
+}
 process.env.OMI_INSTANCE = devInstance.name
 process.env.OMI_DEV_CDP_PORT = String(devInstance.cdpPort)
 if (!devInstance.isPrimary && !process.env.OMI_SANDBOX) {
@@ -143,6 +152,10 @@ export default defineConfig({
     },
     plugins: [
       react(),
+      {
+        name: 'signed-self-hosted-csp',
+        transformIndexHtml: { order: 'pre', handler: selfHostedCsp }
+      },
       {
         // onnxruntime-web's wasm binary is self-hosted under public/vad/ (see
         // scripts/copy-vad-assets.mjs) and loaded at runtime via

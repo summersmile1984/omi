@@ -19,15 +19,20 @@ CUTOVER_SMOKE="$ROOT/deploy/self-host/cutover-live-smoke.py"
 CUTOVER_OVERLAY="$ROOT/deploy/self-host/compose.cutover-acceptance.yml"
 CUTOVER_PROXY="$ROOT/deploy/self-host/nginx.cutover-acceptance.conf"
 REALTIME_RELAY_FIXTURE="$ROOT/deploy/self-host/realtime-relay-fixture.py"
+EGRESS_POLICY_CONTRACT="$ROOT/deploy/self-host/egress-policy-contract.py"
 EVIDENCE_BUILDER="$ROOT/deploy/self-host/acceptance_evidence.py"
 RUNTIME_EVIDENCE_TOOL="$ROOT/deploy/self-host/runtime-evidence.py"
+RUNTIME_PROVIDER_SCHEMA="$ROOT/deploy/self-host/runtime_provider_attestation.py"
 PUBLIC_OBJECT_EVIDENCE_TOOL="$ROOT/deploy/self-host/public_object_evidence.py"
 SOURCE_WRITE_FREEZE_TOOL="$ROOT/backend/scripts/source_write_freeze.py"
+AGENT_VM_RECONCILE_TOOL="$ROOT/backend/scripts/agent_vm_reconcile.py"
+AGENT_VM_RECONCILE_TEST="$ROOT/backend/scripts/test-agent-vm-reconcile.sh"
 EVIDENCE="${SELF_HOST_ACCEPTANCE_EVIDENCE:-${TMPDIR:-/tmp}/omi-zero-vendor-acceptance-evidence.json}"
 MODE=contracts
 LIVE_REPLACEMENT_JSON=''
 ASSEMBLED_LOOP_JSON=''
 RUNTIME_EVIDENCE_JSON=''
+RECOVERY_EVIDENCE_JSON=''
 
 LOOP_TESTS=(
   testing/e2e/test_listen_stt.py
@@ -40,10 +45,11 @@ LOOP_TESTS=(
 
 self_check() {
   local path
-  for path in "$CHECKER" "$OPS" "$COMPOSE_WRAPPER" "$E2E_RUNNER" "$E2E_GUARD" "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_GATE" "$CUTOVER_SMOKE" "$CUTOVER_OVERLAY" "$CUTOVER_PROXY" "$REALTIME_RELAY_FIXTURE" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$PUBLIC_OBJECT_EVIDENCE_TOOL" "$SOURCE_WRITE_FREEZE_TOOL"; do
+  for path in "$CHECKER" "$OPS" "$COMPOSE_WRAPPER" "$E2E_RUNNER" "$E2E_GUARD" "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_GATE" "$CUTOVER_SMOKE" "$CUTOVER_OVERLAY" "$CUTOVER_PROXY" "$REALTIME_RELAY_FIXTURE" "$EGRESS_POLICY_CONTRACT" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$RUNTIME_PROVIDER_SCHEMA" "$PUBLIC_OBJECT_EVIDENCE_TOOL" "$SOURCE_WRITE_FREEZE_TOOL" "$AGENT_VM_RECONCILE_TOOL" "$AGENT_VM_RECONCILE_TEST"; do
     [[ -f "$path" ]] || { echo "error: acceptance dependency missing: $path" >&2; return 1; }
   done
-  "$PY" -m py_compile "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_SMOKE" "$REALTIME_RELAY_FIXTURE" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$PUBLIC_OBJECT_EVIDENCE_TOOL" "$SOURCE_WRITE_FREEZE_TOOL"
+  "$PY" -m py_compile "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_SMOKE" "$REALTIME_RELAY_FIXTURE" "$EGRESS_POLICY_CONTRACT" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$RUNTIME_PROVIDER_SCHEMA" "$PUBLIC_OBJECT_EVIDENCE_TOOL" "$SOURCE_WRITE_FREEZE_TOOL" "$AGENT_VM_RECONCILE_TOOL"
+  "$AGENT_VM_RECONCILE_TEST"
   grep -q 'blocked outbound network connection' "$E2E_GUARD"
   grep -q 'blocked DNS lookup' "$E2E_GUARD"
   for path in "${LOOP_TESTS[@]}"; do
@@ -88,6 +94,12 @@ if [[ "$MODE" != contracts ]]; then
       --source-database "$SELF_HOST_SOURCE_DATABASE" \
       --source-endpoint "$SELF_HOST_SOURCE_ENDPOINT" \
       --scope firestore --scope storage >/dev/null
+    : "${SELF_HOST_RECOVERY_EVIDENCE:?external cutover requires SELF_HOST_RECOVERY_EVIDENCE pointing to an operator recovery-drill evidence JSON file}"
+    if [[ "$SELF_HOST_RECOVERY_EVIDENCE" != /* || ! -f "$SELF_HOST_RECOVERY_EVIDENCE" || -L "$SELF_HOST_RECOVERY_EVIDENCE" ]]; then
+      echo "ERROR: SELF_HOST_RECOVERY_EVIDENCE must be an existing non-symlink absolute JSON file" >&2
+      exit 1
+    fi
+    RECOVERY_EVIDENCE_JSON="$($PY -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps(value, separators=(",", ":")))' "$SELF_HOST_RECOVERY_EVIDENCE")"
   fi
   export OMI_SOURCE_GIT_COMMIT OMI_SOURCE_GIT_TREE OMI_RUNTIME_CONFIG_SHA256
   OMI_SOURCE_GIT_COMMIT="$(printf '%s' "$SOURCE_ATTRIBUTION_JSON" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["git_commit"])')"
@@ -180,4 +192,5 @@ SOURCE_ATTRIBUTION_JSON="$SOURCE_ATTRIBUTION_JSON" \
 LIVE_REPLACEMENT_JSON="$LIVE_REPLACEMENT_JSON" \
 ASSEMBLED_LOOP_JSON="$ASSEMBLED_LOOP_JSON" \
 RUNTIME_EVIDENCE_JSON="$RUNTIME_EVIDENCE_JSON" \
+RECOVERY_EVIDENCE_JSON="$RECOVERY_EVIDENCE_JSON" \
 "$PY" "$EVIDENCE_BUILDER"

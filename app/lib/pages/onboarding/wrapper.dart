@@ -3,13 +3,13 @@ import 'dart:math';
 import 'package:omi/utils/platform/platform_manager.dart';
 import 'package:flutter/material.dart';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 
 import 'package:omi/backend/http/api/knowledge_graph_api.dart';
 import 'package:omi/backend/http/api/users.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/env/env.dart';
 import 'package:omi/gen/assets.gen.dart';
 import 'package:omi/pages/home/page.dart';
 import 'package:omi/pages/onboarding/ai_consent_widget.dart';
@@ -17,6 +17,7 @@ import 'package:omi/pages/onboarding/auth.dart';
 import 'package:omi/pages/onboarding/found_omi/found_omi_widget.dart';
 import 'package:omi/pages/onboarding/knowledge_graph_step.dart';
 import 'package:omi/pages/onboarding/name/name_widget.dart';
+import 'package:omi/pages/onboarding/onboarding_identity.dart';
 import 'package:omi/pages/onboarding/permissions/permissions_checker.dart';
 import 'package:omi/pages/onboarding/permissions/permissions_widget.dart';
 import 'package:omi/pages/onboarding/primary_language/primary_language_widget.dart';
@@ -279,7 +280,9 @@ class _OnboardingWrapperState extends State<OnboardingWrapper> with TickerProvid
           // so an in-session re-login would otherwise leave it null until the
           // Plan & Usage page is opened (missing Pro badge).
           context.read<UsageProvider>().fetchSubscription();
-          IntercomManager.instance.loginIdentifiedUser(SharedPreferencesUtil().uid);
+          if (OnboardingIdentity.allowsManagedSupport(Env.profile)) {
+            IntercomManager.instance.loginIdentifiedUser(SharedPreferencesUtil().uid);
+          }
           // Consent is checked first regardless of server-side onboarding
           // state so a returning user signing in on a fresh install still
           // sees the consent screen before any AI processing begins.
@@ -310,11 +313,20 @@ class _OnboardingWrapperState extends State<OnboardingWrapper> with TickerProvid
       NameWidget(
         goNext: () {
           _goNext(); // Go to Primary Language page
-          IntercomManager.instance.updateUser(
-            FirebaseAuth.instance.currentUser!.email,
-            FirebaseAuth.instance.currentUser!.displayName,
-            FirebaseAuth.instance.currentUser!.uid,
+          final preferences = SharedPreferencesUtil();
+          final identity = OnboardingIdentity.fromCachedSession(
+            profile: Env.profile,
+            uid: preferences.uid,
+            email: preferences.email,
+            displayName: preferences.givenName,
           );
+          if (identity.updateManagedSupportProfile) {
+            IntercomManager.instance.updateUser(
+              identity.email,
+              identity.displayName,
+              identity.uid,
+            );
+          }
           PlatformManager.instance.analytics.onboardingStepCompleted('Name');
         },
       ),

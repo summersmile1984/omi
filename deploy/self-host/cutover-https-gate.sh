@@ -11,6 +11,8 @@ COMPOSE_WRAPPER="$ROOT/deploy/self-host/compose-clean-env.sh"
 OVERLAY="$ROOT/deploy/self-host/compose.cutover-acceptance.yml"
 SMOKE="$ROOT/deploy/self-host/cutover-live-smoke.py"
 OBJECT_EVIDENCE="$ROOT/deploy/self-host/public_object_evidence.py"
+RUNTIME_PROVIDER_SCHEMA="$ROOT/deploy/self-host/runtime_provider_attestation.py"
+EGRESS_POLICY_CONTRACT="$ROOT/deploy/self-host/egress-policy-contract.py"
 SOURCE_WRITE_FREEZE_TOOL="$ROOT/backend/scripts/source_write_freeze.py"
 AUDIO="$ROOT/backend/testing/release_fixtures/transcription-release-probe.wav"
 MANIFEST="$ROOT/backend/testing/release_fixtures/transcription-release-probe.json"
@@ -38,7 +40,7 @@ if [[ "$DIARIZATION_AUDIO" != /* || ! -f "$DIARIZATION_AUDIO" ]]; then
 fi
 CERT_DIR=''
 CA_FILE='/etc/ssl/certs/ca-certificates.crt'
-LIVE_EGRESS_EVIDENCE_JSON='{"enforcement":"not_enforced_by_compose","sentinel_targets_denied":[],"workloads":[],"operator_policy_artifact_sha256":null,"scope":"compose_has_no_application_egress_policy"}'
+LIVE_EGRESS_EVIDENCE_JSON='{"enforcement":"not_enforced_by_compose","sentinel_targets_denied":[],"workloads":[],"operator_policy_artifact_sha256":null,"operator_policy_schema_version":null,"operator_policy_workloads":[],"operator_policy_denied_targets":[],"scope":"compose_has_no_application_egress_policy"}'
 compose() {
   bash "$COMPOSE_WRAPPER" "$ENV_FILE" "$COMPOSE" "$@"
 }
@@ -98,6 +100,13 @@ else
     --scope firestore --scope storage >/dev/null
   for value in "$PUBLIC_BACKEND_URL" "$PUBLIC_AUTH_URL" "$PUBLIC_MCP_URL" "$PUBLIC_OBJECTS_URL"; do
     case "$value" in
+      https://*) ;;
+      *)
+        echo "ERROR: --external requires every public origin to use HTTPS: $value" >&2
+        exit 1
+        ;;
+    esac
+    case "$value" in
       https://*.localhost*|https://localhost*|https://*.test*|https://127.*|https://\[*|https://*.invalid*)
         echo "ERROR: --external refuses local or reserved public origin $value" >&2
         exit 1
@@ -118,7 +127,18 @@ else
     echo "ERROR: external egress policy artifact is missing or empty: $EGRESS_POLICY_ARTIFACT" >&2
     exit 1
   fi
-  EGRESS_POLICY_SHA256="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$EGRESS_POLICY_ARTIFACT")"
+  : "${OMI_SOURCE_GIT_COMMIT:?--external requires OMI_SOURCE_GIT_COMMIT for egress policy binding}"
+  : "${OMI_SOURCE_GIT_TREE:?--external requires OMI_SOURCE_GIT_TREE for egress policy binding}"
+  : "${OMI_RUNTIME_CONFIG_SHA256:?--external requires OMI_RUNTIME_CONFIG_SHA256 for egress policy binding}"
+  if ! EGRESS_POLICY_CONTRACT_JSON="$(python3 "$EGRESS_POLICY_CONTRACT" "$EGRESS_POLICY_ARTIFACT" \
+    --expected-git-commit "$OMI_SOURCE_GIT_COMMIT" \
+    --expected-git-tree "$OMI_SOURCE_GIT_TREE" \
+    --expected-config-sha256 "$OMI_RUNTIME_CONFIG_SHA256" 2>&1)"; then
+    echo "ERROR: external egress policy artifact does not satisfy the reviewed JSON contract: $EGRESS_POLICY_CONTRACT_JSON" >&2
+    exit 1
+  fi
+  EGRESS_POLICY_SHA256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha256"])' "$EGRESS_POLICY_CONTRACT_JSON")"
+  EGRESS_POLICY_METADATA_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["policy"],separators=(",",":")))' "$EGRESS_POLICY_CONTRACT_JSON")"
   SENTINEL_TARGETS_JSON='["api.openai.com","generativelanguage.googleapis.com","api.anthropic.com","api.omi.me","1.1.1.1"]'
   WORKLOAD_STATUS_JSON="$(profile_compose ps --format json backend queue-worker auth-server)"
   if ! python3 -c 'import json,sys; rows=[json.loads(line) for line in sys.argv[1].splitlines() if line.strip()]; expected={"backend","queue-worker","auth-server"}; healthy={row.get("Service") for row in rows if row.get("State")=="running" and row.get("Health")=="healthy"}; raise SystemExit(0 if healthy==expected else 1)' "$WORKLOAD_STATUS_JSON"; then
@@ -148,7 +168,7 @@ for target in targets:
     echo "ERROR: auth-server can open a reviewed vendor/arbitrary sentinel socket; enforce the supplied production egress policy" >&2
     exit 1
   fi
-  LIVE_EGRESS_EVIDENCE_JSON="$(python3 -c 'import json,sys; print(json.dumps({"enforcement":"sentinel_targets_denied_with_operator_policy","sentinel_targets_denied":json.loads(sys.argv[1]),"workloads":["backend","queue-worker","auth-server"],"operator_policy_artifact_sha256":sys.argv[2],"scope":"sentinel_targets_only"}, separators=(",", ":")))' "$SENTINEL_TARGETS_JSON" "$EGRESS_POLICY_SHA256")"
+  LIVE_EGRESS_EVIDENCE_JSON="$(python3 -c 'import json,sys; policy=json.loads(sys.argv[3]); print(json.dumps({"enforcement":"sentinel_targets_denied_with_operator_policy","sentinel_targets_denied":json.loads(sys.argv[1]),"workloads":["backend","queue-worker","auth-server"],"operator_policy_artifact_sha256":sys.argv[2],"operator_policy_schema_version":policy["schema_version"],"operator_policy_workloads":policy["workloads"],"operator_policy_denied_targets":policy["denied_targets"],"operator_policy_source_git_commit":policy["source_git_commit"],"operator_policy_source_git_tree":policy["source_git_tree"],"operator_policy_runtime_config_sha256":policy["runtime_config_sha256"],"scope":"sentinel_targets_only"}, separators=(",", ":")))' "$SENTINEL_TARGETS_JSON" "$EGRESS_POLICY_SHA256" "$EGRESS_POLICY_METADATA_JSON")"
 fi
 
 CONFIGURED_SEARXNG_SECRET="$(dotenv_value SEARXNG_SECRET)"
@@ -167,6 +187,7 @@ RUN_ARGS=(
   run --rm --no-deps -T
   --volume "$SMOKE:/tmp/cutover-live-smoke.py:ro"
   --volume "$OBJECT_EVIDENCE:/tmp/public_object_evidence.py:ro"
+  --volume "$RUNTIME_PROVIDER_SCHEMA:/tmp/runtime_provider_attestation.py:ro"
   --volume "$AUDIO:/tmp/transcription-release-probe.wav:ro"
   --volume "$DIARIZATION_AUDIO:/tmp/mlx-moss-diarization-acceptance.wav:ro"
   --volume "$MANIFEST:/tmp/transcription-release-probe.json:ro"
@@ -182,6 +203,7 @@ RUN_ARGS=(
   --env "SELF_HOST_ACCEPTANCE_ALLOW_CONTROL_SEED=${SELF_HOST_ACCEPTANCE_ALLOW_CONTROL_SEED:-false}"
   --env "SELF_HOST_LIVE_EGRESS_EVIDENCE_JSON=$LIVE_EGRESS_EVIDENCE_JSON"
   --env "SELF_HOST_SEARXNG_SETTINGS_EVIDENCE_JSON=$SEARXNG_SETTINGS_EVIDENCE_JSON"
+  --env "SELF_HOST_CUTOVER_EDGE_MODE=$MODE"
 )
 if [[ "$MODE" == --local ]]; then
   RUN_ARGS+=(--volume "$CERT_DIR/server.crt:$CA_FILE:ro")

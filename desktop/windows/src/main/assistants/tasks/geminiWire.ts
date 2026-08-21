@@ -1,4 +1,4 @@
-// The Gemini TOOL-LOOP wire layer for TaskAssistant — the transport only, no
+// The model TOOL-LOOP wire layer for TaskAssistant — the transport only, no
 // tool dispatch. It MIRRORS insight/gemini.ts's primitives (per PR-B decision #5:
 // copy, don't refactor insight/) and re-parameterizes the four Task-loop values:
 // a 300s per-call timeout (Insight uses 120s), thinkingBudget 1024, and a
@@ -15,9 +15,9 @@
 // Deciding WHICH tool result to return for a given call — the dispatch — stays in
 // the caller (Wave 2). This file never selects or executes a tool.
 //
-// Transport template is insight/gemini.ts, itself templated on focus/gemini.ts:
-// Electron net.fetch through the Rust Gemini proxy (the key never touches the
-// device), a per-call timeout composed with the session abort signal, and a
+// Managed cloud keeps Electron net.fetch through the Rust Gemini proxy (the key
+// never touches the device); self-hosted uses the backend generic capability.
+// Both compose a per-call timeout with the session abort signal and a
 // [2s, 8s] explicit-backend-retryable retry policy; duplicate model IDs collapse
 // to one round.
 //
@@ -33,8 +33,13 @@
 //    functionResponse turn (NOT role:"function");
 //  - only toolCalls[0] is consumed by the caller; parallel calls are its concern.
 import { net } from 'electron'
+import { resolveWindowsDeployment } from '../../../shared/deploymentProfile'
 import { getAbortSignal, type BackendSession } from '../core/session'
 import type { GeminiTool, ToolCall } from '../insight/models'
+import {
+  completeToolCapability,
+  ModelCapabilityUnavailableError
+} from '../core/modelCapabilityClient'
 
 /** Task-loop model pair. Windows surfaces no tier, so both are Flash and dedupe
  *  to one model round (up to three explicitly authorized attempts). Keep the
@@ -61,7 +66,9 @@ export class GeminiHttpError extends Error {
 
 /** Replay only when the backend explicitly marks the response retryable. */
 function isTransient(e: unknown): boolean {
-  return e instanceof GeminiHttpError && e.retryable
+  return (
+    (e instanceof GeminiHttpError || e instanceof ModelCapabilityUnavailableError) && e.retryable
+  )
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -193,6 +200,22 @@ function buildBody(opts: TurnOpts): Record<string, unknown> {
 }
 
 async function callModel(model: string, opts: TurnOpts): Promise<ToolTurn> {
+  if (resolveWindowsDeployment().profile === 'self_hosted') {
+    return withTimeout(
+      TASK_REQUEST_TIMEOUT_MS,
+      (signal) =>
+        completeToolCapability({
+          session: opts.session,
+          systemPrompt: opts.systemPrompt,
+          contents: opts.contents,
+          tool: opts.tool,
+          forceToolCall: opts.forceToolCall,
+          maxOutputTokens: 2048,
+          signal
+        }),
+      opts.external
+    )
+  }
   return withTimeout(
     TASK_REQUEST_TIMEOUT_MS,
     async (signal) => {

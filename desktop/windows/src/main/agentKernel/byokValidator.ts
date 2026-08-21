@@ -17,6 +17,7 @@ import {
   type ByokProvider,
   type ByokValidationResults
 } from '../../shared/byok'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
 export type { ByokKeyValidation, ByokValidationResults } from '../../shared/byok'
 
@@ -65,6 +66,9 @@ export async function validateProviderKey(
   key: string,
   fetchImpl: FetchLike = globalThis.fetch as unknown as FetchLike
 ): Promise<ByokKeyValidation> {
+  if (!resolveWindowsDeployment().allowByok) {
+    return { ok: false, kind: 'rejected', detail: 'Disabled by deployment profile' }
+  }
   // Per-field detail strings mirror the macOS validator's inline messages
   // (BYOKValidator.swift): "Empty" / "Rejected (HTTP N)" / "HTTP N" / a network
   // message. The aggregate "Rejected by provider: X" banner is composed in the UI.

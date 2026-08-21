@@ -1,4 +1,5 @@
-import { auth } from './firebase'
+import { auth } from './identity'
+import { resolveWindowsDeployment } from '../../../shared/deploymentProfile'
 
 export type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } }
 
@@ -23,6 +24,16 @@ function sleep(ms: number): Promise<void> {
  * multimodal parts, optional structured output, retry on 429/503.
  */
 export async function generate(args: GenerateArgs): Promise<string> {
+  if (resolveWindowsDeployment().profile === 'self_hosted') {
+    if (args.parts.length !== 1 || !('text' in args.parts[0])) {
+      throw new Error('Self-hosted proactive generation accepts one text prompt')
+    }
+    const result = await window.omi.modelCapabilityGenerate({
+      surface: args.responseSchema ? 'screen_synthesis' : 'live_notes',
+      prompt: args.parts[0].text
+    })
+    return result.text
+  }
   const model = args.model || DEFAULT_MODEL
   const base = import.meta.env.VITE_OMI_DESKTOP_API_BASE as string
   const url = `${base}/v1/proxy/gemini/models/${model}:generateContent`

@@ -1,9 +1,9 @@
 // One-shot client-side goal generation: assemble context → a single structured
-// Gemini call (responseSchema JSON) → parse & validate → POST /v1/goals → record
+// model call (structured JSON) → parse & validate → POST /v1/goals → record
 // attribution → notify + refresh. Port of Mac's `GoalsAIService.generateGoal`.
 //
-// The Gemini call MIRRORS focus/gemini.ts's structured wire (net.fetch through the
-// Rust proxy, `responseMimeType: application/json` + `responseSchema`, [2s,8s]
+// Cloud mirrors focus/gemini.ts's Gemini proxy wire; self-hosted uses the configured
+// backend's generic tool capability. Both retain the same [2s,8s]
 // transient retry, session-abort). insight/gemini.ts is a multi-turn TOOL loop —
 // the wrong shape for a single structured completion — so we reuse focus's
 // single-shot template rather than that one. No new Gemini client, no BYOK key.
@@ -14,6 +14,7 @@
 // parse + validate the ids against the bundle (below) so the model output is fully
 // handled; `linkTasks` is a documented no-op seam awaiting an orchestrator ruling.
 import { BrowserWindow, net } from 'electron'
+import { resolveWindowsDeployment } from '../../../shared/deploymentProfile'
 import {
   getAbortSignal,
   getBackendSession,
@@ -24,8 +25,14 @@ import { notifyProactive } from '../core/notify'
 import { getAppSettings, setAppSettings } from '../../appSettings'
 import { fetchGoalContext, hasSufficientContext, type GoalContextData } from './context'
 import { GOAL_SYSTEM_PROMPT, GOAL_SUGGESTION_SCHEMA, fillPrompt } from './prompt'
+import {
+  completeStructuredCapability,
+  ModelCapabilityUnavailableError
+} from '../core/modelCapabilityClient'
 
-const MODEL = 'gemini-2.5-flash'
+// Flash-Lite: text-only, schema-bounded, nobody waiting — no business on the Vertex
+// Flash PT reservation. Mirrors Mac's ModelQoS.Gemini.lightweight goals pin.
+export const MODEL = 'gemini-2.5-flash-lite'
 const REQUEST_TIMEOUT_MS = 30_000
 /** 3 attempts total. Mac's backoff, exactly: 2s then 8s. */
 const RETRY_DELAYS_MS = [2_000, 8_000]
@@ -46,7 +53,9 @@ export class GeminiHttpError extends Error {
 }
 
 function isTransient(e: unknown): boolean {
-  return e instanceof GeminiHttpError && e.retryable
+  return (
+    (e instanceof GeminiHttpError || e instanceof ModelCapabilityUnavailableError) && e.retryable
+  )
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -107,6 +116,18 @@ async function attempt(
   return withTimeout(
     REQUEST_TIMEOUT_MS,
     async (signal) => {
+      if (resolveWindowsDeployment().profile === 'self_hosted') {
+        return (
+          await completeStructuredCapability({
+            session,
+            systemPrompt: GOAL_SYSTEM_PROMPT,
+            prompt,
+            responseToolName: 'submit_goal_suggestion',
+            responseSchema: GOAL_SUGGESTION_SCHEMA,
+            signal
+          })
+        ).text
+      }
       const res = await net.fetch(
         `${session.desktopApiBase}/v1/proxy/gemini/models/${MODEL}:generateContent`,
         {

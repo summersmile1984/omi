@@ -4,7 +4,7 @@
 // Connections UI's seam onto them.
 //
 // SECURITY: the hosted MCP key never crosses to the renderer. The renderer relays
-// the Firebase token + its uid; main mints/reads the key, writes it into the
+// the configured identity token + its uid; main mints/reads the key, writes it into the
 // tool's config file itself, and returns only non-secret status. The key is a
 // credential — never logged.
 
@@ -15,6 +15,7 @@ import { buildCloudConnectors } from '../mcp/cloudConnectors'
 import { buildMemoryPack, memoryPackChatUrl, type MemoryPackProvider } from '../mcp/memoryPack'
 import type { ExportMemory } from '../../shared/types'
 import type { McpCloudConnectorInfo } from '../../shared/mcpExports'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 import {
   detectClaudeCode,
   claudeMcpConnected,
@@ -51,7 +52,7 @@ function getService(): McpExportsService {
 }
 
 function apiBase(): string {
-  return import.meta.env.VITE_OMI_API_BASE || 'https://api.omi.me'
+  return resolveWindowsDeployment().mcpBase
 }
 
 /** Ping every renderer so the Connections UI re-reads connector status. */
@@ -163,7 +164,12 @@ async function rotate(token: string, ownerUserId: string): Promise<McpExportsSna
 /** Cloud (OAuth) connector cards — static field values. Connected-state is a
  *  local renderer latch (Mac has no reliable probe; we replicate that gap). */
 function cloudInfo(): McpCloudConnectorInfo[] {
-  return buildCloudConnectors(apiBase())
+  const deployment = resolveWindowsDeployment()
+  if (!deployment.allowCloudConnectors) return []
+  return buildCloudConnectors(deployment.mcpBase, {
+    chatgpt: deployment.mcpChatgptOAuthClientId,
+    claude: deployment.mcpClaudeOAuthClientId
+  })
 }
 
 /**
@@ -181,6 +187,9 @@ function openMemoryPack(provider: MemoryPackProvider, memories: ExportMemory[]):
 
 /** Open a cloud connector's provider connector page (the assisted "open & guide"). */
 function openCloudConnector(url: string): void {
+  if (!resolveWindowsDeployment().allowCloudConnectors) {
+    throw new Error('Cloud OAuth connectors are disabled by this deployment profile')
+  }
   if (!process.env.OMI_E2E) void shell.openExternal(url)
 }
 

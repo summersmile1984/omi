@@ -1,20 +1,22 @@
 import Foundation
 
-/// Deployment authority for the desktop client.
-///
-/// `omi_cloud` preserves the shipped client behavior. `self_hosted` is an
-/// explicit operator-owned mode: client-direct vendor services and Omi-managed
-/// telemetry/update/auth paths are disabled, so a missing or malformed profile
-/// cannot silently opt into those paths.
 enum DesktopDeploymentProfile: String, Sendable {
   case omiCloud = "omi_cloud"
   case selfHosted = "self_hosted"
 
-  static func resolve(_ rawValue: String?) -> Self {
-    guard let rawValue else { return .omiCloud }
-    let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    return Self(rawValue: normalized) ?? .selfHosted
+  static func resolve(_ raw: String?) -> DesktopDeploymentProfile {
+    guard let raw else { return .omiCloud }
+    let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard let profile = DesktopDeploymentProfile(rawValue: normalized) else {
+      preconditionFailure("OMI_DEPLOYMENT_PROFILE must be omi_cloud or self_hosted")
+    }
+    return profile
   }
+}
+
+enum DesktopIdentityProvider: String, Codable, Sendable {
+  case firebase
+  case betterAuth = "better_auth"
 }
 
 enum DesktopDeploymentOriginError: Error, Equatable {
@@ -24,14 +26,30 @@ enum DesktopDeploymentOriginError: Error, Equatable {
   case managed(String)
 }
 
-enum DesktopIdentityProvider: String, Sendable {
-  case firebase
-  case betterAuth = "better_auth"
+enum DesktopProactiveModelRoute: Equatable, Sendable {
+  case vendorSpecificBackendProxy
+  case providerNeutralBackendCapability
 }
 
-/// Shared egress boundary for the desktop surfaces that can otherwise open a
-/// provider-owned connection without going through the configured backend.
+enum DesktopRealtimeRelaySelection: Equatable, Sendable {
+  case cloudPreference
+  case backend(provider: String)
+  case unavailable
+}
+
+/// One deployment-profile boundary for every client-side model credential or
+/// vendor socket. The self-hosted artifact delegates provider choice to its
+/// configured backend; it never turns a persisted BYOK key, inherited shell
+/// variable, or "Auto" preference into permission for client-direct egress.
 enum DesktopModelEgressPolicy {
+  static func proactiveRoute(
+    deploymentProfile: DesktopDeploymentProfile
+  ) -> DesktopProactiveModelRoute {
+    deploymentProfile == .selfHosted
+      ? .providerNeutralBackendCapability
+      : .vendorSpecificBackendProxy
+  }
+
   static func allowsClientDirectVendorEgress(
     deploymentProfile: DesktopDeploymentProfile
   ) -> Bool {
@@ -42,8 +60,32 @@ enum DesktopModelEgressPolicy {
     deploymentProfile == .omiCloud
   }
 
-  static func allowsOmiManagedServices(deploymentProfile: DesktopDeploymentProfile) -> Bool {
-    deploymentProfile == .omiCloud
+  static func allowsAgentAdapter(
+    _ adapterID: String,
+    deploymentProfile: DesktopDeploymentProfile
+  ) -> Bool {
+    deploymentProfile == .omiCloud || adapterID == "pi-mono"
+  }
+
+  /// Realtime voice remains a backend relay in the self-hosted profile. The
+  /// provider must be signed into the artifact; no value means the relay
+  /// capability is absent and PTT uses backend-selected pre-recorded STT.
+  static func realtimeRelaySelection(
+    deploymentProfile: DesktopDeploymentProfile,
+    configuredProvider: String?
+  ) -> DesktopRealtimeRelaySelection {
+    guard deploymentProfile == .selfHosted else { return .cloudPreference }
+    guard let raw = configuredProvider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+      !raw.isEmpty
+    else {
+      return .unavailable
+    }
+    switch raw {
+    case "openai", "gemini":
+      return .backend(provider: raw)
+    default:
+      preconditionFailure("OMI_REALTIME_MODEL_PROVIDER must be openai or gemini")
+    }
   }
 }
 
@@ -56,27 +98,67 @@ enum DesktopBackendEnvironment {
   static let productionShareBaseURL = "https://h.omi.me"
 
   static var deploymentProfile: DesktopDeploymentProfile {
-    DesktopDeploymentProfile.resolve(currentEnvironmentValue("OMI_DEPLOYMENT_PROFILE"))
+    .resolve(currentEnvironmentValue("OMI_DEPLOYMENT_PROFILE"))
   }
 
   static var identityProvider: DesktopIdentityProvider {
-    identityProvider(deploymentProfile: deploymentProfile)
+    identityProvider(
+      deploymentProfile: deploymentProfile,
+      configuredValue: currentEnvironmentValue("OMI_AUTH_PROVIDER")
+    )
   }
 
-  static func identityProvider(deploymentProfile: DesktopDeploymentProfile) -> DesktopIdentityProvider {
-    deploymentProfile == .selfHosted ? .betterAuth : .firebase
+  /// A signed deployment profile must never adopt credentials minted by a
+  /// different identity system. Missing metadata means a legacy Firebase-only
+  /// session and remains compatible with the managed-cloud profile.
+  static func acceptsStoredIdentityProvider(
+    _ storedProvider: DesktopIdentityProvider?,
+    configuredProvider: DesktopIdentityProvider
+  ) -> Bool {
+    (storedProvider ?? .firebase) == configuredProvider
   }
 
-  static var shouldConfigureFirebaseSDK: Bool {
-    shouldConfigureFirebaseSDK(deploymentProfile: deploymentProfile)
-  }
-
-  static func shouldConfigureFirebaseSDK(deploymentProfile: DesktopDeploymentProfile) -> Bool {
-    identityProvider(deploymentProfile: deploymentProfile) == .firebase
-  }
-
+  /// Omi-operated analytics and update infrastructure is selected only by the
+  /// signed cloud profile. Self-hosted artifacts fail closed until their own
+  /// provider origins are explicitly added to the deployment contract.
   static var allowsOmiManagedServices: Bool {
-    DesktopModelEgressPolicy.allowsOmiManagedServices(deploymentProfile: deploymentProfile)
+    allowsOmiManagedServices(deploymentProfile: deploymentProfile)
+  }
+
+  static func allowsOmiManagedServices(deploymentProfile: DesktopDeploymentProfile) -> Bool {
+    deploymentProfile == .omiCloud
+  }
+
+  /// Managed builds may use FluidAudio's historical first-run model download.
+  /// Self-hosted artifacts have no signed model authority in the deployment
+  /// profile, so a missing local model must not turn into an implicit
+  /// Hugging Face/vendor request. The operator can still provide a future
+  /// packaged/local model path once that capability is part of the profile.
+  static func allowsImplicitSpeechModelDownload(
+    deploymentProfile: DesktopDeploymentProfile
+  ) -> Bool {
+    deploymentProfile == .omiCloud
+  }
+
+  static func shouldConfigureFirebaseSDK(identityProvider: DesktopIdentityProvider) -> Bool {
+    identityProvider == .firebase
+  }
+
+  static func identityProvider(
+    deploymentProfile: DesktopDeploymentProfile,
+    configuredValue: String?
+  ) -> DesktopIdentityProvider {
+    let normalized = configuredValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if let normalized {
+      guard let provider = DesktopIdentityProvider(rawValue: normalized) else {
+        preconditionFailure("OMI_AUTH_PROVIDER must be firebase or better_auth")
+      }
+      guard deploymentProfile != .selfHosted || provider == .betterAuth else {
+        preconditionFailure("self_hosted requires OMI_AUTH_PROVIDER=better_auth")
+      }
+      return provider
+    }
+    return deploymentProfile == .selfHosted ? .betterAuth : .firebase
   }
 
   static var shouldUseDevelopmentBackends: Bool {
@@ -137,13 +219,11 @@ enum DesktopBackendEnvironment {
   }
 
   static func pythonBaseURL(
-    environmentValue: String? = currentEnvironmentValue("OMI_PYTHON_API_URL"),
-    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile
+    environmentValue: String? = currentEnvironmentValue("OMI_PYTHON_API_URL")
   ) -> String {
     pythonBaseURL(
       useDevelopmentBackends: shouldUseDevelopmentBackends,
-      environmentValue: environmentValue,
-      deploymentProfile: deploymentProfile
+      environmentValue: environmentValue
     )
   }
 
@@ -151,17 +231,13 @@ enum DesktopBackendEnvironment {
     useDevelopmentBackends: Bool,
     bundleIdentifier: String = AppBuild.bundleIdentifier,
     environmentValue: String?,
-    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile
+    deploymentProfile: DesktopDeploymentProfile = deploymentProfile
   ) -> String {
     if deploymentProfile == .selfHosted {
-      // Self-hosted builds must be explicitly pointed at an operator-owned
-      // backend. An absent URL yields an unusable endpoint rather than a
-      // silent fallback to api.omi.me.
       return requiredSelfHostedURL(
         environmentValue,
         key: "OMI_PYTHON_API_URL",
-        requiresHTTPS: AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier)
-      )
+        requiresHTTPS: AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier))
     }
     // A production-family app must not allow a launch environment or bundled
     // config to switch its customer data plane. Development identities retain
@@ -185,20 +261,17 @@ enum DesktopBackendEnvironment {
   static func authBaseURL(
     useDevelopmentBackends: Bool = shouldUseDevelopmentBackends,
     bundleIdentifier: String = AppBuild.bundleIdentifier,
-    environmentValue: String? = currentEnvironmentValue("OMI_AUTH_API_URL"),
-    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile
+    environmentValue: String? = nil,
+    deploymentProfile: DesktopDeploymentProfile = deploymentProfile
   ) -> String {
     if deploymentProfile == .selfHosted {
-      let configured =
-        normalizedURL(environmentValue)
-        ?? normalizedURL(currentEnvironmentValue("OMI_AUTH_SERVER_URL"))
-        ?? normalizedURL(currentEnvironmentValue("OMI_AUTH_API_URL"))
+      let configured = environmentValue ?? currentEnvironmentValue("OMI_AUTH_SERVER_URL")
       return requiredSelfHostedURL(
         configured,
         key: "OMI_AUTH_SERVER_URL",
-        requiresHTTPS: AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier)
-      )
+        requiresHTTPS: AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier))
     }
+    let environmentValue = environmentValue ?? currentEnvironmentValue("OMI_AUTH_API_URL")
     if shouldUseProductionAuth(bundleIdentifier: bundleIdentifier) || !useDevelopmentBackends {
       return productionPythonAPIURL
     }
@@ -212,16 +285,33 @@ enum DesktopBackendEnvironment {
     return productionPythonAPIURL
   }
 
+  static func mcpBaseURL(
+    useDevelopmentBackends: Bool = shouldUseDevelopmentBackends,
+    bundleIdentifier: String = AppBuild.bundleIdentifier,
+    environmentValue: String? = currentEnvironmentValue("OMI_MCP_API_URL"),
+    deploymentProfile: DesktopDeploymentProfile = deploymentProfile
+  ) -> String {
+    if deploymentProfile == .selfHosted {
+      return requiredSelfHostedURL(
+        environmentValue,
+        key: "OMI_MCP_API_URL",
+        requiresHTTPS: AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier))
+    }
+    return pythonBaseURL(
+      useDevelopmentBackends: useDevelopmentBackends,
+      bundleIdentifier: bundleIdentifier,
+      environmentValue: environmentValue,
+      deploymentProfile: deploymentProfile)
+  }
+
   static func rustBackendURL(
     environmentValue: String? = currentEnvironmentValue("OMI_DESKTOP_API_URL"),
-    launchEnvironmentValue: String? = ProcessInfo.processInfo.environment["OMI_DESKTOP_API_URL"],
-    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile
+    launchEnvironmentValue: String? = ProcessInfo.processInfo.environment["OMI_DESKTOP_API_URL"]
   ) -> String {
     rustBackendURL(
       useDevelopmentBackends: shouldUseDevelopmentBackends,
       environmentValue: environmentValue,
-      launchEnvironmentValue: launchEnvironmentValue,
-      deploymentProfile: deploymentProfile
+      launchEnvironmentValue: launchEnvironmentValue
     )
   }
 
@@ -230,14 +320,13 @@ enum DesktopBackendEnvironment {
     bundleIdentifier: String = AppBuild.bundleIdentifier,
     environmentValue: String?,
     launchEnvironmentValue: String?,
-    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile
+    deploymentProfile: DesktopDeploymentProfile = deploymentProfile
   ) -> String {
     if deploymentProfile == .selfHosted {
       return requiredSelfHostedURL(
         environmentValue ?? launchEnvironmentValue,
         key: "OMI_DESKTOP_API_URL",
-        requiresHTTPS: AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier)
-      )
+        requiresHTTPS: AppBuild.productionFamilyBundleIdentifiers.contains(bundleIdentifier))
     }
     if shouldForceDevelopmentServingEndpoints(bundleIdentifier: bundleIdentifier) {
       return developmentRustBackendURL
@@ -262,12 +351,32 @@ enum DesktopBackendEnvironment {
   /// Public share origin used when minting conversation links (#4339).
   /// Matches backend ``OMI_SHARE_BASE_URL`` (default ``https://h.omi.me``).
   static func shareBaseURL(
-    environmentValue: String? = currentEnvironmentValue("OMI_SHARE_BASE_URL")
+    environmentValue: String? = currentEnvironmentValue("OMI_SHARE_BASE_URL"),
+    deploymentProfile: DesktopDeploymentProfile = deploymentProfile,
+    selfHostedBackendURL: String? = nil
   ) -> String {
+    let fallback: String
+    if deploymentProfile == .selfHosted {
+      fallback = stripTrailingSlashes(
+        requiredSelfHostedURL(
+          selfHostedBackendURL ?? currentEnvironmentValue("OMI_PYTHON_API_URL"),
+          key: "OMI_PYTHON_API_URL",
+          requiresHTTPS: false))
+    } else {
+      fallback = productionShareBaseURL
+    }
     guard var raw = environmentValue?.trimmingCharacters(in: .whitespacesAndNewlines),
       !raw.isEmpty
     else {
-      return productionShareBaseURL
+      return fallback
+    }
+    if deploymentProfile == .selfHosted {
+      do {
+        return stripTrailingSlashes(
+          try canonicalSelfHostedOrigin(raw, key: "OMI_SHARE_BASE_URL", requiresHTTPS: true))
+      } catch {
+        preconditionFailure("self_hosted deployment requires a canonical OMI_SHARE_BASE_URL: \(error)")
+      }
     }
     if !raw.contains("://") {
       raw = "https://\(raw)"
@@ -281,21 +390,69 @@ enum DesktopBackendEnvironment {
       let host = url.host,
       !host.isEmpty
     else {
-      return productionShareBaseURL
+      if deploymentProfile == .selfHosted {
+        preconditionFailure("self_hosted deployment requires a valid OMI_SHARE_BASE_URL")
+      }
+      return fallback
     }
     return raw
   }
 
   static func conversationShareURL(
     id: String,
-    environmentValue: String? = currentEnvironmentValue("OMI_SHARE_BASE_URL")
+    environmentValue: String? = currentEnvironmentValue("OMI_SHARE_BASE_URL"),
+    deploymentProfile: DesktopDeploymentProfile = deploymentProfile,
+    selfHostedBackendURL: String? = nil
   ) -> String {
-    "\(shareBaseURL(environmentValue: environmentValue))/conversations/\(id)"
+    let origin = shareBaseURL(
+      environmentValue: environmentValue,
+      deploymentProfile: deploymentProfile,
+      selfHostedBackendURL: selfHostedBackendURL)
+    return "\(origin)/conversations/\(id)"
+  }
+
+  /// A public MCP OAuth client is optional for self-hosted deployments. Missing
+  /// configuration disables that public-OAuth setup path instead of borrowing
+  /// an Omi-registered client from the selected backend host.
+  static func mcpOAuthClientID(
+    environmentValue: String?,
+    cloudDefault: String,
+    deploymentProfile: DesktopDeploymentProfile = deploymentProfile
+  ) -> String? {
+    if let configured = nonEmptyValue(environmentValue) { return configured }
+    return deploymentProfile == .omiCloud ? cloudDefault : nil
   }
 
   static func applyReleaseChannelDefaults() {
-    guard deploymentProfile != .selfHosted else {
-      log("BackendEnvironment: self-hosted profile keeps operator backend URLs unchanged")
+    if deploymentProfile == .selfHosted {
+      let requiresHTTPS = AppBuild.productionFamilyBundleIdentifiers.contains(AppBuild.bundleIdentifier)
+      _ = requiredSelfHostedURL(
+        currentEnvironmentValue("OMI_PYTHON_API_URL"), key: "OMI_PYTHON_API_URL", requiresHTTPS: requiresHTTPS)
+      _ = requiredSelfHostedURL(
+        currentEnvironmentValue("OMI_DESKTOP_API_URL"), key: "OMI_DESKTOP_API_URL", requiresHTTPS: requiresHTTPS)
+      _ = requiredSelfHostedURL(
+        currentEnvironmentValue("OMI_AUTH_SERVER_URL"), key: "OMI_AUTH_SERVER_URL", requiresHTTPS: requiresHTTPS)
+      _ = requiredSelfHostedURL(
+        currentEnvironmentValue("OMI_MCP_API_URL"), key: "OMI_MCP_API_URL", requiresHTTPS: requiresHTTPS)
+      if nonEmptyValue(currentEnvironmentValue("OMI_SHARE_BASE_URL")) != nil {
+        _ = requiredSelfHostedURL(
+          currentEnvironmentValue("OMI_SHARE_BASE_URL"), key: "OMI_SHARE_BASE_URL", requiresHTTPS: requiresHTTPS)
+      }
+      guard identityProvider == .betterAuth else {
+        preconditionFailure("self_hosted deployment requires OMI_AUTH_PROVIDER=better_auth")
+      }
+      let realtime = DesktopModelEgressPolicy.realtimeRelaySelection(
+        deploymentProfile: .selfHosted,
+        configuredProvider: currentEnvironmentValue("OMI_REALTIME_MODEL_PROVIDER"))
+      switch realtime {
+      case .backend(let provider):
+        log("BackendEnvironment: model egress=backend_only realtime_relay=backend provider=\(provider)")
+      case .unavailable:
+        log("BackendEnvironment: model egress=backend_only realtime_relay=unavailable")
+      case .cloudPreference:
+        preconditionFailure("self_hosted realtime policy resolved a cloud preference")
+      }
+      log("BackendEnvironment: validated signed self-hosted deployment profile")
       return
     }
     if shouldUseDevelopmentBackends {
@@ -309,13 +466,28 @@ enum DesktopBackendEnvironment {
     log("BackendEnvironment: release-channel defaults applied only for missing backend URLs")
   }
 
-  /// Canonicalize an operator-owned origin before it becomes an API base URL.
-  /// Only an origin is accepted: path/query/fragment/credentials are rejected
-  /// so callers cannot accidentally join routes across authorities.
+  private static func normalizedURL(_ raw: String?) -> String? {
+    guard let raw else { return nil }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return trimmed.hasSuffix("/") ? trimmed : trimmed + "/"
+  }
+
+  private static func nonEmptyValue(_ raw: String?) -> String? {
+    guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+      return nil
+    }
+    return value
+  }
+
+  private static func stripTrailingSlashes(_ raw: String) -> String {
+    var value = raw
+    while value.hasSuffix("/") { value.removeLast() }
+    return value
+  }
+
   static func canonicalSelfHostedOrigin(
-    _ raw: String?,
-    key: String,
-    requiresHTTPS: Bool
+    _ raw: String?, key: String, requiresHTTPS: Bool
   ) throws -> String {
     guard let raw = nonEmptyValue(raw) else { throw DesktopDeploymentOriginError.missing(key) }
     guard var components = URLComponents(string: raw),
@@ -326,9 +498,7 @@ enum DesktopBackendEnvironment {
       components.query == nil,
       components.fragment == nil,
       components.path.isEmpty || components.path == "/"
-    else {
-      throw DesktopDeploymentOriginError.invalid(key)
-    }
+    else { throw DesktopDeploymentOriginError.invalid(key) }
 
     let scheme = rawScheme.lowercased()
     guard scheme == "http" || scheme == "https" else {
@@ -337,19 +507,14 @@ enum DesktopBackendEnvironment {
     if requiresHTTPS, scheme != "https" {
       throw DesktopDeploymentOriginError.insecure(key)
     }
-
     let host = rawHost.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
     guard !host.isEmpty else { throw DesktopDeploymentOriginError.invalid(key) }
     if host == "desktop-backend-hhibjajaja-uc.a.run.app"
-      || host == "desktop-backend-dt5lrfkkoa-uc.a.run.app"
-      || host == "omi.me"
-      || host.hasSuffix(".omi.me")
-      || host == "omiapi.com"
-      || host.hasSuffix(".omiapi.com")
+      || host == "desktop-backend-dt5lrfkkoa-uc.a.run.app" || host == "omi.me"
+      || host.hasSuffix(".omi.me") || host == "omiapi.com" || host.hasSuffix(".omiapi.com")
     {
       throw DesktopDeploymentOriginError.managed(key)
     }
-
     components.scheme = scheme
     components.host = host
     components.path = "/"
@@ -363,27 +528,14 @@ enum DesktopBackendEnvironment {
   private static func requiredSelfHostedURL(_ raw: String?, key: String, requiresHTTPS: Bool) -> String {
     do {
       return try canonicalSelfHostedOrigin(raw, key: key, requiresHTTPS: requiresHTTPS)
+    } catch DesktopDeploymentOriginError.insecure {
+      preconditionFailure("self_hosted production deployment requires HTTPS for \(key)")
     } catch {
-      log("BackendEnvironment: self-hosted \(key) rejected (\(String(reflecting: error)))")
-      return ""
+      preconditionFailure("self_hosted deployment requires a valid operator origin for \(key): \(error)")
     }
   }
 
-  private static func nonEmptyValue(_ raw: String?) -> String? {
-    guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-      return nil
-    }
-    return value
-  }
-
-  private static func normalizedURL(_ raw: String?) -> String? {
-    guard let raw else { return nil }
-    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return nil }
-    return trimmed.hasSuffix("/") ? trimmed : trimmed + "/"
-  }
-
-  private static func currentEnvironmentValue(_ key: String) -> String? {
+  static func currentEnvironmentValue(_ key: String) -> String? {
     guard let value = getenv(key), let string = String(validatingCString: value) else {
       return nil
     }

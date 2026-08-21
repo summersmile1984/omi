@@ -4,6 +4,7 @@ import 'package:intercom_flutter/intercom_flutter.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/env/env.dart';
+import 'package:omi/env/environment_profile.dart';
 import 'package:omi/utils/platform/platform_service.dart';
 
 class IntercomManager {
@@ -51,6 +52,27 @@ class IntercomManager {
 
   Future loginUnidentifiedUser() async {
     return PlatformService.executeIfSupportedAsync(_isIntercomEnabled, () => intercom.loginUnidentifiedUser());
+  }
+
+  static Future<T?> displayMessengerForDeployment<T>({
+    required AppEnvironmentProfile profile,
+    required bool platformSupported,
+    required String? appId,
+    required Future<T> Function() display,
+  }) async {
+    if (profile == AppEnvironmentProfile.selfHosted || !platformSupported || appId == null || appId.isEmpty) {
+      return null;
+    }
+    return display();
+  }
+
+  Future<void> displayMessenger() async {
+    await displayMessengerForDeployment<void>(
+      profile: Env.profile,
+      platformSupported: PlatformService.isIntercomSupported,
+      appId: Env.intercomAppId,
+      display: () => intercom.displayMessenger(),
+    );
   }
 
   Future displayEarnMoneyArticle() async {
