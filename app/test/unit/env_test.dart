@@ -69,35 +69,30 @@ void main() {
       expect(AppEnvironmentProfile.mobileBeta.authCallbackScheme, 'omi-beta');
     });
 
+    test('self-hosted profile has no managed Firebase identity or API default', () {
+      expect(AppEnvironmentProfile.selfHosted.defaultApiBaseUrl, isEmpty);
+      expect(AppEnvironmentProfile.selfHosted.firebaseProjectId, isEmpty);
+      expect(AppEnvironmentProfile.selfHosted.managedClientValue('managed-secret'), isNull);
+    });
+
     test('mobile beta keeps OAuth on the production identity plane', () {
       expect(
-        Env.authApiBaseUrlForProfile(
-          AppEnvironmentProfile.mobileBeta,
-          servingApiBaseUrl: 'https://api.omiapi.com/',
-        ),
+        Env.authApiBaseUrlForProfile(AppEnvironmentProfile.mobileBeta, servingApiBaseUrl: 'https://api.omiapi.com/'),
         Env.productionApiBaseUrl,
       );
     });
 
     test('local profile rejects a production Firebase project', () {
       expect(
-        () => Env.validateFirebaseProject(
-          projectId: 'based-hardware',
-          configuredProfile: AppEnvironmentProfile.localDev,
-        ),
+        () =>
+            Env.validateFirebaseProject(projectId: 'based-hardware', configuredProfile: AppEnvironmentProfile.localDev),
         throwsStateError,
       );
     });
 
     test('flavor defaults map to production and local profiles', () {
-      expect(
-        AppEnvironmentProfile.forFlavor(productionFlavor: true),
-        AppEnvironmentProfile.production,
-      );
-      expect(
-        AppEnvironmentProfile.forFlavor(productionFlavor: false),
-        AppEnvironmentProfile.localDev,
-      );
+      expect(AppEnvironmentProfile.forFlavor(productionFlavor: true), AppEnvironmentProfile.production);
+      expect(AppEnvironmentProfile.forFlavor(productionFlavor: false), AppEnvironmentProfile.localDev);
     });
   });
 
@@ -164,19 +159,72 @@ void main() {
         throwsStateError,
       );
     });
+
+    test('self-hosted routing requires an explicit non-Omi HTTPS origin', () {
+      expect(
+        () => Env.validateStartupRouting(
+          productionFamily: true,
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredApiBaseUrl: 'https://api.example.com/',
+          releaseBuild: true,
+        ),
+        returnsNormally,
+      );
+      for (final endpoint in [
+        '',
+        'http://api.example.com',
+        'https://api.omi.me',
+        'https://user:secret@api.example.com',
+        'https://api.example.com/path',
+        'https://api.example.com/?query=value',
+      ]) {
+        expect(
+          () => Env.validateStartupRouting(
+            productionFamily: true,
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredApiBaseUrl: endpoint,
+            releaseBuild: true,
+          ),
+          throwsStateError,
+          reason: endpoint,
+        );
+      }
+      expect(
+        Env.canonicalSelfHostedOrigin('HTTPS://API.Example.COM:443/', key: 'OMI_API_BASE_URL'),
+        'https://api.example.com',
+      );
+    });
+
+    test('self-hosted public origins require explicit operator HTTPS URLs', () {
+      expect(
+        () => Env.validateClientPublicOrigins(
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredPrivacyUrl: 'https://docs.example.com/privacy',
+          configuredTermsUrl: 'https://docs.example.com/terms',
+          configuredShareUrl: 'https://share.example.com',
+        ),
+        returnsNormally,
+      );
+      expect(
+        () => Env.validateClientPublicOrigins(
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredPrivacyUrl: 'https://www.omi.me/privacy',
+          configuredTermsUrl: 'https://docs.example.com/terms',
+          configuredShareUrl: 'https://share.example.com',
+        ),
+        throwsStateError,
+      );
+    });
   });
 
   test('main invokes the production startup routing seam before services initialize', () {
     // Static wiring tripwire: the behavioral cases above call the exact seam.
     final mainSource = File('lib/main.dart').readAsStringSync();
-    expect(mainSource, contains('validateApplicationStartupRouting();'));
+    expect(mainSource, contains('validateApplicationStartupRouting(releaseBuild: kReleaseMode);'));
     expect(
-      mainSource.indexOf('validateApplicationStartupRouting();'),
+      mainSource.indexOf('validateApplicationStartupRouting(releaseBuild: kReleaseMode);'),
       lessThan(mainSource.indexOf('ServiceManager.init()')),
     );
-    expect(
-      mainSource,
-      contains('Env.validateFirebaseProject(projectId: Firebase.app().options.projectId);'),
-    );
+    expect(mainSource, contains('Env.validateFirebaseProject(projectId: Firebase.app().options.projectId);'));
   });
 }

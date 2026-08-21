@@ -5,9 +5,11 @@ import 'environment_profile.dart';
 abstract class Env {
   static const productionApiBaseUrl = 'https://api.omi.me/';
   static const productionAgentProxyWsUrl = 'wss://agent.omi.me/v1/agent/ws';
-  static const _apiBaseUrlFromDefine = String.fromEnvironment(
-    'OMI_API_BASE_URL',
-  );
+  static const privacyPolicyUrl = String.fromEnvironment('OMI_PRIVACY_URL');
+  static const termsOfServiceUrl = String.fromEnvironment('OMI_TERMS_URL');
+  static const shareBaseUrl = String.fromEnvironment('OMI_SHARE_BASE_URL');
+  static const firebaseServicesEnabled = bool.fromEnvironment('OMI_FIREBASE_SERVICES_ENABLED', defaultValue: true);
+  static const _apiBaseUrlFromDefine = String.fromEnvironment('OMI_API_BASE_URL');
   static const firebaseAuthEmulatorHost = String.fromEnvironment(
     'OMI_FIREBASE_AUTH_EMULATOR_HOST',
     defaultValue: '127.0.0.1',
@@ -21,9 +23,8 @@ abstract class Env {
   static String? _agentProxyWsUrlOverride;
   static bool isTestFlight = false;
 
-  static AppEnvironmentProfile get profile => AppEnvironmentProfile.forFlavor(
-        productionFlavor: F.env == Environment.prod,
-      );
+  static AppEnvironmentProfile get profile =>
+      AppEnvironmentProfile.forFlavor(productionFlavor: F.env == Environment.prod);
 
   static void init(EnvFields instance) {
     _instance = instance;
@@ -66,32 +67,117 @@ abstract class Env {
   /// uses the development serving API for product traffic.
   static String get authApiBaseUrl => authApiBaseUrlForProfile(profile, servingApiBaseUrl: apiBaseUrl);
 
-  static String authApiBaseUrlForProfile(
-    AppEnvironmentProfile configuredProfile, {
-    String? servingApiBaseUrl,
-  }) {
+  static String authApiBaseUrlForProfile(AppEnvironmentProfile configuredProfile, {String? servingApiBaseUrl}) {
     if (configuredProfile == AppEnvironmentProfile.mobileBeta) {
       return productionApiBaseUrl;
     }
     return servingApiBaseUrl ?? configuredProfile.defaultApiBaseUrl;
   }
 
+  static String get betterAuthServerUrl => const String.fromEnvironment('OMI_AUTH_SERVER_URL');
+
   static void validateProfilePairing() {
     final productionFlavor = F.env == Environment.prod;
     if (!productionFlavor && profile != AppEnvironmentProfile.localDev) {
-      throw StateError(
-        'Profile ${profile.name} must be built with the prod flavor.',
-      );
+      throw StateError('Profile ${profile.name} must be built with the prod flavor.');
     }
     if (productionFlavor && profile == AppEnvironmentProfile.localDev) {
       throw StateError('The prod flavor cannot use the local_dev profile.');
     }
   }
 
-  static void validateFirebaseProject({
-    required String projectId,
+  /// Self-hosted builds must provide their legal/share origins explicitly.
+  /// Managed builds retain the established Omi URLs and do not need these
+  /// compile-time overrides.
+  static void validateClientPublicOrigins({
     AppEnvironmentProfile? configuredProfile,
+    String? configuredPrivacyUrl,
+    String? configuredTermsUrl,
+    String? configuredShareUrl,
   }) {
+    final effectiveProfile = configuredProfile ?? profile;
+    if (effectiveProfile != AppEnvironmentProfile.selfHosted) return;
+    for (final origin in {
+      'OMI_PRIVACY_URL': configuredPrivacyUrl ?? privacyPolicyUrl,
+      'OMI_TERMS_URL': configuredTermsUrl ?? termsOfServiceUrl,
+      'OMI_SHARE_BASE_URL': configuredShareUrl ?? shareBaseUrl,
+    }.entries) {
+      final uri = Uri.tryParse(origin.value.trim());
+      if (uri == null ||
+          uri.scheme != 'https' ||
+          uri.host.isEmpty ||
+          uri.userInfo.isNotEmpty ||
+          uri.hasQuery ||
+          uri.hasFragment ||
+          _isOmiOperatedHost(uri.host)) {
+        throw StateError('Profile self_hosted requires ${origin.key} to use an explicit non-Omi HTTPS URL.');
+      }
+    }
+  }
+
+  static String resolveShareBaseUrl({AppEnvironmentProfile? configuredProfile, String? configuredShareUrl}) {
+    final effectiveProfile = configuredProfile ?? profile;
+    var value = (configuredShareUrl ?? shareBaseUrl).trim();
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      final uri = Uri.tryParse(value);
+      if (uri == null ||
+          uri.scheme != 'https' ||
+          uri.host.isEmpty ||
+          uri.userInfo.isNotEmpty ||
+          uri.hasQuery ||
+          uri.hasFragment ||
+          _isOmiOperatedHost(uri.host)) {
+        throw StateError('Profile self_hosted requires OMI_SHARE_BASE_URL to use an explicit non-Omi HTTPS URL.');
+      }
+      return value.replaceFirst(RegExp(r'/+$'), '');
+    }
+    if (value.isEmpty) return 'https://h.omi.me';
+    if (!value.contains('://')) value = 'https://$value';
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment ||
+        (uri.scheme != 'http' && uri.scheme != 'https')) {
+      return 'https://h.omi.me';
+    }
+    final origin = uri.hasPort ? '${uri.scheme}://${uri.host}:${uri.port}' : '${uri.scheme}://${uri.host}';
+    final path = uri.path.replaceFirst(RegExp(r'/+$'), '');
+    return path.isEmpty ? origin : '$origin$path';
+  }
+
+  /// Canonical operator origin used by API/auth and other client-owned
+  /// authorities. Credentials, paths, queries and fragments are rejected so
+  /// a server response cannot smuggle a second authority into a URL join.
+  static String canonicalSelfHostedOrigin(String raw, {required String key, bool releaseBuild = true}) {
+    final value = raw.trim();
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment ||
+        (uri.path.isNotEmpty && uri.path != '/')) {
+      throw StateError('Profile self_hosted requires $key to be an absolute origin without credentials or path.');
+    }
+    if (releaseBuild && uri.scheme != 'https') {
+      throw StateError('Profile self_hosted requires $key to use HTTPS in release builds.');
+    }
+    if (_isOmiOperatedHost(uri.host)) {
+      throw StateError('Profile self_hosted cannot use an Omi-operated origin for $key.');
+    }
+    final defaultPort = (uri.scheme == 'https' && uri.port == 443) || (uri.scheme == 'http' && uri.port == 80);
+    final canonical = Uri(
+      scheme: uri.scheme.toLowerCase(),
+      host: uri.host.toLowerCase().replaceFirst(RegExp(r'\.+$'), ''),
+      port: uri.hasPort && !defaultPort ? uri.port : null,
+    );
+    return canonical.origin;
+  }
+
+  static void validateFirebaseProject({required String projectId, AppEnvironmentProfile? configuredProfile}) {
     final effectiveProfile = configuredProfile ?? profile;
     if (projectId != effectiveProfile.firebaseProjectId) {
       throw StateError(
@@ -107,13 +193,11 @@ abstract class Env {
     required bool productionFamily,
     String? configuredApiBaseUrl,
     AppEnvironmentProfile? configuredProfile,
+    bool releaseBuild = true,
   }) {
     final effectiveProfile = configuredProfile ?? (productionFamily ? AppEnvironmentProfile.production : profile);
     final normalized = (configuredApiBaseUrl ?? apiBaseUrl ?? '').trim().replaceFirst(RegExp(r'/+$'), '');
-    final expected = effectiveProfile.defaultApiBaseUrl.replaceFirst(
-      RegExp(r'/+$'),
-      '',
-    );
+    final expected = effectiveProfile.defaultApiBaseUrl.replaceFirst(RegExp(r'/+$'), '');
 
     if (effectiveProfile == AppEnvironmentProfile.localDev) {
       if (!_isLocalDevelopmentApi(normalized)) {
@@ -125,17 +209,22 @@ abstract class Env {
       return;
     }
 
-    if (normalized != expected) {
-      throw StateError(
-        'Profile ${effectiveProfile.name} requires API_BASE_URL=${effectiveProfile.defaultApiBaseUrl}',
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      canonicalSelfHostedOrigin(
+        configuredApiBaseUrl ?? apiBaseUrl ?? '',
+        key: 'OMI_API_BASE_URL',
+        releaseBuild: releaseBuild,
       );
+      return;
+    }
+
+    if (normalized != expected) {
+      throw StateError('Profile ${effectiveProfile.name} requires API_BASE_URL=${effectiveProfile.defaultApiBaseUrl}');
     }
 
     if (effectiveProfile == AppEnvironmentProfile.production &&
         _agentProxyWsUrlFor(normalized) != productionAgentProxyWsUrl) {
-      throw StateError(
-        'Production packages require the production agent WebSocket endpoint.',
-      );
+      throw StateError('Production packages require the production agent WebSocket endpoint.');
     }
   }
 
@@ -175,21 +264,29 @@ abstract class Env {
         (first == 127);
   }
 
-  static String? get googleMapsApiKey => _instance.googleMapsApiKey;
+  static bool _isOmiOperatedHost(String host) {
+    final normalized = host.toLowerCase().replaceFirst(RegExp(r'\.+$'), '');
+    return normalized == 'omi.me' ||
+        normalized.endsWith('.omi.me') ||
+        normalized == 'omiapi.com' ||
+        normalized.endsWith('.omiapi.com');
+  }
 
-  static String? get intercomAppId => _instance.intercomAppId;
+  static String? get googleMapsApiKey => profile.managedClientValue(_instance.googleMapsApiKey);
 
-  static String? get intercomIOSApiKey => _instance.intercomIOSApiKey;
+  static String? get intercomAppId => profile.managedClientValue(_instance.intercomAppId);
 
-  static String? get intercomAndroidApiKey => _instance.intercomAndroidApiKey;
+  static String? get intercomIOSApiKey => profile.managedClientValue(_instance.intercomIOSApiKey);
 
-  static String? get googleClientId => _instance.googleClientId;
+  static String? get intercomAndroidApiKey => profile.managedClientValue(_instance.intercomAndroidApiKey);
 
-  static String? get googleClientSecret => _instance.googleClientSecret;
+  static String? get googleClientId => profile.managedClientValue(_instance.googleClientId);
 
-  static bool get useWebAuth => _instance.useWebAuth ?? false;
+  static String? get googleClientSecret => profile.managedClientValue(_instance.googleClientSecret);
 
-  static bool get useAuthCustomToken => _instance.useAuthCustomToken ?? false;
+  static bool get useWebAuth => profile.managedClientValue(_instance.useWebAuth) ?? false;
+
+  static bool get useAuthCustomToken => profile.managedClientValue(_instance.useAuthCustomToken) ?? false;
 }
 
 abstract class EnvFields {

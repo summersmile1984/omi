@@ -20,6 +20,9 @@ Before getting started, make sure your device is connected and unlocked. If you'
 
    # macOS/Linux: Android
    bash setup.sh android
+
+   # Android self-hosted operator profile (requires explicit OMI_* origins)
+   bash setup.sh android selfhost
    ```
 
    ```powershell
@@ -56,6 +59,33 @@ beta build uses the `mobile_beta` profile and the `omi-beta://auth/callback`
 scheme. Product traffic uses the beta serving API, while Google and Apple OAuth
 remain on `https://api.omi.me/`; the beta must not be treated as a local-emulator
 build.
+
+### Self-hosted mobile profile
+
+Self-hosted builds select the deployment plane explicitly with Dart defines.
+Startup requires operator-owned HTTPS API/auth origins, `better_auth`, explicit
+privacy/terms/share URLs, and `OMI_FIREBASE_SERVICES_ENABLED=false`; invalid or
+managed origins fail before services initialize:
+
+```bash
+flutter build apk --flavor selfhost --release \
+  --dart-define=OMI_APP_PROFILE=self_hosted \
+  --dart-define=OMI_API_BASE_URL=https://api.example.com/ \
+  --dart-define=OMI_AUTH_PROVIDER=better_auth \
+  --dart-define=OMI_AUTH_SERVER_URL=https://auth.example.com/ \
+  --dart-define=OMI_FIREBASE_SERVICES_ENABLED=false \
+  --dart-define=OMI_PRIVACY_URL=https://docs.example.com/privacy \
+  --dart-define=OMI_TERMS_URL=https://docs.example.com/terms \
+  --dart-define=OMI_SHARE_BASE_URL=https://share.example.com
+```
+
+The self-hosted identity flow uses operator Better Auth email endpoints and a
+Keychain/Keystore-backed bearer session. Client-direct vendor STT providers are
+rejected; only the configured backend route, on-device Whisper, or a private
+network local Whisper endpoint are allowed. The Android selfhost flavor has no
+Firebase/Crashlytics native plugin or auto-start registration. The setup script
+rejects `ios selfhost` until an equivalent native iOS target exists, rather than
+falling back to the managed prod target.
  
 3. Ensure GitHub SSH access is set up correctly for pulling certificates from repositories. After running the command below, if you're prompted for a passphrase, enter your SSH passphrase — or simply press Enter/Return if you haven't set one.
     ```bash

@@ -88,6 +88,7 @@ import 'package:omi/utils/notification_channel_strings.dart';
 /// Background message handler for FCM data messages
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  if (!AuthService.firebaseServicesEnabled) return;
   await Firebase.initializeApp();
   await NotificationChannelStrings.loadAppLocale();
 
@@ -131,7 +132,12 @@ Future _init() async {
     Env.init(DevEnv());
   }
   Env.validateProfilePairing();
-  validateApplicationStartupRouting();
+  validateApplicationStartupRouting(releaseBuild: kReleaseMode);
+  AuthService.validateIdentityConfiguration(
+    configuredProfile: Env.profile,
+    firebaseServicesEnabled: AuthService.firebaseServicesEnabled,
+  );
+  Env.validateClientPublicOrigins();
 
   FlutterForegroundTask.initCommunicationPort();
 
@@ -139,25 +145,23 @@ Future _init() async {
   await ServiceManager.init();
   LimitlessDeviceConnection.realtimeSuppressionPolicy = () => SharedPreferencesUtil().batchModeEnabled;
 
-  // Firebase
-  if (Firebase.apps.isEmpty) {
-    final profile = Env.profile;
-    final options = profile == AppEnvironmentProfile.localDev
-        ? local.DefaultFirebaseOptions.currentPlatform
-        : prod.DefaultFirebaseOptions.currentPlatform;
-    Env.validateFirebaseProject(projectId: options.projectId);
-    await Firebase.initializeApp(options: options);
-  } else {
-    // Firebase may already be initialized by native SDK (macOS)
-    debugPrint('Firebase already initialized.');
-    Env.validateFirebaseProject(projectId: Firebase.app().options.projectId);
-  }
+  if (AuthService.firebaseServicesEnabled) {
+    // Firebase is opt-in for self-hosted Better Auth builds.
+    if (Firebase.apps.isEmpty) {
+      final profile = Env.profile;
+      final options = profile == AppEnvironmentProfile.localDev
+          ? local.DefaultFirebaseOptions.currentPlatform
+          : prod.DefaultFirebaseOptions.currentPlatform;
+      Env.validateFirebaseProject(projectId: options.projectId);
+      await Firebase.initializeApp(options: options);
+    } else {
+      debugPrint('Firebase already initialized.');
+      Env.validateFirebaseProject(projectId: Firebase.app().options.projectId);
+    }
 
-  if (Env.profile.usesFirebaseAuthEmulator) {
-    await FirebaseAuth.instance.useAuthEmulator(
-      Env.firebaseAuthEmulatorHost,
-      Env.firebaseAuthEmulatorPort,
-    );
+    if (Env.profile.usesFirebaseAuthEmulator) {
+      await FirebaseAuth.instance.useAuthEmulator(Env.firebaseAuthEmulatorHost, Env.firebaseAuthEmulatorPort);
+    }
   }
 
   await PlatformManager.initializeServices();
@@ -165,7 +169,7 @@ Future _init() async {
   await NotificationService.instance.initialize();
 
   // Register FCM background message handler
-  if (PlatformManager().isFCMSupported) {
+  if (AuthService.firebaseServicesEnabled && PlatformManager().isFCMSupported) {
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   }
 
@@ -177,6 +181,7 @@ Future _init() async {
     Env.isTestFlight = await EnvironmentDetector.isTestFlight();
   }
 
+  await AuthService.instance.initializeIdentitySession();
   bool isAuth = (await AuthService.instance.getIdToken()) != null;
   if (isAuth) {
     PlatformManager.instance.analytics.identify();
@@ -187,9 +192,12 @@ Future _init() async {
     }
     // Fail-closed cutover gate before product traffic / offline uploads.
     // Anonymous Firebase sessions are not cutover product owners.
-    final bootstrapUser = FirebaseAuth.instance.currentUser;
-    if (bootstrapUser != null && !bootstrapUser.isAnonymous) {
-      await AccountCutoverRuntime.instance.bindAuthenticatedOwner(bootstrapUser.uid);
+    final bootstrapUser = AuthService.firebaseServicesEnabled ? FirebaseAuth.instance.currentUser : null;
+    final ownerUid = AuthService.betterAuthEnabled
+        ? SharedPreferencesUtil().uid
+        : (bootstrapUser != null && !bootstrapUser.isAnonymous ? bootstrapUser.uid : null);
+    if (ownerUid != null && ownerUid.isNotEmpty) {
+      await AccountCutoverRuntime.instance.bindAuthenticatedOwner(ownerUid);
     }
   }
   initOpus(await opus_flutter.load());
@@ -201,38 +209,49 @@ Future _init() async {
     Logger.debug('main: restored ${peripheralUuids.length} BLE peripherals');
   };
 
-  await CrashlyticsManager.init();
+  if (AuthService.firebaseServicesEnabled) await CrashlyticsManager.init();
   if (isAuth) {
     PlatformManager.instance.crashReporter.identifyUser(
-      FirebaseAuth.instance.currentUser?.email ?? '',
+      AuthService.betterAuthEnabled ? SharedPreferencesUtil().email : (FirebaseAuth.instance.currentUser?.email ?? ''),
       SharedPreferencesUtil().fullName,
       SharedPreferencesUtil().uid,
     );
   }
-  FlutterError.onError = (FlutterErrorDetails details) {
-    FirebaseCrashlytics.instance.recordFlutterFatalError(details);
-  };
+  if (AuthService.firebaseServicesEnabled) {
+    FlutterError.onError = (FlutterErrorDetails details) {
+      FirebaseCrashlytics.instance.recordFlutterFatalError(details);
+    };
 
-  PlatformDispatcher.instance.onError = (error, stack) {
-    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
-    return true;
-  };
+    PlatformDispatcher.instance.onError = (error, stack) {
+      FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+      return true;
+    };
+  }
 
   await ServiceManager.instance().start();
   return;
 }
 
 void main() {
-  runZonedGuarded(() async {
-    // Ensure
-    if (kDebugMode) {
-      MarionetteBinding.ensureInitialized();
-    } else {
-      WidgetsFlutterBinding.ensureInitialized();
-    }
-    await _init();
-    runApp(const MyApp());
-  }, (error, stack) => FirebaseCrashlytics.instance.recordError(error, stack, fatal: true));
+  runZonedGuarded(
+    () async {
+      // Ensure
+      if (kDebugMode) {
+        MarionetteBinding.ensureInitialized();
+      } else {
+        WidgetsFlutterBinding.ensureInitialized();
+      }
+      await _init();
+      runApp(const MyApp());
+    },
+    (error, stack) {
+      if (AuthService.firebaseServicesEnabled) {
+        FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+      } else {
+        debugPrint('Uncaught error: $error\n$stack');
+      }
+    },
+  );
 }
 
 class MyApp extends StatefulWidget {
@@ -274,8 +293,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     }
     // Apply fresh cutover control before waking WAL recovery so a stale
     // legacy/allow projection cannot admit one offline upload.
-    final resumeUser = FirebaseAuth.instance.currentUser;
-    final resumeOwner = (resumeUser != null && !resumeUser.isAnonymous) ? resumeUser.uid : null;
+    final resumeUser = AuthService.firebaseServicesEnabled ? FirebaseAuth.instance.currentUser : null;
+    final resumeOwner = AuthService.betterAuthEnabled
+        ? SharedPreferencesUtil().uid
+        : ((resumeUser != null && !resumeUser.isAnonymous) ? resumeUser.uid : null);
     await AccountCutoverRuntime.instance.bindAuthenticatedOwner(resumeOwner);
     SyncReconciler.instance.onForeground();
     unawaited(SyncUploadGate.instance.reconcileFairUseStatus());

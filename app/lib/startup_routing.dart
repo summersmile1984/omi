@@ -6,6 +6,7 @@ import 'package:omi/flavors.dart';
 void validateApplicationStartupRouting({
   Environment? environment,
   String? configuredApiBaseUrl,
+  bool releaseBuild = true,
 }) {
   final configuredProfile = environment == null
       ? Env.profile
@@ -14,5 +15,6 @@ void validateApplicationStartupRouting({
     productionFamily: (environment ?? F.env) == Environment.prod,
     configuredApiBaseUrl: configuredApiBaseUrl,
     configuredProfile: configuredProfile,
+    releaseBuild: releaseBuild,
   );
 }

@@ -20,6 +20,129 @@ class AuthComponent extends StatefulWidget {
 }
 
 class _AuthComponentState extends State<AuthComponent> {
+  Future<void> _showBetterAuthDialog(AuthenticationProvider provider) async {
+    final emailController = TextEditingController();
+    final passwordController = TextEditingController();
+    final nameController = TextEditingController();
+    var createAccount = false;
+    var submitting = false;
+    String? formError;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, setDialogState) => AlertDialog(
+            backgroundColor: const Color(0xFF111111),
+            title: Text(
+              createAccount ? dialogContext.l10n.createAccountTitle : dialogContext.l10n.signInTitle,
+              style: const TextStyle(color: Colors.white),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (createAccount)
+                  TextField(
+                    controller: nameController,
+                    textInputAction: TextInputAction.next,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(labelText: dialogContext.l10n.nameLabel),
+                  ),
+                TextField(
+                  key: const Key('betterAuthEmailField'),
+                  controller: emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.next,
+                  autocorrect: false,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(labelText: dialogContext.l10n.emailLabel),
+                ),
+                TextField(
+                  key: const Key('betterAuthPasswordField'),
+                  controller: passwordController,
+                  obscureText: true,
+                  enableSuggestions: false,
+                  autocorrect: false,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(labelText: dialogContext.l10n.passwordLabel),
+                ),
+                if (formError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(formError!, style: const TextStyle(color: Colors.redAccent)),
+                  ),
+                TextButton(
+                  onPressed: submitting
+                      ? null
+                      : () => setDialogState(() {
+                            createAccount = !createAccount;
+                            formError = null;
+                          }),
+                  child: Text(
+                    createAccount ? dialogContext.l10n.alreadyHaveAccountLogin : dialogContext.l10n.createAccountTitle,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: submitting ? null : () => Navigator.of(dialogContext).pop(),
+                child: Text(dialogContext.l10n.cancel),
+              ),
+              FilledButton(
+                key: const Key('betterAuthEmailSubmit'),
+                onPressed: submitting
+                    ? null
+                    : () async {
+                        final email = emailController.text.trim();
+                        String? validationError;
+                        if (email.isEmpty) {
+                          validationError = dialogContext.l10n.enterEmailError;
+                        } else if (!email.contains('@')) {
+                          validationError = dialogContext.l10n.invalidEmailError;
+                        } else if (passwordController.text.isEmpty) {
+                          validationError = dialogContext.l10n.enterPasswordError;
+                        } else if (passwordController.text.length < 8) {
+                          validationError = dialogContext.l10n.passwordMinLengthError;
+                        } else if (createAccount && nameController.text.trim().isEmpty) {
+                          validationError = dialogContext.l10n.enterNameError;
+                        }
+                        if (validationError != null) {
+                          setDialogState(() => formError = validationError);
+                          return;
+                        }
+                        setDialogState(() {
+                          submitting = true;
+                          formError = null;
+                        });
+                        final signedIn = await provider.onBetterAuthEmailSignIn(
+                          email: email,
+                          password: passwordController.text,
+                          name: nameController.text,
+                          createAccount: createAccount,
+                        );
+                        if (!dialogContext.mounted) return;
+                        if (signedIn) {
+                          Navigator.of(dialogContext).pop();
+                          widget.onSignIn();
+                        } else {
+                          setDialogState(() => submitting = false);
+                        }
+                      },
+                child: submitting
+                    ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : Text(createAccount ? dialogContext.l10n.signUpButton : dialogContext.l10n.signInButton),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      emailController.dispose();
+      passwordController.dispose();
+      nameController.dispose();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Consumer<AuthenticationProvider>(
@@ -70,7 +193,7 @@ class _AuthComponentState extends State<AuthComponent> {
                     const SizedBox(height: 32),
 
                     // Sign in buttons
-                    if (Platform.isIOS || Platform.isAndroid) ...[
+                    if (!provider.betterAuthEnabled && (Platform.isIOS || Platform.isAndroid)) ...[
                       SizedBox(
                         width: double.infinity,
                         height: 56,
@@ -104,66 +227,72 @@ class _AuthComponentState extends State<AuthComponent> {
                       const SizedBox(height: 16),
                     ],
 
-                    // Better Auth (self-hosted) sign in button — dev-only
-                    // for the cloud-neutral fork. Bypasses Firebase OAuth.
-                    SizedBox(
-                      width: double.infinity,
-                      height: 56,
-                      child: ElevatedButton(
-                        key: const Key('betterAuthSignInButton'),
-                        onPressed: () {
-                          HapticFeedback.mediumImpact();
-                          provider.onBetterAuthSignIn(widget.onSignIn);
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.black,
-                          foregroundColor: Colors.white,
-                          side: const BorderSide(color: Colors.white24),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-                        ),
-                        child: const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            FaIcon(FontAwesomeIcons.server, size: 20),
-                            SizedBox(width: 8),
-                            Text(
-                              'Better Auth (self-hosted)',
-                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, fontFamily: 'Manrope'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    // Google sign in button
-                    SizedBox(
-                      width: double.infinity,
-                      height: 56,
-                      child: ElevatedButton(
-                        onPressed: () {
-                          HapticFeedback.mediumImpact();
-                          provider.onGoogleSignIn(widget.onSignIn);
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: Colors.black,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const FaIcon(FontAwesomeIcons.google, size: 20),
-                            const SizedBox(width: 8),
-                            Text(
-                              context.l10n.signInWithGoogle,
-                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, fontFamily: 'Manrope'),
-                            ),
-                          ],
+                    if (provider.betterAuthEnabled) ...[
+                      // Better Auth is available only when the build explicitly
+                      // selects the operator identity provider.
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          key: const Key('betterAuthSignInButton'),
+                          onPressed: () {
+                            HapticFeedback.mediumImpact();
+                            _showBetterAuthDialog(provider);
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.black,
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white24),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                          ),
+                          child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              FaIcon(FontAwesomeIcons.server, size: 20),
+                              SizedBox(width: 8),
+                              Text(
+                                'Better Auth (self-hosted)',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, fontFamily: 'Manrope'),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
+                      const SizedBox(height: 16),
+                    ],
+
+                    if (!provider.betterAuthEnabled)
+                      // Google sign in button
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          onPressed: () {
+                            HapticFeedback.mediumImpact();
+                            provider.onGoogleSignIn(widget.onSignIn);
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const FaIcon(FontAwesomeIcons.google, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                context.l10n.signInWithGoogle,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  fontFamily: 'Manrope',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
 
                     const SizedBox(height: 24),
 

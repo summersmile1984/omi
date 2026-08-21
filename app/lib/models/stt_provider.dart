@@ -20,6 +20,11 @@ enum SttProvider {
   static SttProvider fromString(String value) {
     return SttProvider.values.firstWhere((e) => e.name == value, orElse: () => SttProvider.omi);
   }
+
+  /// Self-hosted releases route network STT through the configured backend.
+  /// Only local engines remain selectable directly on the client.
+  bool get isSelfHostedClientSafe =>
+      this == SttProvider.omi || this == SttProvider.localWhisper || this == SttProvider.onDeviceWhisper;
 }
 
 /// Request types determine how audio is sent and whether it's streaming

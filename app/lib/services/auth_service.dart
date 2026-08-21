@@ -16,8 +16,11 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:omi/backend/http/api/users.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/env/env.dart';
+import 'package:omi/env/environment_profile.dart';
 import 'package:omi/flavors.dart';
 import 'package:omi/services/auth/auth_token_result.dart';
+import 'package:omi/services/auth/better_auth_client.dart';
+import 'package:omi/services/auth/better_auth_session_store.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
 
@@ -39,6 +42,48 @@ final class _FirebaseAuthTokenGateway implements AuthTokenGateway {
   @override
   Future<void> signOut() => FirebaseAuth.instance.signOut();
 }
+
+final class _BetterAuthTokenGateway implements AuthTokenGateway {
+  _BetterAuthTokenGateway()
+      : _client = BetterAuthClient(baseUrl: AuthService.betterAuthServerUrl),
+        _sessionStore = BetterAuthSessionStore.instance;
+
+  final BetterAuthClient _client;
+  final BetterAuthSessionStore _sessionStore;
+
+  @override
+  AuthUserSnapshot? get currentUser {
+    final preferences = SharedPreferencesUtil();
+    if (preferences.identityProvider != 'better_auth' ||
+        _sessionStore.sessionToken.isEmpty ||
+        preferences.uid.isEmpty) {
+      return null;
+    }
+    return AuthUserSnapshot(
+      uid: preferences.uid,
+      email: preferences.email.isEmpty ? null : preferences.email,
+      displayName: preferences.fullName.isEmpty ? null : preferences.fullName,
+    );
+  }
+
+  @override
+  Future<RefreshedAuthToken?> forceRefresh() async {
+    final refreshed = await _client.refreshJwt(_sessionStore.sessionToken);
+    return RefreshedAuthToken(token: refreshed.token, expirationTime: refreshed.expirationTime);
+  }
+
+  @override
+  Future<void> signOut() async {
+    try {
+      await _client.signOut(_sessionStore.sessionToken);
+    } finally {
+      await _sessionStore.clear();
+    }
+  }
+}
+
+AuthTokenGateway _defaultAuthTokenGateway() =>
+    AuthService.betterAuthEnabled ? _BetterAuthTokenGateway() : _FirebaseAuthTokenGateway();
 
 /// Source-bound proof captured before a credential-collision sign-in replaces
 /// the anonymous Firebase user.
@@ -83,7 +128,7 @@ class AuthService {
   static AuthService get instance => _instance;
 
   AuthService._internal()
-      : _tokenGateway = _FirebaseAuthTokenGateway(),
+      : _tokenGateway = _defaultAuthTokenGateway(),
         _refreshDelay = _defaultRefreshDelay,
         _recordTelemetry = _recordProductionTelemetry,
         _telemetryContextProvider = _productionTelemetryContext;
@@ -100,6 +145,56 @@ class AuthService {
         _telemetryContextProvider = telemetryContextProvider ?? (() => const {});
 
   static const int _maxRefreshAttempts = 3;
+  static const identityProvider = String.fromEnvironment('OMI_AUTH_PROVIDER', defaultValue: 'firebase');
+  static const betterAuthServerUrl = String.fromEnvironment('OMI_AUTH_SERVER_URL');
+  static bool get firebaseServicesEnabled => Env.firebaseServicesEnabled;
+  static String get normalizedIdentityProvider => identityProvider.trim().toLowerCase().replaceAll('-', '_');
+  static bool get betterAuthEnabled => normalizedIdentityProvider == 'better_auth';
+
+  static void validateIdentityConfiguration({
+    String? configuredProvider,
+    String? configuredServerUrl,
+    AppEnvironmentProfile? configuredProfile,
+    bool? releaseMode,
+    required bool firebaseServicesEnabled,
+  }) {
+    final provider = (configuredProvider ?? identityProvider).trim().toLowerCase().replaceAll('-', '_');
+    final serverUrl = (configuredServerUrl ?? betterAuthServerUrl).trim();
+    final isRelease = releaseMode ?? kReleaseMode;
+    final effectiveProfile = configuredProfile ?? Env.profile;
+    if (provider != 'firebase' && provider != 'better_auth') {
+      throw StateError('Unsupported OMI_AUTH_PROVIDER: $provider');
+    }
+    if (provider == 'firebase') {
+      if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+        throw StateError('self_hosted builds require OMI_AUTH_PROVIDER=better_auth');
+      }
+      if (!firebaseServicesEnabled) {
+        throw StateError('Firebase identity requires OMI_FIREBASE_SERVICES_ENABLED=true');
+      }
+      return;
+    }
+    if (serverUrl.isEmpty) throw StateError('Better Auth requires an explicit OMI_AUTH_SERVER_URL');
+    final uri = Uri.tryParse(serverUrl);
+    if (uri == null ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment ||
+        (uri.path.isNotEmpty && uri.path != '/')) {
+      throw StateError('Better Auth requires an absolute OMI_AUTH_SERVER_URL origin');
+    }
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      Env.canonicalSelfHostedOrigin(serverUrl, key: 'OMI_AUTH_SERVER_URL', releaseBuild: isRelease);
+    } else if (isRelease && uri.scheme != 'https') {
+      throw StateError('Better Auth release builds require an HTTPS OMI_AUTH_SERVER_URL');
+    }
+    if (firebaseServicesEnabled) {
+      throw StateError('Better Auth builds require OMI_FIREBASE_SERVICES_ENABLED=false');
+    }
+  }
+
   static const List<Duration> _refreshRetryDelays = [Duration(milliseconds: 200), Duration(milliseconds: 500)];
   static const Set<String> _terminalTokenErrorCodes = {
     'invalid-user-token',
@@ -134,12 +229,17 @@ class AuthService {
         'release_channel': Env.isTestFlight ? 'testflight' : (F.env == Environment.prod ? 'app_store' : 'dev'),
       };
 
-  bool isSignedIn() => FirebaseAuth.instance.currentUser != null && !FirebaseAuth.instance.currentUser!.isAnonymous;
+  bool isSignedIn() => _tokenGateway.currentUser != null;
+
+  Future<void> initializeIdentitySession() async {
+    if (betterAuthEnabled) await BetterAuthSessionStore.instance.load();
+  }
 
   static const _pkceCodeVerifierLength = 64;
   static const _pkceCharset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
 
   getFirebaseUser() {
+    if (!firebaseServicesEnabled) return null;
     return FirebaseAuth.instance.currentUser;
   }
 
@@ -252,8 +352,37 @@ class AuthService {
 
   Future<void> signOut() async {
     _invalidateRefreshes();
-    _clearCachedIdentityAndAuth();
-    await _tokenGateway.signOut();
+    try {
+      await _tokenGateway.signOut();
+    } finally {
+      _clearCachedIdentityAndAuth();
+    }
+  }
+
+  Future<BetterAuthSession> authenticateWithBetterAuthEmail({
+    required String email,
+    required String password,
+    String? name,
+    bool createAccount = false,
+  }) async {
+    if (!betterAuthEnabled) throw const BetterAuthException('provider_not_configured');
+    final client = BetterAuthClient(baseUrl: betterAuthServerUrl);
+    final session = createAccount
+        ? await client.signUpEmail(email: email, password: password, name: name?.trim() ?? '')
+        : await client.signInEmail(email: email, password: password);
+    final preferences = SharedPreferencesUtil();
+    preferences.identityProvider = 'better_auth';
+    await BetterAuthSessionStore.instance.save(session.sessionToken);
+    preferences.uid = session.uid;
+    preferences.email = session.email ?? email.trim();
+    final normalizedName = (session.displayName ?? name ?? '').trim();
+    final nameParts = normalizedName.isEmpty ? const <String>[] : normalizedName.split(RegExp(r'\s+'));
+    preferences.givenName = nameParts.isEmpty ? '' : nameParts.first;
+    preferences.familyName = nameParts.length > 1 ? nameParts.skip(1).join(' ') : '';
+    preferences.authToken = session.jwt;
+    preferences.tokenExpirationTime = session.expirationTime.millisecondsSinceEpoch;
+    markAuthenticatedUser(session.uid);
+    return session;
   }
 
   void _invalidateRefreshes() {
@@ -403,6 +532,14 @@ class AuthService {
         return AuthTokenTerminalFailure(code: e.code);
       }
       return AuthTokenTransientFailure(failureClass: 'firebase_transient', code: e.code);
+    } on BetterAuthException catch (e) {
+      if (generation != _sessionGeneration) return const AuthTokenMissingUser();
+      if (e.code == 'session_expired') {
+        _clearCachedAuth();
+        return const AuthTokenTerminalFailure(code: 'session_expired');
+      }
+      Logger.debug('refreshIdToken: Better Auth refresh failed: ${e.code}');
+      return AuthTokenTransientFailure(failureClass: 'better_auth_transient', code: e.code);
     } catch (e) {
       if (generation != _sessionGeneration) return const AuthTokenMissingUser();
       Logger.debug('refreshIdToken: token refresh failed transiently: ${e.runtimeType}');

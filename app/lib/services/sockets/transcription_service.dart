@@ -7,6 +7,7 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/schema/message_event.dart';
 import 'package:omi/backend/schema/transcript_segment.dart';
 import 'package:omi/env/env.dart';
+import 'package:omi/env/environment_profile.dart';
 import 'package:omi/models/custom_stt_config.dart';
 import 'package:omi/models/stt_provider.dart';
 import 'package:omi/services/sockets/on_device_apple_provider.dart';
@@ -342,6 +343,15 @@ class TranscriptSocketServiceFactory {
       return createDefault(sampleRate, codec, language, source: source);
     }
 
+    final primarySocket = createTransportForProfile<IPureSocket>(
+      profile: Env.profile,
+      provider: config.provider,
+      config: config,
+      createTransport: () => config.isLive
+          ? _createStreamingSocket(sampleRate, codec, config)
+          : _createPollingSocket(sampleRate, codec, config),
+    );
+
     final sttConfigId = config.sttConfigId;
     final effectiveLang = config.effectiveLanguage;
     final effectiveModel = config.effectiveModel;
@@ -350,10 +360,6 @@ class TranscriptSocketServiceFactory {
     );
 
     // Create primary socket based on isLive/isPolling
-    final primarySocket = config.isLive
-        ? _createStreamingSocket(sampleRate, codec, config)
-        : _createPollingSocket(sampleRate, codec, config);
-
     // Wrap with composite service (primary STT + Omi backend)
     return _createCompositeService(
       sampleRate,
@@ -364,6 +370,77 @@ class TranscriptSocketServiceFactory {
       sttConfigId: sttConfigId,
       sttProvider: config.provider.name,
     );
+  }
+
+  static void validateDeploymentEgress({
+    required AppEnvironmentProfile profile,
+    required SttProvider provider,
+    CustomSttConfig? config,
+  }) {
+    if (profile != AppEnvironmentProfile.selfHosted) return;
+    if (!provider.isSelfHostedClientSafe) {
+      throw StateError(
+        'Profile self_hosted routes network transcription through its configured backend; '
+        'client-direct ${provider.name} is unavailable.',
+      );
+    }
+
+    if (provider == SttProvider.onDeviceWhisper &&
+        config?.requestType != null &&
+        config!.requestType != SttRequestType.multipartForm) {
+      throw StateError('Profile self_hosted on-device transcription cannot use a network request type.');
+    }
+
+    if (provider == SttProvider.localWhisper) {
+      if (config?.url?.trim().isNotEmpty == true) {
+        throw StateError('Profile self_hosted local Whisper cannot override its local inference URL.');
+      }
+      if (config?.requestType != null && config!.requestType != SttRequestType.multipartForm) {
+        throw StateError('Profile self_hosted local Whisper requires multipart_form transport.');
+      }
+      final host = config?.host?.trim() ?? '127.0.0.1';
+      if (!_isPrivateLocalHost(host)) {
+        throw StateError('Profile self_hosted local Whisper requires a loopback or private-network host.');
+      }
+    }
+  }
+
+  static T createTransportForProfile<T>({
+    required AppEnvironmentProfile profile,
+    required SttProvider provider,
+    CustomSttConfig? config,
+    required T Function() createTransport,
+  }) {
+    validateDeploymentEgress(profile: profile, provider: provider, config: config);
+    return createTransport();
+  }
+
+  static bool _isPrivateLocalHost(String rawHost) {
+    var host = rawHost.trim().toLowerCase();
+    if (host.isEmpty || host.contains(RegExp(r'[/:?#@\s]'))) return false;
+    host = host.replaceFirst(RegExp(r'\.+$'), '');
+    if (host == 'localhost' || host == 'host.docker.internal' || host.endsWith('.local')) return true;
+    final address = InternetAddress.tryParse(host);
+    if (address == null) return false;
+    if (address.type == InternetAddressType.IPv4) {
+      final octets = host.split('.').map(int.tryParse).toList();
+      if (octets.length != 4 || octets.any((octet) => octet == null || octet < 0 || octet > 255)) return false;
+      final first = octets[0]!;
+      final second = octets[1]!;
+      return first == 10 ||
+          (first == 172 && second >= 16 && second <= 31) ||
+          (first == 192 && second == 168) ||
+          first == 127 ||
+          (first == 100 && second >= 64 && second <= 127);
+    }
+    final normalized = address.address.toLowerCase();
+    return address.isLoopback ||
+        normalized.startsWith('fe8') ||
+        normalized.startsWith('fe9') ||
+        normalized.startsWith('fea') ||
+        normalized.startsWith('feb') ||
+        normalized.startsWith('fc') ||
+        normalized.startsWith('fd');
   }
 
   /// Create streaming WebSocket for live STT

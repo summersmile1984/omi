@@ -47,6 +47,7 @@ echo "Usages:"
 echo "- bash setup.sh ios"
 echo "- bash setup.sh android"
 echo "- bash setup.sh ios beta   # explicit production-data dogfood build"
+echo "- bash setup.sh android selfhost   # operator-owned Better Auth/API"
 echo ""
 
 LOCAL_DEV_HOST="${OMI_DEV_HOST:-127.0.0.1}"
@@ -54,6 +55,41 @@ LOCAL_API_BASE_URL="${OMI_LOCAL_API_BASE_URL:-http://${LOCAL_DEV_HOST}:8000/}"
 ANDROID_DEV_HOST="${OMI_ANDROID_DEV_HOST:-${OMI_DEV_HOST:-10.0.2.2}}"
 ANDROID_LOCAL_API_BASE_URL="${OMI_LOCAL_API_BASE_URL:-http://${ANDROID_DEV_HOST}:8000/}"
 BETA_API_BASE_URL="${OMI_BETA_API_BASE_URL:-https://api.omiapi.com/}"
+
+######################################
+# Validate explicit self-hosted authorities
+######################################
+function require_self_host_config() {
+  local require_https="${1:-false}"
+  local key value
+  if [[ "${OMI_AUTH_PROVIDER:-}" != "better_auth" ]]; then
+    echo "selfhost requires OMI_AUTH_PROVIDER=better_auth; refusing Firebase fallback." >&2
+    return 1
+  fi
+  if [[ "${OMI_FIREBASE_SERVICES_ENABLED:-false}" != "false" ]]; then
+    echo "selfhost requires OMI_FIREBASE_SERVICES_ENABLED=false." >&2
+    return 1
+  fi
+  for key in OMI_API_BASE_URL OMI_AUTH_SERVER_URL OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL; do
+    value="${!key:-}"
+    if [[ -z "$value" || "$value" =~ [[:space:]] ]]; then
+      echo "$key is required for selfhost and must not contain whitespace." >&2
+      return 1
+    fi
+    if [[ "$key" == "OMI_PRIVACY_URL" || "$key" == "OMI_TERMS_URL" || "$key" == "OMI_SHARE_BASE_URL" ]]; then
+      if [[ "$value" != https://* ]]; then
+        echo "$key must use HTTPS for selfhost." >&2
+        return 1
+      fi
+    elif [[ "$require_https" == "true" && "$value" != https://* ]]; then
+      echo "$key must use HTTPS in a selfhost release." >&2
+      return 1
+    elif [[ "$value" != https://* && "$value" != http://* ]]; then
+      echo "$key must be an explicit HTTP(S) URL for selfhost." >&2
+      return 1
+    fi
+  done
+}
 
 ######################################
 # Generate device suffix from hostname
@@ -151,8 +187,10 @@ function setup_app_env() {
   local configured_api_base_url="${2:-}"
   local env_file='.dev.env'
   local api_base_url="${configured_api_base_url:-$LOCAL_API_BASE_URL}"
-  if [[ "$profile" == "mobile_beta" ]]; then
+  if [[ "$profile" == "mobile_beta" || "$profile" == "self_hosted" ]]; then
     env_file='.env'
+  fi
+  if [[ "$profile" == "mobile_beta" ]]; then
     api_base_url="$BETA_API_BASE_URL"
   fi
   printf 'API_BASE_URL=%s\nUSE_WEB_AUTH=true\nUSE_AUTH_CUSTOM_TOKEN=true\n' "$api_base_url" > "$env_file"
@@ -173,9 +211,16 @@ function run_build_android() {
   local profile='local_dev'
   local api_base_url="$ANDROID_LOCAL_API_BASE_URL"
   local emulator_host="$ANDROID_DEV_HOST"
-  if [[ "$flavor" == "prod" ]]; then
-    profile='mobile_beta'
-    api_base_url="$BETA_API_BASE_URL"
+  if [[ "$flavor" == "prod" || "$flavor" == "selfhost" ]]; then
+    if [[ "$flavor" == "selfhost" ]]; then
+      require_self_host_config false
+      export OMI_FIREBASE_SERVICES_ENABLED=false
+      profile='self_hosted'
+      api_base_url="$OMI_API_BASE_URL"
+    else
+      profile='mobile_beta'
+      api_base_url="$BETA_API_BASE_URL"
+    fi
     emulator_host=''
   fi
   local flutter_args=(
@@ -183,6 +228,16 @@ function run_build_android() {
     "--dart-define=OMI_APP_PROFILE=$profile"
     "--dart-define=OMI_API_BASE_URL=$api_base_url"
   )
+  if [[ "$flavor" == "selfhost" ]]; then
+    flutter_args+=(
+      '--dart-define=OMI_AUTH_PROVIDER=better_auth'
+      '--dart-define=OMI_FIREBASE_SERVICES_ENABLED=false'
+      "--dart-define=OMI_AUTH_SERVER_URL=${OMI_AUTH_SERVER_URL}"
+      "--dart-define=OMI_PRIVACY_URL=${OMI_PRIVACY_URL}"
+      "--dart-define=OMI_TERMS_URL=${OMI_TERMS_URL}"
+      "--dart-define=OMI_SHARE_BASE_URL=${OMI_SHARE_BASE_URL}"
+    )
+  fi
   if [[ -n "$emulator_host" ]]; then
     flutter_args+=("--dart-define=OMI_FIREBASE_AUTH_EMULATOR_HOST=$emulator_host")
   fi
@@ -206,7 +261,10 @@ function run_build_ios() {
 
 case "${1}" in
   ios)
-    if [[ "${2:-}" == "beta" ]]; then
+    if [[ "${2:-}" == "selfhost" ]]; then
+      echo "iOS selfhost is not wired to a native target in this setup script; refusing the managed prod fallback." >&2
+      exit 1
+    elif [[ "${2:-}" == "beta" ]]; then
       if [[ -z "${FIREBASE_SERVICE_ACCOUNT_KEY:-}" ]]; then
         echo "ios beta requires FIREBASE_SERVICE_ACCOUNT_KEY so the production Firebase app config can be generated." >&2
         exit 1
@@ -228,7 +286,11 @@ case "${1}" in
     fi
     ;;
   android)
-    if [[ "${2:-}" == "beta" ]]; then
+    if [[ "${2:-}" == "selfhost" ]]; then
+      require_self_host_config false
+      setup_app_env self_hosted "$OMI_API_BASE_URL"
+      run_build_android selfhost
+    elif [[ "${2:-}" == "beta" ]]; then
       if [[ -z "${FIREBASE_SERVICE_ACCOUNT_KEY:-}" ]]; then
         echo "android beta requires FIREBASE_SERVICE_ACCOUNT_KEY so the production Firebase app config can be generated." >&2
         exit 1

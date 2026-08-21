@@ -685,6 +685,10 @@ class SharedPreferencesUtil {
 
   set tokenExpirationTime(int value) => saveInt('tokenExpirationTime', value);
 
+  String get identityProvider => getString('identityProvider');
+
+  set identityProvider(String value) => saveString('identityProvider', value);
+
   String get email => getString('email');
 
   set email(String value) => saveString('email', value);
@@ -706,6 +710,7 @@ class SharedPreferencesUtil {
     if (ownerUid.isNotEmpty) _scopeLegacyUserData(ownerUid);
     authToken = '';
     tokenExpirationTime = 0;
+    identityProvider = '';
     uid = '';
     email = '';
     givenName = '';
