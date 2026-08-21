@@ -36,12 +36,28 @@ _LENGTH = struct.Struct('>I')
 _HKDF_INFO = b'omi-self-host-backup-aead-v1'
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _protect_and_hash_file(path: Path, label: str) -> tuple[str, int]:
+    """Hash one regular artifact while changing its mode through the open fd."""
+
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RuntimeError(f'{label} is missing: {path.name}') from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f'{label} must be a regular file: {path.name}')
+        os.fchmod(descriptor, 0o600)
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, 'rb') as handle:
+            descriptor = -1
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest(), metadata.st_size
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _read_exact(handle, size: int, label: str) -> bytes:
@@ -68,6 +84,7 @@ def _safe_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
             or member.ischr()
             or member.isblk()
             or member.isfifo()
+            or not (member.isdir() or member.isreg())
         ):
             raise RuntimeError(f'unsafe archive member: {member.name}')
     return members
@@ -82,8 +99,23 @@ def _require_private_file(path: Path, label: str) -> None:
 
 def _load_key(path: Path) -> bytes:
     _require_private_file(path, 'backup key')
-    with path.open('rb') as handle:
-        key = handle.read(ENVELOPE_KEY_BYTES + 1)
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RuntimeError(f'backup key is missing: {path.name}') from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f'backup key is missing: {path.name}')
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise RuntimeError(f'backup key must be mode 0600: {path.name}')
+        with os.fdopen(descriptor, 'rb') as handle:
+            descriptor = -1
+            key = handle.read(ENVELOPE_KEY_BYTES + 1)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if len(key) != ENVELOPE_KEY_BYTES:
         raise RuntimeError('backup key must contain exactly 32 bytes')
     return key
@@ -109,6 +141,7 @@ class _EnvelopeWriter:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.fchmod(descriptor, 0o600)
         self._handle = os.fdopen(descriptor, 'wb')
         salt = os.urandom(ENVELOPE_SALT_BYTES)
         self._header = ENVELOPE_MAGIC + _HEADER.pack(ENVELOPE_CHUNK_BYTES, salt)
@@ -150,7 +183,6 @@ class _EnvelopeWriter:
         self._handle.flush()
         os.fsync(self._handle.fileno())
         self._handle.close()
-        os.chmod(self.path, 0o600)
         self._closed = True
 
     def abort(self) -> None:
@@ -173,6 +205,7 @@ def _iter_decrypted(path: Path, key: bytes):
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+    _require_private_file(path, 'backup artifact')
     with path.open('rb') as handle:
         magic = _read_exact(handle, len(ENVELOPE_MAGIC), 'header')
         if magic != ENVELOPE_MAGIC:
@@ -228,6 +261,12 @@ def _decrypted_temp(path: Path, key: bytes):
 def backup(source: Path, archive_path: Path, key_file: Path) -> None:
     if not source.is_dir() or source.is_symlink():
         raise RuntimeError(f'volume source is not a directory: {source}')
+    for current, directories, files in os.walk(source, followlinks=False):
+        for name in (*directories, *files):
+            child = Path(current) / name
+            mode = child.lstat().st_mode
+            if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                raise RuntimeError(f'volume source contains an unsafe member: {child.name}')
     key = _load_key(key_file)
     try:
         with _EnvelopeWriter(archive_path, key) as encrypted:
@@ -299,6 +338,7 @@ def open_file(source: Path, plaintext_path: Path, key_file: Path) -> None:
         raise RuntimeError(f'plaintext restore target already exists: {plaintext_path.name}')
     key = _load_key(key_file)
     descriptor = os.open(plaintext_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.fchmod(descriptor, 0o600)
     try:
         with os.fdopen(descriptor, 'wb') as handle:
             for chunk in _iter_decrypted(source, key):
@@ -308,7 +348,6 @@ def open_file(source: Path, plaintext_path: Path, key_file: Path) -> None:
     except Exception:
         plaintext_path.unlink(missing_ok=True)
         raise
-    os.chmod(plaintext_path, 0o600)
 
 
 def _require_sha256(value: object, label: str) -> str:
@@ -359,8 +398,8 @@ def write_manifest(
             raise RuntimeError(f'backup artifact missing: {name}')
         if path.is_symlink():
             raise RuntimeError(f'backup artifact must not be a symlink: {name}')
-        os.chmod(path, 0o600)
-        entries[name] = {'sha256': _sha256(path), 'bytes': path.stat().st_size}
+        sha256, bytes_count = _protect_and_hash_file(path, 'backup artifact')
+        entries[name] = {'sha256': sha256, 'bytes': bytes_count}
     payload = {
         'schema_version': MANIFEST_SCHEMA_VERSION,
         'created_at': datetime.now(timezone.utc).isoformat(),
@@ -370,10 +409,11 @@ def write_manifest(
         'artifacts': entries,
     }
     manifest_path = directory / 'manifest.json'
-    descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0)
+    descriptor = os.open(manifest_path, flags, 0o600)
+    os.fchmod(descriptor, 0o600)
     with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=True) + '\n')
-    os.chmod(manifest_path, 0o600)
 
 
 def verify_manifest(
@@ -419,11 +459,12 @@ def verify_manifest(
             raise RuntimeError(f'invalid backup manifest metadata: {name}')
         path = directory / name
         _require_private_file(path, 'backup artifact')
+        actual_sha256, actual_bytes = _protect_and_hash_file(path, 'backup artifact')
         if (
-            _require_sha256(metadata.get('sha256'), f'backup artifact checksum for {name}') != _sha256(path)
+            _require_sha256(metadata.get('sha256'), f'backup artifact checksum for {name}') != actual_sha256
             or not isinstance(metadata.get('bytes'), int)
             or isinstance(metadata.get('bytes'), bool)
-            or metadata['bytes'] != path.stat().st_size
+            or metadata['bytes'] != actual_bytes
         ):
             raise RuntimeError(f'backup checksum mismatch: {name}')
         _verify_envelope(path, key)

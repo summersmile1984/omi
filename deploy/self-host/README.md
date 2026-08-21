@@ -255,8 +255,10 @@ Auth/Firestore migration owners. The manifest contains ciphertext checksums and
 non-secret envelope format metadata only; key bytes are never copied into the
 backup directory, manifest, or logs. Verification authenticates every envelope
 before it succeeds and rejects missing, malformed, changed, or non-private
-artifacts. Store the runtime env/secrets separately: they are deliberately
-never copied into a backup directory.
+artifacts. Direct volume restore/open also rejects symlinked or non-0600 archive
+paths, and backup refuses source-volume symlinks or special files that the
+restore safety contract cannot materialize. Store the runtime env/secrets
+separately: they are deliberately never copied into a backup directory.
 
 Create and protect the key outside the repository. An operator may use a
 secret manager to materialize this file for the duration of the operation; the

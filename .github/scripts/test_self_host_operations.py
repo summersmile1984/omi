@@ -1290,6 +1290,51 @@ class SelfHostOperationsTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'unsafe archive member'):
                 SNAPSHOT.restore(source, archive_path, key_file)
 
+    def test_restore_and_open_reject_non_private_archive_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = self._key_file(root)
+            source = root / 'state'
+            source.mkdir()
+            (source / 'marker').write_text('keep', encoding='utf-8')
+            archive = root / 'state.tar.gz.enc'
+            SNAPSHOT.backup(source, archive, key_file)
+
+            symlink = root / 'symlink.tar.gz.enc'
+            symlink.symlink_to(archive)
+            with self.assertRaisesRegex(RuntimeError, 'backup artifact'):
+                SNAPSHOT.restore(source, symlink, key_file)
+
+            non_private = root / 'non-private.tar.gz.enc'
+            non_private.write_bytes(archive.read_bytes())
+            non_private.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError, 'mode 0600'):
+                SNAPSHOT.open_file(non_private, root / 'plaintext', key_file)
+
+    def test_backup_rejects_source_symlinks_and_special_members(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = self._key_file(root)
+            source = root / 'state'
+            source.mkdir()
+            outside = root / 'outside.txt'
+            outside.write_text('outside', encoding='utf-8')
+            (source / 'linked').symlink_to(outside)
+            archive = root / 'state.tar.gz.enc'
+            with self.assertRaisesRegex(RuntimeError, 'unsafe member'):
+                SNAPSHOT.backup(source, archive, key_file)
+            self.assertFalse(archive.exists())
+
+            plaintext = root / 'special.tar.gz'
+            with tarfile.open(plaintext, 'w:gz') as output:
+                member = tarfile.TarInfo('unsupported')
+                member.type = tarfile.FIFOTYPE
+                output.addfile(member)
+            special = root / 'special.tar.gz.enc'
+            SNAPSHOT.seal_file(plaintext, special, key_file)
+            with self.assertRaisesRegex(RuntimeError, 'unsafe archive member'):
+                SNAPSHOT.restore(source, special, key_file)
+
     def test_backup_rejects_wrong_key_and_tamper_without_mutating_restore_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
