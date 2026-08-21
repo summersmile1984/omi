@@ -24,7 +24,7 @@ from database.firestore_index_registry import INDEX_REQUIREMENTS
 from .engine import KNOWN_COLLECTIONS, create_composite_indexes, get_engine
 from .sql import build_ddl, resolve_collection
 
-LATEST_SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 2
 MIGRATION_LOCK_ID = 7_362_737_641_104_927_311
 MIGRATION_TABLE = 'firestore_pg_schema_migrations'
 COLLECTION_TABLE = 'firestore_pg_collections'
@@ -68,6 +68,118 @@ LEGACY_RAW_COLLECTION_IDS_V1 = frozenset(
     }
 )
 
+# Schema v2 freezes the exhaustive production inventory added after v1.  These
+# IDs intentionally keep the hashed mapping they had while they were dynamic;
+# adding another ID requires schema v3 rather than mutating this snapshot.
+STATIC_HASHED_COLLECTION_IDS_V2 = frozenset(
+    {
+        'account_cutover',
+        'account_deletion_receipts',
+        'account_deletions',
+        'agentVmMigrations',
+        'analytics',
+        'analytics_markers',
+        'announcements',
+        'api_keys',
+        'app_review_config',
+        'artifact_heads',
+        'artifact_refs',
+        'candidate_idempotency_aliases',
+        'candidate_pending_claims',
+        'candidate_resolution_claims',
+        'canonical_memory_atoms',
+        'canonical_memory_dreaming_state',
+        'canonical_memory_maintenance_registry',
+        'chat_first_proactive_intents',
+        'chat_first_proactive_state',
+        'chat_quota_events',
+        'client_devices',
+        'continuation_checkpoints',
+        'conversation_finalization_projection_shards',
+        'conversation_recovery_state',
+        'daily_summaries',
+        'deepgram_streaming',
+        'desktop_beta_admission',
+        'desktop_beta_breakglass_audits',
+        'desktop_preview_manifests',
+        'desktop_preview_pointers',
+        'desktop_release_manifests',
+        'desktop_releases',
+        'desktop_update_channels',
+        'desktop_update_policy',
+        'dev_api_keys',
+        'dismissed_announcements',
+        'fair_use_events',
+        'fal_whisperx',
+        'goal_history',
+        'hourly_usage',
+        'import_jobs',
+        'integrations',
+        'knowledge_edges',
+        'knowledge_nodes',
+        'llm_gateway_attempts',
+        'llm_runtime_controls',
+        'mcp_api_keys',
+        'mcp_oauth_access_tokens',
+        'mcp_oauth_authorization_codes',
+        'mcp_oauth_clients',
+        'mcp_oauth_grants',
+        'mcp_oauth_refresh_tokens',
+        'meetings',
+        'memory_commits',
+        'memory_control',
+        'memory_corrections',
+        'memory_evidence',
+        'memory_graph_assertions',
+        'memory_historical_overrides',
+        'memory_import_artifacts',
+        'memory_import_candidates',
+        'memory_import_runs',
+        'memory_legacy_fallback',
+        'memory_lineage',
+        'memory_runs',
+        'memory_source_replacements',
+        'memory_state',
+        'non_active_memory_routes',
+        'pending_verifications',
+        'people',
+        'phone_call_config',
+        'phone_numbers',
+        'photos',
+        'plugins',
+        'plugins_data',
+        'projection_repairs',
+        'realtime_sessions',
+        'recording_sessions',
+        'reviews',
+        'short_term',
+        'short_term_lifecycle_transitions',
+        'soniox_streaming',
+        'speechmatics_streaming',
+        'sync_content_ledger',
+        'task_context_snapshots',
+        'task_feedback',
+        'task_integrations',
+        'task_intelligence_control',
+        'task_interventions',
+        'task_open_loop_snapshots',
+        'task_outcomes',
+        'task_recommendation_decisions',
+        'task_recommendation_projections',
+        'task_recurrence_inbox',
+        'task_snapshot_receipts',
+        'testers',
+        'topics',
+        'trends',
+        'usage_history',
+        'work_intent_receipts',
+        'workflow_mutation_receipts',
+        'wrapped',
+        'x_connector_users',
+        'x_posts',
+    }
+)
+
 
 class SchemaNotCurrent(RuntimeError):
     """The database has not been admitted by the explicit migration owner."""
@@ -91,18 +203,25 @@ def _declared_known_collections() -> set[str]:
 
 
 def _assert_known_inventory_versioned() -> None:
-    added = _declared_known_collections() - LEGACY_RAW_COLLECTION_IDS_V1
+    versioned = LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2
+    declared = _declared_known_collections()
+    added = declared - versioned
     if added:
         raise SchemaNotCurrent(
             'new statically-known collections require a new firestore_pg schema migration/version: '
             + ', '.join(sorted(added))
         )
+    stale = versioned - declared
+    if stale:
+        raise SchemaNotCurrent(
+            'schema-owned collections are absent from the production inventory: ' + ', '.join(sorted(stale))
+        )
 
 
 def known_collections() -> tuple[str, ...]:
-    """Return schema-v1's frozen statically-known collection inventory."""
+    """Return every frozen statically-known production collection ID."""
     _assert_known_inventory_versioned()
-    return tuple(sorted(LEGACY_RAW_COLLECTION_IDS_V1))
+    return tuple(sorted(LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2))
 
 
 def validate_collection_id(collection_id: Any) -> str:
@@ -185,7 +304,6 @@ def _register_collection(conn: Connection, collection_id: str) -> None:
 
 
 def _apply_v1(conn: Connection) -> None:
-    _assert_known_inventory_versioned()
     legacy = _legacy_collection_tables(conn)
     populated_legacy = _legacy_tables_with_rows(conn, legacy)
     if populated_legacy:
@@ -193,15 +311,21 @@ def _apply_v1(conn: Connection) -> None:
             'legacy firestore_pg tables contain rows with ambiguous parent paths/value encoding; '
             'migrate into a fresh target with the authoritative Firestore importer: ' + ', '.join(populated_legacy)
         )
-    unmanaged_legacy = legacy - set(known_collections())
+    unmanaged_legacy = legacy - set(LEGACY_RAW_COLLECTION_IDS_V1)
     if unmanaged_legacy:
         raise SchemaNotCurrent(
             'legacy firestore_pg has unknown direct-table mappings; migrate into a fresh target: '
             + ', '.join(sorted(unmanaged_legacy))
         )
-    for collection_id in sorted(known_collections()):
+    for collection_id in sorted(LEGACY_RAW_COLLECTION_IDS_V1):
         _register_collection(conn, collection_id)
 
+    create_composite_indexes(conn, collection_table_name)
+
+
+def _apply_v2(conn: Connection) -> None:
+    for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V2):
+        _register_collection(conn, collection_id)
     create_composite_indexes(conn, collection_table_name)
 
 
@@ -223,6 +347,12 @@ def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
             conn.execute(
                 text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (1, :name)'),
                 {'name': 'full_parent_paths_versions_collection_registry'},
+            )
+        if 2 not in applied:
+            _apply_v2(conn)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (2, :name)'),
+                {'name': 'production_static_collection_inventory'},
             )
     return check_schema(engine)
 

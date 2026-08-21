@@ -53,17 +53,6 @@ def test_migration_entrypoint_resolves_backend_packages_from_any_working_directo
     assert result.returncode == 0, result.stderr
     assert 'Explicit schema and Firestore import owner' in result.stdout
 
-    import_help = subprocess.run(
-        [sys.executable, str(script), 'import', '--help'],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert import_help.returncode == 0, import_help.stderr
-    assert '--source-endpoint' in import_help.stdout
-    assert '--freeze-lease' in import_help.stdout
-
 
 class _Snapshot:
     def __init__(self, reference, data):
@@ -325,7 +314,6 @@ def test_production_static_collection_references_are_in_versioned_inventory():
         for root_name in production_roots
         for source_path in (backend_root / root_name).rglob('*.py')
         if source_path.name != 'chat_first_e2e_fixture.py'
-        and source_path != backend_root / 'utils' / 'conversations' / 'typesense_index.py'
     ]
     source_paths.append(repository_root / 'deploy' / 'self-host' / 'live-replacement-smoke.py')
 

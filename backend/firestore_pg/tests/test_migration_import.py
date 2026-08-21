@@ -24,7 +24,13 @@ cloud_firestore = sys.modules.get('google.cloud.firestore._real', cloud_firestor
 from firestore_pg import ArrayRemove, ArrayUnion, FieldFilter, Increment  # noqa: E402
 from firestore_pg.client import Client, UnsupportedFirestoreQuery, transactional as pg_transactional  # noqa: E402
 from firestore_pg.importer import run_import, target_inventory  # noqa: E402
-from firestore_pg.migrations import check_schema, migrate, provision_collections  # noqa: E402
+from firestore_pg.migrations import (  # noqa: E402
+    STATIC_HASHED_COLLECTION_IDS_V2,
+    check_schema,
+    collection_table_name,
+    migrate,
+    provision_collections,
+)
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get('FIRESTORE_PG_DSN') or not os.environ.get('FIRESTORE_EMULATOR_HOST'),
@@ -35,9 +41,17 @@ pytestmark = pytest.mark.skipif(
 def test_forward_migration_imports_full_paths_and_reconciles(tmp_path):
     first = migrate()
     second = migrate()
-    assert first.current_version == second.current_version == 1
-    assert check_schema().latest_version == 1
+    assert first.current_version == second.current_version == 2
+    assert check_schema().latest_version == 2
 
+    production_controls = {
+        'account_deletions',
+        'account_deletion_receipts',
+        'conversation_finalization_projection_shards',
+        'conversation_recovery_state',
+    }
+    assert production_controls <= STATIC_HASHED_COLLECTION_IDS_V2
+    assert production_controls <= set(first.collections)
     source = cloud_firestore.Client(project=os.environ.get('FIREBASE_PROJECT_ID', 'demo-omi-local'))
     root = source.document('pg_import_root/present')
     missing_parent = source.document('pg_import_root/missing')
@@ -419,6 +433,14 @@ def test_forward_migration_imports_full_paths_and_reconciles(tmp_path):
         mixed_second.path
     ]
     assert target_inventory().count == 17
+
+    target_controls = Client(project='demo-schema-v2-controls')
+    for collection_id in sorted(production_controls):
+        assert collection_table_name(collection_id).startswith('f_')
+        ref = target_controls.collection(collection_id).document('live-contract')
+        ref.set({'collection_id': collection_id, 'version': 2})
+        assert ref.get().to_dict() == {'collection_id': collection_id, 'version': 2}
+        ref.delete()
 
     target.document(time_high.path).delete()
     target.document(time_low.path).delete()
