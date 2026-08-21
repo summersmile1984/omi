@@ -1700,6 +1700,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                     str(root),
                     '--expected-files',
                     artifact.name,
+                    '--expected-git-sha',
+                    'cafebabe',
                     '--expected-runtime-fingerprint',
                     fingerprints['runtime_fingerprint'],
                     '--expected-config-fingerprint',
@@ -1716,6 +1718,8 @@ class SelfHostOperationsTest(unittest.TestCase):
             self.assertEqual(verified.returncode, 0, verified.stderr)
 
             payload = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+            with self.assertRaisesRegex(RuntimeError, 'backup git_sha does not match'):
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints, key_file, 'different-current-revision')
             payload['migration_fingerprint'] = 'd' * 64
             (root / 'manifest.json').write_text(json.dumps(payload), encoding='utf-8')
             (root / 'manifest.json').chmod(0o600)
@@ -1727,6 +1731,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                     str(root),
                     '--expected-files',
                     artifact.name,
+                    '--expected-git-sha',
+                    'cafebabe',
                     '--expected-runtime-fingerprint',
                     fingerprints['runtime_fingerprint'],
                     '--expected-config-fingerprint',
@@ -1839,6 +1845,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                 [
                     'verify',
                     str(root),
+                    '--expected-git-sha',
+                    'cafebabe',
                     '--expected-runtime-fingerprint',
                     'a' * 64,
                     '--expected-config-fingerprint',
@@ -1881,6 +1889,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertIn('--runtime-fingerprint "$runtime_sha256"', script)
         self.assertIn('--config-fingerprint "$config_sha256"', script)
         self.assertIn('--migration-fingerprint "$migration_sha256"', script)
+        self.assertIn('--expected-git-sha "$git_sha"', script)
         self.assertIn('--key-file /backup-key/key', script)
         self.assertIn('postgres.dump.enc', script)
         self.assertIn('verify /backup \\\n      --expected-files "${ARCHIVE_FILES[@]}"', script)
