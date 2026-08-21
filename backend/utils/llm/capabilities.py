@@ -283,6 +283,12 @@ def resolve_model_capability(
         selected = values.get('REALTIME_PROVIDER', '').strip().lower()
         if selected == 'disabled':
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
+        # A neutral process must not let a client-selected provider become an
+        # implicit managed endpoint. Operators may still opt into any
+        # supported provider (or the self-hosted relay), but the server-side
+        # deployment contract must name it explicitly first.
+        if _neutral_deployment(values) and not selected:
+            return _unavailable(capability, 'disabled_by_deployment', retryable=False)
         provider = selected or requested
         if provider == 'relay':
             url = values.get('REALTIME_RELAY_URL', '').strip()

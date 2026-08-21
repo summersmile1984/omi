@@ -144,6 +144,21 @@ def test_neutral_capability_defaults_fail_closed_without_vendor_routes():
     assert resolve_model_capability('screen', env=neutral).reason == 'embedding_provider_not_configured'
 
 
+def test_neutral_realtime_requires_an_explicit_server_provider():
+    neutral = {'OMI_DEPLOYMENT_PROFILE': 'self_hosted'}
+
+    client_selected = resolve_model_capability('realtime', requested_provider='openai', env=neutral)
+    assert client_selected.reason == 'disabled_by_deployment'
+
+    operator_selected = resolve_model_capability(
+        'realtime',
+        requested_provider='openai',
+        env={**neutral, 'REALTIME_PROVIDER': 'openai', 'REALTIME_MODEL': 'operator-realtime'},
+    )
+    assert operator_selected.selected is True
+    assert operator_selected.routes[0].model == 'operator-realtime'
+
+
 def test_self_hosted_web_search_selects_only_an_explicit_searxng_endpoint():
     missing = resolve_model_capability('web_search', env={'WEB_SEARCH_TRANSPORT': 'searxng'})
     selected = resolve_model_capability(
