@@ -73,7 +73,8 @@ self-host: BetterAuth/Postgres/MinIO/Redis/generic routes
       not accepted by the neutral backend.
 - [ ] Fresh operator-signed Flutter artifacts have been exercised on both
       mobile platforms. The self-host build, Firebase-runtime boundary and
-      unsigned/local artifact scans are green; a real operator certificate,
+      unsigned/local artifact scans are green, and the mobile artifact smoke
+      gates reject embedded official `*.omi.me` origins; a real operator certificate,
       device install, sign-in, capture and MCP session are still external
       evidence requirements.
 

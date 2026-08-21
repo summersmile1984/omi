@@ -182,6 +182,7 @@ printf 'completed\\n'
         self.assertIn('$entry.Open()', checker)
         self.assertIn('[IO.File]::ReadAllBytes', checker)
         self.assertIn('Remove-Item -LiteralPath $scanRoot -Recurse -Force', checker)
+        self.assertIn('https?://([^/@\\s]+\\.)?omi\\.me([/:?#]|$)', checker)
 
     def test_android_self_host_flavor_cannot_inherit_managed_native_credentials(self) -> None:
         gradle = (ROOT / 'app' / 'android' / 'app' / 'build.gradle').read_text(encoding='utf-8')
@@ -235,6 +236,20 @@ printf 'completed\\n'
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn('populated managed-client credentials', result.stderr)
+
+    def test_android_self_host_artifact_gate_rejects_official_omi_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / 'bad-official-origin.zip'
+            with zipfile.ZipFile(artifact, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('assets/runtime.bin', 'https://api.omi.me/v1')
+            result = subprocess.run(
+                ['bash', str(ROOT / 'app' / 'scripts' / 'smoke_android_self_host_artifact.sh'), artifact],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('official Omi-managed origin', result.stderr)
 
     def test_self_host_codegen_uses_clean_env_and_restores_local_files_and_modes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -357,6 +372,35 @@ printf 'completed\\n'
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn('managed-client credentials', result.stderr)
+
+    def test_ios_artifact_gate_rejects_official_omi_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / 'Runner.app'
+            artifact.mkdir()
+            (artifact / 'Info.plist').write_bytes(
+                plistlib.dumps(
+                    {
+                        'CFBundleIdentifier': 'org.example.memory.selfhost',
+                        'CFBundleURLTypes': [{'CFBundleURLSchemes': ['memory-auth']}],
+                    }
+                )
+            )
+            (artifact / 'Runner').write_bytes(b'compiled-data https://api.omi.me/v1')
+            result = subprocess.run(
+                [
+                    'bash',
+                    str(ROOT / 'app' / 'scripts' / 'smoke_ios_self_host_artifact.sh'),
+                    str(artifact),
+                    'org.example.memory.selfhost',
+                    'memory-auth',
+                    'false',
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('official Omi-managed origin', result.stderr)
 
     def test_ios_self_host_entrypoint_uses_a_distinct_signed_identity(self) -> None:
         script = (ROOT / 'app' / 'setup.sh').read_text(encoding='utf-8')

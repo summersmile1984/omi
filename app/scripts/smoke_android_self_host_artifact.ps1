@@ -15,6 +15,7 @@ $archive = $null
 try {
     $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $Artifact).Path)
     $forbiddenNames = @("google-services.json", "GoogleService-Info.plist", "google_app_id.xml")
+    $officialOmiOriginPattern = 'https?://([^/@\s]+\.)?omi\.me([/:?#]|$)'
     $forbiddenPattern = 'AIza[0-9A-Za-z_-]{30,}|phc_[0-9A-Za-z_-]{12,}|[0-9]+-[0-9A-Za-z_-]+\.apps\.googleusercontent\.com|[a-z0-9-]+\.firebaseapp\.com|[a-z0-9-]+\.firebaseio\.com'
     $entryIndex = 0
     foreach ($entry in $archive.Entries) {
@@ -38,6 +39,9 @@ try {
             $inputStream.Dispose()
         }
         $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($scanFile))
+        if ($ascii -match $officialOmiOriginPattern) {
+            throw "self-host Android artifact contains an official Omi-managed origin"
+        }
         if ($ascii -match $forbiddenPattern) {
             throw "self-host Android artifact contains populated managed-client credentials/origins"
         }

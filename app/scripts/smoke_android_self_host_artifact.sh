@@ -25,6 +25,10 @@ trap cleanup EXIT
 # prompt or overwrite one payload, so stream every decompressed entry instead.
 scan_file="$scan_dir/decompressed-strings.txt"
 unzip -p "$artifact" | strings > "$scan_file"
+if grep -Eiq 'https?://([^/@[:space:]]+[.])?omi[.]me([/:?#]|$)' "$scan_file"; then
+  echo "self-host Android artifact contains an official Omi-managed origin" >&2
+  exit 1
+fi
 if grep -Ei 'AIza[0-9A-Za-z_-]{30,}|phc_[0-9A-Za-z_-]{12,}|[0-9]+-[0-9A-Za-z_-]+\.apps\.googleusercontent\.com|[a-z0-9-]+\.firebaseapp\.com|[a-z0-9-]+\.firebaseio\.com' "$scan_file" >/dev/null; then
   echo "self-host Android artifact contains populated managed-client credentials/origins" >&2
   exit 1

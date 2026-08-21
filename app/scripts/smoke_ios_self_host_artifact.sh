@@ -29,11 +29,17 @@ if find "$artifact" -maxdepth 1 -name '*.xcconfig' -print -quit | grep -q .; the
   echo 'self-hosted iOS artifact packaged Xcode authority files' >&2
   exit 1
 fi
-if plutil -convert json -o - "$info_plist" | grep -Eiq 'h[.]omi[.]me|googleusercontent[.]com'; then
+if plutil -convert json -o - "$info_plist" | grep -Eiq '(^|[^[:alnum:]-])([^/@[:space:]]+[.])?omi[.]me([/:?#]|$)|googleusercontent[.]com'; then
   echo 'self-hosted iOS Info.plist retained an official callback identity' >&2
   exit 1
 fi
 
+if find "$artifact" -type f -print0 \
+  | xargs -0 strings \
+  | grep -Eiq 'https?://([^/@[:space:]]+[.])?omi[.]me([/:?#]|$)'; then
+  echo 'self-hosted iOS artifact retained an official Omi-managed origin' >&2
+  exit 1
+fi
 if find "$artifact" -type f -print0 \
   | xargs -0 strings \
   | grep -Eiq 'AIza[0-9A-Za-z_-]{30,}|phc_[0-9A-Za-z_-]{12,}|[0-9]+-[0-9A-Za-z_-]+\.apps\.googleusercontent\.com|[a-z0-9-]+\.firebaseapp\.com|[a-z0-9-]+\.firebaseio\.com'; then
