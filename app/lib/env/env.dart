@@ -23,7 +23,6 @@ abstract class Env {
   );
   static late final EnvFields _instance;
   static String? _apiBaseUrlOverride;
-  static String? _agentProxyWsUrlOverride;
   static bool isTestFlight = false;
 
   static AppEnvironmentProfile get profile =>

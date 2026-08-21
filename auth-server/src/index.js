@@ -2,7 +2,7 @@
 //
 // Provides email+password signup/signin and a JWT plugin that signs ES256
 // JWTs carrying a `uid` claim. The Python backend verifies these via
-// utils/auth_shim.py (JWKS at /jwks).
+// utils/auth_shim.py (JWKS at /api/auth/jwks).
 //
 // User data is stored in PostgreSQL (reuses the same server as the shim).
 // Docs: https://better-auth.com
@@ -12,6 +12,8 @@
 //   DATABASE_URL    postgres://... (default localhost:5434 omi)
 //   BETTER_AUTH_SECRET  signing secret for the session/JWT infrastructure
 //   BETTER_AUTH_URL     public base URL of this service
+//   AUTH_DEV_ISSUER_SECRET  enables the local-only /auth-issue bridge
+import crypto from "node:crypto";
 import { betterAuth } from "better-auth";
 import { jwt } from "better-auth/plugins";
 import express from "express";
@@ -25,6 +27,7 @@ const SECRET =
   process.env.BETTER_AUTH_SECRET ||
   "dev-only-better-auth-secret-change-me-32bytes-min";
 const BASE_URL = process.env.BETTER_AUTH_URL || `http://127.0.0.1:${PORT}`;
+const DEV_ISSUER_SECRET = process.env.AUTH_DEV_ISSUER_SECRET || "";
 
 const { Pool } = pg;
 
@@ -43,7 +46,7 @@ export const auth = betterAuth({
     jwt({
       jwt: {
         // ES256 asymmetric signing so the Python shim can verify with the
-        // public key from /jwks (no shared secret in the backend).
+        // public key from /api/auth/jwks (no shared secret in the backend).
         jwks: {
           keyPairConfig: { alg: "ES256" },
         },
@@ -78,27 +81,36 @@ app.all("/api/auth/*", async (req, res) => {
   res.send(await response.text());
 });
 
-// Issue a JWT for a uid (for services that call the backend with Bearer tokens).
-// Uses Better Auth's server-only signJWT so the ES256 key from the jwt plugin
-// signs it; the Python shim verifies via /api/auth/jwks.
-// NOTE: registered BEFORE the /api/auth/* wildcard so it is not swallowed.
-app.post("/auth-issue", async (req, res) => {
-  const uid = req.body?.uid;
-  if (!uid) return res.status(400).json({ error: "uid required" });
-  try {
-    const result = await auth.api.signJWT({
-      body: { payload: { uid, sub: uid } },
-      headers: { "content-type": "application/json" },
-    });
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: String(err?.message || err) });
-  }
-});
+// Local development bridge for clients that cannot complete an OAuth flow.
+// It is absent unless explicitly enabled and requires a separate bearer secret;
+// production clients must use Better Auth's session-authenticated JWT endpoint.
+if (DEV_ISSUER_SECRET) {
+  app.post("/auth-issue", async (req, res) => {
+    const authorization = req.get("authorization") || "";
+    const presented = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+    const presentedBuffer = Buffer.from(presented);
+    const expectedBuffer = Buffer.from(DEV_ISSUER_SECRET);
+    const authorized =
+      presentedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(presentedBuffer, expectedBuffer);
+    if (!authorized) return res.status(401).json({ error: "unauthorized" });
+
+    const uid = req.body?.uid;
+    if (typeof uid !== "string" || !uid.trim()) return res.status(400).json({ error: "uid required" });
+    try {
+      const result = await auth.api.signJWT({
+        body: { payload: { uid, sub: uid } },
+        headers: { "content-type": "application/json" },
+      });
+      res.json({ ...result, uid });
+    } catch (err) {
+      res.status(500).json({ error: String(err?.message || err) });
+    }
+  });
+}
 
 // Health check
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
 app.listen(PORT, () => {
-  console.log(`omi-auth-server listening on :${PORT} (JWKS at ${BASE_URL}/jwks)`);
+  console.log(`omi-auth-server listening on :${PORT} (JWKS at ${BASE_URL}/api/auth/jwks)`);
 });

@@ -53,7 +53,7 @@
 ```bash
 AUTH_PROVIDER=better_auth        AUTH_JWKS_URL=http://127.0.0.1:3000/api/auth/jwks
 STORAGE_BACKEND=minio            MINIO_ENDPOINT=http://127.0.0.1:9000
-QUEUE_BACKEND=redis              REDIS_DB_HOST=127.0.0.1
+QUEUE_BACKEND=redis              REDIS_DB_HOST=127.0.0.1  QUEUE_REDIS_WORKER_SECRET=<local secret>
 STT_SERVICE_MODELS=sensevoice|mimo   SENSEVOICE_MODEL_DIR=/tmp/sherpa/...
 TTS_PROVIDER=mimo                MIMO_API_KEY=<operator key>
 MIMO_API_BASE=http://127.0.0.1:5002/mimo

@@ -6,9 +6,8 @@ SDK, so the 88 business modules in this package transparently use PostgreSQL.
 Without the env var this file is a no-op (production path unchanged).
 """
 
+import importlib
 import os
 
 if os.environ.get("FIRESTORE_PG_DSN"):
-    from firestore_pg.compat import install as _install_pg_shim
-
-    _install_pg_shim()
+    importlib.import_module("firestore_pg.compat").install()

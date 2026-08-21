@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from google.cloud import firestore
 from pydantic import BaseModel, StrictInt, StrictStr
 
-from database._client import get_firestore_client
+from database._client import get_customer_firestore_client
 from utils.executors import db_executor, run_blocking
 from utils.llm.capabilities import realtime_relay_wire_protocol, resolve_model_capability
 from utils.other.endpoints import get_current_user_uid
@@ -21,6 +21,8 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _OPENAI_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
+# Leftover AI Studio Live token mint. Vertex Live is not wired here; this is
+# not the $1k/day Flash text bill. See backend/docs/vertex-pt-flash.md.
 _GEMINI_AUTH_TOKENS_URL = "https://generativelanguage.googleapis.com/v1alpha/auth_tokens"
 _OPENAI_REALTIME_MODEL = "gpt-realtime-2"
 _GEMINI_LIVE_MODEL = "models/gemini-3.1-flash-live-preview"
@@ -117,7 +119,7 @@ async def _post_json(
 
 
 def _record_session(uid: str, token: str, provider: str, model: str, expires_at: str) -> None:
-    get_firestore_client().collection("users").document(uid).collection("realtime_sessions").document(
+    get_customer_firestore_client().collection("users").document(uid).collection("realtime_sessions").document(
         hashlib.sha256(token.encode()).hexdigest()
     ).set(
         {
@@ -237,7 +239,7 @@ def _record_usage(
         )
     updates["desktop_chat.quota_questions"] = firestore.Increment(1)
     updates[f"{account}.quota_questions"] = firestore.Increment(1)
-    get_firestore_client().collection("users").document(uid).collection("llm_usage").document(date).set(
+    get_customer_firestore_client().collection("users").document(uid).collection("llm_usage").document(date).set(
         updates, merge=True
     )
 

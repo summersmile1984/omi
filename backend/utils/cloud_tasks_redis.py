@@ -24,36 +24,41 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, cast
 
+import httpx
 import redis
 
 logger = logging.getLogger(__name__)
 
-REDIS_HOST = os.getenv("REDIS_DB_HOST", "127.0.0.1")
-REDIS_PORT = int(os.getenv("REDIS_DB_PORT", "6379") or "6379")
-REDIS_PASSWORD = os.getenv("REDIS_DB_PASSWORD")
-REDIS_PREFIX = os.getenv("QUEUE_REDIS_PREFIX", "omi:queue")
-
-QUEUE_NAMES = {
-    "sync": f"{REDIS_PREFIX}:sync",
-    "audio-merge": f"{REDIS_PREFIX}:audio-merge",
-    "account-deletion": f"{REDIS_PREFIX}:account-deletion",
-    "finalization": f"{REDIS_PREFIX}:finalization",
-}
+QUEUE_ALIASES = ("sync", "audio-merge", "account-deletion", "finalization")
 
 _client: Optional[redis.Redis] = None
+_client_config: Optional[Tuple[str, int, Optional[str]]] = None
+_client_lock = threading.Lock()
+
+
+def _redis_config() -> Tuple[str, int, Optional[str]]:
+    return (
+        os.getenv("REDIS_DB_HOST", "127.0.0.1"),
+        int(os.getenv("REDIS_DB_PORT", "6379") or "6379"),
+        os.getenv("REDIS_DB_PASSWORD"),
+    )
+
+
+def _queue_names() -> Dict[str, str]:
+    prefix = os.getenv("QUEUE_REDIS_PREFIX", "omi:queue")
+    return {alias: f"{prefix}:{alias}" for alias in QUEUE_ALIASES}
 
 
 def _r() -> redis.Redis:
-    global _client
-    if _client is None:
-        _client = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            password=REDIS_PASSWORD,
-            decode_responses=True,
-        )
+    global _client, _client_config
+    config = _redis_config()
+    if _client is None or _client_config != config:
+        with _client_lock:
+            if _client is None or _client_config != config:
+                _client = redis.Redis(host=config[0], port=config[1], password=config[2], decode_responses=True)
+                _client_config = config
     return _client
 
 
@@ -78,7 +83,10 @@ def _enqueue(queue_key: str, task_id: str, payload: Dict[str, Any]) -> None:
 
 
 def enqueue_sync_job(payload: Dict[str, Any]) -> None:
-    _enqueue(QUEUE_NAMES["sync"], str(payload.get("job_id") or payload.get("id") or ""), payload)
+    task_id = str(payload.get("job_id") or "")
+    if not task_id:
+        raise ValueError("job_id must be non-empty")
+    _enqueue(_queue_names()["sync"], task_id, payload)
 
 
 def enqueue_audio_merge_job(payload: Dict[str, Any]) -> None:
@@ -86,11 +94,13 @@ def enqueue_audio_merge_job(payload: Dict[str, Any]) -> None:
         task_id = f"amc-{payload['conversation_id']}-{payload['fingerprint']}"
     else:
         task_id = f"am-{payload['conversation_id']}-{payload['audio_file_id']}"
-    _enqueue(QUEUE_NAMES["audio-merge"], task_id, payload)
+    _enqueue(_queue_names()["audio-merge"], task_id, payload)
 
 
 def enqueue_account_deletion_wipe(wipe_job_id: str) -> None:
-    _enqueue(QUEUE_NAMES["account-deletion"], f"wipe-{wipe_job_id}", {"wipe_job_id": wipe_job_id})
+    if not wipe_job_id:
+        raise ValueError("wipe_job_id must be non-empty")
+    _enqueue(_queue_names()["account-deletion"], f"wipe-{wipe_job_id}", {"job_id": wipe_job_id})
 
 
 def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> None:
@@ -112,16 +122,16 @@ HANDLER_URL_ENV = {
 
 
 def _worker(queue_name: str) -> None:
-    import httpx
-
-    if queue_name not in QUEUE_NAMES:
-        logger.error("unknown queue %s (choices: %s)", queue_name, ", ".join(QUEUE_NAMES))
+    queue_names = _queue_names()
+    if queue_name not in queue_names:
+        logger.error("unknown queue %s (choices: %s)", queue_name, ", ".join(queue_names))
         return
-    queue_key = QUEUE_NAMES[queue_name]
+    queue_key = queue_names[queue_name]
     handler_env = HANDLER_URL_ENV[queue_name]
     handler_url = os.getenv(handler_env, "")
-    if not handler_url:
-        logger.error("%s not set; cannot dispatch %s tasks", handler_env, queue_name)
+    worker_secret = os.getenv("QUEUE_REDIS_WORKER_SECRET", "")
+    if not handler_url or not worker_secret:
+        logger.error("%s and QUEUE_REDIS_WORKER_SECRET are required to dispatch %s tasks", handler_env, queue_name)
         return
     logger.info("worker %s -> %s (blocking on %s)", queue_name, handler_url, queue_key)
     # redis-py exposes both synchronous and asyncio client overloads through
@@ -131,12 +141,17 @@ def _worker(queue_name: str) -> None:
     # tuple from ``Redis.blpop``.
     r: Any = _r()
     while True:
-        raw = r.blpop(queue_key, timeout=1)
+        raw = cast(Any, r).blpop([queue_key], timeout=1)
         if raw is None:
             continue
         try:
             item = json.loads(raw[1])
-            resp = httpx.post(handler_url, json=item["payload"], timeout=30.0)
+            resp = httpx.post(
+                handler_url,
+                json=item["payload"],
+                headers={"X-Omi-Queue-Secret": worker_secret},
+                timeout=30.0,
+            )
             logger.info("task %s -> %s status=%s", item.get("task_id"), handler_url, resp.status_code)
             if resp.status_code >= 500:
                 # requeue for retry (bounded by caller retry logic)
@@ -150,14 +165,12 @@ def _worker(queue_name: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Redis task queue worker")
-    parser.add_argument("--worker", choices=list(QUEUE_NAMES), help="queue to consume")
+    parser.add_argument("--worker", choices=list(QUEUE_ALIASES), help="queue to consume")
     parser.add_argument("--all", action="store_true", help="run workers for every queue")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.all:
-        import threading
-
-        threads = [threading.Thread(target=_worker, args=(q,), daemon=True) for q in QUEUE_NAMES]
+        threads = [threading.Thread(target=_worker, args=(q,), daemon=True) for q in QUEUE_ALIASES]
         for t in threads:
             t.start()
         for t in threads:

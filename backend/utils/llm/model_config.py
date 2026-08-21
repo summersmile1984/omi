@@ -80,51 +80,56 @@ class ResolvedFeatureRoute:
 #   byok     — same models as max (BYOK users pay their own API costs)
 # ---------------------------------------------------------------------------
 
-# All QoS profiles deliberately share this map. Keeping independent copies below
-# retains profile selection semantics while preventing a higher tier or BYOK
-# route from reintroducing a retired direct-provider text model. Managed product
-# text is gpt-5.6-luna via OpenRouter only; web_search stays on Perplexity.
+# All QoS profiles deliberately share this two-tier map. Keeping independent
+# copies below retains profile selection semantics while preventing a higher
+# tier or BYOK route from reintroducing a retired OpenAI text model.
 _TWO_TIER_MODEL_PROFILE: Dict[str, Tuple[str, str]] = {
-    # Managed product text — Luna via OpenRouter
-    'conv_action_items': ('gpt-5.6-luna', 'openrouter'),
-    'conv_structure': ('gpt-5.6-luna', 'openrouter'),
-    'conv_app_result': ('gpt-5.6-luna', 'openrouter'),
-    'daily_summary': ('gpt-5.6-luna', 'openrouter'),
-    'external_structure': ('gpt-5.6-luna', 'openrouter'),
-    'memories': ('gpt-5.6-luna', 'openrouter'),
-    'learnings': ('gpt-5.6-luna', 'openrouter'),
-    'memory_conflict': ('gpt-5.6-luna', 'openrouter'),
-    'knowledge_graph': ('gpt-5.6-luna', 'openrouter'),
-    'memory_l1': ('gpt-5.6-luna', 'openrouter'),
-    'memory_l2': ('gpt-5.6-luna', 'openrouter'),
-    'chat_responses': ('gpt-5.6-luna', 'openrouter'),
-    'chat_extraction': ('gpt-5.6-luna', 'openrouter'),
-    'chat_graph': ('gpt-5.6-luna', 'openrouter'),
-    'goals': ('gpt-5.6-luna', 'openrouter'),
-    'goals_advice': ('gpt-5.6-luna', 'openrouter'),
-    'notifications': ('gpt-5.6-luna', 'openrouter'),
-    'proactive_notification': ('gpt-5.6-luna', 'openrouter'),
-    'what_matters_now': ('gpt-5.6-luna', 'openrouter'),
-    'openglass': ('gpt-5.6-luna', 'openrouter'),
-    'app_generator': ('gpt-5.6-luna', 'openrouter'),
-    'persona_clone': ('gpt-5.6-luna', 'openrouter'),
-    'persona_chat_premium': ('gpt-5.6-luna', 'openrouter'),
-    'conv_app_select': ('gpt-5.6-luna', 'openrouter'),
-    'conv_folder': ('gpt-5.6-luna', 'openrouter'),
-    'conv_discard': ('gpt-5.6-luna', 'openrouter'),
-    'daily_summary_simple': ('gpt-5.6-luna', 'openrouter'),
-    'memory_category': ('gpt-5.6-luna', 'openrouter'),
-    'smart_glasses': ('gpt-5.6-luna', 'openrouter'),
-    'persona_chat': ('gpt-5.6-luna', 'openrouter'),
-    'session_titles': ('gpt-5.6-luna', 'openrouter'),
-    'followup': ('gpt-5.6-luna', 'openrouter'),
-    'onboarding': ('gpt-5.6-luna', 'openrouter'),
-    'app_integration': ('gpt-5.6-luna', 'openrouter'),
-    'trends': ('gpt-5.6-luna', 'openrouter'),
-    'translation': ('gpt-5.6-luna', 'openrouter'),
-    'chat_agent': ('gpt-5.6-luna', 'openrouter'),
-    'wrapped_analysis': ('gpt-5.6-luna', 'openrouter'),
-    # Provider search stays on Perplexity; it is not a general text-generation route.
+    # OpenAI — default intelligence
+    'conv_action_items': ('gpt-5.6-luna', 'openai'),
+    'conv_structure': ('gpt-5.6-luna', 'openai'),
+    'conv_app_result': ('gpt-5.6-luna', 'openai'),
+    'daily_summary': ('gpt-5.6-luna', 'openai'),
+    'external_structure': ('gpt-5.6-luna', 'openai'),
+    'memories': ('gpt-5.6-luna', 'openai'),
+    'x_memory_extraction_flex': ('gpt-5.6-luna', 'openai'),
+    'learnings': ('gpt-5.6-luna', 'openai'),
+    'memory_conflict': ('gpt-5.6-luna', 'openai'),
+    'memory_conflict_flex': ('gpt-5.6-luna', 'openai'),
+    'knowledge_graph': ('gpt-5.6-luna', 'openai'),
+    'memory_l1': ('gpt-5.6-luna', 'openai'),
+    'memory_l2': ('gpt-5.6-luna', 'openai'),
+    'memory_l2_flex': ('gpt-5.6-luna', 'openai'),
+    'chat_responses': ('gpt-5.6-luna', 'openai'),
+    'chat_extraction': ('gpt-5.6-luna', 'openai'),
+    'chat_graph': ('gpt-5.6-luna', 'openai'),
+    'goals': ('gpt-5.6-luna', 'openai'),
+    'goals_advice': ('gpt-5.6-luna', 'openai'),
+    'notifications': ('gpt-5.6-luna', 'openai'),
+    'proactive_notification': ('gpt-5.6-luna', 'openai'),
+    'desktop_proactive_reasoning': ('gpt-5.6-luna', 'openai'),
+    'what_matters_now': ('gpt-5.6-luna', 'openai'),
+    'openglass': ('gpt-5.6-luna', 'openai'),
+    'app_generator': ('gpt-5.6-luna', 'openai'),
+    'persona_clone': ('gpt-5.6-luna', 'openai'),
+    'persona_chat_premium': ('gpt-5.6-luna', 'openai'),
+    # OpenAI — cheapest light/binary work
+    'conv_app_select': ('gpt-5-nano', 'openai'),
+    'conv_folder': ('gpt-5-nano', 'openai'),
+    'conv_discard': ('gpt-5-nano', 'openai'),
+    'daily_summary_simple': ('gpt-5-nano', 'openai'),
+    'memory_category': ('gpt-5-nano', 'openai'),
+    'smart_glasses': ('gpt-5-nano', 'openai'),
+    'persona_chat': ('gpt-5-nano', 'openai'),
+    'desktop_proactive_extraction': ('gpt-5-nano', 'openai'),
+    # Non-OpenAI routes remain intentionally unchanged.
+    'session_titles': ('gemini-2.5-flash-lite', 'gemini'),
+    'followup': ('gemini-2.5-flash-lite', 'gemini'),
+    'onboarding': ('gemini-2.5-flash-lite', 'gemini'),
+    'app_integration': ('gemini-2.5-flash-lite', 'gemini'),
+    'trends': ('gemini-2.5-flash-lite', 'gemini'),
+    'translation': ('gemini-2.5-flash-lite', 'gemini'),
+    'chat_agent': ('claude-sonnet-4-6', 'anthropic'),
+    'wrapped_analysis': ('gemini-3-flash-preview', 'openrouter'),
     'web_search': ('sonar-pro', 'perplexity'),
 }
 
@@ -134,39 +139,8 @@ MODEL_QOS_PROFILES: Dict[str, Dict[str, Tuple[str, str]]] = {
 
 # Pinned features — (model, provider) fixed regardless of profile or env override.
 _PINNED_FEATURES: Dict[str, Tuple[str, str]] = {
-    'fair_use': (os.getenv('FAIR_USE_CLASSIFIER_MODEL', 'gpt-5.6-luna').strip() or 'gpt-5.6-luna', 'openrouter'),
+    'fair_use': (os.getenv('FAIR_USE_CLASSIFIER_MODEL', 'gpt-5.6-luna').strip() or 'gpt-5.6-luna', 'openai'),
 }
-
-# Translation provider is env-configurable (self-hosted deployments may use a
-# domestic OpenAI-compatible LLM instead of Gemini). TRANSLATION_PROVIDER picks
-# the provider; TRANSLATION_MODEL overrides the default model for it.
-_TRANSLATION_PROVIDER = os.getenv('TRANSLATION_PROVIDER', 'gemini').strip().lower()
-_TRANSLATION_MODEL = os.getenv('TRANSLATION_MODEL', '').strip()
-if _TRANSLATION_PROVIDER in ('mimo', 'xiaomi'):
-    _PINNED_FEATURES['translation'] = (
-        _TRANSLATION_MODEL or 'mimo-v2.5',
-        'mimo',
-    )
-elif _TRANSLATION_PROVIDER in ('deepseek', 'ds'):
-    _PINNED_FEATURES['translation'] = (
-        _TRANSLATION_MODEL or 'deepseek-chat',
-        'deepseek',
-    )
-
-# Chat provider is env-configurable too (CHAT_PROVIDER + CHAT_MODEL), so a
-# self-hosted deployment can route desktop chat through a domestic
-# OpenAI-compatible model instead of OpenAI/Anthropic. Applies to every
-# chat_* feature.
-_CHAT_PROVIDER = os.getenv('CHAT_PROVIDER', '').strip().lower()
-_CHAT_MODEL = os.getenv('CHAT_MODEL', '').strip()
-if _CHAT_PROVIDER in ('deepseek', 'ds'):
-    _chat_model = _CHAT_MODEL or 'deepseek-v4-flash'
-    for _feature in ('chat_responses', 'chat_extraction', 'chat_graph'):
-        _PINNED_FEATURES[_feature] = (_chat_model, 'deepseek')
-elif _CHAT_PROVIDER in ('mimo', 'xiaomi'):
-    _chat_model = _CHAT_MODEL or 'mimo-v2.5'
-    for _feature in ('chat_responses', 'chat_extraction', 'chat_graph'):
-        _PINNED_FEATURES[_feature] = (_chat_model, 'mimo')
 
 # Resolve active profile once at startup.
 _active_profile_name = os.environ.get('MODEL_QOS', 'premium').strip().lower()
@@ -181,7 +155,7 @@ _byok_profile_name = 'byok'
 _byok_profile = MODEL_QOS_PROFILES[_byok_profile_name]
 
 # Features that can't go through get_llm() (non-ChatOpenAI providers).
-_ANTHROPIC_ONLY_FEATURES = set()
+_ANTHROPIC_ONLY_FEATURES = {'chat_agent'}
 _PERPLEXITY_ONLY_FEATURES = {'web_search'}
 
 
@@ -200,7 +174,9 @@ _OPENROUTER_TEMPERATURES: Dict[str, float] = {
 #   prompt_cache_key             — prefix-cache request routing. Supported by the gpt-4o,
 #                                  gpt-4o, gpt-5.x and o-series families.
 #   prompt_cache_retention='24h' — extended (24h) cache retention. Supported by the
-#                                  gpt-5.x and o-series families.
+#                                  gpt-5.x and o-series families, except gpt-5.6, which
+#                                  uses the explicit prompt_cache_options contract instead
+#                                  (see supports_cache_retention).
 _CACHE_KEY_MODEL_PREFIXES = ('gpt-5', 'gpt-4o', 'o1', 'o3', 'o4')
 _CACHE_RETENTION_MODEL_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 
@@ -208,6 +184,8 @@ _CACHE_RETENTION_MODEL_PREFIXES = ('gpt-5', 'o1', 'o3', 'o4')
 _STRUCTURED_OUTPUT_FEATURES = {
     'chat_extraction',
     'proactive_notification',
+    'desktop_proactive_extraction',
+    'desktop_proactive_reasoning',
     'conv_app_select',
     'external_structure',
     'trends',
@@ -216,13 +194,36 @@ _STRUCTURED_OUTPUT_FEATURES = {
 }
 STRUCTURED_OUTPUT_FEATURES = _STRUCTURED_OUTPUT_FEATURES
 
-_DEFAULT_CONFIG: Tuple[str, str] = ('gpt-5.6-luna', 'openrouter')
+_DEFAULT_CONFIG: Tuple[str, str] = ('gpt-5.6-luna', 'openai')
 DEFAULT_CONFIG = _DEFAULT_CONFIG
 
 # Future migration point for features that should call the gateway via an auto
 # lane. Keep empty until a ticket explicitly wires and verifies shadow/live
 # traffic; existing direct LLM routing never consults this map.
 _AUTO_LANE_FEATURES: Dict[str, str] = {}
+_CHAT_FEATURES = {'chat_responses', 'chat_extraction', 'chat_graph'}
+
+
+def _cloud_neutral_route(feature: str, env: Optional[Mapping[str, str]] = None) -> Optional[Tuple[str, str]]:
+    """Resolve explicitly configured self-hosted LLM routes at the call boundary."""
+
+    values = os.environ if env is None else env
+    if feature == 'translation':
+        provider = values.get('TRANSLATION_PROVIDER', '').strip().lower()
+        model = values.get('TRANSLATION_MODEL', '').strip()
+        if provider in ('mimo', 'xiaomi'):
+            return model or 'mimo-v2.5', 'mimo'
+        if provider in ('deepseek', 'ds'):
+            return model or 'deepseek-chat', 'deepseek'
+    elif feature in _CHAT_FEATURES:
+        provider = values.get('CHAT_PROVIDER', '').strip().lower()
+        model = values.get('CHAT_MODEL', '').strip()
+        if provider in ('mimo', 'xiaomi'):
+            return model or 'mimo-v2.5', 'mimo'
+        if provider in ('deepseek', 'ds'):
+            return model or 'deepseek-v4-flash', 'deepseek'
+    return None
+
 
 # Deployment overrides are deliberately explicit. ``generic`` has no vendor
 # default, so an operator must provide both its endpoint and model. These
@@ -392,7 +393,7 @@ def resolve_feature_route(feature: str, env: Optional[Mapping[str, str]] = None)
 def _get_model_config(feature: str) -> Tuple[str, str]:
     """Get the (model, provider) tuple for a feature. Internal — used by get_llm/get_model/get_provider.
 
-    Resolution order: pinned > active profile > fallback.
+    Resolution order: explicit self-hosted route > pinned > active profile > fallback.
     """
     route = resolve_feature_route(feature)
     return route.primary.model, route.primary.provider
@@ -433,8 +434,7 @@ def get_route_options(feature: str, model: str, provider: str) -> Dict[str, obje
     """Return provider/model construction options for a resolved route."""
 
     options: Dict[str, object] = {}
-    # OpenAI-only: OpenRouter does not accept prompt_cache_retention=24h.
-    if provider == 'openai' and supports_cache_retention(model):
+    if supports_cache_retention(model):
         options['extra_body'] = {"prompt_cache_retention": "24h"}
     if provider == 'openrouter':
         temperature = _OPENROUTER_TEMPERATURES.get(feature)
@@ -477,7 +477,10 @@ def supports_prompt_cache(model: str) -> bool:
 
 def supports_cache_retention(model: str) -> bool:
     """Whether a model supports 24h OpenAI prompt-cache retention (prompt_cache_retention='24h')."""
-    return bool(model) and model.startswith(_CACHE_RETENTION_MODEL_PREFIXES)
+    # GPT-5.6 uses the explicit cache contract (prompt_cache_options + a
+    # breakpoint) rather than the legacy prompt_cache_retention field. Sending
+    # both contracts in the same request is rejected by the provider.
+    return bool(model) and not model.startswith('gpt-5.6') and model.startswith(_CACHE_RETENTION_MODEL_PREFIXES)
 
 
 def is_structured_output_feature(feature: str) -> bool:

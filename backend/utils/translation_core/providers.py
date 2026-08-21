@@ -100,9 +100,7 @@ class GeminiTranslationProvider:
                     self.provider, 'other', 'Gemini translation request failed'
                 ) from first_error
             try:
-                response = client.invoke(
-                    _translation_json_prompt(contents, target_language, source_language)
-                )
+                response = client.invoke(_translation_json_prompt(contents, target_language, source_language))
                 payload = json.loads(_extract_json(response.content))
                 batch = GeminiTranslationBatch.model_validate(payload)
                 return self._coerce(batch)
@@ -341,8 +339,7 @@ def _translation_json_prompt(contents: list[str], target_language: str, source_l
     told to reply with a bare JSON object matching GeminiTranslationBatch."""
     base = _translation_prompt(contents, target_language, source_language)
     return (
-        base
-        + '\nReply with ONLY a JSON object of the form '
+        base + '\nReply with ONLY a JSON object of the form '
         '{"translations": [{"text": "<translation>", "detected_language": "<bcp47>"}, ...]} '
         '— one entry per input item, in order. No markdown, no commentary.'
     )

@@ -385,7 +385,7 @@ def _create_byok_client(
     kwargs: Dict[str, Any] = _with_llm_callbacks(
         {'request_timeout': 120, 'max_retries': 1}, callback_provider, model=model, feature=feature
     )
-    if callback_provider == 'openai' and supports_cache_retention(model):
+    if supports_cache_retention(model):
         kwargs['extra_body'] = {"prompt_cache_retention": "24h"}
     if streaming:
         kwargs['streaming'] = True
@@ -404,10 +404,7 @@ def _create_byok_client(
             if 'temperature' in route_options:
                 kwargs['temperature'] = route_options['temperature']
             return _cached_openai_chat(model, byok_key, {**kwargs, 'base_url': GEMINI_OPENAI_BASE_URL})
-        # OpenAI-family OpenRouter models reroute to OpenAI direct via BYOK
-        if model.startswith('gpt-') or model.startswith(('o1', 'o3', 'o4')):
-            return _cached_openai_chat(model, byok_key, kwargs)
-        return None  # Other OpenRouter models: no BYOK support
+        return None  # Non-Gemini OpenRouter: no BYOK support
 
     return None
 
@@ -433,11 +430,9 @@ def get_openai_chat(model: str, **kwargs) -> ChatOpenAI:
 
 
 def _effective_byok_provider(model: str, provider: str) -> str:
-    """Map provider to the actual BYOK key type needed (OpenRouter gemini/gpt/o-series → vendor key)."""
+    """Map provider to the actual BYOK key type needed (Gemini-based OpenRouter → Gemini key)."""
     if provider == 'openrouter' and model.startswith('gemini'):
         return 'gemini'
-    if provider == 'openrouter' and (model.startswith('gpt-') or model.startswith(('o1', 'o3', 'o4'))):
-        return 'openai'
     return provider
 
 
@@ -465,6 +460,7 @@ def get_llm(
     cache_key: Optional[str] = None,
     prompt_cache_options: Optional[dict[str, str]] = None,
     request_timeout: float | None = None,
+    max_retries: int | None = None,
 ) -> BaseChatModel:
     """Get the LLM client for a feature based on the active Model QoS profile.
 
@@ -532,14 +528,20 @@ def get_llm(
             else get_default_client(model, provider, streaming, get_route_options(feature, model, provider))
         )
     elif gateway_feature_mode:
-        gateway_options = {"request_timeout": request_timeout} if request_timeout is not None else None
+        gateway_options = {}
+        if request_timeout is not None:
+            gateway_options["request_timeout"] = request_timeout
+        if max_retries is not None:
+            gateway_options["max_retries"] = max_retries
         result = get_or_create_omi_gateway_llm(
-            feature_auto_lane_id(feature), streaming, gateway_options, feature=feature
+            feature_auto_lane_id(feature), streaming, gateway_options or None, feature=feature
         )
     else:
         route_options = get_route_options(feature, model, provider)
         if request_timeout is not None:
             route_options = {**route_options, "request_timeout": request_timeout}
+        if max_retries is not None:
+            route_options = {**route_options, "max_retries": max_retries}
         result = get_default_client(model, provider, streaming, route_options)
         if resolved_route.fallbacks:
             from utils.llm.direct_fallback import BoundedFallbackChatModel
@@ -572,17 +574,12 @@ def get_llm(
     cache_params: Dict[str, Any] = {}
     if cache_key and supports_prompt_cache(model):
         cache_params['prompt_cache_key'] = cache_key
-    # prompt_cache_options is accepted but not sent. The field is a contract
-    # between this caller and the gateway, and the two deploy from separate
-    # pipelines, so the gateway can be running a build that predates it and
-    # rejects the request outright. Sending it broke conversation structuring
-    # for every request that routed through the gateway.
-    #
-    # Restore the send once a gateway carrying the field in its forwarded
-    # parameters is deployed. It travels in extra_body when it returns: the
-    # client validates named arguments before building the request, so a
-    # version that predates the field raises in process instead of reaching the
-    # gateway at all.
+    if prompt_cache_options and model.startswith('gpt-5.6'):
+        # This is a provider request field, not a ChatOpenAI constructor field.
+        # extra_body lets the OpenAI client merge it into the wire payload. It
+        # must be sent even without a cache key: explicit mode with no
+        # breakpoint is how unique prompts opt out of billable cache writes.
+        cache_params['extra_body'] = {'prompt_cache_options': prompt_cache_options}
     if cache_params:
         return result.bind(**cache_params)
     return result
@@ -643,11 +640,10 @@ if _so_gemini:
 
 
 # ---------------------------------------------------------------------------
-# Anthropic — direct/BYOK agent loop only. Managed chat_agent is OpenRouter Luna
-# via get_llm / omi:auto:chat-agent; these constants must stay Anthropic IDs.
+# Anthropic — model resolved from active QoS profile
 # ---------------------------------------------------------------------------
-ANTHROPIC_AGENT_MODEL = 'claude-sonnet-4-6'
-ANTHROPIC_AGENT_COMPLEX_MODEL = 'claude-sonnet-4-6'
+ANTHROPIC_AGENT_MODEL = get_model('chat_agent')
+ANTHROPIC_AGENT_COMPLEX_MODEL = get_model('chat_agent')
 
 
 # ---------------------------------------------------------------------------

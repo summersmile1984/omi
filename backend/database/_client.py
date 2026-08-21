@@ -1,13 +1,18 @@
+import importlib
 import logging
+import os
 from threading import Lock
 from typing import Any
 
-import os
 from google.api_core.exceptions import InvalidArgument
 from google.cloud import firestore
 
 from database.document_ids import document_id_from_seed
-from database.google_credentials import prepare_google_credentials
+from database.google_credentials import (
+    customer_data_service_account,
+    customer_entitlement_service_account,
+    prepare_google_credentials,
+)
 
 __all__ = [
     "db",
@@ -80,22 +85,23 @@ _install_query_stream_retry_compat()
 
 _firestore_client = None
 _firestore_client_lock = Lock()
+_customer_firestore_client = None
+_customer_firestore_client_lock = Lock()
 
 
 def _build_firestore_client() -> Any:
     # Cloud-neutral shim mode: FIRESTORE_PG_DSN points at PostgreSQL, and
     # firestore_pg serves the same SDK surface (see firestore_pg/README).
     if os.environ.get("FIRESTORE_PG_DSN"):
-        from firestore_pg.compat import install as _install_pg_shim
-        from firestore_pg.client import Client as _PgClient
-
-        _install_pg_shim()
-        return _PgClient(project=os.environ.get("FIREBASE_PROJECT_ID"))
-    prepare_google_credentials()
+        importlib.import_module("firestore_pg.compat").install()
+        client_type = importlib.import_module("firestore_pg.client").Client
+        return client_type(project=os.environ.get("FIREBASE_PROJECT_ID"))
     # Production safety: only override project/database when pointed at a local
     # Firestore emulator. Without FIRESTORE_EMULATOR_HOST set (i.e. real Firestore),
-    # defer entirely to default resolution so env vars cannot repoint prod Firestore.
+    # never let bare GOOGLE_CLOUD_PROJECT (often the GKE compute project) repoint
+    # the customer-data client away from SERVICE_ACCOUNT_JSON's project_id.
     if os.environ.get("FIRESTORE_EMULATOR_HOST"):
+        prepare_google_credentials()
         project = os.environ.get("FIREBASE_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
         database = os.environ.get("FIRESTORE_DATABASE_ID")
         kwargs: dict[str, str] = {}
@@ -104,6 +110,13 @@ def _build_firestore_client() -> Any:
         if database:
             kwargs["database"] = database
         return firestore.Client(**kwargs)
+
+    customer_data = customer_data_service_account()
+    if customer_data is not None:
+        credentials, project_id = customer_data
+        return firestore.Client(credentials=credentials, project=project_id)
+
+    prepare_google_credentials()
     return firestore.Client()
 
 

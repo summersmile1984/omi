@@ -187,7 +187,7 @@ def test_rendered_dev_pusher_direct_bindings_match_source_contract(preflight: Si
         "OMI_LLM_GATEWAY_FEATURE_MODE": "gateway",
         "OMI_LLM_GATEWAY_URL": "http://dev-omi-llm-gateway.dev-omi-backend.svc.cluster.local:8080",
         "STT_PRERECORDED_MODEL": "parakeet,modulate-velma-2",
-        "STT_SERVICE_MODELS": "modulate-velma-2,dg-nova-3,parakeet",
+        "STT_SERVICE_MODELS": "dg-nova-3,modulate-velma-2,parakeet",
     }
     assert clear_historical_secret == {"REDIS_DB_HOST", "GOOGLE_CLIENT_ID", "TYPESENSE_HOST"}
     assert preflight.validate_dev_pusher_binding_contract(deployment) == []
@@ -201,7 +201,7 @@ def test_prod_pusher_retains_the_explicit_self_hosted_deepgram_contract(prefligh
     assert bindings["DEEPGRAM_API_KEY"] == ("secret", "prod-omi-backend-secrets", "DEEPGRAM_API_KEY")
     assert literals["DEEPGRAM_SELF_HOSTED_ENABLED"] == "true"
     assert literals["DEEPGRAM_SELF_HOSTED_URL"] == "https://dg.omi.me"
-    assert literals["STT_SERVICE_MODELS"] == "modulate-velma-2,dg-nova-3,parakeet"
+    assert literals["STT_SERVICE_MODELS"] == "dg-nova-3,modulate-velma-2,parakeet"
 
 
 def test_dev_pusher_literal_policy_rejects_stale_deepgram_model(preflight: SimpleNamespace):
@@ -212,7 +212,7 @@ def test_dev_pusher_literal_policy_rejects_stale_deepgram_model(preflight: Simpl
 
     assert preflight.validate_dev_pusher_binding_contract(deployment) == [
         "dev pusher literal contract mismatch for STT_SERVICE_MODELS: "
-        "expected 'modulate-velma-2,dg-nova-3,parakeet', got 'modulate-velma-2'"
+        "expected 'dg-nova-3,modulate-velma-2,parakeet', got 'modulate-velma-2'"
     ]
 
 
@@ -253,7 +253,9 @@ def test_historical_secret_named_env_upgrade_uses_kubernetes_strategic_merge(
     base = tmp_path / "base"
     base.mkdir()
     (base / "kustomization.yaml").write_text("resources:\n  - deployment.yaml\n")
-    (base / "deployment.yaml").write_text(textwrap.dedent(f"""\
+    (base / "deployment.yaml").write_text(
+        textwrap.dedent(
+            f"""\
             apiVersion: apps/v1
             kind: Deployment
             metadata:
@@ -276,12 +278,15 @@ def test_historical_secret_named_env_upgrade_uses_kubernetes_strategic_merge(
                             secretKeyRef:
                               name: {environment}-omi-backend-secrets
                               key: {env_name}
-            """))
+            """
+        )
+    )
 
     def render(value_from: str) -> dict:
         overlay = tmp_path / f"overlay-{len(list(tmp_path.glob('overlay-*')))}"
         overlay.mkdir()
-        strategic_patch = textwrap.dedent(f"""\
+        strategic_patch = textwrap.dedent(
+            f"""\
             apiVersion: apps/v1
             kind: Deployment
             metadata:
@@ -294,9 +299,11 @@ def test_historical_secret_named_env_upgrade_uses_kubernetes_strategic_merge(
                       env:
                         - name: {env_name}
                           valueFrom:
-            """)
+            """
+        )
         strategic_patch += textwrap.indent(value_from, " " * 16)
-        kustomization = textwrap.dedent("""\
+        kustomization = textwrap.dedent(
+            """\
             resources:
               - ../base
             patches:
@@ -304,16 +311,19 @@ def test_historical_secret_named_env_upgrade_uses_kubernetes_strategic_merge(
                   kind: Deployment
                   name: pusher
                 patch: |-
-            """)
+            """
+        )
         (overlay / "kustomization.yaml").write_text(kustomization + textwrap.indent(strategic_patch, " " * 6))
         result = subprocess.run(["kubectl", "kustomize", str(overlay)], check=True, capture_output=True, text=True)
         return yaml.safe_load(result.stdout)
 
-    broken = render(f"""\
+    broken = render(
+        f"""\
 configMapKeyRef:
   name: {environment}-omi-backend-config
   key: {env_name}
-""")
+"""
+    )
     broken_value_from = broken["spec"]["template"]["spec"]["containers"][0]["env"][0]["valueFrom"]
     assert broken_value_from == {
         "configMapKeyRef": {"name": f"{environment}-omi-backend-config", "key": env_name},

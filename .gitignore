@@ -7,6 +7,7 @@
 !.env.prod.template
 !.env.offline.template
 !.envrc.example
+.personal_configs/
 *__pycache__/
 *venv/
 libraries/
@@ -26,6 +27,7 @@ yarn.lock
 .coordination/
 
 # General
+/.pr-body.md
 .idea/
 .next/
 .worktrees/
@@ -126,7 +128,6 @@ src/recordings
 /app/lib/firebase_options.dart
 /app/lib/firebase_options_*.dart
 !/app/lib/firebase_options_local.dart
-/app/ios/Runner/Info-Dev.plist
 /app/firebase.json
 
 # Solidworks models

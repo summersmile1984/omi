@@ -136,6 +136,18 @@ sdist = { url = "https://files.pythonhosted.org/packages/1e/57/a6a1721eff09598fb
 wheels = [{ url = "https://files.pythonhosted.org/packages/bb/2a/10164ed1f31196a2f7f3799368a821765c62851ead0e630ab52b8e14b4d0/blinker-1.8.2-py3-none-any.whl", upload-time = 2024-05-06T17:04:08Z, size = 9456, hashes = { sha256 = "1779309f71bf239144b9399d06ae925637cf6634cf6bd131104184531bf67c01" } }]
 
 [[packages]]
+name = "boto3"
+version = "1.43.74"
+sdist = { url = "https://files.pythonhosted.org/packages/02/3b/a8c14b2390a54189b0b14c03376e05150dcc4c1a875d18bff8f6594d7494/boto3-1.43.74.tar.gz", upload-time = 2026-08-18T21:20:33Z, size = 112608, hashes = { sha256 = "9d4d0dcf81c941cfe7d927486435521e0f3bf657cb68b10dfe445cfe311f8839" } }
+wheels = [{ url = "https://files.pythonhosted.org/packages/5b/a1/61f89804cfa2f3517319bd92fffca12d35dfe90621f9d4f2ca95818eaa96/boto3-1.43.74-py3-none-any.whl", upload-time = 2026-08-18T21:20:31Z, size = 140027, hashes = { sha256 = "d7f6a921efbda61ed787b403df8b64a95bc66e66299e9772fc40c235c28a5bde" } }]
+
+[[packages]]
+name = "botocore"
+version = "1.43.74"
+sdist = { url = "https://files.pythonhosted.org/packages/1d/fb/00969dfa9fee1d1e278a0e65109d07acacceae4acd177d9d9413479720ab/botocore-1.43.74.tar.gz", upload-time = 2026-08-18T21:20:28Z, size = 15964456, hashes = { sha256 = "b127b24d49532b5d7b0851b4abb3d3b99f58a121f87f07c23dac7c4d88b25c72" } }
+wheels = [{ url = "https://files.pythonhosted.org/packages/c6/b0/d1446c501d8a59db3881b2bca136024e0ee4f381efb58122a0608a276a16/botocore-1.43.74-py3-none-any.whl", upload-time = 2026-08-18T21:20:23Z, size = 15658675, hashes = { sha256 = "5793d9170b2b9f3194fb6f667feed8986eb81f767528d52ceaf45df2242d56e9" } }]
+
+[[packages]]
 name = "cachecontrol"
 version = "0.14.0"
 sdist = { url = "https://files.pythonhosted.org/packages/06/55/edea9d90ee57ca54d34707607d15c20f72576b96cb9f3e7fc266cb06b426/cachecontrol-0.14.0.tar.gz", upload-time = 2024-02-02T02:53:30Z, size = 28899, hashes = { sha256 = "7db1195b41c81f8274a7bbd97c956f44e8348265a1bc7641c37dfebc39f0c938" } }
@@ -609,6 +621,12 @@ name = "jiwer"
 version = "3.0.4"
 sdist = { url = "https://files.pythonhosted.org/packages/f3/1e/9db54957d7fa66272de22ec9c82f37089e9b15398273de41854840e6e21c/jiwer-3.0.4.tar.gz", upload-time = 2024-05-05T08:14:48Z, size = 17515, hashes = { sha256 = "2438acdc7ca22128fcab4be60db595809d2b5e73785b736de36dc3281a2a6ae8" } }
 wheels = [{ url = "https://files.pythonhosted.org/packages/00/b9/113eba899451e6dc2acd3a3637ce9ef327ea6dea2e7a93dcd3523197f395/jiwer-3.0.4-py3-none-any.whl", upload-time = 2024-05-05T08:14:46Z, size = 21972, hashes = { sha256 = "d6761a1cb7c5a8e3f4bafa96cf4b4f125e2ccc82b625f74dd23557414e97f86f" } }]
+
+[[packages]]
+name = "jmespath"
+version = "1.1.0"
+sdist = { url = "https://files.pythonhosted.org/packages/d3/59/322338183ecda247fb5d1763a6cbe46eff7222eaeebafd9fa65d4bf5cb11/jmespath-1.1.0.tar.gz", upload-time = 2026-01-22T16:35:26Z, size = 27377, hashes = { sha256 = "472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d" } }
+wheels = [{ url = "https://files.pythonhosted.org/packages/14/2f/967ba146e6d58cf6a652da73885f52fc68001525b4197effc174321d70b4/jmespath-1.1.0-py3-none-any.whl", upload-time = 2026-01-22T16:35:24Z, size = 20419, hashes = { sha256 = "a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64" } }]
 
 [[packages]]
 name = "joblib"
@@ -1316,6 +1334,12 @@ name = "ruamel-yaml-clib"
 version = "0.2.8"
 sdist = { url = "https://files.pythonhosted.org/packages/46/ab/bab9eb1566cd16f060b54055dd39cf6a34bfa0240c53a7218c43e974295b/ruamel.yaml.clib-0.2.8.tar.gz", upload-time = 2023-10-03T18:12:42Z, size = 213824, hashes = { sha256 = "beb2e0404003de9a4cab9753a8805a8fe9320ee6673136ed7f04255fe60bb512" } }
 wheels = [{ url = "https://files.pythonhosted.org/packages/a4/f7/22d6b620ed895a05d40802d8281eff924dc6190f682d933d4efff60db3b5/ruamel.yaml.clib-0.2.8-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux_2_24_x86_64.whl", upload-time = 2023-10-03T18:13:03Z, size = 544020, hashes = { sha256 = "25c515e350e5b739842fc3228d662413ef28f295791af5e5110b543cf0b57d9b" } }]
+
+[[packages]]
+name = "s3transfer"
+version = "0.19.2"
+sdist = { url = "https://files.pythonhosted.org/packages/76/43/35e4d8aa320bffe8287fe8f65f578fa2d2db0a64212f0e710dce58267854/s3transfer-0.19.2.tar.gz", upload-time = 2026-07-22T19:30:44Z, size = 165592, hashes = { sha256 = "ba0309fd86be3c27dbf78cdd813c13c5e1df16e5874b99d2535ebbdfb9892993" } }
+wheels = [{ url = "https://files.pythonhosted.org/packages/bc/e7/5c595c75e9f41a44f30e526eda465ea0b4eec93470e074e4a111b253f13a/s3transfer-0.19.2-py3-none-any.whl", upload-time = 2026-07-22T19:30:43Z, size = 90216, hashes = { sha256 = "d8168eccca828cbb2cd573675333f3bddd254313a9c42494b84c76b539e8ba25" } }]
 
 [[packages]]
 name = "scikit-learn"

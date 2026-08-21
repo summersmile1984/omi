@@ -8,9 +8,12 @@ import yaml
 from config.stt_provider_policy import (
     DEEPGRAM_CLOUD_PROVIDER,
     DEEPGRAM_SELF_HOSTED_PROVIDER,
+    MIMO_PROVIDER,
     MODULATE_PROVIDER,
+    MOSS_PROVIDER,
     PARAKEET_MODEL_BY_SURFACE,
     PARAKEET_PROVIDER,
+    SENSEVOICE_PROVIDER,
     STTServingSurface,
     canonical_model_config,
     deepgram_provider_for_runtime,
@@ -51,9 +54,20 @@ def test_self_hosted_deepgram_is_explicitly_limited_to_streaming():
     assert not provider_is_enabled(DEEPGRAM_SELF_HOSTED_PROVIDER, STTServingSurface.PTT)
 
 
+def test_cloud_neutral_providers_are_explicit_and_surface_bounded():
+    assert provider_for_model_token('sensevoice') == SENSEVOICE_PROVIDER
+    assert provider_for_model_token('mimo') == MIMO_PROVIDER
+    assert provider_for_model_token('moss') == MOSS_PROVIDER
+    assert provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.STREAMING)
+    assert provider_is_enabled(MIMO_PROVIDER, STTServingSurface.STREAMING)
+    assert not provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PTT)
+    assert provider_is_enabled(MOSS_PROVIDER, STTServingSurface.PRERECORDED)
+    assert not provider_is_enabled(MOSS_PROVIDER, STTServingSurface.STREAMING)
+
+
 def test_policy_owns_the_safe_model_order_for_every_serving_surface():
     expected = {
-        STTServingSurface.STREAMING: 'modulate-velma-2,dg-nova-3,parakeet',
+        STTServingSurface.STREAMING: 'dg-nova-3,modulate-velma-2,parakeet',
         STTServingSurface.PRERECORDED: 'parakeet,modulate-velma-2',
         STTServingSurface.PTT: 'modulate-velma-2,parakeet',
     }

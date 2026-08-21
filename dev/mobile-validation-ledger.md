@@ -20,7 +20,7 @@ flutter emulators --launch Medium_Phone_API_36.1
 flutter run --flavor dev --dart-define=OMI_API_BASE_URL=http://10.0.2.2:8104/ -d emulator-5554
 ```
 
-**注意**: 
+**注意**:
 - 后端 :8104 用 Firebase-auth 面(移动端走 FirebaseAuth SDK),desktop 走 BetterAuth 面(:8100)
 - Android 模拟器访问宿主机用 `10.0.2.2`(非 127.0.0.1),flutter 自动映射 auth emulator
 - iOS 模拟器构建受 watch companion(omiWatchApp)签名/嵌入限制,推荐 Android 模拟器验证

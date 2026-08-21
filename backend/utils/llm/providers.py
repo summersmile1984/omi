@@ -19,7 +19,6 @@ from pydantic import SecretStr
 
 from utils.llm.gateway_client import GatewayContextChatOpenAI, get_llm_gateway_base_url, get_llm_gateway_service_token
 from utils.llm.gateway_resilience import gateway_transport_timeout
-from utils.llm.openrouter_model_names import openrouter_provider_model_name
 from utils.llm.usage_tracker import get_usage_callback
 from utils.mimo_pipeline.config import (
     MimoConfigurationError,
@@ -57,6 +56,7 @@ class OpenAICompatibleProviderConfig:
     base_url_env: Optional[str] = None
     require_base_url: bool = False
     default_headers: Dict[str, str] = field(default_factory=dict)
+    prefix_google_models: bool = False
 
     def resolved_base_url(self, env: Optional[Mapping[str, str]] = None) -> Optional[str]:
         values = os.environ if env is None else env
@@ -75,6 +75,7 @@ OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
         base_url="https://openrouter.ai/api/v1",
         base_url_env='OPENROUTER_BASE_URL',
         default_headers={"X-Title": "Omi Chat"},
+        prefix_google_models=True,
     ),
     # Operator-owned OpenAI-compatible authority. It intentionally has no
     # checked-in endpoint so a neutral deployment cannot fall back to a
@@ -131,7 +132,9 @@ def _cache_key(provider: str, model_name: str, streaming: bool, options: Dict[st
 
 
 def _api_model_name(provider_config: OpenAICompatibleProviderConfig, model_name: str) -> str:
-    return openrouter_provider_model_name(provider_config.name, model_name)
+    if provider_config.prefix_google_models and model_name.startswith('gemini'):
+        return f'google/{model_name}'
+    return model_name
 
 
 def get_or_create_openai_compatible_llm(

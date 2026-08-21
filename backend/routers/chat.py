@@ -27,7 +27,6 @@ from multipart.multipart import shutil
 from pydantic import BaseModel
 
 import database.chat as chat_db
-import database.conversations as conversations_db
 import database.llm_usage as llm_usage_db
 from database.apps import record_app_usage
 from models.app import App, UsageHistoryType
@@ -48,7 +47,6 @@ from utils.chat import (
     acquire_chat_session,
     emit_stream_error_fallback,
     initial_message_util,
-    process_voice_message_segment,
     process_voice_message_segment_stream,
     resolve_voice_message_language,
     transcribe_voice_message_segment,
@@ -69,7 +67,7 @@ from utils.rate_limit_config import get_effective_limit, RATE_LIMIT_SHADOW
 from utils.subscription import enforce_chat_quota, is_trial_paywalled
 from utils import share_links
 from utils.other import endpoints as auth, storage
-from utils.other.chat_file import FileChatTool
+from utils.other.chat_file import FileChatTool, UnsupportedChatFileError
 from utils.multipart import (
     CHAT_FILE_MAX_PART_SIZE,
     MultipartMaxPartSizeRoute,
@@ -77,7 +75,7 @@ from utils.multipart import (
     max_part_size,
     parse_multipart_form,
 )
-from utils.retrieval.graph import execute_graph_chat, execute_chat_stream, execute_persona_chat_stream
+from utils.retrieval.graph import execute_chat_stream
 from utils.llm.usage_tracker import set_usage_context, reset_usage_context, Features
 from utils.users import get_user_display_name
 from utils.log_sanitizer import sanitize_pii
@@ -259,7 +257,25 @@ def _build_quota_exceeded_reply(
     return ResponseMessage(**ai_msg.model_dump(), ask_for_nps=False)
 
 
-def _record_chat_quota_question_safe(
+def _build_quota_accounting_unavailable_reply(compat_app_id: Optional[str]) -> ResponseMessage:
+    """SSE-visible retry copy when Free-plan counter persistence fails.
+
+    Returned as an in-memory ``done:`` frame only — do not persist a human or AI
+    message here. Persisting before accounting succeeds would orphan user text on
+    retries (fresh message ids / idempotency keys under the same outage).
+    """
+    ai_msg = Message(
+        id=str(uuid.uuid4()),
+        text=("Usage accounting is temporarily unavailable. Please retry in a moment — " "your message was not saved."),
+        created_at=datetime.now(timezone.utc),
+        sender='ai',
+        type='text',
+        app_id=compat_app_id,
+    )
+    return ResponseMessage(**ai_msg.model_dump(), ask_for_nps=False)
+
+
+def _record_chat_quota_question(
     uid: str,
     *,
     idempotency_key: str,
@@ -267,9 +283,32 @@ def _record_chat_quota_question_safe(
     message_id: Optional[str] = None,
     chat_session_id: Optional[str] = None,
     platform: Optional[str] = None,
-):
+) -> None:
+    """Persist the free-plan question counter. Callers that are about to invoke a
+    billable provider must treat failures as request failures (fail-closed)."""
+    llm_usage_db.record_chat_quota_question(
+        uid,
+        idempotency_key=idempotency_key,
+        source=source,
+        message_id=message_id,
+        chat_session_id=chat_session_id,
+        platform=platform,
+    )
+
+
+def _record_chat_quota_question_best_effort(
+    uid: str,
+    *,
+    idempotency_key: str,
+    source: str,
+    message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
+    platform: Optional[str] = None,
+) -> None:
+    """Best-effort counter write for paths where the billable work already happened
+    (e.g. voice stream after a visible ``message:`` frame)."""
     try:
-        llm_usage_db.record_chat_quota_question(
+        _record_chat_quota_question(
             uid,
             idempotency_key=idempotency_key,
             source=source,
@@ -350,17 +389,33 @@ def send_message(
 
     if chat_session:
         message.chat_session_id = chat_session.id
+
+    # Fail-closed before persisting the human turn or starting billable work:
+    # a Firestore outage must not leave Free-plan turns uncounted, orphan
+    # messages on retry, or return a bare HTTP 503 that mobile SSE silently drops.
+    try:
+        _record_chat_quota_question(
+            uid,
+            idempotency_key=f'v2_messages:{message.id}',
+            source='v2_messages',
+            message_id=message.id,
+            chat_session_id=message.chat_session_id,
+            platform=x_app_platform,
+        )
+    except Exception:
+        logger.exception('Failed to record chat quota question source=v2_messages uid=%s', uid)
+        response_msg = _build_quota_accounting_unavailable_reply(compat_app_id)
+
+        def _quota_accounting_unavailable_stream():
+            encoded = base64.b64encode(bytes(response_msg.model_dump_json(), 'utf-8')).decode('utf-8')
+            yield f"done: {encoded}\n\n"
+
+        return StreamingResponse(_quota_accounting_unavailable_stream(), media_type="text/event-stream")
+
+    if chat_session:
         chat_db.add_message_to_chat_session(uid, chat_session.id, message.id)
 
     chat_db.add_message(uid, message.model_dump())
-    _record_chat_quota_question_safe(
-        uid,
-        idempotency_key=f'v2_messages:{message.id}',
-        source='v2_messages',
-        message_id=message.id,
-        chat_session_id=message.chat_session_id,
-        platform=x_app_platform,
-    )
 
     # Check for goal progress (background) — rate-limited to one call per user per 5 min
     if try_acquire_goal_extraction_lock(uid):
@@ -746,7 +801,7 @@ def create_voice_message_stream(
                         message_data = json.loads(base64.b64decode(payload).decode('utf-8'))
                         await run_blocking(
                             db_executor,
-                            _record_chat_quota_question_safe,
+                            _record_chat_quota_question_best_effort,
                             uid,
                             idempotency_key=f"v2_voice_messages:{message_data.get('id') or first_wav}",
                             source='v2_voice_messages',
@@ -1460,7 +1515,10 @@ def upload_file_chat(
             with temp_file.open("wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-            result = FileChatTool.upload(temp_file)
+            try:
+                result = FileChatTool.upload(temp_file)
+            except UnsupportedChatFileError as error:
+                raise HTTPException(status_code=400, detail=str(error))
 
             thumb_name = result.get("thumbnail_name", "")
             if thumb_name != "":
@@ -1504,9 +1562,14 @@ def upload_file_chat(
 # CLEANUP: Remove after new app goes to prod ----------------------------------------------------------
 
 
-@router.post('/v1/files', response_model=List[FileChat], tags=['chat'])
+@router.post(
+    '/v1/files',
+    response_model=List[FileChat],
+    tags=['chat'],
+    operation_id='upload_file_chat_v1_files_post',
+)
 @max_part_size(CHAT_FILE_MAX_PART_SIZE)
-def upload_file_chat(
+def upload_file_chat_v1(
     files: List[UploadFile] = File(...),
     uid: str = Depends(auth.with_rate_limit(auth.get_current_user_uid, "file:upload")),
 ):
@@ -1520,7 +1583,10 @@ def upload_file_chat(
             with temp_file.open("wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-            result = FileChatTool.upload(temp_file)
+            try:
+                result = FileChatTool.upload(temp_file)
+            except UnsupportedChatFileError as error:
+                raise HTTPException(status_code=400, detail=str(error))
 
             thumb_name = result.get("thumbnail_name", "")
             if thumb_name != "":
@@ -1560,8 +1626,13 @@ def upload_file_chat(
     return response
 
 
-@router.post('/v1/messages/{message_id}/report', tags=['chat'], response_model=dict)
-def report_message(message_id: str, uid: str = Depends(auth.get_current_user_uid)):
+@router.post(
+    '/v1/messages/{message_id}/report',
+    tags=['chat'],
+    response_model=dict,
+    operation_id='report_message_v1_messages__message_id__report_post',
+)
+def report_message_v1(message_id: str, uid: str = Depends(auth.get_current_user_uid)):
     result = chat_db.get_message(uid, message_id)
     if result is None:
         raise HTTPException(status_code=404, detail='Message not found')
@@ -1574,8 +1645,13 @@ def report_message(message_id: str, uid: str = Depends(auth.get_current_user_uid
     return {'message': 'Message reported'}
 
 
-@router.delete('/v1/messages', tags=['chat'], response_model=Message)
-def clear_chat_messages(
+@router.delete(
+    '/v1/messages',
+    tags=['chat'],
+    response_model=Message,
+    operation_id='clear_chat_messages_v1_messages_delete',
+)
+def clear_chat_messages_v1(
     plugin_id: Optional[str] = None, app_id: Optional[str] = None, uid: str = Depends(auth.get_current_user_uid)
 ):
     compat_app_id = app_id or plugin_id
@@ -1606,8 +1682,13 @@ def clear_chat_messages(
     return initial_message_util(uid, compat_app_id)
 
 
-@router.post('/v1/initial-message', tags=['chat'], response_model=Message)
-def create_initial_message(
+@router.post(
+    '/v1/initial-message',
+    tags=['chat'],
+    response_model=Message,
+    operation_id='create_initial_message_v1_initial_message_post',
+)
+def create_initial_message_v1(
     plugin_id: Optional[str] = None,
     app_id: Optional[str] = None,
     uid: str = Depends(auth.with_rate_limit(auth.get_current_user_uid, "chat:initial")),

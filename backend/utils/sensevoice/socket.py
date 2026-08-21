@@ -20,6 +20,7 @@ selection branch in the streaming provider.
 from __future__ import annotations
 
 import array
+import importlib
 import logging
 import os
 import threading

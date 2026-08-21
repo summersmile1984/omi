@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+import routers.tts as tts_mod
 from utils.mimo_pipeline.tts import MimoTTSAPIError, MimoTTSClient
 
 
@@ -119,8 +120,6 @@ def test_synthesize_raises_on_unexpected_shape(monkeypatch):
 
 
 def test_mimo_enabled_flag(monkeypatch):
-    import routers.tts as tts_mod
-
     monkeypatch.delenv('MIMO_API_KEY', raising=False)
     monkeypatch.delenv('TTS_PROVIDER', raising=False)
     assert tts_mod._is_mimo_enabled() is False

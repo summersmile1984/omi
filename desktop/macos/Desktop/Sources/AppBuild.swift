@@ -16,15 +16,6 @@ enum AppBuild {
   static let externalPreviewBundleIdentifierPrefix = "com.omi.preview."
   static let externalPreviewMarkerInfoKey = "OMIExternalPreview"
   static let externalPreviewBackendInfoKey = "OMIExternalPreviewBackend"
-  private static let updateChannelDefaultsKey = "update_channel"
-  private static let betaOverwriteMigrationKey = "didMigrateBetaOverwrite_v1"
-  private static let desktopAppcastURL = URL(
-    string: "https://api.omi.me/v2/desktop/appcast.xml?platform=macos")!
-
-  /// How long the launch-time channel probe may hold the main thread. It runs before the
-  /// first frame, so it has to stay clear of the 3s watchdog that reports "App Hanging".
-  private static let channelProbeMainThreadBudget: TimeInterval = 1.5
-  private static let channelProbeRequestTimeout: TimeInterval = 3
 
   enum ExternalPreviewBackend: String, Equatable {
     case production
@@ -221,12 +212,16 @@ enum AppBuild {
     return "\(releasesBaseURL)/tag/\(tag.replacingOccurrences(of: "+", with: "%2B"))"
   }
 
+  /// Sparkle channel is identity-bound. Omi Beta is permanently a beta-channel
+  /// client. Stable.app never consumes the beta Sparkle channel: leftover
+  /// `update_channel` defaults and server-synced settings must not opt it into
+  /// newer stable-identity zips against production APIs.
   static var currentUpdateChannel: String {
-    // The Omi Beta app is permanently a beta-channel client; a stray defaults value
-    // (imported settings, sync) must never flip it to stable-identity updates.
-    if isBetaProductionBundle { return "beta" }
-    let raw = UserDefaults.standard.string(forKey: updateChannelDefaultsKey) ?? "stable"
-    return raw == "staging" ? "beta" : raw
+    updateChannel(isBetaIdentity: isBetaProductionBundle)
+  }
+
+  static func updateChannel(isBetaIdentity: Bool) -> String {
+    isBetaIdentity ? "beta" : "stable"
   }
 
   static var manualDownloadURL: URL {

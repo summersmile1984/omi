@@ -24,7 +24,7 @@ flowchart TB
         DESKWS["desktop_realtime<br/>桌面实时通道"]
     end
 
-    subgraph AI_PIPE["音频智能管线 (GPU)"] 
+    subgraph AI_PIPE["音频智能管线 (GPU)"]
         VAD["VAD<br/>语音活动检测"]
         ASR["Parakeet ASR<br/>GPU Worker (NIM)"]
         DIA["Diarizer<br/>说话人分离"]
@@ -174,7 +174,7 @@ flowchart LR
 
 ### 记忆抽取数据结构(事实三元组)
 ```
-Memory = proposition(主语, 谓语, 宾语) 
+Memory = proposition(主语, 谓语, 宾语)
        + category + tags + headline
        + Evidence[] { source_id(对话), extractor_id, capture_confidence, independence_group }
        + subject_entity_id → KG 实体

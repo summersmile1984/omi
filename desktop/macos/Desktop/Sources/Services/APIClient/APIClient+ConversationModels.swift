@@ -42,6 +42,28 @@ struct ConversationMutationResponse: Decodable {
   let conversation: ServerConversation
 }
 
+/// Durable Cloud Tasks finalization projection returned by
+/// GET /v1/conversations/{id}/finalization.
+struct ConversationFinalizationStatusResponse: Decodable, Equatable {
+  let jobID: String
+  let status: String
+  let terminal: Bool
+  let retryable: Bool
+  let attemptCount: Int
+  let taskRetryCount: Int
+  let meetingTreatmentEligible: Bool?
+
+  enum CodingKeys: String, CodingKey {
+    case jobID = "job_id"
+    case status
+    case terminal
+    case retryable
+    case attemptCount = "attempt_count"
+    case taskRetryCount = "task_retry_count"
+    case meetingTreatmentEligible = "meeting_treatment_eligible"
+  }
+}
+
 enum TranscriptPresenceState: Equatable {
   case omittedFromResponse
   case lockedOrRedacted
@@ -366,7 +388,8 @@ struct Structured: Codable, Equatable {
   func encode(to encoder: Encoder) throws {
     let actionItemsWire = actionItems.map {
       OmiAPI.ActionItem(
-        candidateAction: nil, captureConfidence: nil, captureKind: nil, captureOwner: nil, completed: $0.completed,
+        candidateAction: nil, captureConfidence: nil, captureKind: nil, captureOwner: $0.captureOwner,
+        completed: $0.completed,
         completedAt: nil, concreteDeliverable: nil, conversationId: nil, createdAt: nil, description_: $0.description,
         dueAt: nil, ownershipConfidence: nil, sourceSegmentIds: $0.sourceSegmentIDs,
         targetTaskId: $0.targetTaskID, updatedAt: nil)
@@ -414,6 +437,10 @@ struct ActionItem: Codable, Identifiable, Equatable {
   let description: String
   let completed: Bool
   let deleted: Bool
+  /// Extraction ownership from the backend (`capture_owner`), e.g. "user" when
+  /// the item is the user's own commitment. Optional: legacy captures and
+  /// locally cached rows predate the field.
+  let captureOwner: String?
   /// Canonical task linkage is optional on legacy captures. When present, the
   /// chat-first archive uses this opaque ID for a typed deep link rather than
   /// inferring a task from the description.
@@ -424,12 +451,14 @@ struct ActionItem: Codable, Identifiable, Equatable {
     description: String,
     completed: Bool,
     deleted: Bool,
+    captureOwner: String? = nil,
     targetTaskID: String? = nil,
     sourceSegmentIDs: [String] = []
   ) {
     self.description = description
     self.completed = completed
     self.deleted = deleted
+    self.captureOwner = captureOwner
     self.targetTaskID = targetTaskID
     self.sourceSegmentIDs = sourceSegmentIDs
   }
@@ -441,6 +470,7 @@ struct ActionItem: Codable, Identifiable, Equatable {
     self.description = wire.description_
     self.completed = wire.completed ?? false
     self.deleted = false
+    self.captureOwner = wire.captureOwner
     self.targetTaskID = wire.targetTaskId
     self.sourceSegmentIDs = wire.sourceSegmentIds ?? []
   }
@@ -450,6 +480,7 @@ struct ActionItem: Codable, Identifiable, Equatable {
     self.description = wire.description_
     self.completed = wire.completed ?? false
     self.deleted = false
+    self.captureOwner = wire.captureOwner
     self.targetTaskID = wire.targetTaskId
     self.sourceSegmentIDs = wire.sourceSegmentIds ?? []
   }
@@ -459,7 +490,7 @@ struct ActionItem: Codable, Identifiable, Equatable {
       candidateAction: nil,
       captureConfidence: nil,
       captureKind: nil,
-      captureOwner: nil,
+      captureOwner: captureOwner,
       completed: completed,
       completedAt: nil,
       concreteDeliverable: nil,

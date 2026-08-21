@@ -25,6 +25,8 @@ COMPOSE_FILE="$DEV_DIR/docker-compose.dev.yml"
 PORT="${BACKEND_PORT:-8100}"
 LOG="${BACKEND_LOG:-/tmp/backend-dev.log}"
 AUTH_PORT="${AUTH_PORT:-3000}"
+AUTH_DEV_ISSUER_SECRET="${AUTH_DEV_ISSUER_SECRET:-omi-local-dev-issuer-change-me}"
+QUEUE_REDIS_WORKER_SECRET="${QUEUE_REDIS_WORKER_SECRET:-omi-local-queue-worker-change-me}"
 
 # Dev-only secret (32-byte base64). Never use in prod.
 ENCRYPTION_SECRET="${ENCRYPTION_SECRET:-YdtqMcLQx1E9r65YS2lRB9eycbcr76RWmizKq8UecTA=}"
@@ -68,8 +70,8 @@ echo "==> [3/4] auth-server (Better Auth) + Redis queue worker"
 # Ensure the Better Auth PG schema exists.
 if ! docker exec omi-postgres psql -U omi -d omi -tAc "SELECT 1 FROM information_schema.tables WHERE table_name='user'" | grep -q 1; then
   echo "    generating + applying Better Auth schema"
-  (cd "$REPO_ROOT/auth-server" && npx auth@latest generate --adapter kysely --dialect postgresql --output /tmp/auth-schema.sql -y >/dev/null 2>&1 || true)
-  docker exec -i omi-postgres psql -U omi -d omi < /tmp/auth-schema.sql >/dev/null 2>&1 || true
+  (cd "$REPO_ROOT/auth-server" && npx --yes auth@latest generate --config auth.ts --output /tmp/auth-schema.sql --yes)
+  docker exec -i omi-postgres psql -U omi -d omi -v ON_ERROR_STOP=1 < /tmp/auth-schema.sql
 fi
 
 if [[ "${1:-}" == "--no-backend" ]]; then
@@ -94,6 +96,7 @@ if ! curl -s --max-time 2 http://127.0.0.1:$AUTH_PORT/health >/dev/null 2>&1; th
     DATABASE_URL="postgresql://omi:omi-dev-password@localhost:5434/omi" \
     BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-dev-only-better-auth-secret-change-me-32bytes-min}" \
     BETTER_AUTH_URL="http://127.0.0.1:$AUTH_PORT" \
+    AUTH_DEV_ISSUER_SECRET="$AUTH_DEV_ISSUER_SECRET" \
     nohup node src/index.js > /tmp/auth-server.log 2>&1 &)
   echo "    auth-server started on :$AUTH_PORT"
 fi
@@ -101,6 +104,7 @@ fi
 # Start Redis queue worker for all queues
 if ! pgrep -f "cloud_tasks_redis.*--all" >/dev/null 2>&1; then
   (cd "$BACKEND_DIR" && QUEUE_BACKEND=redis REDIS_DB_HOST=127.0.0.1 \
+    QUEUE_REDIS_WORKER_SECRET="$QUEUE_REDIS_WORKER_SECRET" \
     SYNC_TASKS_HANDLER_URL="http://127.0.0.1:$PORT/v2/sync-jobs/run" \
     AUDIO_MERGE_HANDLER_URL="http://127.0.0.1:$PORT/v2/audio-merge-jobs/run" \
     ACCOUNT_DELETION_HANDLER_URL="http://127.0.0.1:$PORT/v1/users/account-deletion-wipes/run" \
@@ -135,6 +139,7 @@ export BUCKET_APP_THUMBNAILS="${BUCKET_APP_THUMBNAILS:-omi-app-thumbnails}"
 export BUCKET_CHAT_FILES="${BUCKET_CHAT_FILES:-omi-chat-files}"
 export BUCKET_DESKTOP_UPDATES="${BUCKET_DESKTOP_UPDATES:-omi-desktop-updates}"
 export QUEUE_BACKEND=redis
+export QUEUE_REDIS_WORKER_SECRET
 export REDIS_DB_HOST=127.0.0.1
 export REDIS_DB_PORT=6379
 # Live STT provider. Default: local CPU SenseVoice (off-cloud). To use
