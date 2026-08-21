@@ -3,6 +3,7 @@ Tools for accessing screen/computer activity data from the desktop app.
 """
 
 import contextvars
+import json
 from datetime import datetime, timezone, tzinfo
 from typing import Any, Dict, List, Optional, Tuple, cast
 from zoneinfo import ZoneInfo
@@ -15,9 +16,18 @@ import database.vector_db as vector_db
 import database.notifications as notification_db
 from database._client import db as firestore_db
 from utils.llm.clients import gemini_embed_query
+from utils.llm.capabilities import resolve_model_capability
+from utils.llm.embedding_providers import ConfiguredEmbeddingProviderProxy, GeminiEmbeddingProviderAdapter
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Retrieval owns a single embedding seam. The legacy Gemini adapter remains
+# available for managed deployments, while neutral deployments must select an
+# explicit operator provider through EMBEDDING_PROVIDER and never inherit it.
+embeddings = ConfiguredEmbeddingProviderProxy(
+    GeminiEmbeddingProviderAdapter(gemini_embed_query),
+)
 
 try:
     from utils.retrieval.agentic import agent_config_context
@@ -258,7 +268,10 @@ def search_screen_activity_tool(
             pass
 
     try:
-        query_vector = gemini_embed_query(query)
+        capability = resolve_model_capability('screen')
+        if not capability.selected:
+            return json.dumps(capability.unavailable_payload(), sort_keys=True, separators=(',', ':'))
+        query_vector = embeddings.embed_query(query)
     except Exception as e:
         logger.error(f"search_screen_activity_tool - embedding error: {e}")
         return f"Error generating search embedding: {e}"

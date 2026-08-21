@@ -282,6 +282,12 @@ def is_trial_paywalled(uid: str, platform: Optional[str]) -> bool:
     return _is_trial_expired_cached(uid)
 
 
+def is_desktop_trial_paywalled(uid: str, platform: Optional[str] = 'desktop') -> bool:
+    """Named desktop policy seam used by provider-neutral model admission."""
+
+    return is_trial_paywalled(uid, platform)
+
+
 def clear_trial_paywall_cache(uid: str) -> None:
     redis_db.delete_generic_cache(f"trial_paywall:expired:{uid}")
 
@@ -905,6 +911,12 @@ def enforce_chat_quota(uid: str, platform: Optional[str] = None) -> None:
             'reset_at': snapshot['reset_at'],
         },
     )
+
+
+def enforce_desktop_chat_quota(uid: str, platform: Optional[str] = 'desktop') -> None:
+    """Apply the desktop model quota through the shared chat policy seam."""
+
+    enforce_chat_quota(uid, platform)
 
 
 def get_basic_plan_limits() -> PlanLimits:

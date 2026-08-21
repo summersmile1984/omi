@@ -33,6 +33,18 @@ def test_product_model_capability_matrix_has_selected_routes():
     )
 
 
+def test_neutral_capability_resolution_returns_typed_unavailable_without_route():
+    route = resolve_model_capability('agent_chat', env={'OMI_DEPLOYMENT_PROFILE': 'self_hosted'})
+
+    assert route.selected is False
+    assert route.unavailable_payload() == {
+        'code': 'model_capability_unavailable',
+        'capability': 'agent_chat',
+        'reason': 'provider_route_not_configured',
+        'retryable': False,
+    }
+
+
 def test_nonportable_capabilities_return_typed_unavailable_payloads():
     screen = resolve_model_capability(
         'screen',

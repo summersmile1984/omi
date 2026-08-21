@@ -13,8 +13,9 @@ from pydantic import BaseModel, StrictInt, StrictStr
 
 from database._client import get_firestore_client
 from utils.executors import db_executor, run_blocking
+from utils.llm.capabilities import realtime_relay_wire_protocol, resolve_model_capability
 from utils.other.endpoints import get_current_user_uid
-from utils.subscription import is_trial_paywalled
+from utils.subscription import enforce_desktop_chat_quota
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -139,11 +140,29 @@ async def _persist_session(uid: str, token: str, provider: str, model: str, expi
 
 @router.post("/v2/realtime/session")
 async def mint_session(request: MintRequest, uid: str = Depends(get_current_user_uid)) -> JSONResponse:
-    if await run_blocking(db_executor, is_trial_paywalled, uid, "desktop"):
-        return JSONResponse(
-            status_code=402,
-            content={"error": "trial_expired", "message": "Desktop trial expired. Upgrade or bring your own keys."},
+    capability = resolve_model_capability('realtime', requested_provider=request.provider)
+    if not capability.selected:
+        return _error(
+            503,
+            'model_capability_unavailable',
+            capability.reason or 'Realtime model capability is unavailable',
+            request.provider,
+            retryable=capability.retryable,
         )
+    selected_model = capability.routes[0].model
+    if capability.transport == 'websocket_relay':
+        return JSONResponse(
+            {
+                'provider': 'relay',
+                'provider_id': capability.routes[0].provider,
+                'model': selected_model,
+                'transport': 'websocket_relay',
+                'protocol': 'omi.realtime.v1',
+                'wire_protocol': realtime_relay_wire_protocol(),
+                'websocket_url': '/v1/model-capabilities/realtime/relay',
+            }
+        )
+    await run_blocking(db_executor, enforce_desktop_chat_quota, uid, "desktop")
     if request.provider == "openai":
         key = os.getenv("OPENAI_API_KEY", "").strip()
         if not key:
@@ -152,7 +171,7 @@ async def mint_session(request: MintRequest, uid: str = Depends(get_current_user
             _OPENAI_CLIENT_SECRETS_URL,
             "openai",
             {"Authorization": f"Bearer {key}"},
-            {"session": {"type": "realtime", "model": _OPENAI_REALTIME_MODEL}},
+            {"session": {"type": "realtime", "model": selected_model}},
         )
         if error:
             return error
@@ -162,7 +181,7 @@ async def mint_session(request: MintRequest, uid: str = Depends(get_current_user
                 502, "provider_mint_transport_error", "openai mint: no client secret in response", retryable=True
             )
         expires_at = json.dumps(data["expires_at"], separators=(",", ":")) if data and "expires_at" in data else None
-        await _persist_session(uid, token, "openai", _OPENAI_REALTIME_MODEL, expires_at or "")
+        await _persist_session(uid, token, "openai", selected_model, expires_at or "")
         return JSONResponse(
             {"provider": "openai", "token": token, **({"expires_at": expires_at} if expires_at is not None else {})}
         )
@@ -187,7 +206,7 @@ async def mint_session(request: MintRequest, uid: str = Depends(get_current_user
             return _error(
                 502, "provider_mint_transport_error", "gemini mint: no token name in response", retryable=True
             )
-        await _persist_session(uid, token, "gemini", _GEMINI_LIVE_MODEL, expires_at)
+        await _persist_session(uid, token, "gemini", selected_model, expires_at)
         return JSONResponse({"provider": "gemini", "token": token, "expires_at": expires_at})
     return _error(400, "bad_provider", 'provider must be "openai" or "gemini"')
 
@@ -245,11 +264,7 @@ def _usage_cost(report: UsageReport) -> float:
 
 @router.post("/v2/realtime/usage", status_code=204)
 async def report_usage(report: UsageReport, uid: str = Depends(get_current_user_uid)) -> Response:
-    if await run_blocking(db_executor, is_trial_paywalled, uid, "desktop"):
-        return JSONResponse(
-            status_code=402,
-            content={"error": "trial_expired", "message": "Desktop trial expired. Upgrade or bring your own keys."},
-        )
+    await run_blocking(db_executor, enforce_desktop_chat_quota, uid, "desktop")
     input_tokens = max(report.input_text_tokens, 0) + max(report.input_audio_tokens, 0)
     output_tokens = max(report.output_text_tokens, 0) + max(report.output_audio_tokens, 0)
     cached_tokens = max(report.input_cached_tokens, 0)

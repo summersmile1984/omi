@@ -1,18 +1,30 @@
 schema_version: llm_model_endpoint_inventory.v1
 scope:
   in_scope: backend chat/completion/generation/model calls, including streaming, tool calling, image generation, file chat, realtime relay, and provider web search
-  out_of_scope: embeddings/vector APIs only
+  out_of_scope: legacy provider-native helpers that are not used by the capability routes
 out_of_scope_surfaces:
   - surface: openai_embeddings
     code_path: backend/utils/llm/clients.py:OpenAIEmbeddings,generate_embedding
     provider_model: openai/text-embedding-3-large
     request_shape: embedding
-    reason: Embeddings are explicitly out of scope for this phase.
+    reason: Legacy compatibility helper; desktop capability callers use the provider-neutral route.
   - surface: gemini_screen_activity_query_embedding
     code_path: backend/utils/llm/clients.py:gemini_embed_query
     provider_model: gemini/embedding-001
     request_shape: embedding
-    reason: Embeddings are explicitly out of scope for this phase.
+    reason: Legacy compatibility helper; screen search preflights the provider-neutral embedding boundary.
+provider_neutral_capabilities:
+  status: authenticated_typed_routes
+  code_path: backend/routers/model_capabilities.py
+  routes:
+    - POST /v1/model-capabilities/embeddings
+    - POST /v1/model-capabilities/tool-completions
+    - GET /v1/model-capabilities/realtime
+    - WEBSOCKET /v1/model-capabilities/realtime/relay
+  route_source: backend/utils/llm/capabilities.py
+  embedding_source: backend/utils/llm/embedding_providers.py
+  neutral_contract: self_hosted deployments require explicit provider/model/endpoint/credential values and return typed unavailable responses; checked-in vendor profiles never become implicit routes.
+  realtime_contract: server-selected provider or an allowlisted operator websocket relay; legacy omni and desktop mint routes cannot override the deployment-selected relay.
 model_config_features:
   status: gateway_lane_generated_from_model_config
   source_of_truth: backend/utils/llm/model_config.py

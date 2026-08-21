@@ -15,6 +15,7 @@ from utils.byok import (
     validate_byok_websocket,
 )
 from utils.executors import critical_executor, db_executor, run_blocking
+from utils.llm.capabilities import resolve_model_capability
 from utils.llm.gateway_client import raise_if_gateway_feature_mode_blocks_direct_model_surface
 from utils.other.endpoints import _verify_ws_auth  # type: ignore[reportPrivateUsage]  # shared WS auth helper, intentionally reused cross-module
 from utils.subscription import is_trial_paywalled
@@ -66,6 +67,13 @@ def _upstream(provider: str, model: str | None) -> tuple[tuple[str, dict[str, st
 
 @router.websocket("/v1/omni/relay")
 async def omni_relay(websocket: WebSocket):
+    requested_provider = websocket.query_params.get("provider", "gemini")
+    capability = resolve_model_capability("realtime", requested_provider=requested_provider)
+    # The legacy relay is vendor-native and cannot be allowed to bypass the
+    # deployment-selected provider-neutral relay contract.
+    if capability.transport != "ephemeral_token":
+        await websocket.close(code=1013, reason="legacy_realtime_transport_unavailable")
+        return
     try:
         raise_if_gateway_feature_mode_blocks_direct_model_surface('omni_realtime.provider_websocket')
     except RuntimeError as exc:
@@ -104,7 +112,7 @@ async def omni_relay(websocket: WebSocket):
         await websocket.close(code=1008, reason="trial_expired")
         return
 
-    provider = websocket.query_params.get("provider", "gemini")
+    provider = requested_provider
     model = websocket.query_params.get("model")
     upstream_cfg, err = _upstream(provider, model)
     if err:

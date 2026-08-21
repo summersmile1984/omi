@@ -51,6 +51,8 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     "voice:transcribe_stream": (60, 3600),
     "voice:message": (60, 3600),
     "file:upload": (40, 3600),
+    # Provider-neutral embedding batches for desktop OCR/task/rewind surfaces.
+    "model:embeddings": (600, 3600),
     # Agent/MCP — bursty tool calls
     "agent:execute_tool": (120, 3600),
     # Platform tools — backend RAG endpoints

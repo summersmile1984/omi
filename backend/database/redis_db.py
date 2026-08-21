@@ -841,7 +841,8 @@ def remove_conversation_summary_app_id(app_id: str) -> bool:
 # Lua script: atomic increment + TTL in a single round-trip.
 # Returns [current_count, ttl_remaining].  Sets TTL on first hit
 # and self-heals any key that lost its TTL (prevents permanent buckets).
-_RATE_LIMIT_LUA = r.register_script("""
+_RATE_LIMIT_LUA = r.register_script(
+    """
 local key = KEYS[1]
 local window = tonumber(ARGV[1])
 local current = redis.call('INCR', key)
@@ -854,7 +855,8 @@ if ttl < 0 then
     ttl = window
 end
 return {current, ttl}
-""")
+"""
+)
 
 
 def check_rate_limit(key: str, policy: str, max_requests: int, window: int) -> tuple[bool, int, int]:
@@ -877,13 +879,96 @@ def check_rate_limit(key: str, policy: str, max_requests: int, window: int) -> t
     return allowed, remaining, retry_after
 
 
+# Reversible reservations for model capability quotas. A provider/schema
+# failure can release an admitted slot instead of consuming the daily budget.
+_RATE_LIMIT_RESERVE_LUA = r.register_script(
+    """
+local key = KEYS[1]
+local window = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local current = tonumber(redis.call('GET', key) or '0')
+local ttl = redis.call('TTL', key)
+if current >= limit then
+    if ttl < 0 then
+        redis.call('EXPIRE', key, window)
+        ttl = window
+    end
+    return {0, current, ttl}
+end
+current = redis.call('INCR', key)
+if current == 1 or ttl < 0 then
+    redis.call('EXPIRE', key, window)
+    ttl = window
+end
+return {1, current, ttl}
+"""
+)
+
+_RATE_LIMIT_RELEASE_LUA = r.register_script(
+    """
+local key = KEYS[1]
+local current = tonumber(redis.call('GET', key) or '0') or 0
+if current <= 1 then
+    redis.call('DEL', key)
+    return 0
+end
+local remaining = tonumber(redis.call('DECR', key) or '0') or 0
+if remaining <= 0 then
+    redis.call('DEL', key)
+    return 0
+end
+return remaining
+"""
+)
+
+_REALTIME_RELAY_LEASE_RELEASE_LUA = r.register_script(
+    """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+)
+
+
+def reserve_rate_limit(key: str, policy: str, max_requests: int, window: int) -> tuple[bool, int, int]:
+    """Atomically reserve a reversible rate-limit slot."""
+
+    redis_key = f'rl:{policy}:{key}'
+    admitted, current, ttl = _RATE_LIMIT_RESERVE_LUA(keys=[redis_key], args=[window, max_requests])
+    return bool(admitted), max(0, max_requests - current), max(0, int(ttl))
+
+
+def release_rate_limit(key: str, policy: str) -> None:
+    """Release one previously admitted reversible slot."""
+
+    _RATE_LIMIT_RELEASE_LUA(keys=[f'rl:{policy}:{key}'], args=[])
+
+
+def try_acquire_realtime_relay_lease(uid: str, token: str, ttl: int) -> bool:
+    """Claim one cross-instance realtime relay lease for a user."""
+
+    if not uid or not token or ttl < 1:
+        raise ValueError('uid, token, and a positive ttl are required')
+    return r.set(f'realtime_relay:lease:{uid}', token, ex=ttl, nx=True) is not None
+
+
+def release_realtime_relay_lease(uid: str, token: str) -> bool:
+    """Release only the relay lease still owned by ``token``."""
+
+    if not uid or not token:
+        return False
+    return bool(_REALTIME_RELAY_LEASE_RELEASE_LUA(keys=[f'realtime_relay:lease:{uid}'], args=[token]))
+
+
 # Atomic TTS rate-limit: burst (sliding-window ZSET) + daily char counter.
 # Returns [status, retry_after_seconds]:
 #   0 = allow, 1 = burst exceeded, 2 = daily char limit exceeded.
 # Burst uses a sorted set keyed by timestamp-ms for sliding-window accuracy,
 # trimmed on every call (O(log n)). Daily char counter auto-expires at midnight
 # UTC (caller passes seconds_until_midnight_utc as the TTL).
-_TTS_RATE_LIMIT_LUA = r.register_script("""
+_TTS_RATE_LIMIT_LUA = r.register_script(
+    """
 local burst_key = KEYS[1]
 local daily_key = KEYS[2]
 local now_ms = tonumber(ARGV[1])
@@ -911,7 +996,8 @@ if new_daily == char_count then
     redis.call('EXPIRE', daily_key, daily_ttl)
 end
 return {0, 0}
-""")
+"""
+)
 
 
 def _seconds_until_midnight_utc() -> int:

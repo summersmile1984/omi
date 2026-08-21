@@ -10,7 +10,7 @@ import logging
 import os
 import hashlib
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -36,6 +36,17 @@ _usage_callback = get_usage_callback()
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 
+class ModelProviderConfigurationError(ValueError):
+    """A selected direct provider cannot execute with current configuration."""
+
+    def __init__(self, provider: str, reason: str, *, setting: str | None = None) -> None:
+        self.provider = provider
+        self.reason = reason
+        self.setting = setting
+        detail = f": {setting} is required" if setting else ""
+        super().__init__(f"provider {provider!r} is not configured ({reason}){detail}")
+
+
 @dataclass(frozen=True)
 class OpenAICompatibleProviderConfig:
     """Configuration for providers served through ChatOpenAI-compatible APIs."""
@@ -46,6 +57,14 @@ class OpenAICompatibleProviderConfig:
     base_url_env: Optional[str] = None
     require_base_url: bool = False
     default_headers: Dict[str, str] = field(default_factory=dict)
+
+    def resolved_base_url(self, env: Optional[Mapping[str, str]] = None) -> Optional[str]:
+        values = os.environ if env is None else env
+        configured = values.get(self.base_url_env, '').strip() if self.base_url_env else ''
+        resolved = configured or (self.base_url or '')
+        if self.require_base_url and not resolved:
+            raise ValueError(f'{self.base_url_env} is required for provider {self.name!r}')
+        return resolved.rstrip('/') or None
 
 
 OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
@@ -88,6 +107,24 @@ OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
 _llm_cache: Dict[tuple, Any] = {}
 
 
+def get_openai_api_key() -> str:
+    """Return the platform OpenAI credential at the provider boundary."""
+
+    return os.environ.get(OPENAI_COMPATIBLE_PROVIDERS['openai'].api_key_env, '').strip()
+
+
+def get_openai_compatible_provider_config(provider: str) -> OpenAICompatibleProviderConfig:
+    normalized = provider.strip().lower()
+    try:
+        return OPENAI_COMPATIBLE_PROVIDERS[normalized]
+    except KeyError as exc:
+        raise ModelProviderConfigurationError(normalized or provider, 'direct_transport_not_supported') from exc
+
+
+def openai_compatible_api_model_name(provider_config: OpenAICompatibleProviderConfig, model_name: str) -> str:
+    return openrouter_provider_model_name(provider_config.name, model_name)
+
+
 def _cache_key(provider: str, model_name: str, streaming: bool, options: Dict[str, Any]) -> tuple:
     option_items = tuple(sorted((key, repr(value)) for key, value in options.items()))
     return provider, model_name, streaming, option_items
@@ -106,10 +143,10 @@ def get_or_create_openai_compatible_llm(
     """Get or create a cached ChatOpenAI-compatible chat model."""
 
     options = options or {}
-    if provider not in OPENAI_COMPATIBLE_PROVIDERS:
-        raise ValueError(f"Unknown OpenAI-compatible provider '{provider}'")
-
-    provider_config = OPENAI_COMPATIBLE_PROVIDERS[provider]
+    try:
+        provider_config = get_openai_compatible_provider_config(provider)
+    except ModelProviderConfigurationError as exc:
+        raise ValueError(f"Unknown OpenAI-compatible provider '{provider}'") from exc
     # Only include options that are actually transferred to kwargs in the cache key,
     # so arbitrary caller options don't create duplicate cache entries.
     _handled_options = {
@@ -133,31 +170,22 @@ def get_or_create_openai_compatible_llm(
             raise ValueError(str(exc)) from exc
         _effective_options['base_url'] = resolve_mimo_openai_base_url(resolved_mimo_config.base_url)
         _effective_options['api_key'] = hashlib.sha256(resolved_mimo_config.api_key.encode()).hexdigest()
-    effective_base_url = (
-        options.get('base_url')
-        or (os.environ.get(provider_config.base_url_env, '').strip() if provider_config.base_url_env else '')
-        or provider_config.base_url
-    )
+    try:
+        effective_base_url = options.get('base_url') or provider_config.resolved_base_url()
+    except ValueError as exc:
+        raise ModelProviderConfigurationError(
+            provider_config.name,
+            'endpoint_not_configured',
+            setting=provider_config.base_url_env,
+        ) from exc
     effective_api_key = options.get('api_key') or os.environ.get(provider_config.api_key_env, '').strip()
+    if not effective_api_key:
+        raise ModelProviderConfigurationError(
+            provider_config.name,
+            'credential_not_configured',
+            setting=provider_config.api_key_env,
+        )
     if resolved_mimo_config is None:
-        if provider_config.require_base_url and not effective_base_url:
-            raise ValueError(f'{provider_config.base_url_env} is required for provider {provider!r}')
-        if provider_config.name != 'openai' and not effective_api_key:
-            if provider_config.name == 'openrouter':
-                # Managed test/dev processes may construct the lazy client
-                # before credentials arrive. Use a non-secret sentinel so
-                # ChatOpenAI cannot accidentally borrow OPENAI_API_KEY. A
-                # neutral deployment still fails closed at construction.
-                neutral = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in {
-                    'neutral',
-                    'self_hosted',
-                    'self-hosted',
-                }
-                if neutral:
-                    raise ValueError(f'{provider_config.api_key_env} is required for provider {provider!r}')
-                effective_api_key = 'openrouter-key-not-configured'
-            else:
-                raise ValueError(f'{provider_config.api_key_env} is required for provider {provider!r}')
         _effective_options['base_url'] = effective_base_url
         _effective_options['api_key_fingerprint'] = (
             hashlib.sha256(str(effective_api_key).encode()).hexdigest() if effective_api_key else 'environment-default'
@@ -188,7 +216,7 @@ def get_or_create_openai_compatible_llm(
             kwargs['streaming'] = True
             kwargs['stream_options'] = {"include_usage": True}
 
-        _llm_cache[key] = ChatOpenAI(model=_api_model_name(provider_config, model_name), **kwargs)
+        _llm_cache[key] = ChatOpenAI(model=openai_compatible_api_model_name(provider_config, model_name), **kwargs)
     return _llm_cache[key]
 
 
@@ -252,18 +280,23 @@ def get_or_create_gemini_llm(
     BYOK users still go through the OpenAI-compatible Gemini endpoint in clients.py.
     """
 
+    # Do not construct either the native Gemini SDK or its OpenAI-compatible
+    # Google endpoint without an explicitly configured authority credential.
+    # A dummy key would make a selected route look executable and can leak a
+    # request to a managed vendor from a neutral deployment.
+    use_vertex = os.environ.get('USE_VERTEX_AI', '').lower() == 'true'
+    gcp_project = os.environ.get('GOOGLE_CLOUD_PROJECT', '') if use_vertex else ''
+    gemini_key = os.environ.get('GEMINI_API_KEY', '').strip()
+    if not gcp_project and not gemini_key:
+        raise ModelProviderConfigurationError('gemini', 'credential_not_configured', setting='GEMINI_API_KEY')
+
     # Build cache key — only include thinking_budget when we'll actually use it
     # (i.e., when Vertex AI or API key is configured). The fallback ChatOpenAI
     # path strips thinking_budget, so including it would create duplicate entries.
-    _has_gemini_creds = bool(
-        os.environ.get('USE_VERTEX_AI', '').lower() == 'true' and os.environ.get('GOOGLE_CLOUD_PROJECT', '')
-    ) or bool(os.environ.get('GEMINI_API_KEY', ''))
+    _has_gemini_creds = bool(gcp_project) or bool(gemini_key)
     cache_budget = thinking_budget if _has_gemini_creds else None
     key = (model_name, streaming, 'gemini', cache_budget)
     if key not in _llm_cache:
-        use_vertex = os.environ.get('USE_VERTEX_AI', '').lower() == 'true'
-        gcp_project = os.environ.get('GOOGLE_CLOUD_PROJECT', '') if use_vertex else ''
-        gemini_key = os.environ.get('GEMINI_API_KEY', '')
         kwargs: Dict[str, Any] = {'callbacks': [_usage_callback], 'timeout': 120, 'max_retries': 1}
         if streaming:
             kwargs['streaming'] = True
@@ -279,16 +312,10 @@ def get_or_create_gemini_llm(
             kwargs['google_api_key'] = gemini_key
             _llm_cache[key] = ChatGoogleGenerativeAI(model=model_name, **kwargs)
         else:
-            logger.warning('No USE_VERTEX_AI or GEMINI_API_KEY — Gemini calls will fail at invoke time')
-            # Strip thinking_budget — it's a ChatGoogleGenerativeAI-only param
-            # that ChatOpenAI rejects at invoke time.
-            fallback_kwargs = {k: v for k, v in kwargs.items() if k != 'thinking_budget'}
-            _llm_cache[key] = ChatOpenAI(
-                model=model_name,
-                api_key=SecretStr('not-set'),
-                base_url=GEMINI_OPENAI_BASE_URL,
-                **fallback_kwargs,
-            )
+            # The credential check above makes this unreachable. Keep an
+            # explicit guard so future changes cannot restore a dummy-key
+            # fallback to the managed Google endpoint.
+            raise ModelProviderConfigurationError('gemini', 'credential_not_configured', setting='GEMINI_API_KEY')
     return _llm_cache[key]
 
 

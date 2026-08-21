@@ -177,7 +177,10 @@ def resolve_model_capability(
     if capability in _FEATURE_CAPABILITIES:
         routes: list[ProviderRoute] = []
         for feature in _FEATURE_CAPABILITIES[capability]:
-            resolved = resolve_feature_route(feature, values)
+            try:
+                resolved = resolve_feature_route(feature, values)
+            except ValueError:
+                return _unavailable(capability, 'provider_route_not_configured', retryable=False)
             for route in (resolved.primary, *resolved.fallbacks):
                 if route not in routes:
                     routes.append(route)
@@ -197,7 +200,10 @@ def resolve_model_capability(
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
         if transport != 'completion':
             return _unavailable(capability, 'unsupported_transport', retryable=False)
-        route = resolve_feature_route('desktop_proactive_reasoning', values)
+        try:
+            route = resolve_feature_route('desktop_proactive_reasoning', values)
+        except ValueError:
+            return _unavailable(capability, 'provider_route_not_configured', retryable=False)
         return ModelCapabilityRoute(
             capability=capability,
             status='selected',
@@ -254,7 +260,10 @@ def resolve_model_capability(
         if transport == 'local_extraction':
             if not values.get('BUCKET_CHAT_FILES', '').strip():
                 return _unavailable(capability, 'object_storage_not_configured', retryable=False)
-            route = resolve_feature_route('chat_responses', values)
+            try:
+                route = resolve_feature_route('chat_responses', values)
+            except ValueError:
+                return _unavailable(capability, 'provider_route_not_configured', retryable=False)
             return ModelCapabilityRoute(
                 capability=capability,
                 status='selected',
@@ -297,7 +306,10 @@ def resolve_model_capability(
             return ModelCapabilityRoute(capability=capability, status='selected', transport='searxng')
         if transport != 'gateway':
             return _unavailable(capability, 'unsupported_transport', retryable=False)
-        route = resolve_feature_route('web_search', values)
+        try:
+            route = resolve_feature_route('web_search', values)
+        except ValueError:
+            return _unavailable(capability, 'provider_route_not_configured', retryable=False)
         return ModelCapabilityRoute(
             capability=capability,
             status='selected',

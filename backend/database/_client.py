@@ -13,6 +13,7 @@ __all__ = [
     "db",
     "delete_collection_recursive",
     "document_id_from_seed",
+    "get_customer_firestore_client",
     "get_firestore_client",
     "get_users_uid",
     "is_document_size_limit_error",
@@ -114,6 +115,17 @@ def get_firestore_client() -> Any:
             if _firestore_client is None:
                 _firestore_client = _build_firestore_client()
     return _firestore_client
+
+
+def get_customer_firestore_client() -> Any:
+    """Return the customer-data authority used by model access policy.
+
+    This checkout has one Firestore/PG compatibility authority. Keep the
+    boundary explicit so deployments that later split entitlement storage can
+    replace it without making quota code construct a second client.
+    """
+
+    return get_firestore_client()
 
 
 _EXPIRED_TRANSACTION_MARKER = "transaction has expired"

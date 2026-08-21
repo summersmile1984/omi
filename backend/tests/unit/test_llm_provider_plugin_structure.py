@@ -256,6 +256,18 @@ def test_generic_provider_uses_explicit_operator_endpoint(monkeypatch):
     assert call['base_url'] == 'http://operator.example.test/v1'
 
 
+def test_gemini_provider_fails_before_constructing_google_client_without_credentials(monkeypatch):
+    providers._llm_cache.clear()
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    monkeypatch.delenv('USE_VERTEX_AI', raising=False)
+    monkeypatch.delenv('GOOGLE_CLOUD_PROJECT', raising=False)
+    monkeypatch.setattr(providers, 'ChatGoogleGenerativeAI', MagicMock(side_effect=AssertionError('must not build')))
+    monkeypatch.setattr(providers, 'ChatOpenAI', MagicMock(side_effect=AssertionError('must not build')))
+
+    with pytest.raises(ValueError, match='GEMINI_API_KEY'):
+        providers.get_or_create_gemini_llm('gemini-embedding-test')
+
+
 def test_route_options_keep_provider_quirks_out_of_callsites():
     assert get_route_options('wrapped_analysis', 'gemini-3-flash-preview', 'openrouter')['temperature'] == 0.7
     assert get_route_options('followup', 'gemini-2.5-flash-lite', 'gemini')['thinking_budget'] == 0
