@@ -49,6 +49,8 @@ from database.vector_projection import (
 )
 from database.memory_vector_metadata import canonical_memory_provider_id
 from database.vector_store import PineconeVectorStoreAdapter, create_qdrant_vector_store_from_env
+from scripts.export_authoritative_vectors import ExportError as AuthorityExportError
+from scripts.export_authoritative_vectors import verify_authoritative_export_manifest
 
 RECEIPT_FORMAT = 'omi-vector-projection-receipt-v1'
 SWITCH_PLAN_FORMAT = 'omi-vector-projection-switch-plan-v1'
@@ -68,11 +70,13 @@ RECEIPT_HEADER_KEYS = frozenset(
         'projection_schema_version',
         'empty_export_acknowledged',
         'memory_mode',
+        'authority_manifest_sha256',
+        'authority_source_kind',
     }
 )
 RECEIPT_RECORD_KEYS = frozenset({'type', 'id', 'values', 'metadata'})
 SWITCH_PLAN_KEYS = frozenset({'format', 'projections'})
-SWITCH_PLAN_ITEM_KEYS = frozenset({'namespace', 'records', 'receipt'})
+SWITCH_PLAN_ITEM_KEYS = frozenset({'namespace', 'records', 'receipt', 'manifest'})
 _SHA256 = re.compile(r'[0-9a-f]{64}')
 _PROJECTION_VERSION = re.compile(r'[a-z0-9][a-z0-9_-]*')
 PROJECTION_METADATA_KEYS = frozenset(
@@ -120,6 +124,8 @@ class ReceiptHeader:
     projection_schema_version: int
     empty_export_acknowledged: bool
     memory_mode: str = 'legacy'
+    authority_manifest_sha256: str | None = None
+    authority_source_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +139,7 @@ class SwitchPlanEntry:
     namespace: str
     records_path: Path
     receipt_path: Path
+    manifest_path: Path
 
 
 @dataclass(frozen=True)
@@ -144,6 +151,30 @@ class _ReceiptEmbeddingIdentity:
 
 class MigrationCliError(RuntimeError):
     """Safe operator-facing contract error."""
+
+
+def _verify_authority_manifest(
+    *,
+    manifest_path: Path | None,
+    records_path: Path,
+    namespace: str,
+    memory_mode: str,
+    allow_empty: bool,
+) -> dict[str, Any] | None:
+    """Require exporter provenance when the operator supplies a manifest."""
+
+    if manifest_path is None:
+        return None
+    try:
+        return verify_authoritative_export_manifest(
+            manifest_path,
+            records_path=records_path,
+            namespace=namespace,
+            memory_mode=memory_mode,
+            allow_empty=allow_empty,
+        )
+    except AuthorityExportError as error:
+        raise MigrationCliError(f'authority export manifest verification failed: {error}') from error
 
 
 def load_authority_records(
@@ -310,6 +341,7 @@ def backfill_from_authority(
     batch_size: int,
     allow_empty: bool = False,
     memory_mode: str = 'canonical',
+    authority_manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     _require_new_output(receipt_path)
     _validate_batch_size(batch_size)
@@ -319,7 +351,16 @@ def backfill_from_authority(
     _validate_embedding_runtime_identity(embeddings)
     requested_memory_mode = _normalize_memory_mode(memory_mode)
     effective_memory_mode = _effective_memory_mode(namespace, requested_memory_mode)
+    authority_manifest = _verify_authority_manifest(
+        manifest_path=authority_manifest_path,
+        records_path=records_path,
+        namespace=namespace,
+        memory_mode=effective_memory_mode,
+        allow_empty=allow_empty,
+    )
     authority, source_sha256 = load_authority_records(records_path, allow_empty=allow_empty)
+    if authority_manifest is not None and authority_manifest['records_sha256'] != source_sha256:
+        raise MigrationCliError('authoritative export changed after manifest verification')
     authority = _canonicalize_memory_authority(authority, mode=effective_memory_mode)
     configured_dimension = embeddings.dimension
     if authority:
@@ -372,9 +413,24 @@ def backfill_from_authority(
         projection_schema_version=schema_version,
         empty_export_acknowledged=not authority,
         memory_mode=effective_memory_mode,
+        authority_manifest_sha256=(authority_manifest['manifest_sha256'] if authority_manifest else None),
+        authority_source_kind=(authority_manifest['source_kind'] if authority_manifest else None),
     )
     _write_receipt(receipt_path, ProjectionReceipt(header=header, records=projection_records))
-    return {'status': 'backfilled', **asdict(report), 'receipt': str(receipt_path), 'source_sha256': source_sha256}
+    return {
+        'status': 'backfilled',
+        **asdict(report),
+        'receipt': str(receipt_path),
+        'source_sha256': source_sha256,
+        **(
+            {
+                'authority_manifest_sha256': authority_manifest['manifest_sha256'],
+                'authority_source_kind': authority_manifest['source_kind'],
+            }
+            if authority_manifest is not None
+            else {}
+        ),
+    }
 
 
 def verify_receipt(
@@ -383,9 +439,22 @@ def verify_receipt(
     receipt_path: Path,
     store_factory: Any,
     batch_size: int,
+    authority_manifest_path: Path | None = None,
 ) -> VerificationReport:
     _validate_batch_size(batch_size)
     receipt = load_receipt(receipt_path)
+    authority_manifest = _verify_authority_manifest(
+        manifest_path=authority_manifest_path,
+        records_path=records_path,
+        namespace=receipt.header.namespace,
+        memory_mode=receipt.header.memory_mode,
+        allow_empty=receipt.header.empty_export_acknowledged,
+    )
+    if authority_manifest is not None:
+        if receipt.header.authority_manifest_sha256 != authority_manifest['manifest_sha256']:
+            raise MigrationCliError('authority export manifest does not match the backfill receipt')
+        if receipt.header.authority_source_kind != authority_manifest['source_kind']:
+            raise MigrationCliError('authority export source kind does not match the backfill receipt')
     authority, source_sha256 = load_authority_records(
         records_path,
         allow_empty=receipt.header.empty_export_acknowledged,
@@ -419,6 +488,7 @@ def switch_from_receipt(
     env_output: Path,
     store_factory: Any,
     batch_size: int,
+    authority_manifest_path: Path | None = None,
 ) -> dict[str, str]:
     _require_new_output(env_output)
     receipt = load_receipt(receipt_path)
@@ -433,6 +503,7 @@ def switch_from_receipt(
         receipt_path=receipt_path,
         store_factory=store_factory,
         batch_size=batch_size,
+        authority_manifest_path=authority_manifest_path,
     )
     manifest = ProjectionMigrationTool.switch_manifest(report)
     _write_env_manifest(env_output, manifest)
@@ -473,6 +544,7 @@ def switch_from_plan(
                 receipt_path=entry.receipt_path,
                 store_factory=store_factory,
                 batch_size=batch_size,
+                authority_manifest_path=entry.manifest_path,
             )
         )
     if len(target_versions) != 1:
@@ -597,21 +669,24 @@ def load_switch_plan(path: Path) -> tuple[SwitchPlanEntry, ...]:
         namespace = item.get('namespace')
         records = item.get('records')
         receipt = item.get('receipt')
+        manifest = item.get('manifest')
         if not _is_nonempty_string(namespace):
             raise MigrationCliError(f'{path}: projection item {index} namespace must be a non-empty string')
         assert isinstance(namespace, str)
         if namespace in seen_namespaces:
             raise MigrationCliError(f'{path}: duplicate switch plan namespace {namespace!r}')
-        if not _is_nonempty_string(records) or not _is_nonempty_string(receipt):
-            raise MigrationCliError(f'{path}: projection item {index} records/receipt must be non-empty paths')
+        if not _is_nonempty_string(records) or not _is_nonempty_string(receipt) or not _is_nonempty_string(manifest):
+            raise MigrationCliError(f'{path}: projection item {index} records/receipt/manifest must be non-empty paths')
         assert isinstance(records, str)
         assert isinstance(receipt, str)
+        assert isinstance(manifest, str)
         seen_namespaces.add(namespace)
         entries.append(
             SwitchPlanEntry(
                 namespace=namespace,
                 records_path=_resolve_plan_path(path, records),
                 receipt_path=_resolve_plan_path(path, receipt),
+                manifest_path=_resolve_plan_path(path, manifest),
             )
         )
     return tuple(entries)
@@ -697,6 +772,13 @@ def _validate_receipt_header(path: Path, header: ReceiptHeader) -> None:
     if (header.source_record_count == 0) != header.empty_export_acknowledged:
         raise MigrationCliError(f'{path}: empty-export acknowledgement does not match receipt record count')
     _normalize_memory_mode(header.memory_mode)
+    if (header.authority_manifest_sha256 is None) != (header.authority_source_kind is None):
+        raise MigrationCliError(f'{path}: authority manifest binding is incomplete')
+    if header.authority_manifest_sha256 is not None:
+        if not _SHA256.fullmatch(header.authority_manifest_sha256):
+            raise MigrationCliError(f'{path}: authority_manifest_sha256 must be a lowercase SHA-256 digest')
+        if not _is_nonempty_string(header.authority_source_kind):
+            raise MigrationCliError(f'{path}: authority_source_kind must be a non-empty string')
     if not _is_nonempty_string(header.namespace):
         raise MigrationCliError(f'{path}: receipt namespace must be a non-empty string')
     _require_projection_version(header.target_version, 'receipt target version')
@@ -886,12 +968,14 @@ def _parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser('validate', help='validate an authoritative JSONL export without writing')
     validate.add_argument('--records', required=True, type=Path)
-    validate.add_argument('--namespace')
+    validate.add_argument('--manifest', required=True, type=Path)
+    validate.add_argument('--namespace', required=True)
     validate.add_argument('--memory-mode', choices=('canonical', 'legacy'), default='canonical')
     validate.add_argument('--allow-empty', action='store_true')
 
     backfill = subparsers.add_parser('backfill', help='embed authoritative JSONL and write one target projection')
     backfill.add_argument('--records', required=True, type=Path)
+    backfill.add_argument('--manifest', required=True, type=Path)
     backfill.add_argument('--receipt', required=True, type=Path)
     backfill.add_argument('--namespace', required=True)
     backfill.add_argument('--target-version', required=True)
@@ -901,6 +985,7 @@ def _parser() -> argparse.ArgumentParser:
 
     verify = subparsers.add_parser('verify', help='verify target vectors against the source-bound receipt')
     verify.add_argument('--records', required=True, type=Path)
+    verify.add_argument('--manifest', required=True, type=Path)
     verify.add_argument('--receipt', required=True, type=Path)
     verify.add_argument('--batch-size', type=int, default=100)
     verify.add_argument('--report-output', type=Path)
@@ -921,6 +1006,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == 'validate':
+            authority_manifest = _verify_authority_manifest(
+                manifest_path=args.manifest,
+                records_path=args.records,
+                namespace=args.namespace,
+                memory_mode=args.memory_mode,
+                allow_empty=args.allow_empty,
+            )
             records, source_sha256 = load_authority_records(args.records, allow_empty=args.allow_empty)
             if args.namespace == 'ns2':
                 _canonicalize_memory_authority(records, mode=_effective_memory_mode(args.namespace, args.memory_mode))
@@ -928,6 +1020,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 'status': 'valid',
                 'records': len(records),
                 'source_sha256': source_sha256,
+                'authority_manifest_sha256': authority_manifest['manifest_sha256'],
+                'authority_source_kind': authority_manifest['source_kind'],
             }
         elif args.command == 'backfill':
             embeddings = _configured_embeddings()
@@ -942,6 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 batch_size=args.batch_size,
                 allow_empty=args.allow_empty,
                 memory_mode=args.memory_mode,
+                authority_manifest_path=args.manifest,
             )
         elif args.command == 'verify':
             if args.report_output is not None:
@@ -951,6 +1046,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 receipt_path=args.receipt,
                 store_factory=_configured_store,
                 batch_size=args.batch_size,
+                authority_manifest_path=args.manifest,
             )
             result = {'status': 'verified' if report.ready_to_switch else 'incomplete', **asdict(report)}
             if args.report_output is not None:

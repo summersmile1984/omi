@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -90,6 +92,48 @@ def _canonical_authority(path: Path) -> None:
     )
 
 
+def _authority_manifest(records_path: Path, *, namespace: str = 'memories', memory_mode: str = 'legacy') -> Path:
+    authority_namespace = {'memories': 'ns2'}.get(namespace, namespace)
+    records = records_path.read_bytes()
+    manifest_path = records_path.with_name('manifest.json')
+    manifest_path.write_text(
+        json.dumps(
+            {
+                'format': 'omi-authoritative-vector-export-manifest-v1',
+                'export_format': 'omi-authoritative-vector-export-v1',
+                'source_kind': 'firestore_pg_facade',
+                'source_authority': {
+                    'project': 'operator-project',
+                    'database': '(default)',
+                    'endpoint': 'firestore.operator.example',
+                },
+                'source_freeze_lease_id': 'lease-1',
+                'memory_mode': memory_mode,
+                'uid_scope': 'explicit',
+                'uids': ['u1'],
+                'uid_sha256': hashlib.sha256(b'u1\n').hexdigest(),
+                'uid_count': 1,
+                'namespace_count': 1,
+                'empty_export_acknowledged': False,
+                'namespaces': [authority_namespace],
+                'files': [
+                    {
+                        'namespace': authority_namespace,
+                        'path': records_path.name,
+                        'source_collection': 'memory_items',
+                        'record_count': len(records.splitlines()),
+                        'sha256': hashlib.sha256(records).hexdigest(),
+                    }
+                ],
+            }
+        ),
+        encoding='utf-8',
+    )
+    records_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    manifest_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    return manifest_path
+
+
 def _stores() -> tuple[QdrantVectorStoreAdapter, VersionedVectorStoreAdapter]:
     raw = QdrantVectorStoreAdapter(QdrantClient(location=':memory:'), collection_prefix='migration_cli')
     return raw, VersionedVectorStoreAdapter(raw, FakeEmbeddings())
@@ -106,6 +150,7 @@ def test_backfill_verify_switch_and_rollback_are_executable_from_authority_expor
     switch_plan_path = tmp_path / 'switch-plan.json'
     rollback_path = tmp_path / 'rollback.env'
     _authority(records_path)
+    manifest_path = _authority_manifest(records_path)
     _, store = _stores()
     embeddings = FakeEmbeddings()
 
@@ -117,6 +162,7 @@ def test_backfill_verify_switch_and_rollback_are_executable_from_authority_expor
         store=store,
         embeddings=embeddings,
         batch_size=1,
+        authority_manifest_path=manifest_path,
     )
     receipt = load_receipt(receipt_path)
     assert backfill['status'] == 'backfilled'
@@ -135,6 +181,7 @@ def test_backfill_verify_switch_and_rollback_are_executable_from_authority_expor
         receipt_path=receipt_path,
         store_factory=store_factory,
         batch_size=1,
+        authority_manifest_path=manifest_path,
     )
     assert verification.ready_to_switch is True
     switch_plan_path.write_text(
@@ -146,6 +193,7 @@ def test_backfill_verify_switch_and_rollback_are_executable_from_authority_expor
                         'namespace': 'memories',
                         'records': records_path.name,
                         'receipt': receipt_path.name,
+                        'manifest': manifest_path.name,
                     }
                 ],
             }
@@ -365,7 +413,23 @@ def test_cli_validate_reports_safe_json_and_never_overwrites_operator_artifacts(
 ) -> None:
     records_path = tmp_path / 'memories.jsonl'
     _authority(records_path)
-    assert main(['validate', '--records', str(records_path)]) == 0
+    manifest_path = _authority_manifest(records_path)
+    assert (
+        main(
+            [
+                'validate',
+                '--records',
+                str(records_path),
+                '--manifest',
+                str(manifest_path),
+                '--namespace',
+                'memories',
+                '--memory-mode',
+                'legacy',
+            ]
+        )
+        == 0
+    )
     result = json.loads(capsys.readouterr().out)
     assert result['status'] == 'valid'
     assert result['records'] == 2
@@ -414,7 +478,14 @@ def test_switch_plan_must_cover_every_required_namespace(tmp_path: Path, monkeyp
         json.dumps(
             {
                 'format': 'omi-vector-projection-switch-plan-v1',
-                'projections': [{'namespace': 'memories', 'records': 'memories.jsonl', 'receipt': 'receipt.jsonl'}],
+                'projections': [
+                    {
+                        'namespace': 'memories',
+                        'records': 'memories.jsonl',
+                        'receipt': 'receipt.jsonl',
+                        'manifest': 'manifest.json',
+                    }
+                ],
             }
         ),
         encoding='utf-8',

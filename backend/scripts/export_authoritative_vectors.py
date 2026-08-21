@@ -65,6 +65,26 @@ _RESTRICTED_SENSITIVITY_LABELS = frozenset(
     }
 )
 _RECORD_KEYS = frozenset({'id', 'content', 'metadata'})
+_MANIFEST_REQUIRED_KEYS = frozenset(
+    {
+        'format',
+        'export_format',
+        'source_kind',
+        'memory_mode',
+        'uid_scope',
+        'uids',
+        'uid_sha256',
+        'uid_count',
+        'namespace_count',
+        'empty_export_acknowledged',
+        'namespaces',
+        'files',
+    }
+)
+_MANIFEST_OPTIONAL_KEYS = frozenset({'source_authority', 'source_freeze_lease_id'})
+_MANIFEST_FILE_KEYS = frozenset({'namespace', 'path', 'source_collection', 'record_count', 'sha256'})
+_SHA256 = set('0123456789abcdef')
+_KNOWN_SOURCE_KINDS = frozenset({'firestore_facade', 'firestore_pg_facade'})
 
 
 class ExportError(RuntimeError):
@@ -134,6 +154,14 @@ NAMESPACE_SPECS: dict[str, NamespaceSpec] = {
     'ns3': NamespaceSpec('screen_activity'),
     'ns4': NamespaceSpec('action_items'),
     'ns_tchunks': NamespaceSpec('conversations'),
+}
+_AUTHORITY_NAMESPACE_ALIASES = {
+    'conversations': 'ns1',
+    'memories': 'ns2',
+    'workstreams': 'workstream-association-v1',
+    'screen_activity': 'ns3',
+    'action_items': 'ns4',
+    'transcript_chunks': 'ns_tchunks',
 }
 
 
@@ -713,6 +741,148 @@ def _write_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
     except BaseException:
         path.unlink(missing_ok=True)
         raise
+
+
+def verify_authoritative_export_manifest(
+    manifest_path: Path,
+    *,
+    records_path: Path,
+    namespace: str,
+    memory_mode: str,
+    allow_empty: bool = False,
+) -> dict[str, Any]:
+    """Verify that one JSONL input is the output of this authority exporter.
+
+    The vector projection CLI accepts JSONL for testability, but production
+    backfills must bind that input to the source export manifest.  This check
+    validates the manifest schema, source evidence, exact file name, mode and
+    count/hash before embeddings or target writes begin.  It intentionally
+    does not trust a vector index or a caller-supplied record count.
+    """
+
+    _require_private_regular_file(manifest_path, 'authority export manifest')
+    _require_private_regular_file(records_path, 'authority export records')
+    try:
+        raw = manifest_path.read_bytes()
+        value = json.loads(raw, parse_constant=lambda constant: _reject_json_constant(constant))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ExportError('authority export manifest is not valid UTF-8 JSON') from error
+    if not isinstance(value, dict):
+        raise ExportError('authority export manifest must be a JSON object')
+    unknown = set(value) - (_MANIFEST_REQUIRED_KEYS | _MANIFEST_OPTIONAL_KEYS)
+    missing = _MANIFEST_REQUIRED_KEYS - set(value)
+    if missing or unknown:
+        raise ExportError(
+            'authority export manifest fields are invalid'
+            + (f' (missing={sorted(missing)})' if missing else '')
+            + (f' (unknown={sorted(unknown)})' if unknown else '')
+        )
+    if value['format'] != MANIFEST_FORMAT or value['export_format'] != EXPORT_FORMAT:
+        raise ExportError('authority export manifest format is unsupported')
+    source_kind = value['source_kind']
+    if not isinstance(source_kind, str) or source_kind not in _KNOWN_SOURCE_KINDS:
+        raise ExportError('authority export manifest source_kind is not a repository authority')
+    normalized_memory_mode = _normalize_memory_mode(str(value['memory_mode']))
+    if normalized_memory_mode != _normalize_memory_mode(memory_mode):
+        raise ExportError('authority export manifest memory_mode does not match the projection request')
+    source_authority = value.get('source_authority')
+    if not isinstance(source_authority, dict) or set(source_authority) != {'project', 'database', 'endpoint'}:
+        raise ExportError('authority export manifest source authority evidence is missing or invalid')
+    if any(not isinstance(source_authority[key], str) or not source_authority[key].strip() for key in source_authority):
+        raise ExportError('authority export manifest source authority evidence is invalid')
+    try:
+        canonical_endpoint(source_authority['endpoint'])
+    except SourceWriteFreezeError as error:
+        raise ExportError('authority export manifest source endpoint evidence is invalid') from error
+    freeze_lease_id = value.get('source_freeze_lease_id')
+    if not isinstance(freeze_lease_id, str) or not freeze_lease_id.strip():
+        raise ExportError('authority export manifest source freeze evidence is missing')
+
+    raw_uids = value['uids']
+    if not isinstance(raw_uids, list) or any(not isinstance(uid, str) or not uid.strip() for uid in raw_uids):
+        raise ExportError('authority export manifest UID inventory is invalid')
+    uids = [uid.strip() for uid in raw_uids]
+    if uids != sorted(set(uids)):
+        raise ExportError('authority export manifest UID inventory is not sorted and duplicate-free')
+    if value['uid_scope'] not in {'all_users', 'explicit'}:
+        raise ExportError('authority export manifest UID scope is invalid')
+    if value['uid_count'] != len(uids) or value['uid_sha256'] != _uid_sha256(uids):
+        raise ExportError('authority export manifest UID inventory hash/count is invalid')
+    raw_namespaces = value['namespaces']
+    if (
+        not isinstance(raw_namespaces, list)
+        or any(not isinstance(item, str) for item in raw_namespaces)
+        or any(item not in NAMESPACE_SPECS for item in raw_namespaces)
+        or len(raw_namespaces) != len(set(raw_namespaces))
+        or tuple(raw_namespaces)
+        != tuple(namespace_name for namespace_name in NAMESPACE_ORDER if namespace_name in raw_namespaces)
+        or value['namespace_count'] != len(raw_namespaces)
+    ):
+        raise ExportError('authority export manifest namespace inventory is invalid')
+    authority_namespace = _AUTHORITY_NAMESPACE_ALIASES.get(namespace, namespace)
+    if authority_namespace not in raw_namespaces:
+        raise ExportError(f'authority export manifest does not contain namespace {namespace!r}')
+    raw_files = value['files']
+    if not isinstance(raw_files, list) or len(raw_files) != len(raw_namespaces):
+        raise ExportError('authority export manifest file inventory is invalid')
+    selected: dict[str, Any] | None = None
+    file_namespaces: set[str] = set()
+    for item in raw_files:
+        if not isinstance(item, dict) or set(item) != _MANIFEST_FILE_KEYS:
+            raise ExportError('authority export manifest contains an invalid file entry')
+        item_namespace = item['namespace']
+        item_path = item['path']
+        if item_namespace not in raw_namespaces or not isinstance(item_path, str) or Path(item_path).name != item_path:
+            raise ExportError('authority export manifest contains an unsafe file mapping')
+        if item['source_collection'] != NAMESPACE_SPECS[item_namespace].collection:
+            raise ExportError(f'authority export manifest source collection does not match {item_namespace!r}')
+        if item_namespace in file_namespaces:
+            raise ExportError(f'authority export manifest repeats namespace {item_namespace!r}')
+        file_namespaces.add(item_namespace)
+        if (
+            not isinstance(item['record_count'], int)
+            or isinstance(item['record_count'], bool)
+            or item['record_count'] < 0
+            or not isinstance(item['sha256'], str)
+            or len(item['sha256']) != 64
+            or set(item['sha256']) - _SHA256
+        ):
+            raise ExportError('authority export manifest file count/hash is invalid')
+        if item_namespace == authority_namespace:
+            if selected is not None:
+                raise ExportError(f'authority export manifest repeats namespace {namespace!r}')
+            selected = item
+    if file_namespaces != set(raw_namespaces):
+        raise ExportError('authority export manifest file namespaces do not match its namespace inventory')
+    if selected is None or selected['path'] != records_path.name:
+        raise ExportError(f'authority export manifest path does not match {records_path.name!r}')
+    record_bytes = records_path.read_bytes()
+    actual_count = len([line for line in record_bytes.splitlines() if line.strip()])
+    if actual_count != selected['record_count'] or hashlib.sha256(record_bytes).hexdigest() != selected['sha256']:
+        raise ExportError('authority export records do not match the manifest count/hash')
+    if actual_count == 0 and (not allow_empty or value['empty_export_acknowledged'] is not True):
+        raise ExportError('empty authority export requires the manifest acknowledgement and --allow-empty')
+    if not isinstance(value['empty_export_acknowledged'], bool):
+        raise ExportError('authority export manifest empty acknowledgement is invalid')
+    return {
+        'manifest_sha256': hashlib.sha256(raw).hexdigest(),
+        'source_kind': source_kind,
+        'source_authority': dict(source_authority),
+        'source_freeze_lease_id': freeze_lease_id,
+        'record_count': actual_count,
+        'records_sha256': selected['sha256'],
+    }
+
+
+def _require_private_regular_file(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ExportError(f'{label} is missing or is not a regular file: {path}')
+    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise ExportError(f'{label} must be mode 0600 or stricter: {path}')
+
+
+def _reject_json_constant(constant: str) -> Any:
+    raise json.JSONDecodeError(f'non-standard numeric constant {constant}', constant, 0)
 
 
 def _open_private_file(path: Path, *, binary: bool):

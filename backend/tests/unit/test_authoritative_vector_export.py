@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.export_authoritative_vectors import ExportError, SourceDocument, export_authoritative_vectors
+from scripts.export_authoritative_vectors import (
+    ExportError,
+    SourceDocument,
+    export_authoritative_vectors,
+    verify_authoritative_export_manifest,
+)
 
 
 class FakeAuthority:
@@ -165,6 +170,44 @@ def test_export_refuses_duplicate_uids_and_existing_output(tmp_path: Path):
             all_users=False,
             namespaces=['ns2'],
             output_dir=output,
+        )
+
+
+def test_export_manifest_preflight_binds_pg_authority_and_rejects_tampering(tmp_path: Path):
+    authority = FakeAuthority()
+    authority.source_kind = 'firestore_pg_facade'
+    output = tmp_path / 'export'
+    manifest = export_authoritative_vectors(
+        authority,
+        uids=['u1'],
+        all_users=False,
+        namespaces=['ns2'],
+        output_dir=output,
+        allow_empty=True,
+        memory_mode='legacy',
+        source_authority={
+            'project': 'operator-project',
+            'database': '(default)',
+            'endpoint': 'firestore.operator.example',
+        },
+        source_freeze_lease_id='lease-1',
+    )
+    records_path = output / 'ns2.jsonl'
+    evidence = verify_authoritative_export_manifest(
+        output / 'manifest.json',
+        records_path=records_path,
+        namespace='ns2',
+        memory_mode='legacy',
+    )
+    assert evidence['manifest_sha256'] == hashlib.sha256((output / 'manifest.json').read_bytes()).hexdigest()
+    assert evidence['source_kind'] == 'firestore_pg_facade'
+    records_path.write_bytes(records_path.read_bytes() + b'{}\n')
+    with pytest.raises(ExportError, match='count/hash'):
+        verify_authoritative_export_manifest(
+            output / 'manifest.json',
+            records_path=records_path,
+            namespace='ns2',
+            memory_mode='legacy',
         )
 
 

@@ -356,7 +356,8 @@ acknowledgement. The exporter writes `ns1.jsonl`, `ns2.jsonl`,
 `ns_tchunks.jsonl`, plus a SHA-256/count sidecar. The exporter re-verifies the
 same mode-0600 source-write freeze lease before every lazy source read and
 binds its source authority and lease id into the manifest. Every JSONL line is strict
-and has no vector values. The default canonical ns2 mode requires schema,
+and has no vector values. The manifest is required by the projection CLI; a
+hand-written JSONL file cannot pass its authority preflight. The default canonical ns2 mode requires schema,
 revision, source/content hashes, a ledger projection fence, and a timezone-aware
 update timestamp; it fails closed rather than creating rows that canonical
 memory search would reject. Use `--memory-mode legacy` only for an explicitly
@@ -395,6 +396,64 @@ imported account still has an `agent_vm` pointer or migration journal; reconcile
 retired GCE resources before cutover and rerun the inventory rather than treating
 missing GCP credentials as a successful deletion.
 
+Use the checked-in Agent VM reconciliation workflow for that hand-off. It is
+deliberately split into a local, no-egress inventory and an operator-owned
+managed-GCE observation. The local commands require `AGENT_VM_PROVIDER=disabled`
+and either `FIRESTORE_PG_DSN` or `FIRESTORE_EMULATOR_HOST`; they never discover
+ADC, import a Compute client, or call a GCE endpoint. The inventory contains
+only UID/resource identities, never `authToken`, IP addresses, or arbitrary user
+fields, and is mode `0600`:
+
+```bash
+export AGENT_VM_PROVIDER=disabled
+deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
+  deploy/self-host/compose.production.yml run --rm --no-deps \
+  --volume /secure/agent-vm:/migration:rw backend \
+  python scripts/agent_vm_reconcile.py inventory \
+  --output /migration/agent-vm-inventory.json
+```
+
+In the managed GCE project, use an explicitly selected project and operator
+credential to check every `key` in the private inventory. Do not let the
+operator shell fall back to ambient ADC. Save only a typed report of the form
+`{"resources":[{"key":"instance:ZONE:NAME:NUMERIC_ID","status":"absent"}]}`
+after the read-only `gcloud compute ... describe` checks and any required,
+identity-fenced deletes have completed. Back on the self-host operator host,
+bind that report to the exact inventory with the reconciliation secret:
+
+```bash
+export OMI_AGENT_VM_RECONCILE_SECRET='from-operator-secret-manager'
+python3 backend/scripts/agent_vm_reconcile.py sign-proof \
+  --inventory /secure/agent-vm/agent-vm-inventory.json \
+  --resource-report /secure/agent-vm/gce-absent-report.json \
+  --output /secure/agent-vm/gce-absent-proof.json \
+  --source-project MANAGED_GCE_PROJECT \
+  --operator CHANGE_TICKET
+python3 backend/scripts/agent_vm_reconcile.py verify \
+  --inventory /secure/agent-vm/agent-vm-inventory.json \
+  --proof /secure/agent-vm/gce-absent-proof.json \
+  --source-project MANAGED_GCE_PROJECT
+```
+
+`sign-proof` only signs the independently collected report; it is not a GCE
+observation. `verify` is therefore the required change-record evidence. To
+clear the exact stale local pointer/journals after the proof passes, require
+both explicit flags; the command re-reads the local authority, aborts on any
+identity drift, performs one transaction per UID, and verifies no state remains:
+
+```bash
+python3 backend/scripts/agent_vm_reconcile.py reconcile \
+  --inventory /secure/agent-vm/agent-vm-inventory.json \
+  --proof /secure/agent-vm/gce-absent-proof.json \
+  --source-project MANAGED_GCE_PROJECT \
+  --apply --confirm-agent-vm-state-clear
+```
+
+An ambiguous journal (especially a missing numeric provider ID), an expired or
+wrong-project proof, a changed local state, or an inventory/proof mismatch
+fails closed. No command in this workflow claims a provider resource was
+deleted without the external identity-fenced report.
+
 For non-ns2 namespaces the generic authority shape remains:
 
 ```json
@@ -418,7 +477,7 @@ Put the immutable export in an operator-controlled local `migration` directory.
 The following commands run the same backend image and configured generic
 embedding/Qdrant adapters as production. The receipt binds the exact source
 bytes and count to the generated vectors, provider, model, dimension, schema,
-namespace, and target version:
+namespace, target version, authority manifest SHA-256, and source kind:
 
 ```bash
 deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
@@ -426,6 +485,7 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py validate \
   --records /migration/ns2.jsonl \
+  --manifest /migration/manifest.json \
   --namespace ns2 --memory-mode canonical
 
 deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
@@ -433,6 +493,7 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py backfill \
   --records /migration/ns2.jsonl \
+  --manifest /migration/manifest.json \
   --receipt /migration/ns2-v2.receipt.jsonl \
   --namespace ns2 --target-version v2 --memory-mode canonical
 
@@ -441,6 +502,7 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py verify \
   --records /migration/ns2.jsonl \
+  --manifest /migration/manifest.json \
   --receipt /migration/ns2-v2.receipt.jsonl \
   --report-output /migration/ns2-v2.verify.json
 ```
@@ -459,13 +521,13 @@ resolved relative to the plan file:
 {
   "format": "omi-vector-projection-switch-plan-v1",
   "projections": [
-    {"namespace":"ns1","records":"ns1.jsonl","receipt":"ns1-v2.receipt.jsonl"},
-    {"namespace":"ns2","records":"ns2.jsonl","receipt":"ns2-v2.receipt.jsonl"},
-    {"namespace":"workstream-association-v1","records":"workstream.jsonl","receipt":"workstream-v2.receipt.jsonl"},
-    {"namespace":"ns_x","records":"ns_x.jsonl","receipt":"ns_x-v2.receipt.jsonl"},
-    {"namespace":"ns3","records":"ns3.jsonl","receipt":"ns3-v2.receipt.jsonl"},
-    {"namespace":"ns4","records":"ns4.jsonl","receipt":"ns4-v2.receipt.jsonl"},
-    {"namespace":"ns_tchunks","records":"ns_tchunks.jsonl","receipt":"ns_tchunks-v2.receipt.jsonl"}
+    {"namespace":"ns1","records":"ns1.jsonl","receipt":"ns1-v2.receipt.jsonl","manifest":"manifest.json"},
+    {"namespace":"ns2","records":"ns2.jsonl","receipt":"ns2-v2.receipt.jsonl","manifest":"manifest.json"},
+    {"namespace":"workstream-association-v1","records":"workstream_association_v1.jsonl","receipt":"workstream-v2.receipt.jsonl","manifest":"manifest.json"},
+    {"namespace":"ns_x","records":"ns_x.jsonl","receipt":"ns_x-v2.receipt.jsonl","manifest":"manifest.json"},
+    {"namespace":"ns3","records":"ns3.jsonl","receipt":"ns3-v2.receipt.jsonl","manifest":"manifest.json"},
+    {"namespace":"ns4","records":"ns4.jsonl","receipt":"ns4-v2.receipt.jsonl","manifest":"manifest.json"},
+    {"namespace":"ns_tchunks","records":"ns_tchunks.jsonl","receipt":"ns_tchunks-v2.receipt.jsonl","manifest":"manifest.json"}
   ]
 }
 ```
