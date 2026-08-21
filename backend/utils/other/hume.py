@@ -6,6 +6,23 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_NEUTRAL_DEPLOYMENT_PROFILES = frozenset({"neutral", "self_hosted", "self-hosted"})
+
+
+def _hume_egress_allowed() -> bool:
+    """Keep optional Hume egress out of neutral/self-hosted deployments.
+
+    Hume has no operator-configurable endpoint in this client.  A process may
+    still inherit ``HUME_API_KEY`` from a managed environment, so checking the
+    key alone would let a self-hosted runtime send private audio URLs to the
+    hosted vendor.  The deployment profile owns this boundary and is read at
+    the request call-site so tests and long-lived workers cannot retain a stale
+    import-time decision.
+    """
+
+    profile = os.getenv("OMI_DEPLOYMENT_PROFILE", "").strip().lower()
+    return profile not in _NEUTRAL_DEPLOYMENT_PROFILES
+
 
 class HumePredictionEmotionResponseModel:
     def __init__(
@@ -171,6 +188,11 @@ class HumeClient:
         self.callback_url = callback_url
 
     def request_user_expression_mersurement(self, urls: List[str]) -> Dict[str, Any]:
+        if not _hume_egress_allowed():
+            return {"error": {"message": "Hume expression measurement is disabled by deployment profile"}}
+        if not self.api_key:
+            return {"error": {"message": "Hume expression measurement is not configured"}}
+
         err: Optional[Dict[str, Any]] = None
         resp: Optional[httpx.Response] = None
 

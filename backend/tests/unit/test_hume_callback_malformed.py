@@ -10,11 +10,37 @@ import os
 
 os.environ.setdefault('ENCRYPTION_SECRET', 'omi_ZwB2ZNqB2HHpMK6wStk7sTpavJiPTFg7gXUHnc4tFABPU6pZ2c2DKgehtfgi4RZv')
 
+from utils.other import hume  # noqa: E402
 from utils.other.hume import (  # noqa: E402
+    HumeClient,
     HumeJobCallbackModel,
     HumeJobModelPredictionResponseModel,
     HumePredictionEmotionResponseModel,
 )
+
+
+def test_neutral_profile_rejects_ambient_hume_egress(monkeypatch):
+    """A self-host process must not send audio URLs to Hume via an inherited key."""
+
+    monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+    monkeypatch.setattr(hume.httpx, "post", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()))
+
+    result = HumeClient(
+        api_key="ambient-managed-key", callback_url="https://operator.invalid/callback"
+    ).request_user_expression_mersurement(["https://operator.invalid/audio.wav"])
+
+    assert result == {"error": {"message": "Hume expression measurement is disabled by deployment profile"}}
+
+
+def test_hume_without_key_fails_closed_before_http(monkeypatch):
+    """Managed mode still requires the explicit Hume credential before egress."""
+
+    monkeypatch.delenv("OMI_DEPLOYMENT_PROFILE", raising=False)
+    monkeypatch.setattr(hume.httpx, "post", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()))
+
+    result = HumeClient(api_key=None, callback_url=None).request_user_expression_mersurement([])
+
+    assert result == {"error": {"message": "Hume expression measurement is not configured"}}
 
 
 def test_emotion_from_dict_missing_fields_no_raise():
