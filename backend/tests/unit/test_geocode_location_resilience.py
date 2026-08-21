@@ -26,6 +26,18 @@ def test_geocode_transport_error_returns_none(monkeypatch):
     assert location.get_google_maps_location(37.78, -122.40) is None
 
 
+def test_neutral_profile_rejects_google_maps_before_network(monkeypatch):
+    """Self-hosted geocoding must not send coordinates or a Google key."""
+    monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "k")
+    monkeypatch.setattr(location.r, "get", lambda *a, **k: None)
+    http_get = MagicMock()
+    monkeypatch.setattr(location.httpx, "get", http_get)
+
+    assert location.get_google_maps_location(37.78, -122.40) is None
+    http_get.assert_not_called()
+
+
 def test_geocode_non_json_body_returns_none(monkeypatch):
     monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "k")
     monkeypatch.setattr(location.r, "get", lambda *a, **k: None)
