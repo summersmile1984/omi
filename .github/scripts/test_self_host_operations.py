@@ -1642,14 +1642,32 @@ class SelfHostOperationsTest(unittest.TestCase):
             source = root / 'state'
             source.mkdir()
             archive = root / 'state.tar.gz.enc'
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), 'backup', str(source), str(archive)],
-                check=False,
-                capture_output=True,
-                text=True,
+            no_key_commands = (
+                ['backup', str(source), str(archive)],
+                ['restore', str(source), str(archive)],
+                ['seal', str(source), str(archive)],
+                ['seal-stdin', str(archive)],
+                ['open', str(archive), str(root / 'plaintext')],
+                [
+                    'verify',
+                    str(root),
+                    '--expected-runtime-fingerprint',
+                    'a' * 64,
+                    '--expected-config-fingerprint',
+                    'b' * 64,
+                    '--expected-migration-fingerprint',
+                    'c' * 64,
+                ],
             )
-            self.assertEqual(result.returncode, 2)
-            self.assertIn('--key-file', result.stderr)
+            for command in no_key_commands:
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), *command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2, command)
+                self.assertIn('--key-file', result.stderr, command)
 
         readme = SCRIPT.with_name('README.md').read_text(encoding='utf-8')
         for required in (
