@@ -149,7 +149,12 @@ enum AppBuild {
   /// Preview artifacts and local named developer bundles never consume the shared Sparkle feed.
   /// The updater additionally checks this at every call site.
   static var allowsSparkleUpdates: Bool {
+    allowsSparkleUpdates(deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+  }
+
+  static func allowsSparkleUpdates(deploymentProfile: DesktopDeploymentProfile) -> Bool {
     buildConfiguration.allowsSparkleUpdates
+      && DesktopModelEgressPolicy.allowsOmiManagedServices(deploymentProfile: deploymentProfile)
   }
 
   static var hasValidExternalPreviewConfiguration: Bool {
@@ -225,14 +230,45 @@ enum AppBuild {
   }
 
   static var manualDownloadURL: URL {
-    manualDownloadURL(channel: currentUpdateChannel, isBetaIdentity: isBetaProductionBundle)
+    manualDownloadURL(
+      channel: currentUpdateChannel,
+      isBetaIdentity: isBetaProductionBundle,
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile,
+      backendBaseURL: DesktopBackendEnvironment.pythonBaseURL()
+    )
   }
 
-  static func manualDownloadURL(channel: String, isBetaIdentity: Bool) -> URL {
+  static func manualDownloadURL(
+    channel: String,
+    isBetaIdentity: Bool,
+    deploymentProfile: DesktopDeploymentProfile = .omiCloud,
+    backendBaseURL: String? = nil
+  ) -> URL {
     var components = URLComponents()
     components.scheme = "https"
-    components.host = "api.omi.me"
-    components.path = "/v2/desktop/download/latest"
+    if deploymentProfile == .selfHosted {
+      guard let backendBaseURL,
+        let canonicalBaseURL = try? DesktopBackendEnvironment.canonicalSelfHostedOrigin(
+          backendBaseURL,
+          key: "OMI_DESKTOP_API_URL",
+          requiresHTTPS: productionFamilyBundleIdentifiers.contains(bundleIdentifier)),
+        let baseURL = URL(string: canonicalBaseURL),
+        let scheme = baseURL.scheme,
+        let host = baseURL.host,
+        !host.isEmpty,
+        ["http", "https"].contains(scheme.lowercased())
+      else {
+        // There is no safe managed-download fallback in self-hosted mode.
+        return URL(fileURLWithPath: "/")
+      }
+      components.scheme = scheme
+      components.host = host
+      components.port = baseURL.port
+      components.path = "/v2/desktop/download/latest"
+    } else {
+      components.host = "api.omi.me"
+      components.path = "/v2/desktop/download/latest"
+    }
     var queryItems = [URLQueryItem(name: "channel", value: channel)]
     if isBetaIdentity {
       // The Omi Beta app must re-download its own identity, never the stable app.
@@ -263,6 +299,7 @@ enum AppBuild {
   /// Never overwrite a user-chosen channel (e.g. beta selected in settings).
   @discardableResult
   static func syncUpdateChannelOnFirstLaunch() -> String? {
+    guard allowsSparkleUpdates else { return nil }
     guard UserDefaults.standard.string(forKey: updateChannelDefaultsKey) == nil else { return nil }
     let resolved = probeFreshInstallUpdateChannel()
     UserDefaults.standard.set(resolved, forKey: updateChannelDefaultsKey)
@@ -273,6 +310,7 @@ enum AppBuild {
   /// by the syncUpdateChannelWithInstalledApp() bug (commit 8c60fafe8, March 27 2026).
   /// Re-checks the appcast: if the current build is ahead of latest stable, restore beta.
   static func migrateBetaChannelOverwrite() {
+    guard allowsSparkleUpdates else { return }
     migrateBetaChannelOverwrite(probeAppcast: probeFreshInstallUpdateChannel)
   }
 
@@ -293,7 +331,7 @@ enum AppBuild {
   }
 
   static func prepareUpdateChannelForBackendRouting() {
-    guard isProductionBundle else { return }
+    guard isProductionBundle, allowsSparkleUpdates else { return }
     // Beta identity: channel is pinned, so the launch-blocking appcast probes and the
     // stable-overwrite migration have nothing to decide.
     guard !isBetaProductionBundle else { return }

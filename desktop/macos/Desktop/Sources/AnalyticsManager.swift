@@ -81,6 +81,10 @@ class AnalyticsManager {
       log("Analytics: Skipping initialization (development build)")
       return
     }
+    guard DesktopBackendEnvironment.allowsOmiManagedServices else {
+      log("Analytics: Skipping initialization (self-hosted deployment profile)")
+      return
+    }
     PostHogManager.shared.initialize()
   }
 
@@ -379,7 +383,7 @@ class AnalyticsManager {
 
   /// Report when ScreenCaptureKit broken state is detected (TCC granted but capture failing).
   func screenCaptureBrokenDetected() {
-    guard !Self.isDevBuild else { return }
+    guard !Self.isDevBuild, DesktopBackendEnvironment.allowsOmiManagedServices else { return }
     let breadcrumb = Breadcrumb(level: .warning, category: "screen_capture")
     breadcrumb.message = "Screen Capture Broken Detected"
     SentrySDK.addBreadcrumb(breadcrumb)
@@ -427,7 +431,7 @@ class AnalyticsManager {
   /// Detect if the previous session crashed (no clean exit) and report to PostHog.
   /// Must be called AFTER analytics initialization but BEFORE appLaunched().
   func detectAndReportCrash() {
-    guard !Self.isDevBuild else { return }
+    guard !Self.isDevBuild, DesktopBackendEnvironment.allowsOmiManagedServices else { return }
 
     let cleanExitKey = "lastSessionCleanExit"
     let hasLaunchedBeforeKey = "crashDetection_hasLaunchedBefore"
@@ -482,7 +486,7 @@ class AnalyticsManager {
     dbInitMs: Double, timeToInteractiveMs: Double, hadUncleanShutdown: Bool,
     databaseInitFailed: Bool
   ) {
-    guard !Self.isDevBuild else { return }
+    guard !Self.isDevBuild, DesktopBackendEnvironment.allowsOmiManagedServices else { return }
     // Routed to Sentry as a breadcrumb (perf telemetry, not product analytics) so the data
     // is attached to any same-session crash report without creating a per-launch analytics
     // event. If we ever need real perf metrics, wire up SentrySDK.startTransaction here.
@@ -501,7 +505,7 @@ class AnalyticsManager {
   /// This only fires once per installation
   func trackFirstLaunchIfNeeded() {
     // Skip in dev builds
-    guard !Self.isDevBuild else { return }
+    guard !Self.isDevBuild, DesktopBackendEnvironment.allowsOmiManagedServices else { return }
 
     let defaults = UserDefaults.standard
     let hasLaunchedKey = "hasLaunchedBefore"

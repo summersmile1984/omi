@@ -389,62 +389,69 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     // not install native crash/app-hang handlers: those handlers run in signal
     // context and have caused named dogfood bundles to crash while reporting.
     let isDev = AnalyticsManager.isDevBuild
-    SentrySDK.start { options in
-      options.dsn =
-        "https://bbffa02d948c81ea4dccd36246c7bd20@o4511085999816704.ingest.us.sentry.io/4511086024851456"
-      options.debug = false
-      options.enableAutoSessionTracking = !isDev
-      options.enableCrashHandler = !isDev
-      options.enableAppHangTracking = !isDev
-      options.enableWatchdogTerminationTracking = !isDev
-      options.environment = isDev ? "development" : "production"
-      // Build-attributable native events (#10425): bind every native crash / app-hang /
-      // watchdog event to the exact version+build (`v{version}+{build}-macos`, the same
-      // tag Codemagic publishes) and the release channel (`stable`/`beta`). Without these,
-      // Sentry's Release/Build filters return nothing for native events and beta+stable
-      // are indistinguishable (both report environment="production").
-      if let releaseTag = AppBuild.releaseTag {
-        options.releaseName = releaseTag
+    if DesktopBackendEnvironment.allowsOmiManagedServices {
+      SentrySDK.start { options in
+        options.dsn =
+          "https://bbffa02d948c81ea4dccd36246c7bd20@o4511085999816704.ingest.us.sentry.io/4511086024851456"
+        options.debug = false
+        options.enableAutoSessionTracking = !isDev
+        options.enableCrashHandler = !isDev
+        options.enableAppHangTracking = !isDev
+        options.enableWatchdogTerminationTracking = !isDev
+        options.environment = isDev ? "development" : "production"
+        // Build-attributable native events (#10425): bind every native crash / app-hang /
+        // watchdog event to the exact version+build (`v{version}+{build}-macos`, the same
+        // tag Codemagic publishes) and the release channel (`stable`/`beta`). Without these,
+        // Sentry's Release/Build filters return nothing for native events and beta+stable
+        // are indistinguishable (both report environment="production").
+        if let releaseTag = AppBuild.releaseTag {
+          options.releaseName = releaseTag
+        }
+        options.dist = AppBuild.currentUpdateChannel
+        // Disable automatic HTTP client error capture — the SDK creates noisy events
+        // for every 4xx/5xx response (e.g. Cloud Run 503 cold starts on /v1/crisp/unread).
+        // App code already handles HTTP errors and reports meaningful ones explicitly.
+        options.enableCaptureFailedRequests = false
+        options.maxBreadcrumbs = 100
+        // App-hang detection fires on the main thread stalling. The default 2s threshold
+        // flags transient jank (disk/IPC stalls, GC-like dealloc storms) that dominates
+        // event volume without being individually actionable. Raise to 3s so only
+        // sustained freezes — the ones users actually feel — are reported.
+        options.appHangTimeoutInterval = isDev ? 0 : 3.0
+        options.beforeSend = { event in
+          // The drop decision is extracted to the pure `shouldDropSentryEvent` so the
+          // filter list is unit-testable without constructing Sentry events (SET-05).
+          let drop = Self.shouldDropSentryEvent(
+            isUserReport: event.message?.formatted.hasPrefix("User Report") == true,
+            isDev: isDev,
+            urlTag: event.tags?["url"],
+            messageFormatted: event.message?.formatted,
+            exceptions: (event.exceptions ?? []).map { (type: $0.type, value: $0.value) })
+          return drop ? nil : event
+        }
       }
-      options.dist = AppBuild.currentUpdateChannel
-      // Disable automatic HTTP client error capture — the SDK creates noisy events
-      // for every 4xx/5xx response (e.g. Cloud Run 503 cold starts on /v1/crisp/unread).
-      // App code already handles HTTP errors and reports meaningful ones explicitly.
-      options.enableCaptureFailedRequests = false
-      options.maxBreadcrumbs = 100
-      // App-hang detection fires on the main thread stalling. The default 2s threshold
-      // flags transient jank (disk/IPC stalls, GC-like dealloc storms) that dominates
-      // event volume without being individually actionable. Raise to 3s so only
-      // sustained freezes — the ones users actually feel — are reported.
-      options.appHangTimeoutInterval = isDev ? 0 : 3.0
-      options.beforeSend = { event in
-        // The drop decision is extracted to the pure `shouldDropSentryEvent` so the
-        // filter list is unit-testable without constructing Sentry events (SET-05).
-        let drop = Self.shouldDropSentryEvent(
-          isUserReport: event.message?.formatted.hasPrefix("User Report") == true,
-          isDev: isDev,
-          urlTag: event.tags?["url"],
-          messageFormatted: event.message?.formatted,
-          exceptions: (event.exceptions ?? []).map { (type: $0.type, value: $0.value) })
-        return drop ? nil : event
+      // Tag every Sentry event (including native crashes, which bypass app code) with
+      // the release channel and bundle identity so a release cohort can be sliced without
+      // relying on `dist` alone (#10425).
+      SentrySDK.configureScope { scope in
+        scope.setTag(value: AppBuild.currentUpdateChannel, key: "update_channel")
+        scope.setTag(value: AppBuild.bundleIdentifier, key: "bundle_id")
       }
+      log(
+        "Sentry initialized (environment: \(isDev ? "development" : "production"), nativeHandlers=\(!isDev))"
+      )
+    } else {
+      log("Sentry skipped by self-hosted deployment profile")
     }
-    // Tag every Sentry event (including native crashes, which bypass app code) with
-    // the release channel and bundle identity so a release cohort can be sliced without
-    // relying on `dist` alone (#10425).
-    SentrySDK.configureScope { scope in
-      scope.setTag(value: AppBuild.currentUpdateChannel, key: "update_channel")
-      scope.setTag(value: AppBuild.bundleIdentifier, key: "bundle_id")
-    }
-    log(
-      "Sentry initialized (environment: \(isDev ? "development" : "production"), nativeHandlers=\(!isDev))"
-    )
 
     // Initialize Firebase (skipped for local harness — Firebase SDK configure can hang;
     // local dev uses Auth emulator REST + stored tokens instead).
     let plistPath = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist")
 
-    if DesktopLocalProfile.isEnabled {
+    if !DesktopBackendEnvironment.shouldConfigureFirebaseSDK {
+      log("Self-hosted profile: skipping Firebase SDK configure; use operator auth token")
+      AuthState.shared.transition(to: .recoveryRequired)
+    } else if DesktopLocalProfile.isEnabled {
       log("Local harness: skipping Firebase SDK configure; bootstrapping Auth emulator via REST")
       AuthState.shared.transition(to: .restoring)
       Task { @MainActor in
@@ -525,7 +532,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
       AnalyticsManager.shared.identify()
       // Set an opaque Sentry user identifier for incident correlation. Do not
       // attach email or display name to crash/error reports.
-      if let userID = AuthState.shared.userId {
+      if DesktopBackendEnvironment.allowsOmiManagedServices,
+        let userID = AuthState.shared.userId
+      {
         SentrySDK.setUser(Sentry.User(userId: userID))
       }
       // Fetch API keys after first-window warmup settles. First-use paths call waitForKeys().
@@ -859,9 +868,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
 
     guard let statusBarItem = statusBarItem else {
       log("AppDelegate: [MENUBAR] ERROR - Failed to create status bar item")
-      SentrySDK.capture(message: "Failed to create NSStatusItem") { scope in
-        scope.setLevel(.error)
-        scope.setTag(value: "menu_bar", key: "component")
+      if DesktopBackendEnvironment.allowsOmiManagedServices {
+        SentrySDK.capture(message: "Failed to create NSStatusItem") { scope in
+          scope.setLevel(.error)
+          scope.setTag(value: "menu_bar", key: "component")
+        }
       }
       return
     }
@@ -1348,7 +1359,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     ResourceMonitor.shared.reportResourcesNow(context: "app_terminating")
     ResourceMonitor.shared.stop()
 
-    if !AnalyticsManager.isDevBuild {
+    if !AnalyticsManager.isDevBuild, DesktopBackendEnvironment.allowsOmiManagedServices {
       let breadcrumb = Breadcrumb(level: .info, category: "lifecycle")
       breadcrumb.message = "App Terminating"
       SentrySDK.addBreadcrumb(breadcrumb)

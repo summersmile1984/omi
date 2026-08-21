@@ -11,6 +11,7 @@ enum SentryHeartbeatTelemetry {
   }
 
   static func recordSessionHeartbeat() {
+    guard DesktopBackendEnvironment.allowsOmiManagedServices else { return }
     SentrySDK.addBreadcrumb(makeSessionHeartbeatBreadcrumb())
   }
 }

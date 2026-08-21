@@ -620,7 +620,7 @@ func logError(
   // but a transient alone must not create a new Sentry event.
   if isNonActionableTransient(error) { return }
 
-  guard !isDevBuild else { return }
+  guard !isDevBuild, DesktopBackendEnvironment.allowsOmiManagedServices else { return }
 
   // Collapse repeated identical errors so a single root cause doesn't flood Sentry.
   guard shouldCaptureToSentry(fullMessage) else { return }

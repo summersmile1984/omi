@@ -16,7 +16,15 @@ enum BYOKValidator {
   }
 
   /// Hit the provider and return whether the key authenticates.
-  static func validate(_ provider: BYOKProvider, key: String) async -> Status {
+  static func validate(
+    _ provider: BYOKProvider,
+    key: String,
+    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile
+  ) async -> Status {
+    guard DesktopModelEgressPolicy.allowsBYOK(deploymentProfile: deploymentProfile) else {
+      return .failed("Disabled by deployment profile")
+    }
+
     let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return .failed("Empty") }
 
@@ -70,11 +78,14 @@ enum BYOKValidator {
   }
 
   /// Validate every provider in parallel. Returns map of provider -> status.
-  static func validateAll(_ keys: [BYOKProvider: String]) async -> [BYOKProvider: Status] {
+  static func validateAll(
+    _ keys: [BYOKProvider: String],
+    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile
+  ) async -> [BYOKProvider: Status] {
     await withTaskGroup(of: (BYOKProvider, Status).self, returning: [BYOKProvider: Status].self) {
       group in
       for (provider, key) in keys {
-        group.addTask { (provider, await validate(provider, key: key)) }
+        group.addTask { (provider, await validate(provider, key: key, deploymentProfile: deploymentProfile)) }
       }
       var results: [BYOKProvider: Status] = [:]
       for await (provider, status) in group {

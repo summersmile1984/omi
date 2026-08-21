@@ -308,6 +308,14 @@ class AuthService {
   func configure() async {
     guard !isConfigured else { return }
     isConfigured = true
+    guard DesktopBackendEnvironment.shouldConfigureFirebaseSDK || DesktopLocalProfile.isEnabled else {
+      // Self-hosted auth is supplied by the operator (for example through
+      // OMI_AUTH_API_TOKEN). Do not restore or attach a Firebase SDK session,
+      // because that would make Firebase the implicit auth authority again.
+      log("AuthService: self-hosted profile skips Firebase auth configuration")
+      AuthState.shared.transition(to: .recoveryRequired)
+      return
+    }
     if UserDefaults.standard.string(forKey: .acceptedAccountDeletionOwnerId) != nil {
       do {
         try await signOut(acceptedAccountDeletion: true)
@@ -697,6 +705,9 @@ class AuthService {
 
   @MainActor
   private func signInWithAppleNative() async throws {
+    guard DesktopBackendEnvironment.allowsOmiManagedServices else {
+      throw AuthError.invalidConfiguration
+    }
     let sessionAttempt = beginSessionAttempt()
     NSLog("OMI AUTH: Starting native Apple Sign In")
     isLoading = true
@@ -820,6 +831,9 @@ class AuthService {
 
   @MainActor
   private func signIn(provider: String) async throws {
+    guard DesktopBackendEnvironment.allowsOmiManagedServices else {
+      throw AuthError.invalidConfiguration
+    }
     // Guard against double sign-in (e.g., rapid button clicks before UI updates)
     guard !isLoading else {
       NSLog("OMI AUTH: Sign in already in progress, ignoring duplicate request")
@@ -2157,6 +2171,9 @@ class AuthService {
 
   /// Exchange custom token for ID token using Firebase REST API
   private func exchangeCustomTokenForIdToken(customToken: String) async throws -> FirebaseTokenResult {
+    guard DesktopBackendEnvironment.allowsOmiManagedServices else {
+      throw AuthError.invalidConfiguration
+    }
     let apiKey = try requireFirebaseApiKey()
     guard
       let url = URL(string: "https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=\(apiKey)")
@@ -2205,6 +2222,9 @@ class AuthService {
 
   /// Refresh the ID token using the refresh token
   private func refreshIdToken(attempt: AuthSessionAttempt) async throws -> String {
+    guard DesktopBackendEnvironment.allowsOmiManagedServices || DesktopLocalProfile.isEnabled else {
+      throw AuthError.invalidConfiguration
+    }
     guard sessionAttemptFence.isCurrent(attempt) else { throw AuthError.notSignedIn }
     guard let refreshToken = storedRefreshToken else {
       throw AuthError.notSignedIn
@@ -2309,9 +2329,17 @@ class AuthService {
     // Firebase idToken for every API request. This lets the app talk to a
     // backend that verifies a non-Firebase identity. Empty value falls back
     // to the normal Firebase token path.
-    if let injected = getenv("OMI_AUTH_API_TOKEN").flatMap({ String(validatingCString: $0) }),
-      !injected.isEmpty {
-      return injected
+    let injectedToken = getenv("OMI_AUTH_API_TOKEN").flatMap { String(validatingCString: $0) }
+    if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
+      guard let injectedToken,
+        !injectedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else {
+        throw AuthError.invalidConfiguration
+      }
+      return injectedToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    if let injectedToken, !injectedToken.isEmpty {
+      return injectedToken
     }
     let attempt = currentSessionAttempt()
     // Get the expected user ID (the currently signed-in user)
@@ -2682,6 +2710,9 @@ class AuthService {
   /// Sign in with Firebase using an Apple identity token via REST API
   /// This bypasses the backend entirely - Firebase verifies the Apple JWT directly
   private func signInWithAppleIdentityToken(identityToken: String, nonce: String) async throws -> FirebaseTokenResult {
+    guard DesktopBackendEnvironment.allowsOmiManagedServices else {
+      throw AuthError.invalidConfiguration
+    }
     let apiKey = try requireFirebaseApiKey()
     guard let url = URL(string: "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=\(apiKey)") else {
       throw AuthError.invalidURL

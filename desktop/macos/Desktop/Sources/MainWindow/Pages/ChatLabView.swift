@@ -470,6 +470,13 @@ class ChatLabViewModel: ObservableObject {
   }
 
   private func callClaude(systemPrompt: String, userMessage: String) async -> (String, Int, String) {
+    guard
+      DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile
+      )
+    else {
+      return ("Disabled by deployment profile", 0, "")
+    }
     guard !anthropicKey.isEmpty else { return ("No API key", 0, "") }
 
     do {
@@ -504,6 +511,13 @@ class ChatLabViewModel: ObservableObject {
   }
 
   private func gradeResponse(question: String, response: String) async -> (Int, String) {
+    guard
+      DesktopModelEgressPolicy.allowsClientDirectVendorEgress(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile
+      )
+    else {
+      return (0, "Disabled by deployment profile")
+    }
     do {
       let url = URL(string: "https://api.anthropic.com/v1/messages")!
       var request = URLRequest(url: url)

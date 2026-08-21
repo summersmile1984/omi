@@ -84,6 +84,10 @@ final class DesktopUpdatePolicyManager: ObservableObject {
   }
 
   func openDownload(_ policy: DesktopUpdatePolicyResponse) {
+    guard DesktopBackendEnvironment.allowsOmiManagedServices else {
+      log("DesktopUpdatePolicy: download skipped by self-hosted deployment profile")
+      return
+    }
     NSWorkspace.shared.open(DesktopUpdatePolicyResponse.resolvedDownloadURL(from: policy.downloadURL))
   }
 
