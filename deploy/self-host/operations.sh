@@ -30,6 +30,44 @@ effective_config_sha256() {
   "$PY" -c 'import runpy,sys; from pathlib import Path; m=runpy.run_path(sys.argv[1]); print(m["effective_compose_config_sha256"](compose_file=Path(sys.argv[2]),env_file=Path(sys.argv[3])))' "$RUNTIME_EVIDENCE_TOOL" "$COMPOSE_FILE" "$ENV_FILE"
 }
 
+runtime_fingerprint() {
+  compose config --format json | "$PY" -c '
+import hashlib,json,sys
+config=json.load(sys.stdin)
+services=config.get("services")
+if not isinstance(services, dict): raise SystemExit("effective Compose services are missing")
+images={}
+for service in ("auth-server", "backend"):
+    row=services.get(service)
+    image=row.get("image") if isinstance(row, dict) else None
+    if not isinstance(image, str) or not image: raise SystemExit(f"effective Compose image is missing for {service}")
+    images[service]=image
+print(hashlib.sha256(json.dumps(images, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest())
+'
+}
+
+migration_fingerprint() {
+  git -C "$REPO_ROOT" hash-object -- \
+    auth-server/src/migrate.js \
+    auth-server/src/auth.js \
+    backend/scripts/firestore_pg_migrate.py \
+    backend/firestore_pg/migrations.py | "$PY" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+}
+
+verify_backup() {
+  local directory runtime_sha256 config_sha256 migration_sha256
+  require_runtime
+  directory="$(absolute_directory "$1")"
+  runtime_sha256="$(runtime_fingerprint)"
+  config_sha256="$(effective_config_sha256)"
+  migration_sha256="$(migration_fingerprint)"
+  "$PY" "$SNAPSHOT_TOOL" verify "$directory" \
+    --expected-files "${ARCHIVE_FILES[@]}" \
+    --expected-runtime-fingerprint "$runtime_sha256" \
+    --expected-config-fingerprint "$config_sha256" \
+    --expected-migration-fingerprint "$migration_sha256"
+}
+
 require_runtime() {
   command -v docker >/dev/null || { echo "error: docker is required" >&2; exit 1; }
   [[ -f "$ENV_FILE" ]] || { echo "error: environment file not found: $ENV_FILE" >&2; exit 1; }
@@ -126,7 +164,7 @@ runtime_evidence() {
 }
 
 backup_state() {
-  local directory git_sha
+  local directory git_sha runtime_sha256 config_sha256 migration_sha256
   directory="$(absolute_directory "$1")"
   mkdir -p "$directory"
   [[ -z "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
@@ -147,7 +185,15 @@ backup_state() {
   snapshot_volume backup backend /app/syncing "$directory/backend.tar.gz"
 
   git_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-  "$PY" "$SNAPSHOT_TOOL" manifest "$directory" --git-sha "$git_sha" "${ARCHIVE_FILES[@]}"
+  runtime_sha256="$(runtime_fingerprint)"
+  config_sha256="$(effective_config_sha256)"
+  migration_sha256="$(migration_fingerprint)"
+  "$PY" "$SNAPSHOT_TOOL" manifest "$directory" \
+    --git-sha "$git_sha" \
+    --runtime-fingerprint "$runtime_sha256" \
+    --config-fingerprint "$config_sha256" \
+    --migration-fingerprint "$migration_sha256" \
+    "${ARCHIVE_FILES[@]}"
   start_profile
   trap - EXIT INT TERM
   echo "backup OK: $directory"
@@ -160,8 +206,7 @@ restore_state() {
     echo "error: restore requires SELF_HOST_RESTORE_ACK=I_ACKNOWLEDGE_THIS_OVERWRITES_STATE" >&2
     exit 1
   }
-  "$PY" "$SNAPSHOT_TOOL" verify "$directory"
-  require_runtime
+  verify_backup "$directory"
   compose stop queue-worker backend auth-server auth-migrate firestore-pg-migrate searxng typesense redis minio qdrant postgres || true
   snapshot_volume restore redis /data "$directory/redis.tar.gz"
   snapshot_volume restore minio /data "$directory/minio.tar.gz"
@@ -247,7 +292,7 @@ case "${1:-}" in
     ;;
   verify-backup)
     [[ $# -eq 2 ]] || { usage; exit 2; }
-    "$PY" "$SNAPSHOT_TOOL" verify "$(absolute_directory "$2")"
+    verify_backup "$2"
     echo "backup verification OK: $2"
     ;;
   restore)
@@ -256,7 +301,7 @@ case "${1:-}" in
     ;;
   rollback-plan)
     [[ $# -eq 2 ]] || { usage; exit 2; }
-    "$PY" "$SNAPSHOT_TOOL" verify "$(absolute_directory "$2")"
+    verify_backup "$2"
     echo "rollback evidence OK; drain public traffic, run restore with the explicit acknowledgement, then rerun migration and acceptance gates"
     ;;
   *)

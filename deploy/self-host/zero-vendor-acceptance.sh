@@ -22,6 +22,7 @@ REALTIME_RELAY_FIXTURE="$ROOT/deploy/self-host/realtime-relay-fixture.py"
 EVIDENCE_BUILDER="$ROOT/deploy/self-host/acceptance_evidence.py"
 RUNTIME_EVIDENCE_TOOL="$ROOT/deploy/self-host/runtime-evidence.py"
 PUBLIC_OBJECT_EVIDENCE_TOOL="$ROOT/deploy/self-host/public_object_evidence.py"
+SOURCE_WRITE_FREEZE_TOOL="$ROOT/backend/scripts/source_write_freeze.py"
 EVIDENCE="${SELF_HOST_ACCEPTANCE_EVIDENCE:-${TMPDIR:-/tmp}/omi-zero-vendor-acceptance-evidence.json}"
 MODE=contracts
 LIVE_REPLACEMENT_JSON=''
@@ -39,10 +40,10 @@ LOOP_TESTS=(
 
 self_check() {
   local path
-  for path in "$CHECKER" "$OPS" "$COMPOSE_WRAPPER" "$E2E_RUNNER" "$E2E_GUARD" "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_GATE" "$CUTOVER_SMOKE" "$CUTOVER_OVERLAY" "$CUTOVER_PROXY" "$REALTIME_RELAY_FIXTURE" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$PUBLIC_OBJECT_EVIDENCE_TOOL"; do
+  for path in "$CHECKER" "$OPS" "$COMPOSE_WRAPPER" "$E2E_RUNNER" "$E2E_GUARD" "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_GATE" "$CUTOVER_SMOKE" "$CUTOVER_OVERLAY" "$CUTOVER_PROXY" "$REALTIME_RELAY_FIXTURE" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$PUBLIC_OBJECT_EVIDENCE_TOOL" "$SOURCE_WRITE_FREEZE_TOOL"; do
     [[ -f "$path" ]] || { echo "error: acceptance dependency missing: $path" >&2; return 1; }
   done
-  "$PY" -m py_compile "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_SMOKE" "$REALTIME_RELAY_FIXTURE" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$PUBLIC_OBJECT_EVIDENCE_TOOL"
+  "$PY" -m py_compile "$AUTH_SMOKE" "$LIVE_REPLACEMENT_SMOKE" "$CUTOVER_SMOKE" "$REALTIME_RELAY_FIXTURE" "$EVIDENCE_BUILDER" "$RUNTIME_EVIDENCE_TOOL" "$PUBLIC_OBJECT_EVIDENCE_TOOL" "$SOURCE_WRITE_FREEZE_TOOL"
   grep -q 'blocked outbound network connection' "$E2E_GUARD"
   grep -q 'blocked DNS lookup' "$E2E_GUARD"
   for path in "${LOOP_TESTS[@]}"; do
@@ -77,6 +78,17 @@ self_check
 
 if [[ "$MODE" != contracts ]]; then
   : "${SELF_HOST_ENV:?live modes require SELF_HOST_ENV pointing to production configuration}"
+  if [[ "$MODE" == external-cutover-live ]]; then
+    : "${SELF_HOST_SOURCE_WRITE_FREEZE_LEASE:?external cutover requires SELF_HOST_SOURCE_WRITE_FREEZE_LEASE}"
+    : "${SELF_HOST_SOURCE_PROJECT:?external cutover requires SELF_HOST_SOURCE_PROJECT}"
+    : "${SELF_HOST_SOURCE_DATABASE:?external cutover requires SELF_HOST_SOURCE_DATABASE}"
+    : "${SELF_HOST_SOURCE_ENDPOINT:?external cutover requires SELF_HOST_SOURCE_ENDPOINT}"
+    "$PY" "$SOURCE_WRITE_FREEZE_TOOL" verify "$SELF_HOST_SOURCE_WRITE_FREEZE_LEASE" \
+      --source-project "$SELF_HOST_SOURCE_PROJECT" \
+      --source-database "$SELF_HOST_SOURCE_DATABASE" \
+      --source-endpoint "$SELF_HOST_SOURCE_ENDPOINT" \
+      --scope firestore --scope storage >/dev/null
+  fi
   export OMI_SOURCE_GIT_COMMIT OMI_SOURCE_GIT_TREE OMI_RUNTIME_CONFIG_SHA256
   OMI_SOURCE_GIT_COMMIT="$(printf '%s' "$SOURCE_ATTRIBUTION_JSON" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["git_commit"])')"
   OMI_SOURCE_GIT_TREE="$(printf '%s' "$SOURCE_ATTRIBUTION_JSON" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["git_tree"])')"

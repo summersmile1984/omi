@@ -29,6 +29,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from scripts.source_write_freeze import SourceWriteFreezeError, verify_lease
 
 PLAN_SCHEMA_VERSION = 1
 CHECKPOINT_SCHEMA_VERSION = 1
@@ -1131,6 +1132,12 @@ def _parser() -> argparse.ArgumentParser:
             child.add_argument('--checkpoint', required=True, type=Path)
             child.add_argument('--target-endpoint', default=os.getenv('MINIO_ENDPOINT', ''))
             child.add_argument('--existing-policy', required=True, choices=sorted(POLICIES))
+            child.add_argument(
+                '--freeze-lease',
+                required=True,
+                type=Path,
+                help='mode-0600 HMAC lease proving source storage writes are paused',
+            )
     return parser
 
 
@@ -1150,6 +1157,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             manifest = load_manifest(arguments.manifest, plan)
             target = _configured_target(arguments)
+            verify_lease(
+                arguments.freeze_lease,
+                source_project=arguments.source_project,
+                source_database='(default)',
+                source_endpoint=source.authority.endpoint,
+                required_scopes={'storage'},
+            )
             if arguments.command == 'apply':
                 applied = run_apply(
                     source,
@@ -1181,7 +1195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     'target_count': verified['target_count'],
                     'target_content_hash': verified['target_content_hash'],
                 }
-    except (StorageMigrationError, OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (StorageMigrationError, SourceWriteFreezeError, OSError, UnicodeError, json.JSONDecodeError) as error:
         print(f'ERROR: {error}', file=sys.stderr)
         return 1
     except Exception as error:

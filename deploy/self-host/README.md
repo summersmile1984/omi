@@ -243,9 +243,14 @@ newly restored database.
 
 Backups quiesce backend/auth/worker traffic, create a PostgreSQL custom-format
 logical dump, issue a synchronous Redis save, and archive the stopped
-Redis/MinIO/Qdrant/backend-syncing volumes. A SHA-256 manifest binds every
-artifact to the source Git revision. Store the runtime env/secrets separately:
-they are deliberately never copied into a backup directory.
+Redis/MinIO/Qdrant/backend-syncing volumes. The schema-v2 SHA-256 manifest
+binds every artifact to the source Git revision plus stable fingerprints of the
+effective backend/auth image strings, effective Compose configuration, and the
+Better Auth/Firestore migration owners. Every backup artifact and the manifest
+are forced to mode `0600`; verification rejects a missing, malformed, changed,
+or non-private manifest/artifact, including a missing or non-64-hex
+fingerprint. Store the runtime env/secrets separately: they are deliberately
+never copied into a backup directory.
 
 ```bash
 SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
@@ -607,6 +612,44 @@ public relay route as a separate hard capability.
 
 ## Firestore-to-PostgreSQL cutover gate
 
+### Source-write freeze lease
+
+The final Firestore and object-storage reconciliations read the source more
+than once. Before starting either migration, the operator must pause source
+writes through the source system's change-control mechanism and issue one
+short-lived, HMAC-signed lease covering both migration scopes. The lease is a
+mode-0600 JSON artifact; its signing secret is supplied only through
+`OMI_SOURCE_WRITE_FREEZE_SECRET` and is never stored in the artifact. Issuing a
+lease does not pause writes by itself.
+
+```bash
+# Set this from the operator secret manager; do not commit it or put it in the
+# reviewed environment file.
+export OMI_SOURCE_WRITE_FREEZE_SECRET='operator-secret-from-secret-manager'
+python3 backend/scripts/source_write_freeze.py issue \
+  --output /secure/firestore-migration/source-write-freeze.json \
+  --source-project SOURCE_PROJECT \
+  --source-database '(default)' \
+  --source-endpoint https://firestore.googleapis.com \
+  --scope firestore --scope storage \
+  --holder CHANGE_TICKET \
+  --ttl-seconds 3600
+python3 backend/scripts/source_write_freeze.py verify \
+  /secure/firestore-migration/source-write-freeze.json \
+  --source-project SOURCE_PROJECT \
+  --source-database '(default)' \
+  --source-endpoint https://firestore.googleapis.com \
+  --scope firestore --scope storage
+```
+
+The Firestore import and storage apply/verify commands require this lease and
+verify its signature, exact source authority, scopes, permissions, and expiry
+at invocation time. External cutover acceptance (`--external` or
+`--external-cutover-live`) also requires the same lease through
+`SELF_HOST_SOURCE_WRITE_FREEZE_LEASE`, `SELF_HOST_SOURCE_PROJECT`,
+`SELF_HOST_SOURCE_DATABASE`, and `SELF_HOST_SOURCE_ENDPOINT`; missing or
+expired evidence fails closed.
+
 The gate is a pre-cutover proof, not a traffic switch. By default it starts the
 existing dev PostgreSQL + Firestore emulator definitions under an isolated
 Compose project and new volume, runs all live `firestore_pg` transaction/index
@@ -651,7 +694,10 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   --volume /secure/firestore-migration:/migration:rw \
   firestore-pg-migrate python scripts/firestore_pg_migrate.py import \
   --source-project SOURCE_PROJECT \
+  --source-database '(default)' \
+  --source-endpoint https://firestore.googleapis.com \
   --source-credentials /migration/firestore-reader.json \
+  --freeze-lease /migration/source-write-freeze.json \
   --checkpoint /migration/firestore-import.json
 ```
 
@@ -747,6 +793,7 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   --checkpoint /migration/gcs-minio-checkpoint.json \
   --source-project SOURCE_PROJECT \
   --source-credentials /migration/gcs-reader.json \
+  --freeze-lease /migration/source-write-freeze.json \
   --target-endpoint http://minio:9000 \
   --existing-policy create-only
 ```
@@ -766,6 +813,7 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   --checkpoint /migration/gcs-minio-checkpoint.json \
   --source-project SOURCE_PROJECT \
   --source-credentials /migration/gcs-reader.json \
+  --freeze-lease /migration/source-write-freeze.json \
   --target-endpoint http://minio:9000 \
   --existing-policy create-only
 ```

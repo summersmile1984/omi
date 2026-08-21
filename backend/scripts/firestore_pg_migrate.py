@@ -25,6 +25,7 @@ from google.cloud import firestore as cloud_firestore
 
 from firestore_pg.importer import run_import
 from firestore_pg.migrations import check_schema, migrate, provision_collections
+from scripts.source_write_freeze import SourceWriteFreezeError, canonical_endpoint, verify_lease
 
 
 def _schema_payload(status: Any) -> dict[str, Any]:
@@ -55,15 +56,55 @@ def main() -> int:
     importer = subparsers.add_parser('import', help='capture/resume Firestore and reconcile PostgreSQL')
     importer.add_argument('--source-project', required=True)
     importer.add_argument('--source-database')
+    importer.add_argument(
+        '--source-endpoint',
+        required=True,
+        help='credential-free Firestore API authority used by the freeze lease (for example https://firestore.googleapis.com)',
+    )
     importer.add_argument('--source-credentials')
     importer.add_argument('--checkpoint', type=Path, required=True)
+    importer.add_argument(
+        '--freeze-lease',
+        type=Path,
+        required=True,
+        help=f'mode-0600 HMAC lease proving Firestore source writes are paused ({"OMI_SOURCE_WRITE_FREEZE_SECRET"})',
+    )
     importer.add_argument('--checkpoint-interval', type=int, default=100)
     args = parser.parse_args()
 
     if args.command == 'import':
         source = _source_client(args)
+        source_endpoint = canonical_endpoint(str(getattr(source, '_target', '') or ''))
+        requested_endpoint = canonical_endpoint(args.source_endpoint)
+        if source_endpoint != requested_endpoint:
+            print('ERROR: Firestore client endpoint does not match --source-endpoint', file=sys.stderr)
+            return 1
+
+        def verify_source_write_freeze() -> None:
+            verify_lease(
+                args.freeze_lease,
+                source_project=args.source_project,
+                source_database=args.source_database or '(default)',
+                source_endpoint=source_endpoint,
+                required_scopes={'firestore'},
+            )
+
+        try:
+            verify_source_write_freeze()
+        except SourceWriteFreezeError as error:
+            print(f'ERROR: {error}', file=sys.stderr)
+            return 1
         migrate()
-        result = run_import(source, args.checkpoint, checkpoint_interval=args.checkpoint_interval)
+        try:
+            result = run_import(
+                source,
+                args.checkpoint,
+                checkpoint_interval=args.checkpoint_interval,
+                freeze_guard=verify_source_write_freeze,
+            )
+        except SourceWriteFreezeError as error:
+            print(f'ERROR: {error}', file=sys.stderr)
+            return 1
         print(json.dumps(result, sort_keys=True))
         return 0
 

@@ -26,7 +26,7 @@ checks:
     reason: "vector migration must begin from a read-only Firestore/PG authority inventory with strict JSONL, source hashing, and an explicit empty-export acknowledgement"
   - id: storage-gcs-minio-migration-cli
     command: ["bash", "backend/scripts/test-storage-gcs-minio-migration.sh"]
-    triggers: ["backend/scripts/storage_gcs_minio_migration.py", "backend/scripts/test-storage-gcs-minio-migration.sh", "backend/tests/unit/test_storage_gcs_minio_migration.py", "deploy/self-host/**", "backend/AGENTS.md", ".github/checks-manifest.yaml"]
+    triggers: ["backend/scripts/storage_gcs_minio_migration.py", "backend/scripts/source_write_freeze.py", "backend/scripts/test-storage-gcs-minio-migration.sh", "backend/tests/unit/test_storage_gcs_minio_migration.py", "backend/tests/unit/test_source_write_freeze.py", "deploy/self-host/**", "backend/AGENTS.md", ".github/checks-manifest.yaml"]
     lanes: ["local", "ci"]
     reason: "fork PR #1 added the MinIO runtime without a GCS/Firebase Storage inventory, resumable copy, or reconciliation path; this behavioral gate prevents production object migration from becoming an undocumented manual copy again"
   - id: self-host-auth-runtime-contract
@@ -36,7 +36,7 @@ checks:
     reason: "Express 4 left rejected Better Auth handlers without a bounded retryable response; the identity boundary must return an explicit 503 during database or signing-key outages"
   - id: self-host-migration-gate-contract
     command: ["bash", "deploy/self-host/migration-cutover-gate.sh", "--self-check"]
-    triggers: ["deploy/self-host/**", "dev/docker-compose.dev.yml", "dev/emulators.Dockerfile", "dev/shadow-diff.sh", "backend/firestore_pg/**", "backend/scripts/firestore_pg_migrate.py", "backend/tests/unit/test_firestore_pg_migration_import.py", ".github/scripts/check_self_host_deployment.py", ".github/checks-manifest.yaml"]
+    triggers: ["deploy/self-host/**", "dev/docker-compose.dev.yml", "dev/emulators.Dockerfile", "dev/shadow-diff.sh", "backend/firestore_pg/**", "backend/scripts/firestore_pg_migrate.py", "backend/scripts/source_write_freeze.py", "backend/tests/unit/test_firestore_pg_migration_import.py", "backend/tests/unit/test_source_write_freeze.py", ".github/scripts/check_self_host_deployment.py", ".github/checks-manifest.yaml"]
     lanes: ["local", "ci"]
     reason: "Firestore-to-PostgreSQL cutover requires one discoverable gate that owns live shim integration plus emulator shadow-diff evidence before traffic changes"
   - id: self-host-operations-contract

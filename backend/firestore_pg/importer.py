@@ -15,7 +15,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Optional, cast
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, cast
 from urllib.parse import urlsplit
 
 from sqlalchemy import text
@@ -315,6 +315,7 @@ def run_import(
     *,
     engine: Optional[Engine] = None,
     checkpoint_interval: int = 100,
+    freeze_guard: Optional[Callable[[], None]] = None,
 ) -> dict[str, Any]:
     """Import or resume, then prove live-source/manifest/target reconciliation."""
     if checkpoint_interval < 1:
@@ -368,6 +369,8 @@ def run_import(
         checkpoint.update(status='reconciling', next_index=next_index)
         _atomic_json(checkpoint_path, checkpoint)
         manifest_inventory = _inventory(_manifest_records(manifest_path))
+        if freeze_guard is not None:
+            freeze_guard()
         live_source = _source_inventory(source_client)
         target_state = target_inventory(engine)
         expected = (int(checkpoint['source_count']), str(checkpoint['source_content_hash']))

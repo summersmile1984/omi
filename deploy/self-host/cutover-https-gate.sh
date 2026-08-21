@@ -11,6 +11,7 @@ COMPOSE_WRAPPER="$ROOT/deploy/self-host/compose-clean-env.sh"
 OVERLAY="$ROOT/deploy/self-host/compose.cutover-acceptance.yml"
 SMOKE="$ROOT/deploy/self-host/cutover-live-smoke.py"
 OBJECT_EVIDENCE="$ROOT/deploy/self-host/public_object_evidence.py"
+SOURCE_WRITE_FREEZE_TOOL="$ROOT/backend/scripts/source_write_freeze.py"
 AUDIO="$ROOT/backend/testing/release_fixtures/transcription-release-probe.wav"
 MANIFEST="$ROOT/backend/testing/release_fixtures/transcription-release-probe.json"
 ENV_FILE="${SELF_HOST_ENV:?SELF_HOST_ENV must point to the reviewed production environment file}"
@@ -86,6 +87,15 @@ if [[ "$MODE" == --local ]]; then
   CA_FILE='/tmp/omi-cutover-ca.crt'
   profile_compose up --detach --wait realtime-relay-fixture backend https-proxy
 else
+  : "${SELF_HOST_SOURCE_WRITE_FREEZE_LEASE:?--external requires SELF_HOST_SOURCE_WRITE_FREEZE_LEASE}"
+  : "${SELF_HOST_SOURCE_PROJECT:?--external requires SELF_HOST_SOURCE_PROJECT}"
+  : "${SELF_HOST_SOURCE_DATABASE:?--external requires SELF_HOST_SOURCE_DATABASE}"
+  : "${SELF_HOST_SOURCE_ENDPOINT:?--external requires SELF_HOST_SOURCE_ENDPOINT}"
+  python3 "$SOURCE_WRITE_FREEZE_TOOL" verify "$SELF_HOST_SOURCE_WRITE_FREEZE_LEASE" \
+    --source-project "$SELF_HOST_SOURCE_PROJECT" \
+    --source-database "$SELF_HOST_SOURCE_DATABASE" \
+    --source-endpoint "$SELF_HOST_SOURCE_ENDPOINT" \
+    --scope firestore --scope storage >/dev/null
   for value in "$PUBLIC_BACKEND_URL" "$PUBLIC_AUTH_URL" "$PUBLIC_MCP_URL" "$PUBLIC_OBJECTS_URL"; do
     case "$value" in
       https://*.localhost*|https://localhost*|https://*.test*|https://127.*|https://\[*|https://*.invalid*)

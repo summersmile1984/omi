@@ -8,6 +8,7 @@ import io
 import json
 import os
 import subprocess
+import stat
 import sys
 import tarfile
 import tempfile
@@ -42,6 +43,11 @@ PUBLIC_OBJECT_EVIDENCE_SPEC = importlib.util.spec_from_file_location(
 assert PUBLIC_OBJECT_EVIDENCE_SPEC and PUBLIC_OBJECT_EVIDENCE_SPEC.loader
 PUBLIC_OBJECT_EVIDENCE = importlib.util.module_from_spec(PUBLIC_OBJECT_EVIDENCE_SPEC)
 PUBLIC_OBJECT_EVIDENCE_SPEC.loader.exec_module(PUBLIC_OBJECT_EVIDENCE)
+SOURCE_FREEZE_SCRIPT = SCRIPT.parent.parent.parent / 'backend' / 'scripts' / 'source_write_freeze.py'
+SOURCE_FREEZE_SPEC = importlib.util.spec_from_file_location('self_host_source_write_freeze', SOURCE_FREEZE_SCRIPT)
+assert SOURCE_FREEZE_SPEC and SOURCE_FREEZE_SPEC.loader
+SOURCE_FREEZE = importlib.util.module_from_spec(SOURCE_FREEZE_SPEC)
+SOURCE_FREEZE_SPEC.loader.exec_module(SOURCE_FREEZE)
 CLEAN_SOURCE_ATTRIBUTION = {
     'git_commit': 'd' * 40,
     'git_tree': 'e' * 40,
@@ -1111,6 +1117,17 @@ class SelfHostOperationsTest(unittest.TestCase):
             )
             policy = root / 'egress-policy.yaml'
             policy.write_text('policy: deny application public egress\n', encoding='utf-8')
+            freeze_lease = root / 'source-freeze.json'
+            SOURCE_FREEZE.issue_lease(
+                freeze_lease,
+                source_project='source-project',
+                source_database='(default)',
+                source_endpoint='https://firestore.googleapis.com',
+                scopes=['firestore', 'storage'],
+                holder='test-change',
+                ttl_seconds=3600,
+                secret='test-source-freeze-secret',
+            )
             bin_dir = root / 'bin'
             bin_dir.mkdir()
             call_log = root / 'docker.calls'
@@ -1141,6 +1158,11 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'SPEAKER_MODEL_HOST_DIR': '/host-injected/speaker',
                 'TTS_MODEL_HOST_DIR': '/host-injected/tts',
                 'GENERIC_OPENAI_BASE_URL': 'https://host-injected.example/v1',
+                'SELF_HOST_SOURCE_WRITE_FREEZE_LEASE': str(freeze_lease),
+                'SELF_HOST_SOURCE_PROJECT': 'source-project',
+                'SELF_HOST_SOURCE_DATABASE': '(default)',
+                'SELF_HOST_SOURCE_ENDPOINT': 'https://firestore.googleapis.com',
+                'OMI_SOURCE_WRITE_FREEZE_SECRET': 'test-source-freeze-secret',
             }
             base_environment.pop('SELF_HOST_EGRESS_POLICY_ARTIFACT', None)
             missing_policy = subprocess.run(
@@ -1212,10 +1234,17 @@ class SelfHostOperationsTest(unittest.TestCase):
             (source / 'nested').mkdir()
             (source / 'nested' / 'record.json').write_text('{"version":1}\n', encoding='utf-8')
             archive = root / 'state.tar.gz'
+            fingerprints = ('a' * 64, 'b' * 64, 'c' * 64)
 
             SNAPSHOT.backup(source, archive)
-            SNAPSHOT.write_manifest(root, 'deadbeef', [archive.name])
-            SNAPSHOT.verify_manifest(root)
+            SNAPSHOT.write_manifest(root, 'deadbeef', [archive.name], *fingerprints)
+            SNAPSHOT.verify_manifest(
+                root,
+                [archive.name],
+                dict(zip(('runtime_fingerprint', 'config_fingerprint', 'migration_fingerprint'), fingerprints)),
+            )
+            self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((root / 'manifest.json').stat().st_mode), 0o600)
 
             (source / 'nested' / 'record.json').write_text('corrupt', encoding='utf-8')
             (source / 'stale').write_text('must disappear', encoding='utf-8')
@@ -1225,7 +1254,11 @@ class SelfHostOperationsTest(unittest.TestCase):
 
             archive.write_bytes(archive.read_bytes() + b'tampered')
             with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
-                SNAPSHOT.verify_manifest(root)
+                SNAPSHOT.verify_manifest(
+                    root,
+                    [archive.name],
+                    dict(zip(('runtime_fingerprint', 'config_fingerprint', 'migration_fingerprint'), fingerprints)),
+                )
 
     def test_restore_rejects_archive_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1246,12 +1279,61 @@ class SelfHostOperationsTest(unittest.TestCase):
             root = Path(directory)
             artifact = root / 'postgres.dump'
             artifact.write_bytes(b'dump')
-            SNAPSHOT.write_manifest(root, 'cafebabe', [artifact.name])
+            SNAPSHOT.write_manifest(root, 'cafebabe', [artifact.name], 'a' * 64, 'b' * 64, 'c' * 64)
 
             payload = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+            self.assertEqual(payload['schema_version'], 2)
             self.assertEqual(payload['git_sha'], 'cafebabe')
+            self.assertEqual(payload['runtime_fingerprint'], 'a' * 64)
+            self.assertEqual(payload['config_fingerprint'], 'b' * 64)
+            self.assertEqual(payload['migration_fingerprint'], 'c' * 64)
             self.assertEqual(set(payload['artifacts']), {'postgres.dump'})
             self.assertNotIn('secret', json.dumps(payload).lower())
+
+    def test_manifest_verification_fails_closed_for_missing_or_tampered_fingerprints_and_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / 'postgres.dump'
+            artifact.write_bytes(b'dump')
+            fingerprints = {
+                'runtime_fingerprint': 'a' * 64,
+                'config_fingerprint': 'b' * 64,
+                'migration_fingerprint': 'c' * 64,
+            }
+            SNAPSHOT.write_manifest(root, 'cafebabe', [artifact.name], **fingerprints)
+            manifest_path = root / 'manifest.json'
+            payload = json.loads(manifest_path.read_text(encoding='utf-8'))
+            del payload['migration_fingerprint']
+            manifest_path.write_text(json.dumps(payload), encoding='utf-8')
+            manifest_path.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, 'migration_fingerprint'):
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints)
+
+            payload['migration_fingerprint'] = 'not-a-fingerprint'
+            manifest_path.write_text(json.dumps(payload), encoding='utf-8')
+            manifest_path.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, 'migration_fingerprint'):
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints)
+
+            payload['migration_fingerprint'] = fingerprints['migration_fingerprint']
+            manifest_path.write_text(json.dumps(payload), encoding='utf-8')
+            manifest_path.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError, 'mode 0600'):
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints)
+
+            manifest_path.chmod(0o600)
+            artifact.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError, 'mode 0600'):
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints)
+
+    def test_operations_bind_all_backup_fingerprints_and_expected_artifacts(self) -> None:
+        script = OPERATIONS.read_text(encoding='utf-8')
+        self.assertIn('runtime_fingerprint()', script)
+        self.assertIn('migration_fingerprint()', script)
+        self.assertIn('--runtime-fingerprint "$runtime_sha256"', script)
+        self.assertIn('--config-fingerprint "$config_sha256"', script)
+        self.assertIn('--migration-fingerprint "$migration_sha256"', script)
+        self.assertIn('verify "$directory" \\\n    --expected-files "${ARCHIVE_FILES[@]}"', script)
 
     def test_restore_and_start_static_contract_is_fail_closed(self) -> None:
         """Tripwire for the destructive ordering; live Compose proves behavior."""
