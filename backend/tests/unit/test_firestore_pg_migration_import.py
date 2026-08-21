@@ -302,6 +302,24 @@ def test_import_resume_rejects_endpoint_or_emulator_authority_change(monkeypatch
         importer.run_import(redirected, checkpoint_path, engine=object())
 
 
+def test_import_resume_rejects_non_private_checkpoint_and_manifest(monkeypatch, tmp_path):
+    checkpoint_path = tmp_path / 'checkpoint.json'
+    importer.capture_source(_source(), checkpoint_path)
+    monkeypatch.setattr(importer, 'check_schema', lambda _engine=None: None)
+    monkeypatch.setattr(importer, 'target_inventory', lambda _engine=None: importer.Inventory(0, '', ()))
+    source = _source()
+
+    checkpoint_path.chmod(0o644)
+    with pytest.raises(importer.ImportReconciliationError, match='checkpoint.*0600'):
+        importer.run_import(source, checkpoint_path, engine=object())
+
+    checkpoint_path.chmod(0o600)
+    manifest_path = Path(json.loads(checkpoint_path.read_text(encoding='utf-8'))['manifest'])
+    manifest_path.chmod(0o644)
+    with pytest.raises(importer.ImportReconciliationError, match='manifest.*0600'):
+        importer.run_import(source, checkpoint_path, engine=object())
+
+
 def test_runtime_client_checks_schema_instead_of_running_ddl(monkeypatch):
     calls = []
     monkeypatch.setattr(client_module, 'check_schema', lambda: calls.append('check'))
