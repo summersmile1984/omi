@@ -204,6 +204,16 @@ def _send_to_user(
     tokens: Optional[List[str]] = None,
 ) -> int:
     """Send a message to all user's devices using batch send. Returns count of successful sends."""
+    # Keep the provider boundary here as well as at the public notification
+    # helpers. Several internal data-only paths (action-item sync, merge
+    # completion, and reminder reconciliation) call this low-level helper
+    # directly. Without this guard a self-host deployment with
+    # ``PUSH_PROVIDER=disabled`` could still read device tokens and invoke the
+    # Firebase Admin SDK, creating an implicit vendor egress path.
+    if not push_notifications_enabled():
+        logger.info('Push notification skipped because PUSH_PROVIDER=disabled')
+        return 0
+
     if tokens is None:
         tokens = notification_db.get_all_tokens(user_id)
     if not tokens:
@@ -239,6 +249,12 @@ async def _send_to_user_async(
     tokens: Optional[List[str]] = None,
 ) -> int:
     """Async boundary for the synchronous token store and Firebase Admin SDK."""
+    # Mirror the synchronous boundary guard. This must run before the token
+    # lookup or executor submission so disabled deployments never touch FCM.
+    if not push_notifications_enabled():
+        logger.info('Push notification skipped because PUSH_PROVIDER=disabled')
+        return 0
+
     if tokens is None:
         tokens = await run_blocking(db_executor, notification_db.get_all_tokens, user_id)
     if not tokens:

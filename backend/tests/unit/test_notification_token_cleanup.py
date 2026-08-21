@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -147,5 +148,30 @@ def test_disabled_push_provider_never_reads_tokens_or_calls_firebase(monkeypatch
     with _loaded_notifications() as (notifications, notification_db, messaging):
         notifications.send_notification('user-1', 'omi', 'hello')
 
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()
+
+
+def test_disabled_push_provider_blocks_direct_data_only_sender(monkeypatch) -> None:
+    """Internal data-only notification paths must share the provider boundary."""
+    monkeypatch.setenv('PUSH_PROVIDER', 'disabled')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        notifications.send_action_item_data_message('user-1', 'item-1', 'Do the thing', '2026-01-01T00:00:00Z')
+
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()
+
+
+def test_disabled_push_provider_blocks_async_data_only_sender(monkeypatch) -> None:
+    """Async reminder sync must not submit a Firebase call when push is disabled."""
+    monkeypatch.setenv('PUSH_PROVIDER', 'disabled')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        result = asyncio.run(
+            notifications.send_apple_reminders_sync_push_async(
+                'user-1', [{'id': 'item-1', 'description': 'Do the thing', 'due_at': None}]
+            )
+        )
+
+        assert result is False
         notification_db.get_all_tokens.assert_not_called()
         messaging.send_each.assert_not_called()
