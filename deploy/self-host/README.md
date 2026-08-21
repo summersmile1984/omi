@@ -252,6 +252,13 @@ or non-private manifest/artifact, including a missing or non-64-hex
 fingerprint. Store the runtime env/secrets separately: they are deliberately
 never copied into a backup directory.
 
+The snapshot helper provides integrity and filesystem-permission checks, not
+encryption. Production backup directories must therefore live on an
+operator-managed encrypted filesystem/object store, or be wrapped by an
+externally reviewed age/KMS encryption workflow before leaving the host. The
+encryption key must be managed separately from this repository and exercised
+in a real restore drill; `0600` and SHA-256 alone are not encryption evidence.
+
 ```bash
 SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
   deploy/self-host/operations.sh backup /srv/backups/omi/2026-08-20T120000Z

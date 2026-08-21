@@ -94,7 +94,10 @@ self-host: BetterAuth/Postgres/MinIO/Redis/generic routes
       Migration, real volume backup/restore, readiness and worker supervision
       passed locally. A temporary-CA HTTPS reverse proxy can exercise exact public
       backend/Auth/MCP/object origins and the container hairpin path; the intended
-      host's certificate, DNS and edge have not been exercised.
+      host's certificate, DNS and edge have not been exercised. Backup archives
+      currently have mode-0600 and SHA-256 integrity checks, but at-rest
+      encryption/key custody and a real encrypted restore drill remain operator
+      prerequisites rather than claims made by the repository helper.
 - [ ] A zero-vendor egress gate starts with all managed-vendor credentials
       removed, denies undeclared public origins, and exercises the complete
       Capture → Understand → Remember → Retrieve → Act loop plus account deletion.
