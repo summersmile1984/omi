@@ -188,6 +188,9 @@ abstract class Env {
       if (parsed.scheme != 'http' && parsed.scheme != 'https') {
         throw StateError('App image URL must use HTTP or HTTPS.');
       }
+      if (effectiveProfile == AppEnvironmentProfile.selfHosted && parsed.scheme != 'https') {
+        throw StateError('Self-hosted app images must use HTTPS.');
+      }
       if (effectiveProfile == AppEnvironmentProfile.selfHosted && _isOmiOperatedHost(parsed.host)) {
         throw StateError('Self-hosted app images cannot use an Omi-operated origin.');
       }

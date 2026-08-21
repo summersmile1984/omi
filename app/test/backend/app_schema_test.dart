@@ -95,6 +95,14 @@ void main() {
         ),
         throwsStateError,
       );
+      expect(
+        () => Env.resolveAppImageUrl(
+          image: 'http://operator.example.test/icon.png',
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredApiBaseUrl: 'https://operator.example.test/',
+        ),
+        throwsStateError,
+      );
     });
   });
 }
