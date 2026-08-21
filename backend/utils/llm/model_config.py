@@ -250,12 +250,22 @@ def _normalize_provider(provider: str) -> str:
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
-def _provider_default_model(provider: str, values: Mapping[str, str]) -> str:
+def _neutral_deployment(values: Mapping[str, str]) -> bool:
+    """Identify profiles where checked-in managed model defaults are forbidden."""
+
+    return values.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in {
+        'neutral',
+        'self_hosted',
+        'self-hosted',
+    }
+
+
+def _provider_default_model(provider: str, values: Mapping[str, str], *, allow_builtin: bool = True) -> str:
     config = _PROVIDER_DEFAULT_MODELS.get(provider)
     if config is None:
         return ''
     env_name, default = config
-    return values.get(env_name, '').strip() or default
+    return values.get(env_name, '').strip() or (default if allow_builtin else '')
 
 
 def _parse_fallbacks(raw: str, *, feature: str) -> Tuple[ProviderRoute, ...]:
@@ -278,7 +288,9 @@ def _parse_fallbacks(raw: str, *, feature: str) -> Tuple[ProviderRoute, ...]:
     return tuple(routes)
 
 
-def _group_route_override(feature: str, values: Mapping[str, str]) -> Optional[ProviderRoute]:
+def _group_route_override(
+    feature: str, values: Mapping[str, str], *, neutral_deployment: bool = False
+) -> Optional[ProviderRoute]:
     """Keep the intentional translation/chat deployment groups below per-feature routes."""
 
     if feature == 'translation':
@@ -295,11 +307,17 @@ def _group_route_override(feature: str, values: Mapping[str, str]) -> Optional[P
         return None
     group_default = ''
     if provider == 'deepseek':
-        group_default = 'deepseek-chat' if feature == 'translation' else 'deepseek-v4-flash'
+        if not neutral_deployment:
+            group_default = 'deepseek-chat' if feature == 'translation' else 'deepseek-v4-flash'
     elif provider == 'mimo':
-        group_default = 'mimo-v2.5'
-    resolved_model = model or group_default or _provider_default_model(provider, values)
+        if not neutral_deployment:
+            group_default = 'mimo-v2.5'
+    resolved_model = (
+        model or group_default or _provider_default_model(provider, values, allow_builtin=not neutral_deployment)
+    )
     if not resolved_model:
+        if neutral_deployment:
+            raise ValueError(f"Feature '{feature}' requires an explicit provider/model route in a neutral deployment")
         raise ValueError(f"Provider '{provider}' for feature '{feature}' requires a configured model")
     return ProviderRoute(provider=provider, model=resolved_model)
 
@@ -327,15 +345,19 @@ def resolve_feature_route(
     model_value = values.get(spec.model_env, '').strip()
     if provider_value or model_value:
         provider = _normalize_provider(provider_value) or spec.default.provider
-        model = model_value or _provider_default_model(provider, values)
-        if not model and provider == spec.default.provider:
+        model = model_value or _provider_default_model(provider, values, allow_builtin=not _neutral_deployment(values))
+        if not model and provider == spec.default.provider and not _neutral_deployment(values):
             model = spec.default.model
         if not model:
+            if _neutral_deployment(values):
+                raise ValueError(
+                    f"Feature '{feature}' requires an explicit provider/model route in a neutral deployment"
+                )
             raise ValueError(f"{spec.model_env} is required when {spec.provider_env} selects '{provider}'")
         primary = ProviderRoute(provider=provider, model=model)
         source = 'feature_env'
     else:
-        group_route = _group_route_override(feature, values)
+        group_route = _group_route_override(feature, values, neutral_deployment=_neutral_deployment(values))
         if group_route is not None:
             primary = group_route
             source = 'group_env'
@@ -344,16 +366,26 @@ def resolve_feature_route(
             default_model_value = values.get(DEFAULT_ROUTE_MODEL_ENV, '').strip()
             if default_provider_value or default_model_value:
                 provider = _normalize_provider(default_provider_value) or spec.default.provider
-                model = default_model_value or _provider_default_model(provider, values)
-                if not model and provider == spec.default.provider:
+                model = default_model_value or _provider_default_model(
+                    provider, values, allow_builtin=not _neutral_deployment(values)
+                )
+                if not model and provider == spec.default.provider and not _neutral_deployment(values):
                     model = spec.default.model
                 if not model:
+                    if _neutral_deployment(values):
+                        raise ValueError(
+                            f"Feature '{feature}' requires an explicit provider/model route in a neutral deployment"
+                        )
                     raise ValueError(
                         f'{DEFAULT_ROUTE_MODEL_ENV} is required when {DEFAULT_ROUTE_PROVIDER_ENV} selects {provider!r}'
                     )
                 primary = ProviderRoute(provider=provider, model=model)
                 source = 'default_env'
             else:
+                if _neutral_deployment(values):
+                    raise ValueError(
+                        f"Feature '{feature}' requires an explicit provider/model route in a neutral deployment"
+                    )
                 primary = spec.default
                 source = 'profile'
 
