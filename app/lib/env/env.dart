@@ -23,6 +23,7 @@ abstract class Env {
   );
   static late final EnvFields _instance;
   static String? _apiBaseUrlOverride;
+  static String? _agentProxyWsUrlOverride;
   static bool isTestFlight = false;
 
   static AppEnvironmentProfile get profile =>
@@ -38,6 +39,24 @@ abstract class Env {
 
   static void clearApiBaseUrlOverrideForTesting() {
     _apiBaseUrlOverride = null;
+  }
+
+  static void overrideAgentProxyWsUrl(String url) {
+    _agentProxyWsUrlOverride = url;
+  }
+
+  /// The legacy hosted agent proxy is not part of the self-hosted contract.
+  /// Self-hosted builds must surface this capability as unavailable instead of
+  /// deriving an Omi authority from the operator API origin.
+  static String get agentProxyWsUrl {
+    if (profile == AppEnvironmentProfile.selfHosted) {
+      throw StateError('The hosted agent proxy is unavailable in self-hosted deployments.');
+    }
+    if (_agentProxyWsUrlOverride != null) return _agentProxyWsUrlOverride!;
+    final base = Uri.parse(apiBaseUrl ?? productionApiBaseUrl);
+    final host = base.host.replaceFirst(RegExp(r'^api\.'), 'agent.');
+    final scheme = base.scheme == 'http' ? 'ws' : 'wss';
+    return '$scheme://$host/v1/agent/ws';
   }
 
   static String? get posthogApiKey => profile.managedClientValue(_instance.posthogApiKey);

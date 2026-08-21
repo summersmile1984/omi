@@ -8,6 +8,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'package:omi/env/env.dart';
+import 'package:omi/env/environment_profile.dart';
 import 'package:omi/services/auth_service.dart';
 import 'package:omi/utils/logger.dart';
 
@@ -99,6 +100,13 @@ class AgentChatService {
     await initAgentLog();
     final connectSw = Stopwatch()..start();
     agentLog('connect() called');
+    if (Env.profile == AppEnvironmentProfile.selfHosted) {
+      const message = 'Hosted agent proxy is unavailable in self-hosted deployments.';
+      agentLog(message);
+      _eventController ??= StreamController<AgentChatEvent>.broadcast();
+      _eventController!.add(AgentChatEvent(AgentChatEventType.error, message, code: 'model_capability_unavailable'));
+      return false;
+    }
     // Startup events describe a specific socket. Never let an error from an
     // earlier connection abort a query after a successful reconnect.
     _pendingStartupEvents.clear();
