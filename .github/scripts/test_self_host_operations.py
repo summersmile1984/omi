@@ -83,6 +83,13 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertIn("with_name('compose-clean-env.sh')", runtime_source)
         self.assertNotIn("['docker', 'compose'", runtime_source)
 
+    def test_runtime_evidence_keeps_validation_diagnostics_off_json_stdout(self) -> None:
+        operations = OPERATIONS.read_text(encoding='utf-8')
+        runtime_evidence = operations[
+            operations.index('runtime_evidence() {') : operations.index('\n}', operations.index('runtime_evidence() {'))
+        ]
+        self.assertIn('require_runtime >&2', runtime_evidence)
+
     def test_clean_compose_wrapper_removes_deployment_overrides_and_preserves_only_gate_controls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

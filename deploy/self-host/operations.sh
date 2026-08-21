@@ -114,7 +114,9 @@ start_profile() {
 }
 
 runtime_evidence() {
-  require_runtime
+  # This command is consumed as a JSON API by the acceptance pipeline. Keep
+  # checker diagnostics on stderr so stdout remains exactly one JSON object.
+  require_runtime >&2
   "$PY" "$RUNTIME_EVIDENCE_TOOL" \
     --compose-file "$COMPOSE_FILE" \
     --env-file "$ENV_FILE" \
