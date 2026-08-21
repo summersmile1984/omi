@@ -244,7 +244,12 @@ labels, config-hash label, state, and health from each exact running container,
 and records the exact effective mlx-audio endpoint/model selection. The JSON
 evidence schema (v3) consumes that structured result rather than a hard-coded
 health claim. Authorization also requires the assembled diarization endpoint
-and model to equal that final effective provider configuration.
+and model to equal that final effective provider configuration. Before emitting
+evidence it also inspects each running container's actual environment and
+rejects injected managed-provider bindings (including Firebase, Google,
+Anthropic, OpenAI-compatible vendor, Deepgram, Modulate, Pinecone, and
+Stripe/Twilio integrations) or official vendor endpoint values, so a neutral
+Compose file cannot hide a non-neutral workload.
 
 ## Operations: health, metrics, backup, restore and rollback
 
