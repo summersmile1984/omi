@@ -96,6 +96,7 @@ EFFECTIVE_PROVIDER_CONFIGURATION = {
     'vector_store_provider': 'qdrant',
     'auth_provider': 'better_auth',
     'firmware_release_transport': 'manifest',
+    'firmware_release_manifest_url': 'https://objects.example.org/omi-firmware/releases.json',
     'firmware_release_manifest_origin': 'https://objects.example.org',
     'firmware_release_asset_origin': 'https://objects.example.org',
     'desktop_update_legacy_fallback': 'disabled',
@@ -1032,7 +1033,32 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'file_chat': {'status': 'passed'},
                 'typesense_keyword': {'status': 'passed'},
                 'conversation_typesense': {'status': 'passed'},
-                'firmware': {'status': 'passed'},
+                'firmware': {
+                    'status': 'passed',
+                    'transport': 'manifest',
+                    'manifest': {
+                        'url': 'https://objects.example.org/omi-firmware/releases.json',
+                        'origin': 'https://objects.example.org',
+                        'sha256': 'b' * 64,
+                        'bytes': 128,
+                        'release_tag': 'Omi_CV1_v9.9.9',
+                        'version': '9.9.9',
+                        'asset_name': 'Omi_CV1_OTA_v9.9.9.zip',
+                        'asset_url': 'https://objects.example.org/omi-firmware/cutover-omi-cv1-9.9.9.zip',
+                    },
+                    'asset': {
+                        'url': 'https://objects.example.org/omi-firmware/cutover-omi-cv1-9.9.9.zip',
+                        'origin': 'https://objects.example.org',
+                        'sha256': 'c' * 64,
+                        'bytes': 64,
+                        'name': 'Omi_CV1_OTA_v9.9.9.zip',
+                    },
+                    'route': {
+                        'version': '9.9.9',
+                        'asset_url': 'https://objects.example.org/omi-firmware/cutover-omi-cv1-9.9.9.zip',
+                    },
+                    'fixture_cleanup_confirmed': True,
+                },
                 'remember': {'long_term_admission': 'passed'},
             },
             'live_egress': {
@@ -1058,6 +1084,24 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertEqual(local['remaining_cutover_reason'], 'intended_public_dns_certificate_and_edge_not_exercised')
         self.assertEqual(local['gates']['live_sentinel_egress_policy']['enforcement'], 'not_enforced_by_compose')
         self.assertEqual(local['gates']['hermetic_undeclared_dns_and_socket_egress'], 'denied')
+
+        for path, value in (
+            (('manifest', 'url'), 'https://other.example.org/omi-firmware/releases.json'),
+            (('asset', 'url'), 'https://other.example.org/omi-firmware/asset.zip'),
+            (('route', 'asset_url'), 'https://other.example.org/omi-firmware/asset.zip'),
+        ):
+            tampered = json.loads(json.dumps(assembled))
+            tampered['assembled_product_loop']['firmware'][path[0]][path[1]] = value
+            rejected = EVIDENCE.build_evidence(
+                mode='cutover-live',
+                source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+                live_replacement={'status': 'passed'},
+                assembled_loop=tampered,
+                checked_at='2026-08-20T00:00:00+00:00',
+                runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+            )
+            self.assertFalse(rejected['authorizes_tested_configuration_cutover'], path)
+            self.assertEqual(rejected['remaining_cutover_reason'], 'firmware_runtime_config_binding_not_passed')
         self.assertFalse(local['gates']['live_dns_denial_claimed'])
 
         mismatched_realtime = json.loads(json.dumps(assembled))

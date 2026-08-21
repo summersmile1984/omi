@@ -634,10 +634,14 @@ def public_firmware_manifest(
     storage_client: Any,
 ) -> dict[str, Any]:
     manifest_url = require_environment('FIRMWARE_RELEASE_MANIFEST_URL')
+    configured_asset_origin = require_environment('FIRMWARE_RELEASE_ASSET_ORIGIN').rstrip('/')
     parsed_manifest = urlsplit(manifest_url)
     parsed_objects = urlsplit(objects_url)
+    parsed_asset_origin = urlsplit(configured_asset_origin)
     if (parsed_manifest.scheme, parsed_manifest.netloc) != (parsed_objects.scheme, parsed_objects.netloc):
         raise RuntimeError('firmware manifest is not on PUBLIC_OBJECTS_URL')
+    if (parsed_asset_origin.scheme, parsed_asset_origin.netloc) != (parsed_objects.scheme, parsed_objects.netloc):
+        raise RuntimeError('firmware asset origin is not PUBLIC_OBJECTS_URL')
     path_parts = unquote(parsed_manifest.path).strip('/').split('/', 1)
     if len(path_parts) != 2 or not all(path_parts):
         raise RuntimeError('firmware manifest URL must identify a MinIO bucket and object')
@@ -666,11 +670,27 @@ def public_firmware_manifest(
             }
         ],
     }
+    manifest_payload = json.dumps([release], separators=(',', ':')).encode('utf-8')
+    manifest_origin = f'{parsed_manifest.scheme}://{parsed_manifest.netloc}'
+    asset_origin = f'{parsed_asset_origin.scheme}://{parsed_asset_origin.netloc}'
+    if manifest_blob.public_url != manifest_url:
+        raise RuntimeError('firmware manifest object URL does not match FIRMWARE_RELEASE_MANIFEST_URL')
+    if urlsplit(asset_blob.public_url).scheme + '://' + urlsplit(asset_blob.public_url).netloc != asset_origin:
+        raise RuntimeError('firmware asset object URL does not match FIRMWARE_RELEASE_ASSET_ORIGIN')
     try:
         asset_blob.upload_from_string(asset_payload, content_type='application/zip')
         asset_blob.make_public()
-        manifest_blob.upload_from_string(json.dumps([release], separators=(',', ':')), content_type='application/json')
+        manifest_blob.upload_from_string(manifest_payload, content_type='application/json')
         manifest_blob.make_public()
+        manifest_response = client.get(manifest_url, timeout=60)
+        if manifest_response.status_code != 200:
+            raise RuntimeError('public firmware manifest object did not roundtrip through PUBLIC_OBJECTS_URL')
+        try:
+            manifest_response_payload = manifest_response.json()
+        except ValueError as error:
+            raise RuntimeError('public firmware manifest object was not valid JSON') from error
+        if manifest_response_payload != [release]:
+            raise RuntimeError('public firmware manifest object did not return the uploaded release identity')
         firmware = require_object(
             client.get(
                 f'{backend_url}/v2/firmware/stable',
@@ -684,6 +704,12 @@ def public_firmware_manifest(
         asset_response = client.get(str(firmware['zip_url']), timeout=60)
         if asset_response.status_code != 200 or asset_response.content != asset_payload:
             raise RuntimeError('public firmware asset did not roundtrip through PUBLIC_OBJECTS_URL')
+        manifest_sha256 = hashlib.sha256(manifest_response.content).hexdigest()
+        asset_sha256 = hashlib.sha256(asset_response.content).hexdigest()
+        asset_url = str(firmware['zip_url'])
+        asset_url_parts = urlsplit(asset_url)
+        if f'{asset_url_parts.scheme}://{asset_url_parts.netloc}' != asset_origin:
+            raise RuntimeError('public firmware route returned an asset outside FIRMWARE_RELEASE_ASSET_ORIGIN')
     finally:
         for blob in (manifest_blob, asset_blob):
             try:
@@ -694,11 +720,27 @@ def public_firmware_manifest(
     return {
         'status': 'passed',
         'transport': 'manifest',
-        'public_backend_route_exercised': True,
-        'manifest_origin_exact': True,
-        'asset_origin_exact': True,
-        'asset_payload_match': True,
-        'github_transport_used': False,
+        'manifest': {
+            'url': manifest_url,
+            'origin': manifest_origin,
+            'sha256': manifest_sha256,
+            'bytes': len(manifest_response.content),
+            'release_tag': release['tag_name'],
+            'version': firmware['version'],
+            'asset_name': release['assets'][0]['name'],
+            'asset_url': asset_url,
+        },
+        'asset': {
+            'url': asset_url,
+            'origin': asset_origin,
+            'sha256': asset_sha256,
+            'bytes': len(asset_response.content),
+            'name': release['assets'][0]['name'],
+        },
+        'route': {
+            'version': firmware['version'],
+            'asset_url': asset_url,
+        },
         'fixture_cleanup_confirmed': not manifest_blob.exists() and not asset_blob.exists(),
     }
 

@@ -165,6 +165,66 @@ def _runtime_provider_attestation_binding(
     return True, attestation
 
 
+def _firmware_probe_runtime_binding(
+    firmware_probe: dict[str, Any] | None,
+    effective_provider_configuration: dict[str, Any],
+) -> bool:
+    """Require firmware evidence to identify the exact configured objects.
+
+    A ``status=passed`` flag alone is not evidence of deployment neutrality:
+    the probe must bind both downloaded bytes and the backend route to the
+    operator manifest URL and asset authority present in the reviewed runtime.
+    """
+
+    if not isinstance(firmware_probe, dict) or firmware_probe.get('status') != 'passed':
+        return False
+    if firmware_probe.get('transport') != 'manifest' or firmware_probe.get('fixture_cleanup_confirmed') is not True:
+        return False
+    manifest = firmware_probe.get('manifest')
+    asset = firmware_probe.get('asset')
+    route = firmware_probe.get('route')
+    if not isinstance(manifest, dict) or not isinstance(asset, dict) or not isinstance(route, dict):
+        return False
+    manifest_url = effective_provider_configuration.get('firmware_release_manifest_url')
+    manifest_origin = effective_provider_configuration.get('firmware_release_manifest_origin')
+    asset_origin = effective_provider_configuration.get('firmware_release_asset_origin')
+    if not isinstance(manifest_url, str) or not isinstance(manifest_origin, str) or not isinstance(asset_origin, str):
+        return False
+    if manifest.get('url') != manifest_url or manifest.get('origin') != manifest_origin:
+        return False
+    if not isinstance(manifest.get('sha256'), str) or SHA256.fullmatch(manifest['sha256']) is None:
+        return False
+    if not isinstance(manifest.get('bytes'), int) or isinstance(manifest['bytes'], bool) or manifest['bytes'] <= 0:
+        return False
+    for field in ('release_tag', 'version', 'asset_name', 'asset_url'):
+        if not isinstance(manifest.get(field), str) or not manifest[field].strip():
+            return False
+    asset_url = asset.get('url')
+    if not isinstance(asset_url, str) or asset_url != manifest['asset_url']:
+        return False
+    try:
+        parsed_asset = urlsplit(asset_url)
+    except ValueError:
+        return False
+    if (
+        parsed_asset.scheme != 'https'
+        or not parsed_asset.netloc
+        or parsed_asset.username is not None
+        or parsed_asset.password is not None
+        or parsed_asset.query
+        or parsed_asset.fragment
+        or f'{parsed_asset.scheme}://{parsed_asset.netloc}' != asset_origin
+    ):
+        return False
+    if asset.get('origin') != asset_origin or asset.get('name') != manifest['asset_name']:
+        return False
+    if not isinstance(asset.get('sha256'), str) or SHA256.fullmatch(asset['sha256']) is None:
+        return False
+    if not isinstance(asset.get('bytes'), int) or isinstance(asset['bytes'], bool) or asset['bytes'] <= 0:
+        return False
+    return route.get('version') == manifest['version'] and route.get('asset_url') == asset_url
+
+
 def _recovery_evidence_passed(
     recovery_evidence: dict[str, Any] | None,
     *,
@@ -428,6 +488,13 @@ def build_evidence(
         tts_runtime_binding_passed = True
     if failed_hard_capability is None and not tts_runtime_binding_passed:
         failed_hard_capability = 'tts_runtime_config_binding'
+    firmware_probe = assembled_product_loop.get('firmware', {})
+    firmware_runtime_binding_passed = _firmware_probe_runtime_binding(
+        firmware_probe,
+        effective_provider_configuration,
+    )
+    if failed_hard_capability is None and not firmware_runtime_binding_passed:
+        failed_hard_capability = 'firmware_runtime_config_binding'
     runtime_health_and_identity_passed = bool(
         isinstance(runtime_evidence, dict)
         and runtime_evidence.get('all_required_services_healthy') is True
@@ -460,6 +527,7 @@ def build_evidence(
         and all(hard_capability_status.values())
         and realtime_runtime_binding_passed
         and tts_runtime_binding_passed
+        and firmware_runtime_binding_passed
         and runtime_health_and_identity_passed
         and runtime_provider_attestation_passed
         and worktree_clean
@@ -498,6 +566,7 @@ def build_evidence(
             'live_hard_capability_probes': hard_capability_status,
             'live_realtime_runtime_config_binding': realtime_runtime_binding_passed,
             'live_tts_runtime_config_binding': tts_runtime_binding_passed,
+            'live_firmware_runtime_config_binding': firmware_runtime_binding_passed,
             'live_mlx_moss_diarization_provider': speaker_diarization or 'not_run',
             'live_mlx_moss_runtime_config_binding': diarization_runtime_config_binding_passed,
             'mounted_model_artifact_identity': model_artifact_identity or 'not_run',

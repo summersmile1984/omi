@@ -218,7 +218,16 @@ the endpoint returns typed `availability=disabled` with `download_url=null`;
 it never returns the managed `api.omi.me` URL in a neutral profile. Firmware
 follows the same boundary: neutral
 profiles default to typed `firmware_updates` unavailability until an explicit
-operator manifest transport is configured.
+operator manifest transport is configured. The live cutover probe uploads only
+an operator-owned fixture to that configured object authority, then fetches the
+exact `FIRMWARE_RELEASE_MANIFEST_URL` and the route-selected asset through the
+public origin. Its evidence records the exact manifest URL/origin, manifest
+SHA-256 and byte length, release tag/version, asset name/URL/origin, and asset
+SHA-256 and byte length; acceptance rejects a `status=passed` boolean unless
+those identities match the reviewed runtime configuration and the backend
+route maps the manifest release to the downloaded asset. These hashes bind the
+observed bytes for the run; they are not a replacement for operator signing,
+TLS, or an external release-authority policy.
 
 The checked-in example sets `BACKEND_PLATFORM=linux/amd64` because the pinned
 runtime lock includes `onnxruntime==1.19.0`, which has no Linux ARM64 wheel.

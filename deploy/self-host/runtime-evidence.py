@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 SELF_HOST_DIR = Path(__file__).resolve().parent
 if str(SELF_HOST_DIR) not in sys.path:
@@ -141,6 +141,16 @@ def _safe_endpoint(
     value, parsed = _parsed_safe_endpoint(environment, name, schemes=schemes)
     if required_path is not None and parsed.path != required_path:
         raise ValueError(f'{name} must use the exact {required_path} path')
+    return value
+
+
+def _safe_firmware_manifest_url(environment: dict[str, Any], name: str) -> str:
+    """Return the exact operator manifest URL after validating its object shape."""
+
+    value, parsed = _parsed_safe_endpoint(environment, name, schemes={'https'})
+    path_parts = unquote(parsed.path).strip('/').split('/', 1)
+    if len(path_parts) != 2 or not all(path_parts):
+        raise ValueError(f'{name} must identify an explicit object path')
     return value
 
 
@@ -290,6 +300,7 @@ PROVIDER_CONFIGURATION_KEYS = frozenset(
         'vector_store_provider',
         'auth_provider',
         'firmware_release_transport',
+        'firmware_release_manifest_url',
         'firmware_release_manifest_origin',
         'firmware_release_asset_origin',
         'desktop_update_legacy_fallback',
@@ -436,6 +447,11 @@ def _validate_provider_configuration(configuration: dict[str, Any]) -> None:
         raise ValueError('self-host identity must use Better Auth')
     if configuration['firmware_release_transport'] != 'manifest':
         raise ValueError('self-host firmware must use the operator manifest transport')
+    manifest_url = _safe_firmware_manifest_url({'value': configuration['firmware_release_manifest_url']}, 'value')
+    manifest_origin = urlsplit(manifest_url)
+    expected_manifest_origin = f'{manifest_origin.scheme}://{manifest_origin.netloc}'
+    if configuration['firmware_release_manifest_origin'] != expected_manifest_origin:
+        raise ValueError('firmware_release_manifest_origin does not match the configured manifest URL')
     _validate_origin_value(
         configuration['firmware_release_manifest_origin'], 'firmware_release_manifest_origin', schemes={'https'}
     )
@@ -630,6 +646,7 @@ def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any
         'vector_store_provider': _safe_identifier(environment, 'VECTOR_STORE_PROVIDER'),
         'auth_provider': _safe_identifier(environment, 'AUTH_PROVIDER'),
         'firmware_release_transport': _safe_identifier(environment, 'FIRMWARE_RELEASE_TRANSPORT'),
+        'firmware_release_manifest_url': _safe_firmware_manifest_url(environment, 'FIRMWARE_RELEASE_MANIFEST_URL'),
         'firmware_release_manifest_origin': _safe_endpoint_origin(
             environment, 'FIRMWARE_RELEASE_MANIFEST_URL', schemes={'https'}
         ),

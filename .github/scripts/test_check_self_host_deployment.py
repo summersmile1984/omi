@@ -265,6 +265,14 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn('FIRMWARE_RELEASE_MANIFEST_URL must be an explicit public HTTPS object URL', errors)
 
+        errors = self.validate_mutation(
+            env_replace=(
+                'FIRMWARE_RELEASE_ASSET_ORIGIN=https://objects.example.com',
+                'FIRMWARE_RELEASE_ASSET_ORIGIN=https://downloads.example.com',
+            )
+        )
+        self.assertIn('FIRMWARE_RELEASE_ASSET_ORIGIN must equal the exact PUBLIC_OBJECTS_URL origin', errors)
+
     def test_private_auth_control_plane_is_explicit_and_cannot_fall_back_public(self) -> None:
         errors = self.validate_mutation(
             compose_replace=(
