@@ -519,7 +519,7 @@ resolved relative to the plan file:
 
 ```json
 {
-  "format": "omi-vector-projection-switch-plan-v1",
+  "format": "omi-vector-projection-switch-plan-v2",
   "projections": [
     {"namespace":"ns1","records":"ns1.jsonl","receipt":"ns1-v2.receipt.jsonl","manifest":"manifest.json"},
     {"namespace":"ns2","records":"ns2.jsonl","receipt":"ns2-v2.receipt.jsonl","manifest":"manifest.json"},

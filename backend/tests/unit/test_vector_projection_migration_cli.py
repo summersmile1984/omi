@@ -187,7 +187,7 @@ def test_backfill_verify_switch_and_rollback_are_executable_from_authority_expor
     switch_plan_path.write_text(
         json.dumps(
             {
-                'format': 'omi-vector-projection-switch-plan-v1',
+                'format': 'omi-vector-projection-switch-plan-v2',
                 'projections': [
                     {
                         'namespace': 'memories',
@@ -477,7 +477,7 @@ def test_switch_plan_must_cover_every_required_namespace(tmp_path: Path, monkeyp
     plan_path.write_text(
         json.dumps(
             {
-                'format': 'omi-vector-projection-switch-plan-v1',
+                'format': 'omi-vector-projection-switch-plan-v2',
                 'projections': [
                     {
                         'namespace': 'memories',
