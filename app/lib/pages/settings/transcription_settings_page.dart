@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:disk_space_2/disk_space_2.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -1676,6 +1677,7 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
     }
 
     final hasModel = _isModelFilePresent;
+    final allowsManagedDownload = Env.allowsManagedModelDownloads();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1699,8 +1701,11 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
                   ),
                 ),
                 TextButton(
-                  onPressed: _downloadModel,
-                  child: Text(context.l10n.reDownload, style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+                  onPressed: allowsManagedDownload ? _downloadModel : _selectLocalModel,
+                  child: Text(
+                    allowsManagedDownload ? context.l10n.reDownload : context.l10n.importConfiguration,
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+                  ),
                 ),
               ],
             ),
@@ -1742,16 +1747,31 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
         else
           Row(
             children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _downloadModel,
-                  icon: const Icon(Icons.download, size: 16),
-                  label: Text(
-                    context.l10n.downloadModelWithName('ggml-${_currentModel.isEmpty ? 'tiny' : _currentModel}.bin'),
+              if (allowsManagedDownload)
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _downloadModel,
+                    icon: const Icon(Icons.download, size: 16),
+                    label: Text(
+                      context.l10n.downloadModelWithName('ggml-${_currentModel.isEmpty ? 'tiny' : _currentModel}.bin'),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
                   ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    foregroundColor: Colors.black,
+                ),
+              if (allowsManagedDownload) const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _selectLocalModel,
+                  icon: const Icon(Icons.folder_open, size: 16),
+                  label: Text(context.l10n.importConfiguration),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: BorderSide(color: Colors.grey.shade700),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
@@ -1771,6 +1791,14 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
   http.Client? _downloadClient;
 
   Future<void> _downloadModel() async {
+    if (!Env.allowsManagedModelDownloads()) {
+      // Keep this guard at the side-effect boundary as well as hiding the
+      // managed download control. A stale widget or persisted callback must
+      // not reach the baked-in Hugging Face URL in a self-hosted build.
+      Logger.warning('Self-hosted profile does not allow managed model downloads.');
+      return;
+    }
+
     final modelName = _currentModel.isEmpty ? 'tiny' : _currentModel;
 
     double estimatedSizeMB = 1500;
@@ -1948,6 +1976,35 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
     } finally {
       _downloadClient?.close();
       _downloadClient = null;
+    }
+  }
+
+  Future<void> _selectLocalModel() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['bin'],
+        allowMultiple: false,
+        withData: false,
+      );
+      final path = result?.files.single.path;
+      if (path == null || path.isEmpty || !mounted) return;
+
+      final file = File(path);
+      if (!await file.exists() || !mounted) return;
+      setState(() {
+        _urlController.text = path;
+        _isModelFilePresent = true;
+      });
+      _updateCurrentProviderConfig(url: path);
+      await _saveCurrentProviderConfig();
+      if (!mounted || !_useCustomStt || _selectedProvider != SttProvider.onDeviceWhisper) return;
+      await SharedPreferencesUtil().saveCustomSttConfig(_buildCurrentConfig());
+      if (mounted) {
+        await Provider.of<CaptureProvider>(context, listen: false).onTranscriptionSettingsChanged();
+      }
+    } catch (e, stack) {
+      Logger.debug('Error selecting local Whisper model: $e\n$stack');
     }
   }
 

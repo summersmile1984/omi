@@ -112,6 +112,17 @@ void main() {
       );
     });
 
+    test('self-hosted clients cannot download models from managed origins', () {
+      expect(
+        Env.allowsManagedModelDownloads(configuredProfile: AppEnvironmentProfile.selfHosted),
+        isFalse,
+      );
+      expect(
+        Env.allowsManagedModelDownloads(configuredProfile: AppEnvironmentProfile.production),
+        isTrue,
+      );
+    });
+
     test('local profile rejects a production Firebase project', () {
       expect(
         () =>

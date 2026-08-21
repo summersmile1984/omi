@@ -132,6 +132,10 @@ All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash
 - Legacy Omi GitHub Markdown setup instructions are hidden in self-hosted
   builds when no operator-owned replacement is supplied; managed profiles keep
   the existing Markdown flow.
+- Self-hosted mobile builds never download the bundled Whisper model from
+  Hugging Face. On-device Whisper remains available only with a local `.bin`
+  file selected by the operator/user; managed profiles retain the convenience
+  download.
 
 ## Codegen Rules
 

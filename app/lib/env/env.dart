@@ -86,6 +86,14 @@ abstract class Env {
 
   static String get mcpSseUrl => '${resolveMcpBaseUrl()}v1/mcp/sse';
 
+  /// Managed profiles may offer the legacy Whisper model download flow. A
+  /// self-hosted client must never fetch a model from a baked-in vendor
+  /// origin; operators can still select a model that is already local to the
+  /// device.
+  static bool allowsManagedModelDownloads({AppEnvironmentProfile? configuredProfile}) {
+    return (configuredProfile ?? profile) != AppEnvironmentProfile.selfHosted;
+  }
+
   /// OAuth remains on the production identity plane even when mobile Beta
   /// uses the development serving API for product traffic.
   static String get authApiBaseUrl => authApiBaseUrlForProfile(profile, servingApiBaseUrl: apiBaseUrl);
