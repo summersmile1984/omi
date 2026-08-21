@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from utils import integration_telemetry
 from utils.integration_telemetry import (
     GOOGLE_CALENDAR,
     X,
@@ -118,6 +119,21 @@ def test_failure_telemetry_ignores_non_integer_status_codes():
     props = fake.calls[0]['properties']
     assert props['provider_status_code'] is None
     assert props['error_bucket'] == 'unknown'
+
+
+def test_self_hosted_profile_ignores_ambient_posthog_configuration(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('POSTHOG_PROJECT_API_KEY', 'ambient-managed-key')
+    monkeypatch.delenv('POSTHOG_HOST', raising=False)
+    monkeypatch.setattr(
+        integration_telemetry.importlib,
+        'import_module',
+        lambda _name: pytest.fail('self-hosted telemetry must not import PostHog'),
+    )
+    integration_telemetry._posthog_client = None
+    integration_telemetry._posthog_disabled = False
+    integration_telemetry.emit_posthog_event('uid-test', 'Integration Sync Attempted', {})
+    assert integration_telemetry._posthog_client is None
 
 
 def test_x_connector_sync_paths_keep_success_and_failure_telemetry_probe():

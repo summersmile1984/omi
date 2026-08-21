@@ -44,3 +44,21 @@ def test_product_event_is_fail_open():
     set_product_telemetry_client_for_tests(_FakePosthog(fail=True))
 
     emit_product_event(uid='user-1', event='Transcript Failed', properties={})
+
+
+def test_self_hosted_profile_ignores_ambient_posthog_configuration(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('POSTHOG_PROJECT_API_KEY', 'ambient-managed-key')
+    monkeypatch.delenv('POSTHOG_HOST', raising=False)
+    monkeypatch.setattr(
+        'utils.product_telemetry.importlib.import_module',
+        lambda _name: pytest.fail('self-hosted telemetry must not import PostHog'),
+    )
+    # The fixture reset intentionally disables the client; re-open the lazy
+    # path so this exercises the profile guard rather than that test seam.
+    import utils.product_telemetry as telemetry
+
+    telemetry._posthog_client = None
+    telemetry._posthog_disabled = False
+    emit_product_event(uid='user-1', event='Transcript Started', properties={})
+    assert telemetry._posthog_client is None

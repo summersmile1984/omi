@@ -22,6 +22,7 @@ X = 'X'
 
 _posthog_client: Optional[Any] = None
 _posthog_disabled = False
+_NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,11 @@ def _get_posthog_client() -> Optional[Any]:
         return None
     if _posthog_client is not None:
         return _posthog_client
+    # Profile selection owns egress. A self-hosted process can retain an
+    # ambient managed PostHog secret without opting into Omi telemetry.
+    if os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in _NEUTRAL_DEPLOYMENT_PROFILES:
+        _posthog_disabled = True
+        return None
 
     api_key = os.getenv('POSTHOG_PROJECT_API_KEY') or os.getenv('POSTHOG_API_KEY')
     if not api_key:
