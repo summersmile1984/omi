@@ -176,11 +176,16 @@ deployment:
   rebuild/reconcile commands and account-deletion ordering are independent of
   the retired Firebase Typesense extension; an unavailable selected service is
   a typed search failure, never an empty vector-only result.
-- push delivery is explicitly `PUSH_PROVIDER=disabled` until an operator push
-  service is configured; notification requests return a typed unavailable
-  capability rather than silently calling Firebase. Omitting `PUSH_PROVIDER`
-  in a neutral/self-hosted profile has the same fail-closed result before the
-  Firebase SDK is initialized; managed profiles retain their Firebase default.
+- push delivery defaults to `PUSH_PROVIDER=disabled` in the checked-in
+  self-host profile, so notification requests return a typed unavailable
+  capability rather than silently calling Firebase. An operator may opt into
+  `PUSH_PROVIDER=webhook` with an HTTPS, HMAC-signed
+  `omi.push.webhook.v1`/`omi.push.receipt.v1` bridge; the bridge is bounded,
+  retryable-only, and never falls through to Firebase. Omitting
+  `PUSH_PROVIDER` in a neutral/self-hosted profile has the same fail-closed
+  result before the Firebase SDK is initialized; managed profiles retain
+  their Firebase default. A real receiver/mobile delivery drill remains an
+  external evidence requirement.
 - macOS FluidAudio speech-model loading is managed-only: self-hosted local STT
   and optional PTT language identification fail through their existing
   backend/auto-detect seams instead of implicitly downloading missing weights.
