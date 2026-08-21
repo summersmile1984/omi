@@ -206,6 +206,25 @@ abstract class Env {
     return 'https://raw.githubusercontent.com/BasedHardware/Omi/main${raw.startsWith('/') ? raw : '/$raw'}';
   }
 
+  /// Whether a setup-instructions path is the legacy managed Omi Markdown
+  /// source. Self-hosted clients do not have an operator-owned equivalent
+  /// unless the backend supplies one, so callers must hide this capability
+  /// rather than fetch GitHub directly.
+  static bool isManagedAppInstructionsPath(String? raw) {
+    final uri = Uri.tryParse((raw ?? '').trim());
+    if (uri == null || uri.host.toLowerCase() != 'raw.githubusercontent.com') return false;
+    final path = uri.path.toLowerCase();
+    return path.startsWith('/basedhardware/omi/');
+  }
+
+  static bool supportsAppInstructions({
+    required String? raw,
+    AppEnvironmentProfile? configuredProfile,
+  }) {
+    final effectiveProfile = configuredProfile ?? profile;
+    return !(effectiveProfile == AppEnvironmentProfile.selfHosted && isManagedAppInstructionsPath(raw));
+  }
+
   static String requireConfiguredApiBaseUrl([String? configuredApiBaseUrl]) {
     final value = (configuredApiBaseUrl ?? apiBaseUrl ?? '').trim();
     final uri = Uri.tryParse(value);

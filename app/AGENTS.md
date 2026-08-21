@@ -129,6 +129,9 @@ All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash
 - Self-hosted app-marketplace image paths resolve against the signed operator API
   origin; they must never fall back to the managed GitHub raw asset host. An
   explicit Omi-operated image origin is rejected by `Env.resolveAppImageUrl`.
+- Legacy Omi GitHub Markdown setup instructions are hidden in self-hosted
+  builds when no operator-owned replacement is supplied; managed profiles keep
+  the existing Markdown flow.
 
 ## Codegen Rules
 

@@ -99,6 +99,19 @@ void main() {
       expect(AppEnvironmentProfile.production.managedClientValue('managed-secret'), 'managed-secret');
     });
 
+    test('self-hosted app instructions never fall back to managed GitHub content', () {
+      const managedPath = 'https://raw.githubusercontent.com/BasedHardware/Omi/main/plugins/instructions/a/README.md';
+      expect(Env.isManagedAppInstructionsPath(managedPath), isTrue);
+      expect(
+        Env.supportsAppInstructions(raw: managedPath, configuredProfile: AppEnvironmentProfile.selfHosted),
+        isFalse,
+      );
+      expect(
+        Env.supportsAppInstructions(raw: managedPath, configuredProfile: AppEnvironmentProfile.production),
+        isTrue,
+      );
+    });
+
     test('local profile rejects a production Firebase project', () {
       expect(
         () =>
