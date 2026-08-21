@@ -99,6 +99,13 @@ else
     --scope firestore --scope storage >/dev/null
   for value in "$PUBLIC_BACKEND_URL" "$PUBLIC_AUTH_URL" "$PUBLIC_MCP_URL" "$PUBLIC_OBJECTS_URL"; do
     case "$value" in
+      https://*) ;;
+      *)
+        echo "ERROR: --external requires every public origin to use HTTPS: $value" >&2
+        exit 1
+        ;;
+    esac
+    case "$value" in
       https://*.localhost*|https://localhost*|https://*.test*|https://127.*|https://\[*|https://*.invalid*)
         echo "ERROR: --external refuses local or reserved public origin $value" >&2
         exit 1
@@ -188,6 +195,7 @@ RUN_ARGS=(
   --env "SELF_HOST_ACCEPTANCE_ALLOW_CONTROL_SEED=${SELF_HOST_ACCEPTANCE_ALLOW_CONTROL_SEED:-false}"
   --env "SELF_HOST_LIVE_EGRESS_EVIDENCE_JSON=$LIVE_EGRESS_EVIDENCE_JSON"
   --env "SELF_HOST_SEARXNG_SETTINGS_EVIDENCE_JSON=$SEARXNG_SETTINGS_EVIDENCE_JSON"
+  --env "SELF_HOST_CUTOVER_EDGE_MODE=$MODE"
 )
 if [[ "$MODE" == --local ]]; then
   RUN_ARGS+=(--volume "$CERT_DIR/server.crt:$CA_FILE:ro")

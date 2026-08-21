@@ -202,3 +202,22 @@ def test_mlx_moss_catalog_and_segments_require_exact_model_two_speakers_and_mult
             ],
             audio_duration_seconds=2.0,
         )
+
+
+def test_edge_evidence_distinguishes_disposable_local_ca_from_external_chain():
+    local = SMOKE.edge_evidence('--local')
+    assert local == {
+        'mode': 'local',
+        'trust_source': 'temporary_ca',
+        'certificate_chain_verified': False,
+    }
+
+    external = SMOKE.edge_evidence('--external')
+    assert external == {
+        'mode': 'external',
+        'trust_source': 'system_ca',
+        'certificate_chain_verified': False,
+    }
+
+    with pytest.raises(RuntimeError, match='must be --local or --external'):
+        SMOKE.edge_evidence('cutover-live')

@@ -45,6 +45,21 @@ def require_environment(name: str) -> str:
     return value
 
 
+def edge_evidence(mode: str) -> dict[str, Any]:
+    """Describe the trust source before the public edge probe runs."""
+
+    if mode not in {'--local', '--external'}:
+        raise RuntimeError('SELF_HOST_CUTOVER_EDGE_MODE must be --local or --external')
+    return {
+        'mode': 'local' if mode == '--local' else 'external',
+        # The booleans remain false until the first public HTTPS request below
+        # succeeds with this trust source. This prevents a mode argument from
+        # being mistaken for certificate-chain evidence.
+        'trust_source': 'temporary_ca' if mode == '--local' else 'system_ca',
+        'certificate_chain_verified': False,
+    }
+
+
 def mounted_model_artifact_identity() -> dict[str, Any]:
     artifacts = {
         'sensevoice_model': Path('/models/sensevoice/model.int8.onnx'),
@@ -752,6 +767,7 @@ def main() -> int:
     objects_url = require_environment('PUBLIC_OBJECTS_URL').rstrip('/')
     origin = require_environment('SELF_HOST_AUTH_ORIGIN')
     ca_file = require_environment('SELF_HOST_CUTOVER_CA_FILE')
+    edge = edge_evidence(require_environment('SELF_HOST_CUTOVER_EDGE_MODE'))
     live_egress_evidence = json.loads(require_environment('SELF_HOST_LIVE_EGRESS_EVIDENCE_JSON'))
     searxng_settings_evidence = json.loads(require_environment('SELF_HOST_SEARXNG_SETTINGS_EVIDENCE_JSON'))
     if not isinstance(live_egress_evidence, dict) or not isinstance(searxng_settings_evidence, dict):
@@ -826,6 +842,7 @@ def main() -> int:
         health = require_object(client.get(f'{backend_url}/v1/health'), 'public backend health')
         if not health:
             raise RuntimeError('public backend health returned no evidence')
+        edge['certificate_chain_verified'] = True
         signed_object_crud = public_signed_object_crud(
             client,
             objects_url=objects_url,
@@ -1184,7 +1201,7 @@ def main() -> int:
                 'public_auth_url': auth_url,
                 'public_mcp_url': mcp_url,
                 'public_objects_url': objects_url,
-                'temporary_ca_verified': True,
+                **edge,
                 'jwt_issuer_audience_exact': True,
                 'public_jwks_kid_present': True,
                 'backend_private_jwks_verification': True,
