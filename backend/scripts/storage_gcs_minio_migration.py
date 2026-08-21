@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Mapping, Protocol, Sequence, cast
+from typing import Any, BinaryIO, Callable, Iterable, Mapping, Protocol, Sequence, cast
 from urllib.parse import urlsplit
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -489,12 +489,27 @@ def _read_stream_part(stream: BinaryIO, maximum: int) -> bytes:
     return b''.join(chunks)
 
 
-def inventory_source(source: SourceStore, plan: MigrationPlan) -> tuple[tuple[ObjectRecord, ...], Inventory]:
+def inventory_source(
+    source: SourceStore,
+    plan: MigrationPlan,
+    *,
+    source_read_guard: Callable[[], None] | None = None,
+) -> tuple[tuple[ObjectRecord, ...], Inventory]:
+    """Capture source objects, rechecking an optional cutover guard per read.
+
+    A source-write freeze is a bounded lease rather than a process-wide lock.
+    Rechecking at each list/open boundary prevents a long inventory from
+    silently continuing after that lease expires.
+    """
+
+    guard = source_read_guard or (lambda: None)
     records: list[ObjectRecord] = []
     target_keys: set[tuple[str, str]] = set()
     for scope in plan.scopes:
+        guard()
         descriptors = sorted(source.list_objects(scope), key=lambda item: (item.name, str(item.generation)))
         for descriptor in descriptors:
+            guard()
             provisional = _record_from_descriptor(scope, descriptor, '0' * 64)
             with source.open_object(provisional) as stream:
                 sha256 = _sha256_stream(stream, expected_size=provisional.size)
@@ -740,7 +755,10 @@ def _copy_one(
     record: ObjectRecord,
     *,
     plan_sha256: str,
+    source_read_guard: Callable[[], None] | None = None,
 ) -> None:
+    if source_read_guard is not None:
+        source_read_guard()
     with source.open_object(record) as raw:
         hashing = _HashingReader(raw)
         target.put_object_create_only(record, cast(BinaryIO, hashing), plan_sha256=plan_sha256)
@@ -760,6 +778,7 @@ def run_apply(
     checkpoint_path: Path,
     *,
     existing_policy: str,
+    source_read_guard: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     if existing_policy not in POLICIES:
         raise ValueError('existing_policy must be create-only or same-hash')
@@ -803,7 +822,13 @@ def run_apply(
                     raise TargetConflictError('create-only migration encountered an existing target object')
                 _verify_target_object(target, existing, record, plan_sha256=plan.sha256)
             else:
-                _copy_one(source, target, record, plan_sha256=plan.sha256)
+                _copy_one(
+                    source,
+                    target,
+                    record,
+                    plan_sha256=plan.sha256,
+                    source_read_guard=source_read_guard,
+                )
             next_index = index + 1
             checkpoint.update(status='importing', next_index=next_index)
             _atomic_json(checkpoint_path, checkpoint)
@@ -829,6 +854,7 @@ def run_verify(
     checkpoint_path: Path,
     *,
     existing_policy: str,
+    source_read_guard: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     if existing_policy not in POLICIES:
         raise ValueError('existing_policy must be create-only or same-hash')
@@ -850,7 +876,7 @@ def run_verify(
     try:
         checkpoint.update(status='verifying')
         _atomic_json(checkpoint_path, checkpoint)
-        live_records, live_source = inventory_source(source, plan)
+        live_records, live_source = inventory_source(source, plan, source_read_guard=source_read_guard)
         target_state = target_inventory(target, plan, manifest)
         manifest_state = _inventory(manifest.records)
         expected = (manifest.inventory.count, manifest.inventory.content_hash)
@@ -861,6 +887,11 @@ def run_verify(
         }
         if any(value != expected for value in observed.values()) or _inventory(live_records) != live_source:
             raise StorageReconciliationError('source/manifest/target count or content reconciliation failed')
+        if source_read_guard is not None:
+            # Keep the lease active through the evidence transition.  A
+            # caller must not receive a passing cutover result after its
+            # source-write lease has expired during target verification.
+            source_read_guard()
         checkpoint.update(
             status='passed',
             verified_at=datetime.now(timezone.utc).isoformat(),
@@ -1167,13 +1198,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             manifest = load_manifest(arguments.manifest, plan)
             target = _configured_target(arguments)
-            verify_lease(
-                arguments.freeze_lease,
-                source_project=arguments.source_project,
-                source_database='(default)',
-                source_endpoint=source.authority.endpoint,
-                required_scopes={'storage'},
-            )
+
+            def verify_source_write_freeze() -> None:
+                verify_lease(
+                    arguments.freeze_lease,
+                    source_project=arguments.source_project,
+                    source_database='(default)',
+                    source_endpoint=source.authority.endpoint,
+                    required_scopes={'storage'},
+                )
+
+            verify_source_write_freeze()
             if arguments.command == 'apply':
                 applied = run_apply(
                     source,
@@ -1182,6 +1217,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     manifest,
                     arguments.checkpoint,
                     existing_policy=arguments.existing_policy,
+                    source_read_guard=verify_source_write_freeze,
                 )
                 result = {
                     'status': applied['status'],
@@ -1197,6 +1233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     manifest,
                     arguments.checkpoint,
                     existing_policy=arguments.existing_policy,
+                    source_read_guard=verify_source_write_freeze,
                 )
                 result = {
                     'status': verified['status'],
