@@ -82,6 +82,18 @@ def _typesense_client() -> Any:
     return client
 
 
+def _is_typesense_object_not_found(exc: Exception) -> bool:
+    """Return whether Typesense authoritatively reports the target absent."""
+    # Keep this optional projection module importable for callers that do not
+    # use Typesense. Some lightweight runtimes and tests intentionally provide
+    # only a top-level ``typesense`` placeholder.
+    try:
+        from typesense.exceptions import ObjectNotFound
+    except ImportError:
+        return False
+    return isinstance(exc, ObjectNotFound)
+
+
 def memories_collection_name() -> str:
     return os.getenv(ATOM_KEYWORD_COLLECTION_ENV, MEMORIES_COLLECTION).strip() or MEMORIES_COLLECTION
 
@@ -298,16 +310,7 @@ def delete_atom_keyword_doc(uid: str, memory_id: str, *, db_client: Any = None) 
         )
         return True
     except Exception as exc:
-        # Keep this optional projection module importable for callers that do
-        # not use Typesense. Some lightweight runtimes and tests intentionally
-        # provide only a top-level ``typesense`` placeholder.
-        try:
-            from typesense.exceptions import ObjectNotFound
-        except ImportError:
-            object_not_found_type = None
-        else:
-            object_not_found_type = ObjectNotFound
-        if object_not_found_type is not None and isinstance(exc, object_not_found_type):
+        if _is_typesense_object_not_found(exc):
             return True
         logger.warning("delete_atom_keyword_doc failed uid=%s memory_id=%s: %s", uid, memory_id, exc)
         return False
@@ -334,6 +337,11 @@ def purge_user_atom_keyword_index(
         )
         return int(result.get("num_deleted") or 0)
     except Exception as exc:
+        # A missing collection authoritatively proves that no keyword document
+        # for this user exists. Treat that exact absence as an idempotent purge,
+        # while preserving fail-closed behavior for outages and auth failures.
+        if _is_typesense_object_not_found(exc):
+            return 0
         logger.warning("purge_user_atom_keyword_index failed uid=%s: %s", uid, exc)
         if raise_on_failure:
             raise

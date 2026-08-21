@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import types
 import importlib
 from dataclasses import dataclass
@@ -666,6 +667,25 @@ class TestPurgeAndRebuild:
 
         with pytest.raises(RuntimeError, match="typesense down"):
             purge_user_atom_keyword_index(CANONICAL_UID, force=True, raise_on_failure=True)
+
+    def test_strict_keyword_purge_treats_missing_collection_as_confirmed_absence(self, monkeypatch):
+        class ObjectNotFound(OSError):
+            pass
+
+        exceptions = types.ModuleType("typesense.exceptions")
+        exceptions.ObjectNotFound = ObjectNotFound
+        monkeypatch.setitem(sys.modules, "typesense.exceptions", exceptions)
+
+        documents = MagicMock()
+        documents.delete.side_effect = ObjectNotFound("Collection not found")
+        collection = MagicMock()
+        collection.documents = documents
+        client = MagicMock()
+        client.collections.__getitem__.return_value = collection
+        monkeypatch.setattr("utils.memory.atom_keyword_index._typesense_client", lambda: client)
+
+        assert purge_user_atom_keyword_index(CANONICAL_UID, force=True, raise_on_failure=True) == 0
+        documents.delete.assert_called_once()
 
     def test_disabled_keyword_provider_confirms_absence_without_typesense(self, monkeypatch):
         client = MagicMock(side_effect=AssertionError('disabled provider must not construct Typesense'))
