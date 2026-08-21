@@ -52,14 +52,13 @@ def get_sensevoice_recognizer() -> Any:
     if _recognizer is None:
         with _recognizer_lock:
             if _recognizer is None:
-                import sherpa_onnx
+                import sherpa_onnx  # pyright: ignore[reportMissingImports]
 
                 model = os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx")
                 tokens = os.path.join(SENSEVOICE_MODEL_DIR, "tokens.txt")
                 if not (os.path.exists(model) and os.path.exists(tokens)):
                     raise RuntimeError(
-                        f"SenseVoice model not found at {SENSEVOICE_MODEL_DIR} "
-                        "(set SENSEVOICE_MODEL_DIR)"
+                        f"SenseVoice model not found at {SENSEVOICE_MODEL_DIR} " "(set SENSEVOICE_MODEL_DIR)"
                     )
                 _recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
                     model=model,

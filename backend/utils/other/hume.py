@@ -209,7 +209,7 @@ class HumeClient:
                 headers={
                     'Content-Type': 'application/json',
                     'Accept': 'application/json; charset=utf-8',
-                    'X-Hume-Api-Key': self.api_key if self.api_key is not None else '',
+                    'X-Hume-Api-Key': self.api_key,
                 },
                 timeout=300.0,
                 follow_redirects=True,

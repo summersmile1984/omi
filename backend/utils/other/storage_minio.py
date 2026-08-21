@@ -14,9 +14,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, Optional
 
-import boto3
+import boto3  # pyright: ignore[reportMissingImports]
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class _MinioBlob:
     def name(self) -> str:
         return self._name
 
-    def upload_from_string(self, data: str, content_type: Optional[str] = None) -> None:
+    def upload_from_string(self, data: str | bytes, content_type: Optional[str] = None) -> None:
         self._s3.put_object(
             Bucket=self._bucket,
             Key=self._name,

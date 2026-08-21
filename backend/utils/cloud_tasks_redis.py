@@ -23,7 +23,6 @@ import argparse
 import json
 import logging
 import os
-import sys
 import time
 from typing import Any, Dict, Optional
 
@@ -95,7 +94,9 @@ def enqueue_account_deletion_wipe(wipe_job_id: str) -> None:
 
 
 def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> None:
-    _enqueue(QUEUE_NAMES["finalization"], f"fin-{job_id}", {"job_id": job_id, "dispatch_generation": dispatch_generation})
+    _enqueue(
+        QUEUE_NAMES["finalization"], f"fin-{job_id}", {"job_id": job_id, "dispatch_generation": dispatch_generation}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +124,12 @@ def _worker(queue_name: str) -> None:
         logger.error("%s not set; cannot dispatch %s tasks", handler_env, queue_name)
         return
     logger.info("worker %s -> %s (blocking on %s)", queue_name, handler_url, queue_key)
-    r = _r()
+    # redis-py exposes both synchronous and asyncio client overloads through
+    # the same stubs. This worker is intentionally synchronous; keep the
+    # boundary typed as Any so pyright does not infer an awaitable result from
+    # the async overload while the runtime still receives a (key, payload)
+    # tuple from ``Redis.blpop``.
+    r: Any = _r()
     while True:
         raw = r.blpop(queue_key, timeout=1)
         if raw is None:

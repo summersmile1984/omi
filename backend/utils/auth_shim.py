@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 import httpx
 import jwt as pyjwt
@@ -50,24 +50,25 @@ def _fetch_jwks() -> Dict[str, Any]:
     global _jwks, _jwks_fetched_at
     now = time.time()
     with _jwks_lock:
-        if _jwks is not None and (now - _jwks_fetched_at) < JWKS_CACHE_TTL:
-            return _jwks
+        cached = _jwks
+        if cached is not None and (now - _jwks_fetched_at) < JWKS_CACHE_TTL:
+            return cached
         try:
             resp = httpx.get(JWKS_URL, timeout=JWKS_TIMEOUT)
             resp.raise_for_status()
-            data = resp.json()
+            data = cast(Dict[str, Any], resp.json())
         except Exception as exc:
             # Stale cache is better than failing closed on a transient fetch error
-            if _jwks is not None:
+            if cached is not None:
                 logger.warning("JWKS refresh failed, using stale cache: %s", exc)
-                return _jwks
+                return cached
             raise CertificateFetchError(f"JWKS fetch failed: {exc}") from exc
         if "keys" not in data:
             raise CertificateFetchError(f"JWKS response missing keys: {data}")
         _jwks = data
         _jwks_fetched_at = now
         logger.info("auth_shim: JWKS cached (%d keys)", len(data["keys"]))
-        return _jwks
+        return data
 
 
 def verify_id_token(token: str, **_: Any) -> Dict[str, Any]:
