@@ -15,6 +15,30 @@ class ObjectNotFound(Exception):
     pass
 
 
+def test_keyword_provider_defaults_are_profile_aware() -> None:
+    assert index.conversation_keyword_index_provider({}) == 'firebase_extension'
+    assert (
+        index.conversation_keyword_index_provider(
+            {
+                'OMI_DEPLOYMENT_PROFILE': 'self_hosted',
+                'CONVERSATION_KEYWORD_INDEX_PROVIDER': '',
+                'TYPESENSE_HOST': 'typesense',
+                'TYPESENSE_API_KEY': 'ambient-key',
+            }
+        )
+        == 'disabled'
+    )
+    assert (
+        index.conversation_keyword_index_provider(
+            {
+                'OMI_DEPLOYMENT_PROFILE': 'self_hosted',
+                'CONVERSATION_KEYWORD_INDEX_PROVIDER': 'typesense',
+            }
+        )
+        == 'typesense'
+    )
+
+
 class _Documents:
     def __init__(self):
         self.rows: dict[str, dict] = {}

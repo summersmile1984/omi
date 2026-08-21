@@ -94,6 +94,7 @@ from models.memory_evidence import ArtifactPreservationState, MemoryEvidence, So
 from models.product_memory import MemoryItemStatus, MemoryTier, ProcessingState, MemoryItem
 from utils.memory.atom_keyword_index import (
     AtomKeywordRebuildReport,
+    atom_keyword_index_provider,
     build_atom_keyword_document,
     delete_atom_keyword_doc,
     ensure_memories_collection,
@@ -106,6 +107,27 @@ from utils.memory.atom_keyword_index import (
     sync_atom_keyword_index_for_item,
     upsert_atom_keyword_doc,
 )
+
+
+def test_keyword_provider_defaults_are_profile_aware():
+    assert atom_keyword_index_provider({}) == "typesense"
+    assert (
+        atom_keyword_index_provider(
+            {
+                "OMI_DEPLOYMENT_PROFILE": "neutral",
+                "MEMORY_KEYWORD_INDEX_PROVIDER": "",
+                "TYPESENSE_HOST": "typesense",
+                "TYPESENSE_API_KEY": "ambient-key",
+            }
+        )
+        == "disabled"
+    )
+    assert (
+        atom_keyword_index_provider({"OMI_DEPLOYMENT_PROFILE": "neutral", "MEMORY_KEYWORD_INDEX_PROVIDER": "typesense"})
+        == "typesense"
+    )
+
+
 from utils.memory.canonical_memory_adapter import (
     purge_canonical_derived_user_data,
     retract_conversation_sourced_memories,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Any, Callable, Literal, TypedDict, cast
 
@@ -39,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 def _purge_user_conversation_keyword_index(uid: str) -> int:
     """Load the self-host projection only in deployments that explicitly own it."""
-    if os.getenv('CONVERSATION_KEYWORD_INDEX_PROVIDER', 'firebase_extension').strip().lower() != 'typesense':
+    from utils.conversations.typesense_index import conversation_keyword_index_provider
+
+    if conversation_keyword_index_provider() != 'typesense':
         return 0
     from utils.conversations.typesense_index import purge_user_conversation_index
 

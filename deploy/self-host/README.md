@@ -227,6 +227,14 @@ Put an HTTPS reverse proxy/load balancer in front of the bound ports:
 - `PUBLIC_OBJECTS_URL` -> `${SELF_HOST_BIND_ADDRESS}:${MINIO_API_PORT}`
 - `OMI_SHARE_BASE_URL` -> the operator's public share-link application
 
+`PUBLIC_MCP_URL` is the operator-owned MCP origin. Compose derives
+`MCP_RESOURCE_URL=${PUBLIC_MCP_URL}/v1/mcp/sse`, but a direct/non-Compose launch
+must set either `MCP_RESOURCE_URL` or `PUBLIC_MCP_URL` explicitly. Neutral and
+self-hosted profiles reject missing, malformed, or Omi-operated authorities;
+the OAuth discovery, authorize, and token endpoints return typed HTTP 503
+`deployment_capability_unavailable` instead of advertising or contacting
+`api.omi.me`. Managed deployments retain their historical resource default.
+
 `OMI_SHARE_BASE_URL` is a required operator-owned HTTPS origin (for example,
 `https://share.example.net`). It must be an exact origin with no path,
 credentials, query, or fragment, and must not be an Omi-operated host. The
@@ -462,10 +470,13 @@ silently producing an incomplete transcript projection.
 Conversation keyword search is likewise a rebuildable projection, but it has a
 separate, backend-owned Typesense schema (`omi_conversations`). The self-host
 profile sets `CONVERSATION_KEYWORD_INDEX_PROVIDER=typesense`; it never waits for
-or invokes the Firebase Typesense extension. Create/update/finalization/delete
-paths synchronously maintain this projection. A selected but unreachable
-Typesense service is surfaced as an unavailable search capability rather than
-an empty result set.
+or invokes the Firebase Typesense extension. If a neutral/self-hosted process
+is launched outside Compose and omits that provider, it resolves to typed
+`disabled` even when ambient Typesense credentials exist. Create/update/finalization/delete
+paths synchronously maintain this projection when selected. A selected but
+unreachable Typesense service is surfaced as an unavailable search capability
+rather than an empty result set. The canonical memory keyword projection uses
+the same explicit-provider rule through `MEMORY_KEYWORD_INDEX_PROVIDER`.
 
 After restore or before cutover, rebuild and then independently reconcile the
 authoritative Firestore-shim rows against Typesense count and content hashes:

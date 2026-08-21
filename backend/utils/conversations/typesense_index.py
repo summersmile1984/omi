@@ -13,12 +13,13 @@ import os
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Iterator, Optional, cast
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, cast
 
 CONVERSATION_KEYWORD_PROVIDER_ENV = 'CONVERSATION_KEYWORD_INDEX_PROVIDER'
 CONVERSATION_COLLECTION_ENV = 'CONVERSATION_TYPESENSE_COLLECTION'
 DEFAULT_CONVERSATION_COLLECTION = 'omi_conversations'
 SCHEMA_VERSION = 1
+NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
 
 
 class ConversationIndexUnavailableError(RuntimeError):
@@ -47,14 +48,19 @@ class ConversationIndexReconciliation:
         return {**asdict(self), 'matches': self.matches}
 
 
-def conversation_keyword_index_provider() -> str:
+def conversation_keyword_index_provider(environ: Mapping[str, str] | None = None) -> str:
     """Return the explicit projection owner for this deployment.
 
     Managed Omi keeps the historical Firebase extension by default.  The
     self-host compose file pins this to ``typesense`` and therefore exercises
-    only the implementation in this module.
+    only the implementation in this module. Neutral profiles disable the
+    projection when the operator omitted the provider, so an ambient
+    Typesense credential cannot create an unexpected index or network path.
     """
-    provider = os.getenv(CONVERSATION_KEYWORD_PROVIDER_ENV, 'firebase_extension').strip().lower()
+    values = os.environ if environ is None else environ
+    configured = (values.get(CONVERSATION_KEYWORD_PROVIDER_ENV) or '').strip().lower()
+    profile = (values.get('OMI_DEPLOYMENT_PROFILE') or '').strip().lower()
+    provider = configured or ('disabled' if profile in NEUTRAL_DEPLOYMENT_PROFILES else 'firebase_extension')
     if provider not in {'firebase_extension', 'typesense', 'disabled'}:
         raise ConversationIndexUnavailableError(f'unsupported conversation keyword index provider {provider!r}')
     return provider

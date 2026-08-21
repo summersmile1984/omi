@@ -178,8 +178,10 @@ deployment:
 - the self-host profile uses explicit, operator-owned Typesense projections for
   canonical memory and conversation keyword search. The projection schema,
   rebuild/reconcile commands and account-deletion ordering are independent of
-  the retired Firebase Typesense extension; an unavailable selected service is
-  a typed search failure, never an empty vector-only result.
+  the retired Firebase Typesense extension; neutral/self-hosted omission of
+  either provider setting resolves to `disabled` before ambient credentials
+  are inspected, and an unavailable selected service is a typed search
+  failure, never an empty vector-only result.
 - push delivery defaults to `PUSH_PROVIDER=disabled` in the checked-in
   self-host profile, so notification requests return a typed unavailable
   capability rather than silently calling Firebase. An operator may opt into

@@ -53,6 +53,19 @@ def test_selected_but_unconfigured_provider_is_typed_and_never_constructs_client
     get_client.assert_not_called()
 
 
+def test_neutral_omission_is_typed_disabled_before_ambient_typesense(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('CONVERSATION_KEYWORD_INDEX_PROVIDER', raising=False)
+    monkeypatch.setenv('TYPESENSE_HOST', 'ambient-typesense')
+    monkeypatch.setenv('TYPESENSE_API_KEY', 'ambient-key')
+    with patch('utils.conversations.search._get_typesense_client') as get_client:
+        with pytest.raises(ConversationSearchUnavailableError) as error:
+            search_conversations(uid='uid-1', query='meeting notes')
+    assert error.value.retryable is False
+    assert error.value.provider == 'disabled'
+    get_client.assert_not_called()
+
+
 def test_invalid_provider_value_is_typed_unavailable(monkeypatch):
     monkeypatch.setenv('CONVERSATION_KEYWORD_INDEX_PROVIDER', 'unknown-provider')
 

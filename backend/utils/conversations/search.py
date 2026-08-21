@@ -358,10 +358,14 @@ def search_conversations(
     except ConversationSearchUnavailableError:
         raise
     except ConversationIndexUnavailableError as e:
-        configured_provider = os.getenv('CONVERSATION_KEYWORD_INDEX_PROVIDER', 'firebase_extension').strip().lower()
-        raise ConversationSearchUnavailableError(
-            str(e), retryable=False, provider=configured_provider or 'invalid'
-        ) from e
+        try:
+            provider = conversation_keyword_index_provider()
+        except ConversationIndexUnavailableError:
+            # Preserve the invalid configured token in the public typed
+            # failure; attempting to resolve it again would mask the actual
+            # configuration error with a second exception.
+            provider = os.getenv('CONVERSATION_KEYWORD_INDEX_PROVIDER', '').strip().lower() or 'invalid'
+        raise ConversationSearchUnavailableError(str(e), retryable=False, provider=provider) from e
     except Exception as e:
         if _is_typesense_transient_error(e):
             logger.warning(

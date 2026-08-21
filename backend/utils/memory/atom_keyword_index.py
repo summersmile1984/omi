@@ -11,7 +11,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import timezone
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Mapping, Optional, cast
 
 from database._client import db as default_db_client
 from database.memory_vector_metadata import canonical_memory_provider_id
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 ATOM_KEYWORD_COLLECTION_ENV = "MEMORY_TYPESENSE_COLLECTION"
 ATOM_KEYWORD_PROVIDER_ENV = "MEMORY_KEYWORD_INDEX_PROVIDER"
 MEMORIES_COLLECTION = "canonical_memory_atoms"
+NEUTRAL_DEPLOYMENT_PROFILES = frozenset({"neutral", "self_hosted", "self-hosted"})
 _DEFAULT_CATEGORY = "interesting"
 _REQUIRED_SCHEMA_FIELDS = {
     "memory_id",
@@ -98,9 +99,17 @@ def memories_collection_name() -> str:
     return os.getenv(ATOM_KEYWORD_COLLECTION_ENV, MEMORIES_COLLECTION).strip() or MEMORIES_COLLECTION
 
 
-def atom_keyword_index_provider() -> str:
-    """Resolve the deployment-wide keyword projection provider."""
-    provider = os.getenv(ATOM_KEYWORD_PROVIDER_ENV, "typesense").strip().lower() or "typesense"
+def atom_keyword_index_provider(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve the deployment-wide keyword projection provider.
+
+    A neutral/self-hosted process must name its projection owner explicitly.
+    This prevents an ambient Typesense credential from turning the optional
+    memory index back on when the deployment omitted its provider setting.
+    """
+    values = os.environ if environ is None else environ
+    configured = (values.get(ATOM_KEYWORD_PROVIDER_ENV) or "").strip().lower()
+    profile = (values.get("OMI_DEPLOYMENT_PROFILE") or "").strip().lower()
+    provider = configured or ("disabled" if profile in NEUTRAL_DEPLOYMENT_PROFILES else "typesense")
     if provider not in {"typesense", "disabled"}:
         raise RuntimeError(f"unsupported memory keyword index provider {provider!r}")
     return provider
