@@ -25,7 +25,7 @@ import os
 import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
@@ -525,9 +525,20 @@ def _timestamp(value: Any) -> int:
     if isinstance(value, bool):
         raise ExportError('boolean cannot be used as a timestamp authority field')
     if isinstance(value, datetime):
-        return int(value.timestamp())
+        normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(normalized.timestamp())
     if isinstance(value, date):
-        return int(datetime(value.year, value.month, value.day).timestamp())
+        return int(datetime(value.year, value.month, value.day, tzinfo=timezone.utc).timestamp())
+    if isinstance(value, str):
+        raw = value.strip()
+        try:
+            parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            normalized = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+            return int(normalized.timestamp())
+        value = raw
     try:
         return int(value)
     except (TypeError, ValueError) as error:

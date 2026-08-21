@@ -63,7 +63,16 @@ class FakeAuthority:
                 ],
                 'x_posts': [SourceDocument('p1', {'id': 'p1', 'text': 'A post', 'kind': 'bookmark'})],
                 'screen_activity': [
-                    SourceDocument('s1', {'storageId': 's1', 'ocrText': 'OCR text', 'timestamp': '1735689600'})
+                    SourceDocument(
+                        's1',
+                        {
+                            'storageId': 's1',
+                            'ocrText': 'OCR text',
+                            # The production screen_activity writer stores a
+                            # UTC wall-clock timestamp string, not epoch text.
+                            'timestamp': '2025-01-01 00:00:00.000',
+                        },
+                    )
                 ],
                 'action_items': [
                     SourceDocument('a1', {'id': 'a1', 'description': 'Do this', 'status': 'active'}),
@@ -110,6 +119,7 @@ def test_export_writes_all_seven_authority_namespaces_and_hash_bound_sidecar(tmp
     assert records['workstream-association-v1'][0]['id'] == 'u1:workstream:3:w1'
     assert records['ns_x'][0]['id'] == 'u1-x-p1'
     assert records['ns3'][0]['id'] == 'u1-sa-s1'
+    assert records['ns3'][0]['metadata']['timestamp'] == 1735689600
     assert records['ns4'][0]['id'] == 'u1-ai-a1'
     assert records['ns_tchunks'][0]['id'] == 'u1-c1-c0'
     assert all(set(record) == {'id', 'content', 'metadata'} for rows in records.values() for record in rows)
