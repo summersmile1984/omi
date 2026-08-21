@@ -175,7 +175,9 @@ deployment:
   a typed search failure, never an empty vector-only result.
 - push delivery is explicitly `PUSH_PROVIDER=disabled` until an operator push
   service is configured; notification requests return a typed unavailable
-  capability rather than silently calling Firebase.
+  capability rather than silently calling Firebase. Omitting `PUSH_PROVIDER`
+  in a neutral/self-hosted profile has the same fail-closed result before the
+  Firebase SDK is initialized; managed profiles retain their Firebase default.
 - Agent VM cleanup is explicitly `AGENT_VM_PROVIDER=disabled`; legacy GCE
   state blocks deletion until it is imported/reconciled, so missing ADC cannot
   be mistaken for successful cleanup.

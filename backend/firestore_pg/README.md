@@ -224,7 +224,12 @@ endpoint, and emulator authority (when present); any authority change fails
 closed. Preserve both to resume after interruption; they contain customer data
 and must be kept in encrypted operator-controlled storage, then securely
 removed per policy. Source writes must be paused by external change control and
-proved with the mode-0600 HMAC freeze lease before the import begins.
+proved with the mode-0600 HMAC freeze lease before the import begins. The
+importer revalidates that lease before every source-iterator advance during
+the initial capture, before every resumed target write, and again immediately
+before the live source reconciliation. If the lease expires, a partial capture
+manifest is removed and the run fails closed; it cannot be mistaken for a
+resumable authority artifact.
 Starting without a checkpoint refuses a non-empty target. Completion rescans
 the live source and independently enumerates all registered PG tables; source
 snapshot, live source, and target must have identical document counts and

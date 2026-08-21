@@ -152,6 +152,17 @@ def test_disabled_push_provider_never_reads_tokens_or_calls_firebase(monkeypatch
         messaging.send_each.assert_not_called()
 
 
+def test_neutral_profile_with_omitted_push_provider_never_reads_tokens_or_calls_firebase(monkeypatch) -> None:
+    """An ambient Firebase credential must not opt a neutral runtime into push."""
+    monkeypatch.delenv('PUSH_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'neutral')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        notifications.send_notification('user-1', 'omi', 'hello')
+
+        notification_db.get_all_tokens.assert_not_called()
+        messaging.send_each.assert_not_called()
+
+
 def test_disabled_push_provider_blocks_direct_data_only_sender(monkeypatch) -> None:
     """Internal data-only notification paths must share the provider boundary."""
     monkeypatch.setenv('PUSH_PROVIDER', 'disabled')

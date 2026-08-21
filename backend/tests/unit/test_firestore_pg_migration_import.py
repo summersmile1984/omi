@@ -156,6 +156,37 @@ def test_capture_source_writes_private_resume_manifest(tmp_path):
     assert len(manifest.read_text(encoding='utf-8').splitlines()) == 2
 
 
+def test_capture_source_rechecks_freeze_before_each_source_read_and_cleans_partial_manifest(tmp_path):
+    calls = 0
+
+    def guard():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise importer.ImportReconciliationError('source-write freeze lease expired')
+
+    checkpoint_path = tmp_path / 'checkpoint.json'
+    manifest_path = checkpoint_path.with_suffix(checkpoint_path.suffix + '.documents.jsonl')
+
+    with pytest.raises(importer.ImportReconciliationError, match='lease expired'):
+        capture_source(_source(), checkpoint_path, source_read_guard=guard)
+
+    assert calls == 2
+    assert not checkpoint_path.exists()
+    assert not manifest_path.exists()
+    assert not list(tmp_path.glob('.*documents.jsonl.tmp-*'))
+
+
+def test_run_import_checks_freeze_before_initial_target_inventory(monkeypatch, tmp_path):
+    def guard():
+        raise importer.ImportReconciliationError('source-write freeze lease expired')
+
+    monkeypatch.setattr(importer, 'capture_source', lambda *args, **kwargs: pytest.fail('capture must not start'))
+
+    with pytest.raises(importer.ImportReconciliationError, match='lease expired'):
+        importer.run_import(_Source([]), tmp_path / 'checkpoint.json', engine=object(), freeze_guard=guard)
+
+
 def test_capture_hash_is_independent_of_depth_first_versus_path_order(monkeypatch, tmp_path):
     records = [
         {'path': 'roots/a', 'data': {'v': 1}, 'collection_id': 'roots'},

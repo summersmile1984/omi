@@ -12,6 +12,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from utils.identity import identity_provider, validate_identity_configuration
+from config.push_provider import validate_push_provider
 
 validate_identity_configuration()
 
@@ -118,9 +119,10 @@ log_langsmith_status()
 # Validate Stripe price IDs so misconfigured plans fail loud
 validate_stripe_price_ids()
 
-_push_provider = os.getenv('PUSH_PROVIDER', 'firebase').strip().lower()
-if _push_provider not in {'firebase', 'disabled'}:
-    raise RuntimeError(f'unsupported PUSH_PROVIDER={_push_provider!r}')
+try:
+    _push_provider = validate_push_provider()
+except ValueError as error:
+    raise RuntimeError(str(error)) from error
 _firebase_admin_required = identity_provider() == 'firebase' or _push_provider == 'firebase'
 if _firebase_admin_required:
     _auth_emulator_host = os.environ.get("FIREBASE_AUTH_EMULATOR_HOST", "").strip()

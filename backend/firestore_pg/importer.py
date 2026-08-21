@@ -215,8 +215,20 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def capture_source(client: Any, checkpoint_path: Path) -> dict[str, Any]:
-    """Capture one immutable source snapshot and create its resume checkpoint."""
+def capture_source(
+    client: Any,
+    checkpoint_path: Path,
+    *,
+    source_read_guard: Optional[Callable[[], None]] = None,
+) -> dict[str, Any]:
+    """Capture one immutable source snapshot and create its resume checkpoint.
+
+    ``source_read_guard`` is evaluated immediately before advancing the source
+    iterator for every record.  A freeze lease can expire while a large
+    Firestore tree is being enumerated; checking only after importing would
+    allow the stale capture to keep consuming source data and writing a target
+    that can never be admitted.
+    """
     if checkpoint_path.exists():
         raise FileExistsError(f'import checkpoint already exists: {checkpoint_path}')
     source = _source_authority(client)
@@ -228,16 +240,29 @@ def capture_source(client: Any, checkpoint_path: Path) -> dict[str, Any]:
     record_digests: list[bytes] = []
     count = 0
     collections: set[str] = set()
-    with temporary.open('x', encoding='utf-8') as handle:
-        os.chmod(temporary, 0o600)
-        for record in walk_source(client):
-            encoded = _encoded_record(record)
-            handle.write(encoded.decode('utf-8') + '\n')
-            record_digests.append(_record_digest(encoded))
-            count += 1
-            collections.add(str(record['collection_id']))
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        with temporary.open('x', encoding='utf-8') as handle:
+            os.chmod(temporary, 0o600)
+            source_records = iter(walk_source(client))
+            while True:
+                if source_read_guard is not None:
+                    source_read_guard()
+                try:
+                    record = next(source_records)
+                except StopIteration:
+                    break
+                encoded = _encoded_record(record)
+                handle.write(encoded.decode('utf-8') + '\n')
+                record_digests.append(_record_digest(encoded))
+                count += 1
+                collections.add(str(record['collection_id']))
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        # Do not leave a partial manifest that could be mistaken for a
+        # resumable capture after a lease expiry or source read failure.
+        temporary.unlink(missing_ok=True)
+        raise
     temporary.replace(manifest_path)
     checkpoint = {
         'schema_version': IMPORT_SCHEMA_VERSION,
@@ -317,9 +342,17 @@ def run_import(
     checkpoint_interval: int = 100,
     freeze_guard: Optional[Callable[[], None]] = None,
 ) -> dict[str, Any]:
-    """Import or resume, then prove live-source/manifest/target reconciliation."""
+    """Import or resume, then prove live-source/manifest/target reconciliation.
+
+    A supplied freeze guard applies to both fresh capture and resume.  It is
+    intentionally checked before each manifest write as well as before the
+    final live-source reconciliation, so an expired lease fails closed before
+    more target state is admitted.
+    """
     if checkpoint_interval < 1:
         raise ValueError('checkpoint_interval must be positive')
+    if freeze_guard is not None:
+        freeze_guard()
     engine = engine or get_engine()
     check_schema(engine)
     if checkpoint_path.exists():
@@ -330,7 +363,7 @@ def run_import(
             raise ImportReconciliationError(
                 'target contains documents but no matching checkpoint; use a fresh database or restore the checkpoint'
             )
-        checkpoint = capture_source(source_client, checkpoint_path)
+        checkpoint = capture_source(source_client, checkpoint_path, source_read_guard=freeze_guard)
 
     source = _source_authority(source_client)
     expected_authority = (
@@ -360,6 +393,8 @@ def run_import(
         for index, record in enumerate(_manifest_records(manifest_path)):
             if index < next_index:
                 continue
+            if freeze_guard is not None:
+                freeze_guard()
             _write_manifest_record(engine, collection_tables, record)
             next_index = index + 1
             if next_index % checkpoint_interval == 0:

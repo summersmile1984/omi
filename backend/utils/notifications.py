@@ -18,6 +18,7 @@ from database.redis_db import (
 from database.auth import get_user_from_uid
 from utils.notification_text import to_plain_text
 from utils import identity
+from config.push_provider import selected_push_provider
 from .llm.notifications import (
     generate_notification_message,
     generate_credit_limit_notification,
@@ -29,9 +30,14 @@ logger = logging.getLogger(__name__)
 
 
 def push_notifications_enabled() -> bool:
-    """Return whether this deployment opted into the Firebase push adapter."""
+    """Return whether this deployment opted into the Firebase push adapter.
 
-    return os.getenv('PUSH_PROVIDER', 'firebase').strip().lower() == 'firebase'
+    Neutral profiles default to disabled when the provider is omitted; this
+    mirrors the startup boundary in ``main.py`` and prevents accidental vendor
+    egress from low-level notification helpers.
+    """
+
+    return selected_push_provider() == 'firebase'
 
 
 def push_capability_unavailable() -> dict[str, object]:

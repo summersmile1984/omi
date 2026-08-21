@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:app_links/app_links.dart';
 import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
@@ -250,7 +251,14 @@ class AuthService {
   static const _pkceCodeVerifierLength = 64;
   static const _pkceCharset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
 
-  getFirebaseUser() {
+  /// Returns the managed Firebase user when that SDK is actually available.
+  ///
+  /// Better Auth/self-hosted builds deliberately do not initialize Firebase.
+  /// Calling `FirebaseAuth.instance` in those builds throws `core/no-app`, so
+  /// callers that only need an optional managed profile must use this guarded
+  /// accessor rather than touching the SDK directly.
+  User? getFirebaseUser() {
+    if (betterAuthEnabled || Firebase.apps.isEmpty) return null;
     return FirebaseAuth.instance.currentUser;
   }
 
@@ -889,7 +897,9 @@ class AuthService {
 
   Future<void> updateGivenName(String fullName) async {
     try {
-      var user = FirebaseAuth.instance.currentUser;
+      // Better Auth/self-hosted releases have no Firebase app. Keep the local
+      // profile update useful without constructing the managed SDK singleton.
+      var user = getFirebaseUser();
 
       SharedPreferencesUtil().givenName = fullName.split(' ')[0];
       if (fullName.split(' ').length > 1) {
@@ -920,7 +930,7 @@ class AuthService {
           await user.updateProfile(displayName: fullName);
         }
         await user.reload();
-        user = FirebaseAuth.instance.currentUser;
+        user = getFirebaseUser();
       } catch (updateError) {
         Logger.debug('Firebase updateProfile failed: $updateError');
       }
