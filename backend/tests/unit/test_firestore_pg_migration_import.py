@@ -36,6 +36,21 @@ from firestore_pg.migrations import (
 from scripts.validate_migration_test_targets import UnsafeMigrationTarget, validate_external_targets
 
 
+def test_migration_entrypoint_resolves_backend_packages_from_any_working_directory(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[2] / 'scripts' / 'firestore_pg_migrate.py'
+
+    result = subprocess.run(
+        [sys.executable, str(script), '--help'],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert 'Explicit schema and Firestore import owner' in result.stdout
+
+
 class _Snapshot:
     def __init__(self, reference, data):
         self.reference = reference

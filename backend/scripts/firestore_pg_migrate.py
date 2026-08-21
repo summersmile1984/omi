@@ -6,8 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+# The production one-shot invokes this file directly as
+# ``python scripts/firestore_pg_migrate.py``. In that mode Python places only
+# ``/app/scripts`` on sys.path, so make the backend package root authoritative
+# independently of the caller's working directory.
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 # Bind the real source SDK before importing firestore_pg migrations. Importing
 # the database package can install the PostgreSQL facade when FIRESTORE_PG_DSN
