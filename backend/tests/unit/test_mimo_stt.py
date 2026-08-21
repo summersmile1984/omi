@@ -10,7 +10,8 @@ import pytest
 
 from utils.mimo_pipeline.config import MimoConfigurationError, validate_mimo_base_url
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, _guess_format
-from utils.mimo_pipeline.socket import MimoSttSocket, _mimo_available, _pcm16_to_wav
+from utils.mimo_pipeline.config import mimo_is_configured
+from utils.mimo_pipeline.socket import MimoSttSocket, _pcm16_to_wav
 from utils.stt.streaming import STTService, get_stt_service_for_language
 
 
@@ -22,11 +23,11 @@ def test_mimo_service_value_registered():
 def test_enabled_only_with_key(monkeypatch):
     monkeypatch.delenv('MIMO_API_KEY', raising=False)
     monkeypatch.delenv('MIMO_API_BASE', raising=False)
-    assert _mimo_available() is False
+    assert mimo_is_configured() is False
     monkeypatch.setenv('MIMO_API_KEY', 'key')
-    assert _mimo_available() is False  # endpoint is required as well
+    assert mimo_is_configured() is False  # endpoint is required as well
     monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
-    assert _mimo_available() is True
+    assert mimo_is_configured() is True
 
 
 def test_select_routes_to_mimo_when_configured(monkeypatch):

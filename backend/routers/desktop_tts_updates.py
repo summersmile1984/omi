@@ -87,7 +87,7 @@ def mimo_tts_selected_but_unavailable() -> bool:
 
 async def _mimo_tts_synthesize(text: str) -> bytes:
     """Synthesize via MiMo-TTS (self-hosted). Raises MimoTTSAPIError on failure."""
-    from utils.mimo_pipeline.tts import MimoTTSClient, MimoTTSAPIError
+    from utils.mimo_pipeline.tts import MimoTTSClient
 
     client = MimoTTSClient()
     return await run_blocking(critical_executor, client.synthesize, text)

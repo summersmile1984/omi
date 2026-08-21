@@ -18,17 +18,10 @@ import tempfile
 import wave
 from typing import Any, Callable, Optional
 
-import httpx
-
-from .config import mimo_is_configured
+from .mimo_client import MimoAPIError, MimoClient
 from utils.stt.socket import STTSocket
 
 logger = logging.getLogger(__name__)
-
-
-def _mimo_available() -> bool:
-    """True when both the operator endpoint and credential are configured."""
-    return mimo_is_configured()
 
 
 def _pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
@@ -75,8 +68,6 @@ class MimoSttSocket(STTSocket):
             return
         self._finished = True
         try:
-            from .mimo_client import MimoClient, MimoAPIError
-
             audio = _pcm16_to_wav(bytes(self._pcm), self._sample_rate, self._channels)
             client = self._client or MimoClient()
             transcription = client.transcribe_audio(audio, audio_format="wav")

@@ -502,16 +502,14 @@ def _sensevoice_available() -> bool:
     """True when a local SenseVoice model directory is configured."""
     from utils.sensevoice.socket import SENSEVOICE_MODEL_DIR
 
-    return bool(SENSEVOICE_MODEL_DIR) and os.path.exists(
-        os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx")
-    )
+    return bool(SENSEVOICE_MODEL_DIR) and os.path.exists(os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx"))
 
 
 def _mimo_available() -> bool:
-    """True when MiMo streaming STT is configured (MIMO_API_KEY set)."""
-    from utils.mimo_pipeline.socket import _mimo_available as _impl
+    """True when MiMo streaming STT is configured at the call boundary."""
+    from utils.mimo_pipeline.config import mimo_is_configured
 
-    return _impl()
+    return mimo_is_configured()
 
 
 async def process_audio_dg(

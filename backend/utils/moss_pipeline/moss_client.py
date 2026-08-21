@@ -1,6 +1,9 @@
-"""MOSS (OpenMOSS) official API client: upload audio, transcribe, diarize.
+"""MOSS-compatible clients for operator-owned batch transcription.
 
-Platform: https://platform.mosi.cn · API base: https://api.mosi.cn
+The default wire is the OpenMOSS file/task API, but its authority is always
+operator-configured.  ``MlxAudioClient`` is a separate adapter for the
+operator-owned mlx-audio server, whose multipart wire does not implement the
+MOSS file-upload API.
 Models:
   - ``moss-transcribe``           plain transcription -> {"text": ...}
   - ``moss-transcribe-diarize``   multi-speaker, diarize=true ->
@@ -16,19 +19,27 @@ labels that the caller matches against known people via speaker embeddings.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import httpx
 
+from .config import (
+    MOSS_TRANSPORT_MLX_AUDIO,
+    MOSS_TRANSPORT_MOSI,
+    MossConfigurationError,
+    MossRuntimeConfig,
+    resolve_moss_config,
+    resolve_moss_timeout,
+    validate_moss_audio_url,
+    validate_moss_base_url,
+)
+
 logger = logging.getLogger(__name__)
 
-MOSS_API_BASE = os.getenv("MOSS_API_BASE", "https://api.mosi.cn")
-MOSS_API_KEY = os.getenv("MOSS_API_KEY", "")
-DEFAULT_TIMEOUT = float(os.getenv("MOSS_TIMEOUT_SECONDS", "120"))
-POLL_INTERVAL = float(os.getenv("MOSS_POLL_INTERVAL_SECONDS", "3"))
+DEFAULT_TIMEOUT = 120.0
+POLL_INTERVAL = 3.0
 
 
 class MossAPIError(RuntimeError):
@@ -56,12 +67,6 @@ class MossTranscription:
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
-def _headers() -> Dict[str, str]:
-    if not MOSS_API_KEY:
-        raise MossAPIError("MOSS_API_KEY environment variable not set")
-    return {"Authorization": f"Bearer {MOSS_API_KEY}"}
-
-
 def _raise_for_error(resp: httpx.Response) -> None:
     if resp.is_success:
         return
@@ -73,28 +78,56 @@ def _raise_for_error(resp: httpx.Response) -> None:
 
 
 class MossClient:
-    """Thin client for the MOSS audio endpoints."""
+    """Client for the operator's OpenMOSS file/task endpoints."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
+        runtime_config: Optional[MossRuntimeConfig] = None,
     ) -> None:
-        self._api_key = api_key or MOSS_API_KEY
-        self._base = base_url or MOSS_API_BASE
-        self._timeout = timeout
-        self._client = httpx.Client(base_url=self._base, timeout=timeout)
+        try:
+            config = runtime_config or resolve_moss_config(
+                api_key=api_key,
+                base_url=base_url,
+                transport=MOSS_TRANSPORT_MOSI,
+            )
+        except MossConfigurationError as exc:
+            raise MossAPIError(str(exc)) from exc
+        if config.transport != MOSS_TRANSPORT_MOSI:
+            raise MossAPIError('MossClient requires MOSS_TRANSPORT=mosi')
+        self._api_key = config.api_key
+        self._base = validate_moss_base_url(config.base_url)
+        try:
+            self._timeout = resolve_moss_timeout(timeout)
+        except MossConfigurationError as exc:
+            raise MossAPIError(str(exc)) from exc
+        # Do not follow a redirect to an authority that was not validated.
+        self._client = httpx.Client(base_url=self._base, timeout=self._timeout, follow_redirects=False)
+
+    def _validate_transport(self) -> None:
+        """Recheck the immutable authority immediately before each HTTP call."""
+
+        try:
+            validate_moss_base_url(self._base)
+        except MossConfigurationError as exc:
+            raise MossAPIError(str(exc)) from exc
+
+    def _auth_headers(self) -> Dict[str, str]:
+        self._validate_transport()
+        return {"Authorization": f"Bearer {self._api_key}"}
 
     # ------------------------------------------------------------------
     # Files
     # ------------------------------------------------------------------
     def upload_file(self, file_path: str, purpose: str = "transcription") -> str:
         """Upload an audio file; returns the file_id."""
+        self._validate_transport()
         with open(file_path, "rb") as f:
             resp = self._client.post(
                 "/v1/files",
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers=self._auth_headers(),
                 files={"file": (file_path.rsplit("/", 1)[-1], f)},
                 data={"purpose": purpose},
             )
@@ -108,9 +141,8 @@ class MossClient:
 
     def delete_file(self, file_id: str) -> None:
         try:
-            self._client.delete(
-                f"/v1/files/{file_id}", headers={"Authorization": f"Bearer {self._api_key}"}
-            )
+            self._validate_transport()
+            self._client.delete(f"/v1/files/{file_id}", headers=self._auth_headers())
         except Exception:  # pragma: no cover - cleanup is best-effort
             logger.debug("MOSS delete file %s failed", file_id)
 
@@ -132,6 +164,12 @@ class MossClient:
         response includes ``segments`` with anonymous ``S01/S02`` speaker
         labels (diarization). Identification is not provided by the API.
         """
+        self._validate_transport()
+        if url:
+            try:
+                url = validate_moss_audio_url(url)
+            except MossConfigurationError as exc:
+                raise MossAPIError(str(exc)) from exc
         payload: Dict[str, Any] = {"model": model, "response_format": "json"}
         if file_id:
             payload["file_id"] = file_id
@@ -142,7 +180,7 @@ class MossClient:
 
         resp = self._client.post(
             "/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
+            headers={**self._auth_headers(), "Content-Type": "application/json"},
             json=payload,
         )
         _raise_for_error(resp)
@@ -152,26 +190,27 @@ class MossClient:
             task_id = data.get("task_id") or data.get("id")
             return self._wait_task(task_id)
 
-        return self._parse_transcription(data)
+        return self.parse_transcription(data)
 
     def _wait_task(self, task_id: str) -> MossTranscription:
         for _ in range(120):  # ~6 min max
+            self._validate_transport()
             resp = self._client.get(
                 f"/v1/audio/tasks/{task_id}",
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers=self._auth_headers(),
             )
             _raise_for_error(resp)
             data = resp.json()
             status = data.get("status", "").upper()
             if status in ("COMPLETED", "SUCCEEDED"):
-                return self._parse_transcription(data.get("result") or data)
+                return self.parse_transcription(data.get("result") or data)
             if status in ("FAILED", "ERROR", "CANCELLED"):
                 raise MossAPIError(f"MOSS task {task_id} failed: {data}")
             time.sleep(POLL_INTERVAL)
         raise MossAPIError(f"MOSS task {task_id} timed out")
 
     @staticmethod
-    def _parse_transcription(data: Dict[str, Any]) -> MossTranscription:
+    def parse_transcription(data: Dict[str, Any]) -> MossTranscription:
         segments = [
             MossSegment(
                 start=float(seg.get("start", 0) or 0),
@@ -192,3 +231,146 @@ class MossClient:
 
     def close(self) -> None:
         self._client.close()
+
+
+class MlxAudioClient:
+    """Adapter for an operator-owned mlx-audio OpenAI-compatible server.
+
+    mlx-audio exposes multipart /v1/audio/transcriptions directly. It does
+    not implement the MOSS /v1/files or asynchronous task endpoints, so it
+    is deliberately kept separate from MossClient instead of pretending the
+    two wires are interchangeable.
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        timeout: Optional[float] = None,
+        runtime_config: Optional[MossRuntimeConfig] = None,
+    ) -> None:
+        try:
+            config = runtime_config or resolve_moss_config(
+                api_key=api_key,
+                base_url=base_url,
+                transport=MOSS_TRANSPORT_MLX_AUDIO,
+                model=model,
+            )
+        except MossConfigurationError as exc:
+            raise MossAPIError(str(exc)) from exc
+        if config.transport != MOSS_TRANSPORT_MLX_AUDIO:
+            raise MossAPIError('MlxAudioClient requires MOSS_TRANSPORT=mlx_audio')
+        self._api_key = config.api_key
+        self._base = validate_moss_base_url(config.base_url)
+        self._model = config.model
+        try:
+            self._timeout = resolve_moss_timeout(timeout)
+        except MossConfigurationError as exc:
+            raise MossAPIError(str(exc)) from exc
+        self._client = httpx.Client(base_url=self._base, timeout=self._timeout, follow_redirects=False)
+
+    def _validate_transport(self) -> None:
+        try:
+            validate_moss_base_url(self._base)
+        except MossConfigurationError as exc:
+            raise MossAPIError(str(exc)) from exc
+
+    def _auth_headers(self) -> Dict[str, str]:
+        self._validate_transport()
+        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+
+    def list_models(self) -> List[str]:
+        """Return model IDs advertised by the operator endpoint."""
+
+        self._validate_transport()
+        resp = self._client.get('/v1/models', headers=self._auth_headers())
+        _raise_for_error(resp)
+        try:
+            data = resp.json()
+            models = [str(item['id']) for item in data.get('data', []) if item.get('id')]
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise MossAPIError('mlx-audio /v1/models returned an invalid response') from exc
+        if not models:
+            raise MossAPIError('mlx-audio /v1/models returned no models')
+        return models
+
+    def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        *,
+        filename: str = 'audio.wav',
+        language: Optional[str] = None,
+        context: Optional[str] = None,
+        diarize: bool = True,
+    ) -> MossTranscription:
+        """Transcribe bytes using mlx-audio's multipart OpenAI-compatible wire."""
+
+        self._validate_transport()
+        data: Dict[str, str] = {
+            'model': self._model,
+            'response_format': 'verbose_json',
+        }
+        if language:
+            data['language'] = language
+        if context:
+            data['context'] = context
+        if diarize:
+            data['diarize'] = 'true'
+        resp = self._client.post(
+            '/v1/audio/transcriptions',
+            headers=self._auth_headers(),
+            files={'file': (filename or 'audio.wav', audio_bytes, 'audio/wav')},
+            data=data,
+        )
+        _raise_for_error(resp)
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise MossAPIError('mlx-audio transcription returned invalid JSON') from exc
+        if not isinstance(payload, dict):
+            raise MossAPIError('mlx-audio transcription returned an invalid object')
+        return MossClient.parse_transcription(payload)
+
+    def close(self) -> None:
+        self._client.close()
+
+
+def download_audio_url(audio_url: str, *, timeout: Optional[float] = None) -> bytes:
+    """Fetch one caller URL after SSRF/vendor validation, without redirects."""
+
+    try:
+        validated_url = validate_moss_audio_url(audio_url)
+        request_timeout = resolve_moss_timeout(timeout)
+    except MossConfigurationError as exc:
+        raise MossAPIError(str(exc)) from exc
+    try:
+        with httpx.Client(timeout=request_timeout, follow_redirects=False) as client:
+            resp = client.get(validated_url)
+    except httpx.HTTPError as exc:
+        raise MossAPIError(f'MOSS audio download failed: {type(exc).__name__}') from exc
+    _raise_for_error(resp)
+    return resp.content
+
+
+def create_moss_client(
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> MossClient | MlxAudioClient:
+    """Build the explicitly selected MOSS-compatible transport adapter."""
+
+    try:
+        config = resolve_moss_config(
+            api_key=api_key,
+            base_url=base_url,
+            transport=None,
+            model=model,
+        )
+    except MossConfigurationError as exc:
+        raise MossAPIError(str(exc)) from exc
+    if config.transport == MOSS_TRANSPORT_MLX_AUDIO:
+        return MlxAudioClient(timeout=timeout, runtime_config=config)
+    return MossClient(timeout=timeout, runtime_config=config)

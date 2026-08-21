@@ -123,6 +123,10 @@ async def tts_synthesize(
     if not _is_valid_voice_id(req.voice_id):
         raise HTTPException(status_code=400, detail="invalid voice_id")
 
+    # The branch reaches the ElevenLabs path only when the credential exists;
+    # make that invariant explicit for the strict type checker as well.
+    assert api_key
+
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
 
