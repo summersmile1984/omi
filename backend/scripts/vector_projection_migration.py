@@ -53,7 +53,7 @@ from scripts.export_authoritative_vectors import ExportError as AuthorityExportE
 from scripts.export_authoritative_vectors import verify_authoritative_export_manifest
 
 RECEIPT_FORMAT = 'omi-vector-projection-receipt-v1'
-SWITCH_PLAN_FORMAT = 'omi-vector-projection-switch-plan-v1'
+SWITCH_PLAN_FORMAT = 'omi-vector-projection-switch-plan-v2'
 PROJECTION_REQUIRED_NAMESPACES_ENV = 'VECTOR_PROJECTION_REQUIRED_NAMESPACES'
 AUTHORITY_RECORD_KEYS = frozenset({'id', 'content', 'metadata'})
 RECEIPT_HEADER_KEYS = frozenset(
