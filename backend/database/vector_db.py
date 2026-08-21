@@ -110,13 +110,25 @@ _pinecone_index_name: Optional[str] = os.getenv('PINECONE_INDEX_NAME')
 # warning-clean without per-call ignores.
 pc: Any = None
 index: Any = None
-_vector_store_provider = os.getenv('VECTOR_STORE_PROVIDER', 'pinecone').strip().lower()
+
+
+def _resolve_vector_store_provider() -> str:
+    """Resolve the vector authority without letting neutral profiles inherit Pinecone."""
+
+    configured = os.getenv('VECTOR_STORE_PROVIDER', '').strip().lower()
+    if configured:
+        return configured
+    profile = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower()
+    return 'disabled' if profile in {'neutral', 'self_hosted', 'self-hosted'} else 'pinecone'
+
+
+_vector_store_provider = _resolve_vector_store_provider()
 if _vector_store_provider == 'qdrant':
     index = VersionedVectorStoreAdapter(create_qdrant_vector_store_from_env(), embeddings)
 elif _vector_store_provider == 'pinecone' and _pinecone_api_key and _pinecone_index_name:
     pc = Pinecone(api_key=_pinecone_api_key)
     index = VersionedVectorStoreAdapter(PineconeVectorStoreAdapter(pc.Index(_pinecone_index_name)), embeddings)
-elif _vector_store_provider not in {'pinecone', 'qdrant'}:
+elif _vector_store_provider not in {'disabled', 'pinecone', 'qdrant'}:
     raise ValueError(f"Unsupported VECTOR_STORE_PROVIDER '{_vector_store_provider}'")
 
 

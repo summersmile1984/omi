@@ -11,6 +11,20 @@ import database.vector_db as vector_db
 from database.vector_projection import ProjectionUnavailableError
 
 
+def test_neutral_profile_defaults_vector_store_to_disabled(monkeypatch):
+    monkeypatch.delenv('VECTOR_STORE_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+
+    assert vector_db._resolve_vector_store_provider() == 'disabled'
+
+
+def test_managed_profile_keeps_pinecone_vector_store_default(monkeypatch):
+    monkeypatch.delenv('VECTOR_STORE_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'omi_cloud')
+
+    assert vector_db._resolve_vector_store_provider() == 'pinecone'
+
+
 def test_query_vectors_by_metadata_returns_typed_unavailable_without_index(monkeypatch):
     monkeypatch.setattr(vector_db, 'index', None)
     with pytest.raises(ProjectionUnavailableError) as error:

@@ -30,6 +30,12 @@ ledger and collection registry, and performs a read-only current-schema check
 before exit. Backend and queue-worker are admitted only after it succeeds;
 their runtime Firestore clients contain no lazy DDL path.
 
+The profile selects Qdrant explicitly for vector projections. The backend also
+resolves an omitted `VECTOR_STORE_PROVIDER` to a typed unavailable vector
+authority in neutral/self-hosted direct launches, rather than inheriting the
+managed Pinecone default; an explicit Qdrant binding is still required for
+normal self-host operation.
+
 The profile deliberately does not ship a default inference vendor. Set
 `GENERIC_OPENAI_BASE_URL` to an operator-selected OpenAI-compatible endpoint and
 set its explicit model/key. Embeddings use that same generic provider boundary.

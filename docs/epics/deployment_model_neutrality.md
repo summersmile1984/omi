@@ -205,6 +205,10 @@ deployment:
   self-hosted direct launches apply the same default when the binding is
   omitted. Legacy GCE state blocks deletion until it is imported/reconciled,
   so missing ADC cannot be mistaken for successful cleanup.
+- Vector-store selection is likewise profile-aware at the import boundary:
+  neutral/self-hosted launches without an explicit store binding remain typed
+  unavailable instead of inheriting Pinecone; the reviewed profile selects
+  operator-owned Qdrant explicitly.
 - Firebase Auth users and Firebase Storage objects have generation-pinned,
   checkpointed import tools. These are safe to run against production exports,
   but the repository contains no production credentials and therefore does not
