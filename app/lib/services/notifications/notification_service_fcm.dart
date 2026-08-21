@@ -27,6 +27,9 @@ import 'package:omi/utils/notification_channel_strings.dart';
 class _FCMNotificationService implements NotificationInterface {
   _FCMNotificationService._();
 
+  @override
+  bool get usesFirebaseMessaging => true;
+
   final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;
 
   // Resolved in initialize() after NotificationChannelStrings.loadAppLocale().

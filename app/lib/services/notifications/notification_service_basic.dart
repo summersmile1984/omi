@@ -15,6 +15,9 @@ import 'package:omi/utils/notification_channel_strings.dart';
 class _BasicNotificationService implements NotificationInterface {
   _BasicNotificationService._();
 
+  @override
+  bool get usesFirebaseMessaging => false;
+
   // Resolved in initialize() after NotificationChannelStrings.loadAppLocale().
   late final NotificationChannel channel;
 

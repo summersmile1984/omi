@@ -151,8 +151,31 @@ class AuthService {
   static const int _maxRefreshAttempts = 3;
   static const identityProvider = String.fromEnvironment('OMI_AUTH_PROVIDER', defaultValue: 'firebase');
   static const betterAuthServerUrl = String.fromEnvironment('OMI_AUTH_SERVER_URL');
+  static const _firebaseServicesEnabledDefine = String.fromEnvironment('OMI_FIREBASE_SERVICES_ENABLED');
   static String get normalizedIdentityProvider => identityProvider.trim().toLowerCase().replaceAll('-', '_');
   static bool get betterAuthEnabled => normalizedIdentityProvider == 'better_auth';
+
+  /// Whether the Firebase SDK/data plane may be initialized for this build.
+  ///
+  /// Managed Firebase builds retain the historical default (`true`), while a
+  /// Better Auth build defaults to Firebase-free. The setup/release scripts
+  /// still require an explicit `false` for self-hosted artifacts; this runtime
+  /// default prevents a missing define from accidentally constructing a
+  /// Firebase plugin before the identity-pairing validator runs.
+  static bool get firebaseServicesEnabled {
+    switch (_firebaseServicesEnabledDefine.trim().toLowerCase()) {
+      case 'true':
+        return true;
+      case 'false':
+        return false;
+      case '':
+        return !betterAuthEnabled;
+      default:
+        throw StateError(
+          'OMI_FIREBASE_SERVICES_ENABLED must be true or false when provided.',
+        );
+    }
+  }
 
   static void validateIdentityConfiguration({
     String? configuredProvider,

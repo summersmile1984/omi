@@ -6,6 +6,13 @@ import 'package:omi/backend/schema/message.dart';
 
 /// Common interface for notification services across all platforms
 abstract class NotificationInterface {
+  /// Whether this implementation talks to Firebase Cloud Messaging.
+  ///
+  /// Self-hosted Better Auth builds intentionally use local notifications only;
+  /// exposing the boundary makes the deployment policy observable without
+  /// constructing a Firebase plugin object in tests.
+  bool get usesFirebaseMessaging;
+
   Future<void> initialize();
 
   Future<void> showNotification({

@@ -7,7 +7,7 @@ Inherits all rules from the root [`../AGENTS.md`](../AGENTS.md). This file adds 
 ### Flavors
 - **dev**: Android `com.friend.ios.dev`, iOS `com.friend-app-with-wearable.ios12.development` — uses `.dev.env`, Firebase project `based-hardware-dev`
 - **prod**: Android `com.friend.ios`, iOS `com.friend-app-with-wearable.ios12` — uses `.prod.env`, Firebase project `based-hardware-prod`
-- **selfhost**: Android `com.friend.ios.selfhost` — requires explicit operator API/auth/legal/share HTTPS origins, Better Auth, and `OMI_FIREBASE_SERVICES_ENABLED=false`; Firebase/Crashlytics native plugins are disabled. The current setup script fails closed for `ios selfhost` until an equivalent native iOS target is wired.
+- **selfhost**: Android `com.friend.ios.selfhost` — requires explicit operator API/auth/legal/share HTTPS origins, Better Auth, and `OMI_FIREBASE_SERVICES_ENABLED=false`; Firebase/Crashlytics native plugins are disabled. The current setup script fails closed for `ios selfhost` until an equivalent native iOS target is wired. Self-hosted startup selects local notifications before constructing Firebase Messaging; remote FCM is unavailable unless Firebase is explicitly enabled by a managed profile.
 - **raybanDat**: camera-capable iOS target with the same iOS development identity; use `scripts/rayban_dat.sh`, which excludes mcumgr only for that transaction and restores the default graph.
 
 ### Generated Files (never edit manually)
