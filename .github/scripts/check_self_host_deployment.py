@@ -81,6 +81,7 @@ REQUIRED_FIXED_BACKEND_ENV = {
     'WEB_SEARCH_TRANSPORT': 'searxng',
     'SEARXNG_BASE_URL': 'http://searxng:8080',
     'FIRMWARE_RELEASE_TRANSPORT': 'manifest',
+    'DESKTOP_UPDATE_LEGACY_FALLBACK': 'disabled',
     'MEMORY_ENABLED': 'on',
     'ADMIN_KEY_AUTH_ENABLED': 'false',
 }

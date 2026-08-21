@@ -466,6 +466,15 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn('TTS_OPENAI_COMPATIBLE_BASE_URL must not use official endpoint host api.openai.com', official)
 
+    def test_desktop_updates_must_disable_legacy_vendor_fallback(self) -> None:
+        errors = self.validate_mutation(
+            compose_replace=(
+                'DESKTOP_UPDATE_LEGACY_FALLBACK=disabled',
+                'DESKTOP_UPDATE_LEGACY_FALLBACK=enabled',
+            )
+        )
+        self.assertIn("backend DESKTOP_UPDATE_LEGACY_FALLBACK must be literal 'disabled'", errors)
+
     def test_local_speaker_embedding_requires_mounted_model_and_bounded_threads(self) -> None:
         errors = self.validate_mutation(
             compose_replace=(

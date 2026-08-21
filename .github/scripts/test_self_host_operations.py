@@ -98,6 +98,7 @@ EFFECTIVE_PROVIDER_CONFIGURATION = {
     'firmware_release_transport': 'manifest',
     'firmware_release_manifest_origin': 'https://objects.example.org',
     'firmware_release_asset_origin': 'https://objects.example.org',
+    'desktop_update_legacy_fallback': 'disabled',
     'push_provider': 'disabled',
     'push_model': 'disabled',
     'push_transport': 'disabled',
@@ -143,6 +144,7 @@ EFFECTIVE_BACKEND_ENVIRONMENT = {
     'FIRMWARE_RELEASE_TRANSPORT': 'manifest',
     'FIRMWARE_RELEASE_MANIFEST_URL': 'https://objects.example.org/omi-firmware/releases.json',
     'FIRMWARE_RELEASE_ASSET_ORIGIN': 'https://objects.example.org',
+    'DESKTOP_UPDATE_LEGACY_FALLBACK': 'disabled',
     'PUSH_PROVIDER': 'disabled',
     'MEMORY_KEYWORD_INDEX_PROVIDER': 'typesense',
     'CONVERSATION_KEYWORD_INDEX_PROVIDER': 'typesense',
@@ -433,6 +435,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             ('vector_store_provider', 'pinecone', 'Qdrant'),
             ('auth_provider', 'firebase', 'Better Auth'),
             ('firmware_release_transport', 'gcs', 'manifest transport'),
+            ('desktop_update_legacy_fallback', 'enabled', 'legacy vendor fallback'),
         ):
             unsafe_provider_config = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
             unsafe_provider_config[key] = value

@@ -175,6 +175,12 @@ requires a real WAV synthesis through the public route.
 must use HTTPS, private HTTP is allowed, and official vendor hosts are rejected;
 there is no implicit endpoint or credential fallback.
 
+Desktop update feeds are pointer-only in this profile. The fixed
+`DESKTOP_UPDATE_LEGACY_FALLBACK=disabled` binding prevents a missing operator
+pointer from triggering the legacy vendor release scan; until the operator
+publishes a valid pointer/manifest for a channel, that channel remains
+unavailable rather than serving a managed release.
+
 The checked-in example sets `BACKEND_PLATFORM=linux/amd64` because the pinned
 runtime lock includes `onnxruntime==1.19.0`, which has no Linux ARM64 wheel.
 Apple Silicon Docker can build/run it through amd64 emulation; native ARM64

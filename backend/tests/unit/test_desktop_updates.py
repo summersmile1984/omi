@@ -462,6 +462,26 @@ def test_legacy_download_fallback_selects_only_lowercase_canonical_omi_dmg():
 
 class TestResolveDesktopReleases:
     @pytest.mark.asyncio
+    async def test_self_host_disables_legacy_vendor_update_fallback(self):
+        from routers.updates import _get_live_desktop_releases
+
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "OMI_DEPLOYMENT_PROFILE": "self_hosted",
+                    "DESKTOP_UPDATE_LEGACY_FALLBACK": "disabled",
+                    "DESKTOP_UPDATE_POINTERS_MODE": "legacy",
+                },
+            ),
+            patch("routers.updates._get_legacy_live_desktop_releases", new_callable=AsyncMock) as legacy,
+        ):
+            result = await _get_live_desktop_releases("windows")
+
+        assert result == []
+        legacy.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_legacy_kill_switch_records_degraded_mode(self):
         from routers.updates import _get_live_desktop_releases
 
@@ -472,7 +492,10 @@ class TestResolveDesktopReleases:
             "metadata": {"edSignature": "legacy"},
         }
         with (
-            patch.dict("os.environ", {"DESKTOP_UPDATE_POINTERS_MODE": "legacy"}),
+            patch.dict(
+                "os.environ",
+                {"DESKTOP_UPDATE_POINTERS_MODE": "legacy", "DESKTOP_UPDATE_LEGACY_FALLBACK": "enabled"},
+            ),
             patch(
                 "routers.updates._get_legacy_live_desktop_releases",
                 new_callable=AsyncMock,
@@ -532,6 +555,7 @@ class TestResolveDesktopReleases:
             "metadata": {"edSignature": "older-legacy"},
         }
         with (
+            patch.dict("os.environ", {"DESKTOP_UPDATE_LEGACY_FALLBACK": "enabled"}),
             patch("routers.updates.resolve_pointer_release", side_effect=resolve),
             patch(
                 "routers.updates._get_legacy_live_desktop_releases",
