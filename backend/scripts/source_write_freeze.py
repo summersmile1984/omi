@@ -108,6 +108,12 @@ def _parse_time(value: Any, *, field: str) -> datetime:
 
 
 def _read_lease(path: Path) -> dict[str, Any]:
+    # The lease is authority evidence for a customer-data migration.  Do not
+    # follow an operator-provided symlink (or accept a directory/FIFO whose
+    # contents happen to be readable); every consumer must verify the exact
+    # private regular file it was given.
+    if path.is_symlink() or not path.is_file():
+        raise SourceWriteFreezeError(f'freeze lease is not a regular file: {path}')
     try:
         mode = stat.S_IMODE(path.stat().st_mode)
     except OSError as error:
