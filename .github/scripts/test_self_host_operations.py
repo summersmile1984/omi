@@ -164,7 +164,35 @@ PASSED_RUNTIME_EVIDENCE = {
         'expected_config_sha256': 'c' * 64,
         'effective_provider_configuration': EFFECTIVE_PROVIDER_CONFIGURATION,
         'source_and_config_match': True,
+        'workloads': {
+            service: {
+                'image_id': f'sha256:{service.encode().hex():0<64}'[:71],
+                'source_git_commit': 'd' * 40,
+                'source_git_tree': 'e' * 40,
+                'runtime_config_sha256': 'c' * 64,
+                'environment_matches_effective_config': True,
+            }
+            for service in ('auth-server', 'backend', 'queue-worker')
+        },
     },
+}
+PASSED_RECOVERY_EVIDENCE = {
+    'schema_version': 1,
+    'status': 'passed',
+    'scope': 'isolated_restore_host',
+    'backup_manifest_sha256': 'f' * 64,
+    'source_git_commit': 'd' * 40,
+    'source_git_tree': 'e' * 40,
+    'runtime_config_sha256': 'c' * 64,
+    'backup_verified': True,
+    'restore_completed': True,
+    'post_restore_migration_passed': True,
+    'post_restore_auth_smoke_passed': True,
+    'post_restore_projection_checks_passed': True,
+    'isolated_restore_host': True,
+    'key_material_outside_backup': True,
+    'production_kms_attested': True,
+    'key_custody_reference': 'change-ticket/recovery-2026-08-20',
 }
 
 
@@ -823,7 +851,21 @@ class SelfHostOperationsTest(unittest.TestCase):
     def test_cutover_evidence_requires_external_edge_and_live_socket_denial(self) -> None:
         assembled = {
             'status': 'passed',
-            'https_origin_and_hairpin': {'public_object_signed_crud': {'status': 'passed'}},
+            'https_origin_and_hairpin': {
+                'mode': 'external',
+                'trust_source': 'system_ca',
+                'certificate_chain_verified': True,
+                'public_backend_url': 'https://api.example.org',
+                'public_auth_url': 'https://auth.example.org',
+                'public_mcp_url': 'https://mcp.example.org',
+                'public_objects_url': 'https://objects.example.org',
+                'jwt_issuer_audience_exact': True,
+                'public_jwks_kid_present': True,
+                'backend_private_jwks_verification': True,
+                'auth_private_lifecycle_blocked_at_edge': True,
+                'wss_public_origin_exercised': True,
+                'public_object_signed_crud': {'status': 'passed'},
+            },
             'assembled_product_loop': {
                 'capture': {
                     'fixture_manifest_match': True,
@@ -943,9 +985,57 @@ class SelfHostOperationsTest(unittest.TestCase):
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+            recovery_evidence=PASSED_RECOVERY_EVIDENCE,
         )
         self.assertTrue(external_with_policy['authorizes_production_cutover'])
         self.assertIsNone(external_with_policy['remaining_cutover_reason'])
+
+        without_external_edge = json.loads(json.dumps(assembled))
+        without_external_edge['https_origin_and_hairpin']['mode'] = 'local'
+        rejected_local_edge = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=without_external_edge,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+            recovery_evidence=PASSED_RECOVERY_EVIDENCE,
+        )
+        self.assertFalse(rejected_local_edge['authorizes_production_cutover'])
+        self.assertEqual(
+            rejected_local_edge['remaining_cutover_reason'],
+            'external_public_edge_certificate_or_origin_not_verified',
+        )
+
+        missing_recovery = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=assembled,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(missing_recovery['authorizes_production_cutover'])
+        self.assertEqual(
+            missing_recovery['remaining_cutover_reason'], 'external_backup_restore_or_kms_evidence_missing'
+        )
+
+        partial_runtime = json.loads(json.dumps(PASSED_RUNTIME_EVIDENCE))
+        del partial_runtime['runtime_identity']['workloads']['queue-worker']
+        rejected_partial_runtime = EVIDENCE.build_evidence(
+            mode='external-cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=assembled,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=partial_runtime,
+            recovery_evidence=PASSED_RECOVERY_EVIDENCE,
+        )
+        self.assertFalse(rejected_partial_runtime['authorizes_tested_configuration_cutover'])
+        self.assertEqual(
+            rejected_partial_runtime['remaining_cutover_reason'],
+            'production_service_health_or_runtime_identity_not_passed',
+        )
 
         without_objects = json.loads(json.dumps(assembled))
         without_objects['https_origin_and_hairpin']['public_object_signed_crud']['status'] = 'failed'
@@ -1703,6 +1793,8 @@ class SelfHostOperationsTest(unittest.TestCase):
             'Qdrant projection',
             'Typesense projection',
             'external evidence',
+            'SELF_HOST_RECOVERY_EVIDENCE',
+            'production_kms_attested',
         ):
             self.assertIn(required, readme)
 

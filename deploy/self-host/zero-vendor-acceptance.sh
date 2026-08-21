@@ -31,6 +31,7 @@ MODE=contracts
 LIVE_REPLACEMENT_JSON=''
 ASSEMBLED_LOOP_JSON=''
 RUNTIME_EVIDENCE_JSON=''
+RECOVERY_EVIDENCE_JSON=''
 
 LOOP_TESTS=(
   testing/e2e/test_listen_stt.py
@@ -92,6 +93,12 @@ if [[ "$MODE" != contracts ]]; then
       --source-database "$SELF_HOST_SOURCE_DATABASE" \
       --source-endpoint "$SELF_HOST_SOURCE_ENDPOINT" \
       --scope firestore --scope storage >/dev/null
+    : "${SELF_HOST_RECOVERY_EVIDENCE:?external cutover requires SELF_HOST_RECOVERY_EVIDENCE pointing to an operator recovery-drill evidence JSON file}"
+    if [[ "$SELF_HOST_RECOVERY_EVIDENCE" != /* || ! -f "$SELF_HOST_RECOVERY_EVIDENCE" || -L "$SELF_HOST_RECOVERY_EVIDENCE" ]]; then
+      echo "ERROR: SELF_HOST_RECOVERY_EVIDENCE must be an existing non-symlink absolute JSON file" >&2
+      exit 1
+    fi
+    RECOVERY_EVIDENCE_JSON="$($PY -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps(value, separators=(",", ":")))' "$SELF_HOST_RECOVERY_EVIDENCE")"
   fi
   export OMI_SOURCE_GIT_COMMIT OMI_SOURCE_GIT_TREE OMI_RUNTIME_CONFIG_SHA256
   OMI_SOURCE_GIT_COMMIT="$(printf '%s' "$SOURCE_ATTRIBUTION_JSON" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["git_commit"])')"
@@ -184,4 +191,5 @@ SOURCE_ATTRIBUTION_JSON="$SOURCE_ATTRIBUTION_JSON" \
 LIVE_REPLACEMENT_JSON="$LIVE_REPLACEMENT_JSON" \
 ASSEMBLED_LOOP_JSON="$ASSEMBLED_LOOP_JSON" \
 RUNTIME_EVIDENCE_JSON="$RUNTIME_EVIDENCE_JSON" \
+RECOVERY_EVIDENCE_JSON="$RECOVERY_EVIDENCE_JSON" \
 "$PY" "$EVIDENCE_BUILDER"

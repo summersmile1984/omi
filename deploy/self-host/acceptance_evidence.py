@@ -14,6 +14,146 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+SHA256 = re.compile(r'^[0-9a-f]{64}$')
+OBJECT_ID = re.compile(r'^[0-9a-f]{40}$')
+RECOVERY_EVIDENCE_KEYS = frozenset(
+    {
+        'schema_version',
+        'status',
+        'scope',
+        'backup_manifest_sha256',
+        'source_git_commit',
+        'source_git_tree',
+        'runtime_config_sha256',
+        'backup_verified',
+        'restore_completed',
+        'post_restore_migration_passed',
+        'post_restore_auth_smoke_passed',
+        'post_restore_projection_checks_passed',
+        'isolated_restore_host',
+        'key_material_outside_backup',
+        'production_kms_attested',
+        'key_custody_reference',
+    }
+)
+
+
+def _external_https_origin(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    hostname = parsed.hostname or ''
+    return bool(
+        parsed.scheme == 'https'
+        and parsed.netloc
+        and hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and hostname.lower() not in {'localhost', '127.0.0.1', '::1'}
+        and not hostname.lower().endswith(('.localhost', '.test', '.invalid'))
+    )
+
+
+def _external_edge_verified(assembled_loop: dict[str, Any] | None) -> bool:
+    edge = assembled_loop.get('https_origin_and_hairpin', {}) if isinstance(assembled_loop, dict) else {}
+    if not isinstance(edge, dict):
+        return False
+    return bool(
+        edge.get('mode') == 'external'
+        and edge.get('trust_source') == 'system_ca'
+        and edge.get('certificate_chain_verified') is True
+        and edge.get('jwt_issuer_audience_exact') is True
+        and edge.get('public_jwks_kid_present') is True
+        and edge.get('backend_private_jwks_verification') is True
+        and edge.get('auth_private_lifecycle_blocked_at_edge') is True
+        and edge.get('wss_public_origin_exercised') is True
+        and all(
+            _external_https_origin(edge.get(name))
+            for name in ('public_backend_url', 'public_auth_url', 'public_mcp_url', 'public_objects_url')
+        )
+    )
+
+
+def _runtime_source_and_config_binding(
+    runtime_evidence: dict[str, Any] | None,
+    *,
+    git_commit: str,
+    git_tree: str,
+) -> tuple[bool, str | None]:
+    if not isinstance(runtime_evidence, dict) or runtime_evidence.get('status') != 'passed':
+        return False, None
+    identity = runtime_evidence.get('runtime_identity')
+    if not isinstance(identity, dict):
+        return False, None
+    expected_config_sha256 = identity.get('expected_config_sha256')
+    if not isinstance(expected_config_sha256, str) or not SHA256.fullmatch(expected_config_sha256):
+        return False, None
+    if (
+        identity.get('source_and_config_match') is not True
+        or identity.get('expected_git_commit') != git_commit
+        or identity.get('expected_git_tree') != git_tree
+    ):
+        return False, expected_config_sha256
+    workloads = identity.get('workloads')
+    if not isinstance(workloads, dict) or set(workloads) != {'auth-server', 'backend', 'queue-worker'}:
+        return False, expected_config_sha256
+    for name, workload in workloads.items():
+        if not isinstance(workload, dict):
+            return False, expected_config_sha256
+        if (
+            not isinstance(workload.get('image_id'), str)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', workload['image_id'])
+            or workload.get('source_git_commit') != git_commit
+            or workload.get('source_git_tree') != git_tree
+            or workload.get('runtime_config_sha256') != expected_config_sha256
+            or workload.get('environment_matches_effective_config') is not True
+        ):
+            return False, expected_config_sha256
+    return True, expected_config_sha256
+
+
+def _recovery_evidence_passed(
+    recovery_evidence: dict[str, Any] | None,
+    *,
+    git_commit: str,
+    git_tree: str,
+    runtime_config_sha256: str | None,
+) -> bool:
+    if not isinstance(recovery_evidence, dict) or set(recovery_evidence) != RECOVERY_EVIDENCE_KEYS:
+        return False
+    if (
+        recovery_evidence.get('schema_version') != 1
+        or recovery_evidence.get('status') != 'passed'
+        or recovery_evidence.get('scope') != 'isolated_restore_host'
+        or recovery_evidence.get('source_git_commit') != git_commit
+        or recovery_evidence.get('source_git_tree') != git_tree
+        or recovery_evidence.get('runtime_config_sha256') != runtime_config_sha256
+        or not isinstance(recovery_evidence.get('backup_manifest_sha256'), str)
+        or SHA256.fullmatch(recovery_evidence['backup_manifest_sha256']) is None
+        or not isinstance(recovery_evidence.get('key_custody_reference'), str)
+        or not recovery_evidence['key_custody_reference'].strip()
+    ):
+        return False
+    return all(
+        recovery_evidence.get(field) is True
+        for field in (
+            'backup_verified',
+            'restore_completed',
+            'post_restore_migration_passed',
+            'post_restore_auth_smoke_passed',
+            'post_restore_projection_checks_passed',
+            'isolated_restore_host',
+            'key_material_outside_backup',
+            'production_kms_attested',
+        )
+    )
 
 
 def _git(root: Path, *args: str, environment: dict[str, str] | None = None) -> str:
@@ -64,13 +204,14 @@ def build_evidence(
     assembled_loop: dict[str, Any] | None,
     checked_at: str,
     runtime_evidence: dict[str, Any] | None = None,
+    recovery_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     git_commit = source_attribution.get('git_commit')
     git_tree = source_attribution.get('git_tree')
     worktree_clean = source_attribution.get('worktree_clean') is True
-    if not isinstance(git_commit, str) or len(git_commit) != 40:
+    if not isinstance(git_commit, str) or OBJECT_ID.fullmatch(git_commit) is None:
         raise ValueError('source attribution git_commit must be a full Git object id')
-    if not isinstance(git_tree, str) or len(git_tree) != 40:
+    if not isinstance(git_tree, str) or OBJECT_ID.fullmatch(git_tree) is None:
         raise ValueError('source attribution git_tree must be a full Git object id')
     external_cutover = mode == 'external-cutover-live'
     live_egress = assembled_loop.get('live_egress', {}) if isinstance(assembled_loop, dict) else 'not_run'
@@ -215,15 +356,22 @@ def build_evidence(
         )
     }
     failed_hard_capability = next((name for name, passed in hard_capability_status.items() if not passed), None)
+    runtime_source_and_config_passed, runtime_config_sha256 = _runtime_source_and_config_binding(
+        runtime_evidence,
+        git_commit=git_commit,
+        git_tree=git_tree,
+    )
     runtime_health_and_identity_passed = bool(
         isinstance(runtime_evidence, dict)
-        and runtime_evidence.get('status') == 'passed'
         and runtime_evidence.get('all_required_services_healthy') is True
-        and runtime_identity.get('source_and_config_match') is True
-        and runtime_identity.get('expected_git_commit') == git_commit
-        and runtime_identity.get('expected_git_tree') == git_tree
-        and isinstance(runtime_identity.get('expected_config_sha256'), str)
-        and len(runtime_identity.get('expected_config_sha256')) == 64
+        and runtime_source_and_config_passed
+    )
+    external_edge_passed = _external_edge_verified(assembled_loop)
+    recovery_drill_passed = _recovery_evidence_passed(
+        recovery_evidence,
+        git_commit=git_commit,
+        git_tree=git_tree,
+        runtime_config_sha256=runtime_config_sha256,
     )
     tested_configuration_authorized = bool(
         mode in {'cutover-live', 'external-cutover-live'}
@@ -241,7 +389,13 @@ def build_evidence(
         and runtime_health_and_identity_passed
         and worktree_clean
     )
-    production_authorized = bool(external_cutover and tested_configuration_authorized and sentinel_policy_verified)
+    production_authorized = bool(
+        external_cutover
+        and tested_configuration_authorized
+        and external_edge_passed
+        and recovery_drill_passed
+        and sentinel_policy_verified
+    )
     return {
         'schema_version': 3,
         'checked_at': checked_at,
@@ -260,6 +414,10 @@ def build_evidence(
             'live_capture_understand_remember_retrieve_act': assembled_loop or 'not_run',
             'production_services_healthy': runtime_evidence or 'not_run',
             'runtime_source_and_config_identity': runtime_identity or 'not_run',
+            'external_public_edge_identity': (
+                assembled_loop.get('https_origin_and_hairpin', {}) if isinstance(assembled_loop, dict) else 'not_run'
+            ),
+            'external_recovery_drill': recovery_evidence or 'not_run',
             'live_replacement_services': live_replacement or 'not_run',
             'live_hard_capability_probes': hard_capability_status,
             'live_mlx_moss_diarization_provider': speaker_diarization or 'not_run',
@@ -307,7 +465,19 @@ def build_evidence(
                                                         else (
                                                             'intended_public_dns_certificate_and_edge_not_exercised'
                                                             if not external_cutover
-                                                            else 'live_sentinel_egress_or_operator_policy_evidence_missing'
+                                                            else (
+                                                                'external_public_edge_certificate_or_origin_not_verified'
+                                                                if not external_edge_passed
+                                                                else (
+                                                                    'live_sentinel_egress_or_operator_policy_evidence_missing'
+                                                                    if not sentinel_policy_verified
+                                                                    else (
+                                                                        'external_backup_restore_or_kms_evidence_missing'
+                                                                        if not recovery_drill_passed
+                                                                        else None
+                                                                    )
+                                                                )
+                                                            )
                                                         )
                                                     )
                                                 )
@@ -345,6 +515,7 @@ def main() -> int:
         json.loads(os.environ['ASSEMBLED_LOOP_JSON']) if mode in {'cutover-live', 'external-cutover-live'} else None
     )
     runtime_evidence = json.loads(os.environ['RUNTIME_EVIDENCE_JSON']) if mode != 'contracts' else None
+    recovery_evidence = json.loads(os.environ['RECOVERY_EVIDENCE_JSON']) if mode == 'external-cutover-live' else None
     evidence = build_evidence(
         mode=mode,
         source_attribution=json.loads(os.environ['SOURCE_ATTRIBUTION_JSON']),
@@ -352,6 +523,7 @@ def main() -> int:
         assembled_loop=assembled_loop,
         checked_at=datetime.now(timezone.utc).isoformat(),
         runtime_evidence=runtime_evidence,
+        recovery_evidence=recovery_evidence,
     )
     path = Path(os.environ['ACCEPTANCE_EVIDENCE'])
     path.parent.mkdir(parents=True, exist_ok=True)

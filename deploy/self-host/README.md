@@ -803,6 +803,7 @@ the same public edge lane:
 ```bash
 SELF_HOST_ENV=/etc/omi/self-host.production.env \
 SELF_HOST_EGRESS_POLICY_ARTIFACT=/secure/change-record/application-egress-policy.json \
+SELF_HOST_RECOVERY_EVIDENCE=/secure/change-record/isolated-restore-evidence.json \
 SELF_HOST_ACCEPTANCE_EVIDENCE=/secure/change-record/zero-vendor-production.json \
   deploy/self-host/zero-vendor-acceptance.sh --external-cutover-live
 ```
@@ -828,6 +829,19 @@ functional equivalence remains explicitly false. mlx-audio model revision and
 offline-cache provenance remain explicitly operator-owned and unattested by the
 service response. The typed realtime relay is exercised through its authenticated
 public relay route as a separate hard capability.
+
+Production authorization also requires an operator-supplied recovery-drill
+evidence file. Set `SELF_HOST_RECOVERY_EVIDENCE` to a non-symlink absolute JSON
+file recorded from an isolated restore host. Its schema-v1 record must bind the
+backup manifest SHA, source commit/tree, and runtime config SHA to the tested
+stack; report backup verification, restore, post-restore migration, Auth smoke,
+and projection checks as passed; and explicitly attest that key material stayed
+outside the backup and that production KMS/secret-manager custody was used.
+The JSON field is named `production_kms_attested`.
+The gate accepts this as an operator attestation only—it is not a cryptographic
+signature—but missing, partial, local-only, or mismatched recovery evidence can
+never authorize production traffic. A local `--cutover-live` run therefore
+remains a tested-configuration proof, not production authorization.
 
 The policy artifact must be UTF-8 JSON with exactly this shape (the artifact is
 review evidence, not a cryptographic signature):
