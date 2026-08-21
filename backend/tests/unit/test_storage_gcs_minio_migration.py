@@ -268,6 +268,29 @@ def test_capture_inventory_records_generation_hash_metadata_and_private_mode(tmp
     assert manifest.path.stat().st_mode & 0o777 == 0o600
 
 
+def test_resume_rejects_non_private_manifest_and_checkpoint(tmp_path: Path) -> None:
+    source, plan, manifest = _captured(tmp_path)
+    checkpoint_path = tmp_path / 'checkpoint.json'
+    target = _FakeTarget()
+    migration.run_apply(source, target, plan, manifest, checkpoint_path, existing_policy='create-only')
+
+    manifest.path.chmod(0o644)
+    with pytest.raises(migration.StorageMigrationError, match='inventory manifest.*0600'):
+        migration.load_manifest(manifest.path, plan)
+
+    manifest.path.chmod(0o600)
+    checkpoint_path.chmod(0o644)
+    with pytest.raises(migration.StorageMigrationError, match='migration checkpoint.*0600'):
+        migration.run_verify(
+            source,
+            target,
+            plan,
+            manifest,
+            checkpoint_path,
+            existing_policy='create-only',
+        )
+
+
 def test_apply_streams_create_only_objects_then_verify_reconciles_fresh_source_and_target(tmp_path: Path) -> None:
     source, plan, manifest = _captured(tmp_path)
     target = _FakeTarget()
