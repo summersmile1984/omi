@@ -327,7 +327,12 @@ records `external_service_revision=null`, `external_model_revision=null`, and
 into a fabricated service revision. The JSON evidence schema (v3) requires
 this attestation rather than accepting only a MOSS health claim. Authorization
 also requires the assembled diarization endpoint and model to equal that final
-effective provider configuration. Before emitting evidence it also inspects
+effective provider configuration. The live replacement smoke additionally
+records sanitized generic LLM and embedding provider/model/origin/transport
+identities next to the real marker/vector calls; acceptance compares both
+identities to the runtime attestation and fails closed if either route is
+missing or differs. The public realtime probe performs the same binding for
+provider/model/origin/wire protocol. Before emitting evidence it also inspects
 each running container's actual environment and rejects injected managed-
 provider bindings (including Firebase, Google, Anthropic, OpenAI-compatible
 vendor, Deepgram, Modulate, Pinecone, and Stripe/Twilio integrations) or

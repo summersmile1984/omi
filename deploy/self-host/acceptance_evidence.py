@@ -165,6 +165,54 @@ def _runtime_provider_attestation_binding(
     return True, attestation
 
 
+def _live_generic_model_runtime_binding(
+    live_replacement: dict[str, Any] | None,
+    provider_attestation: dict[str, Any] | None,
+) -> bool:
+    """Bind real generic LLM/embedding calls to the attested runtime routes.
+
+    A live smoke result that only says ``status=passed`` is insufficient: the
+    adapter could have reached a different model or authority than the one
+    reviewed in Compose.  The smoke emits only sanitized provider identities;
+    this gate compares both call surfaces to the runtime attestation and never
+    treats an external service revision as known.
+    """
+
+    if not isinstance(live_replacement, dict) or live_replacement.get('status') != 'passed':
+        return False
+    if not isinstance(provider_attestation, dict):
+        return False
+    providers = provider_attestation.get('providers')
+    adapter = live_replacement.get('generic_model_adapter')
+    if not isinstance(providers, dict) or not isinstance(adapter, dict):
+        return False
+    expected_llm = providers.get('generic_llm')
+    expected_embedding = providers.get('embedding')
+    observed_llm = adapter.get('chat')
+    observed_embedding = adapter.get('embedding')
+    if not isinstance(expected_llm, dict) or not isinstance(expected_embedding, dict):
+        return False
+    if not isinstance(observed_llm, dict) or not isinstance(observed_embedding, dict):
+        return False
+    if (
+        adapter.get('chat_response_marker_observed') is not True
+        or adapter.get('embedding_nonzero') is not True
+        or adapter.get('embedding_dimension') != observed_embedding.get('dimension')
+    ):
+        return False
+    if set(observed_llm) != {'provider', 'model', 'endpoint_origin', 'transport'}:
+        return False
+    if set(observed_embedding) != {'provider', 'model', 'endpoint_origin', 'transport', 'dimension'}:
+        return False
+    expected_llm_identity = {
+        key: expected_llm.get(key) for key in ('provider', 'model', 'endpoint_origin', 'transport')
+    }
+    expected_embedding_identity = {
+        key: expected_embedding.get(key) for key in ('provider', 'model', 'endpoint_origin', 'transport', 'dimension')
+    }
+    return observed_llm == expected_llm_identity and observed_embedding == expected_embedding_identity
+
+
 def _firmware_probe_runtime_binding(
     firmware_probe: dict[str, Any] | None,
     effective_provider_configuration: dict[str, Any],
@@ -505,6 +553,12 @@ def build_evidence(
         git_commit=git_commit,
         git_tree=git_tree,
     )
+    generic_model_runtime_binding_passed = _live_generic_model_runtime_binding(
+        live_replacement,
+        provider_attestation,
+    )
+    if failed_hard_capability is None and not generic_model_runtime_binding_passed:
+        failed_hard_capability = 'generic_model_runtime_config_binding'
     external_edge_passed = _external_edge_verified(assembled_loop)
     recovery_drill_passed = _recovery_evidence_passed(
         recovery_evidence,
@@ -528,6 +582,7 @@ def build_evidence(
         and realtime_runtime_binding_passed
         and tts_runtime_binding_passed
         and firmware_runtime_binding_passed
+        and generic_model_runtime_binding_passed
         and runtime_health_and_identity_passed
         and runtime_provider_attestation_passed
         and worktree_clean
@@ -567,6 +622,7 @@ def build_evidence(
             'live_realtime_runtime_config_binding': realtime_runtime_binding_passed,
             'live_tts_runtime_config_binding': tts_runtime_binding_passed,
             'live_firmware_runtime_config_binding': firmware_runtime_binding_passed,
+            'live_generic_model_runtime_config_binding': generic_model_runtime_binding_passed,
             'live_mlx_moss_diarization_provider': speaker_diarization or 'not_run',
             'live_mlx_moss_runtime_config_binding': diarization_runtime_config_binding_passed,
             'mounted_model_artifact_identity': model_artifact_identity or 'not_run',

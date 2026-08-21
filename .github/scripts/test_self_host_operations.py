@@ -187,6 +187,27 @@ PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation'] = RUNTIME_EV
         'runtime_config_sha256': 'c' * 64,
     },
 )
+PASSED_LIVE_REPLACEMENT = {
+    'status': 'passed',
+    'generic_model_adapter': {
+        'chat_response_marker_observed': True,
+        'embedding_dimension': 1536,
+        'embedding_nonzero': True,
+        'chat': {
+            'provider': 'generic',
+            'model': 'operator-llm',
+            'endpoint_origin': 'https://llm.example.org',
+            'transport': 'openai_compatible_http',
+        },
+        'embedding': {
+            'provider': 'generic',
+            'model': 'operator-embedding',
+            'endpoint_origin': 'https://llm.example.org',
+            'transport': 'direct',
+            'dimension': 1536,
+        },
+    },
+}
 PASSED_RECOVERY_EVIDENCE = {
     'schema_version': 1,
     'status': 'passed',
@@ -331,6 +352,17 @@ class SelfHostOperationsTest(unittest.TestCase):
         mismatched['endpoint_origin'] = 'wss://wrong.example.org'
         with self.assertRaisesRegex(ValueError, 'does not match reviewed configuration'):
             RUNTIME_EVIDENCE.validate_realtime_probe_identity(mismatched, EFFECTIVE_PROVIDER_CONFIGURATION)
+
+    def test_live_generic_model_and_embedding_identity_is_bound_to_attestation(self) -> None:
+        attestation = PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation']
+        self.assertTrue(EVIDENCE._live_generic_model_runtime_binding(PASSED_LIVE_REPLACEMENT, attestation))
+
+        mismatched = json.loads(json.dumps(PASSED_LIVE_REPLACEMENT))
+        mismatched['generic_model_adapter']['chat']['endpoint_origin'] = 'https://wrong.example.org'
+        self.assertFalse(EVIDENCE._live_generic_model_runtime_binding(mismatched, attestation))
+
+        missing_identity = {'status': 'passed', 'generic_model_adapter': {'chat_response_marker_observed': True}}
+        self.assertFalse(EVIDENCE._live_generic_model_runtime_binding(missing_identity, attestation))
 
     def test_tts_probe_identity_is_bound_to_runtime_provider_configuration(self) -> None:
         probe = {
@@ -1074,7 +1106,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         local = EVIDENCE.build_evidence(
             mode='cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1095,7 +1127,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             rejected = EVIDENCE.build_evidence(
                 mode='cutover-live',
                 source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-                live_replacement={'status': 'passed'},
+                live_replacement=PASSED_LIVE_REPLACEMENT,
                 assembled_loop=tampered,
                 checked_at='2026-08-20T00:00:00+00:00',
                 runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1109,7 +1141,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         rejected_realtime = EVIDENCE.build_evidence(
             mode='cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=mismatched_realtime,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1125,7 +1157,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         rejected_tts = EVIDENCE.build_evidence(
             mode='cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=mismatched_tts,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1136,7 +1168,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         external_without_policy = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1175,7 +1207,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         external_with_policy = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1189,7 +1221,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         rejected_local_edge = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_external_edge,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1204,7 +1236,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_recovery = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1219,7 +1251,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         rejected_partial_runtime = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=partial_runtime,
@@ -1236,7 +1268,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_object_edge = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_objects,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1248,7 +1280,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_runtime_health = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=unhealthy_runtime,
@@ -1264,7 +1296,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_speaker = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_speaker,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1277,7 +1309,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_diarization = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_diarization,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1292,7 +1324,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         rejected_diarization_hard_field = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=missing_diarization_hard_field,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1312,7 +1344,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             rejected_runtime_binding = EVIDENCE.build_evidence(
                 mode='external-cutover-live',
                 source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-                live_replacement={'status': 'passed'},
+                live_replacement=PASSED_LIVE_REPLACEMENT,
                 assembled_loop=assembled,
                 checked_at='2026-08-20T00:00:00+00:00',
                 runtime_evidence=mismatched_runtime,
@@ -1328,7 +1360,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         missing_model_artifact_identity = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=without_model_artifact_identity,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1353,7 +1385,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             rejected_hard_field = EVIDENCE.build_evidence(
                 mode='external-cutover-live',
                 source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-                live_replacement={'status': 'passed'},
+                live_replacement=PASSED_LIVE_REPLACEMENT,
                 assembled_loop=missing_status_field,
                 checked_at='2026-08-20T00:00:00+00:00',
                 runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1365,7 +1397,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         dirty_external = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=dirty_source,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1408,7 +1440,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         external_without_long_term_admission = EVIDENCE.build_evidence(
             mode='external-cutover-live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop=assembled,
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
@@ -1423,7 +1455,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         non_cutover_mode = EVIDENCE.build_evidence(
             mode='live',
             source_attribution=CLEAN_SOURCE_ATTRIBUTION,
-            live_replacement={'status': 'passed'},
+            live_replacement=PASSED_LIVE_REPLACEMENT,
             assembled_loop={
                 **assembled,
                 'assembled_product_loop': {
@@ -2096,7 +2128,11 @@ class SelfHostOperationsTest(unittest.TestCase):
 
     def test_restore_stages_postgres_plaintext_outside_read_only_backup_mount(self) -> None:
         script = OPERATIONS.read_text(encoding='utf-8')
-        open_source = script[script.index('open_snapshot() {') : script.index('\n}\n\nstart_profile()', script.index('open_snapshot() {'))]
+        open_source = script[
+            script.index('open_snapshot() {') : script.index(
+                '\n}\n\nstart_profile()', script.index('open_snapshot() {')
+            )
+        ]
         self.assertIn('--volume "$archive_dir:/backup:ro"', open_source)
         self.assertIn('--volume "$plaintext_dir:/restore:rw"', open_source)
         self.assertIn('"/restore/$(basename "$plaintext")"', open_source)
