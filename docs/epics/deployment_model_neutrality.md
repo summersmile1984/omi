@@ -178,6 +178,11 @@ deployment:
   capability rather than silently calling Firebase. Omitting `PUSH_PROVIDER`
   in a neutral/self-hosted profile has the same fail-closed result before the
   Firebase SDK is initialized; managed profiles retain their Firebase default.
+- macOS FluidAudio speech-model loading is managed-only: self-hosted local STT
+  and optional PTT language identification fail through their existing
+  backend/auto-detect seams instead of implicitly downloading missing weights.
+  A packaged or operator-provisioned local model remains an explicit future
+  capability rather than an undocumented network fallback.
 - Agent VM cleanup is explicitly `AGENT_VM_PROVIDER=disabled`; legacy GCE
   state blocks deletion until it is imported/reconciled, so missing ADC cannot
   be mistaken for successful cleanup.

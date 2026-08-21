@@ -18,6 +18,9 @@ final class DeploymentProfileTests: XCTestCase {
       .betterAuth
     )
     XCTAssertFalse(DesktopBackendEnvironment.allowsOmiManagedServices(deploymentProfile: .selfHosted))
+    XCTAssertFalse(
+      DesktopBackendEnvironment.allowsImplicitSpeechModelDownload(
+        deploymentProfile: .selfHosted))
     XCTAssertFalse(DesktopBackendEnvironment.shouldConfigureFirebaseSDK(identityProvider: .betterAuth))
     XCTAssertTrue(DesktopBackendEnvironment.shouldConfigureFirebaseSDK(identityProvider: .firebase))
   }
@@ -74,6 +77,9 @@ final class DeploymentProfileTests: XCTestCase {
         deploymentProfile: .omiCloud,
         configuredProvider: nil),
       .cloudPreference)
+    XCTAssertTrue(
+      DesktopBackendEnvironment.allowsImplicitSpeechModelDownload(
+        deploymentProfile: .omiCloud))
   }
 
   func testSelfHostedTaskAgentRejectsLocalClaudeCLIWhileCloudKeepsIt() {

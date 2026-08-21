@@ -37,6 +37,17 @@ actor PTTLanguageIdentifier {
   }
 
   private func loadedManager() async -> AsrManager? {
+    // Language identification is an optional enhancement. A self-hosted
+    // artifact has no signed speech-model authority, so never allow a cache
+    // miss to become an implicit Hugging Face download. The provider/backend
+    // remains responsible for transcription in that profile.
+    guard
+      DesktopBackendEnvironment.allowsImplicitSpeechModelDownload(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile
+      )
+    else {
+      return nil
+    }
     if let manager { return manager }
     if let loadTask { return await loadTask.value }
     let task = Task<AsrManager?, Never> {

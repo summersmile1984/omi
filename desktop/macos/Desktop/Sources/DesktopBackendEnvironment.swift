@@ -129,6 +129,17 @@ enum DesktopBackendEnvironment {
     deploymentProfile == .omiCloud
   }
 
+  /// Managed builds may use FluidAudio's historical first-run model download.
+  /// Self-hosted artifacts have no signed model authority in the deployment
+  /// profile, so a missing local model must not turn into an implicit
+  /// Hugging Face/vendor request. The operator can still provide a future
+  /// packaged/local model path once that capability is part of the profile.
+  static func allowsImplicitSpeechModelDownload(
+    deploymentProfile: DesktopDeploymentProfile
+  ) -> Bool {
+    deploymentProfile == .omiCloud
+  }
+
   static func shouldConfigureFirebaseSDK(identityProvider: DesktopIdentityProvider) -> Bool {
     identityProvider == .firebase
   }
