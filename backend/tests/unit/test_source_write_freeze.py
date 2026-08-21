@@ -119,6 +119,37 @@ def test_verify_rejects_scope_gap_wrong_secret_and_broad_permissions(tmp_path: P
         )
 
 
+def test_verify_rejects_symlinked_or_non_regular_lease(tmp_path: Path) -> None:
+    target = tmp_path / 'freeze-target.json'
+    _issue(target)
+
+    link = tmp_path / 'freeze-link.json'
+    link.symlink_to(target)
+    with pytest.raises(freeze.SourceWriteFreezeError, match='regular file'):
+        freeze.verify_lease(
+            link,
+            source_project='source-project',
+            source_database='(default)',
+            source_endpoint='https://firestore.googleapis.com',
+            required_scopes={'firestore'},
+            secret=SECRET,
+            now=NOW,
+        )
+
+    directory = tmp_path / 'freeze-directory.json'
+    directory.mkdir()
+    with pytest.raises(freeze.SourceWriteFreezeError, match='regular file'):
+        freeze.verify_lease(
+            directory,
+            source_project='source-project',
+            source_database='(default)',
+            source_endpoint='https://firestore.googleapis.com',
+            required_scopes={'firestore'},
+            secret=SECRET,
+            now=NOW,
+        )
+
+
 def test_issue_refuses_overwrite_and_excessive_ttl(tmp_path: Path) -> None:
     path = tmp_path / 'freeze.json'
     _issue(path)
