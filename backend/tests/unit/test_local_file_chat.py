@@ -539,6 +539,34 @@ def test_legacy_cleanup_rejects_generic_openai_base_even_when_a_key_is_present(m
     assert raised.value.receipt.pending_records == 1
 
 
+def test_disabled_file_chat_never_deletes_legacy_openai_objects_even_with_key(monkeypatch, local_transport):
+    """An explicit capability disable must fence cleanup egress as well as uploads."""
+
+    legacy = {'id': 'legacy-record', 'name': 'legacy.pdf', 'openai_file_id': 'file-openai-legacy'}
+
+    class _ForbiddenOpenAI:
+        @property
+        def files(self):
+            raise AssertionError('disabled file chat must not call the official provider')
+
+        @property
+        def beta(self):
+            raise AssertionError('disabled file chat must not call the official provider')
+
+    monkeypatch.setenv('FILE_CHAT_TRANSPORT', 'disabled')
+    monkeypatch.setenv('OPENAI_API_KEY', 'unrelated-key')
+    monkeypatch.delenv('OPENAI_BASE_URL', raising=False)
+    monkeypatch.setattr(chat_file.chat_db, 'get_chat_files', lambda _uid: [legacy])
+    monkeypatch.setattr(chat_file.chat_db, 'delete_multi_files', MagicMock())
+    monkeypatch.setattr(chat_file, 'openai', _ForbiddenOpenAI())
+
+    with pytest.raises(chat_file.FileChatCleanupError) as raised:
+        _cleanup_tool().cleanup()
+
+    assert raised.value.reason == 'managed_cleanup_credential_required'
+    assert raised.value.receipt == chat_file.FileChatCleanupReceipt(0, 1, 0)
+
+
 def test_legacy_session_objects_without_managed_credential_block_session_cleanup(monkeypatch, local_transport):
     class _ForbiddenOpenAI:
         @property

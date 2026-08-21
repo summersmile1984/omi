@@ -127,6 +127,12 @@ def _file_record_transport(record: Dict[str, Any]) -> str:
 def _managed_openai_cleanup_is_configured() -> bool:
     """Require an explicit platform credential before constructing vendor egress."""
 
+    # An explicit deployment disable is a stronger boundary than merely lacking
+    # credentials.  Legacy provider-owned objects remain pending for an
+    # operator migration/retry; they must never be deleted through the vendor
+    # SDK just because an unrelated OpenAI key leaked into the process.
+    if os.getenv('FILE_CHAT_TRANSPORT', '').strip().lower() == 'disabled':
+        return False
     if not os.getenv('OPENAI_API_KEY', '').strip():
         return False
     configured_base = os.getenv('OPENAI_BASE_URL', '').strip().rstrip('/')
