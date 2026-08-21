@@ -362,6 +362,7 @@ class TranscriptSocketServiceFactory {
     final primarySocket = createTransportForProfile(
       profile: Env.profile,
       provider: config.provider,
+      config: config,
       createTransport: () => config.isLive
           ? _createStreamingSocket(sampleRate, codec, config)
           : _createPollingSocket(sampleRate, codec, config),
@@ -383,12 +384,38 @@ class TranscriptSocketServiceFactory {
   static void validateDeploymentEgress({
     required AppEnvironmentProfile profile,
     required SttProvider provider,
+    CustomSttConfig? config,
   }) {
-    if (profile == AppEnvironmentProfile.selfHosted && !provider.isSelfHostedClientSafe) {
+    if (profile != AppEnvironmentProfile.selfHosted) return;
+
+    if (!provider.isSelfHostedClientSafe) {
       throw StateError(
         'Profile self_hosted routes network transcription through its configured backend; '
         'client-direct ${provider.name} is unavailable.',
       );
+    }
+
+    // The provider enum alone is not an authority boundary: an imported or
+    // persisted config can override request_type/url. Keep the two client-safe
+    // providers on their intended local transports before any URL/HTTP/WS
+    // object is constructed.
+    if (provider == SttProvider.onDeviceWhisper &&
+        config?.requestType != null &&
+        config!.requestType != SttRequestType.multipartForm) {
+      throw StateError('Profile self_hosted on-device transcription cannot use a network request type.');
+    }
+
+    if (provider == SttProvider.localWhisper) {
+      if (config?.url?.trim().isNotEmpty == true) {
+        throw StateError('Profile self_hosted local Whisper cannot override its local inference URL.');
+      }
+      if (config?.requestType != null && config!.requestType != SttRequestType.multipartForm) {
+        throw StateError('Profile self_hosted local Whisper requires multipart_form transport.');
+      }
+      final host = config?.host?.trim() ?? '127.0.0.1';
+      if (!_isPrivateLocalHost(host)) {
+        throw StateError('Profile self_hosted local Whisper requires a loopback or private-network host.');
+      }
     }
   }
 
@@ -398,10 +425,48 @@ class TranscriptSocketServiceFactory {
   static T createTransportForProfile<T>({
     required AppEnvironmentProfile profile,
     required SttProvider provider,
+    CustomSttConfig? config,
     required T Function() createTransport,
   }) {
-    validateDeploymentEgress(profile: profile, provider: provider);
+    validateDeploymentEgress(profile: profile, provider: provider, config: config);
     return createTransport();
+  }
+
+  /// A self-hosted mobile client may use a Whisper process on the device or a
+  /// private operator network, but must not turn the "local" provider into a
+  /// public vendor egress path. Public operator STT belongs behind the
+  /// configured backend provider route and is therefore not accepted here.
+  static bool _isPrivateLocalHost(String rawHost) {
+    var host = rawHost.trim().toLowerCase();
+    if (host.isEmpty || host.contains(RegExp(r'[/:?#@\s]'))) return false;
+    host = host.replaceFirst(RegExp(r'\.+$'), '');
+    if (host == 'localhost' || host == 'host.docker.internal' || host.endsWith('.local')) return true;
+
+    final address = InternetAddress.tryParse(host);
+    if (address == null) return false;
+    if (address.type == InternetAddressType.IPv4) {
+      final octets = host.split('.').map(int.tryParse).toList();
+      if (octets.length != 4 || octets.any((octet) => octet == null || octet < 0 || octet > 255)) return false;
+      final first = octets[0]!;
+      final second = octets[1]!;
+      return first == 10 ||
+          (first == 172 && second >= 16 && second <= 31) ||
+          (first == 192 && second == 168) ||
+          first == 127 ||
+          (first == 100 && second >= 64 && second <= 127);
+    }
+
+    // IPv6 loopback, link-local, and unique-local addresses are private to
+    // the device/operator network. InternetAddress normalizes neither textual
+    // form here, so use the canonical address string for the prefix check.
+    final normalized = address.address.toLowerCase();
+    return address.isLoopback ||
+        normalized.startsWith('fe8') ||
+        normalized.startsWith('fe9') ||
+        normalized.startsWith('fea') ||
+        normalized.startsWith('feb') ||
+        normalized.startsWith('fc') ||
+        normalized.startsWith('fd');
   }
 
   /// Create streaming WebSocket for live STT

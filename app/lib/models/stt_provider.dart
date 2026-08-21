@@ -25,6 +25,8 @@ enum SttProvider {
   /// Self-hosted releases route network STT through their configured backend.
   /// Only fully local engines remain selectable client-side; a persisted legacy
   /// vendor/custom config is also rejected by the socket factory before URL use.
+  /// The local Whisper server is further constrained to a private endpoint by
+  /// that factory, so it cannot be repurposed as public vendor egress.
   bool get isSelfHostedClientSafe =>
       this == SttProvider.omi || this == SttProvider.localWhisper || this == SttProvider.onDeviceWhisper;
 }
