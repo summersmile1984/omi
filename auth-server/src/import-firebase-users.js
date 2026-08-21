@@ -185,6 +185,24 @@ export function planFirebaseIdentityImport(source, hashConfig) {
         `user ${userId}: disabled Firebase users require explicit remediation before import`,
       );
     }
+    const customAttributes = optionalString(
+      rawUser.customAttributes,
+      `user ${userId}: customAttributes`,
+    );
+    if (customAttributes && customAttributes !== "{}") {
+      throw new FirebaseIdentityMigrationError(
+        `user ${userId}: non-empty customAttributes require explicit reconciliation before import`,
+      );
+    }
+    const phoneNumber = optionalString(
+      rawUser.phoneNumber,
+      `user ${userId}: phoneNumber`,
+    );
+    if (phoneNumber) {
+      throw new FirebaseIdentityMigrationError(
+        `user ${userId}: phoneNumber identities require explicit reconciliation before import`,
+      );
+    }
     const email = requiredString(rawUser.email, `user ${userId}: email`).toLowerCase();
     if (seenEmails.has(email)) {
       throw new FirebaseIdentityMigrationError(`duplicate Firebase email ${email}`);

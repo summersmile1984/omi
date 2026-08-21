@@ -101,6 +101,38 @@ test("fails closed for identities that cannot sign in after migration", () => {
   );
 });
 
+test("fails closed instead of silently dropping unsupported Firebase profile data", () => {
+  const base = {
+    localId: "uid-profile-data",
+    email: "profile@example.com",
+    createdAt: "1700000000000",
+    passwordHash,
+    salt: "42xEC+ixf3L2lw==",
+  };
+  assert.throws(
+    () =>
+      planFirebaseIdentityImport(
+        { users: [{ ...base, customAttributes: '{"plan":"pro"}' }] },
+        config,
+      ),
+    /non-empty customAttributes require explicit reconciliation/,
+  );
+  assert.throws(
+    () =>
+      planFirebaseIdentityImport(
+        { users: [{ ...base, phoneNumber: "+15551234567" }] },
+        config,
+      ),
+    /phoneNumber identities require explicit reconciliation/,
+  );
+  assert.doesNotThrow(() =>
+    planFirebaseIdentityImport(
+      { users: [{ ...base, customAttributes: "{}" }] },
+      config,
+    ),
+  );
+});
+
 test("rejects duplicate email and provider authority before touching PostgreSQL", () => {
   const user = {
     emailVerified: true,

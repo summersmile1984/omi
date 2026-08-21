@@ -98,8 +98,10 @@ requires empty Better Auth user/account/session tables, and records a single
 source SHA-256/config fingerprint/count/content receipt. Reapplying the exact
 export is idempotent; a different source, a non-empty unreceipted target,
 duplicate UID/email/provider identity, disabled account, unsupported provider,
-or a user without a supported sign-in identity fails closed. Google and Apple
-accounts are imported only when their operator OAuth pairs are configured.
+or a user without a supported sign-in identity fails closed. Non-empty Firebase
+`customAttributes` and `phoneNumber` fields also fail closed instead of being
+silently discarded; reconcile those identities explicitly before importing.
+Google and Apple accounts are imported only when their operator OAuth pairs are configured.
 Sessions are intentionally not migrated; clients must establish a new signed
 Better Auth session after cutover.
 
