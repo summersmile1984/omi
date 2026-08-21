@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, AudioLines } from 'lucide-react'
-import type { User } from 'firebase/auth'
-import { auth, onAuthStateChanged } from '../lib/firebase'
+import { auth, onAuthStateChanged, type IdentityUser } from '../lib/identity'
 import { useAppState } from '../state/appState'
 import { QuickTaskWidget } from '../components/home/QuickTaskWidget'
 import { QuickGoalsWidget } from '../components/home/QuickGoalsWidget'
@@ -13,7 +12,7 @@ import { BrandImage } from '../components/ui/BrandImage'
 import { VoiceSessionSurface } from '../components/voice/VoiceSessionSurface'
 import { nextOverflowing } from './homeScroll'
 
-function firstName(u: User | null): string {
+function firstName(u: IdentityUser | null): string {
   const display = u?.displayName?.trim().split(/\s+/)[0]
   if (display) return display
   const emailLocal = u?.email?.split('@')[0]
@@ -93,7 +92,7 @@ function ChatBar(props: {
 // the direction.
 export function LegacyHome(): React.JSX.Element {
   const { chat } = useAppState()
-  const [user, setUser] = useState<User | null>(auth.currentUser)
+  const [user, setUser] = useState<IdentityUser | null>(auth.currentUser)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const chatContentRef = useRef<HTMLDivElement>(null)
   const widgetsGridRef = useRef<HTMLDivElement>(null)

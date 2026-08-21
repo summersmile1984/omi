@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { auth, onAuthStateChanged } from '../lib/firebase'
+import { auth, onAuthStateChanged } from '../lib/identity'
 import { getPreferences, onPreferencesChange } from '../lib/preferences'
 import { liveConversation, requestFinalize } from '../lib/liveConversation'
 import { formatAssistantLine, shouldInjectIntoLive } from '../lib/voice/injectedTranscript'

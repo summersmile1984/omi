@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { User, LogOut } from 'lucide-react'
-import { auth, signOutUser } from '../../../lib/firebase'
+import { auth, signOutUser } from '../../../lib/identity'
 import { getPreferences, setPreferences } from '../../../lib/preferences'
 import { setDisplayName } from '../../../lib/userProfile'
 import { toast } from '../../../lib/toast'

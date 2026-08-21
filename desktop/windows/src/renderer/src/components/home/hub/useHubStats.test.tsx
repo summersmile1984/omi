@@ -20,7 +20,7 @@ const h = vi.hoisted(() => ({
   frameCountCalls: 0
 }))
 
-vi.mock('../../../lib/firebase', () => ({
+vi.mock('../../../lib/identity', () => ({
   auth: {
     get currentUser() {
       return h.currentUser

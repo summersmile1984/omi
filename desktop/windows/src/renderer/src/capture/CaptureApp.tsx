@@ -6,7 +6,7 @@ import { PttCaptureHost } from './PttCaptureHost'
 import { ScreenSessionHost } from './ScreenSessionHost'
 import { MeetingSessionHost } from './MeetingSessionHost'
 import { installCaptureE2EHooks } from './e2eHooks'
-import { auth } from '../lib/firebase'
+import { auth } from '../lib/identity'
 
 // Test hooks (no-op unless OMI_E2E=1) — module scope so they exist as soon as
 // the capture bundle evaluates, before React mounts.

@@ -41,7 +41,7 @@ vi.mock('../lib/apiClient', () => ({
 
 // Signed-in by default; a test flips this to null to exercise the auth guard.
 const firebaseMock = { auth: { currentUser: { uid: 'u1' } as { uid: string } | null } }
-vi.mock('../lib/firebase', () => firebaseMock)
+vi.mock('../lib/identity', () => firebaseMock)
 
 async function renderPage(): Promise<void> {
   const { Memories } = await import('./Memories')

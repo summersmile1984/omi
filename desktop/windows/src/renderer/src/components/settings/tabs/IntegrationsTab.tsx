@@ -6,7 +6,7 @@ import { toastImportTally } from '../../../lib/importToast'
 import { useMemories } from '../../../hooks/useMemories'
 import { useGoogleConnection } from '../../../hooks/useGoogleConnection'
 import { GMAIL_SESSION_ENABLED } from '../../../lib/gmailSessionFeatureFlag'
-import { auth } from '../../../lib/firebase'
+import { auth } from '../../../lib/identity'
 import { SettingRow } from '../SettingRow'
 import type { GmailSessionStatus } from '../../../../../shared/types'
 

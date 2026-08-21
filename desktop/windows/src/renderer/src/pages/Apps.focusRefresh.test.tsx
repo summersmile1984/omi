@@ -15,7 +15,7 @@ vi.mock('../lib/toast', () => ({ toast: vi.fn() }))
 
 // Signed-in by default; a test flips this to null to exercise the auth guard.
 const firebaseMock = { auth: { currentUser: { uid: 'u1' } as { uid: string } | null } }
-vi.mock('../lib/firebase', () => firebaseMock)
+vi.mock('../lib/identity', () => firebaseMock)
 
 // Resolve every catalog endpoint with empty data. A never-resolving variant (below)
 // keeps the mount load in flight so the loading guard can be exercised.

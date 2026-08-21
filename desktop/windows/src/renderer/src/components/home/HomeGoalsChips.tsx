@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { omiApi } from '../../lib/apiClient'
-import { auth, onAuthStateChanged } from '../../lib/firebase'
+import { auth, onAuthStateChanged } from '../../lib/identity'
 import { goalEmoji, DEFAULT_GOAL_EMOJI } from '../../lib/goalEmoji'
 import { isCompleted, progressColor, progressPct } from '../../lib/goalVisuals'
 import { cache as goalsCache, hydrateGoalsFromDisk, writeCache } from '../../lib/goalsCache'

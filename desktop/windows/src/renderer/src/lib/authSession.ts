@@ -1,19 +1,18 @@
-// Firebase session health for the primary API client. Mirrors the macOS
+// Configured-identity session health for the primary API client. Mirrors the macOS
 // AuthSessionCoordinator refresh→retry→classify model (INV-AUTH-1): on a 401 the
 // client force-refreshes the ID token once and retries; the outcome is then
 // classified as a DEFINITIVE death (→ sign-in) or a TRANSIENT failure (→ keep the
 // session, retry later). Critically, a network blip during refresh must NOT sign
 // the user out. The definitive path is LIGHT — it never wipes local data; a full
-// teardown is reserved for a user-initiated Sign Out (firebase.signOutUser →
+// teardown is reserved for a user-initiated Sign Out (identity sign-out →
 // authTeardown).
-import { signOut } from 'firebase/auth'
-import { auth, onAuthStateChanged } from './firebase'
+import { auth, onAuthStateChanged, signOutIdentitySession } from './identity'
 import { toast } from './toast'
 
-// Firebase Auth error codes that mean the credential is permanently dead — the
-// JS-SDK equivalents of macOS's INVALID_REFRESH_TOKEN / USER_DISABLED /
-// USER_NOT_FOUND / TOKEN_EXPIRED. Anything else (network-request-failed, unknown)
-// is treated as transient so a blip can't spuriously kick the user to sign-in.
+// Provider-neutral error codes that mean the credential is permanently dead.
+// Both the managed SDK adapter and Better Auth shim converge on these codes.
+// Anything else (network-request-failed, unknown) is treated as transient so a
+// blip can't spuriously kick the user to sign-in.
 const DEFINITIVE_AUTH_CODES = new Set([
   'auth/user-token-expired', // refresh token expired (TOKEN_EXPIRED)
   'auth/user-disabled', // USER_DISABLED
@@ -33,7 +32,7 @@ export type RefreshOutcome =
 let reauthInFlight = false
 
 /**
- * Force a network refresh of the current user's Firebase ID token, classifying
+ * Force a network refresh of the current user's identity token, classifying
  * the result so the caller can distinguish "the session is dead, prompt sign-in"
  * from "a transient failure, keep the session and retry later".
  */
@@ -51,7 +50,7 @@ export async function refreshIdToken(): Promise<RefreshOutcome> {
 /**
  * The Firebase session is definitively dead: no user, a permanent refresh
  * failure, or the backend rejected even a freshly-refreshed token. Drop the
- * Firebase SDK session so onAuthStateChanged emits null and the router falls back
+ * configured identity session so onAuthStateChanged emits null and the router falls back
  * to the Login screen (the sign-in CTA), and surface a one-time prompt. Does NOT
  * wipe local data — that is the user-initiated Sign Out path. Guarded so a burst
  * of concurrent 401s triggers exactly one sign-out + toast.
@@ -61,7 +60,7 @@ export async function forceReauth(): Promise<void> {
   reauthInFlight = true
   toast('Your session expired — please sign in again', { tone: 'warn' })
   try {
-    await signOut(auth)
+    await signOutIdentitySession()
   } catch {
     /* best-effort; a partial sign-out still emits null from onAuthStateChanged */
   }

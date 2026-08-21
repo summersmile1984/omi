@@ -11,7 +11,7 @@
 // turn — while the bar itself renders the same copy inline (Mac shows both: a
 // local assistant bubble in the bar AND the modal on the main window).
 import { createChatQuotaGate, type ChatQuotaGate, type QuotaVerdict } from '../../lib/chatQuotaGate'
-import { auth } from '../../lib/firebase'
+import { auth } from '../../lib/identity'
 
 export type BarSender = {
   /** Send through the quota gate. Resolves to the blocked-notice text when the

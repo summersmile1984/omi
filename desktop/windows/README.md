@@ -23,6 +23,18 @@ npm run dev
 config, so after `cp .env.example .env` the app runs and sign-in works with no extra
 keys to obtain.
 
+### Self-hosted release profile
+
+Windows self-hosted builds require a separate explicit `.env`; copy
+`.env.selfhost.example`, replace its four operator origins, and run
+`npm run build:selfhost:win` (or invoke `node scripts/ensure-env.mjs --profile=self_hosted`
+before a custom build). The prestep fails closed unless the profile selects Better Auth,
+all API/desktop/auth/MCP origins are operator-owned HTTPS origins, and no Firebase or
+Sentry credentials are present. Self-hosted clients disable direct model-provider/BYOK,
+Omi analytics/share/update fallbacks, and hosted OAuth connectors; model/realtime work
+must be advertised by the configured backend. An optional update feed and analytics
+origin/key are accepted only when explicitly configured.
+
 ## Authentication
 
 - **App sign-in:** each user signs in with **their own** Google or Apple/Omi account

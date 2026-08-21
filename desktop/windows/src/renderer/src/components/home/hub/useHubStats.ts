@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMemories } from '../../../hooks/useMemories'
 import { fetchAllActionItems } from '../../../lib/actionItems'
-import { auth, onAuthStateChanged } from '../../../lib/firebase'
+import { auth, onAuthStateChanged } from '../../../lib/identity'
 import { conversationsCache, subscribeConversationsCache } from '../../../lib/pageCache'
 import type { ConversationRow } from '../../../lib/pageCache'
 import type { HubStatCounts } from './HubStatRibbon'

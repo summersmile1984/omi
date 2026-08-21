@@ -1,4 +1,4 @@
-import type { User } from 'firebase/auth'
+import type { IdentityUser } from '../identity'
 
 // Dev-only fake auth for the perf bench (OMI_BENCH=1). A live Firebase session
 // can't survive a repeated bench loop — the project invalidates the refresh token
@@ -16,9 +16,9 @@ const BENCH_USER = {
   email: 'bench@local',
   displayName: 'Bench User',
   getIdToken: async () => 'bench-token'
-} as unknown as User
+} satisfies IdentityUser
 
-export function getBenchUser(): User | null {
+export function getBenchUser(): IdentityUser | null {
   if (!import.meta.env.DEV) return null
   return window.omi?.isBench ? BENCH_USER : null
 }

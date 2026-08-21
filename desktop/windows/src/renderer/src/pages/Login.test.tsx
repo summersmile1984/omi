@@ -4,7 +4,7 @@ import { render, cleanup, fireEvent, screen, waitFor } from '@testing-library/re
 
 const signInWithProvider = vi.hoisted(() => vi.fn())
 
-vi.mock('../lib/firebase', () => ({ signInWithProvider }))
+vi.mock('../lib/identity', () => ({ signInWithProvider }))
 
 import { Login } from './Login'
 

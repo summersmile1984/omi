@@ -14,7 +14,7 @@ import {
   speakText
 } from './voiceController'
 import { beginRealtimeAudible, endRealtimeAudible, isRealtimeAudible } from './audibleOutputArbiter'
-import { auth } from '../firebase'
+import { auth } from '../identity'
 import { liveConversation } from '../liveConversation'
 import { setPreferences, type Preferences } from '../preferences'
 import type { VoiceProvider } from './sessionMachine'

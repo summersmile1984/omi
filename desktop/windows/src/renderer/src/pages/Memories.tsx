@@ -21,7 +21,7 @@ import { MemoryCard } from '../components/memories/MemoryCard'
 import { MemoryFilterBar } from '../components/memories/MemoryFilterBar'
 import { MemoryDetailSheet } from '../components/memories/MemoryDetailSheet'
 import { UndoDeleteToast } from '../components/memories/UndoDeleteToast'
-import { auth } from '../lib/firebase'
+import { auth } from '../lib/identity'
 
 // Cap how many cards render at once so a multi-thousand list stays responsive;
 // filtering/selection still operate on the full (filtered) set, not just what's

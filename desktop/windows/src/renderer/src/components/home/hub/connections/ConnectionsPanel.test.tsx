@@ -13,7 +13,7 @@ vi.mock('../../../../lib/apiClient', () => ({
 }))
 // The X tile/row mints a session from Firebase; keep it signed-out (null) here so
 // the X status/run probes never fire.
-vi.mock('../../../../lib/firebase', () => ({ auth: { currentUser: null } }))
+vi.mock('../../../../lib/identity', () => ({ auth: { currentUser: null } }))
 
 import { ConnectionsPanel } from './ConnectionsPanel'
 import { getHubConnectContent } from '../hubConnectSlot'

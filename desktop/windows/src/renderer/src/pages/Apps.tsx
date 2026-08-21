@@ -34,7 +34,7 @@ import { getCacheUid, readPersistedValue, writePersistedValue } from '../lib/per
 import { toast } from '../lib/toast'
 import { worksExternally, setupUrl, isSetupCompleted, startSetupPolling } from '../lib/appInstall'
 import { AppDetailSheet } from '../components/apps/AppDetailSheet'
-import { auth } from '../lib/firebase'
+import { auth } from '../lib/identity'
 import { getE2EUser } from '../lib/dev/e2eAuth'
 
 // Cap rendered search results so a broad query (e.g. "a") can't mount the whole

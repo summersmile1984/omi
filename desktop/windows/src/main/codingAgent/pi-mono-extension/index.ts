@@ -1027,7 +1027,10 @@ export async function __registerOmiToolsForTest(pi: ExtensionAPI): Promise<void>
 // ---------------------------------------------------------------------------
 
 export default function omiProvider(pi: ExtensionAPI): void {
-  const baseUrl = process.env.OMI_API_BASE_URL || 'https://api.omi.me/v2'
+  const baseUrl = process.env.OMI_API_BASE_URL
+  if (!baseUrl) {
+    throw new Error('OMI_API_BASE_URL is required; the host must supply the signed backend origin')
+  }
   const apiKey = process.env.OMI_API_KEY || ''
 
   // BYOK: the app sets OMI_BYOK_* env vars (all four, or none) when the user is

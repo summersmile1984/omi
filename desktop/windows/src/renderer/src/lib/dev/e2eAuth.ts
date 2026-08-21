@@ -1,4 +1,4 @@
-import type { User } from 'firebase/auth'
+import type { IdentityUser } from '../identity'
 
 // Offline fake auth for E2E, gated on the runtime flag OMI_E2E_FAKE_AUTH=1
 // (surfaced via the preload as window.omi.e2eFakeAuth). Unlike the perf-bench
@@ -17,10 +17,9 @@ const E2E_USER = {
   uid: 'e2e-user',
   email: 'e2e@local',
   displayName: 'E2E User',
-  photoURL: null,
   getIdToken: async () => 'e2e-token'
-} as unknown as User
+} satisfies IdentityUser
 
-export function getE2EUser(): User | null {
+export function getE2EUser(): IdentityUser | null {
   return window.omi?.e2eFakeAuth ? E2E_USER : null
 }

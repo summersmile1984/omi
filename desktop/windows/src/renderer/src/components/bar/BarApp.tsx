@@ -16,7 +16,7 @@
 // sole status indicator). On release the bar STAYS a pill; the reply is spoken.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useAuth } from '../../hooks/useAuth'
-import { auth } from '../../lib/firebase'
+import { auth } from '../../lib/identity'
 import { getPreferences, onPreferencesChange } from '../../lib/preferences'
 import { usePushToTalk } from '../../hooks/usePushToTalk'
 import { useVoicePlaneSupervisor } from '../../hooks/useVoicePlaneSupervisor'

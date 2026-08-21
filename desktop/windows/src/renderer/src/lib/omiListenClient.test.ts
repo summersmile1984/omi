@@ -6,7 +6,7 @@ import type { CaptureCommand, CaptureEvent, ListenMessage } from '../../../share
 // window, reports connected only after both transport and source are ready, maps
 // a routed audio-source-error to a fatal error, and tears down on stop.
 
-vi.mock('./firebase', () => ({
+vi.mock('./identity', () => ({
   auth: { currentUser: { getIdToken: vi.fn(async () => 'test-token') } }
 }))
 vi.mock('./preferences', () => ({ getPreferences: () => ({ language: 'en' }) }))

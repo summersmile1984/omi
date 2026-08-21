@@ -3,7 +3,7 @@ import { StepScaffold } from './StepScaffold'
 import { ConnectorBrandMark } from '../home/hub/connections/ConnectorBrandMark'
 import { useMemories } from '../../hooks/useMemories'
 import { useGoogleConnection } from '../../hooks/useGoogleConnection'
-import { auth } from '../../lib/firebase'
+import { auth } from '../../lib/identity'
 import { toast } from '../../lib/toast'
 import { toastImportTally } from '../../lib/importToast'
 import {

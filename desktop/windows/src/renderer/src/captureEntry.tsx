@@ -19,10 +19,11 @@ import { CaptureApp } from './capture/CaptureApp'
 import { SandboxBadge } from './components/SandboxBadge'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { scrubEventPii } from '../../shared/sentryScrub'
+import { deploymentTelemetryDsn } from '../../shared/deploymentProfile'
 
 // Renderer-side crash reporting — same init as the main entry (main.tsx). No-op
 // without a DSN (dev builds).
-const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined
+const SENTRY_DSN = deploymentTelemetryDsn(import.meta.env.VITE_SENTRY_DSN as string | undefined)
 if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
