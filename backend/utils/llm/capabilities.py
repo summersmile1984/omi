@@ -167,6 +167,37 @@ def resolve_model_capability(
         transport = values.get('APP_ICON_GENERATION_TRANSPORT', 'gateway').strip().lower() or 'gateway'
         if transport == 'disabled':
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
+        if transport == 'local_template':
+            return ModelCapabilityRoute(
+                capability=capability,
+                status='selected',
+                routes=(),
+                transport='local_template_image_generation',
+            )
+        if transport == 'openai_compatible':
+            base_url = values.get('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', '').strip()
+            api_key = values.get('IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY', '').strip()
+            model = values.get('IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL', '').strip()
+            parsed = urlparse(base_url)
+            if (
+                parsed.scheme not in {'http', 'https'}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+            ):
+                return _unavailable(capability, 'compatible_endpoint_not_configured', retryable=False)
+            if not api_key:
+                return _unavailable(capability, 'compatible_credential_not_configured', retryable=False)
+            if not model:
+                return _unavailable(capability, 'compatible_model_not_configured', retryable=False)
+            return ModelCapabilityRoute(
+                capability=capability,
+                status='selected',
+                routes=(ProviderRoute(provider='openai_compatible', model=model),),
+                transport='openai_compatible_image_generation',
+            )
         if transport != 'gateway':
             return _unavailable(capability, 'unsupported_transport', retryable=False)
         return ModelCapabilityRoute(
@@ -179,6 +210,16 @@ def resolve_model_capability(
         transport = values.get('FILE_CHAT_TRANSPORT', 'openai_assistants').strip().lower() or 'openai_assistants'
         if transport == 'disabled':
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
+        if transport == 'local_extraction':
+            if not values.get('BUCKET_CHAT_FILES', '').strip():
+                return _unavailable(capability, 'object_storage_not_configured', retryable=False)
+            route = resolve_feature_route('chat_responses', values)
+            return ModelCapabilityRoute(
+                capability=capability,
+                status='selected',
+                routes=(route.primary, *route.fallbacks),
+                transport='local_extraction',
+            )
         if transport != 'openai_assistants':
             return _unavailable(capability, 'unsupported_transport', retryable=False)
         if not values.get('OPENAI_API_KEY', '').strip():

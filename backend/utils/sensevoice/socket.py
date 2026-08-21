@@ -19,6 +19,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from utils.async_tasks import create_named_task
 from utils.executors import run_blocking, sync_executor
+from utils.sensevoice.speaker import (
+    SenseVoiceSpeakerError,
+    WindowSpeakerClusterer,
+    build_window_speaker_clusterer,
+    sensevoice_speaker_mode,
+)
 from utils.stt.socket import STTSocket
 
 logger = logging.getLogger(__name__)
@@ -71,7 +77,7 @@ def pcm16_to_samples(pcm: bytes) -> List[int]:
     return list(array.array('h', aligned))
 
 
-def _decode_pcm(recognizer: Any, sample_rate: int, pcm: bytes) -> str:
+def decode_pcm(recognizer: Any, sample_rate: int, pcm: bytes) -> str:
     """Decode one window under the recognizer's process-wide concurrency gate."""
     with _decode_lock:
         stream = recognizer.create_stream()
@@ -90,12 +96,20 @@ class SenseVoiceSocket(STTSocket):
         recognizer: Any = None,
         window_seconds: float = SENSEVOICE_STREAM_WINDOW_SECONDS,
         poll_seconds: float = SENSEVOICE_STREAM_POLL_SECONDS,
+        speaker_clusterer: Optional[WindowSpeakerClusterer] = None,
     ) -> None:
         if sample_rate <= 0 or window_seconds <= 0 or poll_seconds <= 0:
             raise ValueError('SenseVoice streaming timing and sample rate must be positive')
         self._sample_rate = sample_rate
         self._callback = transcript_callback
         self._recognizer = recognizer
+        mode = sensevoice_speaker_mode()
+        self._speaker_clusterer = (
+            speaker_clusterer
+            if speaker_clusterer is not None
+            else build_window_speaker_clusterer() if mode == 'window_clustering' else None
+        )
+        self._speaker_window_index = 0
         self._window_bytes = max(2, int(sample_rate * 2 * window_seconds))
         self._poll_seconds = poll_seconds
         self._pcm = bytearray()
@@ -152,6 +166,10 @@ class SenseVoiceSocket(STTSocket):
                     return
         except asyncio.CancelledError:
             raise
+        except SenseVoiceSpeakerError as error:
+            self._dead = True
+            self._death_reason = f'sensevoice_speaker:{error.reason}'
+            logger.error('SenseVoice speaker attribution failed reason=%s', error.reason)
         except Exception as error:
             self._dead = True
             self._death_reason = f'sensevoice_decode:{type(error).__name__}'
@@ -163,7 +181,10 @@ class SenseVoiceSocket(STTSocket):
                 available = len(self._pcm) - (len(self._pcm) % 2)
                 if available < self._window_bytes and not (force and available > 0):
                     return
-                take = available if force else self._window_bytes
+                # A final/VAD flush may include a partial tail, but it must not
+                # collapse an arbitrarily large buffered session into one CPU
+                # inference or one speaker label.
+                take = min(available, self._window_bytes)
                 pcm = bytes(self._pcm[:take])
                 del self._pcm[:take]
                 start = self._emitted_seconds
@@ -174,13 +195,23 @@ class SenseVoiceSocket(STTSocket):
             self._recognizer = recognizer
             text = await run_blocking(
                 sync_executor,
-                lambda: _decode_pcm(recognizer, self._sample_rate, pcm),
+                lambda: decode_pcm(recognizer, self._sample_rate, pcm),
             )
             if self._callback and text:
+                speaker = 'SPEAKER_00'
+                if self._speaker_clusterer is not None:
+                    speaker = await run_blocking(
+                        sync_executor,
+                        self._speaker_clusterer.assign_pcm,
+                        self._speaker_window_index,
+                        pcm,
+                        self._sample_rate,
+                    )
+                    self._speaker_window_index += 1
                 self._callback(
                     [
                         {
-                            'speaker': 'SPEAKER_00',
+                            'speaker': speaker,
                             'start': start,
                             'end': start + duration,
                             'text': text,
@@ -190,8 +221,6 @@ class SenseVoiceSocket(STTSocket):
                     ]
                 )
             logger.info('SenseVoice transcript window emitted chars=%d duration=%.1fs', len(text), duration)
-            if force:
-                return
 
     @property
     def is_connection_dead(self) -> bool:

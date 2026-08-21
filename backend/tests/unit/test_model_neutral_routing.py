@@ -221,6 +221,84 @@ def test_direct_compatible_provider_never_borrows_the_openai_key(monkeypatch):
         providers.get_or_create_openai_compatible_llm('deepseek', 'deepseek-chat')
 
 
+@pytest.mark.parametrize(
+    ('provider', 'credential_env'),
+    [
+        ('openai', 'OPENAI_API_KEY'),
+        ('openrouter', 'OPENROUTER_API_KEY'),
+    ],
+)
+def test_official_openai_compatible_provider_without_credentials_fails_before_client_construction(
+    monkeypatch,
+    provider,
+    credential_env,
+):
+    monkeypatch.delenv(credential_env, raising=False)
+    providers._llm_cache.clear()
+    constructor_calls = []
+    monkeypatch.setattr(providers, 'ChatOpenAI', lambda **kwargs: constructor_calls.append(kwargs))
+
+    with pytest.raises(providers.ModelProviderConfigurationError) as error:
+        providers.get_or_create_openai_compatible_llm(provider, 'configured-model')
+
+    assert error.value.provider == provider
+    assert error.value.reason == 'credential_not_configured'
+    assert constructor_calls == []
+
+
+def test_gemini_without_credentials_fails_before_any_provider_client_construction(monkeypatch):
+    for env_name in ('GEMINI_API_KEY', 'USE_VERTEX_AI', 'GOOGLE_CLOUD_PROJECT'):
+        monkeypatch.delenv(env_name, raising=False)
+    providers._llm_cache.clear()
+    constructor_calls = []
+    monkeypatch.setattr(
+        providers,
+        'ChatGoogleGenerativeAI',
+        lambda **kwargs: constructor_calls.append(('gemini', kwargs)),
+    )
+    monkeypatch.setattr(providers, 'ChatOpenAI', lambda **kwargs: constructor_calls.append(('openai', kwargs)))
+
+    with pytest.raises(providers.ModelProviderConfigurationError) as error:
+        providers.get_or_create_gemini_llm('gemini-2.5-flash-lite')
+
+    assert error.value.provider == 'gemini'
+    assert error.value.reason == 'credential_not_configured'
+    assert constructor_calls == []
+
+
+def test_explicit_gemini_api_key_still_constructs_the_managed_provider(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'configured-gemini-key')
+    monkeypatch.delenv('USE_VERTEX_AI', raising=False)
+    monkeypatch.delenv('GOOGLE_CLOUD_PROJECT', raising=False)
+    providers._llm_cache.clear()
+    captured = {}
+    selected = object()
+
+    def fake_gemini(**kwargs):
+        captured.update(kwargs)
+        return selected
+
+    monkeypatch.setattr(providers, 'ChatGoogleGenerativeAI', fake_gemini)
+
+    assert providers.get_or_create_gemini_llm('gemini-2.5-flash-lite') is selected
+    assert captured['google_api_key'] == 'configured-gemini-key'
+
+
+def test_legacy_gemini_embedding_without_credentials_fails_before_official_http(monkeypatch):
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    monkeypatch.setattr(clients, 'get_byok_key', lambda _provider: None)
+    monkeypatch.setattr(clients, 'should_route_features_through_gateway', lambda: False)
+    post_calls = []
+    monkeypatch.setattr(clients.httpx, 'post', lambda *args, **kwargs: post_calls.append((args, kwargs)))
+
+    with pytest.raises(providers.ModelProviderConfigurationError) as error:
+        clients._gemini_embed_query_direct('private query')
+
+    assert error.value.provider == 'gemini'
+    assert error.value.reason == 'credential_not_configured'
+    assert post_calls == []
+
+
 @pytest.mark.asyncio
 async def test_gateway_registers_generic_deepseek_and_mimo_from_the_shared_provider_contract(monkeypatch):
     for env_name in (

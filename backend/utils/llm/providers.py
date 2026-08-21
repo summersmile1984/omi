@@ -30,6 +30,17 @@ _usage_callback = get_usage_callback()
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 
+class ModelProviderConfigurationError(ValueError):
+    """A selected direct provider cannot execute with the current deployment config."""
+
+    def __init__(self, provider: str, reason: str, *, setting: str | None = None) -> None:
+        self.provider = provider
+        self.reason = reason
+        self.setting = setting
+        detail = f': {setting} is required' if setting else ''
+        super().__init__(f"provider {provider!r} is not configured ({reason}){detail}")
+
+
 @dataclass(frozen=True)
 class OpenAICompatibleProviderConfig:
     """Configuration for providers served through ChatOpenAI-compatible APIs."""
@@ -104,7 +115,7 @@ def get_openai_compatible_provider_config(provider: str) -> OpenAICompatibleProv
     try:
         return OPENAI_COMPATIBLE_PROVIDERS[normalized]
     except KeyError as exc:
-        raise ValueError(f"Unknown OpenAI-compatible provider '{provider}'") from exc
+        raise ModelProviderConfigurationError(normalized or provider, 'direct_transport_not_supported') from exc
 
 
 def _cache_key(provider: str, model_name: str, streaming: bool, options: Dict[str, Any]) -> tuple:
@@ -140,14 +151,25 @@ def get_or_create_openai_compatible_llm(
         'api_key',
     }
     _effective_options = {k: v for k, v in options.items() if k in _handled_options}
-    effective_base_url = options.get('base_url') or provider_config.resolved_base_url()
     effective_api_key = options.get('api_key') or os.environ.get(provider_config.api_key_env, '').strip()
-    if provider_config.name in {'generic', 'deepseek', 'mimo'} and not effective_api_key:
-        raise ValueError(f'{provider_config.api_key_env} is required for provider {provider_config.name!r}')
-    if provider_config.name != 'openai' and not effective_api_key:
-        # ChatOpenAI otherwise consults OPENAI_API_KEY implicitly and can leak an
-        # unrelated credential to another provider's configured base URL.
-        effective_api_key = f'{provider_config.name}-key-not-configured'
+    if not effective_api_key:
+        # Validate credentials before resolving a provider's default URL or
+        # constructing ChatOpenAI. Besides producing an actionable failure for
+        # the selected primary, this prevents optional providers from borrowing
+        # OPENAI_API_KEY through the SDK's environment fallback.
+        raise ModelProviderConfigurationError(
+            provider_config.name,
+            'credential_not_configured',
+            setting=provider_config.api_key_env,
+        )
+    try:
+        effective_base_url = options.get('base_url') or provider_config.resolved_base_url()
+    except ValueError as exc:
+        raise ModelProviderConfigurationError(
+            provider_config.name,
+            'endpoint_not_configured',
+            setting=provider_config.base_url_env,
+        ) from exc
     cache_options = {
         **_effective_options,
         'base_url': effective_base_url,
@@ -237,23 +259,29 @@ def get_or_create_gemini_llm(
     Routing priority:
       1. USE_VERTEX_AI=true + GOOGLE_CLOUD_PROJECT → Vertex AI
       2. GEMINI_API_KEY set → AI Studio
-      3. Neither → placeholder that fails at invoke time (unit tests)
+      3. Neither → fail before an SDK client or official URL is constructed
 
     BYOK users still go through the OpenAI-compatible Gemini endpoint in clients.py.
     """
 
-    # Build cache key — only include thinking_budget when we'll actually use it
-    # (i.e., when Vertex AI or API key is configured). The fallback ChatOpenAI
-    # path strips thinking_budget, so including it would create duplicate entries.
-    _has_gemini_creds = bool(
-        os.environ.get('USE_VERTEX_AI', '').lower() == 'true' and os.environ.get('GOOGLE_CLOUD_PROJECT', '')
-    ) or bool(os.environ.get('GEMINI_API_KEY', ''))
-    cache_budget = thinking_budget if _has_gemini_creds else None
-    key = (model_name, streaming, 'gemini', cache_budget)
+    use_vertex = os.environ.get('USE_VERTEX_AI', '').strip().lower() == 'true'
+    gcp_project = os.environ.get('GOOGLE_CLOUD_PROJECT', '').strip() if use_vertex else ''
+    gemini_key = os.environ.get('GEMINI_API_KEY', '').strip()
+    if not gcp_project and not gemini_key:
+        raise ModelProviderConfigurationError(
+            'gemini',
+            'credential_not_configured',
+            setting='GEMINI_API_KEY or USE_VERTEX_AI=true with GOOGLE_CLOUD_PROJECT',
+        )
+
+    auth_identity = (
+        f'vertex:{gcp_project}:{os.environ.get("GCP_LOCATION", "us-central1").strip()}'
+        if gcp_project
+        else f'ai-studio:{hashlib.sha256(gemini_key.encode()).hexdigest()}'
+    )
+    cache_budget = thinking_budget
+    key = (model_name, streaming, 'gemini', auth_identity, cache_budget)
     if key not in _llm_cache:
-        use_vertex = os.environ.get('USE_VERTEX_AI', '').lower() == 'true'
-        gcp_project = os.environ.get('GOOGLE_CLOUD_PROJECT', '') if use_vertex else ''
-        gemini_key = os.environ.get('GEMINI_API_KEY', '')
         kwargs: Dict[str, Any] = {'callbacks': [_usage_callback], 'timeout': 120, 'max_retries': 1}
         if streaming:
             kwargs['streaming'] = True
@@ -268,17 +296,6 @@ def get_or_create_gemini_llm(
         elif gemini_key:
             kwargs['google_api_key'] = gemini_key
             _llm_cache[key] = ChatGoogleGenerativeAI(model=model_name, **kwargs)
-        else:
-            logger.warning('No USE_VERTEX_AI or GEMINI_API_KEY — Gemini calls will fail at invoke time')
-            # Strip thinking_budget — it's a ChatGoogleGenerativeAI-only param
-            # that ChatOpenAI rejects at invoke time.
-            fallback_kwargs = {k: v for k, v in kwargs.items() if k != 'thinking_budget'}
-            _llm_cache[key] = ChatOpenAI(
-                model=model_name,
-                api_key=SecretStr('not-set'),
-                base_url=GEMINI_OPENAI_BASE_URL,
-                **fallback_kwargs,
-            )
     return _llm_cache[key]
 
 

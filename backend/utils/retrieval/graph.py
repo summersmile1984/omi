@@ -25,7 +25,7 @@ from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.llm.gateway_client import GatewayDirectModelSurfaceBlocked
 from utils.llm.usage_tracker import Features, track_usage
 from utils.executors import db_executor, llm_executor, run_blocking
-from utils.other.chat_file import FileChatTool
+from utils.other.chat_file import FileChatTool, LocalFileChatError
 from utils.retrieval.agentic import (
     AGENT_STREAM_FAILURE_MESSAGE,
     AGENT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
@@ -102,7 +102,7 @@ async def _drain_chat_callback(
     except asyncio.CancelledError:
         await cancel_stream_task(task)
         raise
-    except (GatewayDirectModelSurfaceBlocked, ModelCapabilityUnavailableError):
+    except (GatewayDirectModelSurfaceBlocked, ModelCapabilityUnavailableError, LocalFileChatError):
         # Let the file-chat caller emit the typed user-safe failure + structured log.
         await cancel_stream_task(task)
         raise
@@ -213,6 +213,18 @@ async def _execute_file_chat_stream(
             callback_data['error'] = error.error_code
             callback_data['answer'] = FILE_CHAT_GATEWAY_BLOCKED_MESSAGE
         yield f'error: {FILE_CHAT_GATEWAY_BLOCKED_MESSAGE}'
+        yield None
+    except LocalFileChatError as error:
+        logger.info(
+            'local file chat unavailable route=file uid=%s reason=%s retryable=%s',
+            uid,
+            error.reason,
+            error.retryable,
+        )
+        if callback_data is not None:
+            callback_data['error'] = error.reason
+            callback_data['answer'] = AGENT_STREAM_FAILURE_MESSAGE
+        yield f'error: {AGENT_STREAM_FAILURE_MESSAGE}'
         yield None
     except Exception as error:
         logger.error(

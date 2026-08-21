@@ -6,7 +6,7 @@ QA/support can flash a named version. It reuses the existing hardened helpers (_
 applies the same draft/prerelease/tag/parseable validation) and mirrors get_stable_version.
 
 Test isolation: routers.firmware imports cleanly; the async handler is driven via asyncio.run with
-get_omi_github_releases patched (no network), and extract_key_value_pairs stays real to parse fixtures.
+get_configured_firmware_releases patched (no network), and extract_key_value_pairs stays real to parse fixtures.
 """
 
 import os
@@ -51,7 +51,7 @@ def _call(**kw):
 
 def test_exact_match_non_glass_returns_ota_zip():
     releases = [_release("Omi_CV1_v3.0.15", "3.0.15", _ota("3.0.15"))]
-    with patch.object(fw, "get_omi_github_releases", AsyncMock(return_value=releases)):
+    with patch.object(fw, "get_configured_firmware_releases", AsyncMock(return_value=releases)):
         result = _call(version="3.0.15")
     assert result["version"] == "3.0.15"
     assert result["zip_url"] == "https://x/ota.zip"
@@ -59,7 +59,7 @@ def test_exact_match_non_glass_returns_ota_zip():
 
 def test_exact_match_glass_returns_bin():
     releases = [_release("OmiGlass_v2.3.2", "2.3.2", _bin("2.3.2"))]
-    with patch.object(fw, "get_omi_github_releases", AsyncMock(return_value=releases)):
+    with patch.object(fw, "get_configured_firmware_releases", AsyncMock(return_value=releases)):
         result = _call(device_model="OmiGlass", version="2.3.2")
     assert result["version"] == "2.3.2"
     assert result["zip_url"] == "https://x/fw.bin"
@@ -67,7 +67,7 @@ def test_exact_match_glass_returns_bin():
 
 def test_version_normalization_accepts_v_prefix():
     releases = [_release("Omi_CV1_v3.0.15", "3.0.15", _ota("3.0.15"))]
-    with patch.object(fw, "get_omi_github_releases", AsyncMock(return_value=releases)):
+    with patch.object(fw, "get_configured_firmware_releases", AsyncMock(return_value=releases)):
         assert _call(version="v3.0.15")["version"] == "3.0.15"
         assert _call(version="3.0.15")["version"] == "3.0.15"
 
@@ -77,13 +77,13 @@ def test_picks_the_requested_version_not_the_newest():
         _release("Omi_CV1_v3.0.15", "3.0.15", _ota("3.0.15"), published_at="2026-03-01T00:00:00Z"),
         _release("Omi_CV1_v3.0.10", "3.0.10", _ota("3.0.10"), published_at="2026-01-01T00:00:00Z"),
     ]
-    with patch.object(fw, "get_omi_github_releases", AsyncMock(return_value=releases)):
+    with patch.object(fw, "get_configured_firmware_releases", AsyncMock(return_value=releases)):
         assert _call(version="3.0.10")["version"] == "3.0.10"
 
 
 def test_not_found_is_404():
     releases = [_release("Omi_CV1_v3.0.15", "3.0.15", _ota("3.0.15"))]
-    with patch.object(fw, "get_omi_github_releases", AsyncMock(return_value=releases)):
+    with patch.object(fw, "get_configured_firmware_releases", AsyncMock(return_value=releases)):
         with pytest.raises(HTTPException) as ei:
             _call(version="9.9.9")
     assert ei.value.status_code == 404
@@ -91,7 +91,7 @@ def test_not_found_is_404():
 
 def test_unparseable_version_is_400_before_fetch():
     m = AsyncMock(return_value=[])
-    with patch.object(fw, "get_omi_github_releases", m):
+    with patch.object(fw, "get_configured_firmware_releases", m):
         with pytest.raises(HTTPException) as ei:
             _call(version="abc")
     assert ei.value.status_code == 400
@@ -100,7 +100,7 @@ def test_unparseable_version_is_400_before_fetch():
 
 def test_unknown_device_is_404_before_fetch():
     m = AsyncMock(return_value=[])
-    with patch.object(fw, "get_omi_github_releases", m):
+    with patch.object(fw, "get_configured_firmware_releases", m):
         with pytest.raises(HTTPException) as ei:
             _call(device_model="Nonexistent", version="3.0.15")
     assert ei.value.status_code == 404
@@ -108,7 +108,7 @@ def test_unknown_device_is_404_before_fetch():
 
 
 def test_empty_releases_is_404():
-    with patch.object(fw, "get_omi_github_releases", AsyncMock(return_value=[])):
+    with patch.object(fw, "get_configured_firmware_releases", AsyncMock(return_value=[])):
         with pytest.raises(HTTPException) as ei:
             _call(version="3.0.15")
     assert ei.value.status_code == 404
@@ -119,7 +119,7 @@ def test_draft_and_prerelease_excluded():
         _release("Omi_CV1_v3.0.15", "3.0.15", _ota("3.0.15"), draft=True),
         _release("Omi_CV1_v3.0.16", "3.0.16", _ota("3.0.16"), prerelease=True),
     ]
-    with patch.object(fw, "get_omi_github_releases", AsyncMock(return_value=releases)):
+    with patch.object(fw, "get_configured_firmware_releases", AsyncMock(return_value=releases)):
         for v in ("3.0.15", "3.0.16"):
             with pytest.raises(HTTPException) as ei:
                 _call(version=v)
@@ -149,5 +149,5 @@ def test_duplicate_version_returns_newest_published_deterministically():
         published_at="2026-03-01T00:00:00Z",
     )
     # Raw list order older-first; the newest-published must win regardless.
-    with patch.object(fw, "get_omi_github_releases", AsyncMock(return_value=[older, newer])):
+    with patch.object(fw, "get_configured_firmware_releases", AsyncMock(return_value=[older, newer])):
         assert _call(version="3.0.15")["zip_url"] == "https://x/NEW.zip"

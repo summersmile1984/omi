@@ -14,7 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from langchain_openai import OpenAIEmbeddings
 
-from utils.llm.providers import get_openai_compatible_provider_config
+from utils.llm.providers import ModelProviderConfigurationError, get_openai_compatible_provider_config
 
 
 @runtime_checkable
@@ -66,10 +66,21 @@ class OpenAICompatibleEmbeddingProviderAdapter:
         client_factory: Callable[..., Any] | None = None,
     ) -> None:
         config = get_openai_compatible_provider_config(provider_id)
-        base_url = config.resolved_base_url()
         api_key = os.getenv(config.api_key_env, '').strip()
         if not api_key:
-            raise ValueError(f'{config.api_key_env} is required for embedding provider {provider_id!r}')
+            raise ModelProviderConfigurationError(
+                config.name,
+                'credential_not_configured',
+                setting=config.api_key_env,
+            )
+        try:
+            base_url = config.resolved_base_url()
+        except ValueError as exc:
+            raise ModelProviderConfigurationError(
+                config.name,
+                'endpoint_not_configured',
+                setting=config.base_url_env,
+            ) from exc
         kwargs: dict[str, Any] = {'model': model_id, 'api_key': api_key}
         if base_url:
             kwargs['base_url'] = base_url
@@ -151,8 +162,21 @@ class ConfiguredEmbeddingProviderProxy:
         if not model:
             raise ValueError('EMBEDDING_MODEL is required for a non-default embedding provider')
         config = get_openai_compatible_provider_config(provider)
-        base_url = config.resolved_base_url() or ''
         api_key = os.getenv(config.api_key_env, '').strip()
+        if not api_key:
+            raise ModelProviderConfigurationError(
+                config.name,
+                'credential_not_configured',
+                setting=config.api_key_env,
+            )
+        try:
+            base_url = config.resolved_base_url() or ''
+        except ValueError as exc:
+            raise ModelProviderConfigurationError(
+                config.name,
+                'endpoint_not_configured',
+                setting=config.base_url_env,
+            ) from exc
         key = (provider, model, dimension, base_url, hashlib.sha256(api_key.encode()).hexdigest())
         instance = self._cache.get(key)
         if instance is None:

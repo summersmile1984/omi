@@ -129,6 +129,14 @@ def test_self_host_route_does_not_fall_through_to_a_managed_default(monkeypatch)
     assert streaming.get_stt_service_for_language('en') == (None, None, None)
 
 
+def test_self_host_route_rejects_unsupported_language_without_opening_sensevoice(monkeypatch) -> None:
+    monkeypatch.setattr(streaming, 'stt_service_models', ['sensevoice'])
+    monkeypatch.setattr(streaming, 'sensevoice_model_is_ready', lambda: True)
+    monkeypatch.setenv('STT_ROUTE_FALLBACK_TO_DEFAULT', 'false')
+
+    assert streaming.get_stt_service_for_language('fr-FR') == (None, None, None)
+
+
 @pytest.mark.asyncio
 async def test_process_audio_sensevoice_fails_before_returning_a_socket(monkeypatch) -> None:
     def unavailable() -> None:

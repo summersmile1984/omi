@@ -8,7 +8,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import httpx
 from pydub import AudioSegment
 
-from utils.sensevoice.socket import get_sensevoice_recognizer, pcm16_to_samples
+from utils.sensevoice.socket import decode_pcm, get_sensevoice_recognizer
+from utils.sensevoice.speaker import (
+    build_window_speaker_clusterer,
+    sensevoice_speaker_mode,
+    speaker_window_seconds,
+    validate_prerecorded_audio_bound,
+)
+from utils.stt.speaker_embedding import MIN_EMBEDDING_AUDIO_DURATION
 from utils.stt.pre_recorded import PrerecordedSTTProvider
 
 _DOWNLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -37,6 +44,22 @@ def _as_pcm16_mono(
     return raw_data, frame_rate
 
 
+def _bounded_pcm_windows(pcm: bytes, sample_rate: int) -> List[Tuple[int, bytes]]:
+    """Split PCM into bounded ASR/embedding windows, merging a tiny tail."""
+
+    validate_prerecorded_audio_bound(len(pcm), sample_rate)
+    window_bytes = max(2, int(speaker_window_seconds() * sample_rate) * 2)
+    minimum_bytes = max(2, int(MIN_EMBEDDING_AUDIO_DURATION * sample_rate) * 2)
+    windows = [(offset, pcm[offset : offset + window_bytes]) for offset in range(0, len(pcm), window_bytes)]
+    if len(windows) > 1 and len(windows[-1][1]) < minimum_bytes:
+        tail_offset, tail = windows.pop()
+        previous_offset, previous = windows[-1]
+        if previous_offset + len(previous) != tail_offset:
+            raise RuntimeError('SenseVoice PCM window planner produced a gap')
+        windows[-1] = (previous_offset, previous + tail)
+    return windows
+
+
 class SenseVoicePrerecordedProvider(PrerecordedSTTProvider):
     """Run the offline SenseVoice recognizer on complete recordings."""
 
@@ -51,6 +74,8 @@ class SenseVoicePrerecordedProvider(PrerecordedSTTProvider):
         channels: int,
         encoding: Optional[str],
         language: Optional[str],
+        diarize: bool,
+        speakers_count: Optional[int],
     ) -> Tuple[List[Dict[str, Any]], str]:
         pcm, prepared_rate = _as_pcm16_mono(
             audio_bytes,
@@ -59,12 +84,25 @@ class SenseVoicePrerecordedProvider(PrerecordedSTTProvider):
             encoding=encoding,
         )
         recognizer = self._recognizer or get_sensevoice_recognizer()
-        stream = recognizer.create_stream()
-        stream.accept_waveform(prepared_rate, pcm16_to_samples(pcm))
-        recognizer.decode_stream(stream)
-        text = stream.result.text.strip()
-        duration = len(pcm) / max(1, 2 * prepared_rate)
-        words = [] if not text else [{'timestamp': [0.0, duration], 'speaker': 'SPEAKER_00', 'text': text}]
+        if not diarize or sensevoice_speaker_mode() == 'single_speaker':
+            text = decode_pcm(recognizer, prepared_rate, pcm)
+            duration = len(pcm) / max(1, 2 * prepared_rate)
+            words = [] if not text else [{'timestamp': [0.0, duration], 'speaker': 'SPEAKER_00', 'text': text}]
+            return words, language or 'multi'
+
+        windows = _bounded_pcm_windows(pcm, prepared_rate)
+        clusterer = build_window_speaker_clusterer(requested_speakers=speakers_count)
+        words = []
+        speaker_window_index = 0
+        for offset, window in windows:
+            text = decode_pcm(recognizer, prepared_rate, window)
+            if not text:
+                continue
+            speaker = clusterer.assign_pcm(speaker_window_index, window, prepared_rate)
+            speaker_window_index += 1
+            start = offset / (2 * prepared_rate)
+            end = (offset + len(window)) / (2 * prepared_rate)
+            words.append({'timestamp': [start, end], 'speaker': speaker, 'text': text})
         return words, language or 'multi'
 
     def transcribe_url(
@@ -85,6 +123,8 @@ class SenseVoicePrerecordedProvider(PrerecordedSTTProvider):
             channels=1,
             encoding=response.headers.get('content-type'),
             language=language,
+            diarize=diarize,
+            speakers_count=speakers_count,
         )
         return (words, detected_language) if return_language else words
 
@@ -106,5 +146,7 @@ class SenseVoicePrerecordedProvider(PrerecordedSTTProvider):
             channels=channels,
             encoding=encoding,
             language=language,
+            diarize=diarize,
+            speakers_count=None,
         )
         return (words, detected_language) if return_language else words

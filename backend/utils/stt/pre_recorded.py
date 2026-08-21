@@ -18,11 +18,13 @@ from config.prerecorded_stt import (
     PrerecordedSTTConfigurationError as _PrerecordedSTTConfigurationError,
     PrerecordedSTTService,
     TranscriptionOutcome,
+    get_mlx_moss_diarize_config,
     get_prerecorded_models,
     require_provider_environment,
 )
 from config.stt_provider_policy import (
     MIMO_PROVIDER,
+    MLX_MOSS_DIARIZE_PROVIDER,
     MODULATE_PROVIDER,
     MOSS_PROVIDER,
     PARAKEET_PROVIDER,
@@ -32,9 +34,11 @@ from config.stt_provider_policy import (
     normalized_stt_language,
     parakeet_supports_language,
     provider_is_enabled,
+    sensevoice_supports_language,
 )
 from models.transcript_segment import TranscriptSegment
 from utils.byok import get_byok_key
+from utils.mlx_moss_diarize.prerecorded_provider import MlxMossDiarizePrerecordedProvider
 from utils.other.endpoints import timeit
 from utils.stt.outcomes import TranscriptionFailure
 from utils.stt.speaker_embedding import SPEAKER_MATCH_THRESHOLD, compare_embeddings, extract_embedding_from_bytes
@@ -95,12 +99,21 @@ def get_prerecorded_service(language: Optional[str] = 'en') -> Tuple[str, Option
     def select(models: Sequence[str]) -> Optional[Tuple[str, Optional[str], str]]:
         for m in models:
             m = m.strip()
-            if m == 'sensevoice' and provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.PRERECORDED):
+            if (
+                m == 'sensevoice'
+                and provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.PRERECORDED)
+                and sensevoice_supports_language(base_lang)
+            ):
                 return PrerecordedSTTService.SENSEVOICE, base_lang, 'sensevoice'
             if m == 'mimo' and provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PRERECORDED):
                 return PrerecordedSTTService.MIMO, base_lang, 'mimo-v2.5-asr'
             if m == 'moss' and provider_is_enabled(MOSS_PROVIDER, STTServingSurface.PRERECORDED):
                 return PrerecordedSTTService.MOSS, base_lang, 'moss-transcribe-diarize'
+            if m == 'mlx_moss_diarize' and provider_is_enabled(
+                MLX_MOSS_DIARIZE_PROVIDER,
+                STTServingSurface.PRERECORDED,
+            ):
+                return PrerecordedSTTService.MLX_MOSS_DIARIZE, base_lang, get_mlx_moss_diarize_config().model
             if m == 'modulate-velma-2' and provider_is_enabled(MODULATE_PROVIDER, STTServingSurface.PRERECORDED):
                 if base_lang in {'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'ja', 'ko', 'zh'}:
                     return PrerecordedSTTService.MODULATE, base_lang, 'velma-2'
@@ -110,9 +123,17 @@ def get_prerecorded_service(language: Optional[str] = 'en') -> Tuple[str, Option
                     return PrerecordedSTTService.PARAKEET, base_lang, 'parakeet'
         return None
 
-    selected = select(get_prerecorded_models())
+    configured_models = get_prerecorded_models()
+    selected = select(configured_models)
     if selected is not None:
         return selected
+
+    # Explicit batch-only routes own the whole request. A configured local
+    # SenseVoice deployment must report a capability mismatch for languages its
+    # mounted model does not support, not borrow a managed default omitted by
+    # the operator.
+    if 'sensevoice' in configured_models:
+        raise TranscriptionFailure(TranscriptionOutcome.CONFIG_ERROR, retryable=False)
 
     # A disabled/unknown preference must not become a provider call. Use the
     # deployment-validated, policy-owned defaults instead.
@@ -1072,6 +1093,9 @@ def get_prerecorded_provider(language: Optional[str] = 'en') -> PrerecordedSTTPr
         from utils.moss_pipeline.prerecorded_provider import MossPrerecordedProvider
 
         return MossPrerecordedProvider()
+    if service == PrerecordedSTTService.MLX_MOSS_DIARIZE:
+        require_provider_environment(PrerecordedSTTService.MLX_MOSS_DIARIZE)
+        return cast(PrerecordedSTTProvider, MlxMossDiarizePrerecordedProvider())
     if service == PrerecordedSTTService.SENSEVOICE:
         require_provider_environment(PrerecordedSTTService.SENSEVOICE)
         from utils.sensevoice.prerecorded_provider import SenseVoicePrerecordedProvider

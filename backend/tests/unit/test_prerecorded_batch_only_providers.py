@@ -12,6 +12,8 @@ from config.prerecorded_stt import (
     providers_for_model_config,
     require_provider_environment,
 )
+from utils.stt.outcomes import TranscriptionFailure
+from utils.stt.pre_recorded import get_prerecorded_service
 from config.stt_provider_policy import SENSEVOICE_PROVIDER, STTServingSurface, provider_is_enabled
 from utils.mimo_pipeline.prerecorded_provider import MimoPrerecordedProvider
 from utils.moss_pipeline.prerecorded_provider import MossPrerecordedProvider
@@ -132,6 +134,16 @@ def test_moss_rejects_unlabelled_compressed_bytes_without_uploading():
 def test_explicit_batch_provider_contract_does_not_require_hidden_managed_fallbacks():
     assert providers_for_model_config('sensevoice') == (PrerecordedSTTService.SENSEVOICE,)
     assert providers_for_model_config('mimo') == (PrerecordedSTTService.MIMO,)
+
+
+def test_explicit_sensevoice_route_rejects_unsupported_language_without_managed_fallback(monkeypatch):
+    monkeypatch.setenv('STT_PRERECORDED_MODEL', 'sensevoice')
+
+    with pytest.raises(TranscriptionFailure) as raised:
+        get_prerecorded_service('fr-FR')
+
+    assert raised.value.outcome.value == 'config_error'
+    assert raised.value.retryable is False
 
 
 def test_mimo_selection_requires_explicit_endpoint_and_key(monkeypatch):

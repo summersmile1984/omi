@@ -6,7 +6,8 @@ from enum import Enum
 import ast
 from pydantic import BaseModel, Field
 
-from utils.github_releases import get_omi_github_releases, extract_key_value_pairs
+from utils.firmware_releases import FirmwareReleaseUnavailable, get_configured_firmware_releases
+from utils.github_releases import extract_key_value_pairs
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,13 @@ class DeviceModel(int, Enum):
 
 
 router = APIRouter()
+
+
+async def _load_firmware_releases() -> List[Dict]:
+    try:
+        return await get_configured_firmware_releases('firmware_releases', tag_filter=FIRMWARE_TAG_PATTERN)
+    except FirmwareReleaseUnavailable as exc:
+        raise HTTPException(status_code=503, detail=exc.as_dict()) from exc
 
 
 class FirmwareVersionResponse(BaseModel):
@@ -245,7 +253,7 @@ async def get_latest_version(device_model: str, firmware_revision: str, hardware
             detail="Could not determine current firmware version",
         )
 
-    releases = await get_omi_github_releases("github_releases_omi", tag_filter=FIRMWARE_TAG_PATTERN)
+    releases = await _load_firmware_releases()
     if not releases:
         raise HTTPException(status_code=404, detail="No releases found for the repository")
 
@@ -269,7 +277,7 @@ async def get_stable_version(device_model: str):
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    releases = await get_omi_github_releases("github_releases_omi", tag_filter=FIRMWARE_TAG_PATTERN)
+    releases = await _load_firmware_releases()
     if not releases:
         raise HTTPException(status_code=404, detail="No releases found for the repository")
 
@@ -298,7 +306,7 @@ async def get_firmware_version(device_model: str, version: str):
     if target is None:
         raise HTTPException(status_code=400, detail="Could not parse requested firmware version")
 
-    releases = await get_omi_github_releases("github_releases_omi", tag_filter=FIRMWARE_TAG_PATTERN)
+    releases = await _load_firmware_releases()
     if not releases:
         raise HTTPException(status_code=404, detail="No releases found for the repository")
 

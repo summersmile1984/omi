@@ -9,6 +9,7 @@ from config.stt_provider_policy import (
     DEEPGRAM_CLOUD_PROVIDER,
     DEEPGRAM_SELF_HOSTED_PROVIDER,
     MIMO_PROVIDER,
+    MLX_MOSS_DIARIZE_PROVIDER,
     MODULATE_PROVIDER,
     MOSS_PROVIDER,
     PARAKEET_MODEL_BY_SURFACE,
@@ -22,6 +23,7 @@ from config.stt_provider_policy import (
     parakeet_supports_language,
     provider_for_model_token,
     provider_is_enabled,
+    sensevoice_supports_language,
     supports_live_multilingual_mode,
 )
 
@@ -58,6 +60,7 @@ def test_cloud_neutral_providers_are_explicit_and_surface_bounded():
     assert provider_for_model_token('sensevoice') == SENSEVOICE_PROVIDER
     assert provider_for_model_token('mimo') == MIMO_PROVIDER
     assert provider_for_model_token('moss') == MOSS_PROVIDER
+    assert provider_for_model_token('mlx_moss_diarize') == MLX_MOSS_DIARIZE_PROVIDER
     assert provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.PRERECORDED)
     assert provider_is_enabled(SENSEVOICE_PROVIDER, STTServingSurface.STREAMING)
     assert provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PRERECORDED)
@@ -65,6 +68,15 @@ def test_cloud_neutral_providers_are_explicit_and_surface_bounded():
     assert not provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PTT)
     assert provider_is_enabled(MOSS_PROVIDER, STTServingSurface.PRERECORDED)
     assert not provider_is_enabled(MOSS_PROVIDER, STTServingSurface.STREAMING)
+    assert provider_is_enabled(MLX_MOSS_DIARIZE_PROVIDER, STTServingSurface.PRERECORDED)
+    assert not provider_is_enabled(MLX_MOSS_DIARIZE_PROVIDER, STTServingSurface.STREAMING)
+
+
+def test_sensevoice_capability_is_bounded_to_the_mounted_models_languages():
+    for language in ('multi', 'en', 'en-US', 'zh-CN', 'yue', 'ja', 'ko'):
+        assert sensevoice_supports_language(language)
+    for language in ('fr', 'es', 'ar', 'xx-unsupported'):
+        assert not sensevoice_supports_language(language)
 
 
 def test_policy_owns_the_safe_model_order_for_every_serving_surface():

@@ -3,6 +3,8 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
+import re
 import struct
 import threading
 import time
@@ -1657,6 +1659,77 @@ def get_app_thumbnail_url(thumbnail_id: str) -> str:
 # **********************************
 # ************* CHAT FILES **************
 # **********************************
+_LOCAL_CHAT_FILE_ID = re.compile(r'local_[0-9a-f]{32}\Z')
+
+
+def _private_chat_file_object_name(uid: str, storage_id: str, file_name: str) -> str:
+    if not uid.strip():
+        raise ValueError('uid is required')
+    if not _LOCAL_CHAT_FILE_ID.fullmatch(storage_id):
+        raise ValueError('invalid local chat attachment id')
+    safe_name = Path(file_name).name
+    if safe_name in {'', '.', '..'}:
+        raise ValueError('chat attachment filename is required')
+    return f'{uid}/attachments/{storage_id}/{safe_name}'
+
+
+def upload_private_chat_file(
+    file_path: str | Path,
+    uid: str,
+    storage_id: str,
+    file_name: str,
+    *,
+    content_type: str,
+) -> None:
+    """Upload one original chat attachment without granting public access."""
+
+    if not chat_files_bucket:
+        raise RuntimeError('BUCKET_CHAT_FILES is not configured')
+    object_name = _private_chat_file_object_name(uid, storage_id, file_name)
+    blob = _get_storage_client().bucket(chat_files_bucket).blob(object_name)
+    blob.cache_control = 'private, no-store'
+    blob.upload_from_filename(str(file_path), content_type=content_type)
+
+
+def download_private_chat_file(
+    uid: str,
+    storage_id: str,
+    file_name: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Download one UID-owned original after enforcing its stored-size bound."""
+
+    if not chat_files_bucket:
+        raise RuntimeError('BUCKET_CHAT_FILES is not configured')
+    if max_bytes < 1:
+        raise ValueError('max_bytes must be positive')
+    object_name = _private_chat_file_object_name(uid, storage_id, file_name)
+    blob = _get_storage_client().bucket(chat_files_bucket).blob(object_name)
+    blob.reload()
+    size = int(blob.size or 0)
+    if size > max_bytes:
+        raise ValueError('private chat attachment exceeds the download limit')
+    payload = blob.download_as_bytes()
+    if len(payload) > max_bytes:
+        raise ValueError('private chat attachment exceeds the download limit')
+    return payload
+
+
+def delete_private_chat_file(uid: str, storage_id: str, file_name: str) -> bool:
+    """Delete one UID-owned original, treating an absent object as reconciled."""
+
+    if not chat_files_bucket:
+        raise RuntimeError('BUCKET_CHAT_FILES is not configured')
+    object_name = _private_chat_file_object_name(uid, storage_id, file_name)
+    blob = _get_storage_client().bucket(chat_files_bucket).blob(object_name)
+    try:
+        blob.delete()
+        return True
+    except NotFound:
+        return False
+
+
 def upload_multi_chat_files(files_name: List[str], uid: str) -> Dict[str, str]:
     """
     Upload multiple files to Google Cloud Storage in the chat files bucket.

@@ -1,4 +1,5 @@
 import os
+from pathlib import PurePosixPath
 from typing import List, Optional
 
 import av
@@ -20,7 +21,7 @@ from utils.other.storage import (
     get_user_has_speech_profile,
 )
 from utils.multipart import MultipartMaxPartSizeRoute, SPEECH_PROFILE_MAX_PART_SIZE, max_part_size
-from utils.stt.speaker_embedding import extract_embedding
+from utils.stt.speaker_embedding import SpeakerEmbeddingUnavailable, extract_embedding
 from utils.stt.vad import apply_vad_for_speech_profile, VADEmptyError
 import logging
 
@@ -94,7 +95,8 @@ def get_speech_profile_status(uid: str = Depends(auth.get_current_user_uid)):
 @max_part_size(SPEECH_PROFILE_MAX_PART_SIZE)
 def upload_profile(file: UploadFile, uid: str = Depends(auth.get_current_user_uid)):
     os.makedirs(f'_temp/{uid}', exist_ok=True)
-    file_path = f"_temp/{uid}/{file.filename}"
+    filename = PurePosixPath((file.filename or 'speech_profile.wav').replace('\\', '/')).name
+    file_path = f"_temp/{uid}/{filename}"
     with open(file_path, 'wb') as f:
         f.write(file.file.read())
 
@@ -117,18 +119,39 @@ def upload_profile(file: UploadFile, uid: str = Depends(auth.get_current_user_ui
     with av.open(file_path) as container:
         duration = (float(container.duration) / av.time_base) + 5 if container.duration else 0
 
-    url = upload_profile_audio(file_path, uid)
-    # Cache the duration only once the profile blob is actually stored: a failed
-    # overwrite must not leave the cache describing an upload that never landed.
-    set_speech_profile_duration(uid, duration)
-
-    # Extract and store speaker embedding for user identification in listen sessions
+    # A speech profile promises speaker identity, not only audio storage. Resolve
+    # that capability before committing the profile blob so an unavailable
+    # provider cannot leave a false-success profile that every listen session
+    # silently ignores.
     try:
         embedding = extract_embedding(file_path)
-        set_user_speaker_embedding(uid, embedding.flatten().tolist())
-        logger.info(f"Speech profile: stored speaker embedding for {uid}")
-    except Exception as e:
-        logger.error(f"Speech profile: failed to extract/store speaker embedding for {uid}: {e}")
+    except SpeakerEmbeddingUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'code': 'model_capability_unavailable',
+                'capability': 'speaker_embedding',
+                'reason': str(exc),
+                'retryable': False,
+            },
+        ) from exc
+    except Exception as exc:
+        logger.error('Speech profile embedding provider failed: %s', type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'code': 'model_capability_unavailable',
+                'capability': 'speaker_embedding',
+                'reason': 'speaker_embedding_provider_failed',
+                'retryable': True,
+            },
+        ) from exc
+
+    url = upload_profile_audio(file_path, uid)
+    # Cache profile-derived state only once the profile blob actually landed.
+    set_user_speaker_embedding(uid, embedding.flatten().tolist())
+    set_speech_profile_duration(uid, duration)
+    logger.info('Speech profile embedding stored')
 
     return {"url": url}
 

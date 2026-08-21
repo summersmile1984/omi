@@ -6,7 +6,7 @@ import uuid
 import re
 import base64
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 from pathlib import Path
 from utils.executors import critical_executor, db_executor, llm_executor, storage_executor, sync_executor, run_blocking
 
@@ -70,7 +70,7 @@ from utils.rate_limit_config import get_effective_limit, RATE_LIMIT_SHADOW
 from utils.subscription import enforce_chat_quota, is_trial_paywalled
 from utils import share_links
 from utils.other import endpoints as auth, storage
-from utils.other.chat_file import FileChatTool, UnsupportedChatFileError
+from utils.other.chat_file import FileChatTool, LocalFileChatError, UnsupportedChatFileError
 from utils.multipart import (
     CHAT_FILE_MAX_PART_SIZE,
     MultipartMaxPartSizeRoute,
@@ -699,6 +699,8 @@ def clear_chat_messages(
         try:
             fc_tool = FileChatTool(uid, chat_session['id'])
             fc_tool.cleanup()
+        except LocalFileChatError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_dict()) from error
         except ValueError:
             # Session not found, continue with cleanup
             pass
@@ -1556,66 +1558,86 @@ async def transcribe_voice_message_stream(
         parity_capture.persist()
 
 
+def _upload_file_chat_records(files: List[UploadFile], uid: str) -> List[dict[str, Any]]:
+    if len(files) > 9:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                'code': 'file_chat_failure',
+                'capability': 'file_chat',
+                'reason': 'too_many_attachments',
+                'retryable': False,
+            },
+        )
+    thumbs_name = []
+    files_chat: List[FileChat] = []
+    try:
+        for file in files:
+            # Use a UUID-based temp file name to prevent path traversal via user-controlled filename
+            safe_suffix = Path(file.filename).name if file.filename else "upload"
+            temp_file = Path(tempfile.gettempdir()) / f"{uuid.uuid4().hex}_{safe_suffix}"
+            try:
+                with temp_file.open("wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+
+                try:
+                    result = FileChatTool.upload(temp_file, uid=uid, file_name=safe_suffix)
+                except UnsupportedChatFileError as error:
+                    raise HTTPException(status_code=400, detail=str(error))
+                except LocalFileChatError as error:
+                    raise HTTPException(status_code=error.status_code, detail=error.as_dict()) from error
+                except ModelCapabilityUnavailableError as error:
+                    raise HTTPException(status_code=503, detail=error.as_dict()) from error
+
+                thumb_name = result.get("thumbnail_name", "")
+                if thumb_name != "":
+                    thumbs_name.append(thumb_name)
+
+                files_chat.append(
+                    FileChat(
+                        id=str(uuid.uuid4()),
+                        name=result.get("file_name", ""),
+                        mime_type=result.get("mime_type", ""),
+                        openai_file_id=result.get("file_id", ""),
+                        created_at=datetime.now(timezone.utc),
+                        thumb_name=thumb_name,
+                    )
+                )
+            finally:
+                if temp_file.exists():
+                    temp_file.unlink()
+
+        if thumbs_name:
+            thumbs_path = storage.upload_multi_chat_files(thumbs_name, uid)
+            for file_chat in files_chat:
+                if not file_chat.is_image():
+                    continue
+                thumb_path = thumbs_path.get(file_chat.thumb_name, "")
+                file_chat.thumbnail = thumb_path
+                thumb_file = Path(file_chat.thumb_name)
+                if thumb_file.exists():
+                    thumb_file.unlink()
+
+        files_chat_dict = [file_chat.model_dump() for file_chat in files_chat]
+        chat_db.add_multi_files(uid, files_chat_dict)
+        return files_chat_dict
+    except Exception:
+        FileChatTool.cleanup_uploaded_local_files(uid, files_chat)
+        raise
+    finally:
+        for thumb_name in thumbs_name:
+            thumb_file = Path(thumb_name)
+            if thumb_file.exists():
+                thumb_file.unlink()
+
+
 @router.post('/v2/files', response_model=List[FileChat], tags=['chat'])
 @max_part_size(CHAT_FILE_MAX_PART_SIZE)
 def upload_file_chat(
     files: List[UploadFile] = File(...),
     uid: str = Depends(auth.with_rate_limit(auth.get_current_user_uid, "file:upload")),
 ):
-    thumbs_name = []
-    files_chat = []
-    for file in files:
-        # Use a UUID-based temp file name to prevent path traversal via user-controlled filename
-        safe_suffix = Path(file.filename).name if file.filename else "upload"
-        temp_file = Path(tempfile.gettempdir()) / f"{uuid.uuid4().hex}_{safe_suffix}"
-        try:
-            with temp_file.open("wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-
-            try:
-                result = FileChatTool.upload(temp_file)
-            except UnsupportedChatFileError as error:
-                raise HTTPException(status_code=400, detail=str(error))
-            except ModelCapabilityUnavailableError as error:
-                raise HTTPException(status_code=503, detail=error.as_dict()) from error
-
-            thumb_name = result.get("thumbnail_name", "")
-            if thumb_name != "":
-                thumbs_name.append(thumb_name)
-
-            filechat = FileChat(
-                id=str(uuid.uuid4()),
-                name=result.get("file_name", ""),
-                mime_type=result.get("mime_type", ""),
-                openai_file_id=result.get("file_id", ""),
-                created_at=datetime.now(timezone.utc),
-                thumb_name=thumb_name,
-            )
-            files_chat.append(filechat)
-        finally:
-            if temp_file.exists():
-                temp_file.unlink()
-
-    if len(thumbs_name) > 0:
-        thumbs_path = storage.upload_multi_chat_files(thumbs_name, uid)
-        for fc in files_chat:
-            if not fc.is_image():
-                continue
-            thumb_path = thumbs_path.get(fc.thumb_name, "")
-            fc.thumbnail = thumb_path
-            # cleanup file thumb
-            thumb_file = Path(fc.thumb_name)
-            if thumb_file.exists():
-                thumb_file.unlink()
-
-    # save db
-    files_chat_dict = [fc.model_dump() for fc in files_chat]
-
-    chat_db.add_multi_files(uid, files_chat_dict)
-
-    response = [fc.model_dump() for fc in files_chat]
-
-    return response
+    return _upload_file_chat_records(files, uid)
 
 
 # CLEANUP: Remove after new app goes to prod ----------------------------------------------------------
@@ -1632,59 +1654,7 @@ def upload_file_chat_v1(
     files: List[UploadFile] = File(...),
     uid: str = Depends(auth.with_rate_limit(auth.get_current_user_uid, "file:upload")),
 ):
-    thumbs_name = []
-    files_chat = []
-    for file in files:
-        # Use a UUID-based temp file name to prevent path traversal via user-controlled filename
-        safe_suffix = Path(file.filename).name if file.filename else "upload"
-        temp_file = Path(tempfile.gettempdir()) / f"{uuid.uuid4().hex}_{safe_suffix}"
-        try:
-            with temp_file.open("wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-
-            try:
-                result = FileChatTool.upload(temp_file)
-            except UnsupportedChatFileError as error:
-                raise HTTPException(status_code=400, detail=str(error))
-            except ModelCapabilityUnavailableError as error:
-                raise HTTPException(status_code=503, detail=error.as_dict()) from error
-
-            thumb_name = result.get("thumbnail_name", "")
-            if thumb_name != "":
-                thumbs_name.append(thumb_name)
-
-            filechat = FileChat(
-                id=str(uuid.uuid4()),
-                name=result.get("file_name", ""),
-                mime_type=result.get("mime_type", ""),
-                openai_file_id=result.get("file_id", ""),
-                created_at=datetime.now(timezone.utc),
-                thumb_name=thumb_name,
-            )
-            files_chat.append(filechat)
-        finally:
-            if temp_file.exists():
-                temp_file.unlink()
-
-    if len(thumbs_name) > 0:
-        thumbs_path = storage.upload_multi_chat_files(thumbs_name, uid)
-        for fc in files_chat:
-            if not fc.is_image():
-                continue
-            thumb_path = thumbs_path.get(fc.thumb_name, "")
-            fc.thumbnail = thumb_path
-            # cleanup file thumb
-            thumb_file = Path(fc.thumb_name)
-            thumb_file.unlink()
-
-    # save db
-    files_chat_dict = [fc.model_dump() for fc in files_chat]
-
-    chat_db.add_multi_files(uid, files_chat_dict)
-
-    response = [fc.model_dump() for fc in files_chat]
-
-    return response
+    return _upload_file_chat_records(files, uid)
 
 
 @router.post(
@@ -1732,6 +1702,8 @@ def clear_chat_messages_v1(
         try:
             fc_tool = FileChatTool(uid, chat_session['id'])
             fc_tool.cleanup()
+        except LocalFileChatError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_dict()) from error
         except ValueError:
             # Session not found, continue with cleanup
             pass

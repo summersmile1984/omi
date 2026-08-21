@@ -282,6 +282,7 @@ class TestCacheKeyHashing:
 
 
 class TestGeminiKeyNotInUrl:
+    @patch.dict(os.environ, {'GEMINI_API_KEY': 'platform-gemini-key'}, clear=False)
     @patch('utils.llm.clients.httpx.post')
     @patch('utils.llm.clients.get_byok_key', return_value=None)
     def test_gemini_embed_uses_header_not_url_param(self, mock_byok, mock_post):
@@ -690,12 +691,37 @@ class TestCacheRouting:
         # Must use the bare model name for Gemini direct API
         assert client.model_name == 'gemini-3-flash-preview'
 
-    def test_non_gemini_openrouter_returns_none(self):
-        """Non-Gemini OpenRouter models have no BYOK support — returns None."""
+    def test_non_gemini_openrouter_fails_closed(self):
+        """Unsupported BYOK transport cannot silently switch to a platform payer."""
         from utils.llm.clients import _create_byok_client
+        from utils.llm.providers import ModelProviderConfigurationError
 
-        result = _create_byok_client('anthropic/claude-3.5-sonnet', 'openrouter', 'sk-or-key')
-        assert result is None
+        with pytest.raises(ModelProviderConfigurationError) as raised:
+            _create_byok_client('anthropic/claude-3.5-sonnet', 'openrouter', 'sk-or-key')
+
+        assert raised.value.provider == 'openrouter'
+        assert raised.value.reason == 'byok_transport_not_supported'
+
+    def test_get_llm_unsupported_byok_never_constructs_platform_default(self, monkeypatch):
+        from utils.llm import clients
+        from utils.llm.providers import ModelProviderConfigurationError
+
+        platform_default = MagicMock(side_effect=AssertionError('BYOK must not switch to platform payer'))
+        monkeypatch.setattr(clients, 'should_route_features_through_gateway', lambda: False)
+        monkeypatch.setattr(
+            clients,
+            '_get_model_config',
+            lambda _feature: ('anthropic/claude-3.5-sonnet', 'openrouter'),
+        )
+        monkeypatch.setattr(clients, 'get_byok_key', lambda provider: 'user-key' if provider == 'openrouter' else None)
+        monkeypatch.setattr(clients, 'get_byok_profile', lambda: {})
+        monkeypatch.setattr(clients, 'get_default_client', platform_default)
+
+        with pytest.raises(ModelProviderConfigurationError) as raised:
+            clients.get_llm('learnings')
+
+        assert raised.value.reason == 'byok_transport_not_supported'
+        platform_default.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

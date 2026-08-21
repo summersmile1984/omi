@@ -59,6 +59,7 @@ from utils.llm.model_config import (
 from utils.llm.providers import (
     ChatGoogleGenerativeAI,
     GEMINI_OPENAI_BASE_URL,
+    ModelProviderConfigurationError,
     get_default_client,
     get_or_create_gemini_llm as _get_or_create_gemini_llm,
     get_or_create_openai_compatible_llm,
@@ -263,33 +264,6 @@ class _OpenAIEmbeddingsProxy:
             return inst
         return self._default_client()
 
-    @staticmethod
-    def _is_key_failure(e: Exception) -> bool:
-        # A user's BYOK OpenAI key being out of quota / invalid / rate-limited must not
-        # silently break memory search (it would return empty). Detect those and fall
-        # back to Omi's key instead. Heuristic on the error text — embeddings have no
-        # typed error here, and a false positive only means one extra default-key call.
-        s = str(e).lower()
-        return any(
-            k in s
-            for k in (
-                'insufficient_quota',
-                'exceeded your current quota',
-                'invalid_api_key',
-                'incorrect api key',
-                'invalid api key',
-                'model_not_found',
-                'does not have access to model',
-                'permissiondeniederror',
-                'permission denied',
-                '403 forbidden',
-                'error code: 403',
-                'rate_limit',
-                ' 429',
-                ' 401',
-            )
-        )
-
     def embed_query(self, text: str) -> List[float]:
         inst = self._resolve()
         try:
@@ -297,9 +271,6 @@ class _OpenAIEmbeddingsProxy:
         except Exception as e:
             if inst is not self._default:
                 handle_llm_error(e, 'openai', feature='embeddings', model=self._model, operation='embed_query')
-                if self._is_key_failure(e):
-                    logger.warning("BYOK OpenAI embeddings failed (%s); falling back to Omi key", type(e).__name__)
-                    return self._default_client().embed_query(text)
             raise
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
@@ -309,9 +280,6 @@ class _OpenAIEmbeddingsProxy:
         except Exception as e:
             if inst is not self._default:
                 handle_llm_error(e, 'openai', feature='embeddings', model=self._model, operation='embed_documents')
-                if self._is_key_failure(e):
-                    logger.warning("BYOK OpenAI embeddings failed (%s); falling back to Omi key", type(e).__name__)
-                    return self._default_client().embed_documents(texts)
             raise
 
     def __getattr__(self, name: str):
@@ -327,11 +295,6 @@ class _OpenAIEmbeddingsProxy:
                 except Exception as e:
                     if inst is not self._default:
                         handle_llm_error(e, 'openai', feature='embeddings', model=self._model, operation=name)
-                        if self._is_key_failure(e):
-                            logger.warning(
-                                "BYOK OpenAI embeddings failed (%s); falling back to Omi key", type(e).__name__
-                            )
-                            return await getattr(self._default_client(), name)(*args, **kwargs)
                     raise
 
             return _wrapped_async
@@ -342,9 +305,6 @@ class _OpenAIEmbeddingsProxy:
             except Exception as e:
                 if inst is not self._default:
                     handle_llm_error(e, 'openai', feature='embeddings', model=self._model, operation=name)
-                    if self._is_key_failure(e):
-                        logger.warning("BYOK OpenAI embeddings failed (%s); falling back to Omi key", type(e).__name__)
-                        return getattr(self._default_client(), name)(*args, **kwargs)
                 raise
 
         return _wrapped
@@ -382,8 +342,8 @@ def _cached_anthropic(api_key: str) -> anthropic.AsyncAnthropic:
 
 def _create_byok_client(
     model: str, provider: str, byok_key: str, streaming: bool = False, feature: str = ''
-) -> Optional[ChatOpenAI]:
-    """Create a ChatOpenAI using the user's BYOK key. Returns None if BYOK not supported for this provider."""
+) -> ChatOpenAI:
+    """Create the selected BYOK client or fail before any platform client exists."""
     callback_provider = _effective_byok_provider(model, provider)
     kwargs: Dict[str, Any] = _with_llm_callbacks(
         {'request_timeout': 120, 'max_retries': 1}, callback_provider, model=model, feature=feature
@@ -407,9 +367,9 @@ def _create_byok_client(
             if 'temperature' in route_options:
                 kwargs['temperature'] = route_options['temperature']
             return _cached_openai_chat(model, byok_key, {**kwargs, 'base_url': GEMINI_OPENAI_BASE_URL})
-        return None  # Non-Gemini OpenRouter: no BYOK support
+        raise ModelProviderConfigurationError(provider, 'byok_transport_not_supported')
 
-    return None
+    raise ModelProviderConfigurationError(provider, 'byok_transport_not_supported')
 
 
 # Anthropic client for chat agent (module-level, BYOK-aware).
@@ -514,12 +474,7 @@ def get_llm(
             feature=feature,
         )
     elif byok_key:
-        byok_client = _create_byok_client(model, provider, byok_key, streaming, feature)
-        result = (
-            byok_client
-            if byok_client is not None
-            else get_default_client(model, provider, streaming, get_route_options(feature, model, provider))
-        )
+        result = _create_byok_client(model, provider, byok_key, streaming, feature)
     elif gateway_feature_mode:
         gateway_options = {}
         if request_timeout is not None:
@@ -548,16 +503,30 @@ def get_llm(
                     fallback_options = {**fallback_options, 'request_timeout': request_timeout}
                 if max_retries is not None:
                     fallback_options = {**fallback_options, 'max_retries': max_retries}
-                fallback_models.append(
-                    get_default_client(fallback.model, fallback.provider, streaming, fallback_options)
-                )
+                try:
+                    fallback_model = get_default_client(
+                        fallback.model,
+                        fallback.provider,
+                        streaming,
+                        fallback_options,
+                    )
+                except ModelProviderConfigurationError as error:
+                    logger.info(
+                        'Skipping unconfigured optional direct fallback feature=%s provider=%s reason=%s',
+                        feature,
+                        fallback.provider,
+                        error.reason,
+                    )
+                    continue
+                fallback_models.append(fallback_model)
                 route_labels.append(f'{fallback.provider}:{fallback.model}')
-            result = BoundedFallbackChatModel(
-                primary=result,
-                fallback_models=tuple(fallback_models),
-                route_labels=tuple(route_labels),
-                feature=feature,
-            )
+            if fallback_models:
+                result = BoundedFallbackChatModel(
+                    primary=result,
+                    fallback_models=tuple(fallback_models),
+                    route_labels=tuple(route_labels),
+                    feature=feature,
+                )
 
     result = maybe_wrap_dev_gateway_shadow(
         feature=feature,
@@ -739,7 +708,13 @@ def _gemini_embed_query_direct(text: str) -> List[float]:
     """
     if should_route_features_through_gateway():
         record_direct_exception_surface(surface='gemini_screen_activity_query_embedding', reason='out_of_scope')
-    api_key = get_byok_key('gemini') or os.environ.get('GEMINI_API_KEY', '')
+    api_key = (get_byok_key('gemini') or os.environ.get('GEMINI_API_KEY', '')).strip()
+    if not api_key:
+        raise ModelProviderConfigurationError(
+            'gemini',
+            'credential_not_configured',
+            setting='GEMINI_API_KEY',
+        )
     url = 'https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent'
     payload = {
         'model': 'models/embedding-001',

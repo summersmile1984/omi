@@ -13,4 +13,6 @@ PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
   tests/unit/test_desktop_chat.py \
   tests/unit/test_web_search_tools.py \
   tests/unit/test_desktop_proxy.py \
-  tests/unit/test_desktop_realtime.py
+  tests/unit/test_desktop_realtime.py \
+  tests/unit/test_local_file_chat.py \
+  tests/unit/test_byok_security.py

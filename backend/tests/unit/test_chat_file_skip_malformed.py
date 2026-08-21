@@ -46,12 +46,8 @@ def test_safe_file_chats_empty():
     assert cf._safe_file_chats([]) == []
 
 
-def test_openai_file_ids_includes_malformed_docs():
-    # A doc that fails FileChat validation can still carry openai_file_id; cleanup must see it.
-    records = [
-        _valid_file_dict(),
-        {'id': 'broken', 'openai_file_id': 'oai-orphan'},
-        {'id': 'no-provider'},
-        {**_valid_file_dict(), 'id': 'f3', 'openai_file_id': 'oai-3'},
-    ]
-    assert cf._openai_file_ids(records) == ['oai-1', 'oai-orphan', 'oai-3']
+def test_cleanup_transport_classifies_malformed_legacy_records_without_pydantic():
+    # Cleanup must still see provider authority on a doc that fails FileChat validation.
+    assert cf._file_record_transport({'id': 'broken', 'openai_file_id': 'oai-orphan'}) == 'openai_assistants'
+    assert cf._file_record_transport({'id': 'broken', 'openai_file_id': 'local_' + ('a' * 32)}) == 'local_extraction'
+    assert cf._file_record_transport({'id': 'no-provider'}) == 'none'

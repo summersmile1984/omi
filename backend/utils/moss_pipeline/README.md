@@ -2,6 +2,10 @@
 
 `backend/utils/moss_pipeline/` — 用 OpenMOSS 官方 API 打通"转写 → 说话人分离 → 说话人识别"一条链路,服务器无需 GPU。
 
+> 这里仅属于 hosted `mosi.cn` authority（selector token `moss`）。运营方自有的
+> mlx-audio 服务使用独立 token `mlx_moss_diarize` 和
+> `backend/utils/mlx_moss_diarize/`；两者不共享 endpoint、client、凭据或 fallback。
+
 ## 链路
 
 ```

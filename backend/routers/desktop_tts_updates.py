@@ -15,9 +15,11 @@ from database._client import get_firestore_client
 from utils.byok import get_byok_key
 from utils.executors import critical_executor, db_executor, run_blocking
 from utils.log_sanitizer import sanitize
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_desktop_trial_paywalled
 from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled
+from utils.tts_provider import selected_tts_provider, synthesize_openai_compatible_tts, synthesize_sherpa_tts
 
 logger = logging.getLogger(__name__)
 
@@ -203,11 +205,21 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
     if tts_explicitly_disabled():
         raise HTTPException(status_code=503, detail=TTS_DISABLED_DETAIL)
 
+    selected_provider = selected_tts_provider()
+    if selected_provider not in {'', 'openai', 'mimo', 'openai_compatible', 'sherpa_onnx'}:
+        error = ModelCapabilityUnavailableError('tts', 'unsupported_provider', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+
     if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop"):
         raise HTTPException(status_code=403, detail="A paid subscription is required")
 
-    provider_is_mimo = mimo_tts_enabled()
-    openai_byok = None if provider_is_mimo else get_byok_key("openai")
+    provider_is_mimo = selected_provider == 'mimo' and mimo_tts_enabled()
+    provider_is_compatible = selected_provider == 'openai_compatible'
+    provider_is_sherpa = selected_provider == 'sherpa_onnx'
+    if selected_provider == 'mimo' and not provider_is_mimo:
+        error = ModelCapabilityUnavailableError('tts', 'mimo_credential_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+    openai_byok = get_byok_key("openai") if selected_provider in {'', 'openai'} else None
     if not openai_byok:
         status, _ = await run_blocking(
             critical_executor,
@@ -232,6 +244,25 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
             logger.error("tts_synthesize: MiMo TTS failed uid=%s: %s", uid, sanitize(str(exc)))
             raise HTTPException(status_code=502, detail="TTS upstream unavailable")
         return Response(content=audio, media_type="audio/wav")
+
+    if provider_is_compatible:
+        try:
+            audio = await synthesize_openai_compatible_tts(
+                text,
+                voice=request.voice_id,
+                audio_format='mp3',
+                instructions=request.instructions,
+            )
+        except ModelCapabilityUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.as_dict()) from error
+        return Response(content=audio.content, media_type=audio.media_type)
+
+    if provider_is_sherpa:
+        try:
+            audio = await synthesize_sherpa_tts(text, audio_format='mp3')
+        except ModelCapabilityUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.as_dict()) from error
+        return Response(content=audio.content, media_type=audio.media_type)
 
     voice_id = request.voice_id.strip()
     if not _is_allowed_openai_voice(voice_id):

@@ -4,7 +4,7 @@ import os
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -402,8 +402,9 @@ class TestGetLlm:
 
     def test_cache_key_ignored_for_non_cacheable_model(self):
         # followup uses Gemini in the premium profile, which does not support OpenAI prompt_cache_key.
-        llm_with_key = get_llm('followup', cache_key='omi-test-key')
-        llm_without_key = get_llm('followup')
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-gemini-key', 'USE_VERTEX_AI': ''}):
+            llm_with_key = get_llm('followup', cache_key='omi-test-key')
+            llm_without_key = get_llm('followup')
         assert llm_with_key is llm_without_key
 
     def test_new_features_return_clients(self):
@@ -532,7 +533,9 @@ class TestOpenRouterClient:
                 captured_kwargs.update(kwargs)
                 original_init(self, **kwargs)
 
-            with _patch.object(RealChatOpenAI, '__init__', capturing_init):
+            with _patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test-openrouter-key'}), _patch.object(
+                RealChatOpenAI, '__init__', capturing_init
+            ):
                 _get_or_create_openrouter_llm('google/gemini-flash-1.5-8b', temperature=0.8)
 
             assert captured_kwargs['base_url'] == "https://openrouter.ai/api/v1"
@@ -880,17 +883,13 @@ class TestRuntimeProviderRouting:
         assert 'openrouter' not in base_url
 
     def test_gemini_feature_routes_correctly(self):
-        """Free-text features on gemini-2.5-flash-lite should route to Gemini (native SDK or fallback)."""
-        llm = get_llm('followup')
-        if os.environ.get('GEMINI_API_KEY'):
-            from langchain_google_genai import ChatGoogleGenerativeAI
+        """A configured Gemini route uses the native Gemini client."""
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-gemini-key', 'USE_VERTEX_AI': ''}):
+            llm = get_llm('followup')
 
-            assert isinstance(
-                llm, ChatGoogleGenerativeAI
-            ), f'followup should be ChatGoogleGenerativeAI, got {type(llm)}'
-        else:
-            # No key — falls back to ChatOpenAI placeholder pointing at Gemini endpoint
-            assert hasattr(llm, 'invoke')
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        assert isinstance(llm, ChatGoogleGenerativeAI), f'followup should be ChatGoogleGenerativeAI, got {type(llm)}'
 
     def test_openglass_routes_to_openai(self):
         """openglass (vision) should route to OpenAI Luna."""
@@ -904,14 +903,16 @@ class TestRuntimeProviderRouting:
         """When get_llm routes to OpenRouter, _OPENROUTER_TEMPERATURES config is applied."""
         from utils.llm.clients import _OPENROUTER_TEMPERATURES
 
-        llm = get_llm('wrapped_analysis')
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test-openrouter-key'}):
+            llm = get_llm('wrapped_analysis')
         expected_temp = _OPENROUTER_TEMPERATURES.get('wrapped_analysis')
         assert expected_temp == 0.7, "wrapped_analysis should have temp 0.7 in config"
         assert llm.temperature == expected_temp, "get_llm should apply _OPENROUTER_TEMPERATURES"
 
     def test_openrouter_adds_vendor_prefix_for_gemini_models(self):
         """Profile stores bare model name; OpenRouter factory must add google/ prefix for API calls."""
-        llm = get_llm('wrapped_analysis')
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test-openrouter-key'}):
+            llm = get_llm('wrapped_analysis')
         default = getattr(llm, '_default', llm)
         assert default.model_name.startswith('google/'), f"Expected google/ prefix, got {default.model_name}"
 
@@ -928,12 +929,20 @@ class TestBYOKWrapperArchitecture:
         llm_openai = get_llm('conv_structure')
         assert isinstance(llm_openai, ChatOpenAI), 'OpenAI get_llm must return ChatOpenAI'
 
-        # Gemini feature — ChatGoogleGenerativeAI (with key) or ChatOpenAI fallback (no key)
-        llm_gemini = get_llm('followup')
-        assert isinstance(llm_gemini, BaseChatModel), 'Gemini get_llm must return BaseChatModel'
+        # Provider-selection assertions configure the provider credentials explicitly;
+        # zero-credential fail-closed behavior is covered separately below.
+        with patch.dict(
+            os.environ,
+            {
+                'GEMINI_API_KEY': 'test-gemini-key',
+                'USE_VERTEX_AI': '',
+                'OPENROUTER_API_KEY': 'test-openrouter-key',
+            },
+        ):
+            llm_gemini = get_llm('followup')
+            llm_or = get_llm('wrapped_analysis')
 
-        # OpenRouter feature — always ChatOpenAI
-        llm_or = get_llm('wrapped_analysis')
+        assert isinstance(llm_gemini, BaseChatModel), 'Gemini get_llm must return BaseChatModel'
         assert isinstance(llm_or, ChatOpenAI), 'OpenRouter get_llm must return ChatOpenAI'
 
     def test_no_legacy_llm_medium_or_llm_large(self):
@@ -957,8 +966,8 @@ class TestBYOKWrapperArchitecture:
 
 
 class TestBYOKEmbeddingsProxy:
-    def test_model_access_403_falls_back_to_default_embeddings(self, monkeypatch):
-        """BYOK OpenAI projects can reject text-embedding-3-large with model_not_found."""
+    def test_model_access_403_never_borrows_the_platform_embedding_key(self, monkeypatch):
+        """A selected BYOK payer/provider fails closed instead of changing authority."""
         import utils.llm.clients as mod
 
         class _FailingBYOKEmbeddings:
@@ -974,6 +983,12 @@ class TestBYOKEmbeddingsProxy:
                     "to model text-embedding-3-large; code: model_not_found"
                 )
 
+            async def aembed_documents(self, _texts):
+                raise RuntimeError('openai.RateLimitError: Error code: 429')
+
+            async def aembed_query(self, _text):
+                raise RuntimeError('openai.AuthenticationError: Error code: 401')
+
         default = MagicMock()
         default.embed_documents.return_value = [[0.1, 0.2]]
         default.embed_query.return_value = [0.1, 0.2]
@@ -988,10 +1003,38 @@ class TestBYOKEmbeddingsProxy:
             ctor_kwargs={},
         )
 
-        assert proxy.embed_documents(['hello']) == [[0.1, 0.2]]
-        assert proxy.embed_query('hello') == [0.1, 0.2]
-        default.embed_documents.assert_called_once_with(['hello'])
-        default.embed_query.assert_called_once_with('hello')
+        with pytest.raises(RuntimeError, match='model_not_found'):
+            proxy.embed_documents(['hello'])
+        with pytest.raises(RuntimeError, match='model_not_found'):
+            proxy.embed_query('hello')
+        default.embed_documents.assert_not_called()
+        default.embed_query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_byok_embedding_failure_never_borrows_platform_key(self, monkeypatch):
+        import utils.llm.clients as mod
+
+        class _FailingBYOKEmbeddings:
+            async def aembed_documents(self, _texts):
+                raise RuntimeError('openai.RateLimitError: Error code: 429')
+
+            async def aembed_query(self, _text):
+                raise RuntimeError('openai.AuthenticationError: Error code: 401')
+
+        default = MagicMock()
+        default.aembed_documents = AsyncMock(return_value=[[0.1, 0.2]])
+        default.aembed_query = AsyncMock(return_value=[0.1, 0.2])
+        monkeypatch.setattr(mod, 'get_byok_key', lambda provider: 'sk-byok' if provider == 'openai' else None)
+        monkeypatch.setattr(mod, 'OpenAIEmbeddings', lambda **_kwargs: _FailingBYOKEmbeddings())
+        mod._openai_cache.clear()
+        proxy = mod._OpenAIEmbeddingsProxy(model='text-embedding-3-large', default=default, ctor_kwargs={})
+
+        with pytest.raises(RuntimeError, match='429'):
+            await proxy.aembed_documents(['hello'])
+        with pytest.raises(RuntimeError, match='401'):
+            await proxy.aembed_query('hello')
+        default.aembed_documents.assert_not_awaited()
+        default.aembed_query.assert_not_awaited()
 
 
 class TestBYOKProfile:
@@ -1132,31 +1175,23 @@ class TestStructuredOutputFeatureTracking:
 
 
 class TestGeminiThinkingBudget:
-    """thinking_budget is a native google-genai SDK param — it must never reach the OpenAI-compat fallback.
+    """thinking_budget is a native google-genai SDK param and requires an executable Gemini route."""
 
-    Regression for the pusher crash: pusher has no GEMINI_API_KEY/USE_VERTEX_AI, so the Gemini client
-    resolves to the ChatOpenAI OpenAI-compat fallback. Passing thinking_budget there leaks it into
-    model_kwargs and crashes at invoke ("Completions.parse() got an unexpected keyword argument
-    'thinking_budget'"), disabling trends/memory-discard for all users.
-    """
-
-    def test_openai_compat_fallback_omits_thinking_budget(self):
+    def test_missing_gemini_credentials_fail_before_the_former_openai_compat_fallback(self):
         from unittest.mock import patch as _patch
+        from utils.llm.providers import ModelProviderConfigurationError
 
         saved = dict(_llm_cache)
         _llm_cache.clear()
-        captured = {}
-
-        def fake_openai(*args, **kwargs):
-            captured.update(kwargs)
-            return MagicMock()
+        constructor = MagicMock()
 
         try:
             with _patch.dict(os.environ, {'GEMINI_API_KEY': '', 'USE_VERTEX_AI': ''}), _patch(
-                'utils.llm.clients.ChatOpenAI', side_effect=fake_openai
+                'utils.llm.providers.ChatOpenAI', side_effect=constructor
             ), _patch('utils.llm.clients.ChatGoogleGenerativeAI', side_effect=lambda *a, **k: MagicMock()):
-                _get_or_create_gemini_llm('gemini-2.5-flash-lite', thinking_budget=0)
-            assert 'thinking_budget' not in captured, 'thinking_budget must not reach the ChatOpenAI fallback'
+                with pytest.raises(ModelProviderConfigurationError):
+                    _get_or_create_gemini_llm('gemini-2.5-flash-lite', thinking_budget=0)
+            constructor.assert_not_called()
         finally:
             _llm_cache.clear()
             _llm_cache.update(saved)

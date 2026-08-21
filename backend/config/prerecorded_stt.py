@@ -7,14 +7,18 @@ does not construct clients, read files, or snapshot environment values at import
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from urllib.parse import urlsplit
 
 from config.stt_provider_policy import (
     DEEPGRAM_SELF_HOSTED_PROVIDER,
     MIMO_PROVIDER,
+    MLX_MOSS_DIARIZE_PROVIDER,
     MODULATE_PROVIDER,
     MOSS_PROVIDER,
     PARAKEET_PROVIDER,
@@ -49,6 +53,7 @@ class PrerecordedSTTService:
     SENSEVOICE = 'sensevoice'
     MIMO = 'mimo'
     MOSS = 'moss'
+    MLX_MOSS_DIARIZE = 'mlx_moss_diarize'
 
 
 class PrerecordedSTTConfigurationError(RuntimeError):
@@ -74,6 +79,15 @@ class ProviderEnvironmentContract:
     required_when_model_source_is_opaque: bool = False
 
 
+@dataclass(frozen=True)
+class MlxMossDiarizeConfig:
+    """Validated operator-owned mlx-audio transcription authority."""
+
+    endpoint: str
+    model: str
+    api_key: str | None
+
+
 PROVIDER_ENVIRONMENT_CONTRACTS: Mapping[str, ProviderEnvironmentContract] = {
     PrerecordedSTTService.DEEPGRAM: ProviderEnvironmentContract(
         required_env=('DEEPGRAM_API_KEY',),
@@ -96,7 +110,142 @@ PROVIDER_ENVIRONMENT_CONTRACTS: Mapping[str, ProviderEnvironmentContract] = {
     # MOSS is selected only by an explicit literal token in the cloud-neutral
     # runtime. Do not make an opaque upstream deployment require its credential.
     PrerecordedSTTService.MOSS: ProviderEnvironmentContract(required_env=('MOSS_API_KEY', 'MOSS_API_BASE')),
+    PrerecordedSTTService.MLX_MOSS_DIARIZE: ProviderEnvironmentContract(
+        required_env=('MLX_MOSS_DIARIZE_ENDPOINT', 'MLX_MOSS_DIARIZE_MODEL'),
+    ),
 }
+
+
+_MLX_MOSS_TRANSCRIPTIONS_PATH = '/v1/audio/transcriptions'
+_PRIVATE_HTTP_HOST_SUFFIXES = ('.internal', '.local', '.svc', '.svc.cluster.local')
+_CGNAT_NETWORK = ipaddress.ip_network('100.64.0.0/10')
+_RFC1918_NETWORKS = (
+    ipaddress.ip_network('10.0.0.0/8'),
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.0.0/16'),
+)
+_ULA_NETWORK = ipaddress.ip_network('fc00::/7')
+_UNSAFE_METADATA_HOSTNAMES = frozenset(
+    {
+        'instance-data',
+        'instance-data.ec2.internal',
+        'metadata',
+        'metadata.aws.internal',
+        'metadata.azure.internal',
+        'metadata.google.internal',
+    }
+)
+_LEGACY_IPV4_LITERAL = re.compile(r'(?:0[xX][0-9a-fA-F]+|[0-9]+)(?:\.(?:0[xX][0-9a-fA-F]+|[0-9]+)){0,3}')
+
+
+def is_unsafe_network_hostname(hostname: str) -> bool:
+    """Reject network authorities that must never receive credentials or audio."""
+
+    normalized = hostname.rstrip('.').lower()
+    if normalized in _UNSAFE_METADATA_HOSTNAMES or any(
+        normalized.endswith(f'.{metadata_hostname}') for metadata_hostname in _UNSAFE_METADATA_HOSTNAMES
+    ):
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        # URL clients and operating-system resolvers can accept legacy integer,
+        # octal, and hexadecimal IPv4 spellings that ``ipaddress`` intentionally
+        # rejects. Treat numeric-looking authorities as unsafe instead of letting
+        # them become operator-controlled single-label DNS names.
+        return _LEGACY_IPV4_LITERAL.fullmatch(normalized) is not None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    if address.is_loopback:
+        return False
+    if isinstance(address, ipaddress.IPv4Address) and any(address in network for network in _RFC1918_NETWORKS):
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address in _ULA_NETWORK:
+        return False
+    return (
+        address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        or (isinstance(address, ipaddress.IPv4Address) and address in _CGNAT_NETWORK)
+        or not address.is_global
+    )
+
+
+def is_private_operator_hostname(hostname: str) -> bool:
+    normalized = hostname.rstrip('.').lower()
+    if is_unsafe_network_hostname(normalized):
+        return False
+    if normalized in {'localhost', 'host.docker.internal'}:
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        # Single-label container/service names and reserved internal DNS suffixes
+        # are operator-controlled private network authorities. Do not resolve DNS
+        # in this pure configuration module.
+        return '.' not in normalized or normalized.endswith(_PRIVATE_HTTP_HOST_SUFFIXES)
+    if isinstance(address, ipaddress.IPv4Address):
+        return address.is_loopback or any(address in network for network in _RFC1918_NETWORKS)
+    return address.is_loopback or address in _ULA_NETWORK
+
+
+def get_mlx_moss_diarize_config(env: Mapping[str, str] | None = None) -> MlxMossDiarizeConfig:
+    """Read and validate the explicit mlx-audio endpoint/model at call time."""
+
+    source = os.environ if env is None else env
+    endpoint = (source.get('MLX_MOSS_DIARIZE_ENDPOINT') or '').strip()
+    model = (source.get('MLX_MOSS_DIARIZE_MODEL') or '').strip()
+    api_key = (source.get('MLX_MOSS_DIARIZE_API_KEY') or '').strip() or None
+    if not endpoint:
+        raise PrerecordedSTTConfigurationError(
+            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            'MLX_MOSS_DIARIZE_ENDPOINT',
+        )
+    if not model:
+        raise PrerecordedSTTConfigurationError(
+            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            'MLX_MOSS_DIARIZE_MODEL',
+        )
+
+    parsed = urlsplit(endpoint)
+    hostname = (parsed.hostname or '').rstrip('.').lower()
+    invalid_url = (
+        parsed.scheme not in {'http', 'https'}
+        or not hostname
+        or parsed.path != _MLX_MOSS_TRANSCRIPTIONS_PATH
+        or bool(parsed.query)
+        or bool(parsed.fragment)
+        or parsed.username is not None
+        or parsed.password is not None
+    )
+    if invalid_url:
+        raise PrerecordedSTTConfigurationError(
+            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            'MLX_MOSS_DIARIZE_ENDPOINT',
+        )
+    if (
+        is_unsafe_network_hostname(hostname)
+        or hostname == 'mosi.cn'
+        or hostname.endswith('.mosi.cn')
+        or hostname == 'omi.me'
+        or hostname.endswith('.omi.me')
+    ):
+        raise PrerecordedSTTConfigurationError(
+            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            'MLX_MOSS_DIARIZE_ENDPOINT',
+        )
+    if parsed.scheme == 'http' and not is_private_operator_hostname(hostname):
+        raise PrerecordedSTTConfigurationError(
+            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            'MLX_MOSS_DIARIZE_ENDPOINT',
+        )
+    if parsed.scheme == 'https' and not is_private_operator_hostname(hostname) and api_key is None:
+        raise PrerecordedSTTConfigurationError(
+            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            'MLX_MOSS_DIARIZE_API_KEY',
+        )
+    return MlxMossDiarizeConfig(endpoint=endpoint, model=model, api_key=api_key)
 
 
 def parse_prerecorded_models(raw: str | None) -> tuple[str, ...]:
@@ -125,6 +274,8 @@ def provider_for_model_token(model: str) -> str | None:
         return PrerecordedSTTService.MIMO
     if provider == MOSS_PROVIDER:
         return PrerecordedSTTService.MOSS
+    if provider == MLX_MOSS_DIARIZE_PROVIDER:
+        return PrerecordedSTTService.MLX_MOSS_DIARIZE
     if provider == DEEPGRAM_SELF_HOSTED_PROVIDER:
         return PrerecordedSTTService.DEEPGRAM
     return None
@@ -147,6 +298,7 @@ def providers_for_model_config(raw: str) -> tuple[str, ...]:
         provider in providers
         for provider in (
             PrerecordedSTTService.MOSS,
+            PrerecordedSTTService.MLX_MOSS_DIARIZE,
             PrerecordedSTTService.SENSEVOICE,
             PrerecordedSTTService.MIMO,
         )

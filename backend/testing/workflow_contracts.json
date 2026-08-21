@@ -676,6 +676,30 @@
       ]
     },
     {
+      "id": "prerecorded_stt_provider_selection",
+      "risk": "high",
+      "sources": [
+        "backend/config/prerecorded_stt.py",
+        "backend/config/stt_provider_policy.py",
+        "backend/utils/stt/pre_recorded.py",
+        "backend/utils/stt/outcomes.py",
+        "backend/utils/mlx_moss_diarize/**"
+      ],
+      "tests": [
+        "tests/unit/test_mlx_moss_diarize_stt.py",
+        "tests/unit/test_prerecorded_stt_config.py",
+        "tests/unit/test_stt_provider_policy.py",
+        "tests/unit/test_transcription_outcomes.py"
+      ],
+      "checks": [],
+      "invariants": [
+        "a prerecorded model token selects exactly one policy-admitted provider authority and never a provider-specific hidden fallback",
+        "the operator-owned mlx-audio MOSS route requires an explicit endpoint and model before client construction and never constructs the hosted mosi.cn client",
+        "provider audio, deadlines, response bytes, segment counts, timestamps, text, and speaker labels remain bounded and malformed responses fail through the typed transcription outcome",
+        "speaker ids from separately chunked MOSS requests are request-local and cannot be treated as one global person without embedding reconciliation"
+      ]
+    },
+    {
       "id": "ci_changed_path_selection",
       "risk": "high",
       "sources": [

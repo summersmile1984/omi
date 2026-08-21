@@ -26,9 +26,15 @@ PARAKEET_PROVIDER: Final = 'parakeet'
 SENSEVOICE_PROVIDER: Final = 'sensevoice'
 MIMO_PROVIDER: Final = 'mimo'
 MOSS_PROVIDER: Final = 'moss'
+MLX_MOSS_DIARIZE_PROVIDER: Final = 'mlx_moss_diarize'
 
 DEEPGRAM_PROVIDERS: Final[tuple[str, ...]] = (DEEPGRAM_CLOUD_PROVIDER, DEEPGRAM_SELF_HOSTED_PROVIDER)
 DEEPGRAM_MODEL_TOKENS: Final[frozenset[str]] = frozenset({'deepgram', 'nova-2', 'nova-3', 'dg-nova-2', 'dg-nova-3'})
+
+# The mounted SenseVoiceSmall model identifies only these languages. ``multi``
+# is its automatic language-selection mode across this same set, not a claim of
+# arbitrary-language coverage.
+SENSEVOICE_SUPPORTED_LANGUAGES: Final[frozenset[str]] = frozenset({'multi', 'en', 'zh', 'yue', 'ja', 'ko'})
 
 # Velma-2 is the live fallback for every language we can safely send to its
 # automatic-detection mode. Keep this capability at the policy boundary rather
@@ -131,6 +137,9 @@ PROVIDER_SERVING_SURFACES: Final[Mapping[str, frozenset[STTServingSurface]]] = {
     # MiMo still accepts a complete recording and returns only when it ends; it
     # cannot be advertised on the live surface without stalling long sessions.
     MIMO_PROVIDER: frozenset({STTServingSurface.PRERECORDED}),
+    # Operator-owned mlx-audio is a separate authority from the hosted
+    # mosi.cn MOSS API. It accepts complete files only.
+    MLX_MOSS_DIARIZE_PROVIDER: frozenset({STTServingSurface.PRERECORDED}),
     MOSS_PROVIDER: frozenset({STTServingSurface.PRERECORDED}),
 }
 
@@ -216,6 +225,12 @@ def modulate_supports_language(language: str | None) -> bool:
     return normalized_stt_language(language) in MODULATE_SUPPORTED_LANGUAGES
 
 
+def sensevoice_supports_language(language: str | None) -> bool:
+    """Return whether the mounted SenseVoice model can serve this language."""
+
+    return normalized_stt_language(language) in SENSEVOICE_SUPPORTED_LANGUAGES
+
+
 def supports_live_multilingual_mode(language: str | None) -> bool:
     """Return whether a live user language can enter Modulate auto-detection."""
     return modulate_supports_language(language)
@@ -238,6 +253,8 @@ def provider_for_model_token(model: str) -> str | None:
         return MIMO_PROVIDER
     if normalized == 'moss':
         return MOSS_PROVIDER
+    if normalized == 'mlx_moss_diarize':
+        return MLX_MOSS_DIARIZE_PROVIDER
     if normalized in DEEPGRAM_MODEL_TOKENS:
         return DEEPGRAM_CLOUD_PROVIDER
     return None

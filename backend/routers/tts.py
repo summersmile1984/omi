@@ -22,9 +22,11 @@ from database import redis_db
 from models.tts import DEFAULT_VOICE_ID, TtsSynthesizeRequest
 from utils.http_client import get_tts_client, get_tts_semaphore
 from utils.log_sanitizer import sanitize
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.other import endpoints as auth
 from utils.executors import run_blocking, critical_executor
 from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled
+from utils.tts_provider import selected_tts_provider, synthesize_openai_compatible_tts, synthesize_sherpa_tts
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,12 @@ def _is_valid_voice_id(voice_id: str) -> bool:
     ElevenLabs URL template (e.g. `../../history` retargeting `xi-api-key`).
     """
     return 1 <= len(voice_id) <= 128 and voice_id.isalnum()
+
+
+def _is_safe_voice_label(voice_id: str) -> bool:
+    """Bound a provider voice label without imposing ElevenLabs path rules."""
+
+    return 1 <= len(voice_id) <= 128 and not any(ord(character) < 32 for character in voice_id)
 
 
 def _is_mimo_enabled() -> bool:
@@ -76,7 +84,7 @@ async def tts_synthesize(
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
-    if not _is_valid_voice_id(req.voice_id):
+    if not _is_safe_voice_label(req.voice_id):
         raise HTTPException(status_code=400, detail="invalid voice_id")
     char_count = len(text)
     if char_count > _TTS_REQUEST_CHAR_LIMIT:
@@ -88,11 +96,21 @@ async def tts_synthesize(
     if tts_explicitly_disabled():
         raise HTTPException(status_code=503, detail=TTS_DISABLED_DETAIL)
 
+    selected_provider = selected_tts_provider()
+    if selected_provider not in {'', 'elevenlabs', 'mimo', 'openai_compatible', 'sherpa_onnx'}:
+        error = ModelCapabilityUnavailableError('tts', 'unsupported_provider', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+
     api_key = os.getenv('ELEVENLABS_API_KEY')
-    mimo_enabled = _is_mimo_enabled()
-    if not api_key and not mimo_enabled:
-        logger.error("tts_synthesize: no TTS provider configured (ELEVENLABS_API_KEY or MIMO_API_KEY)")
-        raise HTTPException(status_code=503, detail="TTS service not configured")
+    mimo_enabled = selected_provider == 'mimo' and _is_mimo_enabled()
+    compatible_enabled = selected_provider == 'openai_compatible'
+    sherpa_enabled = selected_provider == 'sherpa_onnx'
+    if selected_provider == 'mimo' and not mimo_enabled:
+        error = ModelCapabilityUnavailableError('tts', 'mimo_credential_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+    if selected_provider in {'', 'elevenlabs'} and not api_key:
+        error = ModelCapabilityUnavailableError('tts', 'elevenlabs_credential_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
 
     status, retry_after = await run_blocking(
         critical_executor,
@@ -150,7 +168,43 @@ async def tts_synthesize(
             headers={"Content-Length": str(len(audio))},
         )
 
+    if compatible_enabled:
+        try:
+            audio = await synthesize_openai_compatible_tts(
+                text,
+                voice=req.voice_id,
+                audio_format=req.output_format,
+            )
+        except ModelCapabilityUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.as_dict()) from error
+
+        async def compatible_stream():
+            yield audio.content
+
+        return StreamingResponse(
+            compatible_stream(),
+            media_type=audio.media_type,
+            headers={"Content-Length": str(len(audio.content))},
+        )
+
+    if sherpa_enabled:
+        try:
+            audio = await synthesize_sherpa_tts(text, audio_format=req.output_format)
+        except ModelCapabilityUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.as_dict()) from error
+
+        async def sherpa_stream():
+            yield audio.content
+
+        return StreamingResponse(
+            sherpa_stream(),
+            media_type=audio.media_type,
+            headers={"Content-Length": str(len(audio.content))},
+        )
+
     assert api_key is not None
+    if not _is_valid_voice_id(req.voice_id):
+        raise HTTPException(status_code=400, detail="invalid voice_id")
 
     body: Dict[str, Any] = {
         "text": text,

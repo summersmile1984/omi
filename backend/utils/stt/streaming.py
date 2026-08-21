@@ -25,6 +25,7 @@ from config.stt_provider_policy import (
     normalized_stt_language,
     parakeet_supports_language,
     provider_is_enabled,
+    sensevoice_supports_language,
     supports_live_multilingual_mode,
 )
 from utils.sensevoice.socket import SenseVoiceSocket, get_sensevoice_recognizer, sensevoice_model_is_ready
@@ -525,6 +526,12 @@ def get_stt_service_for_language(
                 model == 'sensevoice'
                 and provider_is_enabled(SENSEVOICE_PROVIDER, surface)
                 and sensevoice_model_is_ready()
+                # ``requested_language`` may be ``multi`` for a user whose
+                # actual locale is unsupported. SenseVoice auto-detection is
+                # bounded to its own language set, so admission must check the
+                # normalized user language rather than treating multi as
+                # arbitrary-language support.
+                and sensevoice_supports_language(base_lang)
             ):
                 return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
             if (

@@ -31,6 +31,7 @@ from utils.llm.embedding_providers import (
     LangChainEmbeddingProviderAdapter,
     OpenAICompatibleEmbeddingProviderAdapter,
 )
+from utils.llm.providers import ModelProviderConfigurationError
 
 
 def test_unselected_qdrant_adapter_does_not_expand_backend_import_requirements(monkeypatch):
@@ -105,6 +106,22 @@ def test_generic_openai_compatible_embedding_adapter_uses_only_configured_endpoi
         'check_embedding_ctx_length': False,
         'dimensions': 2,
     }
+
+
+def test_openrouter_embedding_without_credentials_fails_before_client_construction(monkeypatch):
+    monkeypatch.delenv('OPENROUTER_API_KEY', raising=False)
+    constructed = []
+
+    with pytest.raises(ModelProviderConfigurationError) as error:
+        OpenAICompatibleEmbeddingProviderAdapter(
+            provider_id='openrouter',
+            model_id='text-embedding-model',
+            client_factory=lambda **kwargs: constructed.append(kwargs),
+        )
+
+    assert error.value.provider == 'openrouter'
+    assert error.value.reason == 'credential_not_configured'
+    assert constructed == []
 
 
 def test_configured_embedding_proxy_switches_to_generic_at_call_boundary(monkeypatch):

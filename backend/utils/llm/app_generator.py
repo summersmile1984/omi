@@ -6,7 +6,10 @@ Generates app configuration from a natural language prompt using LLM
 import json
 import re
 import base64
+import binascii
 import httpx
+from io import BytesIO
+from PIL import Image, UnidentifiedImageError
 from typing import Any, Dict, Optional, cast
 from pydantic import BaseModel
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -14,6 +17,7 @@ from utils.executors import llm_executor, run_blocking
 from utils.llm.capabilities import ModelCapabilityUnavailableError, resolve_model_capability
 from utils.llm.clients import get_llm
 from utils.llm.gateway_client import generate_image_via_gateway
+from utils.llm.image_generation_provider import generate_image_via_local_template, generate_image_via_openai_compatible
 
 
 def _content_str(response: Any) -> str:
@@ -51,6 +55,30 @@ class GeneratedAppData(BaseModel):
     capabilities: list[str]  # 'chat' or 'memories' or both
     chat_prompt: Optional[str] = None
     memory_prompt: Optional[str] = None
+
+
+def _validated_icon_png(image_bytes: bytes) -> bytes:
+    """Decode one bounded 1024px provider image and canonicalize it as PNG."""
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            if image.format not in {'PNG', 'JPEG', 'WEBP'} or image.size != (1024, 1024):
+                raise ModelCapabilityUnavailableError('app_icon_generation', 'provider_invalid_image', retryable=False)
+            image.verify()
+        with Image.open(BytesIO(image_bytes)) as image:
+            canonical = image.convert('RGBA')
+            output = BytesIO()
+            canonical.save(output, format='PNG', optimize=True)
+    except ModelCapabilityUnavailableError:
+        raise
+    except (OSError, UnidentifiedImageError, ValueError, Image.DecompressionBombError) as error:
+        raise ModelCapabilityUnavailableError(
+            'app_icon_generation', 'provider_invalid_image', retryable=False
+        ) from error
+    encoded = output.getvalue()
+    if not encoded or len(encoded) > 16 * 1024 * 1024:
+        raise ModelCapabilityUnavailableError('app_icon_generation', 'provider_invalid_image', retryable=False)
+    return encoded
 
 
 SYSTEM_PROMPT = """You are an expert app designer for Omi, an AI-powered wearable device that records conversations and provides intelligent insights.
@@ -189,19 +217,46 @@ Design requirements:
     # (openai.gpt-image-1.medium.1024x1024). The retired dall-e-3 `standard` quality and the
     # `response_format` parameter are both rejected by the images API now, and it always
     # returns base64 image data.
-    response = await run_blocking(
-        llm_executor,
-        generate_image_via_gateway,
-        model="gpt-image-1",
-        prompt=icon_prompt,
-        size="1024x1024",
-        quality="medium",
-        n=1,
-    )
+    if capability.transport == 'gateway_image_generation':
+        response = await run_blocking(
+            llm_executor,
+            generate_image_via_gateway,
+            model="gpt-image-1",
+            prompt=icon_prompt,
+            size="1024x1024",
+            quality="medium",
+            n=1,
+        )
+    elif capability.transport == 'openai_compatible_image_generation':
+        response = await run_blocking(
+            llm_executor,
+            generate_image_via_openai_compatible,
+            prompt=icon_prompt,
+            size="1024x1024",
+            quality="medium",
+            n=1,
+        )
+    elif capability.transport == 'local_template_image_generation':
+        response = await run_blocking(
+            llm_executor,
+            generate_image_via_local_template,
+            prompt=icon_prompt,
+            size='1024x1024',
+        )
+    else:
+        raise ModelCapabilityUnavailableError('app_icon_generation', 'unsupported_transport', retryable=False)
 
     # Get the base64 image data and decode it
-    image_data = cast("list[dict[str, Any]]", response["data"])[0]["b64_json"]
-    return base64.b64decode(cast(str, image_data))
+    try:
+        image_data = cast("list[dict[str, Any]]", response["data"])[0]["b64_json"]
+        image_bytes = base64.b64decode(cast(str, image_data), validate=True)
+    except (KeyError, IndexError, TypeError, ValueError, binascii.Error) as error:
+        raise ModelCapabilityUnavailableError(
+            'app_icon_generation', 'provider_invalid_image', retryable=False
+        ) from error
+    if not image_bytes or len(image_bytes) > 16 * 1024 * 1024:
+        raise ModelCapabilityUnavailableError('app_icon_generation', 'provider_invalid_image', retryable=False)
+    return _validated_icon_png(image_bytes)
 
 
 async def download_image_from_url(url: str) -> bytes:

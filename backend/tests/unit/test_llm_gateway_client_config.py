@@ -410,6 +410,7 @@ async def test_app_icon_generation_always_uses_gateway(monkeypatch):
         return {'data': [{'b64_json': 'aWNvbg=='}]}
 
     monkeypatch.setattr(app_generator, 'generate_image_via_gateway', gateway)
+    monkeypatch.setattr(app_generator, '_validated_icon_png', lambda raw: raw)
 
     assert await app_generator.generate_app_icon('Name', 'Description', 'other') == b'icon'
     # The images API rejects `response_format` (400 unknown_parameter) and no longer serves
@@ -419,6 +420,88 @@ async def test_app_icon_generation_always_uses_gateway(monkeypatch):
     assert captured['quality'] == 'medium'
     assert captured['size'] == '1024x1024'
     assert 'response_format' not in captured
+
+
+@pytest.mark.asyncio
+async def test_app_icon_generation_uses_explicit_compatible_transport(monkeypatch):
+    from utils.llm import app_generator
+
+    captured = {}
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'openai_compatible')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', 'http://image.internal/v1')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY', 'operator-key')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL', 'local-image-model')
+
+    def compatible(**kwargs):
+        captured.update(kwargs)
+        return {'data': [{'b64_json': 'aWNvbg=='}]}
+
+    monkeypatch.setattr(app_generator, 'generate_image_via_openai_compatible', compatible)
+    monkeypatch.setattr(app_generator, '_validated_icon_png', lambda raw: raw)
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_gateway',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not be called')),
+    )
+
+    assert await app_generator.generate_app_icon('Name', 'Description', 'other') == b'icon'
+    assert captured == {
+        'prompt': captured['prompt'],
+        'size': '1024x1024',
+        'quality': 'medium',
+        'n': 1,
+    }
+    assert 'Name' in captured['prompt']
+
+
+@pytest.mark.asyncio
+async def test_app_icon_generation_uses_local_template_without_managed_provider(monkeypatch):
+    from utils.llm import app_generator
+
+    captured = {}
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'local_template')
+
+    def local_template(**kwargs):
+        captured.update(kwargs)
+        return {'data': [{'b64_json': 'aWNvbg=='}]}
+
+    monkeypatch.setattr(app_generator, 'generate_image_via_local_template', local_template)
+    monkeypatch.setattr(app_generator, '_validated_icon_png', lambda raw: raw)
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_openai_compatible',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('compatible provider must not be called')),
+    )
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_gateway',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not be called')),
+    )
+
+    assert await app_generator.generate_app_icon('Name', 'Description', 'other') == b'icon'
+    assert captured['size'] == '1024x1024'
+    assert 'Name' in captured['prompt']
+
+
+@pytest.mark.asyncio
+async def test_app_icon_compatible_transport_fails_before_provider_call_when_unconfigured(monkeypatch):
+    from utils.llm import app_generator
+    from utils.llm.capabilities import ModelCapabilityUnavailableError
+
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'openai_compatible')
+    monkeypatch.delenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', raising=False)
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY', 'operator-key')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL', 'local-image-model')
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_openai_compatible',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('provider must not be called')),
+    )
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        await app_generator.generate_app_icon('Name', 'Description', 'other')
+
+    assert error.value.as_dict()['reason'] == 'compatible_endpoint_not_configured'
 
 
 @pytest.mark.asyncio
