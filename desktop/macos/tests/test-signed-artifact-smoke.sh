@@ -165,6 +165,9 @@ make_signed_smoke_fixture() {
   <key>CFBundleURLTypes</key>
   <array><dict><key>CFBundleURLSchemes</key><array><string>omi-computer</string></array></dict></array>
   <key>SUFeedURL</key><string>$feed_url</string>
+  <key>SUPublicEDKey</key><string>fixture-sparkle-public-key</string>
+  <key>SUEnableAutomaticChecks</key><true/>
+  <key>SUAutomaticallyUpdate</key><false/>
 </dict>
 </plist>
 PLIST
@@ -259,6 +262,46 @@ make_signed_smoke_fixture "$renamed_beta_app" \
   'https://api.omi.me/v2/desktop/appcast.xml?identity=beta' \
   https://api.omiapi.com/ \
   https://desktop-backend-dt5lrfkkoa-uc.a.run.app/
+
+# Self-hosted artifacts must remove both the managed Sparkle feed and its
+# update-signing key, and must disable automatic checks. First prove the
+# smoke gate rejects a contaminated artifact, then prove the clean artifact
+# reaches the later signed/runtime checks.
+selfhost_root="$tmp_root/selfhost"
+selfhost_app="$selfhost_root/Omi Self-Hosted.app"
+make_signed_smoke_fixture "$selfhost_app" \
+  com.omi.selfhost.desktop \
+  https://api.omi.me/v2/desktop/appcast.xml \
+  https://selfhost.example.test/ \
+  https://desktop.selfhost.example.test/
+cat > "$selfhost_app/Contents/Resources/.env" <<'ENV'
+OMI_DEPLOYMENT_PROFILE=self_hosted
+OMI_AUTH_PROVIDER=better_auth
+OMI_PYTHON_API_URL=https://selfhost.example.test/
+OMI_DESKTOP_API_URL=https://desktop.selfhost.example.test/
+ENV
+rm -f "$selfhost_app/Contents/Resources/GoogleService-Info.plist"
+if PATH="$mock_bin:$PATH" "$SMOKE" --app "$selfhost_app" \
+  --expected-bundle-id com.omi.selfhost.desktop \
+  --expected-python-api-url https://selfhost.example.test/ \
+  --expected-desktop-api-url https://desktop.selfhost.example.test/ \
+  >/tmp/omi-smoke-selfhost-contaminated.out 2>/tmp/omi-smoke-selfhost-contaminated.err; then
+  fail "self-hosted smoke must reject an Omi Sparkle feed/public key"
+fi
+grep -q "self-hosted artifact must not carry a Sparkle feed" /tmp/omi-smoke-selfhost-contaminated.err \
+  || fail "self-hosted feed rejection should be explicit"
+
+/usr/libexec/PlistBuddy -c 'Delete :SUFeedURL' "$selfhost_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Delete :SUPublicEDKey' "$selfhost_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :SUEnableAutomaticChecks false' "$selfhost_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :SUAutomaticallyUpdate false' "$selfhost_app/Contents/Info.plist"
+PATH="$mock_bin:$PATH" "$SMOKE" --app "$selfhost_app" \
+  --expected-bundle-id com.omi.selfhost.desktop \
+  --expected-python-api-url https://selfhost.example.test/ \
+  --expected-desktop-api-url https://desktop.selfhost.example.test/ \
+  >/tmp/omi-smoke-selfhost-clean.out 2>/tmp/omi-smoke-selfhost-clean.err \
+  || fail "clean self-hosted artifact should pass: $(cat /tmp/omi-smoke-selfhost-clean.err)"
+
 # Firebase Web API keys are public client configuration, required for desktop
 # sign-in, and bound by the signed GoogleService-Info.plist project check.
 printf 'FIREBASE_API_KEY=public-firebase-web-key\n' >> "$signed_beta_app/Contents/Resources/.env"

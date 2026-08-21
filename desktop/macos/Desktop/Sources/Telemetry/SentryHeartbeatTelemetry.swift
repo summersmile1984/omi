@@ -10,7 +10,14 @@ enum SentryHeartbeatTelemetry {
     return breadcrumb
   }
 
-  static func recordSessionHeartbeat() {
+  static func shouldRecordSessionHeartbeat(allowsOmiManagedServices: Bool) -> Bool {
+    allowsOmiManagedServices
+  }
+
+  static func recordSessionHeartbeat(
+    allowsOmiManagedServices: Bool = DesktopBackendEnvironment.allowsOmiManagedServices
+  ) {
+    guard shouldRecordSessionHeartbeat(allowsOmiManagedServices: allowsOmiManagedServices) else { return }
     SentrySDK.addBreadcrumb(makeSessionHeartbeatBreadcrumb())
   }
 }

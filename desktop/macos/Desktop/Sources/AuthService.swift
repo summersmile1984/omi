@@ -884,7 +884,7 @@ class AuthService {
     // bar read it); without this it stays nil/old until the next app launch.
     Task { await FloatingBarUsageLimiter.shared.fetchPlan() }
 
-    if !AnalyticsManager.isDevBuild {
+    if DesktopBackendEnvironment.allowsOmiManagedServices && !AnalyticsManager.isDevBuild {
       // Keep Sentry correlation opaque; PII remains in the application/backend,
       // not crash and error reports.
       SentrySDK.setUser(User(userId: nativeSignIn.tokens.localId))
@@ -1187,7 +1187,7 @@ class AuthService {
       Task { await FloatingBarUsageLimiter.shared.fetchPlan() }
 
       // Set opaque Sentry user context for error correlation (skip in dev builds).
-      if !AnalyticsManager.isDevBuild {
+      if DesktopBackendEnvironment.allowsOmiManagedServices && !AnalyticsManager.isDevBuild {
         SentrySDK.setUser(User(userId: userId))
       }
 
@@ -2687,7 +2687,7 @@ class AuthService {
     // a storage failure cannot leave a partially signed-out prior-owner session.
     AnalyticsManager.shared.signedOut()
     AnalyticsManager.shared.reset()
-    if !AnalyticsManager.isDevBuild {
+    if DesktopBackendEnvironment.allowsOmiManagedServices && !AnalyticsManager.isDevBuild {
       SentrySDK.setUser(nil)
     }
     sessionCoordinator.resetAfterNuclearSignOut()

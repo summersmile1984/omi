@@ -21,4 +21,13 @@ final class SentryHeartbeatTelemetryTests: XCTestCase {
         messageFormatted: "Session Heartbeat",
         exceptions: []))
   }
+
+  func testSelfHostedDeploymentDoesNotRecordSentryHeartbeat() {
+    XCTAssertFalse(
+      SentryHeartbeatTelemetry.shouldRecordSessionHeartbeat(
+        allowsOmiManagedServices: false))
+    XCTAssertTrue(
+      SentryHeartbeatTelemetry.shouldRecordSessionHeartbeat(
+        allowsOmiManagedServices: true))
+  }
 }

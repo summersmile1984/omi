@@ -550,7 +550,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
       AnalyticsManager.shared.identify()
       // Set an opaque Sentry user identifier for incident correlation. Do not
       // attach email or display name to crash/error reports.
-      if let userID = AuthState.shared.userId {
+      if DesktopBackendEnvironment.allowsOmiManagedServices, let userID = AuthState.shared.userId {
         SentrySDK.setUser(Sentry.User(userId: userID))
       }
       // Fetch API keys after first-window warmup settles. First-use paths call waitForKeys().
@@ -670,7 +670,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
   /// Start a timer that records Sentry session breadcrumbs every 5 minutes.
   /// Breadcrumbs preserve observability without creating unresolved Sentry issues (#9191).
   private func startSentryHeartbeat() {
-    guard !AnalyticsManager.isDevBuild else { return }
+    guard DesktopBackendEnvironment.allowsOmiManagedServices, !AnalyticsManager.isDevBuild else { return }
     sentryHeartbeatTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
       SentryHeartbeatTelemetry.recordSessionHeartbeat()
       log("Sentry: Session heartbeat breadcrumb recorded")
@@ -1393,7 +1393,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     ResourceMonitor.shared.reportResourcesNow(context: "app_terminating")
     ResourceMonitor.shared.stop()
 
-    if !AnalyticsManager.isDevBuild {
+    if DesktopBackendEnvironment.allowsOmiManagedServices && !AnalyticsManager.isDevBuild {
       let breadcrumb = Breadcrumb(level: .info, category: "lifecycle")
       breadcrumb.message = "App Terminating"
       SentrySDK.addBreadcrumb(breadcrumb)
