@@ -29,6 +29,11 @@ checks:
     triggers: ["backend/scripts/storage_gcs_minio_migration.py", "backend/scripts/source_write_freeze.py", "backend/scripts/test-storage-gcs-minio-migration.sh", "backend/tests/unit/test_storage_gcs_minio_migration.py", "backend/tests/unit/test_source_write_freeze.py", "deploy/self-host/**", "backend/AGENTS.md", ".github/checks-manifest.yaml"]
     lanes: ["local", "ci"]
     reason: "fork PR #1 added the MinIO runtime without a GCS/Firebase Storage inventory, resumable copy, or reconciliation path; this behavioral gate prevents production object migration from becoming an undocumented manual copy again and keeps the source-write freeze live for every source read and final evidence transition"
+  - id: agent-vm-neutrality-reconcile-cli
+    command: ["bash", "backend/scripts/test-agent-vm-reconcile.sh"]
+    triggers: ["backend/scripts/agent_vm_reconcile.py", "backend/scripts/test-agent-vm-reconcile.sh", "backend/tests/unit/test_agent_vm_reconcile.py", "backend/services/users/agent_vm_account_cleanup.py", "deploy/self-host/**", ".github/checks-manifest.yaml"]
+    lanes: ["local", "ci"]
+    reason: "self-host Agent VM retirement must inventory legacy GCE identities without ADC/Compute egress and require an identity-bound, signed absence proof before clearing local deletion-blocking state"
   - id: self-host-auth-runtime-contract
     command: ["npm", "--prefix", "auth-server", "test"]
     triggers: ["auth-server/src/**", "auth-server/test/**", "auth-server/package.json", "auth-server/package-lock.json", ".github/checks-manifest.yaml"]

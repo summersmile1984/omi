@@ -15,6 +15,8 @@ INTEGRATION_TESTS=(
 FIRESTORE_PG_MIGRATOR="$REPO_ROOT/backend/scripts/firestore_pg_migrate.py"
 TARGET_SAFETY_CHECK="$REPO_ROOT/backend/scripts/validate_migration_test_targets.py"
 SOURCE_WRITE_FREEZE_TOOL="$REPO_ROOT/backend/scripts/source_write_freeze.py"
+AGENT_VM_RECONCILE_TOOL="$REPO_ROOT/backend/scripts/agent_vm_reconcile.py"
+AGENT_VM_RECONCILE_TEST="$REPO_ROOT/backend/scripts/test-agent-vm-reconcile.sh"
 SHADOW_DIFF="$REPO_ROOT/dev/shadow-diff.sh"
 AUTH_FLOW_SMOKE="$REPO_ROOT/deploy/self-host/auth-flow-smoke.py"
 LEGACY_JWKS_FIXTURE="$REPO_ROOT/auth-server/src/seed-legacy-jwk.js"
@@ -29,7 +31,7 @@ usage() {
 
 self_check() {
   local missing=0 path
-  for path in "$COMPOSE_FILE" "$CHECKER" "$SHADOW_DIFF" "$AUTH_FLOW_SMOKE" "$LEGACY_JWKS_FIXTURE" "$FIRESTORE_PG_MIGRATOR" "$TARGET_SAFETY_CHECK" "$SOURCE_WRITE_FREEZE_TOOL" "${INTEGRATION_TESTS[@]}"; do
+  for path in "$COMPOSE_FILE" "$CHECKER" "$SHADOW_DIFF" "$AUTH_FLOW_SMOKE" "$LEGACY_JWKS_FIXTURE" "$FIRESTORE_PG_MIGRATOR" "$TARGET_SAFETY_CHECK" "$SOURCE_WRITE_FREEZE_TOOL" "$AGENT_VM_RECONCILE_TOOL" "$AGENT_VM_RECONCILE_TEST" "${INTEGRATION_TESTS[@]}"; do
     if [[ ! -f "$path" ]]; then
       echo "error: migration gate dependency missing: $path" >&2
       missing=1
@@ -37,7 +39,8 @@ self_check() {
   done
   [[ "$missing" -eq 0 ]] || return 1
   "$PY" "$CHECKER"
-  "$PY" -m py_compile "$SOURCE_WRITE_FREEZE_TOOL"
+  "$PY" -m py_compile "$SOURCE_WRITE_FREEZE_TOOL" "$AGENT_VM_RECONCILE_TOOL"
+  "$AGENT_VM_RECONCILE_TEST"
   echo "migration cutover gate self-check OK"
 }
 
