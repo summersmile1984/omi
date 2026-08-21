@@ -233,7 +233,6 @@ class SwiftLintConfigTests(unittest.TestCase):
             cache_binary.write_text(
                 f'#!/bin/sh\ntouch "{bash_path(marker, bash)}"\necho 0.65.0\n',
                 encoding="utf-8",
-                newline="\n",
             )
             cache_binary.chmod(0o755)
 
@@ -242,7 +241,7 @@ class SwiftLintConfigTests(unittest.TestCase):
             blocked_curl = root / "bin"
             blocked_curl.mkdir()
             curl = blocked_curl / "curl"
-            curl.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8", newline="\n")
+            curl.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
             curl.chmod(0o755)
             shasum = blocked_curl / "shasum"
             shasum.write_text(
@@ -250,7 +249,6 @@ class SwiftLintConfigTests(unittest.TestCase):
                 "for path do :; done\n"
                 "printf '%064d  %s\\n' 0 \"$path\"\n",
                 encoding="utf-8",
-                newline="\n",
             )
             shasum.chmod(0o755)
             env = os.environ | {
