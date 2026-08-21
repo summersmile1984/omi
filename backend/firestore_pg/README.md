@@ -207,8 +207,11 @@ new explicit schema version and cannot change an existing dynamic mapping.
 export FIRESTORE_PG_DSN='postgresql+psycopg://...'
 python scripts/firestore_pg_migrate.py import \
   --source-project source-project-id \
+  --source-database '(default)' \
+  --source-endpoint https://firestore.googleapis.com \
   --source-credentials /secure/firestore-reader.json \
-  --checkpoint /secure/change-record/firestore-import.json
+  --checkpoint /secure/change-record/firestore-import.json \
+  --freeze-lease /secure/change-record/source-freeze.json
 ```
 
 `--source-endpoint` is passed to the Firestore SDK as the actual API target,
@@ -220,9 +223,10 @@ the fact.
 The checkpoint and adjacent JSONL document manifest are mode `0600`. The
 checkpoint binds every resume to the source project, database, resolved API
 endpoint, and emulator authority (when present); any authority change fails
-closed. Preserve
-both to resume after interruption; they contain customer data and must be kept
-in encrypted operator-controlled storage, then securely removed per policy.
+closed. Preserve both to resume after interruption; they contain customer data
+and must be kept in encrypted operator-controlled storage, then securely
+removed per policy. Source writes must be paused by external change control and
+proved with the mode-0600 HMAC freeze lease before the import begins.
 Starting without a checkpoint refuses a non-empty target. Completion rescans
 the live source and independently enumerates all registered PG tables; source
 snapshot, live source, and target must have identical document counts and

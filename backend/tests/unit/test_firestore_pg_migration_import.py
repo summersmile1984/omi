@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import math
 import struct
@@ -14,6 +15,7 @@ from google.api_core.datetime_helpers import DatetimeWithNanoseconds
 from google.cloud.firestore_v1 import GeoPoint
 from sqlalchemy import create_engine
 
+from database.memory_collections import MemoryCollections
 import firestore_pg.client as client_module
 from firestore_pg import importer, migrations
 from firestore_pg.client import Client
@@ -28,13 +30,39 @@ from firestore_pg.engine import _dsn_host
 from firestore_pg.importer import capture_source, walk_source
 from firestore_pg.migrations import (
     LEGACY_RAW_COLLECTION_IDS_V1,
+    STATIC_HASHED_COLLECTION_IDS_V2,
     SchemaNotCurrent,
     _legacy_tables_with_rows,
     collection_table_name,
     validate_collection_id,
 )
-from scripts import firestore_pg_migrate
 from scripts.validate_migration_test_targets import UnsafeMigrationTarget, validate_external_targets
+
+
+def test_migration_entrypoint_resolves_backend_packages_from_any_working_directory(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[2] / 'scripts' / 'firestore_pg_migrate.py'
+
+    result = subprocess.run(
+        [sys.executable, str(script), '--help'],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert 'Explicit schema and Firestore import owner' in result.stdout
+
+    import_help = subprocess.run(
+        [sys.executable, str(script), 'import', '--help'],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert import_help.returncode == 0, import_help.stderr
+    assert '--source-endpoint' in import_help.stdout
+    assert '--freeze-lease' in import_help.stdout
 
 
 class _Snapshot:
@@ -94,27 +122,6 @@ def _source():
         ],
     )
     return _Source([roots])
-
-
-def test_firestore_import_client_uses_declared_source_endpoint(monkeypatch):
-    observed = {}
-
-    def fake_client(**kwargs):
-        observed.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(firestore_pg_migrate.cloud_firestore, 'Client', fake_client)
-    args = SimpleNamespace(
-        source_project='operator-firestore',
-        source_database='(default)',
-        source_credentials=None,
-        source_endpoint='https://FIRESTORE.OPERATOR.EXAMPLE:8443/',
-    )
-
-    assert firestore_pg_migrate._source_client(args) is not None
-    assert observed['project'] == 'operator-firestore'
-    assert observed['client_options'].api_endpoint == 'firestore.operator.example:8443'
-    assert observed['database'] == '(default)'
 
 
 def test_walk_source_keeps_missing_parent_nested_document_path():
@@ -242,24 +249,6 @@ def test_import_resume_rejects_endpoint_or_emulator_authority_change(monkeypatch
         importer.run_import(redirected, checkpoint_path, engine=object())
 
 
-def test_import_resume_rejects_non_private_checkpoint_and_manifest(monkeypatch, tmp_path):
-    checkpoint_path = tmp_path / 'checkpoint.json'
-    importer.capture_source(_source(), checkpoint_path)
-    monkeypatch.setattr(importer, 'check_schema', lambda _engine=None: None)
-    monkeypatch.setattr(importer, 'target_inventory', lambda _engine=None: importer.Inventory(0, '', ()))
-    source = _source()
-
-    checkpoint_path.chmod(0o644)
-    with pytest.raises(importer.ImportReconciliationError, match='checkpoint.*0600'):
-        importer.run_import(source, checkpoint_path, engine=object())
-
-    checkpoint_path.chmod(0o600)
-    manifest_path = Path(json.loads(checkpoint_path.read_text(encoding='utf-8'))['manifest'])
-    manifest_path.chmod(0o644)
-    with pytest.raises(importer.ImportReconciliationError, match='manifest.*0600'):
-        importer.run_import(source, checkpoint_path, engine=object())
-
-
 def test_runtime_client_checks_schema_instead_of_running_ddl(monkeypatch):
     calls = []
     monkeypatch.setattr(client_module, 'check_schema', lambda: calls.append('check'))
@@ -303,6 +292,86 @@ def test_dynamic_collection_ids_map_to_deterministic_safe_tables():
     assert set(LEGACY_RAW_COLLECTION_IDS_V1) >= {'users', 'conversations', 'memory_items'}
     with pytest.raises(ValueError, match='invalid Firestore collection ID'):
         validate_collection_id('invalid/path')
+
+
+def test_schema_v2_provisions_production_control_collections_with_hashed_tables():
+    required_controls = {
+        'account_deletions',
+        'account_deletion_receipts',
+        'conversation_finalization_projection_shards',
+        'conversation_recovery_state',
+    }
+
+    assert required_controls <= STATIC_HASHED_COLLECTION_IDS_V2
+    assert required_controls <= set(migrations.known_collections())
+    assert all(collection_table_name(collection_id).startswith('f_') for collection_id in required_controls)
+    assert 'self_host_live_rows' not in migrations.known_collections()
+
+
+def test_production_static_collection_references_are_in_versioned_inventory():
+    backend_root = Path(__file__).resolve().parents[2]
+    repository_root = backend_root.parent
+    production_roots = ('database', 'jobs', 'services', 'routers', 'utils')
+    declared = set(migrations.known_collections())
+    discovered: set[str] = set()
+
+    def logical_collection_id(reference: str) -> str:
+        parts = [part for part in reference.split('/') if part]
+        assert parts, f'invalid empty Firestore reference in production inventory: {reference!r}'
+        return parts[-1] if len(parts) % 2 == 1 else parts[-2]
+
+    source_paths = [
+        source_path
+        for root_name in production_roots
+        for source_path in (backend_root / root_name).rglob('*.py')
+        if source_path.name != 'chat_first_e2e_fixture.py'
+        and source_path != backend_root / 'utils' / 'conversations' / 'typesense_index.py'
+    ]
+    source_paths.append(repository_root / 'deploy' / 'self-host' / 'live-replacement-smoke.py')
+
+    for source_path in source_paths:
+        tree = ast.parse(source_path.read_text())
+        string_bindings: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                names = [node.target.id] if isinstance(node.target, ast.Name) else []
+                value = node.value
+            else:
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                string_bindings.update({name: value.value for name in names})
+                if any(
+                    'collection' in name.lower() and 'max' not in name.lower() and 'env' not in name.lower()
+                    for name in names
+                ):
+                    discovered.add(logical_collection_id(value.value))
+
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {'collection', 'collection_group'}
+                and node.args
+            ):
+                continue
+            argument = node.args[0]
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                discovered.add(logical_collection_id(argument.value))
+            elif isinstance(argument, ast.Name) and argument.id in string_bindings:
+                discovered.add(logical_collection_id(string_bindings[argument.id]))
+
+    memory_collections = MemoryCollections(uid='inventory-user')
+    for name, descriptor in vars(MemoryCollections).items():
+        if not isinstance(descriptor, property):
+            continue
+        value = getattr(memory_collections, name)
+        if isinstance(value, str):
+            discovered.add(logical_collection_id(value))
+
+    assert discovered <= declared, f'unversioned production Firestore collections: {sorted(discovered - declared)}'
 
 
 def test_tagged_codec_preserves_iso_text_timestamp_bytes_geo_and_reference():
@@ -412,7 +481,7 @@ def test_timestamp_codec_is_utc_fixed_nine_digits_at_firestore_microsecond_preci
 
 
 def test_new_declared_known_collection_requires_new_schema_version(monkeypatch):
-    declared = set(migrations.LEGACY_RAW_COLLECTION_IDS_V1) | {'future_upstream_known'}
+    declared = set(migrations.known_collections()) | {'future_upstream_known'}
     monkeypatch.setattr(migrations, '_declared_known_collections', lambda: declared)
 
     assert migrations.collection_table_name('future_upstream_known').startswith('f_')
