@@ -29,14 +29,14 @@ logger = logging.getLogger(__name__)
 
 
 def push_notifications_enabled() -> bool:
-    """Return whether this deployment opted into the Firebase push adapter.
+    """Return whether this deployment opted into a push adapter.
 
     Neutral profiles default to disabled when the provider is omitted; this
     mirrors the startup boundary in ``main.py`` and prevents accidental vendor
     egress from low-level notification helpers.
     """
 
-    return selected_push_provider() == 'firebase'
+    return selected_push_provider() in {'firebase', 'webhook'}
 
 
 class PushCapabilityUnavailablePayload(TypedDict):
@@ -232,6 +232,24 @@ def _send_to_user(
     tokens: Optional[List[str]] = None,
 ) -> int:
     """Send a message to all user's devices using batch send. Returns count of successful sends."""
+    provider = selected_push_provider()
+    if provider == 'webhook':
+        # Keep the operator-owned bridge entirely separate from Firebase's
+        # message builders. The receiver owns the final mobile adapter and
+        # returns a typed receipt; no Firebase SDK call occurs on this path.
+        from utils.push_webhook import send_webhook_notifications
+
+        return send_webhook_notifications(
+            user_id,
+            tag,
+            title=getattr(notification, 'title', None) if notification is not None else None,
+            body=getattr(notification, 'body', None) if notification is not None else None,
+            data=data,
+            is_background=is_background,
+            priority=priority,
+            tokens=tokens if tokens is not None else notification_db.get_all_tokens(user_id),
+        )
+
     # Keep the provider boundary here as well as at the public notification
     # helpers. Several internal data-only paths (action-item sync, merge
     # completion, and reminder reconciliation) call this low-level helper
@@ -277,6 +295,24 @@ async def _send_to_user_async(
     tokens: Optional[List[str]] = None,
 ) -> int:
     """Async boundary for the synchronous token store and Firebase Admin SDK."""
+    provider = selected_push_provider()
+    if provider == 'webhook':
+        from utils.push_webhook import send_webhook_notifications_async
+
+        resolved_tokens = tokens
+        if resolved_tokens is None:
+            resolved_tokens = await run_blocking(db_executor, notification_db.get_all_tokens, user_id)
+        return await send_webhook_notifications_async(
+            user_id,
+            tag,
+            title=getattr(notification, 'title', None) if notification is not None else None,
+            body=getattr(notification, 'body', None) if notification is not None else None,
+            data=data,
+            is_background=is_background,
+            priority=priority,
+            tokens=resolved_tokens,
+        )
+
     # Mirror the synchronous boundary guard. This must run before the token
     # lookup or executor submission so disabled deployments never touch FCM.
     if not push_notifications_enabled():

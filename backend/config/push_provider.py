@@ -11,13 +11,10 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-# ``webhook`` is intentionally not a supported provider yet.  A generic
-# notification webhook cannot safely be treated as a drop-in replacement for
-# FCM: it needs an operator-owned device identity contract, authenticated
-# delivery receipts, and a reviewed retry/idempotency policy.  Keep the name
-# reserved so a typo cannot silently turn into an unsigned HTTP client.
-SUPPORTED_PUSH_PROVIDERS = frozenset({'firebase', 'disabled'})
-RESERVED_UNIMPLEMENTED_PUSH_PROVIDERS = frozenset({'webhook'})
+# ``webhook`` is an explicit operator-owned bridge.  Its endpoint, secret-file
+# and receipt contract are validated by ``utils.push_webhook`` before the first
+# request; it never falls through to Firebase.
+SUPPORTED_PUSH_PROVIDERS = frozenset({'firebase', 'disabled', 'webhook'})
 NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
 
 
@@ -42,10 +39,12 @@ def validate_push_provider(env: Mapping[str, str] | None = None) -> str:
 
     provider = selected_push_provider(env)
     if provider not in SUPPORTED_PUSH_PROVIDERS:
-        if provider in RESERVED_UNIMPLEMENTED_PUSH_PROVIDERS:
-            raise ValueError(
-                "unsupported PUSH_PROVIDER='webhook': operator-owned webhook delivery is reserved but not implemented; "
-                "use PUSH_PROVIDER=disabled"
-            )
         raise ValueError(f'unsupported PUSH_PROVIDER={provider!r}')
+    if provider == 'webhook':
+        # Import lazily so the neutral/managed Firebase startup path stays
+        # independent from the optional HTTP bridge.  This also ensures a
+        # malformed operator configuration fails before the server starts.
+        from utils.push_webhook import resolve_push_webhook_config
+
+        resolve_push_webhook_config(env)
     return provider

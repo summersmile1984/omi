@@ -65,7 +65,9 @@ REQUIRED_FIXED_BACKEND_ENV = {
     'TRANSLATION_PROVIDER': 'generic',
     'EMBEDDING_PROVIDER': 'generic',
     'FILE_CHAT_TRANSPORT': 'local_extraction',
-    'PUSH_PROVIDER': 'disabled',
+    # The checked-in profile remains disabled, while an operator may opt into
+    # the separately validated HTTPS webhook through the reviewed env file.
+    'PUSH_PROVIDER': '${PUSH_PROVIDER:-disabled}',
     'DESKTOP_VENDOR_PROXY_TRANSPORT': 'disabled',
     'EMBEDDING_CAPABILITY_TRANSPORT': 'direct',
     'PROACTIVE_TOOL_TRANSPORT': 'completion',
@@ -797,10 +799,23 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
         'TYPESENSE_PROTOCOL': 'http',
         'MEMORY_TYPESENSE_COLLECTION': 'canonical_memory_atoms',
         'CONVERSATION_TYPESENSE_COLLECTION': 'omi_conversations',
-        'PUSH_PROVIDER': 'disabled',
+        'PUSH_PROVIDER': '${PUSH_PROVIDER:-disabled}',
     }.items():
         if queue_worker_env.get(name) != expected:
             errors.append(f'queue-worker {name} must be literal {expected!r}')
+    push_webhook_bindings = {
+        'PUSH_WEBHOOK_URL': '${PUSH_WEBHOOK_URL-}',
+        'PUSH_WEBHOOK_SECRET_FILE': '${PUSH_WEBHOOK_SECRET_FILE-}',
+        'PUSH_WEBHOOK_TIMEOUT_SECONDS': '${PUSH_WEBHOOK_TIMEOUT_SECONDS:-5}',
+        'PUSH_WEBHOOK_MAX_ATTEMPTS': '${PUSH_WEBHOOK_MAX_ATTEMPTS:-3}',
+    }
+    for service in ('backend', 'queue-worker'):
+        service_env = _environment(services.get(service, ''))
+        for name, expected in push_webhook_bindings.items():
+            if service_env.get(name) != expected:
+                errors.append(f'{service} {name} must use exact optional binding {expected!r}')
+        if 'PUSH_WEBHOOK_SECRET=' in services.get(service, ''):
+            errors.append(f'{service} must not accept an inline PUSH_WEBHOOK_SECRET')
     for name in ('AUTH_JWT_ISSUER', 'AUTH_JWT_AUDIENCE'):
         if backend_env.get(name) != '${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}':
             errors.append(f'backend {name} must use the same PUBLIC_AUTH_URL origin')

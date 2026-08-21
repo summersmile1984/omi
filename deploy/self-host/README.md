@@ -84,27 +84,39 @@ payload. Background notification paths use the same gate before token lookup,
 including data-only reminders, important-conversation updates, and BYOK error
 alerts; they record the unavailable outcome and do not read tokens, initialize
 or call Firebase, or mark a notification as delivered. No generic webhook
-provider is implied by this profile. `PUSH_PROVIDER=webhook` is deliberately
-reserved and rejected during startup; `PUSH_WEBHOOK_URL` or
-`PUSH_WEBHOOK_SECRET` are inert configuration and are never read by the
-checked-in runtime. This is a fail-closed boundary, not a claim that a generic
-HTTP POST delivered a mobile push.
+provider is implied by this profile. An operator may opt into the separate
+`PUSH_PROVIDER=webhook` bridge in an unmodified deployment overlay. It
+requires an HTTPS `PUSH_WEBHOOK_URL`, a regular non-symlink mode-0600
+`PUSH_WEBHOOK_SECRET_FILE` containing at least 32 printable bytes, and the
+`omi.push.webhook.v1` request/`omi.push.receipt.v1` response contract. The
+receiver owns the opaque device-token mapping and final mobile adapter; a
+2xx response without a matching receipt is not success. Requests are
+DNS-pinned, HMAC signed, bounded by the shared webhook semaphore/circuit
+breaker, and retried only for transport/429/5xx failures with a stable
+idempotency key. No Firebase credential or vendor endpoint is consulted on
+this path. The checked-in profile remains disabled until the operator has
+deployed and exercised that receiver.
 
-An operator-owned webhook may be added only as a separate reviewed provider
-contract. Its admission checklist is executable before implementation:
+An operator-owned webhook may be enabled only after the receiver has adopted
+the following reviewed provider contract:
 
-- an explicit credential-free endpoint is required; public targets use HTTPS,
-  while private/loopback targets may use HTTP only with an explicit deployment
-  opt-in and DNS/IP pinning (no metadata, CGNAT, or arbitrary private target);
-- a secret-manager supplied signing secret is required, used for an HMAC
-  request signature, and must never appear in URLs, payloads, exceptions, or
-  logs;
+- public targets use HTTPS (private/loopback, metadata, CGNAT and arbitrary
+  private targets are rejected by the runtime); the URL has no userinfo,
+  query, or fragment;
+- a secret-manager supplied file is regular, non-symlink, mode 0600, and is
+  used for `HMAC-SHA256(timestamp + "." + body)`; it never appears in URLs,
+  payloads, exceptions, or logs;
 - requests use the shared bounded webhook client/semaphore and circuit breaker,
   a short fixed timeout, and retries only for transport/429/5xx failures with
   an idempotency key; permanent failures must not be reported as delivered;
-- the receiver contract maps operator user/device identities and returns a
-  verifiable delivery receipt. Without that contract the stable typed
-  `deployment_capability_unavailable` response remains the only valid outcome.
+- the receiver accepts `schema=omi.push.webhook.v1`, `event_id`, `user_id`,
+  opaque `device.token`, notification/data fields, and idempotency headers;
+  it returns JSON `schema=omi.push.receipt.v1`, the same `event_id`, a
+  non-empty `receipt_id`, and `status=accepted|delivered`;
+- the receiver maps user/device identities and owns final mobile delivery;
+  `accepted` means durably admitted, not that a handset displayed it. Until
+  this receiver contract is deployed and exercised, the stable typed
+  `deployment_capability_unavailable` response remains the valid outcome.
 
 `GET /v1/model-capabilities/realtime` and `POST /v2/realtime/session` report the
 same relay selection. The client then connects to
@@ -754,9 +766,10 @@ SELF_HOST_ACCEPTANCE_EVIDENCE=/secure/change-record/zero-vendor-production.json 
   deploy/self-host/zero-vendor-acceptance.sh --external-cutover-live
 ```
 
-External mode rejects reserved/local public origins, uses system certificate
-trust, validates the supplied policy artifact against the checked-in JSON
-contract, hashes its original bytes into the evidence, and requires
+External mode rejects reserved/local public origins, requires every public
+origin to be HTTPS, uses system certificate trust, validates the supplied policy
+artifact against the checked-in JSON contract, hashes its original bytes into
+the evidence, and requires
 socket attempts to OpenAI, Google, Anthropic, Omi, and an arbitrary public-IP
 sentinel to fail from backend, queue-worker, and auth-server. The JSON calls
 these `sentinel_targets_denied` and explicitly limits the claim to those

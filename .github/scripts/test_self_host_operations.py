@@ -100,6 +100,7 @@ EFFECTIVE_PROVIDER_CONFIGURATION = {
     'firmware_release_asset_origin': 'https://objects.example.org',
     'desktop_update_legacy_fallback': 'disabled',
     'push_provider': 'disabled',
+    'push_endpoint_origin': '',
     'push_model': 'disabled',
     'push_transport': 'disabled',
     'memory_keyword_provider': 'typesense',
@@ -210,6 +211,29 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertNotIn('operator-realtime-secret', serialized)
         self.assertNotIn('operator-typesense-secret', serialized)
         self.assertNotIn('api_key', serialized.lower())
+
+    def test_runtime_evidence_records_operator_webhook_without_secret_material(self) -> None:
+        webhook_environment = {
+            **EFFECTIVE_BACKEND_ENVIRONMENT,
+            'PUSH_PROVIDER': 'webhook',
+            'PUSH_WEBHOOK_URL': 'https://push.example.org/v1/omi/push',
+            'PUSH_WEBHOOK_SECRET_FILE': '/run/secrets/omi-push-webhook',
+        }
+        configuration = RUNTIME_EVIDENCE.effective_provider_configuration(
+            {'services': {'backend': {'environment': webhook_environment}}}
+        )
+        self.assertEqual(configuration['push_provider'], 'webhook')
+        self.assertEqual(configuration['push_endpoint_origin'], 'https://push.example.org')
+        self.assertEqual(configuration['push_model'], 'operator_webhook')
+        self.assertEqual(configuration['push_transport'], 'https_json_hmac')
+        RUNTIME_EVIDENCE._validate_provider_configuration(configuration)
+        self.assertNotIn('secret', json.dumps(configuration).lower())
+
+        webhook_environment['PUSH_WEBHOOK_URL'] = 'http://push.example.org/v1/omi/push'
+        with self.assertRaisesRegex(ValueError, 'credential-free endpoint'):
+            RUNTIME_EVIDENCE.effective_provider_configuration(
+                {'services': {'backend': {'environment': webhook_environment}}}
+            )
 
     def test_clean_compose_wrapper_removes_deployment_overrides_and_preserves_only_gate_controls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -500,9 +524,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             RUNTIME_EVIDENCE.validate_runtime_environment({'ANTHROPIC_API_KEY': 'redacted'})
 
         with self.assertRaisesRegex(RuntimeError, 'official endpoint host'):
-            RUNTIME_EVIDENCE.validate_runtime_environment(
-                {'GENERIC_OPENAI_BASE_URL': 'https://api.openai.com/v1'}
-            )
+            RUNTIME_EVIDENCE.validate_runtime_environment({'GENERIC_OPENAI_BASE_URL': 'https://api.openai.com/v1'})
 
         # Runtime evidence diagnostics must identify only the binding class,
         # not leak an operator credential from the container environment.

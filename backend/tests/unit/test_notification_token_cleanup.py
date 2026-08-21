@@ -163,6 +163,24 @@ def test_neutral_profile_with_omitted_push_provider_never_reads_tokens_or_calls_
         messaging.send_each.assert_not_called()
 
 
+def test_webhook_push_provider_uses_operator_bridge_without_firebase(monkeypatch) -> None:
+    """Webhook delivery must not build or submit a Firebase message."""
+    from utils import push_webhook
+
+    monkeypatch.setenv('PUSH_PROVIDER', 'webhook')
+    with _loaded_notifications() as (notifications, notification_db, messaging):
+        monkeypatch.setattr(notifications, 'selected_push_provider', lambda: 'webhook')
+        monkeypatch.setattr(
+            push_webhook,
+            'send_webhook_notifications',
+            lambda *args, **kwargs: 1,
+        )
+        notifications.send_notification('user-1', 'omi', 'hello')
+
+        notification_db.get_all_tokens.assert_called_once_with('user-1')
+        messaging.send_each.assert_not_called()
+
+
 def test_disabled_push_provider_blocks_direct_data_only_sender(monkeypatch) -> None:
     """Internal data-only notification paths must share the provider boundary."""
     monkeypatch.setenv('PUSH_PROVIDER', 'disabled')

@@ -283,6 +283,7 @@ PROVIDER_CONFIGURATION_KEYS = frozenset(
         'firmware_release_asset_origin',
         'desktop_update_legacy_fallback',
         'push_provider',
+        'push_endpoint_origin',
         'push_model',
         'push_transport',
         'memory_keyword_provider',
@@ -325,7 +326,16 @@ def _validate_provider_configuration(configuration: dict[str, Any]) -> None:
     if any(str(key).lower().endswith(('_key', '_secret', '_token', '_password')) for key in configuration):
         raise ValueError('effective provider configuration must not contain credentials')
     for key, value in configuration.items():
-        if key in {'tts_endpoint_origin', 'app_icon_endpoint_origin', 'translation_endpoint_origin'} and value == '':
+        if (
+            key
+            in {
+                'tts_endpoint_origin',
+                'app_icon_endpoint_origin',
+                'translation_endpoint_origin',
+                'push_endpoint_origin',
+            }
+            and value == ''
+        ):
             continue
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f'effective provider configuration is missing {key}')
@@ -431,10 +441,18 @@ def _validate_provider_configuration(configuration: dict[str, Any]) -> None:
         raise ValueError('self-host Typesense must use HTTP transport')
     if not HOSTNAME.fullmatch(configuration['typesense_host']):
         raise ValueError('typesense_host must be a host name without credentials or a URL')
-    if configuration['push_provider'] != 'disabled':
-        raise ValueError('self-host push provider must be disabled')
-    if configuration['push_model'] != 'disabled' or configuration['push_transport'] != 'disabled':
-        raise ValueError('self-host push must be disabled')
+    push_provider = configuration['push_provider']
+    if push_provider == 'disabled':
+        if configuration['push_endpoint_origin']:
+            raise ValueError('disabled self-host push must not include an endpoint origin')
+        if configuration['push_model'] != 'disabled' or configuration['push_transport'] != 'disabled':
+            raise ValueError('disabled self-host push must have disabled model and transport')
+    elif push_provider == 'webhook':
+        if configuration['push_model'] != 'operator_webhook' or configuration['push_transport'] != 'https_json_hmac':
+            raise ValueError('operator webhook push must use the HTTPS HMAC transport identity')
+        _validate_origin_value(configuration['push_endpoint_origin'], 'push_endpoint_origin', schemes={'https'})
+    else:
+        raise ValueError('self-host selected an unsupported push provider')
 
 
 def validate_runtime_snapshot(
@@ -520,6 +538,10 @@ def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any
     )
     app_icon_transport = _safe_identifier(environment, 'APP_ICON_GENERATION_TRANSPORT')
     translation_provider = _safe_identifier(environment, 'TRANSLATION_PROVIDER')
+    push_provider = _safe_identifier(environment, 'PUSH_PROVIDER')
+    push_endpoint_origin = (
+        _safe_endpoint_origin(environment, 'PUSH_WEBHOOK_URL', schemes={'https'}) if push_provider == 'webhook' else ''
+    )
     return {
         'deployment_profile': _safe_identifier(environment, 'OMI_DEPLOYMENT_PROFILE'),
         'stt_prerecorded_model': _required_text(environment, 'STT_PRERECORDED_MODEL'),
@@ -586,9 +608,10 @@ def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any
             environment, 'FIRMWARE_RELEASE_ASSET_ORIGIN', schemes={'https'}
         ),
         'desktop_update_legacy_fallback': _safe_identifier(environment, 'DESKTOP_UPDATE_LEGACY_FALLBACK'),
-        'push_provider': _safe_identifier(environment, 'PUSH_PROVIDER'),
-        'push_model': 'disabled',
-        'push_transport': 'disabled',
+        'push_provider': push_provider,
+        'push_endpoint_origin': push_endpoint_origin,
+        'push_model': 'operator_webhook' if push_provider == 'webhook' else 'disabled',
+        'push_transport': 'https_json_hmac' if push_provider == 'webhook' else 'disabled',
         'memory_keyword_provider': _safe_identifier(environment, 'MEMORY_KEYWORD_INDEX_PROVIDER'),
         'conversation_keyword_provider': _safe_identifier(environment, 'CONVERSATION_KEYWORD_INDEX_PROVIDER'),
         'typesense_transport': _safe_identifier(environment, 'TYPESENSE_PROTOCOL'),
