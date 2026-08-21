@@ -493,6 +493,21 @@ def _newest_release_by_channel(entries: List[Dict]) -> Dict[str, Dict]:
     return newest
 
 
+def _legacy_desktop_updates_disabled() -> bool:
+    """Keep the managed release scan opt-in for neutral deployments.
+
+    The self-host Compose profile binds this setting explicitly, but the
+    request boundary also has to be safe for direct launches and stale
+    containers. Managed profiles retain the historical enabled default.
+    """
+
+    configured = os.getenv("DESKTOP_UPDATE_LEGACY_FALLBACK", "").strip().lower()
+    if configured:
+        return configured == "disabled"
+    profile = os.getenv("OMI_DEPLOYMENT_PROFILE", "").strip().lower()
+    return profile in {"neutral", "self_hosted", "self-hosted"}
+
+
 def _record_pointer_mismatches(platform: str, pointer_entries: List[Dict], legacy_entries: List[Dict]) -> None:
     legacy_by_channel = _newest_release_by_channel(legacy_entries)
     for pointer in pointer_entries:
@@ -527,7 +542,7 @@ async def _get_live_desktop_releases(platform: str) -> List[Dict]:
     falls through to beta. Set DESKTOP_UPDATE_POINTERS_MODE=legacy as a kill
     switch while the dual-path rollout is being observed.
     """
-    legacy_updates_disabled = os.getenv("DESKTOP_UPDATE_LEGACY_FALLBACK", "enabled").lower() == "disabled"
+    legacy_updates_disabled = _legacy_desktop_updates_disabled()
     if os.getenv("DESKTOP_UPDATE_POINTERS_MODE", "primary").lower() == "legacy":
         if legacy_updates_disabled:
             return []

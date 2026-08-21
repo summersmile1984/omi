@@ -461,6 +461,22 @@ def test_legacy_download_fallback_selects_only_lowercase_canonical_omi_dmg():
 
 
 class TestResolveDesktopReleases:
+    def test_neutral_profile_defaults_legacy_fallback_to_disabled(self, monkeypatch):
+        from routers.updates import _legacy_desktop_updates_disabled
+
+        monkeypatch.delenv("DESKTOP_UPDATE_LEGACY_FALLBACK", raising=False)
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+
+        assert _legacy_desktop_updates_disabled() is True
+
+    def test_managed_profile_keeps_legacy_fallback_enabled_by_default(self, monkeypatch):
+        from routers.updates import _legacy_desktop_updates_disabled
+
+        monkeypatch.delenv("DESKTOP_UPDATE_LEGACY_FALLBACK", raising=False)
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "omi_cloud")
+
+        assert _legacy_desktop_updates_disabled() is False
+
     @pytest.mark.asyncio
     async def test_self_host_disables_legacy_vendor_update_fallback(self):
         from routers.updates import _get_live_desktop_releases

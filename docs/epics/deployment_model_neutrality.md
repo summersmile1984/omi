@@ -187,6 +187,11 @@ deployment:
   result before the Firebase SDK is initialized; managed profiles retain
   their Firebase default. A real receiver/mobile delivery drill remains an
   external evidence requirement.
+- Firmware and desktop update authorities are also profile-aware at the
+  request boundary: neutral/self-hosted direct launches default to typed
+  unavailability rather than GitHub/Omi release scans when their explicit
+  manifest/pointer bindings are omitted. Managed profiles retain their
+  historical release defaults.
 - macOS FluidAudio speech-model loading is managed-only: self-hosted local STT
   and optional PTT language identification fail through their existing
   backend/auto-detect seams instead of implicitly downloading missing weights.

@@ -155,3 +155,21 @@ async def test_disabled_firmware_transport_is_a_typed_route_response(monkeypatch
         'reason': 'firmware_updates_disabled',
         'retryable': False,
     }
+
+
+def test_neutral_profile_defaults_firmware_transport_to_disabled(monkeypatch):
+    from utils.firmware_releases import firmware_release_transport
+
+    monkeypatch.delenv('FIRMWARE_RELEASE_TRANSPORT', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+
+    assert firmware_release_transport() == 'disabled'
+
+
+def test_managed_profile_keeps_github_firmware_default(monkeypatch):
+    from utils.firmware_releases import firmware_release_transport
+
+    monkeypatch.delenv('FIRMWARE_RELEASE_TRANSPORT', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'omi_cloud')
+
+    assert firmware_release_transport() == 'github'

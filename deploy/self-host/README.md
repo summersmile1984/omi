@@ -191,7 +191,13 @@ Desktop update feeds are pointer-only in this profile. The fixed
 `DESKTOP_UPDATE_LEGACY_FALLBACK=disabled` binding prevents a missing operator
 pointer from triggering the legacy vendor release scan; until the operator
 publishes a valid pointer/manifest for a channel, that channel remains
-unavailable rather than serving a managed release.
+unavailable rather than serving a managed release. The backend also defaults
+this fallback to disabled whenever `OMI_DEPLOYMENT_PROFILE` is neutral or
+self-hosted, so a direct launch or stale container cannot turn an omitted
+binding into a GitHub release request; managed profiles retain their
+historical enabled default. Firmware follows the same boundary: neutral
+profiles default to typed `firmware_updates` unavailability until an explicit
+operator manifest transport is configured.
 
 The checked-in example sets `BACKEND_PLATFORM=linux/amd64` because the pinned
 runtime lock includes `onnxruntime==1.19.0`, which has no Linux ARM64 wheel.

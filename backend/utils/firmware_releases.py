@@ -42,7 +42,16 @@ class FirmwareReleaseUnavailable(RuntimeError):
 
 
 def firmware_release_transport() -> str:
-    transport = os.getenv('FIRMWARE_RELEASE_TRANSPORT', 'github').strip().lower()
+    configured = os.getenv('FIRMWARE_RELEASE_TRANSPORT', '').strip().lower()
+    if configured:
+        transport = configured
+    else:
+        # Managed deployments preserve the historical GitHub catalog. A
+        # neutral/self-hosted process must not reach that catalog merely
+        # because it was launched outside the reviewed Compose overlay (or
+        # inherited a stale environment without the explicit binding).
+        profile = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower()
+        transport = 'disabled' if profile in {'neutral', 'self_hosted', 'self-hosted'} else 'github'
     if transport not in {'github', 'manifest', 'disabled'}:
         raise FirmwareReleaseUnavailable('unsupported_firmware_release_transport', retryable=False)
     return transport
