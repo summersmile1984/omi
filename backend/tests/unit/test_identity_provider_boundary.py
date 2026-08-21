@@ -5,6 +5,14 @@ import pytest
 from utils import auth_shim, identity
 
 
+def test_neutral_profile_requires_explicit_identity_provider(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('AUTH_PROVIDER', raising=False)
+
+    with pytest.raises(identity.IdentityProviderUnavailable, match='AUTH_PROVIDER must be explicitly configured'):
+        identity.identity_provider()
+
+
 def test_better_auth_invalid_token_is_not_reported_as_provider_outage(monkeypatch):
     monkeypatch.setenv('AUTH_PROVIDER', 'better_auth')
     monkeypatch.setattr(

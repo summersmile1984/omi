@@ -73,7 +73,15 @@ def _is_explicit_private_http_origin(value: str) -> bool:
 
 
 def identity_provider() -> str:
-    provider = os.getenv('AUTH_PROVIDER', 'firebase').strip().lower().replace('-', '_')
+    configured = os.getenv('AUTH_PROVIDER', '').strip()
+    if not configured:
+        profile = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower()
+        if profile in {'neutral', 'self_hosted', 'self-hosted'}:
+            raise IdentityProviderUnavailable(
+                'AUTH_PROVIDER must be explicitly configured for neutral/self-hosted deployments'
+            )
+        configured = 'firebase'
+    provider = configured.lower().replace('-', '_')
     if provider not in {'firebase', 'better_auth'}:
         raise IdentityProviderUnavailable(f'unsupported AUTH_PROVIDER={provider!r}')
     return provider
