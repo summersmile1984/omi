@@ -94,6 +94,41 @@ abstract class Env {
     return (configuredProfile ?? profile) != AppEnvironmentProfile.selfHosted;
   }
 
+  /// Validate a firmware asset URL returned by the deployment's firmware
+  /// authority before the client starts downloading bytes.
+  ///
+  /// Managed profiles retain their existing release authorities. A self-hosted
+  /// build may only follow an explicit HTTPS operator URL; an API response
+  /// must not be able to redirect it to Omi/GitHub release infrastructure.
+  static String validateFirmwareDownloadUrl(
+    String raw, {
+    AppEnvironmentProfile? configuredProfile,
+  }) {
+    final value = raw.trim();
+    final parsed = Uri.tryParse(value);
+    if (parsed == null ||
+        parsed.host.isEmpty ||
+        (parsed.scheme != 'http' && parsed.scheme != 'https') ||
+        parsed.userInfo.isNotEmpty ||
+        parsed.fragment.isNotEmpty ||
+        parsed.path.isEmpty) {
+      throw StateError('Firmware download URL must be an absolute HTTP(S) URL without credentials or fragments.');
+    }
+
+    final effectiveProfile = configuredProfile ?? profile;
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      if (parsed.scheme != 'https') {
+        throw StateError('Self-hosted firmware downloads must use HTTPS.');
+      }
+      final host = parsed.host.toLowerCase().replaceFirst(RegExp(r'\.+$'), '');
+      if (_isOmiOperatedHost(host) || _isManagedReleaseHost(host)) {
+        throw StateError('Self-hosted firmware downloads cannot use a managed release origin.');
+      }
+    }
+
+    return value;
+  }
+
   /// OAuth remains on the production identity plane even when mobile Beta
   /// uses the development serving API for product traffic.
   static String get authApiBaseUrl => authApiBaseUrlForProfile(profile, servingApiBaseUrl: apiBaseUrl);
@@ -373,6 +408,14 @@ abstract class Env {
         normalized.endsWith('.omi.me') ||
         normalized == 'omiapi.com' ||
         normalized.endsWith('.omiapi.com');
+  }
+
+  static bool _isManagedReleaseHost(String host) {
+    final normalized = host.toLowerCase().replaceFirst(RegExp(r'\.+$'), '');
+    return normalized == 'github.com' ||
+        normalized.endsWith('.github.com') ||
+        normalized == 'githubusercontent.com' ||
+        normalized.endsWith('.githubusercontent.com');
   }
 
   static String? get googleMapsApiKey => profile.managedClientValue(_instance.googleMapsApiKey);

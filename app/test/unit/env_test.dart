@@ -123,6 +123,38 @@ void main() {
       );
     });
 
+    test('self-hosted firmware downloads require an operator HTTPS origin', () {
+      expect(
+        Env.validateFirmwareDownloadUrl(
+          'https://objects.example.com/firmware/Omi_CV1.zip?sig=operator',
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+        ),
+        'https://objects.example.com/firmware/Omi_CV1.zip?sig=operator',
+      );
+      for (final invalid in [
+        'http://objects.example.com/firmware/Omi_CV1.zip',
+        'https://api.omi.me/releases/Omi_CV1.zip',
+        'https://github.com/BasedHardware/omi/releases/download/fw.zip',
+        'https://objects.githubusercontent.com/omi/fw.zip',
+        'https://user:secret@objects.example.com/firmware/Omi_CV1.zip',
+        'https://objects.example.com/firmware/Omi_CV1.zip#fragment',
+        'not-a-url',
+      ]) {
+        expect(
+          () => Env.validateFirmwareDownloadUrl(invalid, configuredProfile: AppEnvironmentProfile.selfHosted),
+          throwsStateError,
+          reason: invalid,
+        );
+      }
+      expect(
+        Env.validateFirmwareDownloadUrl(
+          'https://github.com/BasedHardware/omi/releases/download/fw.zip',
+          configuredProfile: AppEnvironmentProfile.production,
+        ),
+        'https://github.com/BasedHardware/omi/releases/download/fw.zip',
+      );
+    });
+
     test('local profile rejects a production Firebase project', () {
       expect(
         () =>
