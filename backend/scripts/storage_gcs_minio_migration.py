@@ -17,6 +17,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
@@ -309,6 +310,13 @@ def _validate_bucket(value: Any, label: str) -> str:
     return value
 
 
+def _require_private_file(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise StorageMigrationError(f'{label} is missing or is not a regular file: {path}')
+    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise StorageMigrationError(f'{label} must be mode 0600 or stricter: {path}')
+
+
 def _validate_prefix(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise StorageMigrationError(f'{label} must be a string')
@@ -560,6 +568,7 @@ def _record_from_json(value: Any, plan: MigrationPlan) -> ObjectRecord:
 
 
 def load_manifest(path: Path, plan: MigrationPlan) -> Manifest:
+    _require_private_file(path, 'inventory manifest')
     lines = path.read_bytes().splitlines()
     if not lines:
         raise StorageMigrationError('inventory manifest is empty')
@@ -697,6 +706,7 @@ def _read_checkpoint(
     target: TargetStore,
     existing_policy: str,
 ) -> dict[str, Any]:
+    _require_private_file(path, 'migration checkpoint')
     try:
         checkpoint = _strict_json_loads(path.read_bytes())
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
