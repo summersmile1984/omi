@@ -14,6 +14,13 @@ import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_FINGERPRINT_KEYS = (
+    'runtime_fingerprint',
+    'config_fingerprint',
+    'migration_fingerprint',
+)
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -67,16 +74,22 @@ def _require_sha256(value: object, label: str) -> str:
 
 
 def _require_private_file(path: Path, label: str) -> None:
-    if not path.is_file():
+    if path.is_symlink() or not path.is_file():
         raise RuntimeError(f'{label} is missing: {path.name}')
     if stat.S_IMODE(path.stat().st_mode) != 0o600:
         raise RuntimeError(f'{label} must be mode 0600: {path.name}')
 
 
 def _safe_artifact_name(name: object) -> str:
-    if not isinstance(name, str) or Path(name).name != name:
+    if not isinstance(name, str) or not name or Path(name).name != name:
         raise RuntimeError(f'unsafe manifest artifact name: {name}')
     return name
+
+
+def _require_git_sha(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError('git_sha must be a non-empty source revision')
+    return value
 
 
 def write_manifest(
@@ -87,6 +100,7 @@ def write_manifest(
     config_fingerprint: str,
     migration_fingerprint: str,
 ) -> None:
+    _require_git_sha(git_sha)
     fingerprints = {
         'runtime_fingerprint': _require_sha256(runtime_fingerprint, 'runtime fingerprint'),
         'config_fingerprint': _require_sha256(config_fingerprint, 'config fingerprint'),
@@ -94,14 +108,18 @@ def write_manifest(
     }
     entries = {}
     for name in files:
-        _safe_artifact_name(name)
+        name = _safe_artifact_name(name)
+        if name in entries:
+            raise RuntimeError(f'duplicate backup artifact: {name}')
         path = directory / name
         if not path.is_file():
             raise RuntimeError(f'backup artifact missing: {name}')
+        if path.is_symlink():
+            raise RuntimeError(f'backup artifact must not be a symlink: {name}')
         os.chmod(path, 0o600)
         entries[name] = {'sha256': _sha256(path), 'bytes': path.stat().st_size}
     payload = {
-        'schema_version': 2,
+        'schema_version': MANIFEST_SCHEMA_VERSION,
         'created_at': datetime.now(timezone.utc).isoformat(),
         'git_sha': git_sha,
         **fingerprints,
@@ -125,12 +143,19 @@ def verify_manifest(
         payload = json.loads(manifest_path.read_text(encoding='utf-8'))
     except json.JSONDecodeError as error:
         raise RuntimeError('invalid backup manifest') from error
-    if payload.get('schema_version') != 2 or not isinstance(payload.get('artifacts'), dict):
+    if (
+        not isinstance(payload, dict)
+        or payload.get('schema_version') != MANIFEST_SCHEMA_VERSION
+        or not isinstance(payload.get('artifacts'), dict)
+    ):
         raise RuntimeError('unsupported backup manifest')
-    for key in ('runtime_fingerprint', 'config_fingerprint', 'migration_fingerprint'):
+    if not isinstance(payload.get('created_at'), str) or not payload['created_at']:
+        raise RuntimeError('backup manifest created_at is missing')
+    _require_git_sha(payload.get('git_sha'))
+    for key in MANIFEST_FINGERPRINT_KEYS:
         _require_sha256(payload.get(key), key)
     if expected_fingerprints is not None:
-        if set(expected_fingerprints) != {'runtime_fingerprint', 'config_fingerprint', 'migration_fingerprint'}:
+        if set(expected_fingerprints) != set(MANIFEST_FINGERPRINT_KEYS):
             raise RuntimeError('expected backup fingerprints are incomplete')
         for key, expected in expected_fingerprints.items():
             if _require_sha256(expected, f'expected {key}') != payload[key]:

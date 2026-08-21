@@ -1290,6 +1290,104 @@ class SelfHostOperationsTest(unittest.TestCase):
             self.assertEqual(set(payload['artifacts']), {'postgres.dump'})
             self.assertNotIn('secret', json.dumps(payload).lower())
 
+    def test_schema_v2_manifest_cli_binds_all_fingerprints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / 'postgres.dump'
+            artifact.write_bytes(b'dump')
+            fingerprints = {
+                'runtime_fingerprint': 'a' * 64,
+                'config_fingerprint': 'b' * 64,
+                'migration_fingerprint': 'c' * 64,
+            }
+            manifest = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    'manifest',
+                    str(root),
+                    '--git-sha',
+                    'cafebabe',
+                    '--runtime-fingerprint',
+                    fingerprints['runtime_fingerprint'],
+                    '--config-fingerprint',
+                    fingerprints['config_fingerprint'],
+                    '--migration-fingerprint',
+                    fingerprints['migration_fingerprint'],
+                    artifact.name,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(manifest.returncode, 0, manifest.stderr)
+
+            verified = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    'verify',
+                    str(root),
+                    '--expected-files',
+                    artifact.name,
+                    '--expected-runtime-fingerprint',
+                    fingerprints['runtime_fingerprint'],
+                    '--expected-config-fingerprint',
+                    fingerprints['config_fingerprint'],
+                    '--expected-migration-fingerprint',
+                    fingerprints['migration_fingerprint'],
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+            payload = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+            payload['migration_fingerprint'] = 'd' * 64
+            (root / 'manifest.json').write_text(json.dumps(payload), encoding='utf-8')
+            (root / 'manifest.json').chmod(0o600)
+            rejected = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    'verify',
+                    str(root),
+                    '--expected-files',
+                    artifact.name,
+                    '--expected-runtime-fingerprint',
+                    fingerprints['runtime_fingerprint'],
+                    '--expected-config-fingerprint',
+                    fingerprints['config_fingerprint'],
+                    '--expected-migration-fingerprint',
+                    fingerprints['migration_fingerprint'],
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn('backup migration_fingerprint does not match', rejected.stderr)
+
+    def test_manifest_rejects_structurally_incomplete_v2_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / 'manifest.json'
+            manifest_path.write_text('[]', encoding='utf-8')
+            manifest_path.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, 'unsupported backup manifest'):
+                SNAPSHOT.verify_manifest(root)
+
+            artifact = root / 'postgres.dump'
+            artifact.write_bytes(b'dump')
+            SNAPSHOT.write_manifest(root, 'cafebabe', [artifact.name], 'a' * 64, 'b' * 64, 'c' * 64)
+            payload = json.loads(manifest_path.read_text(encoding='utf-8'))
+            del payload['git_sha']
+            manifest_path.write_text(json.dumps(payload), encoding='utf-8')
+            manifest_path.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, 'git_sha'):
+                SNAPSHOT.verify_manifest(root)
+
     def test_manifest_verification_fails_closed_for_missing_or_tampered_fingerprints_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
