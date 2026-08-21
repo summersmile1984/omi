@@ -176,7 +176,7 @@ Runtime-selected providers must keep model-token parsing and required environmen
 
 HTTP endpoints: `uid: str = Depends(get_current_user_uid)` from `utils.other.endpoints`.
 
-`AUTH_PROVIDER=better_auth` is the self-hosted path. JWT verification accepts only asymmetric ES256/RS256/EdDSA keys from `AUTH_JWKS_URL`; the optional auth-server `/auth-issue` development bridge must stay disabled unless protected by `AUTH_DEV_ISSUER_SECRET`.
+`AUTH_PROVIDER=better_auth` is self-hosted; neutral/self-hosted launches must set it explicitly (omission fails closed, not Firebase). JWT verification accepts only asymmetric ES256/RS256/EdDSA keys from `AUTH_JWKS_URL`; auth-server `/auth-issue` stays disabled unless protected by `AUTH_DEV_ISSUER_SECRET`.
 
 WebSocket endpoints: use `WebSocketException(code=1008)`, **not** `HTTPException` — HTTPException exits ASGI without handshake, causing LB 5xx.
 
