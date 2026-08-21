@@ -1,7 +1,7 @@
 import ContextCore
 import Foundation
 
-/// Everything that can go wrong between here and `api.omi.me`.
+/// Everything that can go wrong between here and the configured Omi backend.
 ///
 /// Five cases, because callers only ever act on five things: send the user to sign in, tell them
 /// Airgap Mode is why nothing happened, show what the server said, report that we cannot read the
@@ -74,34 +74,11 @@ final class OmiAPI: @unchecked Sendable {
 
     // MARK: - Base URL
 
-    /// `https://api.omi.me/` — override with `OMI_PYTHON_API_URL` for local DEBUG builds only.
-    ///
-    /// Resolved once at first use: the value is process-wide configuration, and re-reading the
-    /// environment per request would let a mid-run `setenv` split one session's traffic across two
-    /// backends. The override is ignored in release builds so a wrapper or launcher cannot redirect
-    /// production traffic.
+    /// The deployment profile is the sole backend authority. Cloud builds carry the managed
+    /// default; self-hosted builds must carry an explicit operator origin. Do not add a second
+    /// environment-driven fallback here: an invalid or absent override must never silently route a
+    /// self-hosted process back to the managed service.
     static var baseURL: URL { ContextDeploymentProfile.current.backendBaseURL }
-
-    static let productionBaseURL = URL(string: "https://api.omi.me/")!
-
-    /// Always ends in `/`, so relative paths concatenate onto it without a special case.
-    static func resolveBaseURL(_ override: String?) -> URL {
-        guard let override else { return productionBaseURL }
-        let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return productionBaseURL }
-        let terminated = trimmed.hasSuffix("/") ? trimmed : trimmed + "/"
-        guard
-            let url = URL(string: terminated),
-            let scheme = url.scheme?.lowercased(),
-            scheme == "http" || scheme == "https",
-            url.host != nil
-        else {
-            // A typo in a local override must not silently redirect production traffic to nowhere.
-            ContextLog.error("Ignoring unusable OMI_PYTHON_API_URL; using api.omi.me", logCategory)
-            return productionBaseURL
-        }
-        return url
-    }
 
     // MARK: - Verbs
 
