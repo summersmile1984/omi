@@ -7,7 +7,7 @@ from uuid import UUID
 
 import typesense
 
-from utils.share_links import accepted_share_hosts, share_base_url
+from utils.share_links import ShareOriginUnavailableError, accepted_share_hosts, share_base_url
 from utils.conversations.typesense_index import (
     ConversationIndexUnavailableError,
     conversation_keyword_index_provider,
@@ -46,10 +46,10 @@ def _canonical_conversation_uuid(value: str) -> Optional[str]:
 
 
 def parse_exact_conversation_reference(query: str) -> Optional[str]:
-    """Extract a canonical conversation UUID from an ID or Omi share URL.
+    """Extract a canonical conversation UUID from an ID or configured share URL.
 
-    Exact references intentionally accept only the two values Omi presents to users: a UUID or an
-    HTTPS URL on the configured share host (default ``h.omi.me``) with the exact
+    Exact references intentionally accept only a UUID or an HTTPS URL on the
+    configured share host (managed default ``h.omi.me``) with the exact
     ``/conversations/<uuid>`` path. Anything else remains a natural-language query so partial IDs
     and lookalike URLs cannot turn search into document probing.
     """
@@ -67,13 +67,13 @@ def parse_exact_conversation_reference(query: str) -> Optional[str]:
         configured = urlsplit(share_base_url())
         port = parsed.port
         configured_port = configured.port
-    except ValueError:
+    except (ShareOriginUnavailableError, ValueError):
         return None
     configured_host = (configured.hostname or '').lower()
     if host == configured_host:
         expected_port = configured_port
         expected_path_prefix = f'{configured.path.rstrip("/")}{_EXACT_CONVERSATION_PATH_PREFIX}'
-    elif host == 'h.omi.me':
+    elif host == 'h.omi.me' and 'h.omi.me' in accepted_share_hosts():
         expected_port = None
         expected_path_prefix = _EXACT_CONVERSATION_PATH_PREFIX
     else:

@@ -91,6 +91,7 @@ REQUIRED_INTERPOLATED_ENV = {
     'backend': {
         'BASE_API_URL',
         'API_BASE_URL',
+        'OMI_SHARE_BASE_URL',
         'CORS_ALLOWED_ORIGINS',
         'ENCRYPTION_SECRET',
         'AUTH_JWT_ISSUER',
@@ -175,6 +176,7 @@ REQUIRED_ENV_FILE_KEYS = {
     'PUBLIC_AUTH_URL',
     'PUBLIC_MCP_URL',
     'PUBLIC_OBJECTS_URL',
+    'OMI_SHARE_BASE_URL',
     'CORS_ALLOWED_ORIGINS',
     'BETTER_AUTH_TRUSTED_ORIGINS',
     'BETTER_AUTH_IP_HEADERS',
@@ -916,6 +918,19 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
             host = (urlsplit(env[name]).hostname or '').lower()
             if not example_mode and (host == 'example.com' or host.endswith('.example.com')):
                 errors.append(f'{name} must not use the reserved example.com deployment host')
+    share_origin = env.get('OMI_SHARE_BASE_URL', '')
+    if share_origin:
+        _validate_url('OMI_SHARE_BASE_URL', share_origin, errors)
+        share_host = (urlsplit(share_origin).hostname or '').lower().rstrip('.')
+        if (
+            share_host == 'omi.me'
+            or share_host.endswith('.omi.me')
+            or share_host == 'omiapi.com'
+            or share_host.endswith('.omiapi.com')
+        ):
+            errors.append('OMI_SHARE_BASE_URL must use an operator-owned host, not an Omi-operated host')
+        if not example_mode and (share_host == 'example.com' or share_host.endswith('.example.com')):
+            errors.append('OMI_SHARE_BASE_URL must not use the reserved example.com deployment host')
     generic_url = env.get('GENERIC_OPENAI_BASE_URL', '')
     if generic_url:
         parsed = urlsplit(generic_url)

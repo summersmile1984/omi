@@ -219,8 +219,18 @@ Put an HTTPS reverse proxy/load balancer in front of the bound ports:
 - `PUBLIC_AUTH_URL` -> `${SELF_HOST_BIND_ADDRESS}:${AUTH_SERVER_PORT}`
 - `PUBLIC_MCP_URL` -> the backend MCP routes, with streaming/buffering disabled
 - `PUBLIC_OBJECTS_URL` -> `${SELF_HOST_BIND_ADDRESS}:${MINIO_API_PORT}`
+- `OMI_SHARE_BASE_URL` -> the operator's public share-link application
 
-All four URLs must be explicit HTTPS URLs. Better Auth tokens keep
+`OMI_SHARE_BASE_URL` is a required operator-owned HTTPS origin (for example,
+`https://share.example.net`). It must be an exact origin with no path,
+credentials, query, or fragment, and must not be an Omi-operated host. The
+backend refuses to mint share links when the self-hosted value is missing or
+invalid. It also does not accept `h.omi.me` as an inbound share authority in a
+neutral/self-hosted profile; this prevents a stale managed link from silently
+crossing the deployment boundary. Managed deployments retain their historical
+`https://h.omi.me` default.
+
+All five URLs must be explicit HTTPS URLs. Better Auth tokens keep
 `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` on `PUBLIC_AUTH_URL`, so the client
 contract never changes. JWKS fetches and privileged lifecycle calls use
 `http://auth-server:3000` only inside the private Compose network, with the

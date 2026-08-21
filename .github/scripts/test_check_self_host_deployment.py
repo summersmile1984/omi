@@ -202,6 +202,31 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn('PUBLIC_AUTH_URL must be an explicit https URL', errors)
 
+    def test_self_host_share_origin_is_required_and_operator_owned(self) -> None:
+        errors = self.validate_mutation(
+            env_replace=(
+                'OMI_SHARE_BASE_URL=https://share.example.com',
+                'OMI_SHARE_BASE_URL=',
+            )
+        )
+        self.assertTrue(any('missing required values' in error and 'OMI_SHARE_BASE_URL' in error for error in errors))
+
+        errors = self.validate_mutation(
+            env_replace=(
+                'OMI_SHARE_BASE_URL=https://share.example.com',
+                'OMI_SHARE_BASE_URL=https://h.omi.me',
+            )
+        )
+        self.assertIn('OMI_SHARE_BASE_URL must use an operator-owned host, not an Omi-operated host', errors)
+
+        errors = self.validate_mutation(
+            env_replace=(
+                'OMI_SHARE_BASE_URL=https://share.example.com',
+                'OMI_SHARE_BASE_URL=http://share.example.com',
+            )
+        )
+        self.assertIn('OMI_SHARE_BASE_URL must be an explicit https URL', errors)
+
     def test_public_origins_are_not_path_prefixed_or_credentialed(self) -> None:
         for replacement in (
             'https://objects.example.com/objects',

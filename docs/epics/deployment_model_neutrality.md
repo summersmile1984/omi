@@ -68,6 +68,9 @@ self-host: BetterAuth/Postgres/MinIO/Redis/generic routes
       session revoke and complete account deletion.
 - [x] Flutter, macOS and Context release entrypoints use one deployment profile
       for login, refresh, API, WebSocket and MCP; no Firebase session is present.
+- [x] Self-hosted share links require an explicit operator-owned HTTPS origin;
+      missing configuration is unavailable and managed `h.omi.me` links are
+      not accepted by the neutral backend.
 - [ ] Fresh operator-signed Flutter artifacts have been exercised on both
       mobile platforms. The self-host build, Firebase-runtime boundary and
       unsigned/local artifact scans are green; a real operator certificate,
