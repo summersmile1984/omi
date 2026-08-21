@@ -70,6 +70,7 @@ import 'package:omi/providers/user_provider.dart';
 import 'package:omi/providers/voice_recorder_provider.dart';
 import 'package:omi/providers/phone_call_provider.dart';
 import 'package:omi/services/auth_service.dart';
+import 'package:omi/services/firebase_background_runtime.dart';
 import 'package:omi/services/notifications.dart';
 import 'package:omi/services/notifications/action_item_notification_handler.dart';
 import 'package:omi/services/notifications/important_conversation_notification_handler.dart';
@@ -90,39 +91,44 @@ import 'package:omi/utils/notification_channel_strings.dart';
 /// Background message handler for FCM data messages
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp();
-  await NotificationChannelStrings.loadAppLocale();
+  await runFirebaseBackgroundWorkIfEnabled(
+    enabled: FirebaseServicesPolicy.enabled,
+    work: () async {
+      await Firebase.initializeApp();
+      await NotificationChannelStrings.loadAppLocale();
 
-  await AwesomeNotifications().initialize(null, [
-    NotificationChannel(
-      channelKey: 'channel',
-      channelName: NotificationChannelStrings.omiChannelName,
-      channelDescription: NotificationChannelStrings.omiChannelDescription,
-      defaultColor: const Color(0xFF9D50DD),
-      ledColor: Colors.white,
-    ),
-  ]);
+      await AwesomeNotifications().initialize(null, [
+        NotificationChannel(
+          channelKey: 'channel',
+          channelName: NotificationChannelStrings.omiChannelName,
+          channelDescription: NotificationChannelStrings.omiChannelDescription,
+          defaultColor: const Color(0xFF9D50DD),
+          ledColor: Colors.white,
+        ),
+      ]);
 
-  final data = message.data;
-  final messageType = data['type'];
-  const channelKey = 'channel';
+      final data = message.data;
+      final messageType = data['type'];
+      const channelKey = 'channel';
 
-  // Handle action item messages
-  if (messageType == 'action_item_reminder') {
-    await ActionItemNotificationHandler.handleReminderMessage(data, channelKey);
-  } else if (messageType == 'action_item_update') {
-    await ActionItemNotificationHandler.handleUpdateMessage(data, channelKey);
-  } else if (messageType == 'action_item_delete') {
-    await ActionItemNotificationHandler.handleDeletionMessage(data);
-  } else if (messageType == 'merge_completed') {
-    await MergeNotificationHandler.handleMergeCompleted(data, channelKey, isAppInForeground: false);
-  } else if (messageType == 'important_conversation') {
-    await ImportantConversationNotificationHandler.handleImportantConversation(
-      data,
-      channelKey,
-      isAppInForeground: false,
-    );
-  }
+      // Handle action item messages
+      if (messageType == 'action_item_reminder') {
+        await ActionItemNotificationHandler.handleReminderMessage(data, channelKey);
+      } else if (messageType == 'action_item_update') {
+        await ActionItemNotificationHandler.handleUpdateMessage(data, channelKey);
+      } else if (messageType == 'action_item_delete') {
+        await ActionItemNotificationHandler.handleDeletionMessage(data);
+      } else if (messageType == 'merge_completed') {
+        await MergeNotificationHandler.handleMergeCompleted(data, channelKey, isAppInForeground: false);
+      } else if (messageType == 'important_conversation') {
+        await ImportantConversationNotificationHandler.handleImportantConversation(
+          data,
+          channelKey,
+          isAppInForeground: false,
+        );
+      }
+    },
+  );
 }
 
 Future _init() async {

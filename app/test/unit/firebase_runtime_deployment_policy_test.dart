@@ -4,6 +4,7 @@ import 'package:talker_flutter/talker_flutter.dart';
 import 'package:omi/env/environment_profile.dart';
 import 'package:omi/env/firebase_services_policy.dart';
 import 'package:omi/services/notifications/notification_service.dart';
+import 'package:omi/services/firebase_background_runtime.dart';
 import 'package:omi/utils/logger.dart';
 
 class _FakeNotificationService implements NotificationInterface {
@@ -52,6 +53,44 @@ class _CountingObserver extends TalkerObserver {
 }
 
 void main() {
+  test('self-hosted background delivery never initializes Firebase runtime', () async {
+    var initialized = false;
+    var handled = false;
+
+    await runFirebaseBackgroundWorkIfEnabled(
+      enabled: FirebaseServicesPolicy.allowsFor(
+        profile: AppEnvironmentProfile.selfHosted,
+        configuredEnabled: true,
+      ),
+      work: () async {
+        initialized = true;
+        handled = true;
+      },
+    );
+
+    expect(initialized, isFalse);
+    expect(handled, isFalse);
+  });
+
+  test('managed background delivery retains Firebase runtime behavior', () async {
+    var initialized = false;
+    var handled = false;
+
+    await runFirebaseBackgroundWorkIfEnabled(
+      enabled: FirebaseServicesPolicy.allowsFor(
+        profile: AppEnvironmentProfile.production,
+        configuredEnabled: true,
+      ),
+      work: () async {
+        initialized = true;
+        handled = true;
+      },
+    );
+
+    expect(initialized, isTrue);
+    expect(handled, isTrue);
+  });
+
   test('self-hosted notification factory never evaluates the Firebase Messaging factory', () {
     var firebaseMessagingSdkConstructions = 0;
     var localProviderConstructions = 0;
