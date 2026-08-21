@@ -778,10 +778,21 @@ class DocumentReference:
                 _del_path(current, key)
 
     def _read_current(self, conn: Any) -> Dict[str, Any]:
-        row = conn.execute(
-            text(get_sql(self._table)), {"uid": self._uid or "", "doc_id": self._id}
-        ).fetchone()
+        row = self._read_current_row(conn)
         return dict(row[0] or {}) if row else {}
+
+    def _read_current_row(self, conn: Any) -> Any:
+        """Read the current row while holding its row lock.
+
+        Transform writes are read-modify-write operations.  Without the lock,
+        two concurrent ``Increment``/``ArrayUnion`` updates can both read the
+        same JSON document and the later write silently loses the first one.
+        The row also lets ``update`` preserve Firestore's missing-document
+        error contract (a transform update must not create a document).
+        """
+        return conn.execute(
+            text(get_sql(self._table) + " FOR UPDATE"), {"uid": self._uid or "", "doc_id": self._id}
+        ).fetchone()
 
     def _write_current(self, conn: Any, current: Dict[str, Any]) -> None:
         conn.execute(
@@ -791,7 +802,10 @@ class DocumentReference:
 
     def _update_with_transforms(self, payload: Dict[str, Any]) -> "DocumentReference":
         def _do(conn: Any) -> None:
-            current = self._read_current(conn)
+            row = self._read_current_row(conn)
+            if row is None:
+                raise _api_exceptions.NotFound(f"Document {self.path} does not exist")
+            current = dict(row[0] or {})
             self._apply_transforms(current, payload)
             self._write_current(conn, current)
 
