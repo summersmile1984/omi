@@ -134,6 +134,16 @@ def test_self_host_optional_vendor_only_capabilities_are_typed_disabled():
     assert vendor_proxy.unavailable_payload()['reason'] == 'disabled_by_deployment'
 
 
+def test_neutral_capability_defaults_fail_closed_without_vendor_routes():
+    neutral = {'OMI_DEPLOYMENT_PROFILE': 'self_hosted'}
+
+    assert resolve_model_capability('app_icon_generation', env=neutral).reason == 'disabled_by_deployment'
+    assert resolve_model_capability('file_chat', env=neutral).reason == 'disabled_by_deployment'
+    assert resolve_model_capability('web_search', env=neutral).reason == 'disabled_by_deployment'
+    assert resolve_model_capability('desktop_vendor_proxy', env=neutral).reason == 'disabled_by_deployment'
+    assert resolve_model_capability('screen', env=neutral).reason == 'embedding_provider_not_configured'
+
+
 def test_self_hosted_web_search_selects_only_an_explicit_searxng_endpoint():
     missing = resolve_model_capability('web_search', env={'WEB_SEARCH_TRANSPORT': 'searxng'})
     selected = resolve_model_capability(

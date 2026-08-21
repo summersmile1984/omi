@@ -69,6 +69,21 @@ _RELAY_PROVIDER_ID = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
 REALTIME_RELAY_WIRE_PROTOCOLS = frozenset({'openai_realtime_v1'})
 
 
+def _neutral_deployment(values: Mapping[str, str]) -> bool:
+    return values.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in {
+        'neutral',
+        'self_hosted',
+        'self-hosted',
+    }
+
+
+def _capability_transport(values: Mapping[str, str], name: str, managed_default: str) -> str:
+    configured = values.get(name, '').strip().lower()
+    if configured:
+        return configured
+    return 'disabled' if _neutral_deployment(values) else managed_default
+
+
 def realtime_relay_wire_protocol(env: Mapping[str, str] | None = None) -> str:
     values = os.environ if env is None else env
     return values.get('REALTIME_RELAY_WIRE_PROTOCOL', '').strip().lower()
@@ -103,7 +118,11 @@ def _unsafe_relay_host(host: str) -> bool:
 
 
 def _embedding_capability(capability: str, values: Mapping[str, str]) -> ModelCapabilityRoute:
-    provider = values.get('EMBEDDING_PROVIDER', 'openai').strip().lower() or 'openai'
+    provider = values.get('EMBEDDING_PROVIDER', '').strip().lower()
+    if not provider:
+        if _neutral_deployment(values):
+            return _unavailable(capability, 'embedding_provider_not_configured', retryable=False)
+        provider = 'openai'
     model = values.get('EMBEDDING_MODEL', '').strip()
     if provider == 'generic':
         model = model or values.get('GENERIC_OPENAI_MODEL', '').strip()
@@ -164,7 +183,7 @@ def resolve_model_capability(
             transport='tool_completion',
         )
     if capability == 'app_icon_generation':
-        transport = values.get('APP_ICON_GENERATION_TRANSPORT', 'gateway').strip().lower() or 'gateway'
+        transport = _capability_transport(values, 'APP_ICON_GENERATION_TRANSPORT', 'gateway')
         if transport == 'disabled':
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
         if transport == 'local_template':
@@ -207,7 +226,7 @@ def resolve_model_capability(
             transport='gateway_image_generation',
         )
     if capability == 'file_chat':
-        transport = values.get('FILE_CHAT_TRANSPORT', 'openai_assistants').strip().lower() or 'openai_assistants'
+        transport = _capability_transport(values, 'FILE_CHAT_TRANSPORT', 'openai_assistants')
         if transport == 'disabled':
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
         if transport == 'local_extraction':
@@ -231,7 +250,7 @@ def resolve_model_capability(
             transport='openai_files_assistants',
         )
     if capability == 'desktop_vendor_proxy':
-        transport = values.get('DESKTOP_VENDOR_PROXY_TRANSPORT', 'gemini').strip().lower() or 'gemini'
+        transport = _capability_transport(values, 'DESKTOP_VENDOR_PROXY_TRANSPORT', 'gemini')
         if transport == 'disabled':
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
         if transport != 'gemini':
@@ -243,7 +262,7 @@ def resolve_model_capability(
             transport='gemini_proxy',
         )
     if capability == 'web_search':
-        transport = values.get('WEB_SEARCH_TRANSPORT', 'gateway').strip().lower() or 'gateway'
+        transport = _capability_transport(values, 'WEB_SEARCH_TRANSPORT', 'gateway')
         if transport == 'disabled':
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
         if transport == 'searxng':

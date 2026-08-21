@@ -44,6 +44,7 @@ STATEFUL_MOUNTS = {
 }
 REQUIRED_FIXED_BACKEND_ENV = {
     'OMI_ENV_STAGE': 'prod',
+    'OMI_DEPLOYMENT_PROFILE': 'self_hosted',
     'AUTH_PROVIDER': 'better_auth',
     'AGENT_VM_PROVIDER': 'disabled',
     'AUTH_INTERNAL_ALLOW_HTTP': 'true',
@@ -59,6 +60,7 @@ REQUIRED_FIXED_BACKEND_ENV = {
     'CONVERSATION_TYPESENSE_COLLECTION': 'omi_conversations',
     'OMI_LLM_DEFAULT_PROVIDER': 'generic',
     'OMI_LLM_DEFAULT_FALLBACKS': '',
+    'TRANSLATION_PROVIDER': 'generic',
     'EMBEDDING_PROVIDER': 'generic',
     'FILE_CHAT_TRANSPORT': 'local_extraction',
     'PUSH_PROVIDER': 'disabled',

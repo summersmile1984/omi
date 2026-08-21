@@ -173,6 +173,7 @@ def effective_compose_config_sha256(*, compose_file: Path, env_file: Path) -> st
 
 PROVIDER_CONFIGURATION_KEYS = frozenset(
     {
+        'deployment_profile',
         'stt_prerecorded_model',
         'mlx_moss_diarize_endpoint',
         'mlx_moss_diarize_model',
@@ -184,6 +185,8 @@ PROVIDER_CONFIGURATION_KEYS = frozenset(
         'embedding_model',
         'embedding_transport',
         'embedding_dimension',
+        'speaker_embedding_provider',
+        'speaker_embedding_model',
         'realtime_provider',
         'realtime_model',
         'realtime_transport',
@@ -196,6 +199,19 @@ PROVIDER_CONFIGURATION_KEYS = frozenset(
         'file_chat_provider',
         'file_chat_model',
         'file_chat_transport',
+        'app_icon_transport',
+        'app_icon_endpoint_origin',
+        'web_search_transport',
+        'translation_provider',
+        'translation_model',
+        'translation_transport',
+        'translation_endpoint_origin',
+        'storage_backend',
+        'vector_store_provider',
+        'auth_provider',
+        'firmware_release_transport',
+        'firmware_release_manifest_origin',
+        'firmware_release_asset_origin',
         'push_provider',
         'push_model',
         'push_transport',
@@ -239,12 +255,14 @@ def _validate_provider_configuration(configuration: dict[str, Any]) -> None:
     if any(str(key).lower().endswith(('_key', '_secret', '_token', '_password')) for key in configuration):
         raise ValueError('effective provider configuration must not contain credentials')
     for key, value in configuration.items():
-        if key == 'tts_endpoint_origin' and value == '':
+        if key in {'tts_endpoint_origin', 'app_icon_endpoint_origin', 'translation_endpoint_origin'} and value == '':
             continue
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f'effective provider configuration is missing {key}')
         if any(ord(character) < 32 or ord(character) == 127 for character in value):
             raise ValueError(f'{key} contains an invalid control character')
+    if configuration['deployment_profile'] != 'self_hosted':
+        raise ValueError('self-host runtime evidence must identify the self_hosted deployment profile')
     if configuration['stt_prerecorded_model'] != 'mlx_moss_diarize':
         raise ValueError('effective provider configuration selected the wrong prerecorded provider')
     _safe_endpoint(
@@ -265,6 +283,10 @@ def _validate_provider_configuration(configuration: dict[str, Any]) -> None:
         raise ValueError('self-host embeddings must use the direct generic provider')
     if configuration['embedding_dimension'].isdecimal() is not True or int(configuration['embedding_dimension']) <= 0:
         raise ValueError('embedding_dimension must be a positive integer')
+    if configuration['speaker_embedding_provider'] != 'sherpa_onnx':
+        raise ValueError('self-host speaker embeddings must use the local sherpa_onnx provider')
+    if not configuration['speaker_embedding_model'].strip():
+        raise ValueError('self-host speaker embeddings require a model artifact identity')
     if configuration['realtime_provider'] != 'relay' or configuration['realtime_transport'] != 'websocket_relay':
         raise ValueError('self-host realtime must use the bounded WebSocket relay')
     _validate_origin_value(configuration['realtime_endpoint_origin'], 'realtime_endpoint_origin', schemes={'ws', 'wss'})
@@ -287,6 +309,48 @@ def _validate_provider_configuration(configuration: dict[str, Any]) -> None:
         or configuration['file_chat_transport'] != 'local_extraction'
     ):
         raise ValueError('self-host file chat must use local extraction')
+    app_icon_transport = configuration['app_icon_transport']
+    if app_icon_transport == 'local_template':
+        if configuration['app_icon_endpoint_origin']:
+            raise ValueError('local app icon generation must not include a remote endpoint origin')
+    elif app_icon_transport == 'openai_compatible':
+        if not configuration['app_icon_endpoint_origin']:
+            raise ValueError('compatible app icon generation requires an endpoint origin')
+        _validate_origin_value(
+            configuration['app_icon_endpoint_origin'], 'app_icon_endpoint_origin', schemes={'http', 'https'}
+        )
+    else:
+        raise ValueError('self-host selected an unsupported app icon transport')
+    if configuration['web_search_transport'] != 'searxng':
+        raise ValueError('self-host web search must use the local SearXNG transport')
+    translation_provider = configuration['translation_provider']
+    if translation_provider == 'generic':
+        if configuration['translation_transport'] != 'llm_feature_route':
+            raise ValueError('self-host generic translation must use the feature route transport')
+        _validate_origin_value(
+            configuration['translation_endpoint_origin'], 'translation_endpoint_origin', schemes={'http', 'https'}
+        )
+    elif translation_provider == 'disabled':
+        if configuration['translation_model'] != 'disabled' or configuration['translation_transport'] != 'disabled':
+            raise ValueError('disabled self-host translation must have a disabled model and transport')
+        if configuration['translation_endpoint_origin']:
+            raise ValueError('disabled self-host translation must not include an endpoint origin')
+    else:
+        raise ValueError('self-host selected an unsupported translation provider')
+    if configuration['storage_backend'] != 'minio':
+        raise ValueError('self-host object storage must use MinIO')
+    if configuration['vector_store_provider'] != 'qdrant':
+        raise ValueError('self-host vector storage must use Qdrant')
+    if configuration['auth_provider'] != 'better_auth':
+        raise ValueError('self-host identity must use Better Auth')
+    if configuration['firmware_release_transport'] != 'manifest':
+        raise ValueError('self-host firmware must use the operator manifest transport')
+    _validate_origin_value(
+        configuration['firmware_release_manifest_origin'], 'firmware_release_manifest_origin', schemes={'https'}
+    )
+    _validate_origin_value(
+        configuration['firmware_release_asset_origin'], 'firmware_release_asset_origin', schemes={'https'}
+    )
     if configuration['memory_keyword_provider'] != 'typesense':
         raise ValueError('memory keyword provider must be typesense')
     if configuration['conversation_keyword_provider'] != 'typesense':
@@ -382,7 +446,10 @@ def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any
         if tts_provider == 'openai_compatible'
         else _basename_model(environment, 'TTS_SHERPA_MODEL')
     )
+    app_icon_transport = _safe_identifier(environment, 'APP_ICON_GENERATION_TRANSPORT')
+    translation_provider = _safe_identifier(environment, 'TRANSLATION_PROVIDER')
     return {
+        'deployment_profile': _safe_identifier(environment, 'OMI_DEPLOYMENT_PROFILE'),
         'stt_prerecorded_model': _required_text(environment, 'STT_PRERECORDED_MODEL'),
         'mlx_moss_diarize_endpoint': _safe_endpoint(
             environment,
@@ -401,6 +468,8 @@ def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any
         'embedding_model': _safe_model_name(environment, 'EMBEDDING_MODEL'),
         'embedding_transport': _safe_identifier(environment, 'EMBEDDING_CAPABILITY_TRANSPORT'),
         'embedding_dimension': _positive_integer(environment, 'EMBEDDING_DIMENSION'),
+        'speaker_embedding_provider': _safe_identifier(environment, 'SPEAKER_EMBEDDING_PROVIDER'),
+        'speaker_embedding_model': _safe_model_name(environment, 'SPEAKER_EMBEDDING_MODEL'),
         'realtime_provider': _safe_identifier(environment, 'REALTIME_PROVIDER'),
         'realtime_model': _safe_model_name(environment, 'REALTIME_MODEL'),
         'realtime_transport': 'websocket_relay',
@@ -417,6 +486,33 @@ def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any
         'file_chat_provider': 'local_extraction',
         'file_chat_model': _safe_model_name(environment, 'OMI_LLM_DEFAULT_MODEL'),
         'file_chat_transport': _safe_identifier(environment, 'FILE_CHAT_TRANSPORT'),
+        'app_icon_transport': app_icon_transport,
+        'app_icon_endpoint_origin': (
+            _safe_endpoint_origin(environment, 'IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', schemes={'http', 'https'})
+            if app_icon_transport == 'openai_compatible'
+            else ''
+        ),
+        'web_search_transport': _safe_identifier(environment, 'WEB_SEARCH_TRANSPORT'),
+        'translation_provider': translation_provider,
+        'translation_model': (
+            _safe_model_name(environment, 'TRANSLATION_MODEL') if translation_provider == 'generic' else 'disabled'
+        ),
+        'translation_transport': 'llm_feature_route' if translation_provider == 'generic' else 'disabled',
+        'translation_endpoint_origin': (
+            _safe_endpoint_origin(environment, 'GENERIC_OPENAI_BASE_URL', schemes={'http', 'https'})
+            if translation_provider == 'generic'
+            else ''
+        ),
+        'storage_backend': _safe_identifier(environment, 'STORAGE_BACKEND'),
+        'vector_store_provider': _safe_identifier(environment, 'VECTOR_STORE_PROVIDER'),
+        'auth_provider': _safe_identifier(environment, 'AUTH_PROVIDER'),
+        'firmware_release_transport': _safe_identifier(environment, 'FIRMWARE_RELEASE_TRANSPORT'),
+        'firmware_release_manifest_origin': _safe_endpoint_origin(
+            environment, 'FIRMWARE_RELEASE_MANIFEST_URL', schemes={'https'}
+        ),
+        'firmware_release_asset_origin': _safe_endpoint_origin(
+            environment, 'FIRMWARE_RELEASE_ASSET_ORIGIN', schemes={'https'}
+        ),
         'push_provider': _safe_identifier(environment, 'PUSH_PROVIDER'),
         'push_model': 'disabled',
         'push_transport': 'disabled',

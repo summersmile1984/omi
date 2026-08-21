@@ -108,15 +108,12 @@ class GeminiTranslationProvider:
                 raise TranslationProviderError(
                     self.provider,
                     'invalid_response',
-                    f'Gemini translation JSON fallback failed: {fallback_error}',
+                    f'Translation JSON fallback failed: {fallback_error}',
                 ) from fallback_error
 
-    @staticmethod
-    def _coerce(response: Any) -> list[ProviderTranslation]:
+    def _coerce(self, response: Any) -> list[ProviderTranslation]:
         if not isinstance(response, GeminiTranslationBatch):
-            raise TranslationProviderError(
-                GeminiTranslationProvider.provider, 'invalid_response', 'Gemini response is malformed'
-            )
+            raise TranslationProviderError(self.provider, 'invalid_response', 'Translation response is malformed')
         return [
             ProviderTranslation(text=item.text, detected_language=item.detected_language)
             for item in response.translations
@@ -128,6 +125,18 @@ class GeminiTranslationProvider:
                 if self._client is None:
                     self._client = self._client_factory()
         return self._client
+
+
+class GenericTranslationProvider(GeminiTranslationProvider):
+    """Translation over the explicitly selected operator LLM route.
+
+    The response contract is shared with the managed adapter, but the provider
+    identity remains generic so neutral deployments do not report or silently
+    fall back to Gemini.
+    """
+
+    provider = TranslationProvider.generic
+    model_name = 'operator-selected'
 
 
 class NllbTranslationProvider:
@@ -291,6 +300,7 @@ def default_provider_chain(
     return TranslationProviderChain(
         providers={
             TranslationProvider.gemini: GeminiTranslationProvider(),
+            TranslationProvider.generic: GenericTranslationProvider(),
             TranslationProvider.nllb: NllbTranslationProvider(),
         },
         metrics=metrics,

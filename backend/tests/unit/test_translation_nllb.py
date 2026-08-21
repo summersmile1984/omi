@@ -21,6 +21,7 @@ from utils.translation_core.metrics import NoopTranslationMetrics
 from utils.translation_core.providers import (
     GeminiTranslationBatch,
     GeminiTranslationProvider,
+    GenericTranslationProvider,
     NllbTranslationProvider,
     TranslationProviderChain,
     TranslationProviderError,
@@ -54,6 +55,22 @@ def test_config_filters_unavailable_and_records_unsupported_tokens():
 
 def test_empty_config_defaults_to_google():
     assert resolve_translation_profile({}).providers == (TranslationProvider.google,)
+
+
+def test_neutral_translation_requires_an_explicit_non_vendor_route():
+    disabled = resolve_translation_profile({'OMI_DEPLOYMENT_PROFILE': 'self_hosted'})
+    assert disabled.providers == (TranslationProvider.disabled,)
+    assert 'translation_not_configured' in disabled.unavailable_tokens
+
+    vendor = resolve_translation_profile({'OMI_DEPLOYMENT_PROFILE': 'neutral', 'TRANSLATION_SERVICE_MODELS': 'google'})
+    assert vendor.providers == (TranslationProvider.disabled,)
+    assert vendor.unsupported_tokens == ('google',)
+
+    generic = resolve_translation_profile(
+        {'OMI_DEPLOYMENT_PROFILE': 'self_hosted', 'TRANSLATION_SERVICE_MODELS': 'generic'}
+    )
+    assert generic.providers == (TranslationProvider.generic,)
+    assert GenericTranslationProvider.provider == TranslationProvider.generic
 
 
 def test_filtered_configured_primary_records_recovered_fallback_after_google_succeeds():
