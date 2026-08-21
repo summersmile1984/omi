@@ -315,6 +315,15 @@ final class AnalyticsBuildRefusalTests: XCTestCase {
             app, so nothing it does may reach production analytics.
             """)
     }
+
+    func testSelfHostedAnalyticsRemainsDisabledWhenLiveDeliveryOverrideIsRequested() {
+        XCTAssertFalse(
+            ContextAnalytics.isEnabled(
+                deploymentMode: .selfHosted,
+                isShippingBundle: true,
+                forceRequested: true),
+            "self-hosted artifacts must not send Omi-managed analytics, including with the live-delivery override")
+    }
 }
 
 /// **`cfc_onboarding_finished` has to survive the relaunch onboarding itself causes.**

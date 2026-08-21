@@ -79,8 +79,23 @@ enum ContextAnalytics {
     /// indistinguishable from real ones, so anything recorded under the override lands in production
     /// series: use a throwaway `CONTEXT_ANALYTICS_FORCE` session, not a day of ordinary work.
     static var isEnabled: Bool {
-        if ProcessInfo.processInfo.environment["CONTEXT_ANALYTICS_FORCE"] == "1" { return true }
-        return ContextPaths.isShippingBundle
+        isEnabled(
+            deploymentMode: ContextDeploymentProfile.current.mode,
+            isShippingBundle: ContextPaths.isShippingBundle,
+            forceRequested: ProcessInfo.processInfo.environment["CONTEXT_ANALYTICS_FORCE"] == "1")
+    }
+
+    /// Analytics is an Omi-managed service, so a self-hosted artifact must never enable it — not
+    /// even when the live-delivery debug override is inherited into the process environment. The
+    /// override is intentionally injectable so this deployment boundary can be tested without
+    /// changing the process environment or touching PostHog.
+    static func isEnabled(
+        deploymentMode: ContextDeploymentMode,
+        isShippingBundle: Bool,
+        forceRequested: Bool
+    ) -> Bool {
+        guard deploymentMode == .omiCloud else { return false }
+        return forceRequested || isShippingBundle
     }
 
     // MARK: - Lifecycle

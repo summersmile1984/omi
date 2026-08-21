@@ -139,6 +139,10 @@ Don't.
    that noise.
 3. **Nothing user-authored, ever** — enforced by construction, not by review.
 
+Analytics is an Omi-managed service and is disabled for `self_hosted` deployment profiles, even
+when `CONTEXT_ANALYTICS_FORCE=1` is present. That override exists only to exercise managed-cloud
+live delivery; it cannot turn a self-hosted artifact into a PostHog client.
+
 ## MCP tool calls cross a process boundary
 
 `context-for-claude-mcp` is spawned by Claude over stdio, several at a time, and killed without
