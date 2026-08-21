@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import utils.stt.speaker_embedding as speaker_embedding
+from utils.egress_policy import EgressPolicyUnavailable
 from utils.stt.speaker_embedding import (
     MIN_EMBEDDING_AUDIO_DURATION,
     SpeakerEmbeddingUnavailable,
@@ -79,6 +80,19 @@ class TestGetWavDuration:
 
 
 class TestExtractEmbeddingFromBytesValidation:
+    def test_sync_http_provider_runs_egress_preflight_before_network(self, monkeypatch):
+        wav = _make_wav_bytes(1.0)
+        request = MagicMock(side_effect=AssertionError("speaker embedding must not reach an official host"))
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "neutral")
+        monkeypatch.setenv("SPEAKER_EMBEDDING_PROVIDER", "http")
+        monkeypatch.setenv("SPEAKER_EMBEDDING_API_URL", "https://api.omiapi.com")
+        monkeypatch.setattr(httpx, "post", request)
+
+        with pytest.raises(EgressPolicyUnavailable, match="official_endpoint_forbidden"):
+            extract_embedding_from_bytes(wav, "test.wav")
+
+        request.assert_not_called()
+
     def test_disabled_provider_fails_before_network(self, monkeypatch):
         wav = _make_wav_bytes(1.0)
         request = MagicMock(side_effect=AssertionError("speaker embedding must not make an HTTP request"))

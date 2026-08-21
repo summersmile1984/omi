@@ -12,6 +12,7 @@ import httpx
 from scipy.spatial.distance import cdist
 
 from utils.executors import storage_executor, sync_executor, run_blocking
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.http_client import get_stt_client
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,10 @@ def extract_embedding(audio_path: str) -> np.ndarray[Any, Any]:
     if provider == "sherpa_onnx":
         return _extract_local_embedding(_read_file(audio_path))
     api_url = _get_api_url()
+    # The synchronous compatibility path cannot use the shared AsyncClient
+    # hook. Apply the same deployment authority before handing the URL to
+    # httpx, otherwise a neutral process can bypass its egress allowlist.
+    assert_http_endpoint_allowed(api_url)
 
     with open(audio_path, 'rb') as f:
         files = {'file': (os.path.basename(audio_path), f, 'audio/wav')}
@@ -258,6 +263,9 @@ def extract_embedding_from_bytes(audio_data: bytes, filename: str = "audio.wav")
     if provider == "sherpa_onnx":
         return _extract_local_embedding(audio_data)
     api_url = _get_api_url()
+    # Keep this sync path subject to the same pre-transport authority as the
+    # async speaker-embedding client below.
+    assert_http_endpoint_allowed(api_url)
 
     files = {'file': (filename, audio_data, 'audio/wav')}
     response = httpx.post(f"{api_url}/v2/embedding", files=files, timeout=300.0)
