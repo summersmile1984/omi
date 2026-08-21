@@ -17,3 +17,9 @@ by the operator; they do not silently contact the Omi PostHog host. Managed
 deployments continue to use the explicitly configured `POSTHOG_HOST` and
 project key. Telemetry is fail-open and must never change the owning request,
 sync, or memory-extraction result.
+
+The same boundary applies to optional LangSmith tracing and prompt retrieval:
+neutral profiles ignore ambient `LANGSMITH_*`/`LANGCHAIN_*` credentials and
+disable all supported tracing aliases before model invocation. They return no
+tracer callbacks and use the checked-in prompt fallback. Managed profiles keep
+their existing explicit LangSmith behavior.
