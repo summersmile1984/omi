@@ -54,14 +54,15 @@ def _jsonb_dumps(value: Any) -> str:
 
 import json as _json
 
+from .codec import encode_document, encode_value
+
 
 def json_dumps(value: Any) -> str:
-    def _default(obj: Any) -> Any:
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+    return _json.dumps(encode_value(value), separators=(",", ":"))
 
-    return _json.dumps(value, default=_default, separators=(",", ":"))
+
+def document_dumps(value: Any) -> str:
+    return _json.dumps(encode_document(value), separators=(",", ":"))
 
 
 def _jsonb_loads(raw: str) -> Any:
@@ -84,11 +85,6 @@ CREATE TABLE IF NOT EXISTS {table} (
 );
 ALTER TABLE {table} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp();
 ALTER TABLE {table} ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1;
--- Revision 1 stored a bare user ID in uid.  First-level user collections can
--- be migrated losslessly to the full parent path.  Deeper paths were
--- previously collapsed and cannot be reconstructed; the deployment
--- readiness gate requires shadow re-import before switching an old database.
-UPDATE {table} SET uid = 'users/' || uid WHERE uid <> '' AND position('/' in uid) = 0;
 CREATE INDEX IF NOT EXISTS {table}_uid_idx ON {table} (uid);
 """
 

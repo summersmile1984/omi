@@ -17,6 +17,8 @@ Scenarios avoid behavior that legitimately differs across backends (ordering of
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List
 
+from google.api_core.datetime_helpers import DatetimeWithNanoseconds
+
 Scenario = Callable[[Any], Any]
 
 _EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -403,6 +405,45 @@ def scenario_transaction_create_and_explicit_add_id(db: Any) -> Any:
     }
 
 
+def scenario_mixed_collection_group_document_names(db: Any) -> Any:
+    from google.cloud.firestore_v1 import FieldFilter as SDKFieldFilter
+
+    collection = db.collection('Shadow-Mixed')
+    first = collection.document('one')
+    second = collection.document('two')
+    first.set({'rank': 1})
+    second.set({'rank': 2})
+    group = db.collection_group('Shadow-Mixed')
+    ordered = list(group.order_by('__name__').stream())
+    equality = list(group.where(filter=SDKFieldFilter('__name__', '==', first)).stream())
+    included = list(group.where(filter=SDKFieldFilter('__name__', 'in', [first, second])).stream())
+    after = list(group.order_by('__name__').start_after(ordered[0]).stream())
+    return {
+        'ordered': [item.reference.path for item in ordered],
+        'equality': [item.reference.path for item in equality],
+        'in': [item.reference.path for item in included],
+        'after': [item.reference.path for item in after],
+    }
+
+
+def scenario_timestamp_nanosecond_order_range_cursor(db: Any) -> Any:
+    """Firestore timestamps retain ordering below PostgreSQL microseconds."""
+    collection = db.collection('shadow_timestamp_nanos')
+    low = DatetimeWithNanoseconds(2026, 8, 21, 12, 35, tzinfo=timezone.utc, nanosecond=123456000)
+    high = DatetimeWithNanoseconds(2026, 8, 21, 12, 35, tzinfo=timezone.utc, nanosecond=123456789)
+    collection.document('a').set({'timestamp': low})
+    collection.document('b').set({'timestamp': high})
+    ordered = list(collection.order_by('timestamp').stream())
+    ranged = list(collection.where('timestamp', '>', low).stream())
+    after = list(collection.order_by('timestamp').start_after(ordered[0]).stream())
+    return {
+        'inputs': [low.nanosecond, high.nanosecond],
+        'ordered': [(item.id, item.to_dict()['timestamp'].microsecond) for item in ordered],
+        'range': [item.id for item in ranged],
+        'after': [item.id for item in after],
+    }
+
+
 SCENARIOS: Dict[str, Scenario] = {
     "set_get": scenario_set_get,
     "set_merge": scenario_set_merge,
@@ -431,4 +472,6 @@ SCENARIOS: Dict[str, Scenario] = {
     "cursor_numeric_and_missing_order": scenario_cursor_numeric_and_missing_order,
     "update_time_cas": scenario_update_time_cas,
     "transaction_create_and_explicit_add_id": scenario_transaction_create_and_explicit_add_id,
+    "mixed_collection_group_document_names": scenario_mixed_collection_group_document_names,
+    "timestamp_nanosecond_order_range_cursor": scenario_timestamp_nanosecond_order_range_cursor,
 }

@@ -26,12 +26,41 @@ pytestmark = pytest.mark.skipif(
 from google.api_core import exceptions as api_exceptions  # noqa: E402
 
 from firestore_pg.compat import install  # noqa: E402
+from firestore_pg.field_path import UnsupportedFirestoreQuery  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def db():
     install()
     from google.cloud import firestore
+    from firestore_pg.migrations import migrate, provision_collections
+
+    migrate()
+    provision_collections(
+        {
+            'account_deletion_receipts',
+            'account_deletions',
+            'future_collection',
+            'future_nested',
+            'future_nested_data',
+            'pg_add_surface',
+            'pg_batch_atomic',
+            'pg_cas',
+            'pg_create_race',
+            'pg_cursor_numeric',
+            'pg_field_path_security',
+            'pg_global_jobs',
+            'pg_global_tasks',
+            'pg_mixed_transform',
+            'pg_nested_inventory',
+            'pg_query_semantics',
+            'pg_query_types',
+            'pg_top_level_inventory',
+            'pg_tx_create',
+            'photos',
+            'txn_semantics',
+        }
+    )
 
     client = firestore.Client(project="demo-omi-local")
     yield client
@@ -320,6 +349,24 @@ def test_equality_preserves_firestore_value_types(db):
     assert [snap.id for snap in collection.where("value", "==", "2").stream()] == ["text"]
 
 
+def test_malicious_query_field_path_cannot_escape_user_namespace(db):
+    attacker = db.collection('users').document('pg-field-attacker').collection('pg_field_path_security')
+    victim = db.collection('users').document('pg-field-victim').collection('pg_field_path_security')
+    attacker.document('visible').set({'x': 'attacker'})
+    victim.document('secret').set({'x': 'victim-secret'})
+
+    assert [snapshot.to_dict()['x'] for snapshot in attacker.where('x', '==', 'attacker').stream()] == ['attacker']
+    malicious = "x' IS NULL OR TRUE --"
+    with pytest.raises(UnsupportedFirestoreQuery, match='field path'):
+        list(attacker.where(malicious, '==', 'ignored').stream())
+    with pytest.raises(UnsupportedFirestoreQuery, match='field path'):
+        list(attacker.order_by(malicious).stream())
+
+    assert victim.document('secret').get().to_dict() == {'x': 'victim-secret'}
+    attacker.document('visible').delete()
+    victim.document('secret').delete()
+
+
 def test_mixed_transform_update_keeps_plain_fields_and_float_precision(db):
     from google.cloud import firestore
 
@@ -376,10 +423,11 @@ def test_collections_discovers_every_direct_child_for_recursive_delete(db):
     assert not nested.get().exists
 
 
-def test_schema_bootstrap_upgrades_unknown_legacy_collection_for_account_delete(db):
+def test_explicit_provision_rejects_populated_unknown_legacy_collection(db):
     from sqlalchemy import text
 
-    from firestore_pg.engine import ensure_tables, get_engine
+    from firestore_pg.engine import get_engine
+    from firestore_pg.migrations import SchemaNotCurrent, provision_collections
 
     with get_engine().begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS pg_legacy_future"))
@@ -398,17 +446,7 @@ def test_schema_bootstrap_upgrades_unknown_legacy_collection_for_account_delete(
             ),
             {"data": '{"legacy":true}'},
         )
-    ensure_tables()
-    user = db.collection("users").document("pg-legacy-user")
-    assert "pg_legacy_future" in [collection.id for collection in user.collections()]
-    migrated = user.collection("pg_legacy_future").document("doc").get()
-    assert migrated.to_dict() == {"legacy": True}
+    with pytest.raises(SchemaNotCurrent, match='authoritative import into a fresh target'):
+        provision_collections(['pg_legacy_future'])
     with get_engine().begin() as conn:
-        columns = {
-            row[0]
-            for row in conn.execute(
-                text("SELECT column_name FROM information_schema.columns " "WHERE table_name = 'pg_legacy_future'")
-            ).fetchall()
-        }
         conn.execute(text("DROP TABLE pg_legacy_future"))
-    assert {"updated_at", "version"}.issubset(columns)

@@ -13,10 +13,14 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection, Engine, make_url
+
+from database.firestore_index_registry import INDEX_REQUIREMENTS
+
+from .field_path import parse_field_path
 
 logger = logging.getLogger(__name__)
 
@@ -46,48 +50,19 @@ def _dsn_from_env() -> str:
 
 def _dsn_host(dsn: str) -> str:
     try:
-        return dsn.split("@")[-1]
-    except Exception:  # pragma: no cover
-        return dsn
-
-
-def ensure_tables(engine: Optional[Engine] = None) -> None:
-    """Create all known collection tables (idempotent)."""
-    from .sql import build_ddl, resolve_collection
-    from database.firestore_index_registry import INDEX_REQUIREMENTS
-
-    engine = engine or get_engine()
-    known_paths = dict(_KNOWN_COLLECTIONS)
-    # Collection groups declared by firestore_index_registry that are not in the
-    # observed set above still need their tables for compound serving queries
-    # (memory maintenance, review queue, outbox, candidates, ...).
-    for req in INDEX_REQUIREMENTS:
-        known_paths.setdefault(req.collection_group, "")
-    with engine.begin() as conn:
-        for path in known_paths:
-            table, _ = resolve_collection(path)
-            conn.execute(text(build_ddl(table)))
-        # Upgrade every table created on demand by an older shim revision,
-        # including collections introduced by upstream business code that are
-        # not yet in either static registry. Account deletion discovers these
-        # tables from their schema, so leaving one on the three-column legacy
-        # shape would make user data invisible to the wipe.
-        legacy_tables = conn.execute(
-            text(
-                "SELECT table_name FROM information_schema.columns "
-                "WHERE table_schema = current_schema() AND column_name IN ('uid', 'doc_id', 'data') "
-                "GROUP BY table_name HAVING count(DISTINCT column_name) = 3"
-            )
-        ).fetchall()
-        for (table,) in legacy_tables:
-            conn.execute(text(build_ddl(table)))
-    logger.info("firestore_pg: schema ensured (%d tables)", len(known_paths))
+        url = make_url(dsn)
+        host = url.host or '<local-socket>'
+        port = f':{url.port}' if url.port is not None else ''
+        database = f'/{url.database}' if url.database else ''
+        return f'{host}{port}{database}'
+    except Exception:  # pragma: no cover - invalid URLs fail at create_engine
+        return '<invalid-postgresql-url>'
 
 
 # Top-level / per-user collections observed in database/*. The uid-namespaced
 # ones (users/{uid}/<coll>) are subcollection tables of the users/{uid} doc and
 # are enumerated by DocumentReference.collections().
-_KNOWN_COLLECTIONS: dict = {
+KNOWN_COLLECTIONS: dict[str, str] = {
     # top-level collections observed in database/*
     "users": "",
     "conversations": "",
@@ -110,22 +85,6 @@ _KNOWN_COLLECTIONS: dict = {
 }
 
 
-_created_tables: set = set()
-_created_tables_lock = threading.Lock()
-
-
-def ensure_table(table: str) -> None:
-    """Create a single collection table on first use (idempotent, cached)."""
-    from .sql import build_ddl
-
-    if table in _created_tables:
-        return
-    with get_engine().begin() as conn:
-        conn.execute(text(build_ddl(table)))
-    with _created_tables_lock:
-        _created_tables.add(table)
-
-
 # ---------------------------------------------------------------------------
 # Composite indexes derived from database.firestore_index_registry
 # ---------------------------------------------------------------------------
@@ -145,23 +104,22 @@ def ensure_table(table: str) -> None:
 
 
 def _pg_index_expr(field: Any) -> Optional[str]:
-    from .sql import resolve_collection  # noqa: F401  (table resolution lives there)
-
     path = field.field_path
     if path == "__name__":
         return "doc_id"
+    parsed = parse_field_path(path, allow_document_name=False)
     if getattr(field, "array_config", None) == "CONTAINS":
-        if "." in path:
-            segs = ",".join(path.split("."))
+        if len(parsed) > 1:
+            segs = ",".join(parsed)
             return f"(data #> '{{{segs}}}')"
-        return f"(data -> '{path}')"
-    if "." in path:
-        segs = ",".join(path.split("."))
+        return f"(data -> '{next(iter(parsed))}')"
+    if len(parsed) > 1:
+        segs = ",".join(parsed)
         return f"(data #>> '{{{segs}}}')"
-    return f"(data ->> '{path}')"
+    return f"(data ->> '{next(iter(parsed))}')"
 
 
-def ensure_composite_indexes(engine: Optional[Any] = None) -> int:
+def create_composite_indexes(conn: Connection, table_name_for_collection: Callable[[str], str]) -> int:
     """Create PG composite indexes mirroring firestore_index_registry.
 
     Idempotent (CREATE INDEX IF NOT EXISTS); returns the number of index DDLs
@@ -169,63 +127,41 @@ def ensure_composite_indexes(engine: Optional[Any] = None) -> int:
     are created — unknown groups are skipped (a later table use can still be
     served by expression scans).
     """
-    from .sql import resolve_collection
-    from database.firestore_index_registry import INDEX_REQUIREMENTS
-
-    engine = engine or get_engine()
     created = 0
-    with engine.begin() as conn:
-        for req in INDEX_REQUIREMENTS:
-            table, _ = resolve_collection(req.collection_group)
-            fields = [f for f in req.fields if f.field_path != "__name__"]
-            if not fields:
+    for req in INDEX_REQUIREMENTS:
+        table = table_name_for_collection(req.collection_group)
+        fields = [f for f in req.fields if f.field_path != "__name__"]
+        if not fields:
+            continue
+        exists = conn.execute(
+            text("SELECT 1 FROM pg_catalog.pg_class WHERE relname = :t"),
+            {"t": table},
+        ).fetchone()
+        if not exists:
+            continue
+        index_name = f"idx_{table}_fs_{req.identifier[-40:]}"
+        scalar_exprs = []
+        array_exprs = []
+        for field in fields:
+            expr = _pg_index_expr(field)
+            if expr is None:
                 continue
-            # Only create indexes for tables that exist (avoid creating tables
-            # for never-used collection groups just to index them).
-            exists = conn.execute(
-                text("SELECT 1 FROM pg_catalog.pg_class WHERE relname = :t"),
-                {"t": table},
-            ).fetchone()
-            if not exists:
-                continue
-            index_name = f"idx_{table}_fs_{req.identifier[-40:]}"
-            scalar_exprs = []
-            array_exprs = []
-            for field in fields:
-                expr = _pg_index_expr(field)
-                if expr is None:
-                    continue
-                if getattr(field, "array_config", None) == "CONTAINS":
-                    array_exprs.append(expr)
-                else:
-                    scalar_exprs.append(expr)
-            if scalar_exprs:
-                # include uid first: every shim query filters on uid for
-                # per-user tables; putting it first lets the btree narrow by user.
-                sql = f"CREATE INDEX IF NOT EXISTS {index_name} ON {table} USING btree (uid, {', '.join(scalar_exprs)})"
-                try:
-                    conn.execute(text(sql))
-                    created += 1
-                except Exception:  # pragma: no cover - expression/type mismatch on exotic fields
-                    logger.warning("firestore_pg: skip composite index %s: %s", index_name, _short_err())
-            if array_exprs:
-                array_name = f"{index_name}_gin"
-                sql = f"CREATE INDEX IF NOT EXISTS {array_name} ON {table} USING gin ({', '.join(array_exprs)})"
-                try:
-                    conn.execute(text(sql))
-                    created += 1
-                except Exception:  # pragma: no cover - expression/type mismatch
-                    logger.warning("firestore_pg: skip gin index %s: %s", array_name, _short_err())
+            if getattr(field, "array_config", None) == "CONTAINS":
+                array_exprs.append(expr)
+            else:
+                scalar_exprs.append(expr)
+        if scalar_exprs:
+            sql = f"CREATE INDEX IF NOT EXISTS {index_name} ON {table} USING btree (uid, {', '.join(scalar_exprs)})"
+            conn.execute(text(sql))
+            created += 1
+        if array_exprs:
+            array_name = f"{index_name}_gin"
+            sql = f"CREATE INDEX IF NOT EXISTS {array_name} ON {table} USING gin ({', '.join(array_exprs)})"
+            conn.execute(text(sql))
+            created += 1
     if created:
-        logger.info("firestore_pg: composite indexes ensured (%d)", created)
+        logger.info("firestore_pg: composite indexes migrated (%d)", created)
     return created
-
-
-def _short_err() -> str:
-    import traceback
-
-    tb = traceback.format_exc().strip().splitlines()
-    return tb[-1] if tb else "unknown"
 
 
 # Thread-local transaction connection. ``@firestore.transactional`` bodies run
@@ -234,13 +170,13 @@ def _short_err() -> str:
 _local = threading.local()
 
 
-def _set_tx_conn(conn: Connection) -> None:
+def set_tx_conn(conn: Connection) -> None:
     _local.tx_conn = conn
 
 
-def _get_tx_conn() -> Optional[Connection]:
+def get_tx_conn() -> Optional[Connection]:
     return getattr(_local, "tx_conn", None)
 
 
-def _clear_tx_conn() -> None:
+def clear_tx_conn() -> None:
     _local.tx_conn = None

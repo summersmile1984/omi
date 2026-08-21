@@ -21,9 +21,10 @@ def engine_conn():
     install()
     from sqlalchemy import text
 
-    from firestore_pg.engine import ensure_composite_indexes, ensure_tables, get_engine
+    from firestore_pg.engine import get_engine
+    from firestore_pg.migrations import migrate
 
-    ensure_tables()
+    migrate()
     engine = get_engine()
     with engine.begin() as conn:
         yield conn
@@ -71,9 +72,9 @@ def test_dotted_path_index_expression(engine_conn):
     assert "data #>> '{subject,kind}'" in indexdef, f"dotted path not nested access: {indexdef}"
 
 
-def test_index_creation_idempotent():
-    """ensure_composite_indexes twice must not error (CREATE INDEX IF NOT EXISTS)."""
-    from firestore_pg.engine import ensure_composite_indexes
+def test_forward_migration_is_idempotent():
+    """The forward migration owner is safe to execute repeatedly."""
+    from firestore_pg.migrations import migrate
 
-    ensure_composite_indexes()
-    ensure_composite_indexes()  # second call is a no-op
+    migrate()
+    migrate()
