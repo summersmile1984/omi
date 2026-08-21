@@ -20,19 +20,43 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-MOSS_API_BASE = os.getenv("MOSS_API_BASE", "https://api.mosi.cn")
-MOSS_API_KEY = os.getenv("MOSS_API_KEY", "")
-DEFAULT_TIMEOUT = float(os.getenv("MOSS_TIMEOUT_SECONDS", "120"))
+DEFAULT_TIMEOUT = 120.0
 POLL_INTERVAL = float(os.getenv("MOSS_POLL_INTERVAL_SECONDS", "3"))
 
 
 class MossAPIError(RuntimeError):
     """Raised for MOSS API failures (auth, validation, transport)."""
+
+
+def _configured_timeout() -> float:
+    try:
+        timeout = float(os.getenv("MOSS_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT)))
+    except ValueError as error:
+        raise MossAPIError("MOSS_TIMEOUT_SECONDS must be a number") from error
+    if timeout <= 0:
+        raise MossAPIError("MOSS_TIMEOUT_SECONDS must be positive")
+    return timeout
+
+
+def _configured_endpoint(value: str) -> str:
+    endpoint = value.strip().rstrip("/")
+    parsed = urlsplit(endpoint)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise MossAPIError("MOSS_API_BASE must be an explicit HTTP(S) endpoint without credentials or query")
+    return endpoint
 
 
 @dataclass
@@ -73,12 +97,19 @@ class MossClient:
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
     ) -> None:
-        self._api_key = api_key or MOSS_API_KEY
-        self._base = base_url or MOSS_API_BASE
-        self._timeout = timeout
-        self._client = httpx.Client(base_url=self._base, timeout=timeout)
+        self._api_key = (api_key or os.getenv("MOSS_API_KEY", "")).strip()
+        if not self._api_key:
+            raise MossAPIError("MOSS_API_KEY environment variable is required")
+        configured_base = base_url or os.getenv("MOSS_API_BASE", "")
+        if not configured_base.strip():
+            raise MossAPIError("MOSS_API_BASE environment variable is required")
+        self._base = _configured_endpoint(configured_base)
+        self._timeout = _configured_timeout() if timeout is None else timeout
+        if self._timeout <= 0:
+            raise MossAPIError("MOSS timeout must be positive")
+        self._client = httpx.Client(base_url=self._base, timeout=self._timeout)
 
     # ------------------------------------------------------------------
     # Files

@@ -49,7 +49,7 @@ speaker_map: S01 -> (person_id, person_name)
 ```python
 from utils.moss_pipeline.pipeline import MossSpeakerPipeline
 
-pipe = MossSpeakerPipeline()  # 读取 MOSS_API_KEY 环境变量
+pipe = MossSpeakerPipeline()  # 读取显式配置的 MOSS_API_KEY / MOSS_API_BASE
 wav = open("meeting.wav", "rb").read()
 people = {
     "alice": {"name": "Alice", "embedding": <(1,256) np.ndarray>},
@@ -65,7 +65,7 @@ for seg in result.segments:
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `MOSS_API_KEY` | — | **必填**。api.mosi.cn 控制台生成 |
-| `MOSS_API_BASE` | `https://api.mosi.cn` | API base |
+| `MOSS_API_BASE` | — | **必填**。显式的 MOSS/兼容服务 HTTP(S) API base；没有默认官方 endpoint |
 | `MOSS_TIMEOUT_SECONDS` | `120` | 请求超时 |
 | `SPEAKER_EMBEDDING_API_URL` | — | 说话人 embedding HTTP 端点(`/v2/embedding`,CPU 兼容) |
 
