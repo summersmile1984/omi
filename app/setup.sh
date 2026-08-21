@@ -98,13 +98,13 @@ function require_self_host_config() {
     echo "selfhost requires OMI_FIREBASE_SERVICES_ENABLED=false." >&2
     return 1
   fi
-  for key in OMI_API_BASE_URL OMI_AUTH_SERVER_URL OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL; do
+  for key in OMI_API_BASE_URL OMI_AUTH_SERVER_URL OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL OMI_MCP_BASE_URL; do
     value="${!key:-}"
     if [[ -z "$value" || "$value" =~ [[:space:]] ]]; then
       echo "$key is required for selfhost and must not contain whitespace." >&2
       return 1
     fi
-    if [[ "$key" == "OMI_PRIVACY_URL" || "$key" == "OMI_TERMS_URL" || "$key" == "OMI_SHARE_BASE_URL" ]]; then
+    if [[ "$key" == "OMI_PRIVACY_URL" || "$key" == "OMI_TERMS_URL" || "$key" == "OMI_SHARE_BASE_URL" || "$key" == "OMI_MCP_BASE_URL" ]]; then
       if [[ "$value" != https://* ]]; then
         echo "$key must use HTTPS for selfhost." >&2
         return 1
@@ -297,6 +297,7 @@ function run_build_android() {
   local profile='local_dev'
   local api_base_url="$ANDROID_LOCAL_API_BASE_URL"
   local emulator_host="$ANDROID_DEV_HOST"
+  local firebase_services_enabled="${OMI_FIREBASE_SERVICES_ENABLED:-true}"
   if [[ "$flavor" == "prod" || "$flavor" == "selfhost" ]]; then
     if [[ "$flavor" == "selfhost" ]]; then
       require_self_host_config false
@@ -315,6 +316,7 @@ function run_build_android() {
     "--dart-define=OMI_API_BASE_URL=$api_base_url"
   )
   if [[ "$flavor" == "selfhost" ]]; then
+    firebase_services_enabled=false
     flutter_args+=(
       '--dart-define=OMI_AUTH_PROVIDER=better_auth'
       '--dart-define=OMI_FIREBASE_SERVICES_ENABLED=false'
@@ -512,8 +514,10 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1}" in
   ios)
     if [[ "${2:-}" == "selfhost" ]]; then
-      echo "iOS selfhost is not wired to a native target in this setup script; refusing the managed prod fallback." >&2
-      exit 1
+      require_self_host_config false
+      generate_ios_self_host_config omi "${OMI_SELF_HOST_BUNDLE_ID:-com.friend-app-with-wearable.ios12.selfhost}"
+      setup_app_env self_hosted "$OMI_API_BASE_URL"
+      run_build_ios prod
     elif [[ "${2:-}" == "beta" ]]; then
       if [[ -z "${FIREBASE_SERVICE_ACCOUNT_KEY:-}" ]]; then
         echo "ios beta requires FIREBASE_SERVICE_ACCOUNT_KEY so the production Firebase app config can be generated." >&2

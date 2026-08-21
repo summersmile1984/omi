@@ -10,6 +10,10 @@ android_flavor='prod'
 if [[ "${OMI_AUTH_PROVIDER:-}" == "better_auth" && -z "${OMI_APP_PROFILE:-}" ]]; then
   app_profile='self_hosted'
 fi
+if [[ "${OMI_AUTH_PROVIDER:-}" == "better_auth" && "$app_profile" != 'self_hosted' ]]; then
+  echo "OMI_AUTH_PROVIDER=better_auth requires OMI_APP_PROFILE=self_hosted; refusing managed Firebase profile." >&2
+  exit 1
+fi
 if [[ "$app_profile" == 'self_hosted' ]]; then
   android_flavor='selfhost'
   if [[ "${OMI_AUTH_PROVIDER:-}" != "better_auth" ]]; then
@@ -20,7 +24,7 @@ if [[ "$app_profile" == 'self_hosted' ]]; then
     echo "self_hosted release requires OMI_FIREBASE_SERVICES_ENABLED=false." >&2
     exit 1
   fi
-  for required_origin in OMI_API_BASE_URL OMI_AUTH_SERVER_URL OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL; do
+  for required_origin in OMI_API_BASE_URL OMI_AUTH_SERVER_URL OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL OMI_MCP_BASE_URL; do
     required_value="${!required_origin:-}"
     if [[ -z "$required_value" || "$required_value" =~ [[:space:]] ]]; then
       echo "$required_origin is required for a self_hosted release." >&2
@@ -49,7 +53,7 @@ if [[ -n "${OMI_AUTH_PROVIDER:-}" ]]; then
     exit 1
   fi
   if [[ "${OMI_AUTH_PROVIDER}" == "better_auth" ]]; then
-    for public_origin in OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL; do
+    for public_origin in OMI_PRIVACY_URL OMI_TERMS_URL OMI_SHARE_BASE_URL OMI_MCP_BASE_URL; do
       if [[ -z "${!public_origin:-}" ]]; then
         echo "${public_origin} is required when OMI_AUTH_PROVIDER=better_auth" >&2
         exit 1
@@ -68,7 +72,7 @@ if [[ -n "${OMI_AUTH_PROVIDER:-}" ]]; then
 fi
 
 flutter clean
-flutter pub get
+flutter pub get --enforce-lockfile
 dart run build_runner build
 flutter build appbundle "${flutter_args[@]}"
 flutter build apk "${flutter_args[@]}"
