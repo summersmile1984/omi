@@ -55,6 +55,21 @@ def test_migration_entrypoint_resolves_backend_packages_from_any_working_directo
     assert 'Explicit schema and Firestore import owner' in result.stdout
 
 
+def test_firestore_import_rejects_non_private_source_credentials(tmp_path: Path) -> None:
+    credentials = tmp_path / 'source-credentials.json'
+    credentials.write_text('{}', encoding='utf-8')
+    credentials.chmod(0o644)
+    args = SimpleNamespace(
+        source_project='operator-firestore',
+        source_database='(default)',
+        source_credentials=credentials,
+        source_endpoint='https://firestore.googleapis.com',
+    )
+
+    with pytest.raises(ValueError, match='credentials.*0600'):
+        firestore_pg_migrate._source_client(args)
+
+
 class _Snapshot:
     def __init__(self, reference, data):
         self.reference = reference
