@@ -853,6 +853,10 @@ also caller-configured authorities: add their host names explicitly when
 using those integrations in a neutral deployment. The backend validates these
 authorities before manifest probes, OAuth/MCP requests, or tool execution and
 never treats a cached manifest as permission to bypass the allowlist.
+Managed OAuth integrations (for example Google Calendar) are unavailable in
+the checked-in neutral profile until an operator-owned integration authority is
+configured; the backend rejects the managed authorization/token hosts before
+creating OAuth state or opening a client.
 This guard covers the backend shared HTTP clients only and is not a network
 firewall or a claim of universal socket isolation.
 

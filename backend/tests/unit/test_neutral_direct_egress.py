@@ -82,3 +82,22 @@ async def test_mcp_transport_rejects_forbidden_authority_before_client(monkeypat
             await mcp_client._mcp_post('https://api.openai.com/mcp', {'jsonrpc': '2.0', 'id': 1})
 
     client.assert_not_called()
+
+
+def test_neutral_profile_rejects_managed_oauth_authority_before_state(monkeypatch):
+    """Self-hosted integrations do not hand managed OAuth URLs to a browser."""
+
+    from fastapi import HTTPException
+    from routers import integrations as integrations_router
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+    monkeypatch.setenv('BASE_API_URL', 'https://api.operator.example')
+    monkeypatch.setenv('GOOGLE_CLIENT_ID', 'operator-test-client')
+    with patch.object(integrations_router.redis_db.r, 'setex') as setex:
+        with pytest.raises(HTTPException) as raised:
+            integrations_router.get_oauth_url('google_calendar', uid='uid-1')
+
+    assert raised.value.status_code == 503
+    assert 'official_endpoint_forbidden' in str(raised.value.detail)
+    setex.assert_not_called()
