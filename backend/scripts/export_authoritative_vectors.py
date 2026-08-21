@@ -30,6 +30,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
+from models.structured import Structured
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -262,9 +264,7 @@ def _record_from_document(namespace: str, uid: str, document: SourceDocument) ->
             return None
         structured = data.get('structured')
         structured_map = structured if isinstance(structured, Mapping) else {}
-        title = _text(structured_map.get('title'))
-        overview = _text(structured_map.get('overview'))
-        content = overview or title
+        content = _conversation_embedding_text(structured_map)
         if not content:
             return None
         metadata = {
@@ -357,6 +357,21 @@ def _record_from_document(namespace: str, uid: str, document: SourceDocument) ->
         return _record(f'{uid}-ai-{action_item_id}', content, metadata)
 
     raise ExportError(f'unsupported namespace {namespace!r}')
+
+
+def _conversation_embedding_text(structured: Mapping[str, Any]) -> str:
+    """Use the exact text representation used by the production vector writer.
+
+    ``save_structured_vector`` embeds ``str(conversation.structured)``.  The
+    migration exporter must not substitute a title/overview shortcut: doing so
+    would produce a different vector for the same authoritative document.
+    """
+
+    try:
+        value = Structured.model_validate(dict(structured))
+    except Exception as error:
+        raise ExportError('conversation structured payload cannot be validated for vector export') from error
+    return str(value).strip()
 
 
 def _transcript_chunk_records(authority: ReadOnlyAuthority, uid: str) -> list[dict[str, Any]]:

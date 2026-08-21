@@ -114,7 +114,7 @@ def test_export_writes_all_seven_authority_namespaces_and_hash_bound_sidecar(tmp
         for item in manifest['files']
     }
     assert records['ns1'][0]['id'] == 'u1-c1'
-    assert records['ns1'][0]['content'] == 'A summary'
+    assert records['ns1'][0]['content'] == 'A title (Other)\nA summary'
     assert records['ns2'][0]['id'] == 'u1-m1'
     assert records['workstream-association-v1'][0]['id'] == 'u1:workstream:3:w1'
     assert records['ns_x'][0]['id'] == 'u1-x-p1'
