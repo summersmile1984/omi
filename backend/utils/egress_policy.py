@@ -35,6 +35,8 @@ OFFICIAL_HOST_SUFFIXES = frozenset(
         'openai.com',
         'anthropic.com',
         'deepgram.com',
+        'github.com',
+        'githubusercontent.com',
         'googleapis.com',
         'google.com',
         'generativelanguage.com',

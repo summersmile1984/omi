@@ -17,6 +17,7 @@ from utils.http_client import (
 )
 from utils.executors import db_executor, postprocess_executor, run_blocking
 from utils.async_tasks import gather_safe
+from utils.egress_policy import assert_http_endpoint_allowed
 import utils.dev_cache as dev_cache
 
 import database.notifications as notification_db
@@ -160,6 +161,11 @@ def get_github_docs_content(repo="BasedHardware/omi", path="docs/doc"):
     If cached, returns cached content. (24 hours)
     So any changes to the docs will take 24 hours to be reflected.
     """
+    # Check the authority before consulting cache as well: a neutral process
+    # must not treat a previously cached managed-only document as an implicit
+    # product capability.  The product-tool boundary can then return its
+    # typed/unavailable response without touching the network.
+    assert_http_endpoint_allowed(f"https://api.github.com/repos/{repo}/contents/{path}")
     if cached := get_generic_cache(f'get_github_docs_content_{repo}_{path}'):
         return cached
     docs_content = {}
@@ -167,6 +173,11 @@ def get_github_docs_content(repo="BasedHardware/omi", path="docs/doc"):
 
     def get_contents(path):
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
+        # This synchronous helper predates the shared AsyncClient pools, so it
+        # does not inherit their request hook.  Product-doc retrieval is a
+        # managed convenience, not an implicit authority for neutral/self-host
+        # deployments: reject the GitHub API before DNS/transport there.
+        assert_http_endpoint_allowed(url)
         response = httpx.get(url, headers=headers, timeout=30.0)
 
         if response.status_code != 200:
@@ -181,7 +192,11 @@ def get_github_docs_content(repo="BasedHardware/omi", path="docs/doc"):
         for item in contents:
             if item["type"] == "file" and (item["name"].endswith(".md") or item["name"].endswith(".mdx")):
                 # Get raw content for documentation files
-                raw_response = httpx.get(item["download_url"], headers=headers, timeout=30.0)
+                download_url = item.get("download_url")
+                if not isinstance(download_url, str) or not download_url:
+                    continue
+                assert_http_endpoint_allowed(download_url)
+                raw_response = httpx.get(download_url, headers=headers, timeout=30.0)
                 if raw_response.status_code == 200:
                     docs_content[item["path"]] = raw_response.text
 
