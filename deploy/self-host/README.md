@@ -783,6 +783,20 @@ SELF_HOST_ACCEPTANCE_EVIDENCE=/secure/change-record/zero-vendor-local.json \
   deploy/self-host/zero-vendor-acceptance.sh --cutover-live
 ```
 
+The backend's shared `httpx` pools also enforce an application-level authority
+boundary before DNS or transport: `SELF_HOST_EGRESS_ALLOWLIST` is a
+comma-separated list of operator-owned external host names (an explicit
+`*.example` suffix is supported), while reviewed Compose service authorities
+such as `auth-server`, `searxng`, and `host.docker.internal` remain internal.
+Neutral/self-hosted requests to official Omi/model/telemetry hosts, or to an
+undeclared external host, raise the typed
+`deployment_capability_unavailable/endpoint_not_allowlisted` boundary before
+the request is sent. The checked-in example includes the generic LLM,
+realtime, and object authorities; operators must add any optional push, TTS,
+icon, maps, webhook, or user-fetch authority they intentionally enable.
+This guard covers the backend shared HTTP clients only and is not a network
+firewall or a claim of universal socket isolation.
+
 Local Compose does not impose a network-level application egress policy, so its
 evidence says `live_sentinel_egress_policy.enforcement=not_enforced_by_compose`
 and never claims live DNS denial. It can authorize only the exact tested
