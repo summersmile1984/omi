@@ -1,6 +1,6 @@
 """MiMo-V2.5-TTS synthesis client for the cloud-neutral Omi fork.
 
-MiMo-V2.5-TTS is an OpenAI-compatible chat completions endpoint (NOT
+MiMo-V2.5-TTS is an operator-configured OpenAI-compatible chat completions endpoint (NOT
 ``/v1/audio/speech``): the text goes in the ``assistant`` message and the
 audio comes back base64-encoded in ``choices.message.audio.data``.
 
@@ -22,27 +22,15 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from .config import MimoConfigurationError, resolve_mimo_config, timeout_seconds
+
 logger = logging.getLogger(__name__)
 
-# Same endpoint family as the ASR client. MIMO_USE_TOKENPLAN switches to the
-# China TokenPlan base (tp- keys), which is what self-hosted CN deploys use.
-MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com")
-MIMO_TOKENPLAN_BASE = os.getenv("MIMO_TOKENPLAN_BASE", "https://token-plan-cn.xiaomimimo.com")
-MIMO_API_KEY = os.getenv("MIMO_API_KEY", "")
-MIMO_TTS_MODEL = os.getenv("MIMO_TTS_MODEL", "mimo-v2.5-tts")
-MIMO_TTS_VOICE = os.getenv("MIMO_TTS_VOICE", "冰糖")
-MIMO_TTS_FORMAT = os.getenv("MIMO_TTS_FORMAT", "wav")
-DEFAULT_TIMEOUT = float(os.getenv("MIMO_TIMEOUT_SECONDS", "120"))
+DEFAULT_TIMEOUT = 120.0
 
 
 class MimoTTSAPIError(RuntimeError):
     """Raised for MiMo TTS API failures (auth, validation, transport)."""
-
-
-def _resolve_base_url() -> str:
-    if os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in ("1", "true", "yes"):
-        return MIMO_TOKENPLAN_BASE
-    return MIMO_API_BASE
 
 
 class MimoTTSClient:
@@ -54,13 +42,20 @@ class MimoTTSClient:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         voice: Optional[str] = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
     ) -> None:
-        self._api_key = api_key or MIMO_API_KEY
-        self._base_url = (base_url or _resolve_base_url()).rstrip("/")
-        self._model = model or MIMO_TTS_MODEL
-        self._voice = voice or MIMO_TTS_VOICE
-        self._timeout = timeout
+        try:
+            config = resolve_mimo_config(api_key=api_key, base_url=base_url)
+            request_timeout = timeout_seconds(DEFAULT_TIMEOUT) if timeout is None else timeout
+        except MimoConfigurationError as exc:
+            raise MimoTTSAPIError(str(exc)) from exc
+        if request_timeout <= 0:
+            raise MimoTTSAPIError("MIMO_TIMEOUT_SECONDS must be greater than zero")
+        self._api_key = config.api_key
+        self._base_url = config.base_url
+        self._model = model or os.getenv("MIMO_TTS_MODEL", "mimo-v2.5-tts").strip() or "mimo-v2.5-tts"
+        self._voice = voice or os.getenv("MIMO_TTS_VOICE", "冰糖").strip() or "冰糖"
+        self._timeout = request_timeout
 
     def _endpoint(self) -> str:
         return f"{self._base_url}/v1/chat/completions"
@@ -80,10 +75,7 @@ class MimoTTSClient:
         """
         if not text.strip():
             raise MimoTTSAPIError("empty TTS text")
-        if not self._api_key:
-            raise MimoTTSAPIError("MIMO_API_KEY environment variable not set")
-
-        fmt = audio_format or MIMO_TTS_FORMAT
+        fmt = audio_format or os.getenv("MIMO_TTS_FORMAT", "wav").strip() or "wav"
         voice_id = voice or self._voice
         messages: list[Dict[str, Any]] = []
         if style_instruction:

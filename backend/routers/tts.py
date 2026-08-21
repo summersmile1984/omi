@@ -22,6 +22,7 @@ from database import redis_db
 from models.tts import DEFAULT_VOICE_ID, TtsSynthesizeRequest
 from utils.http_client import get_tts_client, get_tts_semaphore
 from utils.log_sanitizer import sanitize
+from utils.mimo_pipeline.config import mimo_is_configured
 from utils.other import endpoints as auth
 from utils.executors import run_blocking, critical_executor
 
@@ -50,11 +51,14 @@ def _is_valid_voice_id(voice_id: str) -> bool:
 
 
 def _is_mimo_enabled() -> bool:
-    """MiMo-TTS is the active provider when TTS_PROVIDER=mimo and a key is set."""
-    return (
-        os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo"
-        and bool(os.getenv("MIMO_API_KEY"))
-    )
+    """MiMo-TTS is active only with an explicit operator endpoint and key."""
+    return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and mimo_is_configured()
+
+
+def _mimo_selected_but_unavailable() -> bool:
+    """Keep an explicitly selected provider from falling through to a vendor."""
+
+    return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and not mimo_is_configured()
 
 
 @router.post(
@@ -77,6 +81,8 @@ async def tts_synthesize(
     """Proxy a TTS request to the configured provider. Per-user rate limited."""
     api_key = os.getenv('ELEVENLABS_API_KEY')
     mimo_enabled = _is_mimo_enabled()
+    if _mimo_selected_but_unavailable():
+        raise HTTPException(status_code=503, detail="MiMo TTS is not configured")
     if not api_key and not mimo_enabled:
         logger.error("tts_synthesize: no TTS provider configured (ELEVENLABS_API_KEY or MIMO_API_KEY)")
         raise HTTPException(status_code=503, detail="TTS service not configured")

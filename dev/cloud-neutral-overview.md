@@ -19,8 +19,8 @@
       ┌──────────┬──────────┬──────────┬───────────┐
       │          │          │          │           │
       ▼          ▼          ▼          ▼           ▼
-   firestore_pg  MinIO      Redis      MiMo       DeepSeek
-   (PostgreSQL) (存储)      (队列)   (STT/TTS)  (聊天/翻译)
+   firestore_pg  MinIO      Redis      operator    operator
+   (PostgreSQL) (存储)      (队列)   ASR/TTS      LLM
 ```
 
 ## 组件状态
@@ -36,11 +36,11 @@
 ### AI 功能(无 GPU,全真实可用)
 | 功能 | Provider | 状态 |
 |---|---|---|
-| live STT | MiMo-V2.5-ASR(`mimo-v2.5-asr`) | ✅ 真实转写 |
-| 批 ASR | OpenMOSS | ✅ 分离 S01/S02 |
-| TTS | MiMo-V2.5-TTS(`mimo-v2.5-tts`) | ✅ 桌面端播报确认 |
-| 翻译 | DeepSeek | ✅ 中译 |
-| 聊天 | DeepSeek(Anthropic 兼容) | ✅ |
+| live STT | MiMo-compatible operator endpoint (`mimo-v2.5-asr`) | ✅ 真实转写；无 endpoint 默认 |
+| 批 ASR | OpenMOSS-compatible operator endpoint | ✅ 分离 S01/S02；authority 必须显式配置 |
+| TTS | MiMo-compatible operator endpoint (`mimo-v2.5-tts`) | ✅ 桌面端播报确认；无 vendor 默认 |
+| 翻译 | operator-configured OpenAI-compatible endpoint | ✅ 中译 |
+| 聊天 | operator-configured OpenAI-compatible endpoint | ✅ |
 
 ### 端到端验证
 | 端 | 认证 | 数据 | AI |
@@ -55,7 +55,8 @@ AUTH_PROVIDER=better_auth        AUTH_JWKS_URL=http://127.0.0.1:3000/api/auth/jw
 STORAGE_BACKEND=minio            MINIO_ENDPOINT=http://127.0.0.1:9000
 QUEUE_BACKEND=redis              REDIS_DB_HOST=127.0.0.1
 STT_SERVICE_MODELS=sensevoice|mimo   SENSEVOICE_MODEL_DIR=/tmp/sherpa/...
-TTS_PROVIDER=mimo                MIMO_API_KEY=<tp- key>  MIMO_USE_TOKENPLAN=1
+TTS_PROVIDER=mimo                MIMO_API_KEY=<operator key>
+MIMO_API_BASE=http://127.0.0.1:5002/mimo
 TRANSLATION_PROVIDER=deepseek    CHAT_PROVIDER=deepseek
 ```
 

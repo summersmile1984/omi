@@ -14,21 +14,21 @@ audio transcoding to MiMo's server side instead of a local sherpa-onnx model.
 from __future__ import annotations
 
 import logging
-import os
 import tempfile
 import wave
 from typing import Any, Callable, Optional
 
 import httpx
 
+from .config import mimo_is_configured
 from utils.stt.socket import STTSocket
 
 logger = logging.getLogger(__name__)
 
 
 def _mimo_available() -> bool:
-    """True when MiMo streaming STT is configured (key set)."""
-    return bool(os.getenv("MIMO_API_KEY"))
+    """True when both the operator endpoint and credential are configured."""
+    return mimo_is_configured()
 
 
 def _pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:

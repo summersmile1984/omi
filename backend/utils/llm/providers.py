@@ -21,6 +21,11 @@ from utils.llm.gateway_client import GatewayContextChatOpenAI, get_llm_gateway_b
 from utils.llm.gateway_resilience import gateway_transport_timeout
 from utils.llm.openrouter_model_names import openrouter_provider_model_name
 from utils.llm.usage_tracker import get_usage_callback
+from utils.mimo_pipeline.config import (
+    MimoConfigurationError,
+    resolve_mimo_config,
+    resolve_mimo_openai_base_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +58,9 @@ OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
     'mimo': OpenAICompatibleProviderConfig(
         name='mimo',
         api_key_env='MIMO_API_KEY',
-        base_url="https://token-plan-cn.xiaomimimo.com/v1",
+        # The authority is resolved from MIMO_API_BASE/TOKENPLAN_BASE at the
+        # call boundary. Never silently construct the vendor default.
+        base_url=None,
     ),
     # DeepSeek (OpenAI-compatible)
     'deepseek': OpenAICompatibleProviderConfig(
@@ -100,6 +107,17 @@ def get_or_create_openai_compatible_llm(
         'api_key',
     }
     _effective_options = {k: v for k, v in options.items() if k in _handled_options}
+    resolved_mimo_config = None
+    if provider == 'mimo':
+        try:
+            resolved_mimo_config = resolve_mimo_config(
+                api_key=options.get('api_key'),
+                base_url=options.get('base_url'),
+            )
+        except MimoConfigurationError as exc:
+            raise ValueError(str(exc)) from exc
+        _effective_options['base_url'] = resolve_mimo_openai_base_url(resolved_mimo_config.base_url)
+        _effective_options['api_key'] = hashlib.sha256(resolved_mimo_config.api_key.encode()).hexdigest()
     key = _cache_key(provider, model_name, streaming, _effective_options)
     if key not in _llm_cache:
         kwargs: Dict[str, Any] = {
@@ -109,11 +127,15 @@ def get_or_create_openai_compatible_llm(
             'request_timeout': options.get('request_timeout', 120),
             'max_retries': options.get('max_retries', 1),
         }
-        api_key = os.environ.get(provider_config.api_key_env)
-        if api_key:
-            kwargs['api_key'] = api_key
-        if provider_config.base_url:
-            kwargs['base_url'] = provider_config.base_url
+        if resolved_mimo_config is not None:
+            kwargs['api_key'] = resolved_mimo_config.api_key
+            kwargs['base_url'] = resolve_mimo_openai_base_url(resolved_mimo_config.base_url)
+        else:
+            api_key = os.environ.get(provider_config.api_key_env)
+            if api_key:
+                kwargs['api_key'] = api_key
+            if provider_config.base_url:
+                kwargs['base_url'] = provider_config.base_url
         if provider_config.default_headers:
             kwargs['default_headers'] = provider_config.default_headers
         if options.get('extra_body'):

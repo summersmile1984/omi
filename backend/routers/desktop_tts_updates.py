@@ -15,6 +15,7 @@ from database._client import get_firestore_client
 from utils.byok import get_byok_key
 from utils.executors import critical_executor, db_executor, run_blocking
 from utils.log_sanitizer import sanitize
+from utils.mimo_pipeline.config import mimo_is_configured
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_trial_paywalled
 
@@ -74,11 +75,14 @@ def _is_allowed_openai_voice(voice_id: str) -> bool:
 
 
 def mimo_tts_enabled() -> bool:
-    """True when the desktop TTS endpoint should use self-hosted MiMo-TTS."""
-    return (
-        os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo"
-        and bool(os.getenv("MIMO_API_KEY"))
-    )
+    """True when desktop TTS has an explicit operator endpoint and key."""
+    return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and mimo_is_configured()
+
+
+def mimo_tts_selected_but_unavailable() -> bool:
+    """Prevent an invalid explicit MiMo selection from falling through to OpenAI."""
+
+    return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and not mimo_is_configured()
 
 
 async def _mimo_tts_synthesize(text: str) -> bytes:
@@ -203,6 +207,8 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
         raise HTTPException(status_code=400, detail="text is too long")
 
     # Cloud-neutral override: MiMo-TTS (self-hosted) when TTS_PROVIDER=mimo.
+    if mimo_tts_selected_but_unavailable():
+        raise HTTPException(status_code=503, detail="MiMo TTS is not configured")
     if mimo_tts_enabled():
         try:
             audio = await _mimo_tts_synthesize(text)

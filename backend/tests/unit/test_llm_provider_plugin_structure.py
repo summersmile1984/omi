@@ -201,6 +201,31 @@ def test_unknown_openai_compatible_provider_fails_loudly():
         providers.get_or_create_openai_compatible_llm('missing-provider', 'some-model')
 
 
+def test_mimo_requires_explicit_operator_endpoint(monkeypatch):
+    FakeChatOpenAI.calls.clear()
+    providers._llm_cache.clear()
+    monkeypatch.setattr(providers, 'ChatOpenAI', FakeChatOpenAI)
+    monkeypatch.setenv('MIMO_API_KEY', 'sk-mimo')
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+
+    with pytest.raises(ValueError, match='MIMO_API_BASE'):
+        providers.get_or_create_openai_compatible_llm('mimo', 'mimo-chat')
+    assert FakeChatOpenAI.calls == []
+
+
+def test_mimo_uses_explicit_operator_endpoint(monkeypatch):
+    FakeChatOpenAI.calls.clear()
+    providers._llm_cache.clear()
+    monkeypatch.setattr(providers, 'ChatOpenAI', FakeChatOpenAI)
+    monkeypatch.setenv('MIMO_API_KEY', 'sk-mimo')
+    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
+
+    providers.get_or_create_openai_compatible_llm('mimo', 'mimo-chat')
+    call = FakeChatOpenAI.calls[-1]
+    assert call['api_key'] == 'sk-mimo'
+    assert call['base_url'] == 'http://operator.example.test/mimo/v1'
+
+
 def test_route_options_keep_provider_quirks_out_of_callsites():
     assert get_route_options('wrapped_analysis', 'gemini-3-flash-preview', 'openrouter')['temperature'] == 0.7
     assert get_route_options('followup', 'gemini-2.5-flash-lite', 'gemini')['thinking_budget'] == 0

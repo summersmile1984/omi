@@ -21,10 +21,25 @@ def test_mimo_enabled_only_when_provider_and_key_set(monkeypatch):
     assert mimo_tts_enabled() is False  # no key
 
     monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
     assert mimo_tts_enabled() is True
 
     monkeypatch.setenv('TTS_PROVIDER', 'openai')
     assert mimo_tts_enabled() is False  # other provider wins
+
+
+def test_explicit_mimo_selection_does_not_fall_through_to_openai(monkeypatch):
+    import routers.desktop_tts_updates as mod
+    from fastapi import HTTPException
+
+    monkeypatch.setenv('TTS_PROVIDER', 'mimo')
+    monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+    monkeypatch.setenv('OPENAI_API_KEY', 'must-not-be-used')
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio_run(mod.tts_synthesize(mod.TtsSynthesizeRequest(text='hello', voice_id='alloy'), uid='user'))
+    assert exc_info.value.status_code == 503
 
 
 def test_mimo_synthesize_uses_client_and_returns_audio(monkeypatch):
@@ -73,11 +88,13 @@ def test_mimo_synthesize_raises_on_client_error(monkeypatch):
 
 def asyncio_run(coro):
     import asyncio
-    return asyncio.get_event_loop().run_until_complete(coro)
+
+    return asyncio.run(coro)
 
 
 def asyncio_future(value):
     import asyncio
+
     f = asyncio.get_event_loop().create_future()
     f.set_result(value)
     return f

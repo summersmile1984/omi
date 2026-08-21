@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from utils.mimo_pipeline.config import MimoConfigurationError, validate_mimo_base_url
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, _guess_format
 from utils.mimo_pipeline.socket import MimoSttSocket, _mimo_available, _pcm16_to_wav
 from utils.stt.streaming import STTService, get_stt_service_for_language
@@ -20,8 +21,11 @@ def test_mimo_service_value_registered():
 
 def test_enabled_only_with_key(monkeypatch):
     monkeypatch.delenv('MIMO_API_KEY', raising=False)
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
     assert _mimo_available() is False
     monkeypatch.setenv('MIMO_API_KEY', 'key')
+    assert _mimo_available() is False  # endpoint is required as well
+    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
     assert _mimo_available() is True
 
 
@@ -29,6 +33,7 @@ def test_select_routes_to_mimo_when_configured(monkeypatch):
     import utils.stt.streaming as streaming
 
     monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
     monkeypatch.delenv('SENSEVOICE_MODEL_DIR', raising=False)
     # stt_service_models is read at import time; patch the module-level list.
     monkeypatch.setattr(streaming, 'stt_service_models', ['mimo'])
@@ -43,6 +48,7 @@ def test_select_ignores_mimo_without_key(monkeypatch):
     import utils.stt.streaming as streaming
 
     monkeypatch.delenv('MIMO_API_KEY', raising=False)
+    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
     monkeypatch.delenv('SENSEVOICE_MODEL_DIR', raising=False)
     monkeypatch.setattr(streaming, 'stt_service_models', ['mimo'])
     result = get_stt_service_for_language('zh-CN')
@@ -124,7 +130,46 @@ def test_guess_format_by_suffix_and_content_type():
 
 def test_client_requires_api_key():
     with pytest.raises(MimoAPIError, match='MIMO_API_KEY'):
-        MimoClient(api_key='')._headers()
+        MimoClient(api_key='', base_url='http://operator.example.test')
+
+
+def test_client_requires_explicit_endpoint(monkeypatch):
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+    monkeypatch.setenv('MIMO_API_KEY', 'test-key')
+    with pytest.raises(MimoAPIError, match='MIMO_API_BASE'):
+        MimoClient()
+
+
+@pytest.mark.parametrize(
+    'endpoint',
+    [
+        'ftp://operator.example.test',
+        'https://user:pass@operator.example.test',
+        'https://operator.example.test/path?token=secret',
+        'https://operator.example.test/path#fragment',
+        'https://operator.example.test:bad',
+    ],
+)
+def test_client_rejects_unsafe_endpoint(endpoint):
+    with pytest.raises(MimoAPIError):
+        MimoClient(api_key='test-key', base_url=endpoint)
+
+
+def test_operator_endpoint_is_used_without_vendor_default():
+    client = MimoClient(api_key='test-key', base_url='http://operator.example.test/mimo/')
+    assert client._endpoint() == 'http://operator.example.test/mimo/v1/chat/completions'
+
+
+def test_endpoint_validator_allows_private_operator_authority():
+    assert validate_mimo_base_url('http://10.0.0.8:8080/mimo/') == 'http://10.0.0.8:8080/mimo'
+    with pytest.raises(MimoConfigurationError):
+        validate_mimo_base_url('https://operator.example.test?x=1')
+
+
+@pytest.mark.parametrize('endpoint', ['https://api.xiaomimimo.com', 'https://token-plan-cn.xiaomimimo.com'])
+def test_endpoint_validator_rejects_known_vendor_authority(endpoint):
+    with pytest.raises(MimoConfigurationError, match='operator-owned'):
+        validate_mimo_base_url(endpoint)
 
 
 def test_transcribe_audio_builds_input_audio_and_parses_response(monkeypatch):
@@ -144,7 +189,7 @@ def test_transcribe_audio_builds_input_audio_and_parses_response(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(mod.httpx, 'post', _post)
-    client = MimoClient(api_key='test-key')
+    client = MimoClient(api_key='test-key', base_url='http://operator.example.test')
     result = client.transcribe_audio(b'\x00\x01', audio_format='wav', language='zh')
     assert result.text == '你好世界'
     assert result.segments[0].text == '你好世界'
@@ -161,7 +206,7 @@ def test_transcribe_audio_builds_input_audio_and_parses_response(monkeypatch):
 
 def test_transcribe_audio_rejects_oversized(monkeypatch):
     monkeypatch.setattr('utils.mimo_pipeline.mimo_client.MAX_AUDIO_BYTES', 10)
-    client = MimoClient(api_key='test-key')
+    client = MimoClient(api_key='test-key', base_url='http://operator.example.test')
     with pytest.raises(MimoAPIError, match='too large'):
         client.transcribe_audio(b'\x00' * 100)
 
@@ -178,7 +223,7 @@ def test_transcribe_audio_raises_on_error_response(monkeypatch):
             return {'error': {'message': 'bad key'}}
 
     monkeypatch.setattr(mod.httpx, 'post', lambda *a, **kw: _ErrResp())
-    client = MimoClient(api_key='wrong')
+    client = MimoClient(api_key='wrong', base_url='http://operator.example.test')
     with pytest.raises(MimoAPIError, match='bad key'):
         client.transcribe_audio(b'\x00\x01')
 
@@ -193,6 +238,6 @@ def test_transcribe_audio_raises_on_unexpected_shape(monkeypatch):
             return {'choices': []}
 
     monkeypatch.setattr(mod.httpx, 'post', lambda *a, **kw: _FakeResp())
-    client = MimoClient(api_key='test-key')
+    client = MimoClient(api_key='test-key', base_url='http://operator.example.test')
     with pytest.raises(MimoAPIError, match='unexpected'):
         client.transcribe_audio(b'\x00\x01')

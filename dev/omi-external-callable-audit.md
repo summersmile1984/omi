@@ -20,8 +20,8 @@
 | **存储桶** (MinIO 9 桶) | `BUCKET_SPEECH_PROFILES` 等 9 个 | `bucket(name)` 自动创建全部 9 桶 | ✅ |
 | **队列** (Redis) | `QUEUE_BACKEND=redis` + `REDIS_DB_HOST/PORT` | `enqueue_sync_job` → SADD 去重 → worker BLPOP → POST handler(403 因缺 Cloud Tasks OIDC,预期边界) | ✅ |
 | **批 STT** (MOSS) | `STT_PRERECORDED_MODEL=moss` + `MOSS_API_KEY` | 先前验证分离 S01/S02(需真实 key) | ⚠️ 可选增强 |
-| **live STT** (MiMo-V2.5-ASR) | `STT_SERVICE_MODELS=mimo` + `MIMO_API_KEY` + `MIMO_USE_TOKENPLAN=1` | **真实转写成功**(2026-08-10):`你好，世界，这是测试。`;需 `tp-` 前缀 TokenPlan key | ✅ |
-| **TTS** (MiMo-V2.5-TTS) | `TTS_PROVIDER=mimo` + `MIMO_API_KEY` + `MIMO_USE_TOKENPLAN=1` | **真实合成成功**(2026-08-10):`/v2/tts/synthesize` → 200,24kHz 2.7s WAV(冰糖音色) | ✅ |
+| **live STT** (MiMo-compatible) | `STT_SERVICE_MODELS=mimo` + `MIMO_API_KEY` + explicit operator `MIMO_API_BASE` | **真实转写成功**(2026-08-10):`你好，世界，这是测试。`; vendor endpoint 不再自动选择 | ✅ |
+| **TTS** (MiMo-compatible) | `TTS_PROVIDER=mimo` + `MIMO_API_KEY` + explicit operator `MIMO_API_BASE` | **真实合成成功**(2026-08-10):`/v2/tts/synthesize` → 200,24kHz 2.7s WAV(冰糖音色)；vendor endpoint 不再自动选择 | ✅ |
 | **说话人识别** | MOSS 识别 + 本地 wespeaker | 调研完成,未接默认链路 | ⚠️ 可选增强 |
 
 ## 修复的配置缺口
@@ -53,8 +53,7 @@
 - 验证后端: 完整 env 集合 :8102 → 全绿后清理;生产实例 :8100 未动
 - 真实 key: DEEPSEEK_API_KEY / ANTHROPIC_API_KEY(指向 api.deepseek.com)注入运行进程
 - 模型目录: `/tmp/sherpa/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`(model.int8.onnx + tokens.txt)
-- **MiMo key 类型**: `tp-` 前缀 = TokenPlan(需 `MIMO_USE_TOKENPLAN=1`,指向 `token-plan-cn.xiaomimimo.com`);
-  `sk-` 前缀 = 按量(指向 `api.xiaomimimo.com`,需账户余额)。MiMo 平台 2026.1.26 起计费,余额不足返回 402。
+- **MiMo endpoint**: 必须由 operator 显式配置 `MIMO_API_BASE`（或显式的 `MIMO_TOKENPLAN_BASE`）；服务不会根据 key 前缀选择 vendor authority，已知 vendor authority 会在 client 构造前拒绝。
 
 ## 复跑命令
 

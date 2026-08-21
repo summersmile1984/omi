@@ -1,8 +1,9 @@
 """MiMo-V2.5-ASR official API client: transcribe audio via OpenAI-compatible
 chat completions.
 
-Platform: https://mimo.mi.com · API base: https://api.xiaomimimo.com
-(China TokenPlan base: https://token-plan-cn.xiaomimimo.com, same /v1 shape)
+Platform: operator-configured OpenAI-compatible endpoint (the authority is
+never selected implicitly).  The endpoint may be a self-hosted service or an
+operator-approved hosted authority.
 Model: ``mimo-v2.5-asr``
 
 MiMo-V2.5-ASR is an OpenAI-compatible **chat completions** endpoint (NOT
@@ -29,15 +30,11 @@ from typing import Any, Dict, List, Optional, Union
 
 import httpx
 
+from .config import MimoConfigurationError, resolve_mimo_config, timeout_seconds
+
 logger = logging.getLogger(__name__)
 
-# OpenAI-compatible base for MiMo ASR. MIMO_API_BASE overrides for a custom
-# gateway; MIMO_USE_TOKENPLAN=1 switches to the China TokenPlan base.
-MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com")
-MIMO_TOKENPLAN_BASE = os.getenv("MIMO_TOKENPLAN_BASE", "https://token-plan-cn.xiaomimimo.com")
-MIMO_API_KEY = os.getenv("MIMO_API_KEY", "")
-MIMO_ASR_MODEL = os.getenv("MIMO_ASR_MODEL", "mimo-v2.5-asr")
-DEFAULT_TIMEOUT = float(os.getenv("MIMO_TIMEOUT_SECONDS", "120"))
+DEFAULT_TIMEOUT = 120.0
 
 # wav/mp3 <= 10MB per MiMo docs; keep a conservative cap.
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -65,18 +62,6 @@ class MimoTranscription:
     duration: float
     segments: List[MimoSegment] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
-
-
-def _resolve_base_url() -> str:
-    if os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in ("1", "true", "yes"):
-        return MIMO_TOKENPLAN_BASE
-    return MIMO_API_BASE
-
-
-def _headers() -> Dict[str, str]:
-    if not MIMO_API_KEY:
-        raise MimoAPIError("MIMO_API_KEY environment variable not set")
-    return {"Authorization": f"Bearer {MIMO_API_KEY}"}
 
 
 def _raise_for_error(resp: httpx.Response) -> None:
@@ -119,16 +104,21 @@ class MimoClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
     ) -> None:
-        self._api_key = api_key or MIMO_API_KEY
-        self._base_url = (base_url or _resolve_base_url()).rstrip("/")
-        self._model = model or MIMO_ASR_MODEL
-        self._timeout = timeout
+        try:
+            config = resolve_mimo_config(api_key=api_key, base_url=base_url)
+            request_timeout = timeout_seconds(DEFAULT_TIMEOUT) if timeout is None else timeout
+        except MimoConfigurationError as exc:
+            raise MimoAPIError(str(exc)) from exc
+        if request_timeout <= 0:
+            raise MimoAPIError("MIMO_TIMEOUT_SECONDS must be greater than zero")
+        self._api_key = config.api_key
+        self._base_url = config.base_url
+        self._model = model or os.getenv("MIMO_ASR_MODEL", "mimo-v2.5-asr").strip() or "mimo-v2.5-asr"
+        self._timeout = request_timeout
 
     def _headers(self) -> Dict[str, str]:
-        if not self._api_key:
-            raise MimoAPIError("MIMO_API_KEY environment variable not set")
         return {"Authorization": f"Bearer {self._api_key}"}
 
     def _endpoint(self) -> str:
@@ -195,9 +185,7 @@ class MimoClient:
         return MimoTranscription(
             text=text,
             duration=0.0,  # MiMo ASR does not return duration; caller measures
-            segments=(
-                [MimoSegment(start=0.0, end=0.0, text=text, speaker="SPEAKER_00")] if text else []
-            ),
+            segments=([MimoSegment(start=0.0, end=0.0, text=text, speaker="SPEAKER_00")] if text else []),
             raw=data,
         )
 

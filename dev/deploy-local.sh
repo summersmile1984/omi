@@ -138,7 +138,8 @@ export QUEUE_BACKEND=redis
 export REDIS_DB_HOST=127.0.0.1
 export REDIS_DB_PORT=6379
 # Live STT provider. Default: local CPU SenseVoice (off-cloud). To use
-# MiMo-V2.5-ASR instead, set STT_SERVICE_MODELS=mimo + MIMO_API_KEY.
+# MiMo-V2.5-ASR instead, set STT_SERVICE_MODELS=mimo + MIMO_API_KEY +
+# an explicit operator-owned MIMO_API_BASE (or MIMO_TOKENPLAN_BASE).
 export SENSEVOICE_MODEL_DIR="${SENSEVOICE_MODEL_DIR:-/tmp/sherpa/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17}"
 export STT_SERVICE_MODELS="${STT_SERVICE_MODELS:-sensevoice}"
 # Pre-recorded batch STT provider (opt-in override, else upstream policy).
@@ -150,11 +151,18 @@ fi
 if [[ -n "${MIMO_API_KEY:-}" ]]; then
   export MIMO_API_KEY
 fi
+if [[ -n "${MIMO_API_BASE:-}" ]]; then
+  export MIMO_API_BASE
+fi
+if [[ -n "${MIMO_TOKENPLAN_BASE:-}" ]]; then
+  export MIMO_TOKENPLAN_BASE
+fi
 if [[ -n "${MOSS_API_KEY:-}" ]]; then
   export MOSS_API_KEY
 fi
 # TTS provider: default ElevenLabs (needs ELEVENLABS_API_KEY). Set
-# TTS_PROVIDER=mimo to use MiMo-V2.5-TTS (needs MIMO_API_KEY + MIMO_USE_TOKENPLAN).
+# TTS_PROVIDER=mimo to use MiMo-V2.5-TTS (needs MIMO_API_KEY and an explicit
+# MIMO_API_BASE or MIMO_TOKENPLAN_BASE).
 if [[ -n "${TTS_PROVIDER:-}" ]]; then
   export TTS_PROVIDER
 fi
