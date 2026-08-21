@@ -435,15 +435,6 @@ def get_llm(
     """
     gateway_feature_mode = should_route_features_through_gateway()
 
-    if is_anthropic_only_feature(feature) and not gateway_feature_mode:
-        raise ValueError(
-            f"Feature '{feature}' is Anthropic — use get_model('{feature}') with anthropic_client instead of get_llm()"
-        )
-    if is_perplexity_only_feature(feature) and not gateway_feature_mode:
-        raise ValueError(
-            f"Feature '{feature}' is Perplexity — use get_model('{feature}') with the Perplexity HTTP client instead of get_llm()"
-        )
-
     resolved_route = resolve_feature_route(feature)
     model, provider = resolved_route.primary.model, resolved_route.primary.provider
 
