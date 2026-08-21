@@ -32,6 +32,7 @@ import 'package:omi/core/app_shell.dart';
 import 'package:omi/env/dev_env.dart';
 import 'package:omi/env/env.dart';
 import 'package:omi/env/environment_profile.dart';
+import 'package:omi/env/firebase_services_policy.dart';
 import 'package:omi/env/prod_env.dart';
 import 'package:omi/firebase_options_local.dart' as local;
 import 'package:omi/flavors.dart';
@@ -86,8 +87,6 @@ import 'package:omi/utils/platform/platform_service.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
 import 'package:omi/utils/notification_channel_strings.dart';
 
-const bool _firebaseServicesEnabled = bool.fromEnvironment('OMI_FIREBASE_SERVICES_ENABLED', defaultValue: true);
-
 /// Background message handler for FCM data messages
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -136,7 +135,8 @@ Future _init() async {
   Env.validateProfilePairing();
   validateApplicationStartupRouting();
   Env.validateClientPublicOrigins();
-  AuthService.validateIdentityConfiguration(firebaseServicesEnabled: _firebaseServicesEnabled);
+  final firebaseServicesEnabled = FirebaseServicesPolicy.enabled;
+  AuthService.validateIdentityConfiguration(firebaseServicesEnabled: firebaseServicesEnabled);
 
   FlutterForegroundTask.initCommunicationPort();
 
@@ -144,7 +144,7 @@ Future _init() async {
   await ServiceManager.init();
   LimitlessDeviceConnection.realtimeSuppressionPolicy = () => SharedPreferencesUtil().batchModeEnabled;
 
-  if (_firebaseServicesEnabled) {
+  if (firebaseServicesEnabled) {
     if (Firebase.apps.isEmpty) {
       final profile = Env.profile;
       if (profile == AppEnvironmentProfile.localDev) {
@@ -170,8 +170,8 @@ Future _init() async {
 
   await PlatformManager.initializeServices();
   await NotificationChannelStrings.loadAppLocale();
-  if (_firebaseServicesEnabled) {
-    await NotificationService.instance.initialize();
+  await NotificationService.instance.initialize();
+  if (firebaseServicesEnabled) {
     if (PlatformManager().isFCMSupported) {
       FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
     }
@@ -211,15 +211,15 @@ Future _init() async {
     Logger.debug('main: restored ${peripheralUuids.length} BLE peripherals');
   };
 
-  if (_firebaseServicesEnabled) await CrashlyticsManager.init();
-  if (isAuth && _firebaseServicesEnabled) {
+  if (firebaseServicesEnabled) await CrashlyticsManager.init();
+  if (isAuth && firebaseServicesEnabled) {
     PlatformManager.instance.crashReporter.identifyUser(
       SharedPreferencesUtil().email,
       SharedPreferencesUtil().fullName,
       SharedPreferencesUtil().uid,
     );
   }
-  if (_firebaseServicesEnabled) {
+  if (firebaseServicesEnabled) {
     FlutterError.onError = (FlutterErrorDetails details) {
       FirebaseCrashlytics.instance.recordFlutterFatalError(details);
     };
@@ -252,7 +252,7 @@ void main() {
         // profile/release builds. A misconfigured OMI_API_BASE_URL cost about a
         // day of investigation for exactly this reason — the app looked hung
         // when it had in fact thrown a precise, actionable StateError.
-        if (Firebase.apps.isNotEmpty) {
+        if (FirebaseServicesPolicy.enabled && Firebase.apps.isNotEmpty) {
           FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
         }
         runApp(StartupFailureApp(error: error, stack: stack));
@@ -262,7 +262,7 @@ void main() {
     },
     (error, stack) {
       debugPrint('Uncaught error: $error\n$stack');
-      if (Firebase.apps.isNotEmpty) {
+      if (FirebaseServicesPolicy.enabled && Firebase.apps.isNotEmpty) {
         FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
       }
     },

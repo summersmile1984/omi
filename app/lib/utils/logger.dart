@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
+import 'package:omi/env/environment_profile.dart';
+import 'package:omi/env/firebase_services_policy.dart';
 import 'package:omi/utils/analytics/intercom.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/l10n_extensions.dart';
@@ -21,11 +23,43 @@ class CrashlyticsTalkerObserver extends TalkerObserver {
   }
 }
 
-class Logger {
-  final crashlyticsTalkerObserver = CrashlyticsTalkerObserver();
-  late final talker = TalkerFlutter.init(observer: crashlyticsTalkerObserver);
+typedef TalkerObserverFactory = TalkerObserver Function();
 
-  Logger._();
+class Logger {
+  late final Talker talker;
+
+  Logger._() {
+    talker = TalkerFlutter.init(
+      observer: FirebaseServicesPolicy.enabled ? CrashlyticsTalkerObserver() : null,
+    );
+  }
+
+  @visibleForTesting
+  Logger.forTesting({
+    required AppEnvironmentProfile profile,
+    required bool firebaseServicesEnabled,
+    required TalkerObserverFactory createCrashObserver,
+  }) {
+    talker = _createTalker(
+      profile: profile,
+      firebaseServicesEnabled: firebaseServicesEnabled,
+      createCrashObserver: createCrashObserver,
+    );
+  }
+
+  static Talker _createTalker({
+    required AppEnvironmentProfile profile,
+    required bool firebaseServicesEnabled,
+    required TalkerObserverFactory createCrashObserver,
+  }) {
+    final observer = FirebaseServicesPolicy.allowsFor(
+      profile: profile,
+      configuredEnabled: firebaseServicesEnabled,
+    )
+        ? createCrashObserver()
+        : null;
+    return TalkerFlutter.init(observer: observer);
+  }
 
   static final Logger _instance = Logger._();
 

@@ -149,7 +149,7 @@ class OnboardingProvider extends BaseProvider with MessageNotifierMixin implemen
   }
 
   Future askForNotificationPermissions() async {
-    var isAllowed = await NotificationService.instance.requestNotificationPermissions();
+    var isAllowed = await NotificationService.instance.requestNotificationPermissionsIfSupported();
     updateNotificationPermission(isAllowed);
     notifyListeners();
   }

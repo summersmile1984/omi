@@ -379,7 +379,7 @@ class _AppShellState extends State<AppShell> {
       // treat an empty in-memory map as "not connected" after process death.
       context.read<IntegrationProvider>().loadFromBackend();
 
-      NotificationService.instance.saveNotificationToken();
+      NotificationService.instance.saveRemoteNotificationTokenIfSupported();
     } else {
       if (!PlatformManager.instance.isAnalyticsSupported) {
         await PlatformManager.instance.intercom.loginUnidentifiedUser();

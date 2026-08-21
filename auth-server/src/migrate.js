@@ -44,6 +44,42 @@ async function checkJwksMetadataColumns() {
     throw new Error('Better Auth JWKS metadata columns are missing');
 }
 
+async function ensureIdentityImportLedger() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "auth_identity_imports" (
+      "sourceSha256" text PRIMARY KEY,
+      "configFingerprint" text NOT NULL,
+      "canonicalSha256" text NOT NULL,
+      "userCount" integer NOT NULL CHECK ("userCount" >= 0),
+      "accountCount" integer NOT NULL CHECK ("accountCount" >= 0),
+      "completedAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+}
+
+async function checkIdentityImportLedger() {
+  const result = await pool.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'auth_identity_imports'`,
+  );
+  const columns = new Set(result.rows.map((row) => row.column_name));
+  const required = [
+    "sourceSha256",
+    "configFingerprint",
+    "canonicalSha256",
+    "userCount",
+    "accountCount",
+    "completedAt",
+  ];
+  const missing = required.filter((column) => !columns.has(column));
+  if (missing.length) {
+    throw new Error(
+      `Better Auth identity import ledger is missing columns: ${missing.join(", ")}`,
+    );
+  }
+}
+
 async function reconcileJwksRows({ checkOnly }) {
   const result = await pool.query(
     `SELECT id, "publicKey", "createdAt", "expiresAt", alg, crv
@@ -123,6 +159,7 @@ try {
       );
     }
     await checkJwksMetadataColumns();
+    await checkIdentityImportLedger();
     await reconcileJwksRows({ checkOnly: true });
     console.log("Better Auth schema/JWKS check OK: no pending migrations");
   } else {
@@ -134,6 +171,8 @@ try {
       );
     }
     await ensureJwksMetadataColumns();
+    await ensureIdentityImportLedger();
+    await checkIdentityImportLedger();
     await reconcileJwksRows({ checkOnly: false });
     await reconcileJwksRows({ checkOnly: true });
     console.log("Better Auth schema/JWKS migration OK: schema and signing keys are current");

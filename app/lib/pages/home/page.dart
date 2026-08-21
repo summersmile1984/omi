@@ -115,8 +115,7 @@ class _HomePageProductState extends State<_HomePageProduct> {
       final notifGranted = await Permission.notification.isGranted;
       if (notifGranted) {
         SharedPreferencesUtil().notificationsEnabled = true;
-        NotificationService.instance.register();
-        NotificationService.instance.saveNotificationToken();
+        await NotificationService.instance.registerRemoteNotificationsIfSupported();
       }
     });
     _navigateToRoute = widget.navigateToRoute;

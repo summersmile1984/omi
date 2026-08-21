@@ -4,7 +4,8 @@ Self-hosted auth for the 4C8G Omi deployment, replacing Firebase Auth.
 
 ## What it does
 
-- email+password signup / signin (Better Auth)
+- email+password signup / signin (Better Auth), plus explicitly configured
+  operator Google/Apple OAuth
 - JWT plugin signs **ES256** JWTs carrying the Better Auth user id in `sub`, with public keys at `/api/auth/jwks`
 - signed bearer session tokens let native clients exchange a persisted session for a short-lived JWT
 - internal, secret-protected user lookup/deletion keeps account lifecycle provider-neutral
@@ -30,6 +31,11 @@ export BETTER_AUTH_TRUSTED_ORIGINS="http://127.0.0.1:3000"
 export BETTER_AUTH_IP_HEADERS=x-forwarded-for
 export AUTH_INTERNAL_ADMIN_SECRET="<separate internal secret>"
 export AUTH_DEV_ISSUER_SECRET="<local-only bridge secret>"
+# Optional operator OAuth pairs. A partial pair fails startup.
+export AUTH_GOOGLE_CLIENT_ID="<operator Google OAuth client>"
+export AUTH_GOOGLE_CLIENT_SECRET="<operator Google OAuth secret>"
+export AUTH_APPLE_CLIENT_ID="<operator Apple Services ID>"
+export AUTH_APPLE_CLIENT_SECRET="<operator-generated Apple client secret>"
 npm run migrate
 # Start only after migrate exits successfully.
 npm start
@@ -54,6 +60,49 @@ session flow. Configure `OMI_AUTH_PROVIDER=better_auth` and
 `OMI_AUTH_SERVER_URL`; `AUTH_DEV_ISSUER_SECRET` remains an optional local test
 bridge and must never be included in a production app.
 
+## Migrate Firebase Auth identities
+
+The permanent importer preserves the Firebase UID used by PostgreSQL, MinIO,
+Qdrant, and account-deletion ownership. It accepts the JSON emitted by
+`firebase auth:export` plus a separate JSON file containing the Firebase
+project's `SCRYPT` password-hash parameters. The signer key is used only at
+the auth boundary and is never copied into PostgreSQL or an import receipt.
+Imported password accounts store an envelope containing the per-user salt and
+hash plus a non-secret configuration fingerprint. Better Auth verifies those
+passwords locally with Firebase's modified-scrypt algorithm; new passwords
+continue to use Better Auth's native scrypt format.
+
+Run the normal schema migrator first, then validate, apply, and verify the exact
+immutable export:
+
+```bash
+export AUTH_FIREBASE_SCRYPT_SIGNER_KEY='<base64_signer_key>'
+export AUTH_FIREBASE_SCRYPT_SALT_SEPARATOR='<base64_salt_separator>'
+export AUTH_FIREBASE_SCRYPT_ROUNDS='<rounds>'
+export AUTH_FIREBASE_SCRYPT_MEM_COST='<mem_cost>'
+
+npm run migrate
+npm run migrate:firebase:validate -- \
+  --users /migration/firebase-users.json \
+  --hash-config /migration/firebase-hash-config.json
+npm run migrate:firebase:apply -- \
+  --users /migration/firebase-users.json \
+  --hash-config /migration/firebase-hash-config.json
+npm run migrate:firebase:verify -- \
+  --users /migration/firebase-users.json \
+  --hash-config /migration/firebase-hash-config.json
+```
+
+The apply step takes a PostgreSQL advisory lock and a serializable transaction,
+requires empty Better Auth user/account/session tables, and records a single
+source SHA-256/config fingerprint/count/content receipt. Reapplying the exact
+export is idempotent; a different source, a non-empty unreceipted target,
+duplicate UID/email/provider identity, disabled account, unsupported provider,
+or a user without a supported sign-in identity fails closed. Google and Apple
+accounts are imported only when their operator OAuth pairs are configured.
+Sessions are intentionally not migrated; clients must establish a new signed
+Better Auth session after cutover.
+
 ## Enable in the backend
 
 ```bash
@@ -71,6 +120,7 @@ export AUTH_INTERNAL_ADMIN_SECRET="<same internal secret as auth server>"
 |---|---|---|
 | POST | `/api/auth/sign-up/email` | create account → session |
 | POST | `/api/auth/sign-in/email` | sign in → session |
+| POST | `/api/auth/sign-in/social` | begin an explicitly configured operator Google/Apple OAuth flow |
 | GET | `/api/auth/token` | exchange a signed bearer session token for a short-lived JWT |
 | POST | `/auth-issue` | optional local bridge; requires `AUTH_DEV_ISSUER_SECRET` bearer token |
 | GET | `/api/auth/jwks` | public keys for the Python shim |

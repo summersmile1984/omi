@@ -2,6 +2,11 @@ import { betterAuth } from "better-auth";
 import { bearer, jwt } from "better-auth/plugins";
 import crypto from "node:crypto";
 import pg from "pg";
+import {
+  hashPassword,
+  verifyPassword,
+} from "./firebase-migration-password.js";
+import { buildSocialProviders } from "./social-providers.js";
 
 export const PORT = process.env.PORT || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -104,7 +109,12 @@ export const authOptions = {
   database: pool,
   emailAndPassword: {
     enabled: true,
+    password: {
+      hash: hashPassword,
+      verify: verifyPassword,
+    },
   },
+  socialProviders: buildSocialProviders(),
   user: {
     deleteUser: { enabled: true },
   },

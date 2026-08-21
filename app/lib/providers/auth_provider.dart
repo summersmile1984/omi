@@ -256,7 +256,7 @@ class AuthenticationProvider extends BaseProvider {
   Future<String?> _getIdToken() async {
     try {
       final token = await AuthService.instance.getIdToken();
-      NotificationService.instance.saveNotificationToken();
+      NotificationService.instance.saveRemoteNotificationTokenIfSupported();
 
       Logger.debug('Firebase token retrieved successfully');
       return token;

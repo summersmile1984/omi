@@ -4,8 +4,21 @@ import 'package:awesome_notifications/awesome_notifications.dart';
 
 import 'package:omi/backend/schema/message.dart';
 
+enum NotificationDeliveryCapability {
+  firebaseRemote,
+  localOnly,
+  disabled;
+
+  bool get supportsPermissionPrompt => this != disabled;
+  bool get supportsRemoteRegistration => this == firebaseRemote;
+}
+
+enum RemoteNotificationActionResult { completed, unsupported }
+
 /// Common interface for notification services across all platforms
 abstract class NotificationInterface {
+  NotificationDeliveryCapability get deliveryCapability;
+
   Future<void> initialize();
 
   Future<void> showNotification({
@@ -36,4 +49,24 @@ abstract class NotificationInterface {
   Future<void> listenForMessages();
 
   Stream<ServerMessage> get listenForServerMessages;
+}
+
+extension NotificationDeploymentActions on NotificationInterface {
+  Future<bool> requestNotificationPermissionsIfSupported() {
+    if (!deliveryCapability.supportsPermissionPrompt) return Future.value(false);
+    return requestNotificationPermissions();
+  }
+
+  Future<RemoteNotificationActionResult> registerRemoteNotificationsIfSupported() async {
+    if (!deliveryCapability.supportsRemoteRegistration) return RemoteNotificationActionResult.unsupported;
+    await register();
+    saveNotificationToken();
+    return RemoteNotificationActionResult.completed;
+  }
+
+  RemoteNotificationActionResult saveRemoteNotificationTokenIfSupported() {
+    if (!deliveryCapability.supportsRemoteRegistration) return RemoteNotificationActionResult.unsupported;
+    saveNotificationToken();
+    return RemoteNotificationActionResult.completed;
+  }
 }

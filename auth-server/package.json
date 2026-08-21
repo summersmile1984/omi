@@ -8,6 +8,9 @@
     "dev": "node --watch src/index.js",
     "migrate": "node src/migrate.js",
     "migrate:check": "node src/migrate.js --check",
+    "migrate:firebase:validate": "node src/import-firebase-users.js validate",
+    "migrate:firebase:apply": "node src/import-firebase-users.js apply",
+    "migrate:firebase:verify": "node src/import-firebase-users.js verify",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {

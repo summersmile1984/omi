@@ -3,6 +3,11 @@
 import { betterAuth } from "better-auth";
 import { bearer, jwt } from "better-auth/plugins";
 import { Pool } from "pg";
+import {
+  hashPassword,
+  verifyPassword,
+} from "./src/firebase-migration-password.js";
+import { buildSocialProviders } from "./src/social-providers.js";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ||
@@ -31,7 +36,12 @@ export const auth = betterAuth({
   database: new Pool({ connectionString: DATABASE_URL }),
   emailAndPassword: {
     enabled: true,
+    password: {
+      hash: hashPassword,
+      verify: verifyPassword,
+    },
   },
+  socialProviders: buildSocialProviders(),
   user: {
     deleteUser: { enabled: true },
   },

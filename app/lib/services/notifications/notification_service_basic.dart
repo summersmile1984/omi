@@ -11,9 +11,12 @@ import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/notification_channel_strings.dart';
 
 /// Basic notification service for platforms without Firebase Messaging support
-/// Currently used for Windows - provides local notifications only
+/// Used by Windows and self-hosted releases; provides local notifications only.
 class _BasicNotificationService implements NotificationInterface {
   _BasicNotificationService._();
+
+  @override
+  NotificationDeliveryCapability get deliveryCapability => NotificationDeliveryCapability.localOnly;
 
   // Resolved in initialize() after NotificationChannelStrings.loadAppLocale().
   late final NotificationChannel channel;
@@ -101,8 +104,7 @@ class _BasicNotificationService implements NotificationInterface {
 
   @override
   Future<void> register() async {
-    // Platform-specific notification registration not available on this platform
-    Logger.debug('Notification registration not available on this platform');
+    throw UnsupportedError('Remote notification registration is unavailable for the local-only provider.');
   }
 
   @override
@@ -113,14 +115,12 @@ class _BasicNotificationService implements NotificationInterface {
 
   @override
   Future<void> saveFcmToken(String? token) async {
-    // Firebase Cloud Messaging not supported on this platform
-    Logger.debug('FCM token save skipped - Firebase Messaging not supported on this platform');
+    throw UnsupportedError('FCM token storage is unavailable for the local-only provider.');
   }
 
   @override
   void saveNotificationToken() {
-    // Firebase Cloud Messaging not supported on this platform
-    Logger.debug('Notification token save skipped - Firebase Messaging not supported on this platform');
+    throw UnsupportedError('Notification token storage is unavailable for the local-only provider.');
   }
 
   @override
