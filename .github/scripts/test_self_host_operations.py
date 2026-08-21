@@ -489,6 +489,24 @@ class SelfHostOperationsTest(unittest.TestCase):
                 effective_provider_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
             )
 
+    def test_runtime_evidence_rejects_vendor_bindings_in_running_workload(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, 'OPENAI_API_KEY'):
+            RUNTIME_EVIDENCE.validate_runtime_environment({'OPENAI_API_KEY': 'redacted'})
+
+        with self.assertRaisesRegex(RuntimeError, 'ANTHROPIC_API_KEY'):
+            RUNTIME_EVIDENCE.validate_runtime_environment({'ANTHROPIC_API_KEY': 'redacted'})
+
+        with self.assertRaisesRegex(RuntimeError, 'official endpoint host'):
+            RUNTIME_EVIDENCE.validate_runtime_environment(
+                {'GENERIC_OPENAI_BASE_URL': 'https://api.openai.com/v1'}
+            )
+
+        # Runtime evidence diagnostics must identify only the binding class,
+        # not leak an operator credential from the container environment.
+        with self.assertRaisesRegex(RuntimeError, 'official endpoint host') as context:
+            RUNTIME_EVIDENCE.validate_runtime_environment({'LLM_ENDPOINT': 'https://api.openai.com/v1?key=secret'})
+        self.assertNotIn('secret', str(context.exception))
+
     def test_attributed_start_builds_current_images_before_service_admission(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

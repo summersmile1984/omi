@@ -34,6 +34,52 @@ COMPOSE_WRAPPER = Path(__file__).with_name('compose-clean-env.sh')
 IDENTIFIER = re.compile(r'^[a-z0-9][a-z0-9_.:-]*$')
 HOSTNAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.-]*$')
 
+# Compose's reviewed environment is not the whole runtime environment: image
+# defaults and an operator can still inject additional bindings at container
+# creation time. Keep this denylist in runtime evidence so an attributed stack
+# cannot pass merely because its checked-in Compose file is neutral. Values are
+# never included in the error, because they may be credentials.
+FORBIDDEN_RUNTIME_ENV_PREFIXES = (
+    'ANTHROPIC_',
+    'DEEPGRAM_',
+    'ELEVENLABS_',
+    'FAL_',
+    'FIREBASE_',
+    'GEMINI_',
+    'GOOGLE_',
+    'GROQ_',
+    'HUME_',
+    'LANGCHAIN_',
+    'MIMO_',
+    'MODULATE_',
+    'MOSS_',
+    'OPENAI_',
+    'OPENROUTER_',
+    'PERPLEXITY_',
+    'PINECONE_',
+    'POSTHOG_',
+    'RAPID_API_',
+    'STRIPE_',
+    'TWILIO_',
+)
+FORBIDDEN_RUNTIME_ENV_NAMES = frozenset({'SERVICE_ACCOUNT_JSON', 'USE_VERTEX_AI', 'GEMINI_API_KEY'})
+FORBIDDEN_RUNTIME_ENDPOINT_HOSTS = (
+    'api.omi.me',
+    'api.anthropic.com',
+    'api.deepgram.com',
+    'api.elevenlabs.io',
+    'api.openai.com',
+    'api.openrouter.ai',
+    'api.perplexity.ai',
+    'api.groq.com',
+    'api.hume.ai',
+    'googleapis.com',
+    'firebaseio.com',
+    'modulate.ai',
+    'pinecone.io',
+    'posthog.com',
+)
+
 
 def _required_text(environment: dict[str, Any], name: str) -> str:
     value = environment.get(name)
@@ -121,6 +167,29 @@ def _positive_integer(environment: dict[str, Any], name: str) -> str:
     if not value.isdecimal() or int(value) <= 0:
         raise ValueError(f'{name} must be a positive integer')
     return value
+
+
+def validate_runtime_environment(environment: dict[str, str]) -> None:
+    """Reject vendor bindings injected outside the reviewed Compose config.
+
+    This reports only names/host classes. Runtime evidence is emitted to an
+    acceptance log and must never expose an operator secret.
+    """
+
+    forbidden_names = sorted(
+        name
+        for name in environment
+        if name in FORBIDDEN_RUNTIME_ENV_NAMES
+        or any(name.startswith(prefix) for prefix in FORBIDDEN_RUNTIME_ENV_PREFIXES)
+    )
+    if forbidden_names:
+        raise RuntimeError('running workload contains forbidden vendor environment: ' + ', '.join(forbidden_names))
+
+    for name, value in environment.items():
+        lowered = value.lower()
+        for host in FORBIDDEN_RUNTIME_ENDPOINT_HOSTS:
+            if host in lowered:
+                raise RuntimeError(f'running workload environment {name} targets a forbidden official endpoint host')
 
 
 def environment_sha256(path: Path) -> str:
@@ -555,6 +624,7 @@ def collect_runtime_snapshot(
             if isinstance(binding, str) and '=' in binding:
                 key, value = binding.split('=', 1)
                 actual_environment[key] = value
+        validate_runtime_environment(actual_environment)
         expected_service = effective_services.get(service) if isinstance(effective_services.get(service), dict) else {}
         expected_environment = (
             expected_service.get('environment') if isinstance(expected_service.get('environment'), dict) else {}
