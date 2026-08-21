@@ -849,6 +849,14 @@ icon, maps, webhook, or user-fetch authority they intentionally enable.
 This guard covers the backend shared HTTP clients only and is not a network
 firewall or a claim of universal socket isolation.
 
+Synchronous compatibility paths are subject to the same boundary: product
+documentation retrieval never reaches the managed GitHub/GitHubusercontent
+authorities in neutral mode, even when an operator mistakenly adds those
+hosts to `SELF_HOST_EGRESS_ALLOWLIST`; the product tool reports typed
+documentation unavailability instead. An operator-hosted documentation
+mirror is a separate capability and must be added as an explicitly reviewed
+operator authority before implementing that adapter.
+
 Local Compose does not impose a network-level application egress policy, so its
 evidence says `live_sentinel_egress_policy.enforcement=not_enforced_by_compose`
 and never claims live DNS denial. It can authorize only the exact tested
