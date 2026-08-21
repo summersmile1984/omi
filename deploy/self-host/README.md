@@ -707,13 +707,14 @@ the same public edge lane:
 
 ```bash
 SELF_HOST_ENV=/etc/omi/self-host.production.env \
-SELF_HOST_EGRESS_POLICY_ARTIFACT=/secure/change-record/application-egress-policy.yaml \
+SELF_HOST_EGRESS_POLICY_ARTIFACT=/secure/change-record/application-egress-policy.json \
 SELF_HOST_ACCEPTANCE_EVIDENCE=/secure/change-record/zero-vendor-production.json \
   deploy/self-host/zero-vendor-acceptance.sh --external-cutover-live
 ```
 
 External mode rejects reserved/local public origins, uses system certificate
-trust, hashes the supplied policy artifact into the evidence, and requires
+trust, validates the supplied policy artifact against the checked-in JSON
+contract, hashes its original bytes into the evidence, and requires
 socket attempts to OpenAI, Google, Anthropic, Omi, and an arbitrary public-IP
 sentinel to fail from backend, queue-worker, and auth-server. The JSON calls
 these `sentinel_targets_denied` and explicitly limits the claim to those
@@ -731,6 +732,29 @@ functional equivalence remains explicitly false. mlx-audio model revision and
 offline-cache provenance remain explicitly operator-owned and unattested by the
 service response. The typed realtime relay is exercised through its authenticated
 public relay route as a separate hard capability.
+
+The policy artifact must be UTF-8 JSON with exactly this shape (the artifact is
+review evidence, not a cryptographic signature):
+
+```json
+{
+  "schema_version": 1,
+  "enforcement": "network_default_deny",
+  "workloads": ["auth-server", "backend", "queue-worker"],
+  "denied_targets": [
+    "1.1.1.1",
+    "api.openai.com",
+    "api.omi.me",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com"
+  ]
+}
+```
+
+The contract prevents an arbitrary non-empty file from being treated as a
+reviewed policy. It does not prove that the host firewall applied the policy;
+the per-workload socket probes are the behavioral corroboration, and the
+artifact's original SHA-256 plus change record remain operator evidence.
 
 ## Firestore-to-PostgreSQL cutover gate
 

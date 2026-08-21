@@ -22,7 +22,12 @@ CUTOVER_GATE = SCRIPT.with_name('cutover-https-gate.sh')
 CUTOVER_OVERLAY = SCRIPT.with_name('compose.cutover-acceptance.yml')
 COMPOSE_WRAPPER = SCRIPT.with_name('compose-clean-env.sh')
 ZERO_VENDOR_ACCEPTANCE = SCRIPT.with_name('zero-vendor-acceptance.sh')
+EGRESS_POLICY_CONTRACT = SCRIPT.with_name('egress-policy-contract.py')
 EVIDENCE_SCRIPT = SCRIPT.with_name('acceptance_evidence.py')
+EGRESS_POLICY_SPEC = importlib.util.spec_from_file_location('self_host_egress_policy_contract', EGRESS_POLICY_CONTRACT)
+assert EGRESS_POLICY_SPEC and EGRESS_POLICY_SPEC.loader
+EGRESS_POLICY = importlib.util.module_from_spec(EGRESS_POLICY_SPEC)
+EGRESS_POLICY_SPEC.loader.exec_module(EGRESS_POLICY)
 RUNTIME_EVIDENCE_SCRIPT = SCRIPT.with_name('runtime-evidence.py')
 PUBLIC_OBJECT_EVIDENCE_SCRIPT = SCRIPT.with_name('public_object_evidence.py')
 SPEC = importlib.util.spec_from_file_location('self_host_volume_snapshot', SCRIPT)
@@ -832,6 +837,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'sentinel_targets_denied': [],
                 'workloads': [],
                 'operator_policy_artifact_sha256': None,
+                'operator_policy_schema_version': None,
+                'operator_policy_workloads': [],
+                'operator_policy_denied_targets': [],
             },
         }
         local = EVIDENCE.build_evidence(
@@ -874,6 +882,15 @@ class SelfHostOperationsTest(unittest.TestCase):
             ],
             'workloads': ['backend', 'queue-worker', 'auth-server'],
             'operator_policy_artifact_sha256': 'a' * 64,
+            'operator_policy_schema_version': 1,
+            'operator_policy_workloads': ['auth-server', 'backend', 'queue-worker'],
+            'operator_policy_denied_targets': [
+                '1.1.1.1',
+                'api.openai.com',
+                'api.omi.me',
+                'api.anthropic.com',
+                'generativelanguage.googleapis.com',
+            ],
             'scope': 'sentinel_targets_only',
         }
         external_with_policy = EVIDENCE.build_evidence(
@@ -1122,8 +1139,25 @@ class SelfHostOperationsTest(unittest.TestCase):
                 + '\n',
                 encoding='utf-8',
             )
-            policy = root / 'egress-policy.yaml'
-            policy.write_text('policy: deny application public egress\n', encoding='utf-8')
+            policy = root / 'egress-policy.json'
+            policy.write_text(
+                json.dumps(
+                    {
+                        'schema_version': 1,
+                        'enforcement': 'network_default_deny',
+                        'workloads': ['auth-server', 'backend', 'queue-worker'],
+                        'denied_targets': [
+                            '1.1.1.1',
+                            'api.openai.com',
+                            'api.omi.me',
+                            'api.anthropic.com',
+                            'generativelanguage.googleapis.com',
+                        ],
+                    }
+                )
+                + '\n',
+                encoding='utf-8',
+            )
             freeze_lease = root / 'source-freeze.json'
             SOURCE_FREEZE.issue_lease(
                 freeze_lease,
@@ -1206,6 +1240,36 @@ class SelfHostOperationsTest(unittest.TestCase):
                 self.assertGreaterEqual(calls.count(f'{key}=unset'), 5, key)
             self.assertNotIn('host-injected', calls)
 
+            policy.write_text('{"schema_version":1,"enforcement":"network_default_deny"}\n', encoding='utf-8')
+            invalid_policy = subprocess.run(
+                ['bash', str(CUTOVER_GATE), '--external'],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**base_environment, 'SELF_HOST_EGRESS_POLICY_ARTIFACT': str(policy)},
+            )
+            self.assertEqual(invalid_policy.returncode, 1)
+            self.assertIn('does not satisfy the reviewed JSON contract', invalid_policy.stderr)
+
+            policy.write_text(
+                json.dumps(
+                    {
+                        'schema_version': 1,
+                        'enforcement': 'network_default_deny',
+                        'workloads': ['auth-server', 'backend', 'queue-worker'],
+                        'denied_targets': [
+                            '1.1.1.1',
+                            'api.openai.com',
+                            'api.omi.me',
+                            'api.anthropic.com',
+                            'generativelanguage.googleapis.com',
+                        ],
+                    }
+                )
+                + '\n',
+                encoding='utf-8',
+            )
+
             docker.write_text(
                 docker.read_text(encoding='utf-8').replace(
                     '{"Service":"backend","State":"running","Health":"healthy"}',
@@ -1222,6 +1286,34 @@ class SelfHostOperationsTest(unittest.TestCase):
             )
             self.assertEqual(unhealthy.returncode, 1)
             self.assertIn('must be the running healthy workloads', unhealthy.stderr)
+
+    def test_external_policy_contract_rejects_partial_or_unknown_scope(self) -> None:
+        valid = {
+            'schema_version': 1,
+            'enforcement': 'network_default_deny',
+            'workloads': ['auth-server', 'backend', 'queue-worker'],
+            'denied_targets': [
+                '1.1.1.1',
+                'api.openai.com',
+                'api.omi.me',
+                'api.anthropic.com',
+                'generativelanguage.googleapis.com',
+            ],
+        }
+        self.assertEqual(EGRESS_POLICY.validate_policy(valid), valid)
+        for field, value in (
+            ('schema_version', True),
+            ('workloads', ['backend']),
+            ('denied_targets', valid['denied_targets'][:-1]),
+            ('enforcement', 'document_only'),
+        ):
+            candidate = dict(valid)
+            candidate[field] = value
+            with self.assertRaisesRegex(ValueError, 'egress policy'):
+                EGRESS_POLICY.validate_policy(candidate)
+        unknown = {**valid, 'operator': 'ticket-123'}
+        with self.assertRaisesRegex(ValueError, 'keys must be exactly'):
+            EGRESS_POLICY.validate_policy(unknown)
 
     def test_operations_entrypoint_self_check(self) -> None:
         result = subprocess.run(

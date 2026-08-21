@@ -81,12 +81,23 @@ def build_evidence(
         'api.omi.me',
         '1.1.1.1',
     }
+    expected_policy_workloads = ['auth-server', 'backend', 'queue-worker']
+    expected_policy_targets = [
+        '1.1.1.1',
+        'api.openai.com',
+        'api.omi.me',
+        'api.anthropic.com',
+        'generativelanguage.googleapis.com',
+    ]
     operator_policy_hash = live_egress.get('operator_policy_artifact_sha256') if isinstance(live_egress, dict) else None
     sentinel_policy_verified = bool(
         isinstance(live_egress, dict)
         and live_egress.get('enforcement') == 'sentinel_targets_denied_with_operator_policy'
         and expected_sentinels.issubset(set(live_egress.get('sentinel_targets_denied') or []))
         and {'backend', 'queue-worker', 'auth-server'}.issubset(set(live_egress.get('workloads') or []))
+        and live_egress.get('operator_policy_schema_version') == 1
+        and live_egress.get('operator_policy_workloads') == expected_policy_workloads
+        and live_egress.get('operator_policy_denied_targets') == expected_policy_targets
         and isinstance(operator_policy_hash, str)
         and len(operator_policy_hash) == 64
     )
