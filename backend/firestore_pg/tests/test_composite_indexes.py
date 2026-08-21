@@ -21,9 +21,10 @@ def engine_conn():
     install()
     from sqlalchemy import text
 
-    from firestore_pg.engine import ensure_composite_indexes, ensure_tables, get_engine
+    from firestore_pg.engine import get_engine
+    from firestore_pg.migrations import migrate
 
-    ensure_tables()
+    migrate()
     engine = get_engine()
     with engine.begin() as conn:
         yield conn
@@ -43,9 +44,7 @@ def test_registry_tables_exist(engine_conn):
 
     groups = {r.collection_group for r in INDEX_REQUIREMENTS}
     for group in groups:
-        row = engine_conn.execute(
-            text("SELECT 1 FROM pg_catalog.pg_class WHERE relname = :t"), {"t": group}
-        ).fetchone()
+        row = engine_conn.execute(text("SELECT 1 FROM pg_catalog.pg_class WHERE relname = :t"), {"t": group}).fetchone()
         assert row is not None, f"table for registry collection {group} not created"
 
 
@@ -66,19 +65,16 @@ def test_dotted_path_index_expression(engine_conn):
     from sqlalchemy import text
 
     row = engine_conn.execute(
-        text(
-            "SELECT indexdef FROM pg_indexes "
-            "WHERE indexname LIKE 'idx_%_chat_first_deferrals_by_subject%'"
-        )
+        text("SELECT indexdef FROM pg_indexes " "WHERE indexname LIKE 'idx_%_chat_first_deferrals_by_subject%'")
     ).fetchone()
     assert row is not None, "chat_first_deferrals by-subject index missing"
     indexdef = row[0]
     assert "data #>> '{subject,kind}'" in indexdef, f"dotted path not nested access: {indexdef}"
 
 
-def test_index_creation_idempotent():
-    """ensure_composite_indexes twice must not error (CREATE INDEX IF NOT EXISTS)."""
-    from firestore_pg.engine import ensure_composite_indexes
+def test_forward_migration_is_idempotent():
+    """The forward migration owner is safe to execute repeatedly."""
+    from firestore_pg.migrations import migrate
 
-    ensure_composite_indexes()
-    ensure_composite_indexes()  # second call is a no-op
+    migrate()
+    migrate()

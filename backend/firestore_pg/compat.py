@@ -12,6 +12,7 @@ Call ``install()`` at process start (before business modules import the SDK).
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from typing import Any
@@ -24,7 +25,21 @@ from . import (  # noqa: F401
     FieldFilter,
     Increment,
 )
-from .client import Client, CollectionReference, DocumentReference, DocumentSnapshot, Query, QuerySnapshot, Transaction, transactional
+
+_CLIENT_EXPORTS = frozenset(
+    {
+        'Client',
+        'CollectionReference',
+        'DocumentReference',
+        'DocumentSnapshot',
+        'LastUpdateOption',
+        'Query',
+        'QuerySnapshot',
+        'Transaction',
+        'UnsupportedFirestoreQuery',
+        'transactional',
+    }
+)
 
 # ---------------------------------------------------------------------------
 # google.cloud.firestore facade
@@ -38,30 +53,32 @@ class _FirestoreModule(types.ModuleType):
     (``__spec__``/``__loader__``/``__path__`` lookups) keeps working.
     """
 
-    Client = Client
-    CollectionReference = CollectionReference
-    DocumentReference = DocumentReference
-    DocumentSnapshot = DocumentSnapshot
-    Query = Query
-    QuerySnapshot = QuerySnapshot
-    Transaction = Transaction
-    transactional = staticmethod(transactional)
     FieldFilter = FieldFilter
     Increment = Increment
     ArrayUnion = ArrayUnion
     ArrayRemove = ArrayRemove
     DELETE_FIELD = DELETE_FIELD
     SERVER_TIMESTAMP = SERVER_TIMESTAMP
+    real_v1: types.ModuleType | None = None
+    real_base_query: types.ModuleType | None = None
 
     def __getattr__(self, name: str) -> Any:
+        # ``database.__init__`` installs this facade while pure schema modules
+        # may still be importing. Defer the client graph until an API surface
+        # is actually requested, preventing engine -> database -> compat ->
+        # client -> engine cycles without hiding imports inside business calls.
+        if name in _CLIENT_EXPORTS:
+            value = getattr(importlib.import_module('firestore_pg.client'), name)
+            setattr(self, name, value)
+            return value
         # Forward any other attribute to the installed google.cloud.firestore
         # module if it exists (e.g. BaseCompositeFilter, FieldPath, exceptions).
         # Submodule attributes (base_query.BaseCompositeFilter) live in the
         # real submodule, captured in install() as ``_real_base_query``.
         candidates = [
             sys.modules.get("google.cloud.firestore._real"),
-            getattr(self, "_real_v1", None),
-            getattr(self, "_real_base_query", None),
+            self.real_v1,
+            self.real_base_query,
         ]
         for mod in candidates:
             if mod is not None and hasattr(mod, name):
@@ -101,21 +118,27 @@ def install() -> None:
         facade.__spec__ = getattr(real, "__spec__", None)
         facade.__loader__ = getattr(real, "__loader__", None)
         facade.__file__ = getattr(real, "__file__", None)
-    facade._real_v1 = real_v1
+    facade.real_v1 = real_v1
 
     # Capture the real base_query submodule before shadowing it, so
     # ``from google.cloud.firestore_v1.base_query import BaseCompositeFilter``
     # can be forwarded by the facade.
     if real_v1 is not None:
         try:
-            import importlib
-
-            facade._real_base_query = importlib.import_module("google.cloud.firestore_v1.base_query")
+            facade.real_base_query = importlib.import_module("google.cloud.firestore_v1.base_query")
         except Exception:  # pragma: no cover - submodule not present
-            facade._real_base_query = None
+            facade.real_base_query = None
 
     sys.modules["google.cloud.firestore"] = facade
     sys.modules["google.cloud.firestore_v1"] = facade
+    # ``from google.cloud import firestore`` resolves the attribute cached on
+    # the parent package before consulting sys.modules.  Replace both parent
+    # attributes as well, otherwise a migration process that first opens the
+    # real Firestore source can leave later business imports on that source.
+    google_cloud = sys.modules.get("google.cloud")
+    if google_cloud is not None:
+        setattr(google_cloud, "firestore", facade)
+        setattr(google_cloud, "firestore_v1", facade)
 
     # Also alias submodule imports used by the codebase:
     #   from google.cloud.firestore import FieldFilter

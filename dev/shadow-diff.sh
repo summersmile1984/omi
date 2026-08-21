@@ -17,12 +17,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$REPO_ROOT/backend"
 PY="$BACKEND_DIR/.venv/bin/python"
 DIFF="$BACKEND_DIR/firestore_pg/tests/shadow_diff.py"
-REAL_OUT="/tmp/shadow-real.json"
-SHIM_OUT="/tmp/shadow-shim.json"
+MIGRATOR="$BACKEND_DIR/scripts/firestore_pg_migrate.py"
+REAL_OUT="${SHADOW_REAL_OUT:-/tmp/shadow-real.json}"
+SHIM_OUT="${SHADOW_SHIM_OUT:-/tmp/shadow-shim.json}"
 
-export FIRESTORE_PG_DSN="postgresql+psycopg://omi:omi-dev-password@localhost:5434/omi"
-export FIRESTORE_EMULATOR_HOST=localhost:8080
-export FIREBASE_PROJECT_ID=demo-omi-local
+export FIRESTORE_PG_DSN="${FIRESTORE_PG_DSN:-postgresql+psycopg://omi:omi-dev-password@localhost:5434/omi}"
+export FIRESTORE_EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-localhost:8080}"
+export FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-demo-omi-local}"
+export PYTHONPATH="$BACKEND_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 if [[ ! -x "$PY" ]]; then
   echo "error: backend venv not found at $PY (run scripts/sync-python-deps.sh)" >&2
@@ -30,6 +32,12 @@ if [[ ! -x "$PY" ]]; then
 fi
 
 echo "==> shim mode (PostgreSQL)"
+"$PY" "$MIGRATOR" migrate >/dev/null
+"$PY" "$MIGRATOR" provision \
+  chats Shadow-Mixed shadow_ac shadow_atomic_batch shadow_cas shadow_count shadow_cursor_numeric \
+  shadow_docs shadow_dotted shadow_dotted_order shadow_explicit_add shadow_idrange \
+  shadow_nested_leaf shadow_offset shadow_parent_users shadow_proj shadow_sel \
+  shadow_timestamp_nanos shadow_transaction_create shadow_tx shadow_users threads >/dev/null
 "$PY" "$DIFF" --mode shim --out "$SHIM_OUT"
 
 if [[ "${1:-}" == "--shim-only" ]]; then
@@ -39,8 +47,8 @@ fi
 
 echo "==> real mode (Firestore emulator)"
 env -u FIRESTORE_PG_DSN \
-  FIRESTORE_EMULATOR_HOST=localhost:8080 \
-  FIREBASE_PROJECT_ID=demo-omi-local \
+  FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
+  FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" \
   "$PY" "$DIFF" --mode real --out "$REAL_OUT"
 
 echo "==> diff"
