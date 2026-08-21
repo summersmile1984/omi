@@ -25,6 +25,7 @@ import httpx
 import numpy as np
 from pydub import AudioSegment
 
+from utils.egress_policy import EgressPolicyUnavailable
 from utils.executors import llm_executor, run_blocking
 from utils.http_client import get_tts_client, get_tts_semaphore, get_webhook_circuit_breaker
 from utils.llm.capabilities import ModelCapabilityUnavailableError
@@ -319,6 +320,9 @@ async def synthesize_openai_compatible_tts(
                 json=payload,
                 timeout=config.timeout_seconds,
             )
+    except EgressPolicyUnavailable as exc:
+        circuit_breaker.record_failure()
+        raise ModelCapabilityUnavailableError('tts', exc.reason, retryable=False) from exc
     except (httpx.TimeoutException, httpx.TransportError) as exc:
         circuit_breaker.record_failure()
         raise ModelCapabilityUnavailableError('tts', 'transport_unavailable', retryable=True) from exc

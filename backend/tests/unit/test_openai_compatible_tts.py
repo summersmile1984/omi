@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 from models.tts import TtsSynthesizeRequest as MobileTtsRequest
+from utils.egress_policy import EgressPolicyUnavailable
 from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.tts_provider import TtsAudio
 
@@ -133,6 +134,34 @@ async def test_compatible_tts_uses_only_the_explicit_endpoint_and_returns_audio(
     }
     assert circuit.successes == 1
     assert circuit.failures == 0
+
+
+@pytest.mark.asyncio
+async def test_compatible_tts_maps_egress_policy_rejection_to_nonretryable_capability(monkeypatch):
+    import utils.tts_provider as mod
+
+    _compatible_env(monkeypatch)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    circuit = _Circuit()
+
+    class _Client:
+        async def post(self, _url, **_kwargs):
+            raise EgressPolicyUnavailable('endpoint_not_allowlisted', host='other.internal')
+
+    monkeypatch.setattr(mod, 'get_tts_client', lambda: _Client())
+    monkeypatch.setattr(mod, 'get_tts_semaphore', lambda: _Semaphore())
+    monkeypatch.setattr(mod, 'get_webhook_circuit_breaker', lambda _url: circuit)
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        await mod.synthesize_openai_compatible_tts('hello')
+
+    assert error.value.as_dict() == {
+        'code': 'model_capability_unavailable',
+        'capability': 'tts',
+        'reason': 'endpoint_not_allowlisted',
+        'retryable': False,
+    }
+    assert circuit.failures == 1
 
 
 @pytest.mark.asyncio

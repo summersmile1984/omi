@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import httpx
 from PIL import Image, ImageDraw
 
+from utils.egress_policy import EgressPolicyUnavailable, assert_http_endpoint_allowed
 from utils.http_client import get_webhook_circuit_breaker
 from utils.llm.capabilities import ModelCapabilityUnavailableError
 
@@ -84,6 +85,13 @@ def generate_image_via_openai_compatible(
     """Call only the explicitly configured image endpoint."""
 
     endpoint = _image_generation_endpoint()
+    try:
+        # This provider uses a synchronous client, so it cannot inherit the
+        # shared AsyncClient request hook.  Keep the same pre-DNS neutral
+        # deployment boundary before credentials or the circuit are touched.
+        assert_http_endpoint_allowed(endpoint)
+    except EgressPolicyUnavailable as exc:
+        raise ModelCapabilityUnavailableError('app_icon_generation', exc.reason, retryable=False) from exc
     api_key = _required('IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY')
     model = _required('IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL')
     circuit_breaker = get_webhook_circuit_breaker(endpoint)

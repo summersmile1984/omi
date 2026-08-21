@@ -160,7 +160,10 @@ deployment:
 - app-icon generation uses a deterministic local template in the checked-in
   profile; it can be switched to an explicit operator-owned
   OpenAI-compatible image endpoint, but never discovers a vendor endpoint or
-  key implicitly;
+  key implicitly. Both the compatible image client and the optional gateway
+  image path preflight the process egress policy before constructing a client;
+  fixed OpenAI/Gemini/ElevenLabs routes are unavailable in neutral mode even
+  when ambient credentials exist;
 - attached-file chat can use `FILE_CHAT_TRANSPORT=local_extraction`: originals
   remain private in the configured UID-scoped object store, bounded local
   extraction handles text/Markdown/JSON/CSV/PDF/DOCX and restricted inline

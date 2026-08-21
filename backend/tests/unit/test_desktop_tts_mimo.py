@@ -77,6 +77,31 @@ async def test_neutral_desktop_tts_missing_provider_never_uses_ambient_openai(mo
     }
 
 
+@pytest.mark.asyncio
+async def test_neutral_desktop_tts_rejects_explicit_openai_before_subscription_or_request(monkeypatch):
+    import routers.desktop_tts_updates as mod
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('TTS_PROVIDER', 'openai')
+    monkeypatch.setenv('OPENAI_API_KEY', 'must-not-be-used')
+
+    async def fail_run_blocking(*_args, **_kwargs):
+        raise AssertionError('official TTS must fail before subscription/provider work')
+
+    monkeypatch.setattr(mod, 'run_blocking', fail_run_blocking)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello', voice_id='alloy'), uid='user-1')
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'tts',
+        'reason': 'official_provider_forbidden',
+        'retryable': False,
+    }
+
+
 def test_mimo_synthesize_uses_client_and_returns_audio(monkeypatch):
     audio = b'RIFF\x24\x00\x00\x00WAVE'
     captured = {}

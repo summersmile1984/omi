@@ -144,6 +144,22 @@ def test_neutral_capability_defaults_fail_closed_without_vendor_routes():
     assert resolve_model_capability('screen', env=neutral).reason == 'embedding_provider_not_configured'
 
 
+def test_neutral_explicit_fixed_vendor_routes_are_forbidden_even_with_ambient_credentials():
+    neutral = {'OMI_DEPLOYMENT_PROFILE': 'self_hosted'}
+
+    files = resolve_model_capability(
+        'file_chat',
+        env={**neutral, 'FILE_CHAT_TRANSPORT': 'openai_assistants', 'OPENAI_API_KEY': 'ambient'},
+    )
+    vendor_proxy = resolve_model_capability(
+        'desktop_vendor_proxy',
+        env={**neutral, 'DESKTOP_VENDOR_PROXY_TRANSPORT': 'gemini', 'GEMINI_API_KEY': 'ambient'},
+    )
+
+    assert files.unavailable_payload()['reason'] == 'official_provider_forbidden'
+    assert vendor_proxy.unavailable_payload()['reason'] == 'official_provider_forbidden'
+
+
 def test_neutral_realtime_requires_an_explicit_server_provider():
     neutral = {'OMI_DEPLOYMENT_PROFILE': 'self_hosted'}
 

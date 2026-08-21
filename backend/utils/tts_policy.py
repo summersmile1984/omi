@@ -29,5 +29,19 @@ def tts_provider_missing_in_neutral_deployment() -> bool:
     return neutral and not os.getenv('TTS_PROVIDER', '').strip()
 
 
+def tts_official_provider_forbidden_in_neutral(provider: str) -> bool:
+    """Return whether a fixed vendor TTS provider is forbidden in neutral mode.
+
+    Compatible and local transports remain operator-selected.  ``elevenlabs``
+    and ``openai`` are different: their routes are hard-coded to official
+    vendor authorities, so an ambient credential or an explicit provider token
+    must not turn a neutral process into a vendor proxy.
+    """
+
+    profile = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower()
+    neutral = profile in {'neutral', 'self_hosted', 'self-hosted'}
+    return neutral and provider.strip().lower() in {'elevenlabs', 'openai'}
+
+
 def tts_explicitly_disabled() -> bool:
     return os.getenv('TTS_PROVIDER', '').strip().lower() == 'disabled'

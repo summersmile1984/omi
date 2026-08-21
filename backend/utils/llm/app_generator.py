@@ -13,10 +13,11 @@ from PIL import Image, UnidentifiedImageError
 from typing import Any, Dict, Optional, cast
 from pydantic import BaseModel
 from langchain_core.messages import SystemMessage, HumanMessage
+from utils.egress_policy import EgressPolicyUnavailable, assert_http_endpoint_allowed
 from utils.executors import llm_executor, run_blocking
 from utils.llm.capabilities import ModelCapabilityUnavailableError, resolve_model_capability
 from utils.llm.clients import get_llm
-from utils.llm.gateway_client import generate_image_via_gateway
+from utils.llm.gateway_client import generate_image_via_gateway, get_llm_gateway_base_url
 from utils.llm.image_generation_provider import generate_image_via_local_template, generate_image_via_openai_compatible
 
 
@@ -218,6 +219,10 @@ Design requirements:
     # `response_format` parameter are both rejected by the images API now, and it always
     # returns base64 image data.
     if capability.transport == 'gateway_image_generation':
+        try:
+            assert_http_endpoint_allowed(f'{get_llm_gateway_base_url()}/v1/images/generations')
+        except EgressPolicyUnavailable as exc:
+            raise ModelCapabilityUnavailableError('app_icon_generation', exc.reason, retryable=False) from exc
         response = await run_blocking(
             llm_executor,
             generate_image_via_gateway,

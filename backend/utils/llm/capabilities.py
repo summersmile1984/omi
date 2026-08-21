@@ -241,6 +241,8 @@ def resolve_model_capability(
             )
         if transport != 'openai_assistants':
             return _unavailable(capability, 'unsupported_transport', retryable=False)
+        if _neutral_deployment(values):
+            return _unavailable(capability, 'official_provider_forbidden', retryable=False)
         if not values.get('OPENAI_API_KEY', '').strip():
             return _unavailable(capability, 'openai_credential_not_configured', retryable=False)
         return ModelCapabilityRoute(
@@ -255,6 +257,8 @@ def resolve_model_capability(
             return _unavailable(capability, 'disabled_by_deployment', retryable=False)
         if transport != 'gemini':
             return _unavailable(capability, 'unsupported_transport', retryable=False)
+        if _neutral_deployment(values):
+            return _unavailable(capability, 'official_provider_forbidden', retryable=False)
         return ModelCapabilityRoute(
             capability=capability,
             status='selected',

@@ -87,3 +87,26 @@ def test_upload_is_typed_unavailable_before_openai_when_deployment_disables_file
         cf.FileChatTool.upload(file_path)
 
     assert error.value.as_dict()['reason'] == 'disabled_by_deployment'
+
+
+def test_neutral_upload_rejects_explicit_openai_assistants_before_openai(monkeypatch, tmp_path):
+    from utils.llm.capabilities import ModelCapabilityUnavailableError
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('FILE_CHAT_TRANSPORT', 'openai_assistants')
+    monkeypatch.setenv('OPENAI_API_KEY', 'ambient-but-forbidden')
+    file_path = tmp_path / 'note.txt'
+    file_path.write_text('hello')
+    fake_files = SimpleNamespace(
+        create=lambda **_kwargs: (_ for _ in ()).throw(AssertionError('OpenAI must not be called'))
+    )
+
+    with patch.object(cf.openai, 'files', fake_files), pytest.raises(ModelCapabilityUnavailableError) as error:
+        cf.FileChatTool.upload(file_path)
+
+    assert error.value.as_dict() == {
+        'code': 'model_capability_unavailable',
+        'capability': 'file_chat',
+        'reason': 'official_provider_forbidden',
+        'retryable': False,
+    }

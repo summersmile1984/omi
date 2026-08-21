@@ -18,7 +18,12 @@ from utils.log_sanitizer import sanitize
 from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_desktop_trial_paywalled
-from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled, tts_provider_missing_in_neutral_deployment
+from utils.tts_policy import (
+    TTS_DISABLED_DETAIL,
+    tts_explicitly_disabled,
+    tts_official_provider_forbidden_in_neutral,
+    tts_provider_missing_in_neutral_deployment,
+)
 from utils.tts_provider import selected_tts_provider, synthesize_openai_compatible_tts, synthesize_sherpa_tts
 
 logger = logging.getLogger(__name__)
@@ -211,6 +216,9 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
     selected_provider = selected_tts_provider()
     if selected_provider not in {'', 'openai', 'mimo', 'openai_compatible', 'sherpa_onnx'}:
         error = ModelCapabilityUnavailableError('tts', 'unsupported_provider', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+    if tts_official_provider_forbidden_in_neutral(selected_provider):
+        error = ModelCapabilityUnavailableError('tts', 'official_provider_forbidden', retryable=False)
         raise HTTPException(status_code=503, detail=error.as_dict())
 
     if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop"):

@@ -114,6 +114,53 @@ def test_compatible_image_provider_missing_key_fails_before_client_construction(
     assert error.value.as_dict()['reason'] == 'image_generation_openai_compatible_api_key_not_configured'
 
 
+def test_neutral_image_provider_rejects_official_endpoint_before_client_or_circuit(monkeypatch):
+    import utils.llm.image_generation_provider as mod
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', 'https://api.openai.com/v1')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY', 'must-not-be-used')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL', 'remote-image-model')
+    monkeypatch.setattr(mod.httpx, 'Client', lambda **_kwargs: (_ for _ in ()).throw(AssertionError('no client')))
+    monkeypatch.setattr(
+        mod, 'get_webhook_circuit_breaker', lambda _url: (_ for _ in ()).throw(AssertionError('no circuit'))
+    )
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        mod.generate_image_via_openai_compatible(prompt='draw it', size='1024x1024', quality='medium', n=1)
+
+    assert error.value.as_dict() == {
+        'code': 'model_capability_unavailable',
+        'capability': 'app_icon_generation',
+        'reason': 'official_endpoint_forbidden',
+        'retryable': False,
+    }
+
+
+def test_neutral_image_provider_rejects_undeclared_endpoint_before_client_or_circuit(monkeypatch):
+    import utils.llm.image_generation_provider as mod
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('SELF_HOST_EGRESS_ALLOWLIST', 'operator-image.internal')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL', 'https://other-image.internal/v1')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_API_KEY', 'must-not-be-used')
+    monkeypatch.setenv('IMAGE_GENERATION_OPENAI_COMPATIBLE_MODEL', 'remote-image-model')
+    monkeypatch.setattr(mod.httpx, 'Client', lambda **_kwargs: (_ for _ in ()).throw(AssertionError('no client')))
+    monkeypatch.setattr(
+        mod, 'get_webhook_circuit_breaker', lambda _url: (_ for _ in ()).throw(AssertionError('no circuit'))
+    )
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        mod.generate_image_via_openai_compatible(prompt='draw it', size='1024x1024', quality='medium', n=1)
+
+    assert error.value.as_dict() == {
+        'code': 'model_capability_unavailable',
+        'capability': 'app_icon_generation',
+        'reason': 'endpoint_not_allowlisted',
+        'retryable': False,
+    }
+
+
 def test_compatible_image_provider_maps_retryable_http_failures(monkeypatch):
     import utils.llm.image_generation_provider as mod
 

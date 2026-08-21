@@ -523,6 +523,31 @@ async def test_app_icon_generation_is_typed_unavailable_when_deployment_disables
 
 
 @pytest.mark.asyncio
+async def test_neutral_app_icon_gateway_rejects_official_endpoint_before_provider_call(monkeypatch):
+    from utils.llm import app_generator
+    from utils.llm.capabilities import ModelCapabilityUnavailableError
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('APP_ICON_GENERATION_TRANSPORT', 'gateway')
+    monkeypatch.setenv('OMI_LLM_GATEWAY_URL', 'https://api.openai.com')
+    monkeypatch.setattr(
+        app_generator,
+        'generate_image_via_gateway',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('gateway must not be called')),
+    )
+
+    with pytest.raises(ModelCapabilityUnavailableError) as error:
+        await app_generator.generate_app_icon('Name', 'Description', 'other')
+
+    assert error.value.as_dict() == {
+        'code': 'model_capability_unavailable',
+        'capability': 'app_icon_generation',
+        'reason': 'official_endpoint_forbidden',
+        'retryable': False,
+    }
+
+
+@pytest.mark.asyncio
 async def test_managed_web_search_tool_uses_gateway(monkeypatch):
     web_search_tools = _load_web_search_tools()
 
