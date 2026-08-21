@@ -349,6 +349,16 @@ def write_manifest(
         'config_fingerprint': _require_sha256(config_fingerprint, 'config fingerprint'),
         'migration_fingerprint': _require_sha256(migration_fingerprint, 'migration fingerprint'),
     }
+    manifest_path = directory / 'manifest.json'
+    # A pre-existing manifest is operator state, not an output scratch file.
+    # Refuse symlinks before touching any artifact permissions and keep the
+    # no-follow flag for the remaining TOCTOU window; otherwise a
+    # malicious/stale symlink could make an otherwise harmless backup write
+    # overwrite a path outside the backup directory.
+    if manifest_path.is_symlink():
+        raise RuntimeError('backup manifest must not be a symlink')
+    if manifest_path.exists() and not manifest_path.is_file():
+        raise RuntimeError('backup manifest must be a regular file')
     entries = {}
     for name in files:
         name = _safe_artifact_name(name)
@@ -369,8 +379,8 @@ def write_manifest(
         'encryption': {'format': ENVELOPE_FORMAT, 'chunk_bytes': ENVELOPE_CHUNK_BYTES},
         'artifacts': entries,
     }
-    manifest_path = directory / 'manifest.json'
-    descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0)
+    descriptor = os.open(manifest_path, flags, 0o600)
     with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     os.chmod(manifest_path, 0o600)

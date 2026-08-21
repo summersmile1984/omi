@@ -342,6 +342,37 @@ only if the old release cannot read the upgraded state. After restore, the
 one-shot Better Auth migrator runs before Auth admission, and all services must
 pass `status`, the auth smoke, and the migration gate before traffic returns.
 
+### Recovery-drill evidence (operator runbook)
+
+The repository tests the envelope, manifest, wrong-key/tamper rejection, staging
+restore, and destructive-operation acknowledgement. They cannot prove that a
+particular host can recreate its real volumes or that its operator key custody
+works. Before declaring a production release recoverable, run the following on
+an isolated restore host (never against the serving deployment):
+
+1. Record the backup directory, source revision, manifest fingerprints, key
+   custody/change-ticket reference, and the intended restore target. Keep the
+   key outside the backup directory and do not put it in shell history.
+2. Run `operations.sh verify-backup BACKUP_DIR` with the same key file. Stop if
+   any fingerprint, ciphertext checksum, envelope authentication, or file
+   permission check fails.
+3. Restore into the isolated Compose volumes with
+   `SELF_HOST_RESTORE_ACK=I_ACKNOWLEDGE_THIS_OVERWRITES_STATE`, then run
+   `make self-host-migration-gate`, `operations.sh status`, and the auth smoke
+   against the isolated public origins. Do not route production traffic yet.
+4. Check application sentinels: a known PostgreSQL row, Redis queue state,
+   MinIO object, Qdrant projection, Typesense projection, and backend syncing
+   file must all match the recorded pre-backup evidence. Also exercise one
+   authenticated read/write/delete path and confirm no post-backup sentinel
+   remains where the restore contract says it must be absent.
+5. Save command output, service/image/config identity, manifest SHA, backup id,
+   restore duration, and pass/fail disposition in the change record. Destroy
+   temporary plaintext extracts and the materialized key according to the
+   operator secret-manager policy.
+
+   A successful local unit/contract lane is not a successful production drill;
+   retain this external evidence before closing the backup/restore prerequisite.
+
 ## Vector projection backfill and cutover
 
 Vectors are rebuildable projections, never authoritative records. Create one
