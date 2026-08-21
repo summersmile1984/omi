@@ -95,38 +95,36 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   await NotificationChannelStrings.loadAppLocale();
 
-      await AwesomeNotifications().initialize(null, [
-        NotificationChannel(
-          channelKey: 'channel',
-          channelName: NotificationChannelStrings.omiChannelName,
-          channelDescription: NotificationChannelStrings.omiChannelDescription,
-          defaultColor: const Color(0xFF9D50DD),
-          ledColor: Colors.white,
-        ),
-      ]);
+  await AwesomeNotifications().initialize(null, [
+    NotificationChannel(
+      channelKey: 'channel',
+      channelName: NotificationChannelStrings.omiChannelName,
+      channelDescription: NotificationChannelStrings.omiChannelDescription,
+      defaultColor: const Color(0xFF9D50DD),
+      ledColor: Colors.white,
+    ),
+  ]);
 
-      final data = message.data;
-      final messageType = data['type'];
-      const channelKey = 'channel';
+  final data = message.data;
+  final messageType = data['type'];
+  const channelKey = 'channel';
 
-      // Handle action item messages
-      if (messageType == 'action_item_reminder') {
-        await ActionItemNotificationHandler.handleReminderMessage(data, channelKey);
-      } else if (messageType == 'action_item_update') {
-        await ActionItemNotificationHandler.handleUpdateMessage(data, channelKey);
-      } else if (messageType == 'action_item_delete') {
-        await ActionItemNotificationHandler.handleDeletionMessage(data);
-      } else if (messageType == 'merge_completed') {
-        await MergeNotificationHandler.handleMergeCompleted(data, channelKey, isAppInForeground: false);
-      } else if (messageType == 'important_conversation') {
-        await ImportantConversationNotificationHandler.handleImportantConversation(
-          data,
-          channelKey,
-          isAppInForeground: false,
-        );
-      }
-    },
-  );
+  // Handle action item messages
+  if (messageType == 'action_item_reminder') {
+    await ActionItemNotificationHandler.handleReminderMessage(data, channelKey);
+  } else if (messageType == 'action_item_update') {
+    await ActionItemNotificationHandler.handleUpdateMessage(data, channelKey);
+  } else if (messageType == 'action_item_delete') {
+    await ActionItemNotificationHandler.handleDeletionMessage(data);
+  } else if (messageType == 'merge_completed') {
+    await MergeNotificationHandler.handleMergeCompleted(data, channelKey, isAppInForeground: false);
+  } else if (messageType == 'important_conversation') {
+    await ImportantConversationNotificationHandler.handleImportantConversation(
+      data,
+      channelKey,
+      isAppInForeground: false,
+    );
+  }
 }
 
 Future _init() async {

@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:intercom_flutter/intercom_flutter.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
+import 'package:omi/env/environment_profile.dart';
 import 'package:omi/env/firebase_services_policy.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/l10n_extensions.dart';
@@ -25,9 +26,7 @@ class CrashlyticsTalkerObserver extends TalkerObserver {
   }
 }
 
-class Logger {
-  final TalkerObserver? crashlyticsTalkerObserver = FirebaseServicesPolicy.enabled ? CrashlyticsTalkerObserver() : null;
-  late final talker = TalkerFlutter.init(observer: crashlyticsTalkerObserver);
+typedef TalkerObserverFactory = TalkerObserver Function();
 
 class Logger {
   late final Talker talker;
