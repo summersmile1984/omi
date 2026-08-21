@@ -204,6 +204,19 @@ def test_entrypoint_resolves_backend_packages_from_any_working_directory(tmp_pat
     assert '{dry-run,apply,verify}' in result.stdout
 
 
+def test_gcs_source_requires_private_credentials_before_client_construction(tmp_path: Path) -> None:
+    credentials = tmp_path / 'source-credentials.json'
+    credentials.write_text('{}', encoding='utf-8')
+    credentials.chmod(0o644)
+
+    with pytest.raises(migration.StorageMigrationError, match='source credentials file.*0600'):
+        migration.GcsSource(
+            project='operator-project',
+            credentials_path=credentials,
+            endpoint='https://storage.googleapis.com',
+        )
+
+
 @pytest.mark.parametrize(
     'scopes,match',
     [
