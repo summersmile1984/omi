@@ -13,6 +13,7 @@ from database.vector_projection import (
     VersionedVectorStoreAdapter,
     physical_namespace,
 )
+from database.memory_vector_metadata import canonical_memory_provider_id
 from database.vector_store import QdrantVectorStoreAdapter
 from scripts.vector_projection_migration import (
     MigrationCliError,
@@ -62,6 +63,31 @@ def _authority(path: Path, *, second_content: str = 'second memory') -> None:
         {'id': 'two', 'content': second_content, 'metadata': {'uid': 'u1', 'kind': 'memory'}},
     ]
     path.write_text(''.join(json.dumps(record) + '\n' for record in records), encoding='utf-8')
+
+
+def _canonical_authority(path: Path) -> None:
+    metadata = {
+        'memory_schema_version': 1,
+        'memory_layer': 'long_term',
+        'uid': 'u1',
+        'memory_id': 'memory-1',
+        'status': 'active',
+        'processing_state': 'processed',
+        'source_state': 'active',
+        'visibility': 'private',
+        'sensitivity_labels': [],
+        'restricted_sensitivity': False,
+        'account_generation': 0,
+        'item_revision': 2,
+        'source_commit_id': 'source-1',
+        'content_hash': 'content-1',
+        'projection_commit_id': 'ledger-1',
+        'vector_updated_at': '2025-01-02T00:00:00+00:00',
+    }
+    path.write_text(
+        json.dumps({'id': 'u1-memory-1', 'content': 'canonical memory', 'metadata': metadata}) + '\n',
+        encoding='utf-8',
+    )
 
 
 def _stores() -> tuple[QdrantVectorStoreAdapter, VersionedVectorStoreAdapter]:
@@ -160,6 +186,43 @@ def test_backfill_verify_switch_and_rollback_are_executable_from_authority_expor
         'VECTOR_PROJECTION_SCHEMA_VERSION': '3',
         'VECTOR_PROJECTION_DELETE_VERSIONS': 'v1,v2',
     }
+
+
+def test_ns2_canonical_mode_fences_lineage_and_uses_canonical_provider_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_migration(monkeypatch)
+    records_path = tmp_path / 'canonical.jsonl'
+    receipt_path = tmp_path / 'canonical.receipt.jsonl'
+    _canonical_authority(records_path)
+    raw, store = _stores()
+
+    result = backfill_from_authority(
+        records_path=records_path,
+        receipt_path=receipt_path,
+        namespace='ns2',
+        target_version='v2',
+        store=store,
+        embeddings=FakeEmbeddings(),
+        batch_size=1,
+    )
+    assert result['status'] == 'backfilled'
+    receipt = load_receipt(receipt_path)
+    assert receipt.header.memory_mode == 'canonical'
+    expected_id = canonical_memory_provider_id('u1', 'memory-1')
+    assert receipt.records[0].id == expected_id
+    assert receipt.records[0].metadata['projection_commit_id'] == 'ledger-1'
+    actual = raw.fetch(ids=[expected_id], namespace=physical_namespace('ns2', 'v2'))
+    assert expected_id in actual['vectors']
+    assert actual['vectors'][expected_id]['metadata']['memory_schema_version'] == 1
+    verification = verify_receipt(
+        records_path=records_path,
+        receipt_path=receipt_path,
+        store_factory=lambda _identity: store,
+        batch_size=1,
+    )
+    assert verification.ready_to_switch is True
 
 
 def test_switch_refuses_missing_or_wrong_identity_target_without_writing_manifest(

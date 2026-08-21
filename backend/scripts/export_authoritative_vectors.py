@@ -47,6 +47,21 @@ NAMESPACE_ORDER = (
 )
 EXPORT_FORMAT = 'omi-authoritative-vector-export-v1'
 MANIFEST_FORMAT = 'omi-authoritative-vector-export-manifest-v1'
+MEMORY_MODES = ('canonical', 'legacy')
+CANONICAL_MEMORY_SCHEMA_VERSION = 1
+_RESTRICTED_SENSITIVITY_LABELS = frozenset(
+    {
+        'credential',
+        'secret',
+        'financial',
+        'health',
+        'intimate',
+        'minor',
+        'minors',
+        'workplace_confidential',
+        'identity_authentication',
+    }
+)
 _RECORD_KEYS = frozenset({'id', 'content', 'metadata'})
 
 
@@ -142,6 +157,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action='store_true',
         help='Explicitly acknowledge a namespace with no authoritative rows; default is fail-closed.',
     )
+    parser.add_argument(
+        '--memory-mode',
+        choices=MEMORY_MODES,
+        default='canonical',
+        help='ns2 export contract; canonical is the safe default and legacy requires an explicit opt-in.',
+    )
     return parser.parse_args(argv)
 
 
@@ -154,9 +175,11 @@ def export_authoritative_vectors(
     output_dir: Path,
     sidecar: Path | None = None,
     allow_empty: bool = False,
+    memory_mode: str = 'canonical',
 ) -> dict[str, Any]:
     """Export selected source rows and return the same data written to sidecar."""
 
+    normalized_memory_mode = _normalize_memory_mode(memory_mode)
     selected_uids = _resolve_uids(authority, uids=uids, all_users=all_users)
     selected_namespaces = _resolve_namespaces(namespaces)
     if output_dir.exists():
@@ -174,7 +197,7 @@ def export_authoritative_vectors(
 
     files: list[dict[str, Any]] = []
     for namespace in selected_namespaces:
-        records = _records_for_namespace(authority, namespace, selected_uids)
+        records = _records_for_namespace(authority, namespace, selected_uids, memory_mode=normalized_memory_mode)
         if not records and not allow_empty:
             raise ExportError(
                 f'authoritative export for namespace {namespace!r} is empty; '
@@ -197,6 +220,7 @@ def export_authoritative_vectors(
         'format': MANIFEST_FORMAT,
         'export_format': EXPORT_FORMAT,
         'source_kind': authority.source_kind,
+        'memory_mode': normalized_memory_mode,
         'uid_count': len(selected_uids),
         'namespace_count': len(selected_namespaces),
         'empty_export_acknowledged': bool(allow_empty),
@@ -239,6 +263,8 @@ def _records_for_namespace(
     authority: ReadOnlyAuthority,
     namespace: str,
     uids: Sequence[str],
+    *,
+    memory_mode: str,
 ) -> tuple[dict[str, Any], ...]:
     records: list[dict[str, Any]] = []
     for uid in uids:
@@ -248,14 +274,20 @@ def _records_for_namespace(
         spec = NAMESPACE_SPECS[namespace]
         assert isinstance(spec.collection, str)
         for document in authority.iter_user_documents(uid, spec.collection):
-            record = _record_from_document(namespace, uid, document)
+            record = _record_from_document(namespace, uid, document, memory_mode=memory_mode)
             if record is not None:
                 records.append(record)
     records.sort(key=lambda record: (str(record['metadata'].get('uid', '')), str(record['id'])))
     return tuple(records)
 
 
-def _record_from_document(namespace: str, uid: str, document: SourceDocument) -> dict[str, Any] | None:
+def _record_from_document(
+    namespace: str,
+    uid: str,
+    document: SourceDocument,
+    *,
+    memory_mode: str,
+) -> dict[str, Any] | None:
     data = dict(document.data)
     if data.get('uid') not in (None, uid):
         raise ExportError(f'{uid}/{NAMESPACE_SPECS[namespace].collection}/{document.id} has a mismatched uid')
@@ -276,6 +308,8 @@ def _record_from_document(namespace: str, uid: str, document: SourceDocument) ->
         return _record(f'{uid}-{document.id}', content, metadata)
 
     if namespace == 'ns2':
+        if memory_mode == 'canonical':
+            return _canonical_memory_record(uid, document)
         if data.get('status') not in (None, 'active'):
             return None
         content = _text(data.get('content'))
@@ -357,6 +391,71 @@ def _record_from_document(namespace: str, uid: str, document: SourceDocument) ->
         return _record(f'{uid}-ai-{action_item_id}', content, metadata)
 
     raise ExportError(f'unsupported namespace {namespace!r}')
+
+
+def _canonical_memory_record(uid: str, document: SourceDocument) -> dict[str, Any] | None:
+    """Build the metadata contract consumed by canonical ns2 memory search.
+
+    Legacy ``memory_items`` rows are deliberately not guessed into this shape.
+    A canonical vector without revision/source/ledger lineage is not safe to
+    hydrate, so the default export fails closed instead of creating a vector
+    that the canonical parser will later reject.
+    """
+    data = dict(document.data)
+    status = _text(_enum_value(data.get('status')))
+    if status not in ('active', ''):
+        return None
+    content = _text(data.get('content'))
+    if not content:
+        return None
+    memory_id = _text(data.get('memory_id')) or document.id
+    if _text(data.get('uid')) not in ('', uid):
+        raise ExportError(f'{uid}/memory_items/{document.id} has a mismatched uid')
+
+    required_strings = (
+        'tier',
+        'processing_state',
+        'source_state',
+        'visibility',
+        'source_commit_id',
+        'content_hash',
+        'ledger_commit_id',
+    )
+    missing = [key for key in required_strings if not _text(_enum_value(data.get(key)))]
+    if missing:
+        raise ExportError(f'{uid}/memory_items/{document.id} is missing canonical memory lineage: {", ".join(missing)}')
+    labels = data.get('sensitivity_labels')
+    if not isinstance(labels, (list, tuple, set)) or any(not isinstance(label, str) for label in labels):
+        raise ExportError(f'{uid}/memory_items/{document.id} sensitivity_labels must be a string list')
+    normalized_labels = sorted({label.strip().lower() for label in labels if label.strip()})
+    updated_at = _canonical_timestamp(data.get('updated_at'), uid=uid, memory_id=memory_id)
+    item_revision = _integer(data.get('item_revision'), default=0)
+    if item_revision < 1:
+        raise ExportError(f'{uid}/memory_items/{document.id} item_revision must be positive')
+    account_generation = _integer(data.get('account_generation'), default=-1)
+    if account_generation < 0:
+        raise ExportError(f'{uid}/memory_items/{document.id} account_generation must be non-negative')
+    metadata = {
+        'memory_schema_version': CANONICAL_MEMORY_SCHEMA_VERSION,
+        'memory_layer': _text(_enum_value(data.get('tier'))),
+        'uid': uid,
+        'memory_id': memory_id,
+        'status': status or 'active',
+        'processing_state': _text(_enum_value(data.get('processing_state'))),
+        'source_state': _text(_enum_value(data.get('source_state'))),
+        'visibility': _text(data.get('visibility')),
+        'sensitivity_labels': normalized_labels,
+        'restricted_sensitivity': bool(set(normalized_labels).intersection(_RESTRICTED_SENSITIVITY_LABELS)),
+        'account_generation': account_generation,
+        'item_revision': item_revision,
+        'source_commit_id': _text(data.get('source_commit_id')),
+        'content_hash': _text(data.get('content_hash')),
+        # The ledger commit is the authoritative projection fence used by the
+        # live canonical upsert path. It is not inferred from a vector id.
+        'projection_commit_id': _text(data.get('ledger_commit_id')),
+        'vector_updated_at': updated_at,
+    }
+    return _record(f'{uid}-{memory_id}', content, metadata)
 
 
 def _conversation_embedding_text(structured: Mapping[str, Any]) -> str:
@@ -519,6 +618,40 @@ def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ''
 
 
+def _normalize_memory_mode(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if normalized not in MEMORY_MODES:
+        raise ExportError(f'memory mode must be one of {MEMORY_MODES!r}')
+    return normalized
+
+
+def _canonical_timestamp(value: Any, *, uid: str, memory_id: str) -> str:
+    if value is None:
+        raise ExportError(f'{uid}/memory_items/{memory_id} updated_at is required for canonical vector metadata')
+    if isinstance(value, bool):
+        raise ExportError(f'{uid}/memory_items/{memory_id} updated_at is invalid')
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ExportError(f'{uid}/memory_items/{memory_id} updated_at must be timezone-aware')
+        return value.isoformat()
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc).isoformat()
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace('Z', '+00:00'))
+        except ValueError as error:
+            raise ExportError(f'{uid}/memory_items/{memory_id} updated_at is invalid') from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ExportError(f'{uid}/memory_items/{memory_id} updated_at must be timezone-aware')
+        return parsed.isoformat()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError) as error:
+            raise ExportError(f'{uid}/memory_items/{memory_id} updated_at is invalid') from error
+    raise ExportError(f'{uid}/memory_items/{memory_id} updated_at is invalid')
+
+
 def _enum_value(value: Any) -> Any:
     return value.value if isinstance(value, Enum) else value
 
@@ -591,6 +724,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_dir=args.output_dir,
             sidecar=args.sidecar,
             allow_empty=bool(args.allow_empty),
+            memory_mode=args.memory_mode,
         )
     except (ExportError, OSError, ValueError) as error:
         print(f'export failed: {error}', file=sys.stderr)

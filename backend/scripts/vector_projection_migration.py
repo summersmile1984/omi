@@ -21,6 +21,7 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -46,6 +47,7 @@ from database.vector_projection import (
     VerificationReport,
     VersionedVectorStoreAdapter,
 )
+from database.memory_vector_metadata import canonical_memory_provider_id
 from database.vector_store import PineconeVectorStoreAdapter, create_qdrant_vector_store_from_env
 
 RECEIPT_FORMAT = 'omi-vector-projection-receipt-v1'
@@ -65,6 +67,7 @@ RECEIPT_HEADER_KEYS = frozenset(
         'embedding_dimension',
         'projection_schema_version',
         'empty_export_acknowledged',
+        'memory_mode',
     }
 )
 RECEIPT_RECORD_KEYS = frozenset({'type', 'id', 'values', 'metadata'})
@@ -116,6 +119,7 @@ class ReceiptHeader:
     embedding_dimension: int
     projection_schema_version: int
     empty_export_acknowledged: bool
+    memory_mode: str = 'legacy'
 
 
 @dataclass(frozen=True)
@@ -187,6 +191,114 @@ def load_authority_records(
     return tuple(records), source_sha256
 
 
+def _normalize_memory_mode(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if normalized not in {'canonical', 'legacy'}:
+        raise MigrationCliError("memory mode must be 'canonical' or 'legacy'")
+    return normalized
+
+
+def _effective_memory_mode(namespace: str, requested: str) -> str:
+    normalized = _normalize_memory_mode(requested)
+    if normalized == 'canonical' and namespace != 'ns2':
+        # Canonical metadata is a memory-only contract. Other namespaces retain
+        # the generic projection contract and are explicitly recorded as legacy
+        # in receipts so verify cannot silently reinterpret their IDs.
+        return 'legacy'
+    return normalized
+
+
+def _canonicalize_memory_authority(
+    records: tuple[AuthorityRecord, ...],
+    *,
+    mode: str,
+) -> tuple[AuthorityRecord, ...]:
+    if mode != 'canonical':
+        return records
+    required = {
+        'memory_schema_version',
+        'memory_layer',
+        'uid',
+        'memory_id',
+        'status',
+        'processing_state',
+        'source_state',
+        'visibility',
+        'sensitivity_labels',
+        'restricted_sensitivity',
+        'account_generation',
+        'item_revision',
+        'source_commit_id',
+        'content_hash',
+        'projection_commit_id',
+        'vector_updated_at',
+    }
+    canonical: list[AuthorityRecord] = []
+    for record in records:
+        metadata = dict(record.metadata)
+        missing = sorted(key for key in required if key not in metadata)
+        if missing:
+            raise MigrationCliError(
+                f'ns2 canonical memory record {record.id!r} is missing lineage fields: {", ".join(missing)}'
+            )
+        if metadata.get('memory_schema_version') != 1:
+            raise MigrationCliError(f'ns2 canonical memory record {record.id!r} has an unsupported schema')
+        uid = metadata.get('uid')
+        memory_id = metadata.get('memory_id')
+        if not isinstance(uid, str) or not uid.strip() or not isinstance(memory_id, str) or not memory_id.strip():
+            raise MigrationCliError(f'ns2 canonical memory record {record.id!r} has invalid identity metadata')
+        if metadata.get('status') != 'active':
+            raise MigrationCliError(f'ns2 canonical memory record {record.id!r} is not active')
+        if not isinstance(metadata.get('sensitivity_labels'), list):
+            raise MigrationCliError(f'ns2 canonical memory record {record.id!r} sensitivity_labels must be a list')
+        for key in (
+            'memory_layer',
+            'processing_state',
+            'source_state',
+            'visibility',
+            'source_commit_id',
+            'content_hash',
+            'projection_commit_id',
+        ):
+            if not isinstance(metadata.get(key), str) or not metadata[key].strip():
+                raise MigrationCliError(f'ns2 canonical memory record {record.id!r} has invalid {key}')
+        if (
+            not isinstance(metadata.get('account_generation'), int)
+            or isinstance(metadata['account_generation'], bool)
+            or metadata['account_generation'] < 0
+        ):
+            raise MigrationCliError(f'ns2 canonical memory record {record.id!r} has invalid account_generation')
+        if (
+            not isinstance(metadata.get('item_revision'), int)
+            or isinstance(metadata['item_revision'], bool)
+            or metadata['item_revision'] < 1
+        ):
+            raise MigrationCliError(f'ns2 canonical memory record {record.id!r} has invalid item_revision')
+        vector_updated_at = metadata.get('vector_updated_at')
+        if not isinstance(vector_updated_at, str) or not vector_updated_at.strip():
+            raise MigrationCliError(f'ns2 canonical memory record {record.id!r} has invalid vector_updated_at')
+        try:
+            parsed = datetime.fromisoformat(vector_updated_at.replace('Z', '+00:00'))
+        except (TypeError, ValueError) as error:
+            raise MigrationCliError(
+                f'ns2 canonical memory record {record.id!r} has invalid vector_updated_at'
+            ) from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise MigrationCliError(
+                f'ns2 canonical memory record {record.id!r} vector_updated_at must be timezone-aware'
+            )
+        metadata['uid'] = uid
+        metadata['memory_id'] = memory_id
+        canonical.append(
+            AuthorityRecord(
+                id=canonical_memory_provider_id(uid, memory_id),
+                content=record.content,
+                metadata=metadata,
+            )
+        )
+    return tuple(canonical)
+
+
 def backfill_from_authority(
     *,
     records_path: Path,
@@ -197,6 +309,7 @@ def backfill_from_authority(
     embeddings: EmbeddingRuntime,
     batch_size: int,
     allow_empty: bool = False,
+    memory_mode: str = 'canonical',
 ) -> dict[str, Any]:
     _require_new_output(receipt_path)
     _validate_batch_size(batch_size)
@@ -204,7 +317,10 @@ def backfill_from_authority(
         raise MigrationCliError('namespace must be a non-empty string')
     _validate_migration_runtime(target_version)
     _validate_embedding_runtime_identity(embeddings)
+    requested_memory_mode = _normalize_memory_mode(memory_mode)
+    effective_memory_mode = _effective_memory_mode(namespace, requested_memory_mode)
     authority, source_sha256 = load_authority_records(records_path, allow_empty=allow_empty)
+    authority = _canonicalize_memory_authority(authority, mode=effective_memory_mode)
     configured_dimension = embeddings.dimension
     if authority:
         vectors: list[list[float]] = []
@@ -255,6 +371,7 @@ def backfill_from_authority(
         embedding_dimension=dimension,
         projection_schema_version=schema_version,
         empty_export_acknowledged=not authority,
+        memory_mode=effective_memory_mode,
     )
     _write_receipt(receipt_path, ProjectionReceipt(header=header, records=projection_records))
     return {'status': 'backfilled', **asdict(report), 'receipt': str(receipt_path), 'source_sha256': source_sha256}
@@ -277,6 +394,7 @@ def verify_receipt(
         raise MigrationCliError('authoritative export SHA-256 does not match the backfill receipt')
     if len(authority) != receipt.header.source_record_count:
         raise MigrationCliError('authoritative export count does not match the backfill receipt')
+    authority = _canonicalize_memory_authority(authority, mode=receipt.header.memory_mode)
     if [record.id for record in authority] != [record.id for record in receipt.records]:
         raise MigrationCliError('authoritative export ids/order do not match the backfill receipt')
     _validate_runtime_projection_contract(receipt.header)
@@ -578,6 +696,7 @@ def _validate_receipt_header(path: Path, header: ReceiptHeader) -> None:
         raise MigrationCliError(f'{path}: receipt empty_export_acknowledged must be a boolean')
     if (header.source_record_count == 0) != header.empty_export_acknowledged:
         raise MigrationCliError(f'{path}: empty-export acknowledgement does not match receipt record count')
+    _normalize_memory_mode(header.memory_mode)
     if not _is_nonempty_string(header.namespace):
         raise MigrationCliError(f'{path}: receipt namespace must be a non-empty string')
     _require_projection_version(header.target_version, 'receipt target version')
@@ -767,6 +886,8 @@ def _parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser('validate', help='validate an authoritative JSONL export without writing')
     validate.add_argument('--records', required=True, type=Path)
+    validate.add_argument('--namespace')
+    validate.add_argument('--memory-mode', choices=('canonical', 'legacy'), default='canonical')
     validate.add_argument('--allow-empty', action='store_true')
 
     backfill = subparsers.add_parser('backfill', help='embed authoritative JSONL and write one target projection')
@@ -775,6 +896,7 @@ def _parser() -> argparse.ArgumentParser:
     backfill.add_argument('--namespace', required=True)
     backfill.add_argument('--target-version', required=True)
     backfill.add_argument('--batch-size', type=int, default=100)
+    backfill.add_argument('--memory-mode', choices=('canonical', 'legacy'), default='canonical')
     backfill.add_argument('--allow-empty', action='store_true')
 
     verify = subparsers.add_parser('verify', help='verify target vectors against the source-bound receipt')
@@ -800,6 +922,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == 'validate':
             records, source_sha256 = load_authority_records(args.records, allow_empty=args.allow_empty)
+            if args.namespace == 'ns2':
+                _canonicalize_memory_authority(records, mode=_effective_memory_mode(args.namespace, args.memory_mode))
             result: dict[str, Any] = {
                 'status': 'valid',
                 'records': len(records),
@@ -817,6 +941,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 embeddings=embeddings,
                 batch_size=args.batch_size,
                 allow_empty=args.allow_empty,
+                memory_mode=args.memory_mode,
             )
         elif args.command == 'verify':
             if args.report_output is not None:

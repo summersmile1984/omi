@@ -96,9 +96,11 @@ def test_export_writes_all_seven_authority_namespaces_and_hash_bound_sidecar(tmp
         namespaces=None,
         output_dir=tmp_path / 'export',
         allow_empty=True,
+        memory_mode='legacy',
     )
 
     assert manifest['source_kind'] == 'fake_firestore_pg_facade'
+    assert manifest['memory_mode'] == 'legacy'
     assert manifest['uid_count'] == 2
     assert manifest['namespaces'] == [
         'ns1',
@@ -180,3 +182,41 @@ def test_export_fails_closed_on_empty_namespace_without_explicit_ack(tmp_path: P
             namespaces=['ns2'],
             output_dir=tmp_path / 'empty',
         )
+
+
+def test_canonical_memory_export_requires_lineage_and_emits_parser_metadata(tmp_path: Path):
+    authority = FakeAuthority()
+    with pytest.raises(ExportError, match='missing canonical memory lineage'):
+        export_authoritative_vectors(
+            authority,
+            uids=['u1'],
+            all_users=False,
+            namespaces=['ns2'],
+            output_dir=tmp_path / 'missing-lineage',
+        )
+
+    authority.docs['u1']['memory_items'][0].data.update(
+        {
+            'processing_state': 'processed',
+            'source_state': 'active',
+            'visibility': 'private',
+            'sensitivity_labels': [],
+            'source_commit_id': 'source-1',
+            'content_hash': 'hash-1',
+            'ledger_commit_id': 'ledger-1',
+            'item_revision': 1,
+            'account_generation': 0,
+        }
+    )
+    manifest = export_authoritative_vectors(
+        authority,
+        uids=['u1'],
+        all_users=False,
+        namespaces=['ns2'],
+        output_dir=tmp_path / 'canonical',
+    )
+    record = json.loads((tmp_path / 'canonical' / 'ns2.jsonl').read_text().strip())
+    assert manifest['memory_mode'] == 'canonical'
+    assert record['metadata']['memory_schema_version'] == 1
+    assert record['metadata']['projection_commit_id'] == 'ledger-1'
+    assert record['metadata']['vector_updated_at'].endswith('+00:00')

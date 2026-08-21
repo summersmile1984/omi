@@ -277,8 +277,9 @@ pass `status`, the auth smoke, and the migration gate before traffic returns.
 Vectors are rebuildable projections, never authoritative records. Create one
 immutable JSONL export per logical namespace from the product store/service that
 owns the source documents. Each non-empty line must contain exactly `id`,
-`content`, and optional `metadata`; do not export vectors or any
-`projection_*` metadata:
+`content`, and optional `metadata`; non-memory namespaces do not export vectors
+or any `projection_*` metadata. Canonical ns2 exports include the explicit
+memory lineage fields required by the canonical search parser:
 
 The repository supplies the read-only authority exporter used for both the
 managed Firestore source and the self-host PostgreSQL-backed Firestore facade.
@@ -291,6 +292,7 @@ mkdir -m 700 migration/authority
 FIRESTORE_PG_DSN="$FIRESTORE_PG_DSN" \
   backend/.venv/bin/python backend/scripts/export_authoritative_vectors.py \
   --all-users \
+  --memory-mode canonical \
   --output-dir migration/authority \
   --allow-empty
 ```
@@ -301,7 +303,11 @@ intentionally unused; the resulting `manifest.json` records the explicit
 acknowledgement. The exporter writes `ns1.jsonl`, `ns2.jsonl`,
 `workstream_association_v1.jsonl`, `ns_x.jsonl`, `ns3.jsonl`, `ns4.jsonl`, and
 `ns_tchunks.jsonl`, plus a SHA-256/count sidecar. Every JSONL line is strict
-and has no vector values. Transcript rows are decoded at the authority
+and has no vector values. The default canonical ns2 mode requires schema,
+revision, source/content hashes, a ledger projection fence, and a timezone-aware
+update timestamp; it fails closed rather than creating rows that canonical
+memory search would reject. Use `--memory-mode legacy` only for an explicitly
+isolated legacy ns2 migration. Transcript rows are decoded at the authority
 boundary; encrypted or malformed transcript data fails the export instead of
 silently producing an incomplete transcript projection.
 
@@ -336,8 +342,10 @@ imported account still has an `agent_vm` pointer or migration journal; reconcile
 retired GCE resources before cutover and rerun the inventory rather than treating
 missing GCP credentials as a successful deletion.
 
+For non-ns2 namespaces the generic authority shape remains:
+
 ```json
-{"id":"memory-01","content":"authoritative text to embed","metadata":{"uid":"user-01"}}
+{"id":"conversation-01","content":"authoritative text to embed","metadata":{"uid":"user-01"}}
 ```
 
 Before backfill, back up the deployment and change the production env to an
@@ -364,7 +372,8 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   deploy/self-host/compose.production.yml run --rm \
   --volume "$PWD/migration:/migration:rw" backend \
   python scripts/vector_projection_migration.py validate \
-  --records /migration/ns2.jsonl
+  --records /migration/ns2.jsonl \
+  --namespace ns2 --memory-mode canonical
 
 deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   deploy/self-host/compose.production.yml run --rm \
@@ -372,7 +381,7 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   python scripts/vector_projection_migration.py backfill \
   --records /migration/ns2.jsonl \
   --receipt /migration/ns2-v2.receipt.jsonl \
-  --namespace ns2 --target-version v2
+  --namespace ns2 --target-version v2 --memory-mode canonical
 
 deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   deploy/self-host/compose.production.yml run --rm \
@@ -386,7 +395,7 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
 Repeat validate, backfill, and verify for every namespace in
 `VECTOR_PROJECTION_REQUIRED_NAMESPACES`. An authority-confirmed empty namespace
 uses `--allow-empty` on validate/backfill; the acknowledgement is recorded in
-the receipt. Before switch, drain projection writes, take final exports, and
+the receipt. For non-ns2 namespaces pass `--memory-mode legacy`. Before switch, drain projection writes, take final exports, and
 rerun backfill/verify so the target count exactly matches authority—unexpected
 target vectors fail verification too.
 
