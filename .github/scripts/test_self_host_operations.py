@@ -224,6 +224,27 @@ class SelfHostOperationsTest(unittest.TestCase):
             else:
                 os.environ['BUCKET_TEMPORAL_SYNC_LOCAL'] = previous_bucket
 
+        for malformed_origin in (
+            'http://objects.example.org',
+            'https://objects.example.org/prefix',
+            'https://objects.example.org?override=1',
+            'https://user:password@objects.example.org',
+        ):
+            os.environ['BUCKET_TEMPORAL_SYNC_LOCAL'] = 'private'
+            try:
+                with self.assertRaisesRegex(RuntimeError, 'exact HTTPS origin'):
+                    PUBLIC_OBJECT_EVIDENCE.public_signed_object_crud(
+                        client,
+                        objects_url=malformed_origin,
+                        marker='malformed-origin',
+                        storage_client=storage_client,
+                    )
+            finally:
+                if previous_bucket is None:
+                    os.environ.pop('BUCKET_TEMPORAL_SYNC_LOCAL', None)
+                else:
+                    os.environ['BUCKET_TEMPORAL_SYNC_LOCAL'] = previous_bucket
+
     def test_runtime_evidence_rejects_stale_images_config_and_unhealthy_services(self) -> None:
         services = {
             service: {'state': 'running', 'health': 'healthy'} for service in RUNTIME_EVIDENCE.REQUIRED_SERVICES

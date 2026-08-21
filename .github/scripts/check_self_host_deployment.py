@@ -665,6 +665,10 @@ def _validate_url(name: str, value: str, errors: list[str]) -> None:
     if parsed.scheme != 'https' or not parsed.netloc:
         errors.append(f'{name} must be an explicit https URL')
         return
+    if parsed.username is not None or parsed.password is not None:
+        errors.append(f'{name} must be an origin URL without embedded credentials')
+    if parsed.path not in {'', '/'} or parsed.query or parsed.fragment:
+        errors.append(f'{name} must be an origin URL without path, query, or fragment')
     host = (parsed.hostname or '').lower()
     if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
         errors.append(f'{name} must not use official endpoint host {host}')
@@ -972,7 +976,17 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     public_objects_origin = f'{public_objects.scheme}://{public_objects.netloc}' if public_objects.netloc else ''
     firmware_manifest = urlsplit(env.get('FIRMWARE_RELEASE_MANIFEST_URL', ''))
     firmware_asset_origin = env.get('FIRMWARE_RELEASE_ASSET_ORIGIN', '').rstrip('/')
-    if firmware_manifest.scheme != 'https' or not firmware_manifest.netloc or not firmware_manifest.path.strip('/'):
+    firmware_manifest_parts = firmware_manifest.path.strip('/').split('/', 1)
+    if (
+        firmware_manifest.scheme != 'https'
+        or not firmware_manifest.netloc
+        or firmware_manifest.username is not None
+        or firmware_manifest.password is not None
+        or firmware_manifest.query
+        or firmware_manifest.fragment
+        or len(firmware_manifest_parts) != 2
+        or not all(firmware_manifest_parts)
+    ):
         errors.append('FIRMWARE_RELEASE_MANIFEST_URL must be an explicit public HTTPS object URL')
     elif f'{firmware_manifest.scheme}://{firmware_manifest.netloc}' != public_objects_origin:
         errors.append('FIRMWARE_RELEASE_MANIFEST_URL must use the exact PUBLIC_OBJECTS_URL origin')

@@ -188,6 +188,44 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn('PUBLIC_AUTH_URL must be an explicit https URL', errors)
 
+    def test_public_origins_are_not_path_prefixed_or_credentialed(self) -> None:
+        for replacement in (
+            'https://objects.example.com/objects',
+            'https://objects.example.com?override=1',
+        ):
+            errors = self.validate_mutation(
+                env_replace=(
+                    'PUBLIC_OBJECTS_URL=https://objects.example.com',
+                    f'PUBLIC_OBJECTS_URL={replacement}',
+                )
+            )
+            self.assertIn('PUBLIC_OBJECTS_URL must be an origin URL without path, query, or fragment', errors)
+
+        errors = self.validate_mutation(
+            env_replace=(
+                'PUBLIC_OBJECTS_URL=https://objects.example.com',
+                'PUBLIC_OBJECTS_URL=https://operator:secret@objects.example.com',
+            )
+        )
+        self.assertIn('PUBLIC_OBJECTS_URL must be an origin URL without embedded credentials', errors)
+
+    def test_firmware_manifest_requires_bucket_and_object_path(self) -> None:
+        errors = self.validate_mutation(
+            env_replace=(
+                'FIRMWARE_RELEASE_MANIFEST_URL=https://objects.example.com/omi-firmware/releases.json',
+                'FIRMWARE_RELEASE_MANIFEST_URL=https://objects.example.com/releases.json',
+            )
+        )
+        self.assertIn('FIRMWARE_RELEASE_MANIFEST_URL must be an explicit public HTTPS object URL', errors)
+
+        errors = self.validate_mutation(
+            env_replace=(
+                'FIRMWARE_RELEASE_MANIFEST_URL=https://objects.example.com/omi-firmware/releases.json',
+                'FIRMWARE_RELEASE_MANIFEST_URL=https://objects.example.com/omi-firmware/releases.json?raw=1',
+            )
+        )
+        self.assertIn('FIRMWARE_RELEASE_MANIFEST_URL must be an explicit public HTTPS object URL', errors)
+
     def test_private_auth_control_plane_is_explicit_and_cannot_fall_back_public(self) -> None:
         errors = self.validate_mutation(
             compose_replace=(

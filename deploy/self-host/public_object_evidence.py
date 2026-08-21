@@ -24,6 +24,16 @@ def public_signed_object_crud(
     blob = storage_client.bucket(bucket_name).blob(f'cutover-acceptance/{marker}.txt')
     payload = f'public-object-cutover:{marker}'.encode()
     expected_origin = urlsplit(objects_url)
+    if (
+        expected_origin.scheme != 'https'
+        or not expected_origin.netloc
+        or expected_origin.username is not None
+        or expected_origin.password is not None
+        or expected_origin.path not in {'', '/'}
+        or expected_origin.query
+        or expected_origin.fragment
+    ):
+        raise RuntimeError('PUBLIC_OBJECTS_URL must be an exact HTTPS origin')
 
     def require_signed_origin(url: str, operation: str) -> None:
         parsed = urlsplit(url)
