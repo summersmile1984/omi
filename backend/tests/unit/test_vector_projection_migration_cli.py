@@ -352,6 +352,27 @@ def test_verify_rejects_changed_authority_export_even_when_ids_are_unchanged(
         )
 
 
+def test_receipt_resume_evidence_must_remain_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_migration(monkeypatch)
+    records_path = tmp_path / 'memories.jsonl'
+    receipt_path = tmp_path / 'receipt.jsonl'
+    _authority(records_path)
+    _, store = _stores()
+    backfill_from_authority(
+        records_path=records_path,
+        receipt_path=receipt_path,
+        namespace='memories',
+        target_version='v2',
+        store=store,
+        embeddings=FakeEmbeddings(),
+        batch_size=10,
+    )
+
+    receipt_path.chmod(0o644)
+    with pytest.raises(MigrationCliError, match='receipt.*0600'):
+        load_receipt(receipt_path)
+
+
 @pytest.mark.parametrize(
     'lines, message',
     [

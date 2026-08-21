@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -582,6 +583,11 @@ def rollback_manifest(
 
 
 def load_receipt(path: Path) -> ProjectionReceipt:
+    # Receipts contain the generated vector values and source-bound metadata,
+    # so they are customer-data migration artifacts rather than ordinary
+    # configuration.  Refuse symlinks, special files, and group/world-readable
+    # paths before parsing or using one as cutover evidence.
+    _require_private_regular_file(path, 'vector projection receipt')
     lines = [line for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
     if not lines:
         raise MigrationCliError(f'{path}: receipt must contain a header')
@@ -641,6 +647,13 @@ def load_receipt(path: Path) -> ProjectionReceipt:
     if len(records) != header.source_record_count:
         raise MigrationCliError(f'{path}: receipt record count does not match its header')
     return ProjectionReceipt(header=header, records=tuple(records))
+
+
+def _require_private_regular_file(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise MigrationCliError(f'{label} is missing or is not a regular file: {path}')
+    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise MigrationCliError(f'{label} must be mode 0600 or stricter: {path}')
 
 
 def load_switch_plan(path: Path) -> tuple[SwitchPlanEntry, ...]:
