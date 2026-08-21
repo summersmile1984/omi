@@ -154,9 +154,10 @@ The remaining paths are deployment-neutral because they fail closed before
 vendor egress, but they do not yet have feature parity with the managed
 deployment:
 
-- app-icon image generation can use an explicit operator-owned
-  OpenAI-compatible image endpoint, but remains disabled in the checked-in
-  profile until the operator configures it;
+- app-icon generation uses a deterministic local template in the checked-in
+  profile; it can be switched to an explicit operator-owned
+  OpenAI-compatible image endpoint, but never discovers a vendor endpoint or
+  key implicitly;
 - attached-file chat can use `FILE_CHAT_TRANSPORT=local_extraction`: originals
   remain private in the configured UID-scoped object store, bounded local
   extraction handles text/Markdown/JSON/CSV/PDF/DOCX and restricted inline
