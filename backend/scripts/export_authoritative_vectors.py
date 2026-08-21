@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -30,11 +31,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
-from models.structured import Structured
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+from models.structured import Structured
+from scripts.source_write_freeze import SourceWriteFreezeError, canonical_endpoint, verify_lease
 
 NAMESPACE_ORDER = (
     'ns1',
@@ -163,6 +165,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default='canonical',
         help='ns2 export contract; canonical is the safe default and legacy requires an explicit opt-in.',
     )
+    parser.add_argument(
+        '--source-project', required=True, help='Authoritative Firestore project id bound to the freeze lease.'
+    )
+    parser.add_argument(
+        '--source-database',
+        default='(default)',
+        help='Authoritative Firestore database id bound to the freeze lease (default: (default)).',
+    )
+    parser.add_argument(
+        '--source-endpoint',
+        required=True,
+        help='Credential-free source authority endpoint bound to the freeze lease.',
+    )
+    parser.add_argument(
+        '--freeze-lease',
+        type=Path,
+        required=True,
+        help='Mode-0600 HMAC source-write freeze lease required for every source read.',
+    )
     return parser.parse_args(argv)
 
 
@@ -176,64 +197,122 @@ def export_authoritative_vectors(
     sidecar: Path | None = None,
     allow_empty: bool = False,
     memory_mode: str = 'canonical',
+    source_read_guard: Any | None = None,
+    source_authority: Mapping[str, str] | None = None,
+    source_freeze_lease_id: str | None = None,
 ) -> dict[str, Any]:
     """Export selected source rows and return the same data written to sidecar."""
 
     normalized_memory_mode = _normalize_memory_mode(memory_mode)
-    selected_uids = _resolve_uids(authority, uids=uids, all_users=all_users)
+    if source_read_guard is not None:
+        source_read_guard()
+    selected_uids = _resolve_uids(authority, uids=uids, all_users=all_users, source_read_guard=source_read_guard)
     selected_namespaces = _resolve_namespaces(namespaces)
-    if output_dir.exists():
-        if not output_dir.is_dir():
-            raise ExportError(f'output path exists and is not a directory: {output_dir}')
-        if any(output_dir.iterdir()):
-            raise ExportError(f'output directory must be new or empty: {output_dir}')
-    else:
-        output_dir.mkdir(parents=True, exist_ok=False)
     manifest_path = sidecar or output_dir / 'manifest.json'
     if manifest_path.exists():
         raise ExportError(f'manifest already exists: {manifest_path}')
+    created_output_dir = _prepare_output_dir(output_dir)
     if manifest_path.parent != output_dir:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
     files: list[dict[str, Any]] = []
-    for namespace in selected_namespaces:
-        records = _records_for_namespace(authority, namespace, selected_uids, memory_mode=normalized_memory_mode)
-        if not records and not allow_empty:
-            raise ExportError(
-                f'authoritative export for namespace {namespace!r} is empty; '
-                'pass --allow-empty only after confirming that the namespace is intentionally unused'
+    generated_paths: list[Path] = []
+    try:
+        for namespace in selected_namespaces:
+            records = _records_for_namespace(
+                authority,
+                namespace,
+                selected_uids,
+                memory_mode=normalized_memory_mode,
+                source_read_guard=source_read_guard,
             )
-        filename = f'{_safe_filename(namespace)}.jsonl'
-        output_path = output_dir / filename
-        record_count, sha256 = _write_jsonl(output_path, records)
-        files.append(
-            {
-                'namespace': namespace,
-                'path': filename,
-                'source_collection': NAMESPACE_SPECS[namespace].collection,
-                'record_count': record_count,
-                'sha256': sha256,
-            }
-        )
+            if not records and not allow_empty:
+                raise ExportError(
+                    f'authoritative export for namespace {namespace!r} is empty; '
+                    'pass --allow-empty only after confirming that the namespace is intentionally unused'
+                )
+            filename = f'{_safe_filename(namespace)}.jsonl'
+            output_path = output_dir / filename
+            record_count, sha256 = _write_jsonl(output_path, records)
+            generated_paths.append(output_path)
+            files.append(
+                {
+                    'namespace': namespace,
+                    'path': filename,
+                    'source_collection': NAMESPACE_SPECS[namespace].collection,
+                    'record_count': record_count,
+                    'sha256': sha256,
+                }
+            )
 
-    manifest: dict[str, Any] = {
-        'format': MANIFEST_FORMAT,
-        'export_format': EXPORT_FORMAT,
-        'source_kind': authority.source_kind,
-        'memory_mode': normalized_memory_mode,
-        'uid_count': len(selected_uids),
-        'namespace_count': len(selected_namespaces),
-        'empty_export_acknowledged': bool(allow_empty),
-        'namespaces': list(selected_namespaces),
-        'files': files,
-    }
-    _write_manifest(manifest_path, manifest)
-    return manifest
+        manifest: dict[str, Any] = {
+            'format': MANIFEST_FORMAT,
+            'export_format': EXPORT_FORMAT,
+            'source_kind': authority.source_kind,
+            'memory_mode': normalized_memory_mode,
+            'uid_scope': 'all_users' if all_users else 'explicit',
+            'uids': list(selected_uids),
+            'uid_sha256': _uid_sha256(selected_uids),
+            'uid_count': len(selected_uids),
+            'namespace_count': len(selected_namespaces),
+            'empty_export_acknowledged': bool(allow_empty),
+            'namespaces': list(selected_namespaces),
+            'files': files,
+        }
+        if source_authority is not None:
+            manifest['source_authority'] = dict(source_authority)
+        if source_freeze_lease_id is not None:
+            manifest['source_freeze_lease_id'] = source_freeze_lease_id
+        _write_manifest(manifest_path, manifest)
+        return manifest
+    except BaseException:
+        # A manifest is the completion receipt. Never leave a partial export
+        # which an operator could accidentally feed into the backfill CLI.
+        for path in generated_paths:
+            path.unlink(missing_ok=True)
+        if manifest_path.parent == output_dir:
+            manifest_path.unlink(missing_ok=True)
+        if created_output_dir:
+            try:
+                output_dir.rmdir()
+            except OSError:
+                pass
+        raise
 
 
-def _resolve_uids(authority: ReadOnlyAuthority, *, uids: Iterable[str] | None, all_users: bool) -> tuple[str, ...]:
+def _prepare_output_dir(output_dir: Path) -> bool:
+    """Create or validate a private, empty output directory.
+
+    The export contains customer text and transcripts. Requiring a private
+    directory makes the create-only contract safe even when the caller's
+    process umask is permissive. The return value tells the caller whether it
+    owns cleanup if a later namespace fails.
+    """
+
+    if output_dir.is_symlink():
+        raise ExportError(f'output directory must not be a symlink: {output_dir}')
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise ExportError(f'output path exists and is not a directory: {output_dir}')
+        if stat.S_IMODE(output_dir.stat().st_mode) & 0o077:
+            raise ExportError(f'output directory must be private mode 0700 or stricter: {output_dir}')
+        if any(output_dir.iterdir()):
+            raise ExportError(f'output directory must be new or empty: {output_dir}')
+        return False
+    output_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+    os.chmod(output_dir, 0o700)
+    return True
+
+
+def _resolve_uids(
+    authority: ReadOnlyAuthority,
+    *,
+    uids: Iterable[str] | None,
+    all_users: bool,
+    source_read_guard: Any | None = None,
+) -> tuple[str, ...]:
     if all_users:
-        raw_uids = list(authority.list_uids())
+        raw_uids = list(_guarded_iter(authority.list_uids(), source_read_guard))
     else:
         raw_uids = list(uids or ())
     normalized = [str(uid).strip() for uid in raw_uids]
@@ -259,21 +338,26 @@ def _resolve_namespaces(namespaces: Iterable[str] | None) -> tuple[str, ...]:
     return tuple(namespace for namespace in NAMESPACE_ORDER if namespace in selected)
 
 
+def _uid_sha256(uids: Sequence[str]) -> str:
+    return hashlib.sha256(('\n'.join(uids) + '\n').encode('utf-8')).hexdigest()
+
+
 def _records_for_namespace(
     authority: ReadOnlyAuthority,
     namespace: str,
     uids: Sequence[str],
     *,
     memory_mode: str,
+    source_read_guard: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     records: list[dict[str, Any]] = []
     for uid in uids:
         if namespace == 'ns_tchunks':
-            records.extend(_transcript_chunk_records(authority, uid))
+            records.extend(_transcript_chunk_records(authority, uid, source_read_guard=source_read_guard))
             continue
         spec = NAMESPACE_SPECS[namespace]
         assert isinstance(spec.collection, str)
-        for document in authority.iter_user_documents(uid, spec.collection):
+        for document in _guarded_iter(authority.iter_user_documents(uid, spec.collection), source_read_guard):
             record = _record_from_document(namespace, uid, document, memory_mode=memory_mode)
             if record is not None:
                 records.append(record)
@@ -473,9 +557,14 @@ def _conversation_embedding_text(structured: Mapping[str, Any]) -> str:
     return str(value).strip()
 
 
-def _transcript_chunk_records(authority: ReadOnlyAuthority, uid: str) -> list[dict[str, Any]]:
+def _transcript_chunk_records(
+    authority: ReadOnlyAuthority,
+    uid: str,
+    *,
+    source_read_guard: Any | None = None,
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for document in authority.iter_user_documents(uid, 'conversations'):
+    for document in _guarded_iter(authority.iter_user_documents(uid, 'conversations'), source_read_guard):
         data = dict(document.data)
         if _is_locked(data) or data.get('discarded') is True:
             continue
@@ -509,6 +598,19 @@ def _transcript_chunk_records(authority: ReadOnlyAuthority, uid: str) -> list[di
                 )
             )
     return records
+
+
+def _guarded_iter(values: Iterable[Any], guard: Any | None) -> Iterator[Any]:
+    """Advance a lazy authority iterator only while the source lease is live."""
+
+    iterator = iter(values)
+    while True:
+        if guard is not None:
+            guard()
+        try:
+            yield next(iterator)
+        except StopIteration:
+            return
 
 
 def _decode_conversation_for_export(uid: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -580,7 +682,7 @@ def _write_jsonl(path: Path, records: Iterable[Mapping[str, Any]]) -> tuple[int,
     digest = hashlib.sha256()
     count = 0
     try:
-        with path.open('xb') as handle:
+        with _open_private_file(path, binary=True) as handle:
             for value in records:
                 if set(value) != _RECORD_KEYS:
                     raise ExportError(f'internal exporter produced invalid JSONL record for {path.name}')
@@ -604,10 +706,27 @@ def _write_jsonl(path: Path, records: Iterable[Mapping[str, Any]]) -> tuple[int,
 def _write_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
     payload = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + '\n'
     try:
-        with path.open('x', encoding='utf-8') as handle:
+        with _open_private_file(path, binary=False) as handle:
             handle.write(payload)
     except FileExistsError as error:
         raise ExportError(f'manifest already exists: {path}') from error
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _open_private_file(path: Path, *, binary: bool):
+    """Open a new file exclusively with mode 0600, rejecting symlink races."""
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        raise
+    mode = 'wb' if binary else 'w'
+    return os.fdopen(descriptor, mode, encoding=None if binary else 'utf-8')
 
 
 def _safe_filename(namespace: str) -> str:
@@ -716,6 +835,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         authority = FirestoreFacadeAuthority()
+        source_endpoint = canonical_endpoint(args.source_endpoint)
+        lease = verify_lease(
+            args.freeze_lease,
+            source_project=args.source_project,
+            source_database=args.source_database,
+            source_endpoint=source_endpoint,
+            required_scopes={'firestore'},
+        )
+
+        def verify_source_write_freeze() -> None:
+            verify_lease(
+                args.freeze_lease,
+                source_project=args.source_project,
+                source_database=args.source_database,
+                source_endpoint=source_endpoint,
+                required_scopes={'firestore'},
+            )
+
         manifest = export_authoritative_vectors(
             authority,
             uids=args.uids,
@@ -725,8 +862,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             sidecar=args.sidecar,
             allow_empty=bool(args.allow_empty),
             memory_mode=args.memory_mode,
+            source_read_guard=verify_source_write_freeze,
+            source_authority={
+                'project': args.source_project,
+                'database': args.source_database,
+                'endpoint': source_endpoint,
+            },
+            source_freeze_lease_id=str(lease['lease_id']),
         )
-    except (ExportError, OSError, ValueError) as error:
+    except (ExportError, SourceWriteFreezeError, OSError, ValueError) as error:
         print(f'export failed: {error}', file=sys.stderr)
         return 2
     print(

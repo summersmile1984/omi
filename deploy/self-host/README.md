@@ -303,6 +303,10 @@ UIDs for a bounded migration, or `--all-users` for a complete source inventory:
 mkdir -m 700 migration/authority
 FIRESTORE_PG_DSN="$FIRESTORE_PG_DSN" \
   backend/.venv/bin/python backend/scripts/export_authoritative_vectors.py \
+  --source-project SOURCE_PROJECT \
+  --source-database '(default)' \
+  --source-endpoint https://firestore.googleapis.com \
+  --freeze-lease /secure/firestore-migration/source-write-freeze.json \
   --all-users \
   --memory-mode canonical \
   --output-dir migration/authority \
@@ -314,7 +318,9 @@ The default is fail-closed when any selected namespace has no rows. Keep
 intentionally unused; the resulting `manifest.json` records the explicit
 acknowledgement. The exporter writes `ns1.jsonl`, `ns2.jsonl`,
 `workstream_association_v1.jsonl`, `ns_x.jsonl`, `ns3.jsonl`, `ns4.jsonl`, and
-`ns_tchunks.jsonl`, plus a SHA-256/count sidecar. Every JSONL line is strict
+`ns_tchunks.jsonl`, plus a SHA-256/count sidecar. The exporter re-verifies the
+same mode-0600 source-write freeze lease before every lazy source read and
+binds its source authority and lease id into the manifest. Every JSONL line is strict
 and has no vector values. The default canonical ns2 mode requires schema,
 revision, source/content hashes, a ledger projection fence, and a timezone-aware
 update timestamp; it fails closed rather than creating rows that canonical

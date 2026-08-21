@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -101,6 +102,9 @@ def test_export_writes_all_seven_authority_namespaces_and_hash_bound_sidecar(tmp
 
     assert manifest['source_kind'] == 'fake_firestore_pg_facade'
     assert manifest['memory_mode'] == 'legacy'
+    assert manifest['uid_scope'] == 'all_users'
+    assert manifest['uids'] == ['u1', 'u2']
+    assert manifest['uid_sha256'] == hashlib.sha256(b'u1\nu2\n').hexdigest()
     assert manifest['uid_count'] == 2
     assert manifest['namespaces'] == [
         'ns1',
@@ -131,10 +135,13 @@ def test_export_writes_all_seven_authority_namespaces_and_hash_bound_sidecar(tmp
 
     sidecar = json.loads((tmp_path / 'export' / 'manifest.json').read_text())
     assert sidecar == manifest
+    assert stat.S_IMODE((tmp_path / 'export').stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / 'export' / 'manifest.json').stat().st_mode) == 0o600
     for item in manifest['files']:
         payload = (tmp_path / 'export' / item['path']).read_bytes()
         assert item['record_count'] == len(payload.splitlines())
         assert item['sha256'] == hashlib.sha256(payload).hexdigest()
+        assert stat.S_IMODE((tmp_path / 'export' / item['path']).stat().st_mode) == 0o600
 
 
 def test_export_refuses_duplicate_uids_and_existing_output(tmp_path: Path):
@@ -148,7 +155,8 @@ def test_export_refuses_duplicate_uids_and_existing_output(tmp_path: Path):
         )
 
     output = tmp_path / 'two'
-    output.mkdir()
+    output.mkdir(mode=0o700)
+    output.chmod(0o700)
     (output / 'leftover').write_text('do not replace')
     with pytest.raises(ExportError, match='new or empty'):
         export_authoritative_vectors(
@@ -158,6 +166,38 @@ def test_export_refuses_duplicate_uids_and_existing_output(tmp_path: Path):
             namespaces=['ns2'],
             output_dir=output,
         )
+
+
+def test_export_refuses_permissive_output_directory(tmp_path: Path):
+    output = tmp_path / 'permissive'
+    output.mkdir(mode=0o755)
+    with pytest.raises(ExportError, match='private mode'):
+        export_authoritative_vectors(
+            FakeAuthority(),
+            uids=['u1'],
+            all_users=False,
+            namespaces=['ns2'],
+            output_dir=output,
+            memory_mode='legacy',
+        )
+
+
+def test_export_removes_partial_files_when_a_later_namespace_fails(tmp_path: Path):
+    authority = FakeAuthority()
+    authority.docs['u1']['memory_items'].append(
+        SourceDocument('broken', {'status': 'active', 'content': 'not serializable', 'tier': object()})
+    )
+    output = tmp_path / 'partial'
+    with pytest.raises(ExportError, match='unsupported authoritative metadata'):
+        export_authoritative_vectors(
+            authority,
+            uids=['u1'],
+            all_users=False,
+            namespaces=['ns1', 'ns2'],
+            output_dir=output,
+            memory_mode='legacy',
+        )
+    assert not output.exists()
 
 
 def test_export_refuses_undecoded_transcript_instead_of_emitting_empty_projection(tmp_path: Path):
@@ -182,6 +222,28 @@ def test_export_fails_closed_on_empty_namespace_without_explicit_ack(tmp_path: P
             namespaces=['ns2'],
             output_dir=tmp_path / 'empty',
         )
+
+
+def test_export_rechecks_source_freeze_before_each_lazy_source_read(tmp_path: Path):
+    checks: list[int] = []
+
+    def guard() -> None:
+        checks.append(1)
+
+    export_authoritative_vectors(
+        FakeAuthority(),
+        uids=['u1'],
+        all_users=False,
+        namespaces=['ns2'],
+        output_dir=tmp_path / 'guarded',
+        memory_mode='legacy',
+        source_read_guard=guard,
+    )
+
+    # The guard runs before the collection iterator advances, including the
+    # final StopIteration check; a one-time CLI check is not sufficient for a
+    # long export whose lease can expire mid-stream.
+    assert len(checks) >= 3
 
 
 def test_canonical_memory_export_requires_lineage_and_emits_parser_metadata(tmp_path: Path):

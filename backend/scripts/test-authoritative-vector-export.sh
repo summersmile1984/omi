@@ -11,4 +11,5 @@ if [[ ! -x "$python_bin" ]]; then
 fi
 
 cd "$backend_root"
+PYTHONDONTWRITEBYTECODE=1 "$python_bin" scripts/export_authoritative_vectors.py --help >/dev/null
 PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m pytest -q tests/unit/test_authoritative_vector_export.py
