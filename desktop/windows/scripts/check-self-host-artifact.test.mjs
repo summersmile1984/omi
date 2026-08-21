@@ -17,13 +17,16 @@ describe('self-hosted Windows artifact CSP checker', () => {
     expect(artifactHtmlErrors(html, origins)).toEqual([])
   })
 
-  it.each(['api.omi.me', 'securetoken.googleapis.com', 'api.openai.com', 'cdn.jsdelivr.net'])(
-    'rejects %s in the emitted artifact',
-    (host) => {
-      const html = `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' ${origins.join(' ')} https://${host};">`
-      expect(artifactHtmlErrors(html, origins)).toContainEqual(expect.stringContaining(host))
-    }
-  )
+  it.each([
+    'api.omi.me',
+    'desktop-backend-dt5lrfkkoa-uc.a.run.app',
+    'securetoken.googleapis.com',
+    'api.openai.com',
+    'cdn.jsdelivr.net'
+  ])('rejects %s in the emitted artifact', (host) => {
+    const html = `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' ${origins.join(' ')} https://${host};">`
+    expect(artifactHtmlErrors(html, origins)).toContainEqual(expect.stringContaining(host))
+  })
 
   it('rejects directive text that is present only inside an HTML comment', () => {
     const html = `<!-- <meta http-equiv="Content-Security-Policy" content="connect-src 'self' ${origins.join(' ')};"> -->`
@@ -72,10 +75,11 @@ describe('final packaged self-host artifact checker', () => {
     VITE_OMI_DESKTOP_API_BASE: 'https://desktop.operator.test',
     VITE_OMI_AUTH_BASE: 'https://auth.operator.test',
     VITE_OMI_MCP_BASE: 'https://mcp.operator.test',
-    VITE_OMI_ANALYTICS_BASE: ''
+    VITE_OMI_ANALYTICS_BASE: '',
+    VITE_OMI_MCP_CHATGPT_OAUTH_CLIENT_ID: 'operator-chatgpt-public'
   }
 
-  async function makePackage(body) {
+  async function makePackage(body, embeddedValues = Object.values(env)) {
     const root = mkdtempSync(join(tmpdir(), 'omi-win-artifact-'))
     const source = join(root, 'source')
     const resources = join(root, 'packaged', 'resources')
@@ -90,7 +94,7 @@ describe('final packaged self-host artifact checker', () => {
     writeFileSync(join(renderer, 'index.html'), body)
     writeFileSync(
       join(main, 'runtime.js'),
-      `export const profile = 'self_hosted'; ${Object.values(env).join(' ')}`
+      `export const profile = 'self_hosted'; ${embeddedValues.join(' ')}`
     )
     writeFileSync(
       join(source, 'dependency-doc.html'),
@@ -118,6 +122,25 @@ describe('final packaged self-host artifact checker', () => {
     try {
       expect(packagedArtifactErrors(fixture.packaged, env)).toContainEqual(
         expect.stringContaining('populated Sentry DSN')
+      )
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a package that dropped a configured operator MCP OAuth client id', async () => {
+    const embeddedValues = Object.entries(env)
+      .filter(([name]) => name !== 'VITE_OMI_MCP_CHATGPT_OAUTH_CLIENT_ID')
+      .map(([, value]) => value)
+    const fixture = await makePackage(
+      `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' https://api.operator.test https://desktop.operator.test https://auth.operator.test https://mcp.operator.test wss://api.operator.test;">`,
+      embeddedValues
+    )
+    try {
+      expect(packagedArtifactErrors(fixture.packaged, env)).toContainEqual(
+        expect.stringContaining(
+          'missing signed public MCP OAuth client VITE_OMI_MCP_CHATGPT_OAUTH_CLIENT_ID'
+        )
       )
     } finally {
       rmSync(fixture.root, { recursive: true, force: true })

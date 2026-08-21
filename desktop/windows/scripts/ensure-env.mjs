@@ -72,6 +72,7 @@ if (profile === 'self_hosted') {
   const forbidden = [
     /(^|\.)omi\.me$/i,
     /^desktop-backend-hhibjajaja-uc\.a\.run\.app$/i,
+    /^desktop-backend-dt5lrfkkoa-uc\.a\.run\.app$/i,
     /(^|\.)googleapis\.com$/i,
     /(^|\.)firebase(?:app|io)\.com$/i,
     /(^|\.)openai\.com$/i,
@@ -105,7 +106,9 @@ if (profile === 'self_hosted') {
   ])
   const firebaseValues = [...firebaseNames].filter((name) => effective(name))
   if (firebaseValues.length) {
-    console.error('[ensure-env] FATAL: self_hosted artifacts must not contain Firebase configuration')
+    console.error(
+      '[ensure-env] FATAL: self_hosted artifacts must not contain Firebase configuration'
+    )
     process.exit(1)
   }
   if (effective('VITE_SENTRY_DSN') || effective('MAIN_VITE_SENTRY_DSN')) {

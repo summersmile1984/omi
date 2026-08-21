@@ -10,20 +10,38 @@ public enum ContextIdentityProvider: String, Codable, Sendable {
   case betterAuth = "better_auth"
 }
 
+public enum ContextSpeechModelAuthority: Equatable, Sendable {
+  /// Managed cloud retains FluidAudio's historical HuggingFace download path.
+  case managedDownload
+  /// Self-hosted models are provisioned by the operator and loaded with
+  /// FluidAudio offline mode enabled. The path is bundle-relative in releases.
+  case local(path: String)
+  /// Transcription is intentionally absent from this artifact.
+  case disabled
+}
+
 public enum ContextDeploymentProfileError: LocalizedError, Equatable {
   case missing(String)
   case invalidURL(String)
   case insecureReleaseURL(String)
+  case managedOrigin(String)
   case invalidMode
   case invalidIdentityProvider
+  case invalidSpeechModelAuthority
 
   public var errorDescription: String? {
     switch self {
     case .missing(let key): return "The signed deployment profile is missing \(key)."
     case .invalidURL(let key): return "The signed deployment profile has an invalid \(key)."
-    case .insecureReleaseURL(let key): return "The signed release profile requires HTTPS for \(key)."
+    case .insecureReleaseURL(let key):
+      return "The signed release profile requires HTTPS for \(key)."
+    case .managedOrigin(let key):
+      return "A self-hosted profile cannot use an Omi-operated origin for \(key)."
     case .invalidMode: return "The signed deployment profile must be omi_cloud or self_hosted."
     case .invalidIdentityProvider: return "A self-hosted profile requires Better Auth."
+    case .invalidSpeechModelAuthority:
+      return
+        "A self-hosted profile requires a local speech model or an explicitly disabled capability."
     }
   }
 }
@@ -35,8 +53,10 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
   public let mode: ContextDeploymentMode
   public let identityProvider: ContextIdentityProvider
   public let backendBaseURL: URL
+  public let desktopBaseURL: URL
   public let authBaseURL: URL
   public let mcpBaseURL: URL
+  public let speechModelAuthority: ContextSpeechModelAuthority
 
   /// Sessions written before provider metadata existed are Firebase sessions.
   /// A self-hosted Better Auth build must make the user sign in to that
@@ -49,8 +69,10 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
     mode: .omiCloud,
     identityProvider: .firebase,
     backendBaseURL: URL(string: "https://api.omi.me/")!,
+    desktopBaseURL: URL(string: "https://desktop-backend-hhibjajaja-uc.a.run.app/")!,
     authBaseURL: URL(string: "https://api.omi.me/")!,
-    mcpBaseURL: URL(string: "https://api.omi.me/")!
+    mcpBaseURL: URL(string: "https://api.omi.me/")!,
+    speechModelAuthority: .managedDownload
   )
 
   public static let current: ContextDeploymentProfile = {
@@ -104,25 +126,55 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
     let backend = try endpoint(
       value(bundleKey: "OmiBackendBaseURL", environmentKey: "OMI_PYTHON_API_URL"),
       key: "OMI_PYTHON_API_URL",
-      requiresHTTPS: enforceHTTPS
+      requiresHTTPS: enforceHTTPS,
+      rejectsManagedOrigin: true
+    )
+    let desktop = try endpoint(
+      value(bundleKey: "OmiDesktopBaseURL", environmentKey: "OMI_DESKTOP_API_URL"),
+      key: "OMI_DESKTOP_API_URL",
+      requiresHTTPS: enforceHTTPS,
+      rejectsManagedOrigin: true
     )
     let auth = try endpoint(
       value(bundleKey: "OmiAuthBaseURL", environmentKey: "OMI_AUTH_SERVER_URL"),
       key: "OMI_AUTH_SERVER_URL",
-      requiresHTTPS: enforceHTTPS
+      requiresHTTPS: enforceHTTPS,
+      rejectsManagedOrigin: true
     )
     let mcp = try endpoint(
       value(bundleKey: "OmiMCPBaseURL", environmentKey: "OMI_MCP_API_URL")
         ?? backend.absoluteString,
       key: "OMI_MCP_API_URL",
-      requiresHTTPS: enforceHTTPS
+      requiresHTTPS: enforceHTTPS,
+      rejectsManagedOrigin: true
     )
+    let rawSpeechMode = value(
+      bundleKey: "OmiSpeechModelMode", environmentKey: "OMI_SPEECH_MODEL_MODE")?.lowercased()
+    let speechModelAuthority: ContextSpeechModelAuthority
+    switch rawSpeechMode {
+    case "disabled":
+      speechModelAuthority = .disabled
+    case "local", "packaged":
+      guard
+        let path = value(bundleKey: "OmiSpeechModelPath", environmentKey: "OMI_SPEECH_MODEL_PATH")
+      else { throw ContextDeploymentProfileError.invalidSpeechModelAuthority }
+      if !allowsEnvironmentOverrides,
+        path.hasPrefix("/") || path.split(separator: "/").contains("..")
+      {
+        throw ContextDeploymentProfileError.invalidSpeechModelAuthority
+      }
+      speechModelAuthority = .local(path: path)
+    default:
+      throw ContextDeploymentProfileError.invalidSpeechModelAuthority
+    }
     return ContextDeploymentProfile(
       mode: .selfHosted,
       identityProvider: .betterAuth,
       backendBaseURL: backend,
+      desktopBaseURL: desktop,
       authBaseURL: auth,
-      mcpBaseURL: mcp
+      mcpBaseURL: mcp,
+      speechModelAuthority: speechModelAuthority
     )
   }
 
@@ -139,9 +191,12 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
       "OmiDeploymentProfile",
       "OmiAuthProvider",
       "OmiBackendBaseURL",
+      "OmiDesktopBaseURL",
       "OmiAuthBaseURL",
       "OmiMCPBaseURL",
       "OmiAllowsInsecureLocalEndpoints",
+      "OmiSpeechModelMode",
+      "OmiSpeechModelPath",
     ]
     var values: [String: String] = [:]
     for key in keys {
@@ -154,15 +209,40 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
     return values
   }
 
-  private static func endpoint(_ raw: String?, key: String, requiresHTTPS: Bool) throws -> URL {
+  private static func endpoint(
+    _ raw: String?, key: String, requiresHTTPS: Bool, rejectsManagedOrigin: Bool = false
+  ) throws -> URL {
     guard let raw else { throw ContextDeploymentProfileError.missing(key) }
-    let terminated = raw.hasSuffix("/") ? raw : raw + "/"
-    guard let url = URL(string: terminated), let scheme = url.scheme?.lowercased(), url.host != nil,
-      scheme == "http" || scheme == "https"
+    guard var components = URLComponents(string: raw),
+      let scheme = components.scheme?.lowercased(), components.host != nil,
+      scheme == "http" || scheme == "https", components.user == nil, components.password == nil,
+      components.query == nil, components.fragment == nil,
+      components.path.isEmpty || components.path == "/"
     else { throw ContextDeploymentProfileError.invalidURL(key) }
     if requiresHTTPS, scheme != "https" {
       throw ContextDeploymentProfileError.insecureReleaseURL(key)
     }
+    guard let rawHost = components.host else {
+      throw ContextDeploymentProfileError.invalidURL(key)
+    }
+    let host = rawHost.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    guard !host.isEmpty else { throw ContextDeploymentProfileError.invalidURL(key) }
+    if rejectsManagedOrigin, isOmiOperatedHost(host) {
+      throw ContextDeploymentProfileError.managedOrigin(key)
+    }
+    components.scheme = scheme
+    components.host = host
+    if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) {
+      components.port = nil
+    }
+    components.path = "/"
+    guard let url = components.url else { throw ContextDeploymentProfileError.invalidURL(key) }
     return url
+  }
+
+  private static func isOmiOperatedHost(_ host: String) -> Bool {
+    host == "desktop-backend-hhibjajaja-uc.a.run.app"
+      || host == "desktop-backend-dt5lrfkkoa-uc.a.run.app" || host == "omi.me"
+      || host.hasSuffix(".omi.me") || host == "omiapi.com" || host.hasSuffix(".omiapi.com")
   }
 }

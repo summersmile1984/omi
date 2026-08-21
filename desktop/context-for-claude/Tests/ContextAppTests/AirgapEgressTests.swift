@@ -36,23 +36,25 @@ final class AirgapEgressTests: XCTestCase {
         let uploader = ScreenActivityUploader(
             isAirgapped: { true },
             isSignedIn: { true },
-            openStore: { contextStore },
-            authHeaders: { _ in ["Authorization": "Bearer test"] },
-            transport: { request in
-                XCTFail("Airgap Mode must not let screen content reach \(request.url?.host() ?? "the network")")
-                throw CancellationError()
-            },
-            defaults: store.defaults)
+      openStore: { contextStore },
+      authHeaders: { _ in ["Authorization": "Bearer test"] },
+      transport: { request in
+        XCTFail(
+          "Airgap Mode must not let screen content reach \(request.url?.host() ?? "the network")")
+        throw CancellationError()
+      },
+      defaults: store.defaults)
 
         let outcome = await uploader.drain()
 
-        XCTAssertEqual(outcome, .suppressedByAirgap)
-        XCTAssertNil(
-            uploader.lastSyncedAt,
-            "a suppressed drain must never stamp a sync time — that is the failure that looks like success")
-        XCTAssertEqual(
-            store.defaults.integer(forKey: Self.cursorKey), 0,
-            "the cursor must not move, so the whole backlog is still owed once Airgap Mode goes off")
+    XCTAssertEqual(outcome, .suppressedByAirgap)
+    XCTAssertNil(
+      uploader.lastSyncedAt,
+      "a suppressed drain must never stamp a sync time — that is the failure that looks like success"
+    )
+    XCTAssertEqual(
+      store.defaults.integer(forKey: Self.cursorKey), 0,
+      "the cursor must not move, so the whole backlog is still owed once Airgap Mode goes off")
     }
 
     /// The control for the test above: the *same* uploader with the *same* seeded frame does reach
@@ -64,27 +66,30 @@ final class AirgapEgressTests: XCTestCase {
     func testTheSameDrainDoesSendWhenAirgapModeIsOff() async throws {
         let store = try TemporaryStore()
         let frameId = try store.seedFrame(ocrText: "a line of text that was on the user's screen")
-        let contextStore = store.store
+    let contextStore = store.store
 
-        let sent = Recorder()
-        let uploader = ScreenActivityUploader(
-            isAirgapped: { false },
-            isSignedIn: { true },
-            openStore: { contextStore },
-            authHeaders: { _ in ["Authorization": "Bearer test"] },
-            transport: { request in
-                sent.record(request)
-                return (Self.syncResponseBody(lastId: frameId), Self.ok(for: request))
+    let sent = Recorder()
+    let operatorEndpoint = URL(string: "https://screen.operator.test/v1/screen-activity/sync")!
+    let uploader = ScreenActivityUploader(
+      isAirgapped: { false },
+      isSignedIn: { true },
+      openStore: { contextStore },
+      authHeaders: { _ in ["Authorization": "Bearer test"] },
+      endpoint: operatorEndpoint,
+      transport: { request in
+        sent.record(request)
+        return (Self.syncResponseBody(lastId: frameId), Self.ok(for: request))
             },
             defaults: store.defaults)
 
         let outcome = await uploader.drain()
 
-        XCTAssertEqual(outcome, .caughtUp)
-        XCTAssertEqual(sent.requests.count, 1, "one batch, one request")
-        XCTAssertEqual(sent.requests.first?.httpMethod, "POST")
-        XCTAssertEqual(
-            store.defaults.integer(forKey: Self.cursorKey), Int(frameId),
+    XCTAssertEqual(outcome, .caughtUp)
+    XCTAssertEqual(sent.requests.count, 1, "one batch, one request")
+    XCTAssertEqual(sent.requests.first?.url, operatorEndpoint)
+    XCTAssertEqual(sent.requests.first?.httpMethod, "POST")
+    XCTAssertEqual(
+      store.defaults.integer(forKey: Self.cursorKey), Int(frameId),
             "an accepted batch advances the cursor")
     }
 
@@ -261,17 +266,56 @@ final class AirgapEgressTests: XCTestCase {
     }
 
     /// All four combinations, so the ordering of the two questions is pinned: what is on disk is read
-    /// first, because Airgap Mode governs the *fetch* and has nothing to say about a local file.
-    func testTheModelDecisionAsksWhatIsOnDiskBeforeItAsksAboutTheSwitch() {
-        XCTAssertEqual(SpeechModelAccess.decide(airgapMode: false, isOnDisk: false), .fetch)
-        XCTAssertEqual(SpeechModelAccess.decide(airgapMode: false, isOnDisk: true), .loadWhatIsAlreadyHere)
-        XCTAssertEqual(SpeechModelAccess.decide(airgapMode: true, isOnDisk: true), .loadWhatIsAlreadyHere)
-        XCTAssertEqual(SpeechModelAccess.decide(airgapMode: true, isOnDisk: false), .refuse)
+  /// first, because Airgap Mode governs the *fetch* and has nothing to say about a local file.
+  func testTheModelDecisionAsksWhatIsOnDiskBeforeItAsksAboutTheSwitch() {
+    XCTAssertEqual(SpeechModelAccess.decide(airgapMode: false, isOnDisk: false), .fetch)
+    XCTAssertEqual(
+      SpeechModelAccess.decide(airgapMode: false, isOnDisk: true), .loadWhatIsAlreadyHere)
+    XCTAssertEqual(
+      SpeechModelAccess.decide(airgapMode: true, isOnDisk: true), .loadWhatIsAlreadyHere)
+    XCTAssertEqual(SpeechModelAccess.decide(airgapMode: true, isOnDisk: false), .refuse)
+  }
+
+  func testSelfHostedMissingOrDisabledSpeechModelFailsBeforeAnyLibraryLoad() async {
+    for authority in [
+      ContextSpeechModelAuthority.disabled,
+      ContextSpeechModelAuthority.local(path: "SpeechModel"),
+    ] {
+      do {
+        let value: String = try await SpeechModelAccess.obtainOperatorProvisioned(
+          authority: authority,
+          isLocalModelAvailable: { false },
+          loadLocalModel: {
+            XCTFail(
+              "a missing/disabled self-hosted model must not reach FluidAudio loading or download")
+            return "unreachable"
+          })
+        XCTFail("typed unavailable must be thrown, not returned: \(value)")
+      } catch let error as SpeechModelError {
+        XCTAssertEqual(
+          error.localizedDescription, SpeechModelError.capabilityUnavailable.localizedDescription)
+      } catch {
+        XCTFail("unexpected error: \(error)")
+      }
     }
+  }
 
-    // MARK: - The gate itself
+  func testSelfHostedPackagedSpeechModelUsesOnlyTheLocalLoader() async throws {
+    var loads = 0
+    let model: String = try await SpeechModelAccess.obtainOperatorProvisioned(
+      authority: .local(path: "SpeechModel"),
+      isLocalModelAvailable: { true },
+      loadLocalModel: {
+        loads += 1
+        return "operator packaged weights"
+      })
+    XCTAssertEqual(model, "operator packaged weights")
+    XCTAssertEqual(loads, 1)
+  }
 
-    /// Every remote client in the app is suppressed, with no exception for any of them.
+  // MARK: - The gate itself
+
+  /// Every remote client in the app is suppressed, with no exception for any of them.
     ///
     /// Written over `Client.allCases` rather than as a list, so a client added later is covered by
     /// this test the moment it names itself — which is the only way the enumeration stays honest.
@@ -383,19 +427,21 @@ final class AirgapEgressTests: XCTestCase {
                 url: URL(string: "https://api.omi.me/v1/auth/token")!,
                 contentType: "application/x-www-form-urlencoded",
                 body: Data("grant_type=authorization_code".utf8),
-                client: .signIn,
-                isSuppressed: { _ in true },
-                transport: { request in
-                    XCTFail("Airgap Mode must not let a sign-in reach \(request.url?.host() ?? "the network")")
-                    throw CancellationError()
-                })
-            XCTFail("a suppressed request has to throw rather than return a half-finished sign-in")
-        } catch let error as OmiAuthError {
-            guard case .airgapMode = error else {
-                return XCTFail("a suppression must not be reported as an account or transport failure: \(error)")
-            }
-        } catch {
-            XCTFail("unexpected error: \(error)")
+        client: .signIn,
+        isSuppressed: { _ in true },
+        transport: { request in
+          XCTFail(
+            "Airgap Mode must not let a sign-in reach \(request.url?.host() ?? "the network")")
+          throw CancellationError()
+        })
+      XCTFail("a suppressed request has to throw rather than return a half-finished sign-in")
+    } catch let error as OmiAuthError {
+      guard case .airgapMode = error else {
+        return XCTFail(
+          "a suppression must not be reported as an account or transport failure: \(error)")
+      }
+    } catch {
+      XCTFail("unexpected error: \(error)")
         }
 
         XCTAssertEqual(recorder.records.count, 1)
@@ -489,13 +535,14 @@ final class AirgapEgressTests: XCTestCase {
         let recorder = AirgapSuppressionRecorder()
         defer { recorder.stop() }
 
-        let outcome = await MCPKeyProvisioner.retire("", isSuppressed: { false })
+    let outcome = await MCPKeyProvisioner.retire("", isSuppressed: { false })
 
-        XCTAssertEqual(outcome, .unusableId)
-        XCTAssertTrue(recorder.records.isEmpty, "nothing was suppressed by the switch, so nothing is reported")
-    }
+    XCTAssertEqual(outcome, .unusableId)
+    XCTAssertTrue(
+      recorder.records.isEmpty, "nothing was suppressed by the switch, so nothing is reported")
+  }
 
-    /// Blocking sign-in is only defensible because the user is told. `OmiAuthError.airgapMode` is
+  /// Blocking sign-in is only defensible because the user is told. `OmiAuthError.airgapMode` is
     /// what both sign-in surfaces render — the menu bar through `OmiAuth.lastSignInError`, onboarding
     /// through its own `catch` — so its sentence is the whole of that promise.
     func testABlockedSignInExplainsItselfRatherThanFailingSilently() {

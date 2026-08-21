@@ -30,6 +30,10 @@ void main() {
       (provider: 'firebase', url: '', firebaseEnabled: true),
       (provider: 'unknown', url: 'https://auth.example.com', firebaseEnabled: false),
       (provider: 'better_auth', url: 'https://auth.omi.me', firebaseEnabled: false),
+      (provider: 'better_auth', url: 'https://user:secret@auth.example.com', firebaseEnabled: false),
+      (provider: 'better_auth', url: 'https://auth.example.com/path', firebaseEnabled: false),
+      (provider: 'better_auth', url: 'https://auth.example.com?query=value', firebaseEnabled: false),
+      (provider: 'better_auth', url: 'https://auth.example.com#fragment', firebaseEnabled: false),
     ]) {
       expect(
         () => AuthService.validateIdentityConfiguration(

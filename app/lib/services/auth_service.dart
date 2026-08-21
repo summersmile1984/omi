@@ -183,20 +183,16 @@ class AuthService {
     if (isRelease && uri.scheme != 'https') {
       throw StateError('Better Auth release builds require an HTTPS OMI_AUTH_SERVER_URL');
     }
-    if (effectiveProfile == AppEnvironmentProfile.selfHosted && _isOmiOperatedHost(uri.host)) {
-      throw StateError('Profile self_hosted cannot use an Omi-operated identity origin.');
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      Env.canonicalSelfHostedOrigin(
+        serverUrl,
+        key: 'OMI_AUTH_SERVER_URL',
+        releaseBuild: isRelease,
+      );
     }
     if (firebaseServicesEnabled) {
       throw StateError('Better Auth builds require OMI_FIREBASE_SERVICES_ENABLED=false');
     }
-  }
-
-  static bool _isOmiOperatedHost(String host) {
-    final normalized = host.toLowerCase();
-    return normalized == 'omi.me' ||
-        normalized.endsWith('.omi.me') ||
-        normalized == 'omiapi.com' ||
-        normalized.endsWith('.omiapi.com');
   }
 
   /// Per-attempt ceiling on the Firebase forced token refresh.

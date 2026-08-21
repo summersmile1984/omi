@@ -1,9 +1,8 @@
-// The Gemini vision call. The FIRST image Omi-on-Windows has ever sent to a
-// model — both existing Gemini callers (screenSynthesis, insightEngine) are
-// text-only.
+// The focus vision call. Managed cloud retains the Gemini proxy wire; a
+// self-hosted artifact uses the configured backend's generic tool capability.
 //
-// It goes through the Rust desktop backend's proxy, never Gemini directly: the
-// API key lives on the server and never touches the device. The proxy's body cap
+// The cloud path goes through the Rust desktop backend's proxy, never Gemini
+// directly: the API key lives on the server and never touches the device. The proxy's body cap
 // is 5 MB and its own comment sizes it for "base64 JPEG + prompt" — the image
 // path is the designed use, not a workaround.
 //
@@ -11,7 +10,12 @@
 // (Chromium's stack — proxy- and TLS-aware, unlike bare node fetch), the shared
 // relayed session for the bearer token, and a timeout + session-abort wrapper.
 import { net } from 'electron'
+import { resolveWindowsDeployment } from '../../../shared/deploymentProfile'
 import { getAbortSignal, type BackendSession } from '../core/session'
+import {
+  completeStructuredCapability,
+  ModelCapabilityUnavailableError
+} from '../core/modelCapabilityClient'
 import { FOCUS_RESPONSE_SCHEMA, parseScreenAnalysis, type ScreenAnalysis } from './models'
 
 // Focus stays on the PT model: small payloads, and the lane earns its cost
@@ -38,7 +42,9 @@ function isTransient(e: unknown): boolean {
   // The proxy owns replay safety. Only retry an outcome it explicitly marks as
   // safe; local timeouts and ambiguous transport failures may already have
   // reached the provider.
-  return e instanceof GeminiHttpError && e.retryable
+  return (
+    (e instanceof GeminiHttpError || e instanceof ModelCapabilityUnavailableError) && e.retryable
+  )
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -114,6 +120,19 @@ async function attempt(
   return withTimeout(
     REQUEST_TIMEOUT_MS,
     async (signal) => {
+      if (resolveWindowsDeployment().profile === 'self_hosted') {
+        return (
+          await completeStructuredCapability({
+            session,
+            systemPrompt,
+            prompt,
+            imageBase64,
+            responseToolName: 'submit_focus_analysis',
+            responseSchema: FOCUS_RESPONSE_SCHEMA,
+            signal
+          })
+        ).text
+      }
       const res = await net.fetch(
         `${session.desktopApiBase}/v1/proxy/gemini/models/${MODEL}:generateContent`,
         {

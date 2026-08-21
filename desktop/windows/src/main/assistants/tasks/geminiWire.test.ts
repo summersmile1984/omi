@@ -14,6 +14,44 @@ import type { BackendSession } from '../core/session'
 import type { GeminiTool } from '../insight/models'
 
 const session = (): BackendSession => ({ apiBase: 'a', desktopApiBase: 'd', token: 't' })
+const selfHostedSession = (): BackendSession => ({
+  apiBase: 'https://api.operator.test',
+  desktopApiBase: 'https://desktop.operator.test',
+  token: 'operator-token'
+})
+
+function selfHostedProfile(): void {
+  vi.stubEnv('VITE_OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+  vi.stubEnv('VITE_OMI_IDENTITY_PROVIDER', 'better_auth')
+  vi.stubEnv('VITE_OMI_API_BASE', 'https://api.operator.test')
+  vi.stubEnv('VITE_OMI_DESKTOP_API_BASE', 'https://desktop.operator.test')
+  vi.stubEnv('VITE_OMI_AUTH_BASE', 'https://auth.operator.test')
+  vi.stubEnv('VITE_OMI_MCP_BASE', 'https://mcp.operator.test')
+}
+
+function capabilityResult(name: string, args: Record<string, unknown>): unknown {
+  return {
+    ok: true,
+    json: async () => ({
+      status: 'ok',
+      capability: 'proactive_tools',
+      outcome: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name, arguments: JSON.stringify(args) } }
+        ]
+      },
+      route: {
+        feature: 'desktop_proactive_reasoning',
+        primary: { provider: 'generic', model: 'operator-model' },
+        fallbacks: [],
+        unavailable_fallbacks: []
+      }
+    })
+  }
+}
 
 const TOOL: GeminiTool = {
   function_declarations: [
@@ -62,9 +100,21 @@ beforeEach(() => vi.clearAllMocks())
 afterEach(() => {
   vi.restoreAllMocks()
   vi.useRealTimers()
+  vi.unstubAllEnvs()
 })
 
 describe('geminiWire', () => {
+  it('routes self-hosted task turns through the operator generic capability only', async () => {
+    selfHostedProfile()
+    h.fetch.mockResolvedValueOnce(capabilityResult('extract_task', { title: 'Ship it' }))
+
+    const result = await sendInitialTurn({ ...initial, session: selfHostedSession() })
+    expect(result.turn.toolCalls).toEqual([{ name: 'extract_task', args: { title: 'Ship it' } }])
+    expect(h.fetch).toHaveBeenCalledTimes(1)
+    expect(urlOf(0)).toBe('https://api.operator.test/v1/model-capabilities/tool-completions')
+    expect(JSON.stringify(h.fetch.mock.calls)).not.toMatch(/omi\.me|googleapis|proxy\/gemini/i)
+  })
+
   it('forcing turn: tool_config mode ANY, the inlineData frame, flash model, thinkingBudget 1024', async () => {
     h.fetch.mockResolvedValueOnce(ok(fc('no_task_found', {})))
     const { turn } = await sendInitialTurn(initial)

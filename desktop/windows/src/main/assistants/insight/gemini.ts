@@ -1,4 +1,5 @@
-// The two-phase Gemini TOOL-LOOP client — net-new for Insight. Focus sends one
+// The two-phase model TOOL-LOOP client. Cloud retains Gemini's wire; self-hosted
+// uses the configured backend's generic tool capability. Focus sends one
 // vision call with a responseSchema; Insight instead drives Gemini's native
 // function calling across up to 7 (Phase 1, text-only SQL investigation) + 5
 // (Phase 2, one vision call + optional SQL cross-reference) iterations.
@@ -19,7 +20,12 @@
 //    result as a role:"user" functionResponse turn (NOT role:"function");
 //  - only toolCalls[0] is consumed; parallel calls after the first are dropped.
 import { net } from 'electron'
+import { resolveWindowsDeployment } from '../../../shared/deploymentProfile'
 import { getAbortSignal, type BackendSession } from '../core/session'
+import {
+  completeToolCapability,
+  ModelCapabilityUnavailableError
+} from '../core/modelCapabilityClient'
 import {
   PHASE1_TOOL,
   PHASE2_TOOL,
@@ -56,7 +62,9 @@ export class GeminiHttpError extends Error {
 
 /** Replay only when the backend explicitly marks the response retryable. */
 function isTransient(e: unknown): boolean {
-  return e instanceof GeminiHttpError && e.retryable
+  return (
+    (e instanceof GeminiHttpError || e instanceof ModelCapabilityUnavailableError) && e.retryable
+  )
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -193,6 +201,22 @@ function buildBody(opts: TurnOpts): Record<string, unknown> {
 }
 
 async function callModel(model: string, opts: TurnOpts): Promise<ToolTurn> {
+  if (resolveWindowsDeployment().profile === 'self_hosted') {
+    return withTimeout(
+      REQUEST_TIMEOUT_MS,
+      (signal) =>
+        completeToolCapability({
+          session: opts.session,
+          systemPrompt: opts.systemPrompt,
+          contents: opts.contents,
+          tool: opts.tool,
+          forceToolCall: opts.forceToolCall,
+          maxOutputTokens: 2048,
+          signal
+        }),
+      opts.external
+    )
+  }
   return withTimeout(
     REQUEST_TIMEOUT_MS,
     async (signal) => {

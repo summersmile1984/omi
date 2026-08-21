@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // generate.ts imports electron + the session/notify/appSettings singletons only
 // for its REAL side-effects. The unit tests here drive the pure helpers and the
@@ -21,6 +21,7 @@ import {
   buildCandidateWith,
   createCandidateWith,
   realCreateDeps,
+  generateSuggestionText,
   validateLinkedTaskIds,
   type CandidateDeps,
   type CreateDeps,
@@ -31,6 +32,75 @@ import { setAppSettings } from '../../appSettings'
 import type { GoalContextData } from './context'
 
 beforeEach(() => vi.clearAllMocks())
+afterEach(() => vi.unstubAllEnvs())
+
+const selfHostedSession = {
+  apiBase: 'https://api.operator.test',
+  desktopApiBase: 'https://desktop.operator.test',
+  token: 'operator-token'
+}
+
+function selfHostedProfile(): void {
+  vi.stubEnv('VITE_OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+  vi.stubEnv('VITE_OMI_IDENTITY_PROVIDER', 'better_auth')
+  vi.stubEnv('VITE_OMI_API_BASE', 'https://api.operator.test')
+  vi.stubEnv('VITE_OMI_DESKTOP_API_BASE', 'https://desktop.operator.test')
+  vi.stubEnv('VITE_OMI_AUTH_BASE', 'https://auth.operator.test')
+  vi.stubEnv('VITE_OMI_MCP_BASE', 'https://mcp.operator.test')
+}
+
+function capabilityResult(name: string, args: Record<string, unknown>): unknown {
+  return {
+    ok: true,
+    json: async () => ({
+      status: 'ok',
+      capability: 'proactive_tools',
+      outcome: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name, arguments: JSON.stringify(args) } }
+        ]
+      },
+      route: {
+        feature: 'desktop_proactive_reasoning',
+        primary: { provider: 'generic', model: 'operator-model' },
+        fallbacks: [],
+        unavailable_fallbacks: []
+      }
+    })
+  }
+}
+
+describe('generateSuggestionText transport', () => {
+  it('routes self-hosted goals through the operator generic capability only', async () => {
+    selfHostedProfile()
+    const { net } = await import('electron')
+    const fetch = vi.mocked(net.fetch)
+    fetch.mockResolvedValue(
+      capabilityResult('submit_goal_suggestion', {
+        suggested_title: 'Read 12 books',
+        suggested_description: 'Grow through reading.',
+        suggested_type: 'numeric',
+        suggested_target: 12,
+        suggested_min: 0,
+        suggested_max: 12,
+        reasoning: 'Fits their learning goals.',
+        linked_task_ids: []
+      }) as Response
+    )
+
+    await expect(generateSuggestionText(selfHostedSession, 'prompt')).resolves.toContain(
+      'Read 12 books'
+    )
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch.mock.calls[0][0]).toBe(
+      'https://api.operator.test/v1/model-capabilities/tool-completions'
+    )
+    expect(JSON.stringify(fetch.mock.calls)).not.toMatch(/omi\.me|googleapis|proxy\/gemini/i)
+  })
+})
 
 const suggestion = (over: Partial<GoalSuggestion> = {}): GoalSuggestion => ({
   title: 'Read 12 books',

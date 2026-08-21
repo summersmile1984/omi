@@ -61,7 +61,8 @@ import type {
   XStatus,
   XSyncResult,
   XRunState,
-  SignInProvider
+  SignInProvider,
+  RendererModelCapabilityRequest
 } from '../shared/types'
 import type { ByokEnrollResult, ByokProvider } from '../shared/byok'
 import type {
@@ -102,6 +103,8 @@ const omi: OmiBridgeApi = {
     ipcRenderer.invoke('db:updateLiveNote', id, text, updatedAt),
   deleteLiveNote: (id: string) => ipcRenderer.invoke('db:deleteLiveNote', id),
   listLiveNotes: (sessionId: string) => ipcRenderer.invoke('db:listLiveNotes', sessionId),
+  modelCapabilityGenerate: (request: RendererModelCapabilityRequest) =>
+    ipcRenderer.invoke('modelCapability:generate', request),
   // --- Track 2: Voice & PTT depth (voice turn outbox) ---
   insertVoiceTurn: (entry: VoiceTurnOutboxInput) => ipcRenderer.invoke('db:insertVoiceTurn', entry),
   listPendingVoiceTurns: (limit?: number) => ipcRenderer.invoke('db:listPendingVoiceTurns', limit),
@@ -367,8 +370,9 @@ const omi: OmiBridgeApi = {
   },
   // Session relay for the main-process embedding indexer + query embedder, which
   // are inert without a Firebase token.
-  rewindSetEmbedSession: (session: { apiBase: string; desktopApiBase: string; token: string } | null) =>
-    ipcRenderer.invoke('rewind:setEmbedSession', session),
+  rewindSetEmbedSession: (
+    session: { apiBase: string; desktopApiBase: string; token: string } | null
+  ) => ipcRenderer.invoke('rewind:setEmbedSession', session),
   rewindFrameImage: (imagePath: string) => ipcRenderer.invoke('rewind:frameImage', imagePath),
   // --- Track 4 --- per-line OCR boxes for the on-image search highlight overlay
   rewindFrameOcrLines: (frameId: number) => ipcRenderer.invoke('rewind:frameOcrLines', frameId),
@@ -417,10 +421,12 @@ const omi: OmiBridgeApi = {
   voiceHubGetSeedContext: (args?: VoiceHubSeedContextArgs) =>
     ipcRenderer.invoke('voiceHub:getSeedContext', args ?? {}),
   voiceHubRelayCreate: () => ipcRenderer.invoke('voiceHub:relayCreate'),
-  voiceHubRelayConnect: (connectionId: string) => ipcRenderer.send('voiceHub:relayConnect', connectionId),
+  voiceHubRelayConnect: (connectionId: string) =>
+    ipcRenderer.send('voiceHub:relayConnect', connectionId),
   voiceHubRelaySend: (connectionId: string, data: string) =>
     ipcRenderer.send('voiceHub:relaySend', connectionId, data),
-  voiceHubRelayClose: (connectionId: string) => ipcRenderer.send('voiceHub:relayClose', connectionId),
+  voiceHubRelayClose: (connectionId: string) =>
+    ipcRenderer.send('voiceHub:relayClose', connectionId),
   onVoiceHubRelayEvent: (cb: (event: VoiceHubRelayEvent) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, event: VoiceHubRelayEvent): void => cb(event)
     ipcRenderer.on('voiceHub:relayEvent', listener)

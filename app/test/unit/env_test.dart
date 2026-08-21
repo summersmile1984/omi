@@ -269,6 +269,30 @@ void main() {
           reason: endpoint,
         );
       }
+      for (final endpoint in [
+        'https://user:secret@api.example.com/',
+        'https://api.example.com/path',
+        'https://api.example.com/?query=value',
+        'https://api.example.com/#fragment',
+      ]) {
+        expect(
+          () => Env.validateStartupRouting(
+            productionFamily: true,
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredApiBaseUrl: endpoint,
+            releaseBuild: true,
+          ),
+          throwsStateError,
+          reason: endpoint,
+        );
+      }
+      expect(
+        Env.canonicalSelfHostedOrigin(
+          'HTTPS://API.Example.COM:443/',
+          key: 'OMI_API_BASE_URL',
+        ),
+        'https://api.example.com',
+      );
     });
 
     test('self-hosted client public origins are explicit, HTTPS, and non-Omi', () {
@@ -297,12 +321,12 @@ void main() {
       expect(
         Env.resolveMcpBaseUrl(
           configuredProfile: AppEnvironmentProfile.selfHosted,
-          configuredMcpBaseUrl: 'https://mcp.example.com/root/',
+          configuredMcpBaseUrl: 'HTTPS://MCP.Example.COM:443/',
           configuredApiBaseUrl: 'https://api.example.com/',
         ),
-        'https://mcp.example.com/root/',
+        'https://mcp.example.com/',
       );
-      for (final invalid in ['', 'http://mcp.example.com', 'https://api.omi.me']) {
+      for (final invalid in ['', 'http://mcp.example.com', 'https://api.omi.me', 'https://mcp.example.com/root']) {
         expect(
           () => Env.resolveMcpBaseUrl(
             configuredProfile: AppEnvironmentProfile.selfHosted,
@@ -318,11 +342,11 @@ void main() {
       expect(
         Env.resolveShareBaseUrl(
           configuredProfile: AppEnvironmentProfile.selfHosted,
-          configuredShareUrl: 'https://share.example.com/omi/',
+          configuredShareUrl: 'HTTPS://SHARE.Example.COM:443/',
         ),
-        'https://share.example.com/omi',
+        'https://share.example.com',
       );
-      for (final invalid in ['', 'http://share.example.com', 'https://h.omi.me']) {
+      for (final invalid in ['', 'http://share.example.com', 'https://h.omi.me', 'https://share.example.com/path']) {
         expect(
           () => Env.resolveShareBaseUrl(
             configuredProfile: AppEnvironmentProfile.selfHosted,

@@ -165,6 +165,43 @@ final class DeploymentProfileTests: XCTestCase {
     )
   }
 
+  func testSelfHostedOriginsAreCanonicalAndDefaultPortsCollapse() throws {
+    XCTAssertEqual(
+      try DesktopBackendEnvironment.canonicalSelfHostedOrigin(
+        "HTTPS://API.Fork.Example:443/", key: "API", requiresHTTPS: true),
+      "https://api.fork.example/"
+    )
+    XCTAssertEqual(
+      try DesktopBackendEnvironment.canonicalSelfHostedOrigin(
+        "https://API.Fork.Example:8443", key: "API", requiresHTTPS: true),
+      "https://api.fork.example:8443/"
+    )
+    XCTAssertEqual(
+      try DesktopBackendEnvironment.canonicalSelfHostedOrigin(
+        "HTTPS://OPERATOR-SCREEN-123.A.RUN.APP.:443/", key: "API", requiresHTTPS: true),
+      "https://operator-screen-123.a.run.app/"
+    )
+  }
+
+  func testSelfHostedOriginsRejectNonOriginAndManagedAuthorities() {
+    for value in [
+      "https://user:secret@api.example.test/",
+      "https://api.example.test/path",
+      "https://api.example.test/?query=value",
+      "https://api.example.test/#fragment",
+      "https://screen.OMI.ME./",
+      "https://operator.omiapi.com/",
+      "https://DESKTOP-BACKEND-HHIBJAJAJA-UC.A.RUN.APP./",
+      "https://DESKTOP-BACKEND-DT5LRFKKOA-UC.A.RUN.APP./",
+    ] {
+      XCTAssertThrowsError(
+        try DesktopBackendEnvironment.canonicalSelfHostedOrigin(
+          value, key: "API", requiresHTTPS: true),
+        value
+      )
+    }
+  }
+
   func testProductionDeploymentKeysComeFromSignedBundleNotHostEnvironment() {
     let host = [
       "OMI_DEPLOYMENT_PROFILE": "omi_cloud",

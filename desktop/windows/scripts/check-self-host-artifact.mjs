@@ -7,6 +7,7 @@ const FORBIDDEN = [
   'api.omi.me',
   'h.omi.me',
   'desktop-backend-hhibjajaja-uc.a.run.app',
+  'desktop-backend-dt5lrfkkoa-uc.a.run.app',
   'identitytoolkit.googleapis.com',
   'securetoken.googleapis.com',
   'firebase.googleapis.com',
@@ -158,6 +159,14 @@ export function packagedArtifactErrors(packagedRoot, env) {
       errors.push(`final packaged artifact gate requires signed ${name}`)
     } else if (!packedText.includes(env[name])) {
       errors.push(`final packaged app is missing signed operator origin ${name}`)
+    }
+  }
+  for (const name of [
+    'VITE_OMI_MCP_CHATGPT_OAUTH_CLIENT_ID',
+    'VITE_OMI_MCP_CLAUDE_OAUTH_CLIENT_ID'
+  ]) {
+    if (env[name] && !packedText.includes(env[name])) {
+      errors.push(`final packaged app is missing signed public MCP OAuth client ${name}`)
     }
   }
   const origins = [

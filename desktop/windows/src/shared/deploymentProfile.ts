@@ -14,6 +14,8 @@ export type WindowsDeploymentConfig = {
   analyticsBase?: string
   analyticsKey?: string
   updateFeed?: string
+  mcpChatgptOAuthClientId?: string
+  mcpClaudeOAuthClientId?: string
   allowDirectModelProviders: boolean
   allowByok: boolean
   allowCloudConnectors: boolean
@@ -28,6 +30,7 @@ const FORBIDDEN_SELF_HOSTED_HOSTS = new Set([
   'api.omi.me',
   'h.omi.me',
   'desktop-backend-hhibjajaja-uc.a.run.app',
+  'desktop-backend-dt5lrfkkoa-uc.a.run.app',
   'identitytoolkit.googleapis.com',
   'securetoken.googleapis.com',
   'firebase.googleapis.com',
@@ -154,7 +157,8 @@ export function resolveWindowsDeployment(
   )
 
   const shareBase = optionalOrigin(
-    trimmed(env, 'VITE_OMI_SHARE_BASE_URL') ?? (profile === 'omi_cloud' ? OFFICIAL_SHARE : undefined),
+    trimmed(env, 'VITE_OMI_SHARE_BASE_URL') ??
+      (profile === 'omi_cloud' ? OFFICIAL_SHARE : undefined),
     'VITE_OMI_SHARE_BASE_URL',
     profile
   )
@@ -166,8 +170,20 @@ export function resolveWindowsDeployment(
   )
   const analyticsKey = trimmed(env, 'VITE_POSTHOG_KEY')
   if (profile === 'self_hosted' && Boolean(analyticsBase) !== Boolean(analyticsKey)) {
-    throw new Error('Self-hosted analytics requires both VITE_OMI_ANALYTICS_BASE and VITE_POSTHOG_KEY')
+    throw new Error(
+      'Self-hosted analytics requires both VITE_OMI_ANALYTICS_BASE and VITE_POSTHOG_KEY'
+    )
   }
+  const mcpChatgptOAuthClientId =
+    trimmed(env, 'VITE_OMI_MCP_CHATGPT_OAUTH_CLIENT_ID') ??
+    (profile === 'omi_cloud'
+      ? new URL(mcpBase).hostname.toLowerCase().replace(/\.+$/, '') === 'api.omi.me'
+        ? 'omi-chatgpt-prod'
+        : 'omi-chatgpt-dev'
+      : undefined)
+  const mcpClaudeOAuthClientId =
+    trimmed(env, 'VITE_OMI_MCP_CLAUDE_OAUTH_CLIENT_ID') ??
+    (profile === 'omi_cloud' ? 'omi-claude-prod' : undefined)
 
   return {
     profile,
@@ -184,9 +200,11 @@ export function resolveWindowsDeployment(
       'VITE_OMI_UPDATE_FEED_URL',
       profile
     ),
+    mcpChatgptOAuthClientId,
+    mcpClaudeOAuthClientId,
     allowDirectModelProviders: profile === 'omi_cloud',
     allowByok: profile === 'omi_cloud',
-    allowCloudConnectors: profile === 'omi_cloud'
+    allowCloudConnectors: Boolean(mcpChatgptOAuthClientId || mcpClaudeOAuthClientId)
   }
 }
 
@@ -222,6 +240,8 @@ export function requireSelfHostedBackendModelCapability(
   config = resolveWindowsDeployment()
 ): void {
   if (config.profile === 'self_hosted') {
-    throw new Error(`${feature} is unavailable until the configured backend advertises that capability`)
+    throw new Error(
+      `${feature} is unavailable until the configured backend advertises that capability`
+    )
   }
 }

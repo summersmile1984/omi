@@ -14,8 +14,8 @@ import SoundAnalysis
 /// transcriber, accumulates into a `Data` buffer, and a pump task drains one fixed-size window per
 /// second. Windows are decoded *independently*, not streamed — see ``drain(force:)``.
 ///
-/// No network, no account, no cloud. Model weights (~600 MB) come from HuggingFace once and are
-/// cached under Application Support; after that this runs with the machine offline.
+/// No account or transcription cloud. Managed cloud may fetch model weights once; self-hosted
+/// artifacts load only an operator-packaged model and never inherit FluidAudio's HuggingFace path.
 actor Transcriber {
 
     /// The one pool shared by onboarding's warm-up and every first capture.
@@ -152,6 +152,26 @@ actor Transcriber {
     fileprivate static func obtainModels(
         version: AsrModelVersion, progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> AsrModels {
+        let authority = ContextDeploymentProfile.current.speechModelAuthority
+        if authority != .managedDownload {
+            // FluidAudio's load helper may recover from a corrupt/missing local cache by downloading.
+            // The profile gate below is the authority; offlineMode closes that library-internal path.
+            ModelHub.offlineMode = true
+            let directory = try localModelDirectory(for: authority)
+            let report: ProgressHandler = { update in progress?(update.fractionCompleted) }
+            return try await SpeechModelAccess.obtainOperatorProvisioned(
+                authority: authority,
+                isLocalModelAvailable: {
+                    guard let directory else { return false }
+                    return AsrModels.modelsExist(at: directory, version: version)
+                },
+                loadLocalModel: {
+                    guard let directory else { throw SpeechModelError.capabilityUnavailable }
+                    return try await AsrModels.load(
+                        from: directory, version: version, progressHandler: report)
+                })
+        }
+
         // Read once and used for both decisions below. Two reads could straddle a flip of the switch
         // and leave FluidAudio's offline flag disagreeing with the branch we then took.
         let airgapMode = NetworkEgress.isSuppressed(.speechModelDownload)
@@ -181,6 +201,22 @@ actor Transcriber {
             fetch: {
                 try await AsrModels.downloadAndLoad(version: version, progressHandler: report)
             })
+    }
+
+    static func localModelDirectory(
+        for authority: ContextSpeechModelAuthority,
+        bundleResources: URL? = Bundle.main.resourceURL
+    ) throws -> URL? {
+        switch authority {
+        case .managedDownload: return nil
+        case .disabled: return nil
+        case .local(let path):
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw SpeechModelError.capabilityUnavailable }
+            if trimmed.hasPrefix("/") { return URL(fileURLWithPath: trimmed, isDirectory: true) }
+            guard let bundleResources else { throw SpeechModelError.capabilityUnavailable }
+            return bundleResources.appendingPathComponent(trimmed, isDirectory: true)
+        }
     }
 
     // MARK: - State
@@ -744,6 +780,19 @@ enum SpeechModelAccess {
             throw SpeechModelError.airgapped
         }
     }
+
+    /// Self-hosted has no fetch closure by construction. A disabled capability or a missing/wrong
+    /// packaged model fails before FluidAudio is asked to load, so it cannot silently recover via HF.
+    static func obtainOperatorProvisioned<Model>(
+        authority: ContextSpeechModelAuthority,
+        isLocalModelAvailable: () -> Bool,
+        loadLocalModel: () async throws -> Model
+    ) async throws -> Model {
+        guard case .local = authority, isLocalModelAvailable() else {
+            throw SpeechModelError.capabilityUnavailable
+        }
+        return try await loadLocalModel()
+    }
 }
 
 /// Why the speech model could not be obtained.
@@ -755,10 +804,13 @@ enum SpeechModelAccess {
 /// sentence, wherever it surfaces.
 enum SpeechModelError: LocalizedError {
     case airgapped
+    case capabilityUnavailable
 
     var errorDescription: String? {
         switch self {
         case .airgapped: return NetworkEgress.explanation(.speechModelDownload)
+        case .capabilityUnavailable:
+            return "On-device transcription is unavailable because this deployment did not package a compatible speech model."
         }
     }
 }

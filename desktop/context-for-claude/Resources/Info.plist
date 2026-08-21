@@ -52,10 +52,16 @@
 	<string>firebase</string>
 	<key>OmiBackendBaseURL</key>
 	<string>https://api.omi.me/</string>
+	<key>OmiDesktopBaseURL</key>
+	<string>https://desktop-backend-hhibjajaja-uc.a.run.app/</string>
 	<key>OmiAuthBaseURL</key>
 	<string>https://api.omi.me/</string>
 	<key>OmiMCPBaseURL</key>
 	<string>https://api.omi.me/</string>
+	<key>OmiSpeechModelMode</key>
+	<string>managed_download</string>
+	<key>OmiSpeechModelPath</key>
+	<string></string>
 	<key>OmiAllowsInsecureLocalEndpoints</key>
 	<false/>
 	<!-- macOS shows these verbatim in the TCC prompt, so they are written as the app speaking. -->

@@ -19,6 +19,13 @@ enum DesktopIdentityProvider: String, Codable, Sendable {
   case betterAuth = "better_auth"
 }
 
+enum DesktopDeploymentOriginError: Error, Equatable {
+  case missing(String)
+  case invalid(String)
+  case insecure(String)
+  case managed(String)
+}
+
 enum DesktopProactiveModelRoute: Equatable, Sendable {
   case vendorSpecificBackendProxy
   case providerNeutralBackendCapability
@@ -352,6 +359,14 @@ enum DesktopBackendEnvironment {
     else {
       return fallback
     }
+    if deploymentProfile == .selfHosted {
+      do {
+        return stripTrailingSlashes(
+          try canonicalSelfHostedOrigin(raw, key: "OMI_SHARE_BASE_URL", requiresHTTPS: true))
+      } catch {
+        preconditionFailure("self_hosted deployment requires a canonical OMI_SHARE_BASE_URL: \(error)")
+      }
+    }
     if !raw.contains("://") {
       raw = "https://\(raw)"
     }
@@ -460,16 +475,53 @@ enum DesktopBackendEnvironment {
     return value
   }
 
-  private static func requiredSelfHostedURL(_ raw: String?, key: String, requiresHTTPS: Bool) -> String {
-    guard let normalized = normalizedURL(raw), let url = URL(string: normalized),
-      let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme), url.host != nil
-    else {
-      preconditionFailure("self_hosted deployment requires a valid \(key)")
+  static func canonicalSelfHostedOrigin(
+    _ raw: String?, key: String, requiresHTTPS: Bool
+  ) throws -> String {
+    guard let raw = nonEmptyValue(raw) else { throw DesktopDeploymentOriginError.missing(key) }
+    guard var components = URLComponents(string: raw),
+      let rawScheme = components.scheme,
+      let rawHost = components.host,
+      components.user == nil,
+      components.password == nil,
+      components.query == nil,
+      components.fragment == nil,
+      components.path.isEmpty || components.path == "/"
+    else { throw DesktopDeploymentOriginError.invalid(key) }
+
+    let scheme = rawScheme.lowercased()
+    guard scheme == "http" || scheme == "https" else {
+      throw DesktopDeploymentOriginError.invalid(key)
     }
     if requiresHTTPS, scheme != "https" {
-      preconditionFailure("self_hosted production deployment requires HTTPS for \(key)")
+      throw DesktopDeploymentOriginError.insecure(key)
     }
-    return normalized
+    let host = rawHost.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    guard !host.isEmpty else { throw DesktopDeploymentOriginError.invalid(key) }
+    if host == "desktop-backend-hhibjajaja-uc.a.run.app"
+      || host == "desktop-backend-dt5lrfkkoa-uc.a.run.app" || host == "omi.me"
+      || host.hasSuffix(".omi.me") || host == "omiapi.com" || host.hasSuffix(".omiapi.com")
+    {
+      throw DesktopDeploymentOriginError.managed(key)
+    }
+    components.scheme = scheme
+    components.host = host
+    components.path = "/"
+    if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) {
+      components.port = nil
+    }
+    guard let url = components.url else { throw DesktopDeploymentOriginError.invalid(key) }
+    return url.absoluteString
+  }
+
+  private static func requiredSelfHostedURL(_ raw: String?, key: String, requiresHTTPS: Bool) -> String {
+    do {
+      return try canonicalSelfHostedOrigin(raw, key: key, requiresHTTPS: requiresHTTPS)
+    } catch DesktopDeploymentOriginError.insecure {
+      preconditionFailure("self_hosted production deployment requires HTTPS for \(key)")
+    } catch {
+      preconditionFailure("self_hosted deployment requires a valid operator origin for \(key): \(error)")
+    }
   }
 
   static func currentEnvironmentValue(_ key: String) -> String? {

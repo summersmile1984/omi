@@ -69,13 +69,12 @@ abstract class Env {
     if (value.isEmpty && effectiveProfile != AppEnvironmentProfile.selfHosted) {
       value = (configuredApiBaseUrl ?? apiBaseUrl ?? '').trim();
     }
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      return '${canonicalSelfHostedOrigin(value, key: 'OMI_MCP_BASE_URL')}/';
+    }
     final uri = Uri.tryParse(value);
     if (uri == null || uri.host.isEmpty || uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment) {
       throw StateError('OMI_MCP_BASE_URL must be an absolute origin.');
-    }
-    if (effectiveProfile == AppEnvironmentProfile.selfHosted &&
-        (uri.scheme != 'https' || _isOmiOperatedHost(uri.host))) {
-      throw StateError('Profile self_hosted requires an explicit non-Omi HTTPS OMI_MCP_BASE_URL.');
     }
     if (uri.scheme != 'http' && uri.scheme != 'https') {
       throw StateError('OMI_MCP_BASE_URL must use HTTP or HTTPS.');
@@ -120,8 +119,6 @@ abstract class Env {
     for (final origin in {
       'OMI_PRIVACY_URL': configuredPrivacyUrl ?? privacyPolicyUrl,
       'OMI_TERMS_URL': configuredTermsUrl ?? termsOfServiceUrl,
-      'OMI_SHARE_BASE_URL': configuredShareUrl ?? shareBaseUrl,
-      'OMI_MCP_BASE_URL': configuredMcpBaseUrl ?? _mcpBaseUrlFromDefine,
     }.entries) {
       final uri = Uri.tryParse(origin.value.trim());
       if (uri == null ||
@@ -134,6 +131,8 @@ abstract class Env {
         throw StateError('Profile self_hosted requires ${origin.key} to use an explicit non-Omi HTTPS URL.');
       }
     }
+    canonicalSelfHostedOrigin(configuredShareUrl ?? shareBaseUrl, key: 'OMI_SHARE_BASE_URL');
+    canonicalSelfHostedOrigin(configuredMcpBaseUrl ?? _mcpBaseUrlFromDefine, key: 'OMI_MCP_BASE_URL');
   }
 
   static String resolveShareBaseUrl({
@@ -148,6 +147,9 @@ abstract class Env {
     if (value.isNotEmpty && !value.contains('://')) {
       value = 'https://$value';
     }
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
+      return canonicalSelfHostedOrigin(value, key: 'OMI_SHARE_BASE_URL');
+    }
     final uri = Uri.tryParse(value);
     final valid = !RegExp(r'\s').hasMatch(value) &&
         uri != null &&
@@ -157,12 +159,7 @@ abstract class Env {
         !uri.hasQuery &&
         !uri.hasFragment &&
         (uri.scheme == 'http' || uri.scheme == 'https');
-    if (!valid ||
-        (effectiveProfile == AppEnvironmentProfile.selfHosted &&
-            (uri.scheme != 'https' || _isOmiOperatedHost(uri.host)))) {
-      if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
-        throw StateError('Profile self_hosted requires OMI_SHARE_BASE_URL to use an explicit non-Omi HTTPS URL.');
-      }
+    if (!valid) {
       return 'https://h.omi.me';
     }
     final origin = uri.hasPort ? '${uri.scheme}://${uri.host}:${uri.port}' : '${uri.scheme}://${uri.host}';
@@ -177,6 +174,39 @@ abstract class Env {
       throw StateError('A configured absolute OMI_API_BASE_URL is required.');
     }
     return value;
+  }
+
+  /// Canonical signed authority for self-hosted API/auth/MCP/share traffic.
+  /// Product/legal links are endpoints and intentionally use their own validator.
+  static String canonicalSelfHostedOrigin(
+    String raw, {
+    required String key,
+    bool releaseBuild = true,
+  }) {
+    final value = raw.trim();
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment ||
+        (uri.path.isNotEmpty && uri.path != '/')) {
+      throw StateError('Profile self_hosted requires $key to be an absolute origin without credentials or path.');
+    }
+    if (releaseBuild && uri.scheme != 'https') {
+      throw StateError('Profile self_hosted requires $key to use HTTPS in release builds.');
+    }
+    if (_isOmiOperatedHost(uri.host)) {
+      throw StateError('Profile self_hosted cannot use an Omi-operated origin for $key.');
+    }
+    final defaultPort = (uri.scheme == 'https' && uri.port == 443) || (uri.scheme == 'http' && uri.port == 80);
+    final canonical = Uri(
+      scheme: uri.scheme.toLowerCase(),
+      host: uri.host.toLowerCase().replaceFirst(RegExp(r'\.+$'), ''),
+      port: uri.hasPort && !defaultPort ? uri.port : null,
+    );
+    return canonical.origin;
   }
 
   static void validateFirebaseProject({
@@ -226,16 +256,11 @@ abstract class Env {
     }
 
     if (effectiveProfile == AppEnvironmentProfile.selfHosted) {
-      final uri = Uri.tryParse(normalized);
-      if (uri == null || !uri.hasScheme || uri.host.isEmpty || (uri.scheme != 'http' && uri.scheme != 'https')) {
-        throw StateError('Profile self_hosted requires an explicit absolute OMI_API_BASE_URL.');
-      }
-      if (releaseBuild && uri.scheme != 'https') {
-        throw StateError('Profile self_hosted requires an HTTPS OMI_API_BASE_URL in release builds.');
-      }
-      if (_isOmiOperatedHost(uri.host)) {
-        throw StateError('Profile self_hosted cannot use an Omi-operated API origin.');
-      }
+      canonicalSelfHostedOrigin(
+        configuredApiBaseUrl ?? apiBaseUrl ?? '',
+        key: 'OMI_API_BASE_URL',
+        releaseBuild: releaseBuild,
+      );
       return;
     }
 
@@ -274,7 +299,7 @@ abstract class Env {
   }
 
   static bool _isOmiOperatedHost(String host) {
-    final normalized = host.toLowerCase();
+    final normalized = host.toLowerCase().replaceFirst(RegExp(r'\.+$'), '');
     return normalized == 'omi.me' ||
         normalized.endsWith('.omi.me') ||
         normalized == 'omiapi.com' ||

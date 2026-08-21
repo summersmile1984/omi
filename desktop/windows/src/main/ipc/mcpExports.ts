@@ -4,7 +4,7 @@
 // Connections UI's seam onto them.
 //
 // SECURITY: the hosted MCP key never crosses to the renderer. The renderer relays
-// the Firebase token + its uid; main mints/reads the key, writes it into the
+// the configured identity token + its uid; main mints/reads the key, writes it into the
 // tool's config file itself, and returns only non-secret status. The key is a
 // credential — never logged.
 
@@ -164,8 +164,12 @@ async function rotate(token: string, ownerUserId: string): Promise<McpExportsSna
 /** Cloud (OAuth) connector cards — static field values. Connected-state is a
  *  local renderer latch (Mac has no reliable probe; we replicate that gap). */
 function cloudInfo(): McpCloudConnectorInfo[] {
-  if (!resolveWindowsDeployment().allowCloudConnectors) return []
-  return buildCloudConnectors(apiBase())
+  const deployment = resolveWindowsDeployment()
+  if (!deployment.allowCloudConnectors) return []
+  return buildCloudConnectors(deployment.mcpBase, {
+    chatgpt: deployment.mcpChatgptOAuthClientId,
+    claude: deployment.mcpClaudeOAuthClientId
+  })
 }
 
 /**

@@ -19,8 +19,11 @@
 #   CONTEXT_DEPLOYMENT_PROFILE       omi_cloud (default) or self_hosted
 #   CONTEXT_AUTH_PROVIDER            firebase (cloud) or better_auth (self-hosted)
 #   CONTEXT_BACKEND_BASE_URL         self-hosted backend origin
+#   CONTEXT_DESKTOP_BASE_URL         self-hosted screen-activity backend origin
 #   CONTEXT_AUTH_BASE_URL            self-hosted Better Auth origin
 #   CONTEXT_MCP_BASE_URL             MCP origin; defaults to backend origin
+#   CONTEXT_SPEECH_MODEL_MODE        self-hosted: local or disabled (required)
+#   CONTEXT_SPEECH_MODEL_PATH        local FluidAudio model directory (required for local)
 #
 # SAFETY: this script only ever touches Context for Claude. It never reads, writes, signs, launches, or kills
 # /Applications/Omi.app, /Applications/Omi Beta.app, or any com.omi.computer-macos* bundle, and
@@ -60,8 +63,11 @@ SPARKLE_PUBLIC_KEY="${CONTEXT_SPARKLE_PUBLIC_KEY:-}"
 DEPLOYMENT_PROFILE="${CONTEXT_DEPLOYMENT_PROFILE:-omi_cloud}"
 AUTH_PROVIDER="${CONTEXT_AUTH_PROVIDER:-firebase}"
 BACKEND_BASE_URL="${CONTEXT_BACKEND_BASE_URL:-}"
+DESKTOP_BASE_URL="${CONTEXT_DESKTOP_BASE_URL:-}"
 AUTH_BASE_URL="${CONTEXT_AUTH_BASE_URL:-}"
 MCP_BASE_URL="${CONTEXT_MCP_BASE_URL:-${CONTEXT_BACKEND_BASE_URL:-}}"
+SPEECH_MODEL_MODE="${CONTEXT_SPEECH_MODEL_MODE:-}"
+SPEECH_MODEL_PATH="${CONTEXT_SPEECH_MODEL_PATH:-}"
 
 log()  { printf '\033[1m[context]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[context]\033[0m %s\n' "$*" >&2; }
@@ -299,10 +305,23 @@ if [[ "$DEPLOYMENT_PROFILE" == "self_hosted" ]]; then
     [[ "$AUTH_PROVIDER" == "better_auth" ]] \
         || die "self_hosted requires CONTEXT_AUTH_PROVIDER=better_auth"
     [[ -n "$BACKEND_BASE_URL" ]] || die "self_hosted requires CONTEXT_BACKEND_BASE_URL"
+    [[ -n "$DESKTOP_BASE_URL" ]] || die "self_hosted requires CONTEXT_DESKTOP_BASE_URL"
     [[ -n "$AUTH_BASE_URL" ]] || die "self_hosted requires CONTEXT_AUTH_BASE_URL"
     [[ -n "$MCP_BASE_URL" ]] || die "self_hosted requires CONTEXT_MCP_BASE_URL or CONTEXT_BACKEND_BASE_URL"
+    if [[ "$SPEECH_MODEL_MODE" == "local" ]]; then
+        [[ -n "$SPEECH_MODEL_PATH" ]] || die "self_hosted local speech model requires CONTEXT_SPEECH_MODEL_PATH"
+        [[ -d "$SPEECH_MODEL_PATH" ]] || die "CONTEXT_SPEECH_MODEL_PATH is not a directory"
+        MODEL_ARTIFACT_COUNT="$(find "$SPEECH_MODEL_PATH" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')"
+        [[ "$MODEL_ARTIFACT_COUNT" -ge 3 ]] \
+            || die "CONTEXT_SPEECH_MODEL_PATH must contain compiled FluidAudio .mlmodelc artifacts"
+        find "$SPEECH_MODEL_PATH" -type f -name '*.json' -print -quit | grep -q . \
+            || die "CONTEXT_SPEECH_MODEL_PATH must contain the FluidAudio vocabulary JSON"
+    elif [[ "$SPEECH_MODEL_MODE" != "disabled" ]]; then
+        die "self_hosted requires CONTEXT_SPEECH_MODEL_MODE=local or disabled"
+    fi
     if [[ "$DO_RELEASE" -eq 1 ]]; then
         [[ "$BACKEND_BASE_URL" == https://* ]] || die "release backend URL must use HTTPS"
+        [[ "$DESKTOP_BASE_URL" == https://* ]] || die "release desktop URL must use HTTPS"
         [[ "$AUTH_BASE_URL" == https://* ]] || die "release auth URL must use HTTPS"
         [[ "$MCP_BASE_URL" == https://* ]] || die "release MCP URL must use HTTPS"
     fi
@@ -314,8 +333,19 @@ fi
 /usr/libexec/PlistBuddy -c "Set :OmiAuthProvider $AUTH_PROVIDER" "$APP_BUNDLE/Contents/Info.plist"
 if [[ "$DEPLOYMENT_PROFILE" == "self_hosted" ]]; then
     /usr/libexec/PlistBuddy -c "Set :OmiBackendBaseURL $BACKEND_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :OmiDesktopBaseURL $DESKTOP_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :OmiAuthBaseURL $AUTH_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :OmiMCPBaseURL $MCP_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
+    if [[ "$SPEECH_MODEL_MODE" == "local" ]]; then
+        SPEECH_MODEL_BUNDLE_PATH="SpeechModel"
+        rm -rf "$APP_BUNDLE/Contents/Resources/$SPEECH_MODEL_BUNDLE_PATH"
+        ditto "$SPEECH_MODEL_PATH" "$APP_BUNDLE/Contents/Resources/$SPEECH_MODEL_BUNDLE_PATH"
+        /usr/libexec/PlistBuddy -c "Set :OmiSpeechModelMode packaged" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Set :OmiSpeechModelPath $SPEECH_MODEL_BUNDLE_PATH" "$APP_BUNDLE/Contents/Info.plist"
+    else
+        /usr/libexec/PlistBuddy -c "Set :OmiSpeechModelMode disabled" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Delete :OmiSpeechModelPath" "$APP_BUNDLE/Contents/Info.plist" >/dev/null 2>&1 || true
+    fi
 fi
 
 # A developer build claims its own identity. All four keys move together by necessity: the binary

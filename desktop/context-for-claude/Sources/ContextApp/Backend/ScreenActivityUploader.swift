@@ -1,6 +1,6 @@
 import Combine
-import CryptoKit
 import ContextCore
+import CryptoKit
 import Foundation
 // Row-level access to `frames`: the `Queries` façade returns display `Hit`s with the row id
 // dropped and the OCR truncated, and a cursor needs the id and the untruncated text.
@@ -35,9 +35,6 @@ final class ScreenActivityUploader: ObservableObject {
     @Published private(set) var lastError: String?
 
     // MARK: - Tuning
-
-    private static let endpoint = URL(
-        string: "https://desktop-backend-hhibjajaja-uc.a.run.app/v1/screen-activity/sync")!
 
     /// The server rejects 101+ rows with a 400, so this is a contract value, not a preference.
     private static let batchSize = 100
@@ -119,6 +116,7 @@ final class ScreenActivityUploader: ObservableObject {
     private let isSignedIn: @MainActor () -> Bool
     private let openStore: @Sendable () throws -> ContextStore
     private let authHeaders: (Bool) async throws -> [String: String]
+    private let endpoint: URL
     private let transport: @MainActor (URLRequest) async throws -> (Data, URLResponse)
     private let defaults: UserDefaults
     /// The engine whose changes are watched. Injected so a test drives a throwaway configuration file
@@ -133,6 +131,7 @@ final class ScreenActivityUploader: ObservableObject {
         authHeaders: @escaping (Bool) async throws -> [String: String] = {
             try await OmiAPI.shared.headers(forceRefresh: $0)
         },
+        endpoint: URL? = nil,
         // Defaulted through nil rather than as a default expression: `urlSession` is `private`, and a
         // default argument on an internal initializer may not name a private declaration.
         transport: (@MainActor (URLRequest) async throws -> (Data, URLResponse))? = nil,
@@ -143,6 +142,10 @@ final class ScreenActivityUploader: ObservableObject {
         self.isSignedIn = isSignedIn
         self.openStore = openStore
         self.authHeaders = authHeaders
+        self.endpoint =
+            endpoint
+            ?? ContextDeploymentProfile.current.desktopBaseURL
+            .appendingPathComponent("v1/screen-activity/sync")
         self.transport = transport ?? Self.defaultTransport
         self.defaults = defaults
         self.exclusions = exclusions
@@ -598,7 +601,7 @@ final class ScreenActivityUploader: ObservableObject {
                 return .failed("Could not build auth headers: \(error.localizedDescription)")
             }
 
-            var request = URLRequest(url: Self.endpoint)
+            var request = URLRequest(url: endpoint)
             request.httpMethod = "POST"
             request.httpBody = body
             request.timeoutInterval = Self.requestTimeout
@@ -724,7 +727,8 @@ final class ScreenActivityUploader: ObservableObject {
     /// Server error text, capped. Bounded because an error body is not a place to discover that a
     /// backend echoed something large back at us.
     private static func detail(from data: Data) -> String {
-        let text = String(data: data, encoding: .utf8)?
+        let text =
+            String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else { return "no response body" }
         return text.count > 200 ? String(text.prefix(200)) + "…" : text

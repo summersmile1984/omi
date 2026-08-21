@@ -60,4 +60,14 @@ final class ShareLinksEnvironmentTests: XCTestCase {
       "https://backend.fork.example/conversations/abc"
     )
   }
+
+  func testSelfHostedShareCanonicalizesOperatorOrigin() {
+    XCTAssertEqual(
+      DesktopBackendEnvironment.shareBaseURL(
+        environmentValue: "HTTPS://SHARE.Fork.Example:443/",
+        deploymentProfile: .selfHosted,
+        selfHostedBackendURL: "https://backend.fork.example/"),
+      "https://share.fork.example"
+    )
+  }
 }
