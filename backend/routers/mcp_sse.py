@@ -127,6 +127,15 @@ def _require_mcp_resource_url() -> str:
         raise HTTPException(status_code=503, detail=exc.as_dict()) from exc
 
 
+async def _require_mcp_resource_url_async() -> str:
+    """Resolve the mutable MCP authority off the async request path."""
+
+    try:
+        return await run_blocking(critical_executor, mcp_oauth_db.require_mcp_resource_url)
+    except mcp_oauth_db.MCPResourceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=exc.as_dict()) from exc
+
+
 def _enforce_mcp_cutover_access(uid: str) -> None:
     """Fence MCP product principals when cutover enforcement is enabled.
 
@@ -1699,7 +1708,7 @@ async def mcp_authorize_consent(
 @router.post("/token", tags=["mcp"], response_model=McpTokenResponse)
 async def mcp_token(request: Request):
     """OAuth token endpoint."""
-    _require_mcp_resource_url()
+    await _require_mcp_resource_url_async()
     try:
         request_data = await _get_token_request_data(request)
     except Exception:
