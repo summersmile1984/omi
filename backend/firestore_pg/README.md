@@ -108,7 +108,72 @@ it, and start the backend.
 
 ## Migration
 
-The shim is the **local/dev** path. Production Firestore remains authoritative.
-To move business code onto Postgres for good, first run shadow-diff continuously
-on the dev stack, then flip the deploy to set `FIRESTORE_PG_DSN` for a staged
-subset. See `omi-shim-and-emulators.md` §4 for the three-phase migration plan.
+The shim is the **local/dev** path until the migration gate below passes.
+Production Firestore remains authoritative during source freeze, import,
+reconciliation, and staged cutover. See `omi-shim-and-emulators.md` §4 for the
+three-phase migration plan.
+
+The first shim schema stored only a bare user ID and collapsed deeper
+subcollections into underscore-joined table names. Migration version 1
+losslessly upgrades first-level namespaces (`u` → `users/u`) and adds
+`updated_at`/`version`, but it cannot infer a deleted parent ID from already
+collapsed nested rows. An existing revision-1 database must therefore be
+rebuilt from the Firestore source before production cutover; do not point a
+production deployment at that volume.
+
+The import CLI recursively uses Firestore `list_documents(show_missing=True)`
+and `DocumentReference.collections()`, so subcollections below missing parents
+retain their real full paths and collection-group identity. Unknown collection
+IDs are dynamically provisioned through the same locked schema owner. Schema
+version 1's 27 raw PostgreSQL collection-table identifiers are a frozen
+migration artifact; every other valid Firestore collection ID maps to a stable
+full SHA-256 table identifier. Schema version 2 explicitly provisions the
+production backend's static inventory, including account-deletion and
+conversation-finalization control collections, while retaining those hashed
+mappings. A unit inventory scan rejects new literal or named collection
+references until a new explicit schema version owns them; future additions
+cannot mutate either frozen version's mapping.
+
+```bash
+export FIRESTORE_PG_DSN='postgresql+psycopg://...'
+python scripts/firestore_pg_migrate.py import \
+  --source-project source-project-id \
+  --source-database '(default)' \
+  --source-endpoint https://firestore.googleapis.com \
+  --source-credentials /secure/firestore-reader.json \
+  --checkpoint /secure/change-record/firestore-import.json \
+  --freeze-lease /secure/change-record/source-freeze.json
+```
+
+`--source-endpoint` is passed into the Firestore SDK as the actual API target,
+then recorded and checked in the checkpoint. It may identify the managed
+Firestore authority or an operator-owned Firestore-compatible endpoint; the
+importer never connects to a default authority and merely compares it after
+the fact.
+
+The checkpoint and adjacent JSONL document manifest are mode `0600`. The
+checkpoint binds every resume to the source project, database, resolved API
+endpoint, and emulator authority (when present); any authority change fails
+closed. Preserve both to resume after interruption; they contain customer data
+and must be kept in encrypted operator-controlled storage, then securely
+removed per policy. Source writes must be paused by external change control and
+proved with the mode-0600 HMAC freeze lease before the import begins. The
+importer revalidates that lease before every source-iterator advance during
+the initial capture, before every resumed target write, and again immediately
+before the live source reconciliation. If the lease expires, a partial capture
+manifest is removed and the run fails closed; it cannot be mistaken for a
+resumable authority artifact.
+Starting without a checkpoint refuses a non-empty target. Completion rescans
+the live source and independently enumerates all registered PG tables; source
+snapshot, live source, and target must have identical document counts and
+canonical content hashes. Source writes must therefore be quiesced for the
+final pass. Any unsupported value, source drift, missing/edited checkpoint, or
+count/hash mismatch exits nonzero and does not authorize cutover.
+
+For a fresh/re-imported database, PostgreSQL behavior is covered by the contract
+suite above. `deploy/self-host/migration-cutover-gate.sh` executes migration
+twice, checks the ledger, imports a real missing-parent nested emulator fixture,
+reconciles count/content hashes, then runs the live PG suite and 29-scenario
+emulator shadow diff. Production enablement still requires the repository-wide
+deployment gate, backups, live source freeze, and rollback—not merely setting
+`FIRESTORE_PG_DSN` on one process.
