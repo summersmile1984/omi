@@ -1444,6 +1444,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                     str(root),
                     '--expected-files',
                     artifact.name,
+                    '--expected-git-sha',
+                    'cafebabe',
                     '--expected-runtime-fingerprint',
                     fingerprints['runtime_fingerprint'],
                     '--expected-config-fingerprint',
@@ -1460,6 +1462,8 @@ class SelfHostOperationsTest(unittest.TestCase):
             self.assertEqual(verified.returncode, 0, verified.stderr)
 
             payload = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+            with self.assertRaisesRegex(RuntimeError, 'backup git_sha does not match'):
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints, key_file, 'different-current-revision')
             payload['migration_fingerprint'] = 'd' * 64
             (root / 'manifest.json').write_text(json.dumps(payload), encoding='utf-8')
             (root / 'manifest.json').chmod(0o600)
@@ -1471,6 +1475,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                     str(root),
                     '--expected-files',
                     artifact.name,
+                    '--expected-git-sha',
+                    'cafebabe',
                     '--expected-runtime-fingerprint',
                     fingerprints['runtime_fingerprint'],
                     '--expected-config-fingerprint',
@@ -1544,6 +1550,82 @@ class SelfHostOperationsTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'mode 0600'):
                 SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints, key_file)
 
+    def test_manifest_writer_rejects_symlink_without_overwriting_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'outside.json'
+            target.write_text('keep me\n', encoding='utf-8')
+            manifest_path = root / 'manifest.json'
+            manifest_path.symlink_to(target)
+            artifact = root / 'postgres.dump.enc'
+            artifact.write_bytes(b'ciphertext')
+
+            with self.assertRaisesRegex(RuntimeError, 'manifest must not be a symlink'):
+                SNAPSHOT.write_manifest(root, 'cafebabe', [artifact.name], 'a' * 64, 'b' * 64, 'c' * 64)
+            self.assertEqual(target.read_text(encoding='utf-8'), 'keep me\n')
+
+    def test_manifest_writer_rejects_non_regular_existing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / 'postgres.dump.enc'
+            artifact.write_bytes(b'ciphertext')
+            manifest_path = root / 'manifest.json'
+            manifest_path.mkdir()
+            with self.assertRaisesRegex(RuntimeError, 'manifest must be a regular file'):
+                SNAPSHOT.write_manifest(root, 'cafebabe', [artifact.name], 'a' * 64, 'b' * 64, 'c' * 64)
+
+    def test_backup_restore_contract_requires_key_and_documents_recovery_drill(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'state'
+            source.mkdir()
+            archive = root / 'state.tar.gz.enc'
+            no_key_commands = (
+                ['backup', str(source), str(archive)],
+                ['restore', str(source), str(archive)],
+                ['seal', str(source), str(archive)],
+                ['seal-stdin', str(archive)],
+                ['open', str(archive), str(root / 'plaintext')],
+                [
+                    'verify',
+                    str(root),
+                    '--expected-git-sha',
+                    'cafebabe',
+                    '--expected-runtime-fingerprint',
+                    'a' * 64,
+                    '--expected-config-fingerprint',
+                    'b' * 64,
+                    '--expected-migration-fingerprint',
+                    'c' * 64,
+                ],
+            )
+            for command in no_key_commands:
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), *command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2, command)
+                self.assertIn('--key-file', result.stderr, command)
+
+        readme = SCRIPT.with_name('README.md').read_text(encoding='utf-8')
+        for required in (
+            'operations.sh backup',
+            'operations.sh verify-backup',
+            'SELF_HOST_RESTORE_ACK=I_ACKNOWLEDGE_THIS_OVERWRITES_STATE',
+            'operations.sh restore',
+            'make self-host-migration-gate',
+            'completed restore drill',
+            'isolated restore host',
+            'Qdrant projection',
+            'Typesense projection',
+            'external evidence',
+            'SELF_HOST_RECOVERY_EVIDENCE',
+            'production_kms_attested',
+        ):
+            self.assertIn(required, readme)
+
     def test_operations_bind_all_backup_fingerprints_and_expected_artifacts(self) -> None:
         script = OPERATIONS.read_text(encoding='utf-8')
         self.assertIn('runtime_fingerprint()', script)
@@ -1551,6 +1633,7 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertIn('--runtime-fingerprint "$runtime_sha256"', script)
         self.assertIn('--config-fingerprint "$config_sha256"', script)
         self.assertIn('--migration-fingerprint "$migration_sha256"', script)
+        self.assertIn('--expected-git-sha "$git_sha"', script)
         self.assertIn('--key-file /backup-key/key', script)
         self.assertIn('postgres.dump.enc', script)
         self.assertIn('verify /backup \\\n      --expected-files "${ARCHIVE_FILES[@]}"', script)

@@ -249,7 +249,8 @@ per-backup salt and nonce); the operator must provide a separate, mode-`0600`
 file containing exactly 32 random bytes through
 `SELF_HOST_BACKUP_KEY_FILE`. There is no generated, default, environment-value,
 or repository-held key. The schema-v3 SHA-256 manifest binds encrypted
-artifacts to the source Git revision plus stable fingerprints of the effective
+artifacts to the source Git revision (and `verify-backup` rejects a manifest
+from any other current checkout) plus stable fingerprints of the effective
 backend/auth image strings, effective Compose configuration, and the Better
 Auth/Firestore migration owners. The manifest contains ciphertext checksums and
 non-secret envelope format metadata only; key bytes are never copied into the

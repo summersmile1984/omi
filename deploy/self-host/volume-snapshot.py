@@ -421,6 +421,7 @@ def verify_manifest(
     expected_files: list[str] | None = None,
     expected_fingerprints: dict[str, str] | None = None,
     key_file: Path | None = None,
+    expected_git_sha: str | None = None,
 ) -> None:
     if key_file is None:
         raise RuntimeError('backup verification requires an explicit key file')
@@ -439,7 +440,9 @@ def verify_manifest(
         raise RuntimeError('unsupported backup manifest')
     if not isinstance(payload.get('created_at'), str) or not payload['created_at']:
         raise RuntimeError('backup manifest created_at is missing')
-    _require_git_sha(payload.get('git_sha'))
+    manifest_git_sha = _require_git_sha(payload.get('git_sha'))
+    if expected_git_sha is not None and manifest_git_sha != _require_git_sha(expected_git_sha):
+        raise RuntimeError('backup git_sha does not match the current deployment')
     for key in MANIFEST_FINGERPRINT_KEYS:
         _require_sha256(payload.get(key), key)
     if expected_fingerprints is not None:
@@ -508,6 +511,7 @@ def main() -> int:
     verify.add_argument('--expected-runtime-fingerprint', required=True)
     verify.add_argument('--expected-config-fingerprint', required=True)
     verify.add_argument('--expected-migration-fingerprint', required=True)
+    verify.add_argument('--expected-git-sha', required=True)
     _key_argument(verify)
     args = parser.parse_args()
     try:
@@ -540,6 +544,7 @@ def main() -> int:
                     'migration_fingerprint': args.expected_migration_fingerprint,
                 },
                 args.key_file,
+                args.expected_git_sha,
             )
     except (OSError, RuntimeError) as error:
         print(f'error: {error}', file=sys.stderr)

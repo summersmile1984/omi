@@ -55,14 +55,15 @@ migration_fingerprint() {
 }
 
 verify_backup() {
-  local directory runtime_sha256 config_sha256 migration_sha256 key_file
+  local directory git_sha runtime_sha256 config_sha256 migration_sha256 key_file
   require_runtime
   directory="$(absolute_directory "$1")"
   key_file="$(backup_key_file)"
+  git_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   runtime_sha256="$(runtime_fingerprint)"
   config_sha256="$(effective_config_sha256)"
   migration_sha256="$(migration_fingerprint)"
-  verify_snapshot "$directory" "$key_file" "$runtime_sha256" "$config_sha256" "$migration_sha256"
+  verify_snapshot "$directory" "$key_file" "$git_sha" "$runtime_sha256" "$config_sha256" "$migration_sha256"
 }
 
 require_runtime() {
@@ -159,7 +160,7 @@ write_snapshot_manifest() {
 }
 
 verify_snapshot() {
-  local directory="$1" key_file="$2" runtime_sha256="$3" config_sha256="$4" migration_sha256="$5" image
+  local directory="$1" key_file="$2" git_sha="$3" runtime_sha256="$4" config_sha256="$5" migration_sha256="$6" image
   image="$(helper_image)"
   docker run --rm --user 0 \
     --volume "$OPS_DIR:/ops:ro" \
@@ -167,6 +168,7 @@ verify_snapshot() {
     --volume "$directory:/backup:ro" \
     "$image" python /ops/volume-snapshot.py verify /backup \
       --expected-files "${ARCHIVE_FILES[@]}" \
+      --expected-git-sha "$git_sha" \
       --expected-runtime-fingerprint "$runtime_sha256" \
       --expected-config-fingerprint "$config_sha256" \
       --expected-migration-fingerprint "$migration_sha256" \
