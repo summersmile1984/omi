@@ -316,6 +316,21 @@ class SelfHostOperationsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'must not invent'):
             RUNTIME_EVIDENCE.validate_provider_attestation(attestation)
 
+    def test_realtime_probe_identity_is_bound_to_runtime_provider_configuration(self) -> None:
+        probe = {
+            'status': 'passed',
+            'provider': 'relay',
+            'model': 'operator-realtime',
+            'endpoint_origin': 'wss://realtime.example.org',
+            'transport': 'websocket_relay',
+            'wire_protocol': 'openai_realtime_v1',
+        }
+        RUNTIME_EVIDENCE.validate_realtime_probe_identity(probe, EFFECTIVE_PROVIDER_CONFIGURATION)
+        mismatched = dict(probe)
+        mismatched['endpoint_origin'] = 'wss://wrong.example.org'
+        with self.assertRaisesRegex(ValueError, 'does not match reviewed configuration'):
+            RUNTIME_EVIDENCE.validate_realtime_probe_identity(mismatched, EFFECTIVE_PROVIDER_CONFIGURATION)
+
     def test_runtime_evidence_records_operator_webhook_without_secret_material(self) -> None:
         webhook_environment = {
             **EFFECTIVE_BACKEND_ENVIRONMENT,
@@ -984,7 +999,14 @@ class SelfHostOperationsTest(unittest.TestCase):
                         },
                     },
                 },
-                'realtime_relay': {'status': 'passed'},
+                'realtime_relay': {
+                    'status': 'passed',
+                    'provider': 'relay',
+                    'model': 'operator-realtime',
+                    'endpoint_origin': 'wss://realtime.example.org',
+                    'transport': 'websocket_relay',
+                    'wire_protocol': 'openai_realtime_v1',
+                },
                 'tts': {'status': 'passed'},
                 'app_icon': {'status': 'passed'},
                 'file_chat': {'status': 'passed'},
@@ -1017,6 +1039,22 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertEqual(local['gates']['live_sentinel_egress_policy']['enforcement'], 'not_enforced_by_compose')
         self.assertEqual(local['gates']['hermetic_undeclared_dns_and_socket_egress'], 'denied')
         self.assertFalse(local['gates']['live_dns_denial_claimed'])
+
+        mismatched_realtime = json.loads(json.dumps(assembled))
+        mismatched_realtime['assembled_product_loop']['realtime_relay']['model'] = 'wrong-model'
+        rejected_realtime = EVIDENCE.build_evidence(
+            mode='cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=mismatched_realtime,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(rejected_realtime['authorizes_tested_configuration_cutover'])
+        self.assertEqual(
+            rejected_realtime['remaining_cutover_reason'],
+            'realtime_relay_runtime_config_binding_not_passed',
+        )
 
         external_without_policy = EVIDENCE.build_evidence(
             mode='external-cutover-live',

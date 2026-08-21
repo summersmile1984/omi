@@ -20,7 +20,7 @@ SELF_HOST_DIR = Path(__file__).resolve().parent
 if str(SELF_HOST_DIR) not in sys.path:
     sys.path.insert(0, str(SELF_HOST_DIR))
 
-from runtime_provider_attestation import validate_provider_attestation
+from runtime_provider_attestation import validate_provider_attestation, validate_realtime_probe_identity
 
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 OBJECT_ID = re.compile(r'^[0-9a-f]{40}$')
@@ -398,6 +398,15 @@ def build_evidence(
         )
     }
     failed_hard_capability = next((name for name, passed in hard_capability_status.items() if not passed), None)
+    realtime_relay = assembled_product_loop.get('realtime_relay', {})
+    try:
+        validate_realtime_probe_identity(realtime_relay, effective_provider_configuration)
+    except (TypeError, ValueError):
+        realtime_runtime_binding_passed = False
+    else:
+        realtime_runtime_binding_passed = True
+    if failed_hard_capability is None and not realtime_runtime_binding_passed:
+        failed_hard_capability = 'realtime_relay_runtime_config_binding'
     runtime_source_and_config_passed, runtime_config_sha256 = _runtime_source_and_config_binding(
         runtime_evidence,
         git_commit=git_commit,
@@ -433,6 +442,7 @@ def build_evidence(
         and model_artifact_identity_passed
         and public_object_signed_crud_passed
         and all(hard_capability_status.values())
+        and realtime_runtime_binding_passed
         and runtime_health_and_identity_passed
         and runtime_provider_attestation_passed
         and worktree_clean
@@ -469,6 +479,7 @@ def build_evidence(
             'external_recovery_drill': recovery_evidence or 'not_run',
             'live_replacement_services': live_replacement or 'not_run',
             'live_hard_capability_probes': hard_capability_status,
+            'live_realtime_runtime_config_binding': realtime_runtime_binding_passed,
             'live_mlx_moss_diarization_provider': speaker_diarization or 'not_run',
             'live_mlx_moss_runtime_config_binding': diarization_runtime_config_binding_passed,
             'mounted_model_artifact_identity': model_artifact_identity or 'not_run',

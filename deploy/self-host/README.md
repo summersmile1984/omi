@@ -134,6 +134,11 @@ declares that those opaque frames use the currently implemented
 `openai_realtime_v1` dialect; clients must select their adapter from the returned
 `wire_protocol`, not from `provider_id`. Configure the public reverse proxy to
 support WebSocket upgrades on that path.
+The assembled cutover probe also requires the minted session's `provider_id`
+and `model` to equal `REALTIME_PROVIDER`/`REALTIME_MODEL`, and records the
+configured relay origin, transport, and wire protocol. Acceptance binds those
+fields to the runtime provider attestation, so a successful WebSocket marker
+cannot authorize a relay or model different from the tested configuration.
 
 App-icon image generation is deployment-selected:
 the checked-in profile uses deterministic `local_template`, while

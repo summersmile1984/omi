@@ -331,3 +331,25 @@ def validate_provider_attestation(
         expected_routes = _provider_payload(expected)
         if dict(providers) != expected_routes:
             raise ValueError('provider attestation routes do not match effective provider configuration')
+
+
+def validate_realtime_probe_identity(probe: Mapping[str, Any], configuration: Mapping[str, Any]) -> None:
+    """Bind a public realtime probe result to the reviewed runtime route."""
+
+    if not isinstance(probe, Mapping) or probe.get('status') != 'passed':
+        raise ValueError('realtime probe did not pass')
+    expected = {
+        'provider': _required_text(configuration.get('realtime_provider'), 'realtime_provider'),
+        'model': _model(configuration.get('realtime_model'), 'realtime_model'),
+        'endpoint_origin': _safe_origin(
+            configuration.get('realtime_endpoint_origin'), 'realtime_endpoint_origin', schemes={'ws', 'wss'}
+        ),
+        'transport': _required_text(configuration.get('realtime_transport'), 'realtime_transport'),
+        'wire_protocol': _required_text(configuration.get('realtime_wire_protocol'), 'realtime_wire_protocol'),
+    }
+    observed_keys = {'provider', 'model', 'endpoint_origin', 'transport', 'wire_protocol'}
+    if any(key not in probe for key in observed_keys):
+        raise ValueError('realtime probe omitted provider route identity')
+    observed = {key: probe[key] for key in observed_keys}
+    if observed != {key: expected[key] for key in observed_keys}:
+        raise ValueError('realtime probe route identity does not match reviewed configuration')

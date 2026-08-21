@@ -33,6 +33,11 @@ import websockets
 
 from public_object_evidence import public_signed_object_crud
 
+SELF_HOST_DIR = Path(__file__).resolve().parent
+if str(SELF_HOST_DIR) not in sys.path:
+    sys.path.insert(0, str(SELF_HOST_DIR))
+from runtime_provider_attestation import validate_realtime_probe_identity
+
 BACKEND_ROOT = os.getenv('SELF_HOST_BACKEND_ROOT', '/app')
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -373,6 +378,21 @@ async def public_realtime_relay_roundtrip(
     ca_file: str,
     marker: str,
 ) -> dict[str, Any]:
+    configured_provider = require_environment('REALTIME_PROVIDER')
+    configured_model = require_environment('REALTIME_MODEL')
+    configured_endpoint = require_environment('REALTIME_RELAY_URL')
+    parsed_endpoint = urlsplit(configured_endpoint)
+    if (
+        parsed_endpoint.scheme not in {'ws', 'wss'}
+        or not parsed_endpoint.netloc
+        or not parsed_endpoint.hostname
+        or parsed_endpoint.username is not None
+        or parsed_endpoint.password is not None
+        or parsed_endpoint.query
+        or parsed_endpoint.fragment
+    ):
+        raise RuntimeError('public realtime acceptance has an unsafe configured relay endpoint')
+    endpoint_origin = f'{parsed_endpoint.scheme}://{parsed_endpoint.netloc}'
     mint = require_object(
         client.post(
             f'{backend_url}/v2/realtime/session',
@@ -385,8 +405,10 @@ async def public_realtime_relay_roundtrip(
         mint.get('transport') != 'websocket_relay'
         or mint.get('protocol') != 'omi.realtime.v1'
         or mint.get('wire_protocol') != 'openai_realtime_v1'
+        or mint.get('provider_id') != configured_provider
+        or mint.get('model') != configured_model
     ):
-        raise RuntimeError('public realtime mint did not select the reviewed relay wire contract')
+        raise RuntimeError('public realtime mint did not select the reviewed provider/model relay contract')
     path = str(mint.get('websocket_url') or '')
     if not path.startswith('/'):
         raise RuntimeError('public realtime mint omitted its backend-relative WebSocket path')
@@ -415,13 +437,28 @@ async def public_realtime_relay_roundtrip(
             raise RuntimeError('public realtime relay returned a malformed upstream event') from error
         if response != {'type': 'session.updated', 'acceptance_marker': marker}:
             raise RuntimeError('public realtime relay response did not preserve the client marker')
-    return {
+    result = {
         'status': 'passed',
+        'provider': configured_provider,
+        'model': configured_model,
+        'endpoint_origin': endpoint_origin,
+        'transport': 'websocket_relay',
         'mint_route_selected': True,
         'wire_protocol': 'openai_realtime_v1',
         'client_event_forwarded': True,
         'upstream_response_forwarded': True,
     }
+    validate_realtime_probe_identity(
+        result,
+        {
+            'realtime_provider': configured_provider,
+            'realtime_model': configured_model,
+            'realtime_transport': 'websocket_relay',
+            'realtime_endpoint_origin': endpoint_origin,
+            'realtime_wire_protocol': 'openai_realtime_v1',
+        },
+    )
+    return result
 
 
 def public_local_tts(client: httpx.Client, *, backend_url: str, headers: dict[str, str], marker: str) -> dict[str, Any]:

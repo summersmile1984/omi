@@ -19,7 +19,11 @@ SELF_HOST_DIR = Path(__file__).resolve().parent
 if str(SELF_HOST_DIR) not in sys.path:
     sys.path.insert(0, str(SELF_HOST_DIR))
 
-from runtime_provider_attestation import build_provider_attestation, validate_provider_attestation
+from runtime_provider_attestation import (
+    build_provider_attestation,
+    validate_provider_attestation,
+    validate_realtime_probe_identity,
+)
 
 REQUIRED_SERVICES = (
     'postgres',
