@@ -200,8 +200,12 @@ retain their real full paths and collection-group identity. Unknown collection
 IDs are dynamically provisioned through the same locked schema owner. Schema
 version 1's 27 raw PostgreSQL collection-table identifiers are a frozen
 migration artifact; every other valid Firestore collection ID maps to a stable
-full SHA-256 table identifier. Adding a statically-known collection requires a
-new explicit schema version and cannot change an existing dynamic mapping.
+full SHA-256 table identifier. Schema version 2 explicitly provisions the
+production backend's static inventory, including account-deletion and
+conversation-finalization control collections, while retaining those hashed
+mappings. A unit inventory scan rejects new literal or named collection
+references until a new explicit schema version owns them; future additions
+cannot mutate either frozen version's mapping.
 
 ```bash
 export FIRESTORE_PG_DSN='postgresql+psycopg://...'

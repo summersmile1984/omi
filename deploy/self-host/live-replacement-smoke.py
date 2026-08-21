@@ -193,7 +193,7 @@ print(json.dumps({'pcm_milliseconds': 250, 'result_text_characters': len(text)})
             user_ref = db.collection('users').document(uid)
             user_ref.set({'email': email, 'name': 'Self Host Live Acceptance'})
             user_ref.collection('conversations').document('live-conversation').set({'uid': uid, 'status': 'processed'})
-            db.collection('self_host_live_rows').document(f'owned-{uuid.uuid4().hex}').set(
+            db.collection('events').document(f'self-host-owned-{uuid.uuid4().hex}').set(
                 {'uid': uid, 'kind': 'acceptance'}
             )
 
