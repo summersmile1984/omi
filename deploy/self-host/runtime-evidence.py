@@ -23,6 +23,7 @@ from runtime_provider_attestation import (
     build_provider_attestation,
     validate_provider_attestation,
     validate_realtime_probe_identity,
+    validate_tts_probe_identity,
 )
 
 REQUIRED_SERVICES = (

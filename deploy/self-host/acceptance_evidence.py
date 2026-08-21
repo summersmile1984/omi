@@ -20,7 +20,11 @@ SELF_HOST_DIR = Path(__file__).resolve().parent
 if str(SELF_HOST_DIR) not in sys.path:
     sys.path.insert(0, str(SELF_HOST_DIR))
 
-from runtime_provider_attestation import validate_provider_attestation, validate_realtime_probe_identity
+from runtime_provider_attestation import (
+    validate_provider_attestation,
+    validate_realtime_probe_identity,
+    validate_tts_probe_identity,
+)
 
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 OBJECT_ID = re.compile(r'^[0-9a-f]{40}$')
@@ -415,6 +419,15 @@ def build_evidence(
         realtime_runtime_binding_passed = True
     if failed_hard_capability is None and not realtime_runtime_binding_passed:
         failed_hard_capability = 'realtime_relay_runtime_config_binding'
+    tts_probe = assembled_product_loop.get('tts', {})
+    try:
+        validate_tts_probe_identity(tts_probe, effective_provider_configuration)
+    except (TypeError, ValueError):
+        tts_runtime_binding_passed = False
+    else:
+        tts_runtime_binding_passed = True
+    if failed_hard_capability is None and not tts_runtime_binding_passed:
+        failed_hard_capability = 'tts_runtime_config_binding'
     runtime_health_and_identity_passed = bool(
         isinstance(runtime_evidence, dict)
         and runtime_evidence.get('all_required_services_healthy') is True
@@ -446,6 +459,7 @@ def build_evidence(
         and public_object_signed_crud_passed
         and all(hard_capability_status.values())
         and realtime_runtime_binding_passed
+        and tts_runtime_binding_passed
         and runtime_health_and_identity_passed
         and runtime_provider_attestation_passed
         and worktree_clean
@@ -483,6 +497,7 @@ def build_evidence(
             'live_replacement_services': live_replacement or 'not_run',
             'live_hard_capability_probes': hard_capability_status,
             'live_realtime_runtime_config_binding': realtime_runtime_binding_passed,
+            'live_tts_runtime_config_binding': tts_runtime_binding_passed,
             'live_mlx_moss_diarization_provider': speaker_diarization or 'not_run',
             'live_mlx_moss_runtime_config_binding': diarization_runtime_config_binding_passed,
             'mounted_model_artifact_identity': model_artifact_identity or 'not_run',

@@ -331,6 +331,20 @@ class SelfHostOperationsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'does not match reviewed configuration'):
             RUNTIME_EVIDENCE.validate_realtime_probe_identity(mismatched, EFFECTIVE_PROVIDER_CONFIGURATION)
 
+    def test_tts_probe_identity_is_bound_to_runtime_provider_configuration(self) -> None:
+        probe = {
+            'status': 'passed',
+            'provider': 'sherpa_onnx',
+            'model': 'model.onnx',
+            'transport': 'local',
+            'endpoint_origin': '',
+        }
+        RUNTIME_EVIDENCE.validate_tts_probe_identity(probe, EFFECTIVE_PROVIDER_CONFIGURATION)
+        mismatched = dict(probe)
+        mismatched['model'] = 'operator-tts'
+        with self.assertRaisesRegex(ValueError, 'does not match reviewed configuration'):
+            RUNTIME_EVIDENCE.validate_tts_probe_identity(mismatched, EFFECTIVE_PROVIDER_CONFIGURATION)
+
     def test_runtime_evidence_records_operator_webhook_without_secret_material(self) -> None:
         webhook_environment = {
             **EFFECTIVE_BACKEND_ENVIRONMENT,
@@ -1007,7 +1021,13 @@ class SelfHostOperationsTest(unittest.TestCase):
                     'transport': 'websocket_relay',
                     'wire_protocol': 'openai_realtime_v1',
                 },
-                'tts': {'status': 'passed'},
+                'tts': {
+                    'status': 'passed',
+                    'provider': 'sherpa_onnx',
+                    'model': 'model.onnx',
+                    'transport': 'local',
+                    'endpoint_origin': '',
+                },
                 'app_icon': {'status': 'passed'},
                 'file_chat': {'status': 'passed'},
                 'typesense_keyword': {'status': 'passed'},
@@ -1055,6 +1075,19 @@ class SelfHostOperationsTest(unittest.TestCase):
             rejected_realtime['remaining_cutover_reason'],
             'realtime_relay_runtime_config_binding_not_passed',
         )
+
+        mismatched_tts = json.loads(json.dumps(assembled))
+        mismatched_tts['assembled_product_loop']['tts']['model'] = 'wrong-model'
+        rejected_tts = EVIDENCE.build_evidence(
+            mode='cutover-live',
+            source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+            live_replacement={'status': 'passed'},
+            assembled_loop=mismatched_tts,
+            checked_at='2026-08-20T00:00:00+00:00',
+            runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+        )
+        self.assertFalse(rejected_tts['authorizes_tested_configuration_cutover'])
+        self.assertEqual(rejected_tts['remaining_cutover_reason'], 'tts_runtime_config_binding_not_passed')
 
         external_without_policy = EVIDENCE.build_evidence(
             mode='external-cutover-live',

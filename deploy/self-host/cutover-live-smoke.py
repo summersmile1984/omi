@@ -36,7 +36,7 @@ from public_object_evidence import public_signed_object_crud
 SELF_HOST_DIR = Path(__file__).resolve().parent
 if str(SELF_HOST_DIR) not in sys.path:
     sys.path.insert(0, str(SELF_HOST_DIR))
-from runtime_provider_attestation import validate_realtime_probe_identity
+from runtime_provider_attestation import validate_realtime_probe_identity, validate_tts_probe_identity
 
 BACKEND_ROOT = os.getenv('SELF_HOST_BACKEND_ROOT', '/app')
 if BACKEND_ROOT not in sys.path:
@@ -462,6 +462,29 @@ async def public_realtime_relay_roundtrip(
 
 
 def public_local_tts(client: httpx.Client, *, backend_url: str, headers: dict[str, str], marker: str) -> dict[str, Any]:
+    configured_provider = require_environment('TTS_PROVIDER')
+    if configured_provider == 'sherpa_onnx':
+        configured_model = Path(require_environment('TTS_SHERPA_MODEL')).name
+        configured_transport = 'local'
+        endpoint_origin = ''
+    elif configured_provider == 'openai_compatible':
+        configured_model = require_environment('TTS_OPENAI_COMPATIBLE_MODEL')
+        configured_endpoint = require_environment('TTS_OPENAI_COMPATIBLE_BASE_URL')
+        parsed_endpoint = urlsplit(configured_endpoint)
+        if (
+            parsed_endpoint.scheme not in {'http', 'https'}
+            or not parsed_endpoint.netloc
+            or not parsed_endpoint.hostname
+            or parsed_endpoint.username is not None
+            or parsed_endpoint.password is not None
+            or parsed_endpoint.query
+            or parsed_endpoint.fragment
+        ):
+            raise RuntimeError('public TTS acceptance has an unsafe configured endpoint')
+        endpoint_origin = f'{parsed_endpoint.scheme}://{parsed_endpoint.netloc}'
+        configured_transport = 'openai_compatible_http'
+    else:
+        raise RuntimeError(f'public TTS acceptance selected unsupported provider: {configured_provider}')
     started = time.monotonic()
     response = client.post(
         f'{backend_url}/v2/tts/synthesize',
@@ -486,9 +509,12 @@ def public_local_tts(client: httpx.Client, *, backend_url: str, headers: dict[st
         raise RuntimeError('public local TTS WAV could not be decoded') from error
     if channels < 1 or rate < 8000 or frames < 1 or width not in {1, 2, 3, 4} or not any(pcm):
         raise RuntimeError('public local TTS WAV was empty, invalid, or silent')
-    return {
+    result = {
         'status': 'passed',
-        'provider': 'sherpa_onnx',
+        'provider': configured_provider,
+        'model': configured_model,
+        'transport': configured_transport,
+        'endpoint_origin': endpoint_origin,
         'public_route_exercised': True,
         'wav_decode_exercised': True,
         'non_silent_pcm': True,
@@ -496,6 +522,16 @@ def public_local_tts(client: httpx.Client, *, backend_url: str, headers: dict[st
         'sample_rate': rate,
         'generation_duration_ms': elapsed_ms,
     }
+    validate_tts_probe_identity(
+        result,
+        {
+            'tts_provider': configured_provider,
+            'tts_model': configured_model,
+            'tts_transport': configured_transport,
+            'tts_endpoint_origin': endpoint_origin,
+        },
+    )
+    return result
 
 
 def public_local_app_icon(

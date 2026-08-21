@@ -197,6 +197,9 @@ requires a real WAV synthesis through the public route.
 `TTS_OPENAI_COMPATIBLE_{BASE_URL,API_KEY,MODEL,VOICE}` contract. Public targets
 must use HTTPS, private HTTP is allowed, and official vendor hosts are rejected;
 there is no implicit endpoint or credential fallback.
+The assembled acceptance evidence records the effective TTS provider, model,
+transport, and endpoint origin and refuses cutover if the public synthesis probe
+does not match that reviewed runtime route.
 
 Desktop update feeds are pointer-only in this profile. The fixed
 `DESKTOP_UPDATE_LEGACY_FALLBACK=disabled` binding prevents a missing operator

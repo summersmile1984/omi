@@ -353,3 +353,30 @@ def validate_realtime_probe_identity(probe: Mapping[str, Any], configuration: Ma
     observed = {key: probe[key] for key in observed_keys}
     if observed != {key: expected[key] for key in observed_keys}:
         raise ValueError('realtime probe route identity does not match reviewed configuration')
+
+
+def validate_tts_probe_identity(probe: Mapping[str, Any], configuration: Mapping[str, Any]) -> None:
+    """Bind a public TTS probe result to the reviewed runtime route."""
+
+    if not isinstance(probe, Mapping) or probe.get('status') != 'passed':
+        raise ValueError('tts probe did not pass')
+    provider = _required_text(configuration.get('tts_provider'), 'tts_provider')
+    model = _model(configuration.get('tts_model'), 'tts_model')
+    transport = _required_text(configuration.get('tts_transport'), 'tts_transport')
+    endpoint_origin = configuration.get('tts_endpoint_origin')
+    if endpoint_origin == '':
+        expected_endpoint_origin = ''
+    else:
+        expected_endpoint_origin = _safe_origin(endpoint_origin, 'tts_endpoint_origin', schemes={'http', 'https'})
+    expected = {
+        'provider': provider,
+        'model': model,
+        'transport': transport,
+        'endpoint_origin': expected_endpoint_origin,
+    }
+    observed_keys = set(expected)
+    if any(key not in probe for key in observed_keys):
+        raise ValueError('tts probe omitted provider route identity')
+    observed = {key: probe[key] for key in observed_keys}
+    if observed != expected:
+        raise ValueError('tts probe route identity does not match reviewed configuration')
