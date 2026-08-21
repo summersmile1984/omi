@@ -130,6 +130,24 @@ def test_update_missing_doc_raises(db):
         ref.update({"v": 1})
 
 
+def test_transform_update_missing_doc_raises_and_does_not_create(db):
+    """Transform updates retain Firestore's missing-document contract.
+
+    The read-modify-write path used to treat a missing row as ``{}``, so an
+    ``Increment`` (or any other transform) accidentally created a document.
+    Besides diverging from Firestore, that could resurrect data during a
+    retrying worker after the authoritative document had been deleted.
+    """
+    _reset(db, "d2")
+    ref = db.collection("txn_semantics").document("d2")
+    from google.cloud import firestore
+
+    with pytest.raises(Exception):
+        ref.update({"count": firestore.Increment(1)})
+
+    assert not ref.get().exists
+
+
 def test_tx_create_existing_raises(db):
     _reset(db, "d2")
     ref = db.collection("txn_semantics").document("d2")
