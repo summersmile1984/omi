@@ -303,6 +303,9 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn('redis must define a healthcheck', errors)
 
+        errors = self.validate_mutation(compose_replace=('127.0.0.1:8080/ready', '127.0.0.1:8080/v1/health'))
+        self.assertIn('backend healthcheck must probe the dependency-aware /ready endpoint', errors)
+
         errors = self.validate_mutation(
             compose_replace=(
                 'GENERIC_OPENAI_API_KEY=${GENERIC_OPENAI_API_KEY:?GENERIC_OPENAI_API_KEY is required}',

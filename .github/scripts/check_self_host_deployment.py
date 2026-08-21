@@ -817,6 +817,8 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
             errors.append(f'{service} contains duplicate environment: {", ".join(duplicate_environment_names)}')
         if service not in ONE_SHOT_SERVICES and '\n    healthcheck:' not in block:
             errors.append(f'{service} must define a healthcheck')
+        if service == 'backend' and not re.search(r'(?s)\n    healthcheck:.*?127\.0\.0\.1:8080/ready(?:["\s]|$)', block):
+            errors.append('backend healthcheck must probe the dependency-aware /ready endpoint')
         image_match = re.search(r'(?m)^    image:\s*(\S+)', block)
         if image_match and image_match.group(1).endswith(':latest'):
             errors.append(f'{service} image must be pinned, not :latest')

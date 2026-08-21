@@ -155,7 +155,9 @@ Web search uses `WEB_SEARCH_TRANSPORT=searxng` and the private
 `http://searxng:8080` service origin. `searxng-settings.yml` enables JSON output
 and keeps only the reviewed Wikipedia engine; it does not inherit the image's
 default engine set. `SEARXNG_SECRET` is mandatory and injected at runtime. The
-health check uses `/healthz`, so readiness causes no search or public traffic.
+The backend healthcheck uses the dependency-aware `/ready` endpoint (including
+the Redis readiness probe), while SearXNG uses `/healthz`; readiness causes no
+search or public traffic.
 Only an explicit agent search during acceptance exercises the declared
 Wikipedia egress. The backend never falls back to Omi's gateway or Perplexity.
 For direct generic desktop chat, the backend searches only the bounded trusted
