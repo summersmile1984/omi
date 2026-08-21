@@ -43,6 +43,8 @@ class OpenAICompatibleProviderConfig:
     name: str
     api_key_env: str
     base_url: Optional[str] = None
+    base_url_env: Optional[str] = None
+    require_base_url: bool = False
     default_headers: Dict[str, str] = field(default_factory=dict)
 
 
@@ -52,7 +54,17 @@ OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
         name='openrouter',
         api_key_env='OPENROUTER_API_KEY',
         base_url="https://openrouter.ai/api/v1",
+        base_url_env='OPENROUTER_BASE_URL',
         default_headers={"X-Title": "Omi Chat"},
+    ),
+    # Operator-owned OpenAI-compatible authority. It intentionally has no
+    # checked-in endpoint so a neutral deployment cannot fall back to a
+    # managed vendor when its endpoint is omitted.
+    'generic': OpenAICompatibleProviderConfig(
+        name='generic',
+        api_key_env='GENERIC_OPENAI_API_KEY',
+        base_url_env='GENERIC_OPENAI_BASE_URL',
+        require_base_url=True,
     ),
     # Xiaomi MiMo (OpenAI-compatible)
     'mimo': OpenAICompatibleProviderConfig(
@@ -61,12 +73,15 @@ OPENAI_COMPATIBLE_PROVIDERS: Dict[str, OpenAICompatibleProviderConfig] = {
         # The authority is resolved from MIMO_API_BASE/TOKENPLAN_BASE at the
         # call boundary. Never silently construct the vendor default.
         base_url=None,
+        base_url_env='MIMO_API_BASE',
+        require_base_url=True,
     ),
     # DeepSeek (OpenAI-compatible)
     'deepseek': OpenAICompatibleProviderConfig(
         name='deepseek',
         api_key_env='DEEPSEEK_API_KEY',
         base_url="https://api.deepseek.com/v1",
+        base_url_env='DEEPSEEK_BASE_URL',
     ),
 }
 
@@ -118,6 +133,35 @@ def get_or_create_openai_compatible_llm(
             raise ValueError(str(exc)) from exc
         _effective_options['base_url'] = resolve_mimo_openai_base_url(resolved_mimo_config.base_url)
         _effective_options['api_key'] = hashlib.sha256(resolved_mimo_config.api_key.encode()).hexdigest()
+    effective_base_url = (
+        options.get('base_url')
+        or (os.environ.get(provider_config.base_url_env, '').strip() if provider_config.base_url_env else '')
+        or provider_config.base_url
+    )
+    effective_api_key = options.get('api_key') or os.environ.get(provider_config.api_key_env, '').strip()
+    if resolved_mimo_config is None:
+        if provider_config.require_base_url and not effective_base_url:
+            raise ValueError(f'{provider_config.base_url_env} is required for provider {provider!r}')
+        if provider_config.name != 'openai' and not effective_api_key:
+            if provider_config.name == 'openrouter':
+                # Managed test/dev processes may construct the lazy client
+                # before credentials arrive. Use a non-secret sentinel so
+                # ChatOpenAI cannot accidentally borrow OPENAI_API_KEY. A
+                # neutral deployment still fails closed at construction.
+                neutral = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in {
+                    'neutral',
+                    'self_hosted',
+                    'self-hosted',
+                }
+                if neutral:
+                    raise ValueError(f'{provider_config.api_key_env} is required for provider {provider!r}')
+                effective_api_key = 'openrouter-key-not-configured'
+            else:
+                raise ValueError(f'{provider_config.api_key_env} is required for provider {provider!r}')
+        _effective_options['base_url'] = effective_base_url
+        _effective_options['api_key_fingerprint'] = (
+            hashlib.sha256(str(effective_api_key).encode()).hexdigest() if effective_api_key else 'environment-default'
+        )
     key = _cache_key(provider, model_name, streaming, _effective_options)
     if key not in _llm_cache:
         kwargs: Dict[str, Any] = {
@@ -131,11 +175,9 @@ def get_or_create_openai_compatible_llm(
             kwargs['api_key'] = resolved_mimo_config.api_key
             kwargs['base_url'] = resolve_mimo_openai_base_url(resolved_mimo_config.base_url)
         else:
-            api_key = os.environ.get(provider_config.api_key_env)
-            if api_key:
-                kwargs['api_key'] = api_key
-            if provider_config.base_url:
-                kwargs['base_url'] = provider_config.base_url
+            kwargs['api_key'] = effective_api_key
+            if effective_base_url:
+                kwargs['base_url'] = effective_base_url
         if provider_config.default_headers:
             kwargs['default_headers'] = provider_config.default_headers
         if options.get('extra_body'):

@@ -88,11 +88,15 @@ class OpenAICompatibleChatCompletionProvider:
         *,
         api_key_env: str = OPENAI_API_KEY_ENV_VAR,
         base_url: str | None = None,
+        base_url_env: str | None = None,
+        require_base_url: bool = False,
         default_headers: Mapping[str, str] | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._api_key_env = api_key_env
-        self._base_url = (base_url or os.getenv(OPENAI_BASE_URL_ENV_VAR, DEFAULT_OPENAI_BASE_URL)).rstrip('/')
+        self._base_url = base_url.rstrip('/') if base_url else None
+        self._base_url_env = base_url_env
+        self._require_base_url = require_base_url
         self._default_headers = dict(default_headers or {})
         self._http_client = http_client or httpx.AsyncClient()
         self._owns_http_client = http_client is None
@@ -110,11 +114,12 @@ class OpenAICompatibleChatCompletionProvider:
             provider_ref=provider_ref,
             api_key_env=self._api_key_env,
         )
+        base_url = self._resolved_base_url()
 
         try:
             async with self._http_client.stream(
                 'POST',
-                f'{self._base_url}/chat/completions',
+                f'{base_url}/chat/completions',
                 json=dict(request),
                 headers={
                     'Authorization': f'Bearer {api_key}',
@@ -158,11 +163,12 @@ class OpenAICompatibleChatCompletionProvider:
             provider_ref=provider_ref,
             api_key_env=self._api_key_env,
         )
+        base_url = self._resolved_base_url()
 
         try:
             async with self._http_client.stream(
                 'POST',
-                f'{self._base_url}/chat/completions',
+                f'{base_url}/chat/completions',
                 json=dict(request),
                 headers={
                     'Authorization': f'Bearer {api_key}',
@@ -185,6 +191,15 @@ class OpenAICompatibleChatCompletionProvider:
     async def aclose(self) -> None:
         if self._owns_http_client:
             await self._http_client.aclose()
+
+    def _resolved_base_url(self) -> str:
+        configured = os.getenv(self._base_url_env, '').strip() if self._base_url_env else ''
+        resolved = configured or self._base_url
+        if not resolved and self._base_url_env is None:
+            resolved = os.getenv(OPENAI_BASE_URL_ENV_VAR, DEFAULT_OPENAI_BASE_URL).strip()
+        if not resolved or (self._require_base_url and not configured and not self._base_url):
+            raise ProviderFailure(FailureClass.INVALID_CONFIG)
+        return resolved.rstrip('/')
 
 
 class VertexAccessTokenSupplier:

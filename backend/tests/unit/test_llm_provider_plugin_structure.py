@@ -226,6 +226,36 @@ def test_mimo_uses_explicit_operator_endpoint(monkeypatch):
     assert call['base_url'] == 'http://operator.example.test/mimo/v1'
 
 
+def test_generic_provider_requires_operator_endpoint_and_key(monkeypatch):
+    FakeChatOpenAI.calls.clear()
+    providers._llm_cache.clear()
+    monkeypatch.setattr(providers, 'ChatOpenAI', FakeChatOpenAI)
+    monkeypatch.delenv('GENERIC_OPENAI_BASE_URL', raising=False)
+    monkeypatch.delenv('GENERIC_OPENAI_API_KEY', raising=False)
+
+    with pytest.raises(ValueError, match='GENERIC_OPENAI_BASE_URL'):
+        providers.get_or_create_openai_compatible_llm('generic', 'local-chat')
+    assert FakeChatOpenAI.calls == []
+
+    monkeypatch.setenv('GENERIC_OPENAI_BASE_URL', 'http://operator.example.test/v1')
+    with pytest.raises(ValueError, match='GENERIC_OPENAI_API_KEY'):
+        providers.get_or_create_openai_compatible_llm('generic', 'local-chat')
+    assert FakeChatOpenAI.calls == []
+
+
+def test_generic_provider_uses_explicit_operator_endpoint(monkeypatch):
+    FakeChatOpenAI.calls.clear()
+    providers._llm_cache.clear()
+    monkeypatch.setattr(providers, 'ChatOpenAI', FakeChatOpenAI)
+    monkeypatch.setenv('GENERIC_OPENAI_BASE_URL', 'http://operator.example.test/v1')
+    monkeypatch.setenv('GENERIC_OPENAI_API_KEY', 'operator-key')
+
+    providers.get_or_create_openai_compatible_llm('generic', 'local-chat')
+    call = FakeChatOpenAI.calls[-1]
+    assert call['api_key'] == 'operator-key'
+    assert call['base_url'] == 'http://operator.example.test/v1'
+
+
 def test_route_options_keep_provider_quirks_out_of_callsites():
     assert get_route_options('wrapped_analysis', 'gemini-3-flash-preview', 'openrouter')['temperature'] == 0.7
     assert get_route_options('followup', 'gemini-2.5-flash-lite', 'gemini')['thinking_budget'] == 0

@@ -45,6 +45,7 @@ from utils.llm.model_config import (
     get_model,
     get_provider,
     get_route_options,
+    resolve_feature_route,
     is_anthropic_only_feature,
     is_perplexity_only_feature,
     is_structured_output_feature,
@@ -482,7 +483,8 @@ def get_llm(
             f"Feature '{feature}' is Perplexity — use get_model('{feature}') with the Perplexity HTTP client instead of get_llm()"
         )
 
-    model, provider = _get_model_config(feature)
+    resolved_route = resolve_feature_route(feature)
+    model, provider = resolved_route.primary.model, resolved_route.primary.provider
 
     if provider == 'anthropic' and not gateway_feature_mode:
         raise ValueError(
@@ -539,6 +541,25 @@ def get_llm(
         if request_timeout is not None:
             route_options = {**route_options, "request_timeout": request_timeout}
         result = get_default_client(model, provider, streaming, route_options)
+        if resolved_route.fallbacks:
+            from utils.llm.direct_fallback import BoundedFallbackChatModel
+
+            fallback_models: list[BaseChatModel] = []
+            route_labels = [f'{provider}:{model}']
+            for fallback in resolved_route.fallbacks:
+                fallback_options = get_route_options(feature, fallback.model, fallback.provider)
+                if request_timeout is not None:
+                    fallback_options = {**fallback_options, 'request_timeout': request_timeout}
+                fallback_models.append(
+                    get_default_client(fallback.model, fallback.provider, streaming, fallback_options)
+                )
+                route_labels.append(f'{fallback.provider}:{fallback.model}')
+            result = BoundedFallbackChatModel(
+                primary=result,
+                fallback_models=tuple(fallback_models),
+                route_labels=tuple(route_labels),
+                feature=feature,
+            )
 
     result = maybe_wrap_dev_gateway_shadow(
         feature=feature,

@@ -24,7 +24,13 @@ def get_provider_registry() -> ProviderRegistry:
             'openrouter': OpenAICompatibleChatCompletionProvider(
                 api_key_env='OPENROUTER_API_KEY',
                 base_url='https://openrouter.ai/api/v1',
+                base_url_env='OPENROUTER_BASE_URL',
                 default_headers={'X-Title': 'Omi Chat'},
+            ),
+            'generic': OpenAICompatibleChatCompletionProvider(
+                api_key_env='GENERIC_OPENAI_API_KEY',
+                base_url_env='GENERIC_OPENAI_BASE_URL',
+                require_base_url=True,
             ),
             'perplexity': OpenAICompatibleChatCompletionProvider(
                 api_key_env='PERPLEXITY_API_KEY',

@@ -8,7 +8,7 @@ continue to use ``clients.get_llm(feature)``.
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Tuple, Union
+from typing import Dict, Mapping, Optional, Tuple, Union
 
 from utils.llm.gateway_client import is_auto_lane_id
 
@@ -30,6 +30,36 @@ class AutoLaneRouteRef:
 
 
 RouteRef = Union[ExplicitRouteRef, AutoLaneRouteRef]
+
+
+@dataclass(frozen=True)
+class ProviderRoute:
+    """One provider/model leg shared by direct and gateway execution."""
+
+    provider: str
+    model: str
+
+
+@dataclass(frozen=True)
+class FeatureRouteSpec:
+    """Environment contract for one configured model workload."""
+
+    feature: str
+    default: ProviderRoute
+    provider_env: str
+    model_env: str
+    fallbacks_env: str
+
+
+@dataclass(frozen=True)
+class ResolvedFeatureRoute:
+    """Resolved primary and explicitly configured fallback legs."""
+
+    feature: str
+    primary: ProviderRoute
+    fallbacks: Tuple[ProviderRoute, ...]
+    source: str
+
 
 # ---------------------------------------------------------------------------
 # Model QoS Profile System
@@ -194,15 +224,178 @@ DEFAULT_CONFIG = _DEFAULT_CONFIG
 # traffic; existing direct LLM routing never consults this map.
 _AUTO_LANE_FEATURES: Dict[str, str] = {}
 
+# Deployment overrides are deliberately explicit. ``generic`` has no vendor
+# default, so an operator must provide both its endpoint and model. These
+# variables are consumed by the direct client and by generated gateway lanes,
+# keeping model/provider ownership in one place.
+FEATURE_ROUTE_ENV_PREFIX = 'OMI_LLM_ROUTE'
+DEFAULT_ROUTE_PROVIDER_ENV = 'OMI_LLM_DEFAULT_PROVIDER'
+DEFAULT_ROUTE_MODEL_ENV = 'OMI_LLM_DEFAULT_MODEL'
+DEFAULT_ROUTE_FALLBACKS_ENV = 'OMI_LLM_DEFAULT_FALLBACKS'
+_CHAT_FEATURES = {'chat_responses', 'chat_extraction', 'chat_graph'}
+_PROVIDER_ALIASES = {
+    'ds': 'deepseek',
+    'xiaomi': 'mimo',
+    'openai_compatible': 'generic',
+    'openai-compatible': 'generic',
+}
+_PROVIDER_DEFAULT_MODELS: Dict[str, Tuple[str, str]] = {
+    'generic': ('GENERIC_OPENAI_MODEL', ''),
+    'deepseek': ('DEEPSEEK_MODEL', 'deepseek-chat'),
+    'mimo': ('MIMO_LLM_MODEL', 'mimo-v2.5'),
+}
+
+
+def _feature_env_slug(feature: str) -> str:
+    return ''.join(character if character.isalnum() else '_' for character in feature).upper()
+
+
+def _feature_route_spec(feature: str, route: Tuple[str, str]) -> FeatureRouteSpec:
+    model, provider = route
+    prefix = f'{FEATURE_ROUTE_ENV_PREFIX}_{_feature_env_slug(feature)}'
+    return FeatureRouteSpec(
+        feature=feature,
+        default=ProviderRoute(provider=provider, model=model),
+        provider_env=f'{prefix}_PROVIDER',
+        model_env=f'{prefix}_MODEL',
+        fallbacks_env=f'{prefix}_FALLBACKS',
+    )
+
+
+FEATURE_ROUTE_MANIFEST: Dict[str, FeatureRouteSpec] = {
+    feature: _feature_route_spec(feature, route) for feature, route in {**_active_profile, **_PINNED_FEATURES}.items()
+}
+
+
+def _normalize_provider(provider: str) -> str:
+    normalized = provider.strip().lower()
+    return _PROVIDER_ALIASES.get(normalized, normalized)
+
+
+def _neutral_deployment(values: Mapping[str, str]) -> bool:
+    """Return whether checked-in managed vendor routes must be rejected."""
+
+    return values.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in {
+        'neutral',
+        'self_hosted',
+        'self-hosted',
+    }
+
+
+def _provider_default_model(provider: str, values: Mapping[str, str], *, allow_builtin: bool = True) -> str:
+    config = _PROVIDER_DEFAULT_MODELS.get(provider)
+    if config is None:
+        return ''
+    env_name, default = config
+    return values.get(env_name, '').strip() or (default if allow_builtin else '')
+
+
+def _parse_fallbacks(raw: str, *, feature: str) -> Tuple[ProviderRoute, ...]:
+    if not raw.strip():
+        return ()
+    routes: list[ProviderRoute] = []
+    for value in raw.split(','):
+        provider, separator, model = value.strip().partition(':')
+        provider = _normalize_provider(provider)
+        model = model.strip()
+        if not separator or not provider or not model:
+            raise ValueError(
+                f"Invalid fallback route for feature '{feature}': expected comma-separated provider:model values"
+            )
+        route = ProviderRoute(provider=provider, model=model)
+        if route not in routes:
+            routes.append(route)
+    return tuple(routes)
+
+
+def _group_route_override(
+    feature: str, values: Mapping[str, str], *, neutral_deployment: bool = False
+) -> Optional[ProviderRoute]:
+    if feature == 'translation':
+        provider = _normalize_provider(values.get('TRANSLATION_PROVIDER', ''))
+        model = values.get('TRANSLATION_MODEL', '').strip()
+    elif feature in _CHAT_FEATURES:
+        provider = _normalize_provider(values.get('CHAT_PROVIDER', ''))
+        model = values.get('CHAT_MODEL', '').strip()
+    else:
+        return None
+    if not provider:
+        return None
+    if provider not in {'generic', 'mimo', 'deepseek'}:
+        return None
+    group_default = ''
+    if not neutral_deployment:
+        if provider == 'deepseek':
+            group_default = 'deepseek-chat' if feature == 'translation' else 'deepseek-v4-flash'
+        elif provider == 'mimo':
+            group_default = 'mimo-v2.5'
+    resolved_model = (
+        model or group_default or _provider_default_model(provider, values, allow_builtin=not neutral_deployment)
+    )
+    if not resolved_model:
+        raise ValueError(f"Feature '{feature}' requires an explicit provider/model route in a neutral deployment")
+    return ProviderRoute(provider=provider, model=resolved_model)
+
+
+def resolve_feature_route(feature: str, env: Optional[Mapping[str, str]] = None) -> ResolvedFeatureRoute:
+    """Resolve primary/fallback provider legs at the call boundary.
+
+    Per-feature routes take precedence over intentional chat/translation group
+    routes, then deployment-wide defaults, then the managed profile. In a
+    neutral deployment the final managed profile is never an implicit fallback.
+    """
+
+    values = os.environ if env is None else env
+    neutral = _neutral_deployment(values)
+    spec = FEATURE_ROUTE_MANIFEST.get(feature) or _feature_route_spec(feature, _DEFAULT_CONFIG)
+
+    provider_value = values.get(spec.provider_env, '').strip()
+    model_value = values.get(spec.model_env, '').strip()
+    if provider_value or model_value:
+        provider = _normalize_provider(provider_value) or spec.default.provider
+        model = model_value or _provider_default_model(provider, values, allow_builtin=not neutral)
+        if not model and provider == spec.default.provider and not neutral:
+            model = spec.default.model
+        if not model:
+            raise ValueError(f"Feature '{feature}' requires an explicit provider/model route in a neutral deployment")
+        primary = ProviderRoute(provider=provider, model=model)
+        source = 'feature_env'
+    else:
+        group_route = _group_route_override(feature, values, neutral_deployment=neutral)
+        if group_route is not None:
+            primary, source = group_route, 'group_env'
+        else:
+            default_provider = _normalize_provider(values.get(DEFAULT_ROUTE_PROVIDER_ENV, ''))
+            default_model = values.get(DEFAULT_ROUTE_MODEL_ENV, '').strip()
+            if default_provider or default_model:
+                provider = default_provider or spec.default.provider
+                model = default_model or _provider_default_model(provider, values, allow_builtin=not neutral)
+                if not model and provider == spec.default.provider and not neutral:
+                    model = spec.default.model
+                if not model:
+                    raise ValueError(
+                        f"Feature '{feature}' requires an explicit provider/model route in a neutral deployment"
+                    )
+                primary, source = ProviderRoute(provider=provider, model=model), 'default_env'
+            else:
+                if neutral:
+                    raise ValueError(
+                        f"Feature '{feature}' requires an explicit provider/model route in a neutral deployment"
+                    )
+                primary, source = spec.default, 'profile'
+
+    fallback_raw = values.get(spec.fallbacks_env, '').strip() or values.get(DEFAULT_ROUTE_FALLBACKS_ENV, '').strip()
+    fallbacks = tuple(route for route in _parse_fallbacks(fallback_raw, feature=feature) if route != primary)
+    return ResolvedFeatureRoute(feature=feature, primary=primary, fallbacks=fallbacks, source=source)
+
 
 def _get_model_config(feature: str) -> Tuple[str, str]:
     """Get the (model, provider) tuple for a feature. Internal — used by get_llm/get_model/get_provider.
 
     Resolution order: pinned > active profile > fallback.
     """
-    if feature in _PINNED_FEATURES:
-        return _PINNED_FEATURES[feature]
-    return _active_profile.get(feature, _DEFAULT_CONFIG)
+    route = resolve_feature_route(feature)
+    return route.primary.model, route.primary.provider
 
 
 def get_model_config(feature: str) -> Tuple[str, str]:
