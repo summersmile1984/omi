@@ -176,6 +176,16 @@ PASSED_RUNTIME_EVIDENCE = {
         },
     },
 }
+PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation'] = RUNTIME_EVIDENCE.build_provider_attestation(
+    expected_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+    runtime_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+    source={
+        'image_id': PASSED_RUNTIME_EVIDENCE['runtime_identity']['workloads']['backend']['image_id'],
+        'git_commit': 'd' * 40,
+        'git_tree': 'e' * 40,
+        'runtime_config_sha256': 'c' * 64,
+    },
+)
 PASSED_RECOVERY_EVIDENCE = {
     'schema_version': 1,
     'status': 'passed',
@@ -239,6 +249,72 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertNotIn('operator-realtime-secret', serialized)
         self.assertNotIn('operator-typesense-secret', serialized)
         self.assertNotIn('api_key', serialized.lower())
+
+    def test_runtime_provider_attestation_records_models_and_effective_origins(self) -> None:
+        source = {
+            'image_id': 'sha256:' + 'a' * 64,
+            'git_commit': 'd' * 40,
+            'git_tree': 'e' * 40,
+            'runtime_config_sha256': 'c' * 64,
+        }
+        attestation = RUNTIME_EVIDENCE.build_provider_attestation(
+            expected_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            runtime_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            source=source,
+        )
+        self.assertEqual(attestation['schema_version'], 1)
+        self.assertEqual(attestation['status'], 'passed')
+        self.assertEqual(attestation['source'], source)
+        self.assertEqual(attestation['providers']['generic_llm']['model'], 'operator-llm')
+        self.assertEqual(attestation['providers']['generic_llm']['endpoint_origin'], 'https://llm.example.org')
+        self.assertEqual(attestation['providers']['embedding']['model'], 'operator-embedding')
+        self.assertEqual(attestation['providers']['embedding']['endpoint_origin'], 'https://llm.example.org')
+        self.assertEqual(attestation['providers']['realtime']['model'], 'operator-realtime')
+        self.assertEqual(attestation['providers']['realtime']['endpoint_origin'], 'wss://realtime.example.org')
+        self.assertEqual(attestation['providers']['pre_recorded_stt']['model'], 'operator-model')
+        self.assertEqual(attestation['providers']['pre_recorded_stt']['endpoint_path'], '/v1/audio/transcriptions')
+        self.assertIsNone(attestation['external_service_revision'])
+        self.assertIsNone(attestation['external_model_revision'])
+        self.assertFalse(attestation['external_revision_attested'])
+        RUNTIME_EVIDENCE.validate_provider_attestation(
+            attestation,
+            expected_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            expected_source=source,
+        )
+
+    def test_runtime_provider_attestation_rejects_missing_model_official_host_and_fake_revision(self) -> None:
+        source = {
+            'image_id': 'sha256:' + 'a' * 64,
+            'git_commit': 'd' * 40,
+            'git_tree': 'e' * 40,
+            'runtime_config_sha256': 'c' * 64,
+        }
+        missing_model = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
+        missing_model['generic_llm_model'] = ''
+        with self.assertRaisesRegex(ValueError, 'missing generic_llm_model'):
+            RUNTIME_EVIDENCE.build_provider_attestation(
+                expected_configuration=missing_model,
+                runtime_configuration=missing_model,
+                source=source,
+            )
+
+        official = dict(EFFECTIVE_PROVIDER_CONFIGURATION)
+        official['generic_llm_endpoint_origin'] = 'https://api.openai.com'
+        with self.assertRaisesRegex(ValueError, 'forbidden official endpoint host'):
+            RUNTIME_EVIDENCE.build_provider_attestation(
+                expected_configuration=official,
+                runtime_configuration=official,
+                source=source,
+            )
+
+        attestation = RUNTIME_EVIDENCE.build_provider_attestation(
+            expected_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            runtime_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
+            source=source,
+        )
+        attestation['external_service_revision'] = 'guessed-from-git'
+        with self.assertRaisesRegex(ValueError, 'must not invent'):
+            RUNTIME_EVIDENCE.validate_provider_attestation(attestation)
 
     def test_runtime_evidence_records_operator_webhook_without_secret_material(self) -> None:
         webhook_environment = {

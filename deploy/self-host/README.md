@@ -295,15 +295,26 @@ Cutover acceptance additionally sets `SELF_HOST_REQUIRE_ATTESTED_BUILD=true`:
 it cannot start from an existing mutable application-image tag. The final
 `runtime-evidence` check reads the content-addressed image ID, embedded source
 labels, config-hash label, state, and health from each exact running container,
-and records the exact effective mlx-audio endpoint/model selection. The JSON
-evidence schema (v3) consumes that structured result rather than a hard-coded
-health claim. Authorization also requires the assembled diarization endpoint
-and model to equal that final effective provider configuration. Before emitting
-evidence it also inspects each running container's actual environment and
-rejects injected managed-provider bindings (including Firebase, Google,
-Anthropic, OpenAI-compatible vendor, Deepgram, Modulate, Pinecone, and
-Stripe/Twilio integrations) or official vendor endpoint values, so a neutral
-Compose file cannot hide a non-neutral workload.
+and records a schema-v1 provider attestation for the actual backend container.
+That attestation binds the effective generic LLM model/origin, embedding
+model/origin/dimension, realtime model/origin/wire protocol, and mlx-audio
+model/origin/path to the reviewed Compose configuration. It requires a
+content-addressed image plus exact Git commit/tree/config source identity;
+`--provider-attestation` emits just this redacted record for change evidence.
+Managed official hosts, missing models/origins, injected runtime bindings, and
+credential-bearing fields fail closed. Operator-owned model/realtime/STT
+services do not expose a signed revision through this gate, so the attestation
+records `external_service_revision=null`, `external_model_revision=null`, and
+`external_revision_attested=false`; it never turns a Git revision or model tag
+into a fabricated service revision. The JSON evidence schema (v3) requires
+this attestation rather than accepting only a MOSS health claim. Authorization
+also requires the assembled diarization endpoint and model to equal that final
+effective provider configuration. Before emitting evidence it also inspects
+each running container's actual environment and rejects injected managed-
+provider bindings (including Firebase, Google, Anthropic, OpenAI-compatible
+vendor, Deepgram, Modulate, Pinecone, and Stripe/Twilio integrations) or
+official vendor endpoint values, so a neutral Compose file cannot hide a
+non-neutral workload.
 
 ## Operations: health, metrics, backup, restore and rollback
 
@@ -322,6 +333,17 @@ OMI_SOURCE_GIT_COMMIT=<40-hex> OMI_SOURCE_GIT_TREE=<40-hex> \
 OMI_RUNTIME_CONFIG_SHA256=<64-hex> \
 SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
   deploy/self-host/operations.sh runtime-evidence
+# Emit only the redacted provider attestation (same live-container checks).
+export OMI_SOURCE_GIT_COMMIT=<40-hex> OMI_SOURCE_GIT_TREE=<40-hex> \
+  OMI_RUNTIME_CONFIG_SHA256=<64-hex> \
+  SELF_HOST_ENV="$PWD/deploy/self-host/.env.production"
+deploy/self-host/runtime-evidence.py \
+  --compose-file deploy/self-host/compose.production.yml \
+  --env-file "$SELF_HOST_ENV" \
+  --expected-git-commit "$OMI_SOURCE_GIT_COMMIT" \
+  --expected-git-tree "$OMI_SOURCE_GIT_TREE" \
+  --expected-config-sha256 "$OMI_RUNTIME_CONFIG_SHA256" \
+  --provider-attestation
 SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
   deploy/self-host/operations.sh metrics > /var/lib/node_exporter/textfile_collector/omi-self-host.prom
 ```

@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+SELF_HOST_DIR = Path(__file__).resolve().parent
+if str(SELF_HOST_DIR) not in sys.path:
+    sys.path.insert(0, str(SELF_HOST_DIR))
+
+from runtime_provider_attestation import build_provider_attestation, validate_provider_attestation
+
 REQUIRED_SERVICES = (
     'postgres',
     'redis',
@@ -462,6 +468,7 @@ def validate_runtime_snapshot(
     expected_git_tree: str,
     expected_config_sha256: str,
     effective_provider_configuration: dict[str, Any],
+    actual_provider_environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not OBJECT_ID.fullmatch(expected_git_commit) or not OBJECT_ID.fullmatch(expected_git_tree):
         raise ValueError('expected source commit/tree must be full Git object IDs')
@@ -504,6 +511,22 @@ def validate_runtime_snapshot(
             'environment_matches_effective_config': True,
         }
 
+    backend = services['backend']
+    source = {
+        'image_id': str(backend.get('image_id') or ''),
+        'git_commit': str(backend.get('source_git_commit') or ''),
+        'git_tree': str(backend.get('source_git_tree') or ''),
+        'runtime_config_sha256': str(backend.get('runtime_config_sha256') or ''),
+    }
+    runtime_configuration = effective_provider_configuration
+    if actual_provider_environment is not None:
+        runtime_configuration = effective_provider_configuration_from_environment(actual_provider_environment)
+    provider_attestation = build_provider_attestation(
+        expected_configuration=effective_provider_configuration,
+        runtime_configuration=runtime_configuration,
+        source=source,
+    )
+
     return {
         'status': 'passed',
         'all_required_services_healthy': True,
@@ -513,6 +536,7 @@ def validate_runtime_snapshot(
             'expected_git_tree': expected_git_tree,
             'expected_config_sha256': expected_config_sha256,
             'effective_provider_configuration': effective_provider_configuration,
+            'provider_attestation': provider_attestation,
             'source_and_config_match': True,
             'workloads': workloads,
         },
@@ -621,8 +645,18 @@ def effective_provider_configuration(effective: dict[str, Any]) -> dict[str, Any
     }
 
 
+def effective_provider_configuration_from_environment(environment: dict[str, str]) -> dict[str, Any]:
+    """Derive provider identity from the environment inspected in a container."""
+
+    return effective_provider_configuration({'services': {'backend': {'environment': environment}}})
+
+
 def collect_runtime_snapshot(
-    *, compose_file: Path, env_file: Path, effective: dict[str, Any] | None = None
+    *,
+    compose_file: Path,
+    env_file: Path,
+    effective: dict[str, Any] | None = None,
+    provider_environment: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     compose = ['bash', str(COMPOSE_WRAPPER), str(env_file), str(compose_file)]
     effective = effective or load_effective_compose_config(compose_file=compose_file, env_file=env_file)
@@ -652,6 +686,9 @@ def collect_runtime_snapshot(
                 key, value = binding.split('=', 1)
                 actual_environment[key] = value
         validate_runtime_environment(actual_environment)
+        if service == 'backend' and provider_environment is not None:
+            provider_environment.clear()
+            provider_environment.update(actual_environment)
         expected_service = effective_services.get(service) if isinstance(effective_services.get(service), dict) else {}
         expected_environment = (
             expected_service.get('environment') if isinstance(expected_service.get('environment'), dict) else {}
@@ -677,27 +714,36 @@ def main() -> int:
     parser.add_argument('--expected-git-commit', required=True)
     parser.add_argument('--expected-git-tree', required=True)
     parser.add_argument('--expected-config-sha256', required=True)
+    parser.add_argument(
+        '--provider-attestation',
+        action='store_true',
+        help='emit only the sanitized provider attestation for the actual backend container',
+    )
     arguments = parser.parse_args()
     try:
         effective = load_effective_compose_config(compose_file=arguments.compose_file, env_file=arguments.env_file)
         actual_config_sha256 = canonical_effective_config_sha256(effective)
         if actual_config_sha256 != arguments.expected_config_sha256:
             raise ValueError('effective reviewed Compose configuration changed after the attributed stack was started')
+        provider_environment: dict[str, str] = {}
         result = validate_runtime_snapshot(
             services=collect_runtime_snapshot(
                 compose_file=arguments.compose_file,
                 env_file=arguments.env_file,
                 effective=effective,
+                provider_environment=provider_environment,
             ),
             expected_git_commit=arguments.expected_git_commit,
             expected_git_tree=arguments.expected_git_tree,
             expected_config_sha256=arguments.expected_config_sha256,
             effective_provider_configuration=effective_provider_configuration(effective),
+            actual_provider_environment=provider_environment,
         )
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         print(f'ERROR: runtime evidence failed: {error}', file=sys.stderr)
         return 1
-    print(json.dumps(result, sort_keys=True))
+    output = result['runtime_identity']['provider_attestation'] if arguments.provider_attestation else result
+    print(json.dumps(output, sort_keys=True))
     return 0
 
 

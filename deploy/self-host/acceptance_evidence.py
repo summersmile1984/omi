@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+SELF_HOST_DIR = Path(__file__).resolve().parent
+if str(SELF_HOST_DIR) not in sys.path:
+    sys.path.insert(0, str(SELF_HOST_DIR))
+
+from runtime_provider_attestation import validate_provider_attestation
+
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 OBJECT_ID = re.compile(r'^[0-9a-f]{40}$')
 RECOVERY_EVIDENCE_KEYS = frozenset(
@@ -117,6 +123,42 @@ def _runtime_source_and_config_binding(
         ):
             return False, expected_config_sha256
     return True, expected_config_sha256
+
+
+def _runtime_provider_attestation_binding(
+    runtime_evidence: dict[str, Any] | None,
+    *,
+    git_commit: str,
+    git_tree: str,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Validate the provider routes against the exact running backend identity."""
+
+    if not isinstance(runtime_evidence, dict) or runtime_evidence.get('status') != 'passed':
+        return False, None
+    identity = runtime_evidence.get('runtime_identity')
+    if not isinstance(identity, dict):
+        return False, None
+    attestation = identity.get('provider_attestation')
+    configuration = identity.get('effective_provider_configuration')
+    workloads = identity.get('workloads')
+    backend = workloads.get('backend') if isinstance(workloads, dict) else None
+    if not isinstance(attestation, dict) or not isinstance(configuration, dict) or not isinstance(backend, dict):
+        return False, attestation if isinstance(attestation, dict) else None
+    expected_source = {
+        'image_id': backend.get('image_id'),
+        'git_commit': git_commit,
+        'git_tree': git_tree,
+        'runtime_config_sha256': identity.get('expected_config_sha256'),
+    }
+    try:
+        validate_provider_attestation(
+            attestation,
+            expected_configuration=configuration,
+            expected_source=expected_source,
+        )
+    except (TypeError, ValueError):
+        return False, attestation
+    return True, attestation
 
 
 def _recovery_evidence_passed(
@@ -366,6 +408,11 @@ def build_evidence(
         and runtime_evidence.get('all_required_services_healthy') is True
         and runtime_source_and_config_passed
     )
+    runtime_provider_attestation_passed, provider_attestation = _runtime_provider_attestation_binding(
+        runtime_evidence,
+        git_commit=git_commit,
+        git_tree=git_tree,
+    )
     external_edge_passed = _external_edge_verified(assembled_loop)
     recovery_drill_passed = _recovery_evidence_passed(
         recovery_evidence,
@@ -387,6 +434,7 @@ def build_evidence(
         and public_object_signed_crud_passed
         and all(hard_capability_status.values())
         and runtime_health_and_identity_passed
+        and runtime_provider_attestation_passed
         and worktree_clean
     )
     production_authorized = bool(
@@ -414,6 +462,7 @@ def build_evidence(
             'live_capture_understand_remember_retrieve_act': assembled_loop or 'not_run',
             'production_services_healthy': runtime_evidence or 'not_run',
             'runtime_source_and_config_identity': runtime_identity or 'not_run',
+            'runtime_provider_attestation': provider_attestation or 'not_run',
             'external_public_edge_identity': (
                 assembled_loop.get('https_origin_and_hairpin', {}) if isinstance(assembled_loop, dict) else 'not_run'
             ),
@@ -463,18 +512,22 @@ def build_evidence(
                                                         'production_service_health_or_runtime_identity_not_passed'
                                                         if not runtime_health_and_identity_passed
                                                         else (
-                                                            'intended_public_dns_certificate_and_edge_not_exercised'
-                                                            if not external_cutover
+                                                            'runtime_provider_attestation_not_passed'
+                                                            if not runtime_provider_attestation_passed
                                                             else (
-                                                                'external_public_edge_certificate_or_origin_not_verified'
-                                                                if not external_edge_passed
+                                                                'intended_public_dns_certificate_and_edge_not_exercised'
+                                                                if not external_cutover
                                                                 else (
-                                                                    'live_sentinel_egress_or_operator_policy_evidence_missing'
-                                                                    if not sentinel_policy_verified
+                                                                    'external_public_edge_certificate_or_origin_not_verified'
+                                                                    if not external_edge_passed
                                                                     else (
-                                                                        'external_backup_restore_or_kms_evidence_missing'
-                                                                        if not recovery_drill_passed
-                                                                        else None
+                                                                        'live_sentinel_egress_or_operator_policy_evidence_missing'
+                                                                        if not sentinel_policy_verified
+                                                                        else (
+                                                                            'external_backup_restore_or_kms_evidence_missing'
+                                                                            if not recovery_drill_passed
+                                                                            else None
+                                                                        )
                                                                     )
                                                                 )
                                                             )
