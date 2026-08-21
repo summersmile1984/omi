@@ -14,5 +14,6 @@ Modules:
   - ``mimo_client``  thin HTTP client for the ASR endpoint
   - ``socket``       upstream STTSocket implementation (live streaming)
 
-Opt-in via ``STT_SERVICE_MODELS=mimo`` + ``MIMO_API_KEY``.
+Opt-in via ``STT_SERVICE_MODELS=mimo`` plus an explicit operator-owned
+``MIMO_API_BASE`` (or ``MIMO_TOKENPLAN_BASE``) and ``MIMO_API_KEY``.
 """

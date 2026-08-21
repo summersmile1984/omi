@@ -1,8 +1,9 @@
-# MiMo-V2.5-ASR: 实时 STT(无 GPU)
+# MiMo-V2.5-ASR: 可选的 operator-gateway STT(无 GPU)
 
-`backend/utils/mimo_pipeline/` — 用小米 MiMo-V2.5-ASR 官方 API(OpenAI 兼容 chat completions)
-做**实时(流式)STT**,服务器无需 GPU。中文质量第一梯队(普通话+英语+方言+语码混合+歌词+嘈杂/多说话人),
-价格低(TokenPlan 等效 ~0.285 元/h)。
+`backend/utils/mimo_pipeline/` — 通过显式配置的 operator-owned、OpenAI-compatible
+gateway 调用 MiMo-V2.5-ASR，服务器无需 GPU。该 provider 是可选能力，不是自托管默认路径。
+部署必须自己提供 endpoint、key 和 model authority；仓库不会替部署选择或拼接任何 MiMo
+官方云端地址。
 
 角色分工(本 fork):
 - **STT(实时流式)** → MiMo-V2.5-ASR(`socket.MimoSttSocket`)
@@ -30,11 +31,11 @@ transcript_callback(text, duration) → 下游(与上游 STT socket 契约一致
 
 | env | 默认 | 说明 |
 |---|---|---|
-| `MIMO_API_KEY` | — | **必需**。小米 MiMo 开放平台 key |
+| `MIMO_API_KEY` | — | **必需**。operator gateway credential |
 | `STT_SERVICE_MODELS` | (上游默认) | 含 `mimo` 即启用本 provider(需 key) |
-| `MIMO_API_BASE` | `https://api.xiaomimimo.com` | API 根(文档默认) |
-| `MIMO_TOKENPLAN_BASE` | `https://token-plan-cn.xiaomimimo.com` | TokenPlan 套餐端点 |
-| `MIMO_USE_TOKENPLAN` | — | `1`/`true` 切换到 TokenPlan 端点 |
+| `MIMO_API_BASE` | — | **必需**（默认路径）。operator-owned HTTP(S) API 根；官方 MiMo authority 和非法 URL 会 fail-closed |
+| `MIMO_TOKENPLAN_BASE` | — | `MIMO_USE_TOKENPLAN=1` 时**必需**；operator-owned TokenPlan-compatible API 根 |
+| `MIMO_USE_TOKENPLAN` | `false` | `1`/`true` 选择 `MIMO_TOKENPLAN_BASE`，否则选择 `MIMO_API_BASE` |
 | `MIMO_ASR_MODEL` | `mimo-v2.5-asr` | 模型 ID |
 | `MIMO_TIMEOUT_SECONDS` | `120` | 请求超时 |
 
@@ -46,5 +47,9 @@ transcript_callback(text, duration) → 下游(与上游 STT socket 契约一致
 - **隔离**: 全部 MiMo 特定代码在本目录;上游 touch-point 仅 3 处:
   `utils/stt/streaming.py`(STTService 枚举 + select 分支 + _mimo_available)、
   `routers/listen/receiver.py`(socket 分支)。
-- **认证**: `Authorization: Bearer $MIMO_API_KEY`(文档也支持 `api-key:` 头)。
+- **认证**: `Authorization: Bearer $MIMO_API_KEY`(gateway 可按自身协议转发)。
+- **端点安全**: endpoint 必须是无 userinfo/query/fragment 的 HTTP(S) URL；公共 HTTP、metadata/unsafe
+  hostname、官方 MiMo 域名都会被拒绝。loopback、容器服务名及私网 HTTP 仅用于 operator-owned 内网。
+- **fail-closed**: 缺少 key、所选 endpoint 或 endpoint 非法时，client 构造和 provider availability
+  都失败；不会回退到官方云端、其他 key 或默认 provider。
 - **说话人**: MiMo ASR 只转写、不分离说话人;分离/识别走 MOSS pipeline 或本地 wespeaker。

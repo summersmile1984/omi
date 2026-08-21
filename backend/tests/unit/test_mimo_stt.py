@@ -15,17 +15,55 @@ from config.stt_provider_policy import MIMO_PROVIDER, STTServingSurface, provide
 from utils.stt.pre_recorded import get_prerecorded_service
 from utils.stt.streaming import get_stt_service_for_language
 
+OPERATOR_BASE = 'https://mimo.operator.example'
+
 
 def test_mimo_is_batch_only():
     assert provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PRERECORDED)
     assert not provider_is_enabled(MIMO_PROVIDER, STTServingSurface.STREAMING)
 
 
-def test_enabled_only_with_key(monkeypatch):
+def test_enabled_only_with_operator_endpoint_and_key(monkeypatch):
     monkeypatch.delenv('MIMO_API_KEY', raising=False)
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+    monkeypatch.delenv('MIMO_TOKENPLAN_BASE', raising=False)
+    monkeypatch.delenv('MIMO_USE_TOKENPLAN', raising=False)
     assert mimo_available() is False
     monkeypatch.setenv('MIMO_API_KEY', 'key')
+    assert mimo_available() is False
+    monkeypatch.setenv('MIMO_API_BASE', OPERATOR_BASE)
     assert mimo_available() is True
+
+
+def test_client_requires_explicit_operator_endpoint(monkeypatch):
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+    monkeypatch.delenv('MIMO_TOKENPLAN_BASE', raising=False)
+    monkeypatch.delenv('MIMO_USE_TOKENPLAN', raising=False)
+    with pytest.raises(MimoAPIError, match='MIMO_API_BASE'):
+        MimoClient(api_key='key')
+
+
+@pytest.mark.parametrize(
+    'base_url',
+    [
+        'https://api.xiaomimimo.com',
+        'ftp://mimo.operator.example',
+        'https://user:pass@mimo.operator.example',
+        'https://mimo.operator.example?token=secret',
+        'http://public.example',
+    ],
+)
+def test_client_rejects_vendor_or_unsafe_endpoint(base_url):
+    with pytest.raises(MimoAPIError, match='operator'):
+        MimoClient(api_key='key', base_url=base_url)
+
+
+def test_client_resolves_explicit_tokenplan_endpoint(monkeypatch):
+    monkeypatch.setenv('MIMO_USE_TOKENPLAN', 'true')
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+    monkeypatch.setenv('MIMO_TOKENPLAN_BASE', OPERATOR_BASE + '/tokenplan')
+    client = MimoClient(api_key='key')
+    assert client._endpoint() == OPERATOR_BASE + '/tokenplan/v1/chat/completions'
 
 
 def test_prerecorded_select_routes_to_mimo_when_configured(monkeypatch):
@@ -126,7 +164,7 @@ def test_guess_format_by_suffix_and_content_type():
 
 def test_client_requires_api_key():
     with pytest.raises(MimoAPIError, match='MIMO_API_KEY'):
-        MimoClient(api_key='')._headers()
+        MimoClient(api_key='', base_url=OPERATOR_BASE)
 
 
 def test_transcribe_audio_builds_input_audio_and_parses_response(monkeypatch):
@@ -146,7 +184,7 @@ def test_transcribe_audio_builds_input_audio_and_parses_response(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(mod.httpx, 'post', _post)
-    client = MimoClient(api_key='test-key')
+    client = MimoClient(api_key='test-key', base_url=OPERATOR_BASE)
     result = client.transcribe_audio(b'\x00\x01', audio_format='wav', language='zh')
     assert result.text == '你好世界'
     assert result.segments[0].text == '你好世界'
@@ -163,7 +201,7 @@ def test_transcribe_audio_builds_input_audio_and_parses_response(monkeypatch):
 
 def test_transcribe_audio_rejects_oversized(monkeypatch):
     monkeypatch.setattr('utils.mimo_pipeline.mimo_client.MAX_AUDIO_BYTES', 10)
-    client = MimoClient(api_key='test-key')
+    client = MimoClient(api_key='test-key', base_url=OPERATOR_BASE)
     with pytest.raises(MimoAPIError, match='too large'):
         client.transcribe_audio(b'\x00' * 100)
 
@@ -180,7 +218,7 @@ def test_transcribe_audio_raises_on_error_response(monkeypatch):
             return {'error': {'message': 'bad key'}}
 
     monkeypatch.setattr(mod.httpx, 'post', lambda *a, **kw: _ErrResp())
-    client = MimoClient(api_key='wrong')
+    client = MimoClient(api_key='wrong', base_url=OPERATOR_BASE)
     with pytest.raises(MimoAPIError, match='bad key'):
         client.transcribe_audio(b'\x00\x01')
 
@@ -195,6 +233,6 @@ def test_transcribe_audio_raises_on_unexpected_shape(monkeypatch):
             return {'choices': []}
 
     monkeypatch.setattr(mod.httpx, 'post', lambda *a, **kw: _FakeResp())
-    client = MimoClient(api_key='test-key')
+    client = MimoClient(api_key='test-key', base_url=OPERATOR_BASE)
     with pytest.raises(MimoAPIError, match='unexpected'):
         client.transcribe_audio(b'\x00\x01')

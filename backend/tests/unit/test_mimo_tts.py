@@ -11,15 +11,47 @@ import pytest
 import routers.tts as tts_mod
 from utils.mimo_pipeline.tts import MimoTTSAPIError, MimoTTSClient
 
+OPERATOR_BASE = 'https://mimo.operator.example'
+
 
 def test_client_requires_api_key():
-    client = MimoTTSClient(api_key='')
     with pytest.raises(MimoTTSAPIError, match='MIMO_API_KEY'):
-        client.synthesize('你好')
+        MimoTTSClient(api_key='', base_url=OPERATOR_BASE)
+
+
+def test_client_requires_explicit_operator_endpoint(monkeypatch):
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+    monkeypatch.delenv('MIMO_TOKENPLAN_BASE', raising=False)
+    monkeypatch.delenv('MIMO_USE_TOKENPLAN', raising=False)
+    with pytest.raises(MimoTTSAPIError, match='MIMO_API_BASE'):
+        MimoTTSClient(api_key='key')
+
+
+@pytest.mark.parametrize(
+    'base_url',
+    [
+        'https://api.xiaomimimo.com',
+        'ftp://mimo.operator.example',
+        'https://user:pass@mimo.operator.example',
+        'https://mimo.operator.example?token=secret',
+        'http://public.example',
+    ],
+)
+def test_client_rejects_vendor_or_unsafe_endpoint(base_url):
+    with pytest.raises(MimoTTSAPIError, match='operator'):
+        MimoTTSClient(api_key='key', base_url=base_url)
+
+
+def test_client_resolves_explicit_tokenplan_endpoint(monkeypatch):
+    monkeypatch.setenv('MIMO_USE_TOKENPLAN', 'true')
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+    monkeypatch.setenv('MIMO_TOKENPLAN_BASE', OPERATOR_BASE + '/tokenplan')
+    client = MimoTTSClient(api_key='key')
+    assert client._endpoint() == OPERATOR_BASE + '/tokenplan/v1/chat/completions'
 
 
 def test_client_rejects_empty_text():
-    client = MimoTTSClient(api_key='key')
+    client = MimoTTSClient(api_key='key', base_url=OPERATOR_BASE)
     with pytest.raises(MimoTTSAPIError, match='empty'):
         client.synthesize('   ')
 
@@ -54,7 +86,7 @@ def test_synthesize_builds_payload_and_decodes_audio(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(mod.httpx, 'post', _post)
-    client = MimoTTSClient(api_key='test-key', voice='冰糖')
+    client = MimoTTSClient(api_key='test-key', base_url=OPERATOR_BASE, voice='冰糖')
     result = client.synthesize('你好', voice='茉莉')
     assert result == audio_bytes
     assert captured['payload']['model'] == 'mimo-v2.5-tts'
@@ -82,7 +114,7 @@ def test_synthesize_with_style_instruction(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(mod.httpx, 'post', _post)
-    client = MimoTTSClient(api_key='k')
+    client = MimoTTSClient(api_key='k', base_url=OPERATOR_BASE)
     client.synthesize('text', style_instruction='用轻快语调')
     # style instruction goes in the user message
     assert captured['payload']['messages'][0] == {'role': 'user', 'content': '用轻快语调'}
@@ -100,7 +132,7 @@ def test_synthesize_raises_on_error_response(monkeypatch):
             return {'error': {'message': 'bad key'}}
 
     monkeypatch.setattr(mod.httpx, 'post', lambda *a, **kw: _ErrResp())
-    client = MimoTTSClient(api_key='wrong')
+    client = MimoTTSClient(api_key='wrong', base_url=OPERATOR_BASE)
     with pytest.raises(MimoTTSAPIError, match='bad key'):
         client.synthesize('你好')
 
@@ -115,7 +147,7 @@ def test_synthesize_raises_on_unexpected_shape(monkeypatch):
             return {'choices': []}
 
     monkeypatch.setattr(mod.httpx, 'post', lambda *a, **kw: _FakeResp())
-    client = MimoTTSClient(api_key='k')
+    client = MimoTTSClient(api_key='k', base_url=OPERATOR_BASE)
     with pytest.raises(MimoTTSAPIError, match='unexpected'):
         client.synthesize('你好')
 

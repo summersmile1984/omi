@@ -1,4 +1,4 @@
-"""MiMo-V2.5-TTS synthesis client for the cloud-neutral Omi fork.
+"""MiMo-V2.5-TTS synthesis client for the deployment-neutral Omi fork.
 
 MiMo-V2.5-TTS is an OpenAI-compatible chat completions endpoint (NOT
 ``/v1/audio/speech``): the text goes in the ``assistant`` message and the
@@ -22,13 +22,15 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from .mimo_client import MIMO_TRUE_VALUES, MimoAPIError, configured_mimo_endpoint
+
 logger = logging.getLogger(__name__)
 
-# Same endpoint family as the ASR client. MIMO_USE_TOKENPLAN switches to the
-# China TokenPlan base (tp- keys), which is what self-hosted CN deploys use.
-MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com")
-MIMO_TOKENPLAN_BASE = os.getenv("MIMO_TOKENPLAN_BASE", "https://token-plan-cn.xiaomimimo.com")
-MIMO_API_KEY = os.getenv("MIMO_API_KEY", "")
+# No vendor endpoint is used as a default.  The selected operator-owned
+# endpoint is resolved from the environment when a client is constructed.
+MIMO_API_BASE = ""
+MIMO_TOKENPLAN_BASE = ""
+MIMO_API_KEY = ""
 MIMO_TTS_MODEL = os.getenv("MIMO_TTS_MODEL", "mimo-v2.5-tts")
 MIMO_TTS_VOICE = os.getenv("MIMO_TTS_VOICE", "冰糖")
 MIMO_TTS_FORMAT = os.getenv("MIMO_TTS_FORMAT", "wav")
@@ -40,9 +42,15 @@ class MimoTTSAPIError(RuntimeError):
 
 
 def _resolve_base_url() -> str:
-    if os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in ("1", "true", "yes"):
-        return MIMO_TOKENPLAN_BASE
-    return MIMO_API_BASE
+    use_tokenplan = os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in MIMO_TRUE_VALUES
+    variable_name = "MIMO_TOKENPLAN_BASE" if use_tokenplan else "MIMO_API_BASE"
+    value = os.getenv(variable_name, "").strip()
+    if not value:
+        raise MimoTTSAPIError(f"{variable_name} environment variable is required for MiMo TTS")
+    try:
+        return configured_mimo_endpoint(value, variable_name)
+    except MimoAPIError as exc:
+        raise MimoTTSAPIError(str(exc)) from exc
 
 
 class MimoTTSClient:
@@ -56,8 +64,16 @@ class MimoTTSClient:
         voice: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
-        self._api_key = api_key or MIMO_API_KEY
-        self._base_url = (base_url or _resolve_base_url()).rstrip("/")
+        self._api_key = (api_key if api_key is not None else os.getenv("MIMO_API_KEY", "")).strip()
+        if not self._api_key:
+            raise MimoTTSAPIError("MIMO_API_KEY environment variable is required")
+        if base_url is not None:
+            try:
+                self._base_url = configured_mimo_endpoint(base_url, "MIMO_API_BASE")
+            except MimoAPIError as exc:
+                raise MimoTTSAPIError(str(exc)) from exc
+        else:
+            self._base_url = _resolve_base_url()
         self._model = model or MIMO_TTS_MODEL
         self._voice = voice or MIMO_TTS_VOICE
         self._timeout = timeout
@@ -80,9 +96,6 @@ class MimoTTSClient:
         """
         if not text.strip():
             raise MimoTTSAPIError("empty TTS text")
-        if not self._api_key:
-            raise MimoTTSAPIError("MIMO_API_KEY environment variable not set")
-
         fmt = audio_format or MIMO_TTS_FORMAT
         voice_id = voice or self._voice
         messages: list[Dict[str, Any]] = []

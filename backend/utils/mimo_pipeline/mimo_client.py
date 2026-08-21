@@ -1,9 +1,8 @@
-"""MiMo-V2.5-ASR official API client: transcribe audio via OpenAI-compatible
-chat completions.
+"""MiMo-V2.5-ASR operator-gateway client: transcribe audio via
+OpenAI-compatible chat completions.
 
-Platform: https://mimo.mi.com · API base: https://api.xiaomimimo.com
-(China TokenPlan base: https://token-plan-cn.xiaomimimo.com, same /v1 shape)
-Model: ``mimo-v2.5-asr``
+Model: ``mimo-v2.5-asr``.  The endpoint is always supplied by the operator;
+this module intentionally has no vendor-cloud URL default.
 
 MiMo-V2.5-ASR is an OpenAI-compatible **chat completions** endpoint (NOT
 ``/v1/audio/transcriptions``): the audio is passed as base64 in an
@@ -26,18 +25,84 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
+from config.prerecorded_stt import is_private_operator_hostname, is_unsafe_network_hostname
+
 logger = logging.getLogger(__name__)
 
-# OpenAI-compatible base for MiMo ASR. MIMO_API_BASE overrides for a custom
-# gateway; MIMO_USE_TOKENPLAN=1 switches to the China TokenPlan base.
-MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com")
-MIMO_TOKENPLAN_BASE = os.getenv("MIMO_TOKENPLAN_BASE", "https://token-plan-cn.xiaomimimo.com")
-MIMO_API_KEY = os.getenv("MIMO_API_KEY", "")
+# There is intentionally no MiMo cloud endpoint default.  A deployment must
+# provide an operator-owned gateway at runtime.  Keep these names as empty
+# compatibility exports for callers that imported the old module constants;
+# resolution below always reads the current environment instead of a snapshot.
+MIMO_API_BASE = ""
+MIMO_TOKENPLAN_BASE = ""
+MIMO_API_KEY = ""
 MIMO_ASR_MODEL = os.getenv("MIMO_ASR_MODEL", "mimo-v2.5-asr")
 DEFAULT_TIMEOUT = float(os.getenv("MIMO_TIMEOUT_SECONDS", "120"))
+
+_MIMO_VENDOR_HOST_SUFFIXES = (".xiaomimimo.com", ".mimo.mi.com")
+MIMO_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def configured_mimo_endpoint(value: str, variable_name: str = "MIMO_API_BASE") -> str:
+    """Validate an explicit operator-owned MiMo-compatible HTTP authority.
+
+    MiMo is an optional provider in this fork.  The official cloud authorities
+    are deliberately rejected so an isolated deployment cannot silently send
+    audio or credentials to the vendor when its own gateway is absent or
+    mistyped.  Private HTTP authorities are allowed for local/container
+    services; public authorities must use HTTPS.
+    """
+
+    endpoint = (value or "").strip().rstrip("/")
+    try:
+        parsed = urlsplit(endpoint)
+        # Accessing ``port`` validates malformed ports (urlsplit is lazy).
+        _ = parsed.port
+    except ValueError as exc:
+        raise MimoAPIError(f"{variable_name} must be an explicit operator HTTP(S) endpoint") from exc
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or is_unsafe_network_hostname(hostname)
+        or any(hostname == suffix.lstrip(".") or hostname.endswith(suffix) for suffix in _MIMO_VENDOR_HOST_SUFFIXES)
+        or (parsed.scheme == "http" and not is_private_operator_hostname(hostname))
+    ):
+        raise MimoAPIError(
+            f"{variable_name} must be an explicit operator HTTP(S) endpoint "
+            "without credentials/query and must not use the MiMo cloud authority"
+        )
+    if not endpoint:
+        raise MimoAPIError(f"{variable_name} environment variable is required")
+    return endpoint
+
+
+def _resolve_base_url() -> str:
+    use_tokenplan = os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in MIMO_TRUE_VALUES
+    variable_name = "MIMO_TOKENPLAN_BASE" if use_tokenplan else "MIMO_API_BASE"
+    value = os.getenv(variable_name, "").strip()
+    if not value:
+        raise MimoAPIError(f"{variable_name} environment variable is required for MiMo")
+    return configured_mimo_endpoint(value, variable_name)
+
+
+def mimo_configuration_ready() -> bool:
+    """Return whether the selected operator endpoint and key are configured."""
+
+    try:
+        _resolve_base_url()
+    except MimoAPIError:
+        return False
+    return bool(os.getenv("MIMO_API_KEY", "").strip())
+
 
 # wav/mp3 <= 10MB per MiMo docs; keep a conservative cap.
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -65,12 +130,6 @@ class MimoTranscription:
     duration: float
     segments: List[MimoSegment] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
-
-
-def _resolve_base_url() -> str:
-    if os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in ("1", "true", "yes"):
-        return MIMO_TOKENPLAN_BASE
-    return MIMO_API_BASE
 
 
 def _raise_for_error(resp: httpx.Response) -> None:
@@ -115,8 +174,12 @@ class MimoClient:
         model: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
-        self._api_key = api_key or MIMO_API_KEY
-        self._base_url = (base_url or _resolve_base_url()).rstrip("/")
+        self._api_key = (api_key if api_key is not None else os.getenv("MIMO_API_KEY", "")).strip()
+        if not self._api_key:
+            raise MimoAPIError("MIMO_API_KEY environment variable is required")
+        self._base_url = (
+            configured_mimo_endpoint(base_url, "MIMO_API_BASE") if base_url is not None else _resolve_base_url()
+        )
         self._model = model or MIMO_ASR_MODEL
         self._timeout = timeout
 
