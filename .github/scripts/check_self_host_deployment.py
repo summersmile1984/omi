@@ -238,6 +238,7 @@ REQUIRED_ENV_FILE_KEYS = {
     'SPEAKER_EMBEDDING_NUM_THREADS',
 }
 DECLARED_OPTIONAL_ENV_FILE_KEYS = {
+    'DESKTOP_UPDATE_DOWNLOAD_URL',
     'TTS_OPENAI_COMPATIBLE_BASE_URL',
     'TTS_OPENAI_COMPATIBLE_API_KEY',
     'TTS_OPENAI_COMPATIBLE_MODEL',
@@ -310,6 +311,29 @@ def _validate_operator_http_endpoint(name: str, value: str, errors: list[str]) -
         or parsed.fragment
     ):
         errors.append(f'{name} must be an explicit credential-free http(s) base URL')
+        return
+    if _unsafe_endpoint_host(host):
+        errors.append(f'{name} must not target link-local, metadata, or reserved hosts')
+    if parsed.scheme == 'http' and not _private_endpoint_host(host):
+        errors.append(f'{name} must use https for a public target host')
+    if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
+        errors.append(f'{name} must not use official endpoint host {host}')
+
+
+def _validate_operator_download_url(name: str, value: str, errors: list[str]) -> None:
+    """Validate a manual installer URL without requiring a base-URL shape."""
+
+    parsed = urlsplit(value)
+    host = (parsed.hostname or '').lower()
+    if (
+        parsed.scheme not in {'http', 'https'}
+        or not parsed.netloc
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        errors.append(f'{name} must be an explicit credential-free http(s) URL')
         return
     if _unsafe_endpoint_host(host):
         errors.append(f'{name} must not target link-local, metadata, or reserved hosts')
@@ -939,6 +963,10 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
         host = (parsed.hostname or '').lower()
         if any(host == forbidden or host.endswith(f'.{forbidden}') for forbidden in FORBIDDEN_ENDPOINT_HOSTS):
             errors.append(f'GENERIC_OPENAI_BASE_URL must not use official endpoint host {host}')
+
+    desktop_download_url = env.get('DESKTOP_UPDATE_DOWNLOAD_URL', '')
+    if desktop_download_url:
+        _validate_operator_download_url('DESKTOP_UPDATE_DOWNLOAD_URL', desktop_download_url, errors)
 
     mlx_moss_endpoint = env.get('MLX_MOSS_DIARIZE_ENDPOINT', '')
     if mlx_moss_endpoint:

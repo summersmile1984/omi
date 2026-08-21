@@ -193,8 +193,11 @@ deployment:
 - Firmware and desktop update authorities are also profile-aware at the
   request boundary: neutral/self-hosted direct launches default to typed
   unavailability rather than GitHub/Omi release scans when their explicit
-  manifest/pointer bindings are omitted. Managed profiles retain their
-  historical release defaults.
+  manifest/pointer bindings are omitted. The desktop recovery policy accepts
+  only an explicit operator-owned `DESKTOP_UPDATE_DOWNLOAD_URL` or Firestore
+  `download_url`; with neither configured it returns `availability=disabled`
+  and `download_url=null`, never the managed `api.omi.me` URL. Managed
+  profiles retain their historical release defaults.
 - macOS FluidAudio speech-model loading is managed-only: self-hosted local STT
   and optional PTT language identification fail through their existing
   backend/auto-detect seams instead of implicitly downloading missing weights.

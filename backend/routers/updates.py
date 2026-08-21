@@ -53,7 +53,11 @@ class DesktopUpdatePolicyResponse(BaseModel):
     title: Optional[str] = Field(default=None, description='Banner title.')
     message: Optional[str] = Field(default=None, description='Banner message body.')
     cta_text: str = Field(default='Download latest', description='Call-to-action button text.')
-    download_url: str = Field(description='Download URL for the latest release.')
+    download_url: Optional[str] = Field(default=None, description='Operator or managed download URL, when configured.')
+    availability: Literal['configured', 'disabled'] = Field(
+        default='disabled', description='Whether a safe download target is configured.'
+    )
+    reason: Optional[str] = Field(default=None, description='Typed reason when the download capability is disabled.')
     can_dismiss: bool = Field(default=True, description='Whether the user can dismiss the banner.')
     platforms: Optional[List[str]] = Field(
         default=None, description='Platforms this policy applies to (empty/None = all).'

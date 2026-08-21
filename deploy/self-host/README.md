@@ -201,7 +201,13 @@ unavailable rather than serving a managed release. The backend also defaults
 this fallback to disabled whenever `OMI_DEPLOYMENT_PROFILE` is neutral or
 self-hosted, so a direct launch or stale container cannot turn an omitted
 binding into a GitHub release request; managed profiles retain their
-historical enabled default. Firmware follows the same boundary: neutral
+historical enabled default. The update-policy endpoint follows the same
+boundary: `DESKTOP_UPDATE_DOWNLOAD_URL` is an optional operator-owned HTTPS
+repair/installer page, and an active `desktop_update_policy/current` document
+may provide an explicit operator-owned `download_url`. If neither is present,
+the endpoint returns typed `availability=disabled` with `download_url=null`;
+it never returns the managed `api.omi.me` URL in a neutral profile. Firmware
+follows the same boundary: neutral
 profiles default to typed `firmware_updates` unavailability until an explicit
 operator manifest transport is configured.
 

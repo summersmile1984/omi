@@ -2,6 +2,13 @@
 
 Use this when macOS desktop users need an extra update prompt beyond Sparkle.
 
+The managed profile keeps the historical `api.omi.me` recovery URL when no
+policy document is available. Neutral/self-hosted deployments never use that
+default: set `DESKTOP_UPDATE_DOWNLOAD_URL` to an operator-owned HTTPS repair or
+installer page, or put an explicit operator-owned `download_url` in the
+Firestore policy document. Until one is present, the API returns typed
+`availability=disabled` with `download_url=null` and no update prompt.
+
 ## Firestore Config
 
 Create or update `desktop_update_policy/current`:
@@ -30,7 +37,8 @@ Create or update `desktop_update_policy/current`:
 - `title`, `message`, `cta_text`: user-facing copy.
 - `download_url`: manual installer URL. For legacy recovery, use the static
   stable repair page published by the stable-promotion workflow instead of the
-  dynamic appcast/download API.
+  dynamic appcast/download API. In a neutral deployment this must be an
+  operator-owned URL; `api.omi.me` and other Omi-operated hosts are rejected.
 - `can_dismiss`: only applies to `banner`; required prompts cannot be dismissed.
 - `platforms`: optional allowlist. Omit or use `["macos"]` for macOS.
 
@@ -43,3 +51,19 @@ curl -fsS 'https://storage.googleapis.com/omi_macos_updates/stable/latest.json' 
 ```
 
 Disable the policy by setting `active` to `false`.
+
+For a self-hosted deployment, verify the fail-closed default and the explicit
+operator path:
+
+```bash
+OMI_DEPLOYMENT_PROFILE=self_hosted \
+  curl -fsS 'https://api.example.com/v2/desktop/update-policy?platform=macos' \
+  | python3 -m json.tool
+
+DESKTOP_UPDATE_DOWNLOAD_URL=https://objects.example.com/desktop/stable.html
+```
+
+The first response must contain `availability: "disabled"` and a null
+`download_url` until the environment variable or Firestore manifest is
+configured. The checked-in Compose profile binds the optional environment
+variable without making it required.

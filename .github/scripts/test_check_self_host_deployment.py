@@ -500,6 +500,35 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
         )
         self.assertIn("backend DESKTOP_UPDATE_LEGACY_FALLBACK must be literal 'disabled'", errors)
 
+    def test_desktop_updates_bind_optional_operator_download_url(self) -> None:
+        errors = self.validate_mutation(
+            compose_replace=(
+                '      - DESKTOP_UPDATE_DOWNLOAD_URL=${DESKTOP_UPDATE_DOWNLOAD_URL-}\n',
+                '',
+            )
+        )
+        self.assertIn(
+            "backend DESKTOP_UPDATE_DOWNLOAD_URL must use exact optional binding '${DESKTOP_UPDATE_DOWNLOAD_URL-}'",
+            errors,
+        )
+
+    def test_desktop_updates_reject_vendor_or_insecure_operator_download_url(self) -> None:
+        official = self.validate_mutation(
+            env_replace=(
+                'DESKTOP_UPDATE_DOWNLOAD_URL=\n',
+                'DESKTOP_UPDATE_DOWNLOAD_URL=https://api.omi.me/v2/desktop/stable.dmg\n',
+            )
+        )
+        self.assertIn('DESKTOP_UPDATE_DOWNLOAD_URL must not use official endpoint host api.omi.me', official)
+
+        insecure = self.validate_mutation(
+            env_replace=(
+                'DESKTOP_UPDATE_DOWNLOAD_URL=\n',
+                'DESKTOP_UPDATE_DOWNLOAD_URL=http://downloads.example.com/stable.dmg\n',
+            )
+        )
+        self.assertIn('DESKTOP_UPDATE_DOWNLOAD_URL must use https for a public target host', insecure)
+
     def test_local_speaker_embedding_requires_mounted_model_and_bounded_threads(self) -> None:
         errors = self.validate_mutation(
             compose_replace=(
