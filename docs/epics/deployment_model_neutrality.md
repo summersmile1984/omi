@@ -183,6 +183,10 @@ deployment:
   backend/auto-detect seams instead of implicitly downloading missing weights.
   A packaged or operator-provisioned local model remains an explicit future
   capability rather than an undocumented network fallback.
+- Flutter self-hosted On-device Whisper follows the same boundary: the settings
+  surface cannot download Hugging Face weights and accepts only a user/operator
+  selected local `.bin` model. Managed profiles retain their existing download
+  flow.
 - Agent VM cleanup is explicitly `AGENT_VM_PROVIDER=disabled`; legacy GCE
   state blocks deletion until it is imported/reconciled, so missing ADC cannot
   be mistaken for successful cleanup.
