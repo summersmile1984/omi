@@ -2094,6 +2094,17 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertIn('postgres.dump.enc', script)
         self.assertIn('verify /backup \\\n      --expected-files "${ARCHIVE_FILES[@]}"', script)
 
+    def test_restore_stages_postgres_plaintext_outside_read_only_backup_mount(self) -> None:
+        script = OPERATIONS.read_text(encoding='utf-8')
+        open_source = script[script.index('open_snapshot() {') : script.index('\n}\n\nstart_profile()', script.index('open_snapshot() {'))]
+        self.assertIn('--volume "$archive_dir:/backup:ro"', open_source)
+        self.assertIn('--volume "$plaintext_dir:/restore:rw"', open_source)
+        self.assertIn('"/restore/$(basename "$plaintext")"', open_source)
+        self.assertIn('restore_staging="$(mktemp -d /tmp/omi-self-host-restore.XXXXXX)"', script)
+        self.assertIn('postgres_restore="$restore_staging/postgres.dump"', script)
+        self.assertIn("trap 'rm -rf -- \"$restore_staging\"' EXIT INT TERM", script)
+        self.assertNotIn('postgres_restore="$directory/.postgres.dump.restore"', script)
+
     def test_restore_and_start_static_contract_is_fail_closed(self) -> None:
         """Tripwire for the destructive ordering; live Compose proves behavior."""
 

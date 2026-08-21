@@ -389,8 +389,12 @@ backup directory, manifest, or logs. Verification authenticates every envelope
 before it succeeds and rejects missing, malformed, changed, or non-private
 artifacts. Direct volume restore/open also rejects symlinked or non-0600 archive
 paths, and backup refuses source-volume symlinks or special files that the
-restore safety contract cannot materialize. Store the runtime env/secrets
-separately: they are deliberately never copied into a backup directory.
+restore safety contract cannot materialize. During PostgreSQL restore, the
+authenticated dump is staged in a disposable mode-`0700` directory outside the
+backup directory; the archive mount remains read-only and the temporary
+plaintext is removed after `pg_restore` (including failure paths). Store the
+runtime env/secrets separately: they are deliberately never copied into a
+backup directory.
 
 Create and protect the key outside the repository. An operator may use a
 secret manager to materialize this file for the duration of the operation; the
