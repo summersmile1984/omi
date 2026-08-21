@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from config.prerecorded_stt import is_private_operator_hostname, is_unsafe_network_hostname
+from utils.egress_policy import assert_http_endpoint_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,12 @@ class MimoClient:
                 f"audio too large for MiMo ASR ({len(audio_bytes)} > {MAX_AUDIO_BYTES} bytes); "
                 "MiMo docs cap audio at 10MB — chunk it upstream"
             )
+        endpoint = self._endpoint()
+        # This legacy synchronous helper does not use the shared httpx pool.
+        # Enforce the same operator egress policy before encoding or sending
+        # audio, so neutral deployments cannot silently use an undeclared
+        # public authority.
+        assert_http_endpoint_allowed(endpoint)
         fmt = infer_audio_format(filename or "", content_type) if audio_format is None else audio_format
         audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
         messages = self._build_messages(audio_b64, fmt, language=language, instruction=instruction)
@@ -241,7 +248,7 @@ class MimoClient:
         if language:
             payload["asr_options"] = {"language": language}
         resp = httpx.post(
-            self._endpoint(),
+            endpoint,
             headers=self._headers(),
             json=payload,
             timeout=self._timeout,

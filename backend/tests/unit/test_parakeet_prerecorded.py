@@ -18,6 +18,7 @@ os.environ.setdefault('DEEPGRAM_API_KEY', 'x')
 os.environ.setdefault('HOSTED_PARAKEET_API_URL', 'http://fake-parakeet:8080')
 
 import utils.stt.pre_recorded as pr  # noqa: E402
+from utils.egress_policy import EgressPolicyUnavailable  # noqa: E402
 
 
 def _cdist(a, b, metric='cosine'):
@@ -171,6 +172,18 @@ class TestFactoryRouting:
 
 
 class TestTranscribeBytes:
+    def test_neutral_profile_rejects_undeclared_batch_endpoint_before_network(self, monkeypatch):
+        monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+        monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+        monkeypatch.setenv('HOSTED_PARAKEET_API_URL', 'https://parakeet.operator.example')
+        client = MagicMock()
+        monkeypatch.setattr(pr.httpx, 'Client', lambda *args, **kwargs: client)
+
+        with pytest.raises(RuntimeError, match='Parakeet transcription failed') as error:
+            pr.parakeet_prerecorded_from_bytes(_make_wav(), diarize=False)
+        assert isinstance(error.value.__cause__, EgressPolicyUnavailable)
+        client.assert_not_called()
+
     def test_missing_endpoint_raises_controlled_configuration_error(self, monkeypatch):
         wav = _make_wav()
         monkeypatch.delenv('HOSTED_PARAKEET_API_URL', raising=False)

@@ -44,6 +44,7 @@ OFFICIAL_HOST_SUFFIXES = frozenset(
         'posthog.com',
         'langchain.com',
         'langsmith.com',
+        'modulate-developer-apis.com',
         'xiaomimimo.com',
         'mosi.cn',
     }

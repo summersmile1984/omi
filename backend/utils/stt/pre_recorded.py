@@ -38,6 +38,7 @@ from config.stt_provider_policy import (
 )
 from models.transcript_segment import TranscriptSegment
 from utils.byok import get_byok_key
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.mlx_moss_diarize.prerecorded_provider import MlxMossDiarizePrerecordedProvider
 from utils.other.endpoints import timeit
 from utils.stt.outcomes import TranscriptionFailure
@@ -611,6 +612,10 @@ def modulate_prerecorded_from_bytes(
 
     try:
         url = 'https://modulate-developer-apis.com/api/velma-2-stt-batch'
+        # This provider is an explicit managed option, but its synchronous
+        # client bypasses the shared pool.  Keep neutral/self-hosted runtimes
+        # from sending audio to the official authority if misconfigured.
+        assert_http_endpoint_allowed(url)
         headers = {'X-API-Key': api_key}
         files = {'upload_file': ('audio.wav', BytesIO(audio_bytes), 'audio/wav')}
         data = {'speaker_diarization': str(diarize).lower()}
@@ -867,10 +872,14 @@ def parakeet_prerecorded_from_bytes(
             url = api_url.rstrip('/') + '/v1/transcribe'
             data = {}
 
+        # The batch client is synchronous and does not inherit the shared
+        # httpx pool's request hook.  Validate before handing audio to it.
+        assert_http_endpoint_allowed(url)
         with httpx.Client(timeout=_PARAKEET_TIMEOUT) as client:
             response = client.post(url, files=files, data=data if data else None)
             if response.status_code == 404 and use_v2:
                 url = api_url.rstrip('/') + '/v1/transcribe'
+                assert_http_endpoint_allowed(url)
                 response = client.post(url, files={'file': ('audio.wav', BytesIO(audio_bytes), 'audio/wav')})
                 use_v2 = False
         response.raise_for_status()

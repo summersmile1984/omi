@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 import routers.tts as tts_mod
+from utils.egress_policy import EgressPolicyUnavailable
 from utils.mimo_pipeline.tts import MimoTTSAPIError, MimoTTSClient
 
 OPERATOR_BASE = 'https://mimo.operator.example'
@@ -94,6 +95,18 @@ def test_synthesize_builds_payload_and_decodes_audio(monkeypatch):
     # assistant message carries the text
     assert captured['payload']['messages'][-1]['role'] == 'assistant'
     assert captured['payload']['messages'][-1]['content'] == '你好'
+
+
+def test_synthesize_rejects_undeclared_neutral_endpoint_before_network(monkeypatch):
+    """The sync MiMo TTS client must honor the neutral egress boundary."""
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+    import utils.mimo_pipeline.tts as mod
+
+    monkeypatch.setattr(mod.httpx, 'post', lambda *args, **kwargs: pytest.fail('network call'))
+    client = MimoTTSClient(api_key='test-key', base_url=OPERATOR_BASE)
+    with pytest.raises(EgressPolicyUnavailable, match='egress_allowlist_not_configured'):
+        client.synthesize('你好')
 
 
 def test_synthesize_with_style_instruction(monkeypatch):

@@ -12,6 +12,7 @@ from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, infer_audi
 from utils.mimo_pipeline.socket import MimoSttSocket, mimo_available, pcm16_to_wav
 from config.prerecorded_stt import PrerecordedSTTService
 from config.stt_provider_policy import MIMO_PROVIDER, STTServingSurface, provider_is_enabled
+from utils.egress_policy import EgressPolicyUnavailable
 from utils.stt.pre_recorded import get_prerecorded_service
 from utils.stt.streaming import get_stt_service_for_language
 
@@ -197,6 +198,18 @@ def test_transcribe_audio_builds_input_audio_and_parses_response(monkeypatch):
     assert captured['payload']['asr_options'] == {'language': 'zh'}
     assert captured['payload']['model'] == 'mimo-v2.5-asr'
     assert captured['payload']['stream'] is False
+
+
+def test_transcribe_audio_rejects_undeclared_neutral_endpoint_before_network(monkeypatch):
+    """The sync MiMo client must not bypass neutral egress policy."""
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+    import utils.mimo_pipeline.mimo_client as mod
+
+    monkeypatch.setattr(mod.httpx, 'post', lambda *args, **kwargs: pytest.fail('network call'))
+    client = MimoClient(api_key='test-key', base_url=OPERATOR_BASE)
+    with pytest.raises(EgressPolicyUnavailable, match='egress_allowlist_not_configured'):
+        client.transcribe_audio(b'\x00\x01')
 
 
 def test_transcribe_audio_rejects_oversized(monkeypatch):

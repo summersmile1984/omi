@@ -14,7 +14,10 @@ def test_managed_profile_preserves_existing_endpoint_behavior(monkeypatch):
     assert assert_http_endpoint_allowed('https://api.openai.com/v1') == 'api.openai.com'
 
 
-@pytest.mark.parametrize('host', ['api.openai.com', 'api.omi.me', 'generativelanguage.googleapis.com', 'api.hume.ai'])
+@pytest.mark.parametrize(
+    'host',
+    ['api.openai.com', 'api.omi.me', 'generativelanguage.googleapis.com', 'api.hume.ai', 'modulate-developer-apis.com'],
+)
 def test_neutral_profile_rejects_official_hosts_before_allowlist(monkeypatch, host):
     monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
     monkeypatch.setenv('SELF_HOST_EGRESS_ALLOWLIST', 'operator.example')
