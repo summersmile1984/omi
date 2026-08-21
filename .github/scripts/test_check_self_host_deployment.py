@@ -42,6 +42,20 @@ class SelfHostDeploymentContractTest(unittest.TestCase):
     def test_checked_in_profile_is_complete_and_zero_vendor(self) -> None:
         self.assertEqual(CHECK.validate(CHECK.DEFAULT_COMPOSE, CHECK.DEFAULT_EXAMPLE_ENV), [])
 
+    def test_backup_key_is_operations_only_and_envelope_is_checked_in(self) -> None:
+        operations = CHECK.DEFAULT_OPERATIONS.read_text(encoding='utf-8')
+        snapshot = CHECK.DEFAULT_SNAPSHOT_TOOL.read_text(encoding='utf-8')
+        self.assertIn('SELF_HOST_BACKUP_KEY_FILE', operations)
+        self.assertIn("ENVELOPE_FORMAT = 'omi-backup-aead-v1'", snapshot)
+
+        errors = self.validate_mutation(env_append='SELF_HOST_BACKUP_KEY_FILE=/secure/backup.key\n')
+        self.assertIn(
+            'SELF_HOST_BACKUP_KEY_FILE is operations-only and must not be stored in the Compose env file', errors
+        )
+
+        errors = self.validate_mutation(compose_replace=('services:\n', 'services:\n# SELF_HOST_BACKUP_KEY_FILE\n'))
+        self.assertIn('Compose must not receive the operations-only backup key path', errors)
+
     def test_firestore_schema_migration_is_an_explicit_startup_dependency(self) -> None:
         errors = self.validate_mutation(
             compose_replace=(

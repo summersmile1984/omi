@@ -161,6 +161,13 @@ PASSED_RUNTIME_EVIDENCE = {
 
 
 class SelfHostOperationsTest(unittest.TestCase):
+    @staticmethod
+    def _key_file(root: Path, value: bytes = b'k' * 32) -> Path:
+        key_file = root / 'backup.key'
+        key_file.write_bytes(value)
+        key_file.chmod(0o600)
+        return key_file
+
     def test_local_cutover_backend_trusts_the_generated_public_edge_ca(self) -> None:
         overlay = CUTOVER_OVERLAY.read_text(encoding='utf-8')
         self.assertIn('SSL_CERT_FILE=/etc/ssl/certs/omi-cutover-ca.crt', overlay)
@@ -1229,26 +1236,30 @@ class SelfHostOperationsTest(unittest.TestCase):
     def test_volume_backup_restore_and_manifest_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            key_file = self._key_file(root)
             source = root / 'state'
             source.mkdir()
             (source / 'nested').mkdir()
             (source / 'nested' / 'record.json').write_text('{"version":1}\n', encoding='utf-8')
-            archive = root / 'state.tar.gz'
+            archive = root / 'state.tar.gz.enc'
             fingerprints = ('a' * 64, 'b' * 64, 'c' * 64)
 
-            SNAPSHOT.backup(source, archive)
+            SNAPSHOT.backup(source, archive, key_file)
             SNAPSHOT.write_manifest(root, 'deadbeef', [archive.name], *fingerprints)
             SNAPSHOT.verify_manifest(
                 root,
                 [archive.name],
                 dict(zip(('runtime_fingerprint', 'config_fingerprint', 'migration_fingerprint'), fingerprints)),
+                key_file,
             )
             self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE((root / 'manifest.json').stat().st_mode), 0o600)
+            self.assertTrue(archive.read_bytes().startswith(SNAPSHOT.ENVELOPE_MAGIC))
+            self.assertNotIn(key_file.read_bytes(), (root / 'manifest.json').read_bytes())
 
             (source / 'nested' / 'record.json').write_text('corrupt', encoding='utf-8')
             (source / 'stale').write_text('must disappear', encoding='utf-8')
-            SNAPSHOT.restore(source, archive)
+            SNAPSHOT.restore(source, archive, key_file)
             self.assertEqual((source / 'nested' / 'record.json').read_text(encoding='utf-8'), '{"version":1}\n')
             self.assertFalse((source / 'stale').exists())
 
@@ -1258,43 +1269,101 @@ class SelfHostOperationsTest(unittest.TestCase):
                     root,
                     [archive.name],
                     dict(zip(('runtime_fingerprint', 'config_fingerprint', 'migration_fingerprint'), fingerprints)),
+                    key_file,
                 )
 
     def test_restore_rejects_archive_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            key_file = self._key_file(root)
             source = root / 'state'
             source.mkdir()
-            archive_path = root / 'unsafe.tar.gz'
-            with tarfile.open(archive_path, 'w:gz') as archive:
+            plaintext = root / 'unsafe.tar.gz'
+            with tarfile.open(plaintext, 'w:gz') as archive:
                 member = tarfile.TarInfo('../outside')
                 member.size = 1
                 archive.addfile(member, io.BytesIO(b'x'))
+            archive_path = root / 'unsafe.tar.gz.enc'
+            SNAPSHOT.seal_file(plaintext, archive_path, key_file)
+            plaintext.unlink()
 
             with self.assertRaisesRegex(RuntimeError, 'unsafe archive member'):
-                SNAPSHOT.restore(source, archive_path)
+                SNAPSHOT.restore(source, archive_path, key_file)
+
+    def test_backup_rejects_wrong_key_and_tamper_without_mutating_restore_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = self._key_file(root)
+            wrong_key_file = root / 'wrong.key'
+            wrong_key_file.write_bytes(b'w' * 32)
+            wrong_key_file.chmod(0o600)
+            source = root / 'state'
+            source.mkdir()
+            (source / 'marker').write_text('keep', encoding='utf-8')
+            archive = root / 'state.tar.gz.enc'
+            SNAPSHOT.backup(source, archive, key_file)
+
+            with self.assertRaisesRegex(RuntimeError, 'authentication failed'):
+                SNAPSHOT.restore(source, archive, wrong_key_file)
+            self.assertEqual((source / 'marker').read_text(encoding='utf-8'), 'keep')
+
+            tampered = root / 'tampered.tar.gz.enc'
+            tampered.write_bytes(archive.read_bytes())
+            tampered_bytes = bytearray(tampered.read_bytes())
+            ciphertext_offset = (
+                len(SNAPSHOT.ENVELOPE_MAGIC)
+                + SNAPSHOT._HEADER.size
+                + SNAPSHOT._LENGTH.size
+                + SNAPSHOT.ENVELOPE_NONCE_BYTES
+            )
+            tampered_bytes[ciphertext_offset] ^= 1
+            tampered.write_bytes(tampered_bytes)
+            tampered.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, 'authentication failed'):
+                SNAPSHOT.restore(source, tampered, key_file)
+            self.assertEqual((source / 'marker').read_text(encoding='utf-8'), 'keep')
+
+    def test_backup_key_requires_exact_private_permissions_and_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = self._key_file(root)
+            source = root / 'state'
+            source.mkdir()
+            archive = root / 'state.tar.gz.enc'
+            key_file.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError, 'mode 0600'):
+                SNAPSHOT.backup(source, archive, key_file)
+            key_file.chmod(0o600)
+            key_file.write_bytes(b'short')
+            with self.assertRaisesRegex(RuntimeError, 'exactly 32 bytes'):
+                SNAPSHOT.backup(source, archive, key_file)
 
     def test_manifest_records_source_revision_without_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            artifact = root / 'postgres.dump'
+            artifact = root / 'postgres.dump.enc'
             artifact.write_bytes(b'dump')
             SNAPSHOT.write_manifest(root, 'cafebabe', [artifact.name], 'a' * 64, 'b' * 64, 'c' * 64)
 
             payload = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
-            self.assertEqual(payload['schema_version'], 2)
+            self.assertEqual(payload['schema_version'], 3)
             self.assertEqual(payload['git_sha'], 'cafebabe')
             self.assertEqual(payload['runtime_fingerprint'], 'a' * 64)
             self.assertEqual(payload['config_fingerprint'], 'b' * 64)
             self.assertEqual(payload['migration_fingerprint'], 'c' * 64)
-            self.assertEqual(set(payload['artifacts']), {'postgres.dump'})
+            self.assertEqual(set(payload['artifacts']), {'postgres.dump.enc'})
+            self.assertEqual(payload['encryption']['format'], SNAPSHOT.ENVELOPE_FORMAT)
             self.assertNotIn('secret', json.dumps(payload).lower())
 
-    def test_schema_v2_manifest_cli_binds_all_fingerprints(self) -> None:
+    def test_schema_v3_manifest_cli_binds_all_fingerprints(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            artifact = root / 'postgres.dump'
-            artifact.write_bytes(b'dump')
+            key_file = self._key_file(root)
+            plaintext = root / 'postgres.dump'
+            plaintext.write_bytes(b'dump')
+            artifact = root / 'postgres.dump.enc'
+            SNAPSHOT.seal_file(plaintext, artifact, key_file)
+            plaintext.unlink()
             fingerprints = {
                 'runtime_fingerprint': 'a' * 64,
                 'config_fingerprint': 'b' * 64,
@@ -1336,6 +1405,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                     fingerprints['config_fingerprint'],
                     '--expected-migration-fingerprint',
                     fingerprints['migration_fingerprint'],
+                    '--key-file',
+                    str(key_file),
                 ],
                 check=False,
                 capture_output=True,
@@ -1361,6 +1432,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                     fingerprints['config_fingerprint'],
                     '--expected-migration-fingerprint',
                     fingerprints['migration_fingerprint'],
+                    '--key-file',
+                    str(key_file),
                 ],
                 check=False,
                 capture_output=True,
@@ -1369,16 +1442,17 @@ class SelfHostOperationsTest(unittest.TestCase):
             self.assertEqual(rejected.returncode, 1)
             self.assertIn('backup migration_fingerprint does not match', rejected.stderr)
 
-    def test_manifest_rejects_structurally_incomplete_v2_payload(self) -> None:
+    def test_manifest_rejects_structurally_incomplete_v3_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            key_file = self._key_file(root)
             manifest_path = root / 'manifest.json'
             manifest_path.write_text('[]', encoding='utf-8')
             manifest_path.chmod(0o600)
             with self.assertRaisesRegex(RuntimeError, 'unsupported backup manifest'):
-                SNAPSHOT.verify_manifest(root)
+                SNAPSHOT.verify_manifest(root, key_file=key_file)
 
-            artifact = root / 'postgres.dump'
+            artifact = root / 'postgres.dump.enc'
             artifact.write_bytes(b'dump')
             SNAPSHOT.write_manifest(root, 'cafebabe', [artifact.name], 'a' * 64, 'b' * 64, 'c' * 64)
             payload = json.loads(manifest_path.read_text(encoding='utf-8'))
@@ -1386,12 +1460,13 @@ class SelfHostOperationsTest(unittest.TestCase):
             manifest_path.write_text(json.dumps(payload), encoding='utf-8')
             manifest_path.chmod(0o600)
             with self.assertRaisesRegex(RuntimeError, 'git_sha'):
-                SNAPSHOT.verify_manifest(root)
+                SNAPSHOT.verify_manifest(root, key_file=key_file)
 
     def test_manifest_verification_fails_closed_for_missing_or_tampered_fingerprints_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            artifact = root / 'postgres.dump'
+            key_file = self._key_file(root)
+            artifact = root / 'postgres.dump.enc'
             artifact.write_bytes(b'dump')
             fingerprints = {
                 'runtime_fingerprint': 'a' * 64,
@@ -1405,24 +1480,24 @@ class SelfHostOperationsTest(unittest.TestCase):
             manifest_path.write_text(json.dumps(payload), encoding='utf-8')
             manifest_path.chmod(0o600)
             with self.assertRaisesRegex(RuntimeError, 'migration_fingerprint'):
-                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints)
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints, key_file)
 
             payload['migration_fingerprint'] = 'not-a-fingerprint'
             manifest_path.write_text(json.dumps(payload), encoding='utf-8')
             manifest_path.chmod(0o600)
             with self.assertRaisesRegex(RuntimeError, 'migration_fingerprint'):
-                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints)
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints, key_file)
 
             payload['migration_fingerprint'] = fingerprints['migration_fingerprint']
             manifest_path.write_text(json.dumps(payload), encoding='utf-8')
             manifest_path.chmod(0o644)
             with self.assertRaisesRegex(RuntimeError, 'mode 0600'):
-                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints)
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints, key_file)
 
             manifest_path.chmod(0o600)
             artifact.chmod(0o644)
             with self.assertRaisesRegex(RuntimeError, 'mode 0600'):
-                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints)
+                SNAPSHOT.verify_manifest(root, [artifact.name], fingerprints, key_file)
 
     def test_operations_bind_all_backup_fingerprints_and_expected_artifacts(self) -> None:
         script = OPERATIONS.read_text(encoding='utf-8')
@@ -1431,7 +1506,9 @@ class SelfHostOperationsTest(unittest.TestCase):
         self.assertIn('--runtime-fingerprint "$runtime_sha256"', script)
         self.assertIn('--config-fingerprint "$config_sha256"', script)
         self.assertIn('--migration-fingerprint "$migration_sha256"', script)
-        self.assertIn('verify "$directory" \\\n    --expected-files "${ARCHIVE_FILES[@]}"', script)
+        self.assertIn('--key-file /backup-key/key', script)
+        self.assertIn('postgres.dump.enc', script)
+        self.assertIn('verify /backup \\\n      --expected-files "${ARCHIVE_FILES[@]}"', script)
 
     def test_restore_and_start_static_contract_is_fail_closed(self) -> None:
         """Tripwire for the destructive ordering; live Compose proves behavior."""

@@ -275,29 +275,40 @@ newly restored database.
 
 Backups quiesce backend/auth/worker traffic, create a PostgreSQL custom-format
 logical dump, issue a synchronous Redis save, and archive the stopped
-Redis/MinIO/Qdrant/backend-syncing volumes. The schema-v2 SHA-256 manifest
-binds every artifact to the source Git revision plus stable fingerprints of the
-effective backend/auth image strings, effective Compose configuration, and the
-Better Auth/Firestore migration owners. Every backup artifact and the manifest
-are forced to mode `0600`; verification rejects a missing, malformed, changed,
-or non-private manifest/artifact, including a structurally incomplete v2
-payload, missing source revision, or missing/non-64-hex fingerprint. The
-checked-in helper and its CLI use the same three-fingerprint interface, so a
-manual `manifest`/`verify` invocation cannot silently fall back to the old v1
-shape. Store the runtime env/secrets separately: they are deliberately never
-copied into a backup directory.
+Redis/MinIO/Qdrant/backend-syncing volumes. Each artifact is streamed through
+the checked-in `omi-backup-aead-v1` envelope (AES-GCM chunks with a random
+per-backup salt and nonce); the operator must provide a separate, mode-`0600`
+file containing exactly 32 random bytes through
+`SELF_HOST_BACKUP_KEY_FILE`. There is no generated, default, environment-value,
+or repository-held key. The schema-v3 SHA-256 manifest binds encrypted
+artifacts to the source Git revision plus stable fingerprints of the effective
+backend/auth image strings, effective Compose configuration, and the Better
+Auth/Firestore migration owners. The manifest contains ciphertext checksums and
+non-secret envelope format metadata only; key bytes are never copied into the
+backup directory, manifest, or logs. Verification authenticates every envelope
+before it succeeds and rejects missing, malformed, changed, or non-private
+artifacts. Store the runtime env/secrets separately: they are deliberately
+never copied into a backup directory.
 
-The snapshot helper provides integrity and filesystem-permission checks, not
-encryption. Production backup directories must therefore live on an
-operator-managed encrypted filesystem/object store, or be wrapped by an
-externally reviewed age/KMS encryption workflow before leaving the host. The
-encryption key must be managed separately from this repository and exercised
-in a real restore drill; `0600` and SHA-256 alone are not encryption evidence.
+Create and protect the key outside the repository. An operator may use a
+secret manager to materialize this file for the duration of the operation; the
+repository does not claim that this is a production KMS integration or a
+completed restore drill:
+
+```bash
+umask 077
+openssl rand -out /secure/omi-self-host-backup.key 32
+chmod 600 /secure/omi-self-host-backup.key
+export SELF_HOST_BACKUP_KEY_FILE=/secure/omi-self-host-backup.key
+```
 
 ```bash
 SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
+SELF_HOST_BACKUP_KEY_FILE=/secure/omi-self-host-backup.key \
   deploy/self-host/operations.sh backup /srv/backups/omi/2026-08-20T120000Z
-deploy/self-host/operations.sh verify-backup /srv/backups/omi/2026-08-20T120000Z
+SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
+SELF_HOST_BACKUP_KEY_FILE=/secure/omi-self-host-backup.key \
+  deploy/self-host/operations.sh verify-backup /srv/backups/omi/2026-08-20T120000Z
 ```
 
 Restore overwrites live state and is therefore fail-closed behind an explicit
@@ -308,6 +319,7 @@ keep the previous images/env file, then run:
 
 ```bash
 SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
+SELF_HOST_BACKUP_KEY_FILE=/secure/omi-self-host-backup.key \
 SELF_HOST_RESTORE_ACK=I_ACKNOWLEDGE_THIS_OVERWRITES_STATE \
   deploy/self-host/operations.sh restore /srv/backups/omi/2026-08-20T120000Z
 make self-host-migration-gate

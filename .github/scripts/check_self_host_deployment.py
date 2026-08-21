@@ -17,6 +17,8 @@ DEFAULT_EXAMPLE_ENV = ROOT / 'deploy' / 'self-host' / '.env.production.example'
 DEFAULT_BACKEND_DOCKERFILE = ROOT / 'backend' / 'Dockerfile'
 DEFAULT_AUTH_DOCKERFILE = ROOT / 'auth-server' / 'Dockerfile'
 DEFAULT_SEARXNG_SETTINGS = ROOT / 'deploy' / 'self-host' / 'searxng-settings.yml'
+DEFAULT_OPERATIONS = ROOT / 'deploy' / 'self-host' / 'operations.sh'
+DEFAULT_SNAPSHOT_TOOL = ROOT / 'deploy' / 'self-host' / 'volume-snapshot.py'
 
 REQUIRED_SERVICES = {
     'postgres',
@@ -681,6 +683,21 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     errors.extend(validate_macos_client_model_egress())
     errors.extend(validate_release_client_model_egress())
     text = compose_path.read_text(encoding='utf-8')
+    operations_text = DEFAULT_OPERATIONS.read_text(encoding='utf-8')
+    snapshot_text = DEFAULT_SNAPSHOT_TOOL.read_text(encoding='utf-8')
+    if 'SELF_HOST_BACKUP_KEY_FILE' in text:
+        errors.append('Compose must not receive the operations-only backup key path')
+    if (
+        'SELF_HOST_BACKUP_KEY_FILE' not in operations_text
+        or '--volume "$key_file:/backup-key/key:ro"' not in operations_text
+        or '--key-file /backup-key/key' not in operations_text
+    ):
+        errors.append('operations.sh must require the explicit backup key file for every backup path')
+    if (
+        "ENVELOPE_FORMAT = 'omi-backup-aead-v1'" not in snapshot_text
+        or 'MANIFEST_SCHEMA_VERSION = 3' not in snapshot_text
+    ):
+        errors.append('volume-snapshot.py must enforce the authenticated encrypted manifest format')
     searxng_settings = DEFAULT_SEARXNG_SETTINGS.read_text(encoding='utf-8')
     if not re.search(r'(?ms)^search:\s*\n\s+formats:\s*\n(?:\s+-\s+\w+\s*\n)*\s+-\s+json\s*$', searxng_settings):
         errors.append('SearXNG settings must enable the JSON search API')
@@ -854,6 +871,8 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
 
     env = _dotenv(env_path)
     example_mode = env_path.name.endswith('.example')
+    if 'SELF_HOST_BACKUP_KEY_FILE' in env:
+        errors.append('SELF_HOST_BACKUP_KEY_FILE is operations-only and must not be stored in the Compose env file')
     if env.get('BACKEND_IMAGE') and env.get('BACKEND_IMAGE') == env.get('AUTH_SERVER_IMAGE'):
         errors.append('BACKEND_IMAGE and AUTH_SERVER_IMAGE must be distinct tags')
     missing_env = sorted(name for name in REQUIRED_ENV_FILE_KEYS if not env.get(name))
