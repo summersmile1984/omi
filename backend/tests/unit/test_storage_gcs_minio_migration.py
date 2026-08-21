@@ -300,6 +300,73 @@ def test_apply_streams_create_only_objects_then_verify_reconciles_fresh_source_a
     assert checkpoint_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_apply_rechecks_source_guard_before_each_source_object_read(tmp_path: Path) -> None:
+    source, plan, manifest = _captured(tmp_path)
+    target = _FakeTarget()
+    checkpoint_path = tmp_path / 'checkpoint.json'
+    calls = 0
+
+    def guard() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise migration.SourceWriteFreezeError('source-write freeze lease expired')
+
+    with pytest.raises(migration.SourceWriteFreezeError, match='lease expired'):
+        migration.run_apply(
+            source,
+            target,
+            plan,
+            manifest,
+            checkpoint_path,
+            existing_policy='create-only',
+            source_read_guard=guard,
+        )
+
+    assert calls == 2
+    assert target.put_calls == 1
+    checkpoint = json.loads(checkpoint_path.read_text(encoding='utf-8'))
+    assert checkpoint['status'] == 'failed'
+    assert checkpoint['next_index'] == 1
+
+
+def test_verify_rechecks_source_guard_before_passing_cutover_evidence(tmp_path: Path) -> None:
+    source, plan, manifest = _captured(tmp_path)
+    target = _FakeTarget()
+    checkpoint_path = tmp_path / 'checkpoint.json'
+    migration.run_apply(
+        source,
+        target,
+        plan,
+        manifest,
+        checkpoint_path,
+        existing_policy='create-only',
+    )
+    calls = 0
+
+    def guard() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise migration.SourceWriteFreezeError('source-write freeze lease expired')
+
+    with pytest.raises(migration.SourceWriteFreezeError, match='lease expired'):
+        migration.run_verify(
+            source,
+            target,
+            plan,
+            manifest,
+            checkpoint_path,
+            existing_policy='create-only',
+            source_read_guard=guard,
+        )
+
+    assert calls == 4
+    checkpoint = json.loads(checkpoint_path.read_text(encoding='utf-8'))
+    assert checkpoint['status'] == 'failed'
+    assert 'source_live_count' not in checkpoint
+
+
 @pytest.mark.parametrize('existing_policy', ['create-only', 'same-hash'])
 def test_policy_resumes_after_crash_between_target_write_and_checkpoint(
     tmp_path: Path,

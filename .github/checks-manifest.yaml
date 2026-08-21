@@ -28,7 +28,7 @@ checks:
     command: ["bash", "backend/scripts/test-storage-gcs-minio-migration.sh"]
     triggers: ["backend/scripts/storage_gcs_minio_migration.py", "backend/scripts/source_write_freeze.py", "backend/scripts/test-storage-gcs-minio-migration.sh", "backend/tests/unit/test_storage_gcs_minio_migration.py", "backend/tests/unit/test_source_write_freeze.py", "deploy/self-host/**", "backend/AGENTS.md", ".github/checks-manifest.yaml"]
     lanes: ["local", "ci"]
-    reason: "fork PR #1 added the MinIO runtime without a GCS/Firebase Storage inventory, resumable copy, or reconciliation path; this behavioral gate prevents production object migration from becoming an undocumented manual copy again"
+    reason: "fork PR #1 added the MinIO runtime without a GCS/Firebase Storage inventory, resumable copy, or reconciliation path; this behavioral gate prevents production object migration from becoming an undocumented manual copy again and keeps the source-write freeze live for every source read and final evidence transition"
   - id: self-host-auth-runtime-contract
     command: ["npm", "--prefix", "auth-server", "test"]
     triggers: ["auth-server/src/**", "auth-server/test/**", "auth-server/package.json", "auth-server/package-lock.json", ".github/checks-manifest.yaml"]

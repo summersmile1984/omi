@@ -644,7 +644,10 @@ python3 backend/scripts/source_write_freeze.py verify \
 
 The Firestore import and storage apply/verify commands require this lease and
 verify its signature, exact source authority, scopes, permissions, and expiry
-at invocation time. External cutover acceptance (`--external` or
+at invocation time. Storage apply/verify re-check the lease before every
+source-object read and immediately before recording passing cutover evidence,
+so a long-running migration cannot continue or authorize traffic after the
+bounded freeze expires. External cutover acceptance (`--external` or
 `--external-cutover-live`) also requires the same lease through
 `SELF_HOST_SOURCE_WRITE_FREEZE_LEASE`, `SELF_HOST_SOURCE_PROJECT`,
 `SELF_HOST_SOURCE_DATABASE`, and `SELF_HOST_SOURCE_ENDPOINT`; missing or
