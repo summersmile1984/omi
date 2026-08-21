@@ -220,6 +220,27 @@ def test_self_hosted_disabled_agent_vm_provider_never_discovers_gce(monkeypatch)
     auth_default.assert_not_called()
 
 
+def test_self_hosted_profile_defaults_agent_vm_provider_to_disabled(monkeypatch):
+    monkeypatch.delenv('AGENT_VM_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setattr(agent_vm_account_cleanup, 'read_agent_vm_migration_journals', lambda _uid: [])
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_agent_vm', lambda _uid: None)
+    monkeypatch.setattr(agent_vm_account_cleanup.users_db, 'get_late_agent_vm_cleanup', lambda _uid: None)
+    auth_default = MagicMock(side_effect=AssertionError('self-hosted cleanup must not discover ADC'))
+    monkeypatch.setattr(agent_vm_account_cleanup.google.auth, 'default', auth_default)
+
+    agent_vm_account_cleanup.delete_agent_vm_for_account('self-hosted-user')
+
+    auth_default.assert_not_called()
+
+
+def test_managed_profile_keeps_agent_vm_gce_default(monkeypatch):
+    monkeypatch.delenv('AGENT_VM_PROVIDER', raising=False)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'omi_cloud')
+
+    assert agent_vm_account_cleanup._agent_vm_provider() == 'gce'
+
+
 def test_self_hosted_disabled_agent_vm_provider_fails_closed_on_legacy_state(monkeypatch):
     monkeypatch.setenv('AGENT_VM_PROVIDER', 'disabled')
     monkeypatch.setattr(

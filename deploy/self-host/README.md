@@ -462,8 +462,10 @@ Both commands print JSON. Reconciliation exits `2` on missing, unexpected, or
 content-mismatched documents; E2EE conversations are intentionally absent from
 both the expected and actual searchable set.
 
-Self-host Compose also sets `AGENT_VM_PROVIDER=disabled`. It never discovers
-GCP ADC or calls `compute.googleapis.com`. Account deletion fails closed when an
+Self-host Compose also sets `AGENT_VM_PROVIDER=disabled`. The backend applies
+the same default whenever `OMI_DEPLOYMENT_PROFILE` is neutral or self-hosted,
+so a direct launch or stale container never discovers GCP ADC or calls
+`compute.googleapis.com`. Account deletion fails closed when an
 imported account still has an `agent_vm` pointer or migration journal; reconcile
 retired GCE resources before cutover and rerun the inventory rather than treating
 missing GCP credentials as a successful deletion.

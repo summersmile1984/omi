@@ -37,7 +37,12 @@ def _agent_vm_provider() -> str:
     must migrate/reconcile that state before cutover.
     """
 
-    provider = os.getenv(_AGENT_VM_PROVIDER_ENV, 'gce').strip().lower()
+    configured = os.getenv(_AGENT_VM_PROVIDER_ENV, '').strip().lower()
+    if configured:
+        provider = configured
+    else:
+        profile = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower()
+        provider = 'disabled' if profile in {'neutral', 'self_hosted', 'self-hosted'} else 'gce'
     if provider not in _AGENT_VM_PROVIDERS:
         raise RuntimeError(f'unsupported Agent VM provider {provider!r}')
     return provider

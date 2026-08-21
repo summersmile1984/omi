@@ -201,9 +201,10 @@ deployment:
   surface cannot download Hugging Face weights and accepts only a user/operator
   selected local `.bin` model. Managed profiles retain their existing download
   flow.
-- Agent VM cleanup is explicitly `AGENT_VM_PROVIDER=disabled`; legacy GCE
-  state blocks deletion until it is imported/reconciled, so missing ADC cannot
-  be mistaken for successful cleanup.
+- Agent VM cleanup is explicitly `AGENT_VM_PROVIDER=disabled`; neutral and
+  self-hosted direct launches apply the same default when the binding is
+  omitted. Legacy GCE state blocks deletion until it is imported/reconciled,
+  so missing ADC cannot be mistaken for successful cleanup.
 - Firebase Auth users and Firebase Storage objects have generation-pinned,
   checkpointed import tools. These are safe to run against production exports,
   but the repository contains no production credentials and therefore does not
