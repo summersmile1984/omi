@@ -848,6 +848,11 @@ undeclared external host, raise the typed
 the request is sent. The checked-in example includes the generic LLM,
 realtime, and object authorities; operators must add any optional push, TTS,
 icon, maps, webhook, or user-fetch authority they intentionally enable.
+Marketplace app manifests, app-tool webhooks, and remote MCP app servers are
+also caller-configured authorities: add their host names explicitly when
+using those integrations in a neutral deployment. The backend validates these
+authorities before manifest probes, OAuth/MCP requests, or tool execution and
+never treats a cached manifest as permission to bypass the allowlist.
 This guard covers the backend shared HTTP clients only and is not a network
 firewall or a claim of universal socket isolation.
 

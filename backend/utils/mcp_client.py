@@ -20,6 +20,7 @@ from urllib.parse import urlencode, urljoin, urlparse
 import httpx
 
 from models.app import ChatTool
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.log_sanitizer import sanitize
 import logging
 
@@ -44,6 +45,7 @@ async def discover_oauth_metadata(server_url: str) -> Optional[dict[str, Any]]:
     parsed = urlparse(server_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
     metadata_url = urljoin(origin, "/.well-known/oauth-authorization-server")
+    assert_http_endpoint_allowed(metadata_url)
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
@@ -78,6 +80,7 @@ async def register_oauth_client(
     if scopes:
         payload["scope"] = " ".join(scopes)
 
+    assert_http_endpoint_allowed(registration_endpoint)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(registration_endpoint, json=payload)
         resp.raise_for_status()
@@ -143,6 +146,7 @@ async def exchange_oauth_code(
     if code_verifier:
         payload["code_verifier"] = code_verifier
 
+    assert_http_endpoint_allowed(token_endpoint)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(token_endpoint, data=payload)
         resp.raise_for_status()
@@ -177,6 +181,7 @@ async def refresh_oauth_token(
     if client_secret:
         payload["client_secret"] = client_secret
 
+    assert_http_endpoint_allowed(token_endpoint)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(token_endpoint, data=payload)
         resp.raise_for_status()
@@ -245,6 +250,7 @@ async def _mcp_post(
     if session_id:
         headers["Mcp-Session-Id"] = session_id
 
+    assert_http_endpoint_allowed(server_url)
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
         resp = await client.post(server_url, json=payload, headers=headers, follow_redirects=True)
 
@@ -329,6 +335,7 @@ async def _sse_send_and_receive_inner(
     responses: list[dict[str, Any]] = []
     post_endpoint: Optional[str] = None
 
+    assert_http_endpoint_allowed(sse_url)
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
         async with client.stream("GET", sse_url, headers=headers, follow_redirects=True) as stream:
             if stream.status_code == 401:
@@ -367,6 +374,7 @@ async def _sse_send_and_receive_inner(
                                 post_endpoint = data_str
                             else:
                                 post_endpoint = origin + data_str
+                            assert_http_endpoint_allowed(post_endpoint)
                             logger.info(f"[MCP SSE] Got endpoint: {sanitize(post_endpoint)}")
 
                             # Now send all payloads

@@ -79,6 +79,7 @@ from utils import stripe
 from utils.llm.persona import condense_conversations, condense_memories, generate_persona_description, condense_tweets
 from utils.llm.usage_tracker import track_usage, Features
 from utils.executors import run_blocking, db_executor, llm_executor
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.social import get_twitter_timeline
 import logging
 
@@ -142,6 +143,11 @@ def validate_app_endpoints_for_reenable(app_dict: Dict[str, Any], update_dict: D
         )
     for label, url, method, require_2xx in endpoints_to_check:
         try:
+            # Marketplace/app endpoints are user-controlled authorities.  Keep
+            # the synchronous re-enable probe behind the same neutral deployment
+            # boundary as the shared HTTP pools; otherwise a self-hosted process
+            # could probe an arbitrary host before the app is enabled.
+            assert_http_endpoint_allowed(url)
             resp = httpx.request(method, url, json={}, timeout=10.0, follow_redirects=True)
             if require_2xx and (resp.status_code < 200 or resp.status_code >= 300):
                 raise HTTPException(
@@ -1498,6 +1504,15 @@ def fetch_app_chat_tools_from_manifest(
     }
     """
     if not manifest_url:
+        return None
+
+    # Validate before consulting the cache as well as before the network call:
+    # a neutral process must not revive an artifact fetched from a forbidden
+    # managed/vendor authority.
+    try:
+        assert_http_endpoint_allowed(manifest_url)
+    except Exception as error:
+        logger.warning("Manifest authority unavailable: %s", type(error).__name__)
         return None
 
     # Check cache first (unless force refresh)
