@@ -435,8 +435,11 @@ def get_llm(
     """
     gateway_feature_mode = should_route_features_through_gateway()
 
+    # Keep the legacy model-config seam authoritative for callers/tests that
+    # inject a request-scoped route, while taking optional fallbacks from the
+    # shared manifest resolver.
     resolved_route = resolve_feature_route(feature)
-    model, provider = resolved_route.primary.model, resolved_route.primary.provider
+    model, provider = _get_model_config(feature)
 
     if provider == 'anthropic' and not gateway_feature_mode:
         raise ValueError(
@@ -503,16 +506,23 @@ def get_llm(
                 fallback_options = get_route_options(feature, fallback.model, fallback.provider)
                 if request_timeout is not None:
                     fallback_options = {**fallback_options, 'request_timeout': request_timeout}
-                fallback_models.append(
-                    get_default_client(fallback.model, fallback.provider, streaming, fallback_options)
-                )
+                try:
+                    fallback_models.append(
+                        get_default_client(fallback.model, fallback.provider, streaming, fallback_options)
+                    )
+                except ModelProviderConfigurationError:
+                    # Optional fallbacks must not prevent a configured primary
+                    # from being constructed. They become executable only when
+                    # their own credential/endpoint contract is satisfied.
+                    continue
                 route_labels.append(f'{fallback.provider}:{fallback.model}')
-            result = BoundedFallbackChatModel(
-                primary=result,
-                fallback_models=tuple(fallback_models),
-                route_labels=tuple(route_labels),
-                feature=feature,
-            )
+            if fallback_models:
+                result = BoundedFallbackChatModel(
+                    primary=result,
+                    fallback_models=tuple(fallback_models),
+                    route_labels=tuple(route_labels),
+                    feature=feature,
+                )
 
     result = maybe_wrap_dev_gateway_shadow(
         feature=feature,

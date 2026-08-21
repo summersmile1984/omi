@@ -907,8 +907,7 @@ return {1, current, ttl}
 """
 )
 
-_RATE_LIMIT_RELEASE_LUA = r.register_script(
-    """
+_RATE_LIMIT_RELEASE_LUA_SOURCE = """
 local key = KEYS[1]
 local current = tonumber(redis.call('GET', key) or '0') or 0
 if current <= 1 then
@@ -920,9 +919,9 @@ if remaining <= 0 then
     redis.call('DEL', key)
     return 0
 end
-return remaining
+    return remaining
 """
-)
+_RATE_LIMIT_RELEASE_LUA = r.register_script(_RATE_LIMIT_RELEASE_LUA_SOURCE)
 
 _REALTIME_RELAY_LEASE_RELEASE_LUA = r.register_script(
     """

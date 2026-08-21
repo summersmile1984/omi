@@ -216,3 +216,15 @@ class BoundedFallbackChatModel(BaseChatModel):
             for candidate in self._candidates()
         ]
         return BoundedFallbackRunnable(candidates, self.route_labels, feature=self.feature)
+
+    def bind_tools(self, tools: Sequence[Any], *, tool_choice: str | None = None, **kwargs: Any) -> Runnable[Any, Any]:
+        """Bind the same tool contract to every candidate before fallback dispatch.
+
+        Binding must happen before invocation so a retryable transport failure on the
+        primary does not lose the caller's tool schema or choice on the fallback.
+        """
+
+        candidates = [
+            candidate.bind_tools(tools, tool_choice=tool_choice, **kwargs) for candidate in self._candidates()
+        ]
+        return BoundedFallbackRunnable(candidates, self.route_labels, feature=self.feature)
