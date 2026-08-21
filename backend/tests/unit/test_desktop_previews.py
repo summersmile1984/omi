@@ -48,6 +48,20 @@ class TestPreviewManifestNormalization:
         assert manifest["source_sha"] == SOURCE_SHA
         assert manifest["notarization"] == "stapled"
 
+    def test_self_host_preview_uses_public_minio_bucket(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("STORAGE_BACKEND", "minio")
+        monkeypatch.setenv("PUBLIC_OBJECTS_URL", "https://objects.example.com")
+        monkeypatch.setenv("BUCKET_DESKTOP_UPDATES", "omi-desktop-updates")
+        manifest = normalize_preview_manifest(
+            _manifest(
+                dmg_url=(
+                    f"https://objects.example.com/omi-desktop-updates/previews/{SLUG}/{SOURCE_SHA}/Omi-Preview.dmg"
+                )
+            )
+        )
+
+        assert manifest["dmg_url"].startswith("https://objects.example.com/omi-desktop-updates/")
+
     @pytest.mark.parametrize("slug", ["../preview", "preview/foo", "UPPERCASE", "contains space", "-leading"])
     def test_rejects_non_path_safe_slug(self, slug):
         with pytest.raises(ValueError, match="slug"):

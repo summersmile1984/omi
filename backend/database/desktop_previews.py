@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import os
 import re
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -93,9 +94,10 @@ def _preview_dmg_url(data: dict[str, Any], *, slug: str, source_sha: str) -> str
     value = _https_url(data, "dmg_url", required=True)
     assert value is not None
     parsed = urlparse(value)
-    expected_path = f"/{PREVIEW_BUCKET_NAME}/previews/{slug}/{source_sha}/Omi-Preview.dmg"
+    expected_host, expected_prefix = _preview_object_authority()
+    expected_path = f"{expected_prefix}/previews/{slug}/{source_sha}/Omi-Preview.dmg"
     if (
-        parsed.netloc != PREVIEW_BUCKET_HOST
+        parsed.netloc != expected_host
         or parsed.path != expected_path
         or parsed.params
         or parsed.query
@@ -103,6 +105,28 @@ def _preview_dmg_url(data: dict[str, Any], *, slug: str, source_sha: str) -> str
     ):
         raise ValueError("dmg_url must be the canonical immutable preview artifact URL")
     return value
+
+
+def _preview_object_authority() -> tuple[str, str]:
+    """Return the configured public object authority for immutable previews.
+
+    Managed deployments retain the historical GCS URL. Self-host uses the
+    same public MinIO origin as every other object and its configured desktop
+    update bucket, so preview registration cannot silently pin the app to GCS.
+    """
+    if os.getenv("STORAGE_BACKEND", "").strip().lower() != "minio":
+        return PREVIEW_BUCKET_HOST, f"/{PREVIEW_BUCKET_NAME}"
+    endpoint = (os.getenv("MINIO_PUBLIC_ENDPOINT") or os.getenv("PUBLIC_OBJECTS_URL") or "").strip()
+    if not endpoint:
+        raise ValueError("MINIO_PUBLIC_ENDPOINT or PUBLIC_OBJECTS_URL is required for MinIO previews")
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError("MINIO_PUBLIC_ENDPOINT must be an exact HTTPS origin for preview artifacts")
+    bucket = os.getenv("BUCKET_DESKTOP_UPDATES", "").strip()
+    if not bucket or "/" in bucket or bucket in {".", ".."}:
+        raise ValueError("BUCKET_DESKTOP_UPDATES is required for MinIO previews")
+    prefix = parsed.path.rstrip("/")
+    return parsed.netloc, f"{prefix}/{bucket}" if prefix else f"/{bucket}"
 
 
 def _manifest_id(slug: str, source_sha: str) -> str:
