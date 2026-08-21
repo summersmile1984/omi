@@ -262,9 +262,12 @@ binds every artifact to the source Git revision plus stable fingerprints of the
 effective backend/auth image strings, effective Compose configuration, and the
 Better Auth/Firestore migration owners. Every backup artifact and the manifest
 are forced to mode `0600`; verification rejects a missing, malformed, changed,
-or non-private manifest/artifact, including a missing or non-64-hex
-fingerprint. Store the runtime env/secrets separately: they are deliberately
-never copied into a backup directory.
+or non-private manifest/artifact, including a structurally incomplete v2
+payload, missing source revision, or missing/non-64-hex fingerprint. The
+checked-in helper and its CLI use the same three-fingerprint interface, so a
+manual `manifest`/`verify` invocation cannot silently fall back to the old v1
+shape. Store the runtime env/secrets separately: they are deliberately never
+copied into a backup directory.
 
 The snapshot helper provides integrity and filesystem-permission checks, not
 encryption. Production backup directories must therefore live on an
