@@ -127,7 +127,13 @@ else
     echo "ERROR: external egress policy artifact is missing or empty: $EGRESS_POLICY_ARTIFACT" >&2
     exit 1
   fi
-  if ! EGRESS_POLICY_CONTRACT_JSON="$(python3 "$EGRESS_POLICY_CONTRACT" "$EGRESS_POLICY_ARTIFACT" 2>&1)"; then
+  : "${OMI_SOURCE_GIT_COMMIT:?--external requires OMI_SOURCE_GIT_COMMIT for egress policy binding}"
+  : "${OMI_SOURCE_GIT_TREE:?--external requires OMI_SOURCE_GIT_TREE for egress policy binding}"
+  : "${OMI_RUNTIME_CONFIG_SHA256:?--external requires OMI_RUNTIME_CONFIG_SHA256 for egress policy binding}"
+  if ! EGRESS_POLICY_CONTRACT_JSON="$(python3 "$EGRESS_POLICY_CONTRACT" "$EGRESS_POLICY_ARTIFACT" \
+    --expected-git-commit "$OMI_SOURCE_GIT_COMMIT" \
+    --expected-git-tree "$OMI_SOURCE_GIT_TREE" \
+    --expected-config-sha256 "$OMI_RUNTIME_CONFIG_SHA256" 2>&1)"; then
     echo "ERROR: external egress policy artifact does not satisfy the reviewed JSON contract: $EGRESS_POLICY_CONTRACT_JSON" >&2
     exit 1
   fi
@@ -162,7 +168,7 @@ for target in targets:
     echo "ERROR: auth-server can open a reviewed vendor/arbitrary sentinel socket; enforce the supplied production egress policy" >&2
     exit 1
   fi
-  LIVE_EGRESS_EVIDENCE_JSON="$(python3 -c 'import json,sys; policy=json.loads(sys.argv[3]); print(json.dumps({"enforcement":"sentinel_targets_denied_with_operator_policy","sentinel_targets_denied":json.loads(sys.argv[1]),"workloads":["backend","queue-worker","auth-server"],"operator_policy_artifact_sha256":sys.argv[2],"operator_policy_schema_version":policy["schema_version"],"operator_policy_workloads":policy["workloads"],"operator_policy_denied_targets":policy["denied_targets"],"scope":"sentinel_targets_only"}, separators=(",", ":")))' "$SENTINEL_TARGETS_JSON" "$EGRESS_POLICY_SHA256" "$EGRESS_POLICY_METADATA_JSON")"
+  LIVE_EGRESS_EVIDENCE_JSON="$(python3 -c 'import json,sys; policy=json.loads(sys.argv[3]); print(json.dumps({"enforcement":"sentinel_targets_denied_with_operator_policy","sentinel_targets_denied":json.loads(sys.argv[1]),"workloads":["backend","queue-worker","auth-server"],"operator_policy_artifact_sha256":sys.argv[2],"operator_policy_schema_version":policy["schema_version"],"operator_policy_workloads":policy["workloads"],"operator_policy_denied_targets":policy["denied_targets"],"operator_policy_source_git_commit":policy["source_git_commit"],"operator_policy_source_git_tree":policy["source_git_tree"],"operator_policy_runtime_config_sha256":policy["runtime_config_sha256"],"scope":"sentinel_targets_only"}, separators=(",", ":")))' "$SENTINEL_TARGETS_JSON" "$EGRESS_POLICY_SHA256" "$EGRESS_POLICY_METADATA_JSON")"
 fi
 
 CONFIGURED_SEARXNG_SECRET="$(dotenv_value SEARXNG_SECRET)"

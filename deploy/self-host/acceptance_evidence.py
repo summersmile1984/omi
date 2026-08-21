@@ -272,15 +272,23 @@ def build_evidence(
         'api.anthropic.com',
         'generativelanguage.googleapis.com',
     ]
+    runtime_source_and_config_passed, runtime_config_sha256 = _runtime_source_and_config_binding(
+        runtime_evidence,
+        git_commit=git_commit,
+        git_tree=git_tree,
+    )
     operator_policy_hash = live_egress.get('operator_policy_artifact_sha256') if isinstance(live_egress, dict) else None
     sentinel_policy_verified = bool(
         isinstance(live_egress, dict)
         and live_egress.get('enforcement') == 'sentinel_targets_denied_with_operator_policy'
         and expected_sentinels.issubset(set(live_egress.get('sentinel_targets_denied') or []))
         and {'backend', 'queue-worker', 'auth-server'}.issubset(set(live_egress.get('workloads') or []))
-        and live_egress.get('operator_policy_schema_version') == 1
+        and live_egress.get('operator_policy_schema_version') == 2
         and live_egress.get('operator_policy_workloads') == expected_policy_workloads
         and live_egress.get('operator_policy_denied_targets') == expected_policy_targets
+        and live_egress.get('operator_policy_source_git_commit') == git_commit
+        and live_egress.get('operator_policy_source_git_tree') == git_tree
+        and live_egress.get('operator_policy_runtime_config_sha256') == runtime_config_sha256
         and isinstance(operator_policy_hash, str)
         and len(operator_policy_hash) == 64
     )
@@ -407,11 +415,6 @@ def build_evidence(
         realtime_runtime_binding_passed = True
     if failed_hard_capability is None and not realtime_runtime_binding_passed:
         failed_hard_capability = 'realtime_relay_runtime_config_binding'
-    runtime_source_and_config_passed, runtime_config_sha256 = _runtime_source_and_config_binding(
-        runtime_evidence,
-        git_commit=git_commit,
-        git_tree=git_tree,
-    )
     runtime_health_and_identity_passed = bool(
         isinstance(runtime_evidence, dict)
         and runtime_evidence.get('all_required_services_healthy') is True

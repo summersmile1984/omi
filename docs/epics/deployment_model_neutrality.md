@@ -139,12 +139,13 @@ aboutness instruction and was correctly blocked by the unchanged subject-safety
 validator. After the production prompt made the `self + primary_user` mapping
 explicit, two consecutive full HTTPS runs reached validated Long-term admission,
 projection and public retrieval. External mode now
-requires a checked-in JSON policy contract plus exact-workload denials for OpenAI,
+requires a checked-in schema-v2 JSON policy contract bound to the tested source
+commit/tree/config plus exact-workload denials for OpenAI,
 Google, Anthropic, Omi and an arbitrary public-IP sentinel; no such production
 run has been claimed. Valid source-attributed evidence therefore continues to record
-`authorizes_production_cutover=false`. The contract validates only the exact
-artifact shape and scope; it is not a cryptographic signature and cannot replace
-host firewall or change-record evidence.
+`authorizes_production_cutover=false`. The contract validates the exact
+artifact shape, scope, and source/config binding; it is not a cryptographic
+signature and cannot replace host firewall or change-record evidence.
 
 ## Explicit self-hosted capability gaps
 

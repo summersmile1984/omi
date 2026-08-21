@@ -890,7 +890,7 @@ review evidence, not a cryptographic signature):
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "enforcement": "network_default_deny",
   "workloads": ["auth-server", "backend", "queue-worker"],
   "denied_targets": [
@@ -899,14 +899,18 @@ review evidence, not a cryptographic signature):
     "api.omi.me",
     "api.anthropic.com",
     "generativelanguage.googleapis.com"
-  ]
+  ],
+  "source_git_commit": "<40-hex-tested-commit>",
+  "source_git_tree": "<40-hex-tested-tree>",
+  "runtime_config_sha256": "<64-hex-effective-config>"
 }
 ```
 
 The contract prevents an arbitrary non-empty file from being treated as a
-reviewed policy. It does not prove that the host firewall applied the policy;
-the per-workload socket probes are the behavioral corroboration, and the
-artifact's original SHA-256 plus change record remain operator evidence.
+reviewed policy and binds it to the exact source/config identity that started
+the tested workloads. It does not prove that the host firewall applied the
+policy; the per-workload socket probes are the behavioral corroboration, and
+the artifact's original SHA-256 plus change record remain operator evidence.
 
 ## Firestore-to-PostgreSQL cutover gate
 

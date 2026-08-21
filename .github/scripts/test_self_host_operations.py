@@ -1081,7 +1081,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             ],
             'workloads': ['backend', 'queue-worker', 'auth-server'],
             'operator_policy_artifact_sha256': 'a' * 64,
-            'operator_policy_schema_version': 1,
+            'operator_policy_schema_version': 2,
             'operator_policy_workloads': ['auth-server', 'backend', 'queue-worker'],
             'operator_policy_denied_targets': [
                 '1.1.1.1',
@@ -1090,6 +1090,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'api.anthropic.com',
                 'generativelanguage.googleapis.com',
             ],
+            'operator_policy_source_git_commit': 'd' * 40,
+            'operator_policy_source_git_tree': 'e' * 40,
+            'operator_policy_runtime_config_sha256': 'c' * 64,
             'scope': 'sentinel_targets_only',
         }
         external_with_policy = EVIDENCE.build_evidence(
@@ -1390,7 +1393,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             policy.write_text(
                 json.dumps(
                     {
-                        'schema_version': 1,
+                        'schema_version': 2,
                         'enforcement': 'network_default_deny',
                         'workloads': ['auth-server', 'backend', 'queue-worker'],
                         'denied_targets': [
@@ -1400,6 +1403,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                             'api.anthropic.com',
                             'generativelanguage.googleapis.com',
                         ],
+                        'source_git_commit': 'd' * 40,
+                        'source_git_tree': 'e' * 40,
+                        'runtime_config_sha256': 'c' * 64,
                     }
                 )
                 + '\n',
@@ -1451,6 +1457,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'SELF_HOST_SOURCE_DATABASE': '(default)',
                 'SELF_HOST_SOURCE_ENDPOINT': 'https://firestore.googleapis.com',
                 'OMI_SOURCE_WRITE_FREEZE_SECRET': 'test-source-freeze-secret',
+                'OMI_SOURCE_GIT_COMMIT': 'd' * 40,
+                'OMI_SOURCE_GIT_TREE': 'e' * 40,
+                'OMI_RUNTIME_CONFIG_SHA256': 'c' * 64,
             }
             base_environment.pop('SELF_HOST_EGRESS_POLICY_ARTIFACT', None)
             missing_policy = subprocess.run(
@@ -1501,7 +1510,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             policy.write_text(
                 json.dumps(
                     {
-                        'schema_version': 1,
+                        'schema_version': 2,
                         'enforcement': 'network_default_deny',
                         'workloads': ['auth-server', 'backend', 'queue-worker'],
                         'denied_targets': [
@@ -1511,6 +1520,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                             'api.anthropic.com',
                             'generativelanguage.googleapis.com',
                         ],
+                        'source_git_commit': 'd' * 40,
+                        'source_git_tree': 'e' * 40,
+                        'runtime_config_sha256': 'c' * 64,
                     }
                 )
                 + '\n',
@@ -1536,7 +1548,7 @@ class SelfHostOperationsTest(unittest.TestCase):
 
     def test_external_policy_contract_rejects_partial_or_unknown_scope(self) -> None:
         valid = {
-            'schema_version': 1,
+            'schema_version': 2,
             'enforcement': 'network_default_deny',
             'workloads': ['auth-server', 'backend', 'queue-worker'],
             'denied_targets': [
@@ -1546,10 +1558,14 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'api.anthropic.com',
                 'generativelanguage.googleapis.com',
             ],
+            'source_git_commit': 'd' * 40,
+            'source_git_tree': 'e' * 40,
+            'runtime_config_sha256': 'c' * 64,
         }
         self.assertEqual(EGRESS_POLICY.validate_policy(valid), valid)
         for field, value in (
             ('schema_version', True),
+            ('schema_version', 1),
             ('workloads', ['backend']),
             ('denied_targets', valid['denied_targets'][:-1]),
             ('enforcement', 'document_only'),
@@ -1917,6 +1933,8 @@ class SelfHostOperationsTest(unittest.TestCase):
             'external evidence',
             'SELF_HOST_RECOVERY_EVIDENCE',
             'production_kms_attested',
+            'schema_version": 2',
+            'source_git_commit',
         ):
             self.assertIn(required, readme)
 
