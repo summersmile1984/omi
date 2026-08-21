@@ -25,7 +25,7 @@ from utils.log_sanitizer import sanitize
 from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.other import endpoints as auth
 from utils.executors import run_blocking, critical_executor
-from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled
+from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled, tts_provider_missing_in_neutral_deployment
 from utils.tts_provider import selected_tts_provider, synthesize_openai_compatible_tts, synthesize_sherpa_tts
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,9 @@ async def tts_synthesize(
 
     if tts_explicitly_disabled():
         raise HTTPException(status_code=503, detail=TTS_DISABLED_DETAIL)
+    if tts_provider_missing_in_neutral_deployment():
+        error = ModelCapabilityUnavailableError('tts', 'provider_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
 
     selected_provider = selected_tts_provider()
     if selected_provider not in {'', 'elevenlabs', 'mimo', 'openai_compatible', 'sherpa_onnx'}:

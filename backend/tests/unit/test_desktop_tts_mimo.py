@@ -52,6 +52,31 @@ async def test_disabled_desktop_tts_never_resolves_openai_or_subscription(monkey
     }
 
 
+@pytest.mark.asyncio
+async def test_neutral_desktop_tts_missing_provider_never_uses_ambient_openai(monkeypatch):
+    import routers.desktop_tts_updates as mod
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('TTS_PROVIDER', raising=False)
+    monkeypatch.setenv('OPENAI_API_KEY', 'must-not-be-used')
+
+    async def fail_run_blocking(*_args, **_kwargs):
+        raise AssertionError('neutral TTS must fail before subscription/rate-limit/provider work')
+
+    monkeypatch.setattr(mod, 'run_blocking', fail_run_blocking)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mod.tts_synthesize(TtsSynthesizeRequest(text='hello', voice_id='alloy'), uid='user-1')
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        'code': 'model_capability_unavailable',
+        'capability': 'tts',
+        'reason': 'provider_not_configured',
+        'retryable': False,
+    }
+
+
 def test_mimo_synthesize_uses_client_and_returns_audio(monkeypatch):
     audio = b'RIFF\x24\x00\x00\x00WAVE'
     captured = {}

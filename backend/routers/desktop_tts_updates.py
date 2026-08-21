@@ -18,7 +18,7 @@ from utils.log_sanitizer import sanitize
 from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_desktop_trial_paywalled
-from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled
+from utils.tts_policy import TTS_DISABLED_DETAIL, tts_explicitly_disabled, tts_provider_missing_in_neutral_deployment
 from utils.tts_provider import selected_tts_provider, synthesize_openai_compatible_tts, synthesize_sherpa_tts
 
 logger = logging.getLogger(__name__)
@@ -204,6 +204,9 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
 
     if tts_explicitly_disabled():
         raise HTTPException(status_code=503, detail=TTS_DISABLED_DETAIL)
+    if tts_provider_missing_in_neutral_deployment():
+        error = ModelCapabilityUnavailableError('tts', 'provider_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
 
     selected_provider = selected_tts_provider()
     if selected_provider not in {'', 'openai', 'mimo', 'openai_compatible', 'sherpa_onnx'}:
