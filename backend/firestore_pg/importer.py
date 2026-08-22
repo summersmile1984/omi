@@ -224,10 +224,37 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def capture_source(client: Any, checkpoint_path: Path) -> dict[str, Any]:
+def _guarded_iter(values: Iterable[dict[str, Any]], guard: Callable[[], None] | None) -> Iterator[dict[str, Any]]:
+    """Advance a lazy source walk only while its freeze lease remains live.
+
+    Firestore enumeration can span many RPCs.  Checking a lease only before
+    the walk would allow a source write to resume halfway through a capture,
+    leaving a mixed-generation manifest that is not safe to resume.  The
+    guard is intentionally called before each ``next`` so callers can use a
+    short-lived external lease without relying on a guessed scan duration.
+    """
+
+    iterator = iter(values)
+    while True:
+        if guard is not None:
+            guard()
+        try:
+            yield next(iterator)
+        except StopIteration:
+            return
+
+
+def capture_source(
+    client: Any,
+    checkpoint_path: Path,
+    *,
+    source_read_guard: Callable[[], None] | None = None,
+) -> dict[str, Any]:
     """Capture one immutable source snapshot and create its resume checkpoint."""
     if checkpoint_path.exists():
         raise FileExistsError(f'import checkpoint already exists: {checkpoint_path}')
+    if source_read_guard is not None:
+        source_read_guard()
     source = _source_authority(client)
     manifest_path = checkpoint_path.with_suffix(checkpoint_path.suffix + '.documents.jsonl')
     if manifest_path.exists():
@@ -237,17 +264,27 @@ def capture_source(client: Any, checkpoint_path: Path) -> dict[str, Any]:
     record_digests: list[bytes] = []
     count = 0
     collections: set[str] = set()
-    with temporary.open('x', encoding='utf-8') as handle:
-        os.chmod(temporary, 0o600)
-        for record in walk_source(client):
-            encoded = _encoded_record(record)
-            handle.write(encoded.decode('utf-8') + '\n')
-            record_digests.append(_record_digest(encoded))
-            count += 1
-            collections.add(str(record['collection_id']))
-        handle.flush()
-        os.fsync(handle.fileno())
-    temporary.replace(manifest_path)
+    manifest_installed = False
+    try:
+        with temporary.open('x', encoding='utf-8') as handle:
+            os.chmod(temporary, 0o600)
+            for record in _guarded_iter(walk_source(client), source_read_guard):
+                encoded = _encoded_record(record)
+                handle.write(encoded.decode('utf-8') + '\n')
+                record_digests.append(_record_digest(encoded))
+                count += 1
+                collections.add(str(record['collection_id']))
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(manifest_path)
+        manifest_installed = True
+    except BaseException:
+        # A failed/expired lease must not leave a partial customer-data export
+        # that an operator could mistake for a resumable authority artifact.
+        temporary.unlink(missing_ok=True)
+        if manifest_installed:
+            manifest_path.unlink(missing_ok=True)
+        raise
     checkpoint = {
         'schema_version': IMPORT_SCHEMA_VERSION,
         'status': 'captured',
@@ -284,8 +321,8 @@ def target_inventory(engine: Optional[Engine] = None) -> Inventory:
     return _inventory(records)
 
 
-def _source_inventory(client: Any) -> Inventory:
-    records = list(walk_source(client))
+def _source_inventory(client: Any, source_read_guard: Callable[[], None] | None = None) -> Inventory:
+    records = list(_guarded_iter(walk_source(client), source_read_guard))
     records.sort(key=lambda item: str(item['path']))
     return _inventory(records)
 
@@ -339,7 +376,7 @@ def run_import(
             raise ImportReconciliationError(
                 'target contains documents but no matching checkpoint; use a fresh database or restore the checkpoint'
             )
-        checkpoint = capture_source(source_client, checkpoint_path)
+        checkpoint = capture_source(source_client, checkpoint_path, source_read_guard=freeze_guard)
 
     source = _source_authority(source_client)
     expected_authority = (
@@ -381,7 +418,7 @@ def run_import(
         manifest_inventory = _inventory(_manifest_records(manifest_path))
         if freeze_guard is not None:
             freeze_guard()
-        live_source = _source_inventory(source_client)
+        live_source = _source_inventory(source_client, source_read_guard=freeze_guard)
         target_state = target_inventory(engine)
         expected = (int(checkpoint['source_count']), str(checkpoint['source_content_hash']))
         observed = {

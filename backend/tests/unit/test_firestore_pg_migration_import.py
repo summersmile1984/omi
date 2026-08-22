@@ -182,6 +182,24 @@ def test_capture_source_writes_private_resume_manifest(tmp_path):
     assert len(manifest.read_text(encoding='utf-8').splitlines()) == 2
 
 
+def test_capture_source_rechecks_freeze_and_cleans_partial_manifest(tmp_path):
+    checkpoint_path = tmp_path / 'checkpoint.json'
+    calls = 0
+
+    def guard() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError('freeze lease expired during source capture')
+
+    with pytest.raises(RuntimeError, match='freeze lease expired'):
+        capture_source(_source(), checkpoint_path, source_read_guard=guard)
+
+    assert calls == 3
+    assert not checkpoint_path.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_capture_hash_is_independent_of_depth_first_versus_path_order(monkeypatch, tmp_path):
     records = [
         {'path': 'roots/a', 'data': {'v': 1}, 'collection_id': 'roots'},
@@ -222,6 +240,12 @@ def test_import_resumes_after_last_checkpoint_and_reconciles(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(importer, '_write_manifest_record', write)
 
+    freeze_checks = 0
+
+    def freeze_guard() -> None:
+        nonlocal freeze_checks
+        freeze_checks += 1
+
     checkpoint_path = tmp_path / 'checkpoint.json'
     source_client = SimpleNamespace(
         project='unit-source-project',
@@ -230,17 +254,33 @@ def test_import_resumes_after_last_checkpoint_and_reconciles(monkeypatch, tmp_pa
         _emulator_host=None,
     )
     with pytest.raises(RuntimeError, match='controlled interruption'):
-        importer.run_import(source_client, checkpoint_path, engine=object(), checkpoint_interval=1)
+        importer.run_import(
+            source_client,
+            checkpoint_path,
+            engine=object(),
+            checkpoint_interval=1,
+            freeze_guard=freeze_guard,
+        )
     failed = json.loads(checkpoint_path.read_text(encoding='utf-8'))
     assert failed['status'] == 'failed'
     assert failed['next_index'] == 1
 
-    result = importer.run_import(source_client, checkpoint_path, engine=object(), checkpoint_interval=1)
+    result = importer.run_import(
+        source_client,
+        checkpoint_path,
+        engine=object(),
+        checkpoint_interval=1,
+        freeze_guard=freeze_guard,
+    )
 
     assert result['status'] == 'passed'
     assert result['source_count'] == result['target_count'] == 2
     assert result['source_content_hash'] == result['target_content_hash']
     assert sorted(store) == ['roots/missing/nested_unknown/child', 'roots/present']
+    # The lease is checked before capture and before every source item in both
+    # the initial capture and the final live reconciliation, not just once per
+    # phase. This protects long-running migrations from a mid-scan expiry.
+    assert freeze_checks >= 6
 
 
 def test_import_resume_rejects_a_different_source_authority(monkeypatch, tmp_path):
