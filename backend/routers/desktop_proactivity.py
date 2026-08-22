@@ -20,6 +20,7 @@ from models.users import Subscription
 from utils.env_loader import EnvStage, resolve_stage_from_env
 from utils.executors import run_blocking
 from utils.http_client import get_llm_gateway_client, get_llm_gateway_semaphore
+from utils.egress_policy import NEUTRAL_DEPLOYMENT_PROFILES
 from utils.llm.desktop_llm_stub import llm_stub_enabled
 from utils.llm.gateway_client import llm_gateway_headers
 from utils.llm.gateway_observability import record_direct_exception_surface
@@ -133,6 +134,12 @@ def _dev_direct_provider_allowed() -> bool:
     return release_channel in {"development", "local"}
 
 
+def _neutral_deployment() -> bool:
+    """Return whether this process must not use a managed-provider recovery path."""
+
+    return os.getenv("OMI_DEPLOYMENT_PROFILE", "").strip().lower() in NEUTRAL_DEPLOYMENT_PROFILES
+
+
 def _proactive_provider_request(request: "ProactiveCompletionRequest", uid: str, request_id: str) -> _ProviderRequest:
     payload = _gateway_payload(request)
     gateway_url = os.getenv("OMI_LLM_GATEWAY_URL", "").strip()
@@ -160,6 +167,22 @@ def _proactive_provider_request(request: "ProactiveCompletionRequest", uid: str,
                 "retryable": False,
             },
         ) from error
+    except ValueError as error:
+        # Neutral route resolution rejects an absent or malformed explicit
+        # route before a wire target can be built. Keep that failure typed at
+        # the HTTP boundary instead of leaking a configuration exception as a
+        # 500; managed profiles retain the legacy error behavior.
+        if not _neutral_deployment():
+            raise
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "model_capability_unavailable",
+                "capability": feature,
+                "reason": "provider_route_not_configured",
+                "retryable": False,
+            },
+        ) from error
     if wire_targets:
         primary = wire_targets[0]
         payload["model"] = primary.api_model
@@ -177,6 +200,21 @@ def _proactive_provider_request(request: "ProactiveCompletionRequest", uid: str,
             wire_targets=wire_targets,
         )
 
+    # The direct OpenAI path is retained for the legacy development workflow,
+    # but a neutral/self-hosted process must never treat an ambient OpenAI key
+    # as its capability configuration.  It may continue through an explicit
+    # operator wire target above; absent that route this is a typed unavailable
+    # capability, before credentials are read or a vendor URL is constructed.
+    if _neutral_deployment():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "model_capability_unavailable",
+                "capability": feature,
+                "reason": "provider_route_not_configured",
+                "retryable": False,
+            },
+        )
     if not _dev_direct_provider_allowed():
         raise HTTPException(status_code=503, detail="Proactive model gateway is not configured")
     api_key = get_openai_api_key()

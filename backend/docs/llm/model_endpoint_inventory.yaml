@@ -99,6 +99,7 @@ surfaces:
     request_shape: non-streaming strict structured output with optional explicit prompt caching on reasoning
     gateway_lane_capability_needed: OpenAI-compatible structured-output lanes with explicit-cache support for reasoning
     migration_status: acknowledged_direct_provider_neutral_manifest_route; optional unconfigured fallbacks are filtered and 429/5xx/timeout alone may switch providers
+    neutral_guard: self_hosted/neutral profiles reject the development-only direct OpenAI recovery path before reading an ambient key or constructing the vendor URL; only an explicit operator wire target or gateway route is eligible
     test_guardrail_coverage: backend/tests/unit/test_desktop_proactivity.py and backend/tests/unit/test_llm_gateway_coverage_guardrails.py
   - surface: public_shared_conversation_chat
     code_path: backend/routers/public_shared_conversation_chat.py:public_shared_conversation_chat

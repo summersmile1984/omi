@@ -506,6 +506,30 @@ def test_direct_provider_fallback_fails_closed_outside_dev(monkeypatch):
     assert unavailable.value.detail == "Proactive model gateway is not configured"
 
 
+def test_self_hosted_never_uses_dev_openai_fallback(monkeypatch):
+    """A self-hosted process cannot turn a local stage plus ambient key into vendor egress."""
+
+    monkeypatch.delenv("OMI_LLM_GATEWAY_URL", raising=False)
+    monkeypatch.setenv("OMI_ENV_STAGE", "local")
+    monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+
+    def forbidden_key_read():
+        raise AssertionError("self-hosted route must fail before reading the OpenAI key")
+
+    monkeypatch.setattr(desktop_proactivity, "get_openai_api_key", forbidden_key_read)
+
+    with pytest.raises(desktop_proactivity.HTTPException) as unavailable:
+        desktop_proactivity._proactive_provider_request(request("proactive_extraction"), "user-1", "request-1")
+
+    assert unavailable.value.status_code == 503
+    assert unavailable.value.detail == {
+        "code": "model_capability_unavailable",
+        "capability": "desktop_proactive_extraction",
+        "reason": "provider_route_not_configured",
+        "retryable": False,
+    }
+
+
 @pytest.mark.asyncio
 async def test_self_host_generic_proactivity_executes_without_gateway_or_openai_key(monkeypatch):
     calls = []
