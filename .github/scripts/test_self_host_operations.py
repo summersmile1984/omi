@@ -236,6 +236,19 @@ PASSED_RECOVERY_EVIDENCE = {
 
 
 class SelfHostOperationsTest(unittest.TestCase):
+    def test_acceptance_evidence_writer_is_atomic_private_and_rejects_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'acceptance.json'
+            EVIDENCE._write_private_json(target, {'status': 'passed'})
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+            self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {'status': 'passed'})
+
+            linked = root / 'linked.json'
+            linked.symlink_to(target)
+            with self.assertRaisesRegex(RuntimeError, 'must not be a symlink'):
+                EVIDENCE._write_private_json(linked, {'status': 'tampered'})
+
     @staticmethod
     def _key_file(root: Path, value: bytes = b'k' * 32) -> Path:
         key_file = root / 'backup.key'
@@ -1593,9 +1606,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                 '"${SENSEVOICE_MODEL_HOST_PATH-unset}" "${SPEAKER_MODEL_HOST_DIR-unset}" '
                 '"${TTS_MODEL_HOST_DIR-unset}" "${GENERIC_OPENAI_BASE_URL-unset}" >> "$FAKE_DOCKER_CALLS"\n'
                 'case "$*" in *"ps --format json backend queue-worker auth-server"*) '
-                'printf \'%s\\n\' \'{"Service":"backend","State":"running","Health":"healthy"}\' '
-                '\'{"Service":"queue-worker","State":"running","Health":"healthy"}\' '
-                '\'{"Service":"auth-server","State":"running","Health":"healthy"}\';; esac\n'
+                'printf \'%s\\n\' \'[{"Service":"backend","State":"running","Health":"healthy"},'
+                '{"Service":"queue-worker","State":"running","Health":"healthy"},'
+                '{"Service":"auth-server","State":"running","Health":"healthy"}]\';; esac\n'
                 'case "$*" in *"exec -T searxng"*) '
                 f'printf \'%s\\n\' \'{{"effective_secret_nonempty":true,"effective_secret_not_known_default":true,"effective_secret_sha256":"{searxng_secret_sha256}"}}\';; esac\n'
                 'exit 0\n',

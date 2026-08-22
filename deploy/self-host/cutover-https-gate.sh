@@ -141,7 +141,16 @@ else
   EGRESS_POLICY_METADATA_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["policy"],separators=(",",":")))' "$EGRESS_POLICY_CONTRACT_JSON")"
   SENTINEL_TARGETS_JSON='["api.openai.com","generativelanguage.googleapis.com","api.anthropic.com","api.omi.me","1.1.1.1"]'
   WORKLOAD_STATUS_JSON="$(profile_compose ps --format json backend queue-worker auth-server)"
-  if ! python3 -c 'import json,sys; rows=[json.loads(line) for line in sys.argv[1].splitlines() if line.strip()]; expected={"backend","queue-worker","auth-server"}; healthy={row.get("Service") for row in rows if row.get("State")=="running" and row.get("Health")=="healthy"}; raise SystemExit(0 if healthy==expected else 1)' "$WORKLOAD_STATUS_JSON"; then
+  if ! python3 -c 'import json,sys
+raw=sys.argv[1].strip()
+try:
+    decoded=json.loads(raw)
+    rows=decoded if isinstance(decoded,list) else [decoded]
+except json.JSONDecodeError:
+    rows=[json.loads(line) for line in raw.splitlines() if line.strip()]
+expected={"backend","queue-worker","auth-server"}
+healthy={row.get("Service") for row in rows if row.get("State")=="running" and row.get("Health")=="healthy"}
+raise SystemExit(0 if healthy==expected else 1)' "$WORKLOAD_STATUS_JSON"; then
     echo "ERROR: backend, queue-worker, and auth-server must be the running healthy workloads before external egress probes" >&2
     exit 1
   fi

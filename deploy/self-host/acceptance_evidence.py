@@ -50,6 +50,35 @@ RECOVERY_EVIDENCE_KEYS = frozenset(
 )
 
 
+def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write acceptance evidence as a non-following 0600 file."""
+
+    if path.is_symlink():
+        raise RuntimeError(f'acceptance evidence path must not be a symlink: {path}')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding='utf-8',
+            dir=path.parent,
+            prefix=f'.{path.name}.',
+            suffix='.tmp',
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            os.chmod(handle.fileno(), 0o600)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        os.chmod(path, 0o600)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
 def _external_https_origin(value: Any) -> bool:
     if not isinstance(value, str) or not value:
         return False
@@ -733,8 +762,7 @@ def main() -> int:
         recovery_evidence=recovery_evidence,
     )
     path = Path(os.environ['ACCEPTANCE_EVIDENCE'])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    _write_private_json(path, evidence)
     print(f'zero-vendor acceptance evidence: {path}')
     return 0
 
