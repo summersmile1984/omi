@@ -1,4 +1,14 @@
-from routers.desktop_tts_updates import ReleaseInfo, _appcast_xml, _is_allowed_openai_voice, _manual_download_url
+from fastapi import HTTPException
+import pytest
+
+from routers.desktop_tts_updates import (
+    ReleaseInfo,
+    _appcast_xml,
+    _is_allowed_openai_voice,
+    _manual_download_url,
+    _neutral_desktop_updates_disabled,
+    _require_desktop_update_capability,
+)
 
 
 def _release(**overrides):
@@ -41,3 +51,19 @@ def test_manual_download_prefers_explicit_dmg_then_github_zip_derivation():
         == "https://example.com/custom.dmg"
     )
     assert _manual_download_url(_release()) == "https://example.com/Omi.dmg"
+
+
+def test_neutral_profile_disables_legacy_desktop_update_routes(monkeypatch):
+    monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+    assert _neutral_desktop_updates_disabled() is True
+
+    monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "omi_cloud")
+    assert _neutral_desktop_updates_disabled() is False
+
+
+def test_neutral_update_capability_fails_closed_before_release_firestore(monkeypatch):
+    monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+    with pytest.raises(HTTPException) as raised:
+        _require_desktop_update_capability()
+    assert raised.value.status_code == 503
+    assert raised.value.detail["reason"] == "operator_update_authority_not_configured"

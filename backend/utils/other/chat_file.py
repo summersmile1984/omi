@@ -127,6 +127,15 @@ def _file_record_transport(record: Dict[str, Any]) -> str:
 def _managed_openai_cleanup_is_configured() -> bool:
     """Require an explicit platform credential before constructing vendor egress."""
 
+    # A self-hosted/neutral runtime may inherit OPENAI_API_KEY from a shell or
+    # another feature, but that is not authority to delete legacy managed
+    # objects. Local extraction is the only supported self-host file-chat
+    # transport there; unresolved OpenAI records remain retryable for an
+    # operator migration instead of being sent to OpenAI.
+    deployment_profile = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower().replace('-', '_')
+    if deployment_profile in {'self_hosted', 'selfhost', 'neutral'}:
+        return False
+
     # An explicit deployment disable is a stronger boundary than merely lacking
     # credentials.  Legacy provider-owned objects remain pending for an
     # operator migration/retry; they must never be deleted through the vendor

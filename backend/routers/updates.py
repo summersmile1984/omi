@@ -512,6 +512,18 @@ def _legacy_desktop_updates_disabled() -> bool:
     return profile in {"neutral", "self_hosted", "self-hosted"}
 
 
+def _neutral_desktop_updates_disabled() -> bool:
+    """Disable the legacy Firestore/GitHub release authority in neutral builds.
+
+    Operator download policy is handled separately by ``desktop_update_policy``;
+    this guard prevents appcast/feed routes from consulting managed release
+    documents or returning their URLs when no operator update authority exists.
+    """
+
+    profile = os.getenv("OMI_DEPLOYMENT_PROFILE", "").strip().lower().replace("-", "_")
+    return profile in {"neutral", "self_hosted", "selfhost"}
+
+
 def _record_pointer_mismatches(platform: str, pointer_entries: List[Dict], legacy_entries: List[Dict]) -> None:
     legacy_by_channel = _newest_release_by_channel(legacy_entries)
     for pointer in pointer_entries:
@@ -546,6 +558,9 @@ async def _get_live_desktop_releases(platform: str) -> List[Dict]:
     falls through to beta. Set DESKTOP_UPDATE_POINTERS_MODE=legacy as a kill
     switch while the dual-path rollout is being observed.
     """
+    if _neutral_desktop_updates_disabled():
+        return []
+
     legacy_updates_disabled = _legacy_desktop_updates_disabled()
     if os.getenv("DESKTOP_UPDATE_POINTERS_MODE", "primary").lower() == "legacy":
         if legacy_updates_disabled:

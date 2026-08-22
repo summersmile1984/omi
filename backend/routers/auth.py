@@ -14,10 +14,10 @@ from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 import pathlib
-import firebase_admin.auth
 from database.redis_db import set_auth_session, get_auth_session, set_auth_code, get_auth_code, delete_auth_code
 from utils.executors import critical_executor, run_blocking
 from utils.http_client import get_auth_client
+from utils.identity import IdentityProviderUnavailable, identity_provider
 from utils.log_sanitizer import sanitize
 from utils.metrics import AUTH_FLOW_DURATION_SECONDS, AUTH_FLOW_EVENTS
 import logging
@@ -37,6 +37,42 @@ templates = Jinja2Templates(directory=str(templates_path))
 # Loopback hosts permitted for CLI/native-app OAuth flows per RFC 8252 §7.3.
 _LOOPBACK_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
 _DEFAULT_MOBILE_REDIRECT = "omi://auth/callback"
+
+
+def _require_firebase_social_auth() -> None:
+    """Reject legacy Google/Apple OAuth before any provider client is touched."""
+
+    try:
+        provider = identity_provider()
+    except IdentityProviderUnavailable as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "auth_capability_unavailable",
+                "capability": "social_auth",
+                "reason": "identity_provider_not_configured",
+                "retryable": False,
+            },
+        ) from error
+    if provider != "firebase":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "auth_capability_unavailable",
+                "capability": "social_auth",
+                "reason": "provider_not_supported",
+                "retryable": False,
+            },
+        )
+
+
+def _firebase_auth_module() -> Any:
+    """Import Firebase Admin only for an explicitly Firebase-backed flow."""
+
+    from firebase_admin import auth as firebase_auth
+
+    return firebase_auth
+
 
 # Schemes that must NOT receive an OAuth code:
 #   - ``https``: would leak the code to an arbitrary remote host. (Loopback OAuth
@@ -310,6 +346,7 @@ async def auth_authorize(
     User authentication authorization endpoint for the main Omi app
     Supports both initial sign-in and account linking flows
     """
+    _require_firebase_social_auth()
     auth_flow_id = _auth_flow_id_from_state(state)
     redirect_scheme = _redirect_scheme(redirect_uri)
     _log_auth_event(
@@ -395,6 +432,7 @@ async def auth_callback_google(
     """
     Google authentication callback handler (GET method)
     """
+    _require_firebase_social_auth()
     auth_flow_id = _auth_flow_id_from_state(state)
     _log_auth_event(provider="google", stage="provider_callback_received", outcome="started", auth_flow_id=auth_flow_id)
     if error:
@@ -485,6 +523,7 @@ async def auth_callback_apple_post(
     Apple's id_token carries no name, so the ``user`` form field (sent only on the
     first authorization) is the sole source of the user's name — capture it here.
     """
+    _require_firebase_social_auth()
     auth_flow_id = _auth_flow_id_from_state(state)
     _log_auth_event(provider="apple", stage="provider_callback_received", outcome="started", auth_flow_id=auth_flow_id)
     if error:
@@ -574,6 +613,7 @@ async def auth_token(
     Args:
         use_custom_token: If True, also generate Firebase custom token (default: True)
     """
+    _require_firebase_social_auth()
     started_at = time.monotonic()
     provider = "unknown"
     auth_flow_id = "missing"
@@ -772,6 +812,7 @@ async def _google_auth_redirect(session_id: str):
     """
     Redirect to Google OAuth for authentication
     """
+    _require_firebase_social_auth()
     client_id = os.getenv('GOOGLE_CLIENT_ID')
     api_base_url = os.getenv('BASE_API_URL')
 
@@ -798,6 +839,7 @@ async def _apple_auth_redirect(session_id: str):
     """
     Redirect to Apple OAuth for authentication
     """
+    _require_firebase_social_auth()
     client_id = os.getenv('APPLE_CLIENT_ID')
     api_base_url = os.getenv('BASE_API_URL')
 
@@ -825,6 +867,7 @@ async def _exchange_provider_code_for_oauth_credentials(provider: str, code: str
     """
     Exchange provider-specific code for OAuth credentials
     """
+    _require_firebase_social_auth()
     if provider == 'google':
         return await _exchange_google_code_for_oauth_credentials(code, session_data)
     elif provider == 'apple':
@@ -1034,6 +1077,8 @@ async def _generate_custom_token(
     This ensures we get the same Firebase UID that client-side auth would create
     Works with any bundle ID - perfect for multiple developers
     """
+    _require_firebase_social_auth()
+    firebase_auth = _firebase_auth_module()
     try:
         # Get Firebase API Key from environment
         firebase_api_key = os.getenv('FIREBASE_API_KEY')
@@ -1086,14 +1131,14 @@ async def _generate_custom_token(
             try:
                 await run_blocking(
                     critical_executor,
-                    lambda: firebase_admin.auth.update_user(firebase_uid, display_name=display_name),
+                    lambda: firebase_auth.update_user(firebase_uid, display_name=display_name),
                 )
                 logger.info(f"Set Firebase display_name for {provider} UID {firebase_uid}")
             except Exception as e:
                 logger.error(f"Failed to set Firebase display_name (non-fatal): {sanitize(str(e))}")
 
         # Create custom token for this UID
-        custom_token: object = firebase_admin.auth.create_custom_token(firebase_uid)  # type: ignore[reportUnknownMemberType]  # firebase_admin auth untyped
+        custom_token: object = firebase_auth.create_custom_token(firebase_uid)  # type: ignore[reportUnknownMemberType]  # firebase_admin auth untyped
 
         return custom_token.decode('utf-8') if isinstance(custom_token, bytes) else cast(str, custom_token)
 
@@ -1144,6 +1189,7 @@ async def _verify_apple_id_token(id_token: str, client_id: str) -> Dict[str, Any
     """
     Verify Apple ID token and extract user information
     """
+    _require_firebase_social_auth()
     try:
         # Get Apple's public keys
         client = get_auth_client()

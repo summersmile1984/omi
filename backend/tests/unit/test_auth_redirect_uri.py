@@ -123,11 +123,31 @@ except ImportError:
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from routers.auth import _validate_redirect_uri  # noqa: E402
+from routers.auth import _require_firebase_social_auth, _validate_redirect_uri  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Acceptance — every shape an existing Omi client uses
 # ---------------------------------------------------------------------------
+
+
+def test_social_oauth_is_unavailable_for_better_auth(monkeypatch):
+    monkeypatch.setenv('AUTH_PROVIDER', 'better_auth')
+
+    with pytest.raises(HTTPException) as info:
+        _require_firebase_social_auth()
+
+    assert info.value.status_code == 503
+    assert info.value.detail == {
+        'code': 'auth_capability_unavailable',
+        'capability': 'social_auth',
+        'reason': 'provider_not_supported',
+        'retryable': False,
+    }
+
+
+def test_social_oauth_remains_available_for_firebase(monkeypatch):
+    monkeypatch.setenv('AUTH_PROVIDER', 'firebase')
+    _require_firebase_social_auth()
 
 
 @pytest.mark.parametrize(

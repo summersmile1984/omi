@@ -99,6 +99,26 @@ def _release_channel(release: ReleaseInfo) -> str:
     return release.channel or "staging"
 
 
+def _neutral_desktop_updates_disabled() -> bool:
+    """Do not expose managed Firestore release URLs from a neutral backend."""
+
+    profile = os.getenv("OMI_DEPLOYMENT_PROFILE", "").strip().lower().replace("-", "_")
+    return profile in {"neutral", "self_hosted", "selfhost"}
+
+
+def _require_desktop_update_capability() -> None:
+    if _neutral_desktop_updates_disabled():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "model_capability_unavailable",
+                "capability": "desktop_updates",
+                "reason": "operator_update_authority_not_configured",
+                "retryable": False,
+            },
+        )
+
+
 def _manual_download_url(release: ReleaseInfo) -> str:
     if release.manual_download_url and release.manual_download_url.strip():
         return release.manual_download_url.strip()
@@ -293,6 +313,7 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
 
 @router.get("/appcast.xml")
 async def get_appcast(platform: str = Query(default="macos")):
+    _require_desktop_update_capability()
     try:
         releases = [release for _, release in await run_blocking(db_executor, _release_models)]
     except Exception:
@@ -304,6 +325,7 @@ async def get_appcast(platform: str = Query(default="macos")):
 
 @router.get("/updates/latest")
 async def get_latest_version():
+    _require_desktop_update_capability()
     try:
         releases = await run_blocking(db_executor, _release_models)
     except Exception as exc:
@@ -321,6 +343,7 @@ async def get_latest_version():
 
 @router.get("/download")
 async def download_redirect():
+    _require_desktop_update_capability()
     try:
         releases = await run_blocking(db_executor, _release_models)
     except Exception as exc:
