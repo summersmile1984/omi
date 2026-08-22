@@ -7,7 +7,7 @@ Inherits all rules from the root [`../AGENTS.md`](../AGENTS.md). This file adds 
 ### Flavors
 - **dev**: Android `com.friend.ios.dev`, iOS `com.friend-app-with-wearable.ios12.development` — uses `.dev.env`, Firebase project `based-hardware-dev`
 - **prod**: Android `com.friend.ios`, iOS `com.friend-app-with-wearable.ios12` — uses `.prod.env`, Firebase project `based-hardware-prod`
-- **selfhost**: Android `com.friend.ios.selfhost` — requires explicit operator API/auth/legal/share HTTPS origins, Better Auth, and `OMI_FIREBASE_SERVICES_ENABLED=false`; Firebase/Crashlytics native plugins are disabled. The current setup script fails closed for `ios selfhost` until an equivalent native iOS target is wired. Self-hosted startup selects local notifications before constructing Firebase Messaging; remote FCM and Crashlytics/Talker reporting are unavailable unless Firebase is explicitly enabled by a managed profile.
+- **selfhost**: Android `com.friend.ios.selfhost` and the explicit iOS self-host setup path require operator API/auth/legal/share/MCP origins, Better Auth, and `OMI_FIREBASE_SERVICES_ENABLED=false`; Firebase/Crashlytics/remote FCM are disabled and notifications are local-only.
 - **raybanDat**: camera-capable iOS target with the same iOS development identity; use `scripts/rayban_dat.sh`, which excludes mcumgr only for that transaction and restores the default graph.
 
 ### Generated Files (never edit manually)
@@ -127,14 +127,10 @@ All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash
 ### API Base URLs
 - Dev: configured in `.dev.env` → `Env.apiBaseUrl`
 - Prod: configured in `.prod.env` → `Env.apiBaseUrl`
-- Self-hosted app-marketplace image paths resolve against the signed operator API
-  origin; they must never fall back to the managed GitHub raw asset host. An
-  explicit Omi-operated image origin is rejected by `Env.resolveAppImageUrl`.
-- Legacy Omi GitHub Markdown setup instructions are hidden in self-hosted
-  builds when no operator-owned replacement is supplied; managed profiles keep
-  the existing Markdown flow.
+- Self-hosted marketplace images resolve only against the signed operator API;
+  managed GitHub/Omi image origins are rejected by `Env.resolveAppImageUrl`.
 - Self-hosted mobile builds never download Whisper from Hugging Face; select a
-  local `.bin` model instead. Managed profiles retain the convenience download.
+  local `.bin` model. Managed profiles retain the existing hosted flows.
 
 ## Codegen Rules
 
