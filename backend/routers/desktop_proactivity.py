@@ -20,7 +20,7 @@ from models.users import Subscription
 from utils.env_loader import EnvStage, resolve_stage_from_env
 from utils.executors import run_blocking
 from utils.http_client import get_llm_gateway_client, get_llm_gateway_semaphore
-from utils.egress_policy import NEUTRAL_DEPLOYMENT_PROFILES
+from utils.egress_policy import EgressPolicyUnavailable, NEUTRAL_DEPLOYMENT_PROFILES, assert_http_endpoint_allowed
 from utils.llm.desktop_llm_stub import llm_stub_enabled
 from utils.llm.gateway_client import llm_gateway_headers
 from utils.llm.gateway_observability import record_direct_exception_surface
@@ -144,11 +144,31 @@ def _proactive_provider_request(request: "ProactiveCompletionRequest", uid: str,
     payload = _gateway_payload(request)
     gateway_url = os.getenv("OMI_LLM_GATEWAY_URL", "").strip()
     if gateway_url:
+        gateway_endpoint = f"{gateway_url.rstrip('/')}/v1/chat/completions"
+        try:
+            # Validate the configured gateway authority before constructing a
+            # provider request.  The shared client hook is still the final
+            # request-time defense, but checking here prevents a self-hosted
+            # process from accepting a managed/vendor URL as its capability
+            # route and only discovering the violation after quota/state work.
+            assert_http_endpoint_allowed(gateway_endpoint)
+        except EgressPolicyUnavailable as error:
+            if not _neutral_deployment():
+                raise
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "model_capability_unavailable",
+                    "capability": f"desktop_{request.operation.value}",
+                    "reason": error.reason,
+                    "retryable": False,
+                },
+            ) from error
         headers = llm_gateway_headers(feature=f"desktop_{request.operation.value}")
         headers["X-Omi-User-Uid"] = uid
         headers["X-Omi-Request-ID"] = request_id
         return _ProviderRequest(
-            url=f"{gateway_url.rstrip('/')}/v1/chat/completions",
+            url=gateway_endpoint,
             headers=headers,
             payload=payload,
             fallback_class="none",

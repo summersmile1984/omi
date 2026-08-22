@@ -675,6 +675,29 @@ def test_configured_gateway_remains_authoritative(monkeypatch):
     assert provider.fallback_class == "none"
 
 
+def test_self_host_gateway_rejects_official_authority_before_request_construction(monkeypatch):
+    """A self-host profile cannot turn a managed/vendor gateway URL into a route."""
+
+    monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+    monkeypatch.setenv("OMI_LLM_GATEWAY_URL", "https://api.openai.com")
+    monkeypatch.setattr(
+        desktop_proactivity,
+        "llm_gateway_headers",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("headers must not be built")),
+    )
+
+    with pytest.raises(desktop_proactivity.HTTPException) as unavailable:
+        desktop_proactivity._proactive_provider_request(request("proactive_reasoning"), "user-1", "request-1")
+
+    assert unavailable.value.status_code == 503
+    assert unavailable.value.detail == {
+        "code": "model_capability_unavailable",
+        "capability": "desktop_proactive_reasoning",
+        "reason": "official_endpoint_forbidden",
+        "retryable": False,
+    }
+
+
 def test_length_retry_gate_is_shape_scoped_and_covers_reasoning():
     empty = {"choices": [{"finish_reason": "length", "message": {"content": ""}}]}
     truncated = {"choices": [{"finish_reason": "length", "message": {"content": '{"summary":'}}]}

@@ -401,6 +401,39 @@ def test_image_generation_normalizes_auto_defaults_for_estimated_accounting(monk
     assert usage.image_quality == 'auto'
 
 
+def test_neutral_image_gateway_rejects_openai_before_client_or_key(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('LLM_GATEWAY_SERVICE_TOKEN', 'shared-secret')
+    monkeypatch.setenv('OPENAI_API_KEY', 'ambient-managed-key')
+    monkeypatch.setattr(
+        openai_compatible,
+        '_get_image_generation_client',
+        lambda: (_ for _ in ()).throw(AssertionError('neutral gateway must not construct a client')),
+    )
+    persisted = []
+    monkeypatch.setattr(
+        openai_compatible,
+        'schedule_attempt_trace',
+        lambda context, trace: persisted.append((context, trace)),
+    )
+
+    response = TestClient(app).post(
+        '/v1/images/generations',
+        json={'model': 'gpt-image-1', 'prompt': 'private prompt'},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()['error'] == {
+        'message': 'provider request failed: official_endpoint_forbidden',
+        'type': 'api_error',
+        'code': 'model_capability_unavailable',
+        'capability': 'app_icon_generation',
+    }
+    assert len(persisted) == 1
+    assert persisted[0][1].attempts[0].error_class == 'official_endpoint_forbidden'
+
+
 def test_chat_completions_forwards_action_item_extraction_strict_schema(monkeypatch):
     monkeypatch.setenv('LLM_GATEWAY_SERVICE_TOKEN', 'shared-secret')
     provider = FakeChatCompletionProvider()

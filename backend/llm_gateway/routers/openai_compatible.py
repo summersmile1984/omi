@@ -61,9 +61,11 @@ from llm_gateway.gateway.resolver import ResolvedRoute, is_lkg_eligible, resolve
 from llm_gateway.gateway.schemas import FailureClass, RouteArtifact, RouteServingClass
 from llm_gateway.gateway.sse import SSEEventDecoder
 from llm_gateway.routers.dependencies import get_gateway_config, get_provider_registry
+from utils.egress_policy import EgressPolicyUnavailable, assert_http_endpoint_allowed
 
 router = APIRouter()
 _image_generation_client: httpx.AsyncClient | None = None
+_OPENAI_IMAGE_GENERATIONS_URL = 'https://api.openai.com/v1/images/generations'
 
 # The provider throttled the caller's own key. These reach the router as a
 # credential failure, but they are not a bad credential: answering 401 tells
@@ -326,6 +328,35 @@ async def create_image_generation(request: Request, caller: ServiceAuthDependenc
         fallback_feature='image_generation',
     )
     trace = AttemptTrace()
+    try:
+        # This gateway route is the managed OpenAI image capability.  A
+        # self-hosted gateway must not turn an ambient OPENAI_API_KEY into
+        # vendor egress; neutral deployments use the local-template or
+        # explicitly configured compatible image transport instead.
+        assert_http_endpoint_allowed(_OPENAI_IMAGE_GENERATIONS_URL)
+    except EgressPolicyUnavailable as error:
+        trace.record(
+            provider='openai',
+            configured_model=_string_request_value(request_body, 'model', default='unknown'),
+            route_artifact_id=None,
+            fallback_reason=None,
+            retry_ordinal=1,
+            outcome='error',
+            error_class=error.reason,
+            usage_status=UsageStatus.INDETERMINATE,
+        )
+        schedule_attempt_trace(context, trace)
+        return JSONResponse(
+            status_code=503,
+            content={
+                'error': {
+                    'message': f'provider request failed: {error.reason}',
+                    'type': 'api_error',
+                    'code': 'model_capability_unavailable',
+                    'capability': 'app_icon_generation',
+                }
+            },
+        )
     api_key = os.getenv('OPENAI_API_KEY', '').strip()
     if not api_key:
         trace.record(
@@ -345,7 +376,7 @@ async def create_image_generation(request: Request, caller: ServiceAuthDependenc
         )
     try:
         response = await _get_image_generation_client().post(
-            'https://api.openai.com/v1/images/generations',
+            _OPENAI_IMAGE_GENERATIONS_URL,
             headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
             json=request_body,
         )
