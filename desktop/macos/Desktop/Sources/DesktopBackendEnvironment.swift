@@ -42,6 +42,15 @@ enum DesktopRealtimeRelaySelection: Equatable, Sendable {
 /// configured backend; it never turns a persisted BYOK key, inherited shell
 /// variable, or "Auto" preference into permission for client-direct egress.
 enum DesktopModelEgressPolicy {
+  /// Browser-cookie Google connectors are explicit managed-cloud integrations,
+  /// not a deployment-neutral data plane. Self-hosted artifacts expose a
+  /// typed unavailable result instead of silently sending cookies to Google.
+  static func allowsGoogleBrowserConnectors(
+    deploymentProfile: DesktopDeploymentProfile
+  ) -> Bool {
+    deploymentProfile == .omiCloud
+  }
+
   static func proactiveRoute(
     deploymentProfile: DesktopDeploymentProfile
   ) -> DesktopProactiveModelRoute {

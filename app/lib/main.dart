@@ -32,6 +32,7 @@ import 'package:omi/core/app_shell.dart';
 import 'package:omi/env/dev_env.dart';
 import 'package:omi/env/env.dart';
 import 'package:omi/env/environment_profile.dart';
+import 'package:omi/env/firebase_services_policy.dart';
 import 'package:omi/env/prod_env.dart';
 import 'package:omi/firebase_options_local.dart' as local;
 import 'package:omi/firebase_options_prod.dart' as prod;
@@ -210,7 +211,12 @@ Future _init() async {
     Logger.debug('main: restored ${peripheralUuids.length} BLE peripherals');
   };
 
-  if (AuthService.firebaseServicesEnabled) await CrashlyticsManager.init();
+  if (FirebaseServicesPolicy.allowsCrashReporting(
+    servicesEnabled: AuthService.firebaseServicesEnabled,
+    hasInitializedApp: Firebase.apps.isNotEmpty,
+  )) {
+    await CrashlyticsManager.init();
+  }
   if (isAuth) {
     PlatformManager.instance.crashReporter.identifyUser(
       AuthService.betterAuthEnabled ? SharedPreferencesUtil().email : (FirebaseAuth.instance.currentUser?.email ?? ''),
@@ -218,7 +224,10 @@ Future _init() async {
       SharedPreferencesUtil().uid,
     );
   }
-  if (AuthService.firebaseServicesEnabled) {
+  if (FirebaseServicesPolicy.allowsCrashReporting(
+    servicesEnabled: AuthService.firebaseServicesEnabled,
+    hasInitializedApp: Firebase.apps.isNotEmpty,
+  )) {
     FlutterError.onError = (FlutterErrorDetails details) {
       FirebaseCrashlytics.instance.recordFlutterFatalError(details);
     };
@@ -246,7 +255,10 @@ void main() {
       runApp(const MyApp());
     },
     (error, stack) {
-      if (AuthService.firebaseServicesEnabled) {
+      if (FirebaseServicesPolicy.allowsCrashReporting(
+        servicesEnabled: AuthService.firebaseServicesEnabled,
+        hasInitializedApp: Firebase.apps.isNotEmpty,
+      )) {
         FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
       } else {
         debugPrint('Uncaught error: $error\n$stack');

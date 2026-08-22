@@ -26,6 +26,12 @@ final class DesktopDeploymentProfileTests: XCTestCase {
     XCTAssertFalse(DesktopBackendEnvironment.allowsOmiManagedServices(deploymentProfile: .selfHosted))
     XCTAssertTrue(DesktopModelEgressPolicy.allowsClientDirectVendorEgress(deploymentProfile: .omiCloud))
     XCTAssertTrue(DesktopModelEgressPolicy.allowsClientDirectWebSearch(deploymentProfile: .omiCloud))
+    XCTAssertFalse(
+      DesktopModelEgressPolicy.allowsGoogleBrowserConnectors(deploymentProfile: .selfHosted))
+    XCTAssertTrue(
+      DesktopModelEgressPolicy.allowsGoogleBrowserConnectors(deploymentProfile: .omiCloud))
+    XCTAssertFalse(APIKeyService.allowsBackendKeyFetch(deploymentProfile: .selfHosted))
+    XCTAssertTrue(APIKeyService.allowsBackendKeyFetch(deploymentProfile: .omiCloud))
   }
 
   func testSelfHostedBackendRoutesRequireAnExplicitCanonicalOperatorOrigin() {

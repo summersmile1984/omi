@@ -41,6 +41,7 @@ struct CalendarFetchParameters: Equatable {
 }
 
 enum CalendarReaderError: LocalizedError, Equatable {
+  case unavailableByDeploymentProfile
   case noBrowserFound
   case notSignedIn
   case sessionExpired
@@ -51,6 +52,9 @@ enum CalendarReaderError: LocalizedError, Equatable {
 
   var errorDescription: String? {
     switch self {
+    case .unavailableByDeploymentProfile:
+      return
+        "Google Calendar is unavailable in the self-hosted deployment. Configure an operator calendar connector instead."
     case .noBrowserFound:
       return "No supported browser found. Open Google Calendar in Chrome, Arc, Brave, or Edge, then try again."
     case .notSignedIn:
@@ -234,6 +238,12 @@ actor CalendarReaderService {
   ) async throws
     -> [CalendarEvent]
   {
+    guard
+      DesktopModelEgressPolicy.allowsGoogleBrowserConnectors(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else {
+      throw CalendarReaderError.unavailableByDeploymentProfile
+    }
     if userInitiated {
       BrowserKeychainCache.shared.beginUserInitiatedOperation()
     }
@@ -255,6 +265,12 @@ actor CalendarReaderService {
   /// one-time success. It runs the same real fetch path over a tiny window so a
   /// green result guarantees the whole chain (cookies → auth → API) works.
   func verifyConnection(userInitiated: Bool = false) async -> CalendarConnectionStatus {
+    guard
+      DesktopModelEgressPolicy.allowsGoogleBrowserConnectors(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else {
+      return .error(message: CalendarReaderError.unavailableByDeploymentProfile.errorDescription ?? "Unavailable")
+    }
     if userInitiated {
       BrowserKeychainCache.shared.beginUserInitiatedOperation()
     }

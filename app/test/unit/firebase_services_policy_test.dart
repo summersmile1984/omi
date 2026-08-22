@@ -21,6 +21,21 @@ void main() {
     );
   });
 
+  test('Crashlytics requires an initialized Firebase app', () {
+    expect(
+      FirebaseServicesPolicy.allowsCrashReporting(servicesEnabled: true, hasInitializedApp: false),
+      isFalse,
+    );
+    expect(
+      FirebaseServicesPolicy.allowsCrashReporting(servicesEnabled: true, hasInitializedApp: true),
+      isTrue,
+    );
+    expect(
+      FirebaseServicesPolicy.allowsCrashReporting(servicesEnabled: false, hasInitializedApp: true),
+      isFalse,
+    );
+  });
+
   test('managed Firebase remains opt-in explicit and invalid values fail closed', () {
     expect(FirebaseServicesPolicy.enabledForTesting(provider: 'firebase', value: 'true'), isTrue);
     expect(FirebaseServicesPolicy.enabledForTesting(provider: 'firebase', value: 'false'), isFalse);

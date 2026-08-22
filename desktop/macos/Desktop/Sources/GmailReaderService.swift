@@ -12,6 +12,7 @@ struct GmailEmail: Identifiable {
 }
 
 enum GmailReaderError: LocalizedError {
+  case unavailableByDeploymentProfile
   case noBrowserFound
   case noGmailCookies
   case notSignedIn
@@ -23,6 +24,8 @@ enum GmailReaderError: LocalizedError {
 
   var errorDescription: String? {
     switch self {
+    case .unavailableByDeploymentProfile:
+      return "Gmail is unavailable in the self-hosted deployment. Configure an operator mail connector instead."
     case .noBrowserFound:
       return "No browser with Gmail session found. Log into Gmail in Chrome, Arc, Brave, or Edge."
     case .noGmailCookies:
@@ -154,6 +157,12 @@ actor GmailReaderService {
   ) async throws
     -> [GmailEmail]
   {
+    guard
+      DesktopModelEgressPolicy.allowsGoogleBrowserConnectors(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else {
+      throw GmailReaderError.unavailableByDeploymentProfile
+    }
     if userInitiated {
       BrowserKeychainCache.shared.beginUserInitiatedOperation()
     }
@@ -201,6 +210,12 @@ actor GmailReaderService {
   }
 
   func verifyConnection(userInitiated: Bool = false) async -> GmailConnectionStatus {
+    guard
+      DesktopModelEgressPolicy.allowsGoogleBrowserConnectors(
+        deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    else {
+      return .error(message: GmailReaderError.unavailableByDeploymentProfile.errorDescription ?? "Unavailable")
+    }
     if userInitiated {
       BrowserKeychainCache.shared.beginUserInitiatedOperation()
     }

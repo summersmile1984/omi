@@ -64,6 +64,10 @@ final class APIKeyService: ObservableObject {
 
   /// Start fetching keys in the background. Callers can await via waitForKeys().
   func startFetchingKeys() {
+    guard Self.allowsBackendKeyFetch(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
+      markLoadedWithoutBackendKeys()
+      return
+    }
     guard !isLoaded else { return }
     guard fetchTask == nil else { return }
     fetchTask = Task { await self.fetchKeys() }
@@ -73,6 +77,10 @@ final class APIKeyService: ObservableObject {
   /// If no fetch is in-flight, starts one (handles app-restart-while-signed-in case).
   /// A previously failed fetch clears fetchTask, so Calendar/Chat callers can retry without restarting.
   func waitForKeys() async {
+    guard Self.allowsBackendKeyFetch(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
+      markLoadedWithoutBackendKeys()
+      return
+    }
     if isLoaded { return }
     if fetchTask == nil {
       log("APIKeyService: waitForKeys called but no fetch in-flight, starting one")
@@ -95,15 +103,25 @@ final class APIKeyService: ObservableObject {
   }
 
   var effectiveFirebaseApiKey: String? {
-    firebaseApiKey
+    guard Self.allowsBackendKeyFetch(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
+      return nil
+    }
+    return firebaseApiKey
   }
 
   var effectiveGoogleCalendarApiKey: String? {
-    googleCalendarApiKey
+    guard Self.allowsBackendKeyFetch(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
+      return nil
+    }
+    return googleCalendarApiKey
   }
 
   /// Fetch keys from the backend. Call after Firebase auth is ready.
   func fetchKeys() async {
+    guard Self.allowsBackendKeyFetch(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
+      markLoadedWithoutBackendKeys()
+      return
+    }
     loadError = nil
 
     // Retry up to 3 times with backoff
@@ -111,8 +129,12 @@ final class APIKeyService: ObservableObject {
       do {
         let keys = try await APIClient.shared.fetchApiKeys()
         self.geminiApiKey = keys.geminiApiKey
-        self.firebaseApiKey = keys.firebaseApiKey
-        self.googleCalendarApiKey = keys.googleCalendarApiKey
+        self.firebaseApiKey =
+          Self.allowsBackendKeyFetch(
+            deploymentProfile: DesktopBackendEnvironment.deploymentProfile) ? keys.firebaseApiKey : nil
+        self.googleCalendarApiKey =
+          Self.allowsBackendKeyFetch(
+            deploymentProfile: DesktopBackendEnvironment.deploymentProfile) ? keys.googleCalendarApiKey : nil
         self.isLoaded = true
 
         // Set env vars so existing getenv() consumers keep working during transition
@@ -126,7 +148,7 @@ final class APIKeyService: ObservableObject {
         fetchTask = nil
 
         log(
-          "APIKeyService: Fetched keys from backend (gemini=\(keys.geminiApiKey != nil), firebase=\(keys.firebaseApiKey != nil), calendar=\(keys.googleCalendarApiKey != nil))"
+          "APIKeyService: Fetched keys from backend (gemini=\(keys.geminiApiKey != nil), firebase=\(effectiveFirebaseApiKey != nil), calendar=\(effectiveGoogleCalendarApiKey != nil))"
         )
         return
       } catch {
@@ -159,8 +181,9 @@ final class APIKeyService: ObservableObject {
     fetchTask = nil
 
     unsetenv("GEMINI_API_KEY")
-    // NOTE: Do NOT unset FIREBASE_API_KEY — it's needed for the next sign-in
-    // (auth bootstrap requires Firebase key before backend is reachable)
+    // Better Auth/self-hosted never uses Firebase; clearing it here also
+    // prevents a stale managed key surviving a profile or identity transition.
+    unsetenv("FIREBASE_API_KEY")
     unsetenv("GOOGLE_CALENDAR_API_KEY")
   }
 
@@ -174,12 +197,37 @@ final class APIKeyService: ObservableObject {
     } else {
       unsetenv("GEMINI_API_KEY")
     }
-    if let key = effectiveFirebaseApiKey {
+    if let key = effectiveFirebaseApiKey,
+      Self.allowsBackendKeyFetch(deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    {
       setenv("FIREBASE_API_KEY", key, 1)
+    } else {
+      unsetenv("FIREBASE_API_KEY")
     }
-    if let key = effectiveGoogleCalendarApiKey {
+    if let key = effectiveGoogleCalendarApiKey,
+      Self.allowsBackendKeyFetch(deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    {
       setenv("GOOGLE_CALENDAR_API_KEY", key, 1)
+    } else {
+      unsetenv("GOOGLE_CALENDAR_API_KEY")
     }
+  }
+
+  /// The self-hosted Better Auth profile must not even request managed
+  /// Firebase/Calendar keys from the backend. Keeping this as a pure seam
+  /// makes the no-request boundary independently testable.
+  nonisolated static func allowsBackendKeyFetch(deploymentProfile: DesktopDeploymentProfile) -> Bool {
+    deploymentProfile == .omiCloud
+  }
+
+  private func markLoadedWithoutBackendKeys() {
+    geminiApiKey = nil
+    firebaseApiKey = nil
+    googleCalendarApiKey = nil
+    isLoaded = true
+    loadError = nil
+    fetchTask = nil
+    applyToEnvironment()
   }
 
   private func nonEmpty(_ s: String?) -> String? {

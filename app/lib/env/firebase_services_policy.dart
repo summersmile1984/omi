@@ -22,6 +22,16 @@ final class FirebaseServicesPolicy {
     return configuredEnabled && profile != AppEnvironmentProfile.selfHosted;
   }
 
+  /// Crash reporting additionally requires an initialized Firebase app. This
+  /// protects startup error handlers when validation rejects stale or partial
+  /// Firebase configuration before initialization can complete.
+  static bool allowsCrashReporting({
+    required bool servicesEnabled,
+    required bool hasInitializedApp,
+  }) {
+    return servicesEnabled && hasInitializedApp;
+  }
+
   /// Pure policy seam used by tests and by build-contract checks.
   static bool enabledForTesting({String profile = '', required String provider, required String value}) {
     final normalizedProfile = profile.trim().toLowerCase().replaceAll('-', '_');
