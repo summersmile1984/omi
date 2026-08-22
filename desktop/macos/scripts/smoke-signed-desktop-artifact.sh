@@ -391,10 +391,30 @@ assert_bundle_identity() {
     || fail "app bundle name for $EXPECTED_BUNDLE_ID must be $required_app_bundle_name, got $app_bundle_name"
   [[ "$url_scheme" == "$EXPECTED_URL_SCHEME" ]] || fail "URL scheme must be $EXPECTED_URL_SCHEME, got ${url_scheme:-missing}"
   if [[ "$deployment_profile" == "self_hosted" ]]; then
-    [[ -z "$feed_url" ]] || fail "self-hosted artifact must not carry a Sparkle feed"
-    [[ -z "$public_key" ]] || fail "self-hosted artifact must not carry a Sparkle update public key"
-    [[ "$automatic_checks" == "false" || "$automatic_checks" == "0" ]] \
-      || fail "self-hosted artifact must disable automatic update checks"
+    local env_feed_url operator_key_bytes
+    env_feed_url=""
+    if [[ -f "$APP_BUNDLE/Contents/Resources/.env" ]]; then
+      env_feed_url="$(sed -n 's/^OMI_UPDATE_FEED_URL=//p' "$APP_BUNDLE/Contents/Resources/.env" | tail -1)"
+    fi
+    if [[ -n "$feed_url" || -n "$public_key" || -n "$env_feed_url" ]]; then
+      # A self-hosted feed is valid only as a complete operator-owned pair.
+      # The URL is runtime-validated again by AppBuild; this smoke gate catches
+      # the common packaging error where the plist and signed environment drift.
+      [[ "$feed_url" != *api.omi.me* && "$feed_url" != *github.com* ]] \
+        || fail "self-hosted artifact must not carry an Omi/GitHub Sparkle feed"
+      [[ -n "$feed_url" && -n "$public_key" && -n "$env_feed_url" ]] \
+        || fail "self-hosted operator updates require feed URL, public key, and bundled OMI_UPDATE_FEED_URL"
+      [[ "$feed_url" == "$env_feed_url" ]] \
+        || fail "self-hosted Sparkle feed must match OMI_UPDATE_FEED_URL"
+      operator_key_bytes="$(printf '%s' "$public_key" | base64 -D 2>/dev/null | wc -c | tr -d ' ')"
+      [[ "$operator_key_bytes" == "32" ]] \
+        || fail "self-hosted Sparkle public key must decode to 32 bytes"
+      [[ "$automatic_checks" == "true" || "$automatic_checks" == "1" ]] \
+        || fail "self-hosted operator update feed must enable automatic checks"
+    else
+      [[ "$automatic_checks" == "false" || "$automatic_checks" == "0" ]] \
+        || fail "self-hosted artifact without an update authority must disable automatic checks"
+    fi
   elif [[ "$IS_EXTERNAL_PREVIEW" == true ]]; then
     [[ "$bundle_id" =~ ^com[.]omi[.]preview[.][a-z0-9-]+$ ]] \
       || fail "external preview bundle id must use the preview namespace"

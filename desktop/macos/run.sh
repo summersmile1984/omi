@@ -655,8 +655,15 @@ update_app_deployment_profile() {
 
     # Optional signed deployment capabilities. Removing stale values first is
     # important when a disposable bundle is rebuilt against a different fork.
-    for key in OMI_SHARE_BASE_URL OMI_REALTIME_MODEL_PROVIDER OMI_MCP_CHATGPT_OAUTH_CLIENT_ID OMI_MCP_CLAUDE_OAUTH_CLIENT_ID; do
+    for key in OMI_SHARE_BASE_URL OMI_REALTIME_MODEL_PROVIDER OMI_MCP_CHATGPT_OAUTH_CLIENT_ID OMI_MCP_CLAUDE_OAUTH_CLIENT_ID OMI_UPDATE_FEED_URL; do
         value="${!key:-}"
+        # A checked-in .env.app may carry a signed operator feed.  Preserve it
+        # when the launcher environment did not override it; otherwise a
+        # self-hosted rebuild would silently erase an otherwise valid update
+        # authority and fall back to typed-unavailable at runtime.
+        if [ -z "$value" ] && [ "$key" = "OMI_UPDATE_FEED_URL" ] && [ -f "$env_file" ]; then
+            value=$(grep "^${key}=" "$env_file" | tail -1 | cut -d= -f2-)
+        fi
         sed -i '' "/^${key}=/d" "$env_file"
         if [ -n "$value" ]; then
             echo "$key=$value" >> "$env_file"
@@ -1135,14 +1142,31 @@ cp -f Desktop/Info.plist "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 $URL_SCHEME" "$APP_BUNDLE/Contents/Info.plist"
-# Sparkle is an Omi-managed update authority. A self-hosted artifact must not
-# retain its feed URL or public key, even though the shared source plist is
-# configured for the managed-cloud release variants.
+# Sparkle is selected by the signed deployment profile. A self-hosted artifact
+# may carry an explicit operator feed only when the launcher also receives the
+# matching base64-encoded 32-byte Ed25519 public key. Without that complete
+# pair, remove the managed metadata so a typo cannot turn into an Omi fallback.
 if [ "${OMI_DEPLOYMENT_PROFILE:-omi_cloud}" = "self_hosted" ]; then
-    /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Delete :SUPublicEDKey" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$APP_BUNDLE/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :SUAutomaticallyUpdate false" "$APP_BUNDLE/Contents/Info.plist"
+    OPERATOR_UPDATE_FEED="${OMI_UPDATE_FEED_URL:-}"
+    if [ -z "$OPERATOR_UPDATE_FEED" ] && [ -f ".env.app" ]; then
+        OPERATOR_UPDATE_FEED=$(grep '^OMI_UPDATE_FEED_URL=' ".env.app" | tail -1 | cut -d= -f2-)
+    fi
+    OPERATOR_UPDATE_PUBLIC_KEY="${OMI_UPDATE_SPARKLE_PUBLIC_KEY:-}"
+    OPERATOR_UPDATE_KEY_BYTES=0
+    if [ -n "$OPERATOR_UPDATE_PUBLIC_KEY" ]; then
+        OPERATOR_UPDATE_KEY_BYTES=$(printf '%s' "$OPERATOR_UPDATE_PUBLIC_KEY" | base64 -D 2>/dev/null | wc -c | tr -d ' ')
+    fi
+    if [ -n "$OPERATOR_UPDATE_FEED" ] && [ "$OPERATOR_UPDATE_KEY_BYTES" = "32" ]; then
+        /usr/libexec/PlistBuddy -c "Set :SUFeedURL $OPERATOR_UPDATE_FEED" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $OPERATOR_UPDATE_PUBLIC_KEY" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks true" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Set :SUAutomaticallyUpdate false" "$APP_BUNDLE/Contents/Info.plist"
+    else
+        /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+        /usr/libexec/PlistBuddy -c "Delete :SUPublicEDKey" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+        /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Set :SUAutomaticallyUpdate false" "$APP_BUNDLE/Contents/Info.plist"
+    fi
 fi
 
 auth_debug "AFTER plist edits: auth_isSignedIn=$(defaults read "$BUNDLE_ID" auth_isSignedIn 2>&1 || true)"

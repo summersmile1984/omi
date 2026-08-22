@@ -288,7 +288,7 @@ if PATH="$mock_bin:$PATH" "$SMOKE" --app "$selfhost_app" \
   >/tmp/omi-smoke-selfhost-contaminated.out 2>/tmp/omi-smoke-selfhost-contaminated.err; then
   fail "self-hosted smoke must reject an Omi Sparkle feed/public key"
 fi
-grep -q "self-hosted artifact must not carry a Sparkle feed" /tmp/omi-smoke-selfhost-contaminated.err \
+grep -q "self-hosted artifact must not carry an Omi/GitHub Sparkle feed" /tmp/omi-smoke-selfhost-contaminated.err \
   || fail "self-hosted feed rejection should be explicit"
 
 /usr/libexec/PlistBuddy -c 'Delete :SUFeedURL' "$selfhost_app/Contents/Info.plist"
@@ -301,6 +301,23 @@ PATH="$mock_bin:$PATH" "$SMOKE" --app "$selfhost_app" \
   --expected-desktop-api-url https://desktop.selfhost.example.test/ \
   >/tmp/omi-smoke-selfhost-clean.out 2>/tmp/omi-smoke-selfhost-clean.err \
   || fail "clean self-hosted artifact should pass: $(cat /tmp/omi-smoke-selfhost-clean.err)"
+
+# A complete operator-owned Sparkle pair is allowed. This proves self-hosted
+# update neutrality is configurable rather than equivalent to permanently
+# disabling updates: the feed is explicit, the public key is a real 32-byte
+# Ed25519 key, and the signed environment carries the same feed URL.
+operator_feed='https://updates.operator.example/omi/macos/appcast.xml'
+operator_key='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+/usr/libexec/PlistBuddy -c "Add :SUFeedURL string $operator_feed" "$selfhost_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $operator_key" "$selfhost_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :SUEnableAutomaticChecks true' "$selfhost_app/Contents/Info.plist"
+printf 'OMI_UPDATE_FEED_URL=%s\n' "$operator_feed" >> "$selfhost_app/Contents/Resources/.env"
+PATH="$mock_bin:$PATH" "$SMOKE" --app "$selfhost_app" \
+  --expected-bundle-id com.omi.selfhost.desktop \
+  --expected-python-api-url https://selfhost.example.test/ \
+  --expected-desktop-api-url https://desktop.selfhost.example.test/ \
+  >/tmp/omi-smoke-selfhost-operator.out 2>/tmp/omi-smoke-selfhost-operator.err \
+  || fail "operator self-hosted artifact should pass: $(cat /tmp/omi-smoke-selfhost-operator.err)"
 
 # Firebase Web API keys are public client configuration, required for desktop
 # sign-in, and bound by the signed GoogleService-Info.plist project check.

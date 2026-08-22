@@ -60,9 +60,12 @@ configuration provides `OMI_UPDATE_FEED_URL`, for example
 operator HTTPS endpoint with a path and no credentials, query, or fragment; Omi-owned
 hosts are rejected. Sparkle still verifies every downloaded archive against the baked
 public key, so an operator must publish an appcast and ZIPs signed by the matching
-private key. Missing or invalid feed/key metadata leaves updates typed-unavailable;
-there is no fallback to Omi's managed feed. The operator must also smoke-test the signed
-bundle and retain the key-rotation/recovery record outside this repository.
+private key. `run.sh` receives the public half through
+`OMI_UPDATE_SPARKLE_PUBLIC_KEY` and writes it into the signed bundle; it never
+copies a managed key into a self-hosted artifact. Missing or invalid feed/key
+metadata leaves updates typed-unavailable; there is no fallback to Omi's managed
+feed. The operator must also smoke-test the signed bundle and retain the
+key-rotation/recovery record outside this repository.
 
 ## License
 
