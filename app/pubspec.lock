@@ -232,7 +232,7 @@ packages:
       sha256: faf38497bda5ead2a8c7615f4f7939df04333478bf32e4173fcb06d428b5716b
       url: "https://pub.dev"
     source: hosted
-      version: "1.4.1"
+    version: "1.4.1"
   checked_yaml:
     dependency: transitive
     description:
@@ -1396,7 +1396,7 @@ packages:
       sha256: dc0b7dc7651697ea4ff3e69ef44b0407ea32c487a39fff6a4004fa585e901861
       url: "https://pub.dev"
     source: hosted
-      version: "0.12.18"
+    version: "0.12.19"
   material_color_utilities:
     dependency: transitive
     description:
@@ -1404,7 +1404,7 @@ packages:
       sha256: "9c337007e82b1889149c82ed242ed1cb24a66044e30979c44912381e9be4c48b"
       url: "https://pub.dev"
     source: hosted
-      version: "0.13.0"
+    version: "0.13.0"
   mcumgr_flutter:
     dependency: "direct main"
     description:
@@ -2180,7 +2180,7 @@ packages:
       sha256: "949a932224383300f01be9221c39180316445ecb8e7547f70a41a35bf421fb9e"
       url: "https://pub.dev"
     source: hosted
-      version: "0.7.9"
+    version: "0.7.11"
   time:
     dependency: transitive
     description:

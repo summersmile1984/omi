@@ -23,6 +23,7 @@ abstract class Env {
   );
   static late final EnvFields _instance;
   static String? _apiBaseUrlOverride;
+  static String? _agentProxyWsUrlOverride;
   static bool isTestFlight = false;
 
   static AppEnvironmentProfile get profile =>
@@ -42,6 +43,11 @@ abstract class Env {
 
   static void overrideAgentProxyWsUrl(String url) {
     _agentProxyWsUrlOverride = url;
+  }
+
+  @visibleForTesting
+  static void clearAgentProxyWsUrlOverrideForTesting() {
+    _agentProxyWsUrlOverride = null;
   }
 
   /// The legacy hosted agent proxy is not part of the self-hosted contract.

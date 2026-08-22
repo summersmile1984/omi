@@ -35,6 +35,7 @@ import 'package:omi/env/environment_profile.dart';
 import 'package:omi/env/firebase_services_policy.dart';
 import 'package:omi/env/prod_env.dart';
 import 'package:omi/firebase_options_local.dart' as local;
+import 'package:omi/firebase_options_prod.dart' as prod;
 import 'package:omi/flavors.dart';
 import 'package:omi/startup_auth.dart';
 import 'package:omi/startup_failure_app.dart';

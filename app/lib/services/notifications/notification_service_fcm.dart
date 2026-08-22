@@ -28,6 +28,9 @@ class _FCMNotificationService implements NotificationInterface {
   _FCMNotificationService._();
 
   @override
+  NotificationDeliveryCapability get deliveryCapability => NotificationDeliveryCapability.firebaseRemote;
+
+  @override
   bool get usesFirebaseMessaging => true;
 
   final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;

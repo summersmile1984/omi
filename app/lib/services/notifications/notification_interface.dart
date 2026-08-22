@@ -17,6 +17,8 @@ enum RemoteNotificationActionResult { completed, unsupported }
 
 /// Common interface for notification services across all platforms
 abstract class NotificationInterface {
+  NotificationDeliveryCapability get deliveryCapability;
+
   /// Whether this implementation talks to Firebase Cloud Messaging.
   ///
   /// Self-hosted Better Auth builds intentionally use local notifications only;

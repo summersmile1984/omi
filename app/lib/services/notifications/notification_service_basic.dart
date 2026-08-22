@@ -16,6 +16,9 @@ class _BasicNotificationService implements NotificationInterface {
   _BasicNotificationService._();
 
   @override
+  NotificationDeliveryCapability get deliveryCapability => NotificationDeliveryCapability.localOnly;
+
+  @override
   bool get usesFirebaseMessaging => false;
 
   // Resolved in initialize() after NotificationChannelStrings.loadAppLocale().

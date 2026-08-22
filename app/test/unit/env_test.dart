@@ -61,6 +61,12 @@ void main() {
     });
   });
 
+  test('agent proxy test override is declared and can be cleared', () {
+    Env.overrideAgentProxyWsUrl('ws://agent.example.test/v1/agent/ws');
+    expect(Env.agentProxyWsUrl, 'ws://agent.example.test/v1/agent/ws');
+    Env.clearAgentProxyWsUrlOverrideForTesting();
+  });
+
   group('mobile environment profiles', () {
     test('local development is emulator-first and does not allow production data', () {
       expect(AppEnvironmentProfile.localDev.defaultApiBaseUrl, 'http://127.0.0.1:8000/');
@@ -476,6 +482,7 @@ void main() {
           configuredPrivacyUrl: 'https://docs.example.com/privacy',
           configuredTermsUrl: 'https://docs.example.com/terms',
           configuredShareUrl: 'https://share.example.com',
+          configuredMcpBaseUrl: 'https://mcp.example.com',
         ),
         returnsNormally,
       );
@@ -485,6 +492,7 @@ void main() {
           configuredPrivacyUrl: 'https://www.omi.me/privacy',
           configuredTermsUrl: 'https://docs.example.com/terms',
           configuredShareUrl: 'https://share.example.com',
+          configuredMcpBaseUrl: 'https://mcp.example.com',
         ),
         throwsStateError,
       );

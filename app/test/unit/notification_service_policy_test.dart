@@ -6,5 +6,6 @@ void main() {
     final service = NotificationService.createForTesting(firebaseServicesEnabled: false);
 
     expect(service.usesFirebaseMessaging, isFalse);
+    expect(service.deliveryCapability, NotificationDeliveryCapability.localOnly);
   });
 }

@@ -7,6 +7,7 @@ import 'package:talker_flutter/talker_flutter.dart';
 
 import 'package:omi/env/environment_profile.dart';
 import 'package:omi/env/firebase_services_policy.dart';
+import 'package:omi/utils/analytics/intercom.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 
