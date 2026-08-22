@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from .config import MimoConfigurationError, resolve_mimo_config, timeout_seconds
+from utils.egress_policy import assert_http_endpoint_allowed
 
 logger = logging.getLogger(__name__)
 

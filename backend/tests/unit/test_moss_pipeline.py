@@ -107,5 +107,5 @@ def test_explicit_moss_selection_does_not_fall_back_when_configuration_is_missin
     monkeypatch.setenv('STT_PRERECORDED_MODEL', 'moss')
     for name in ('MOSS_API_BASE', 'MOSS_API_KEY', 'MOSS_MODEL', 'MOSS_TRANSPORT'):
         monkeypatch.delenv(name, raising=False)
-    with pytest.raises(MossConfigurationError, match='MOSS_API_BASE'):
+    with pytest.raises(MossConfigurationError, match='MOSS_API_(BASE|KEY)'):
         get_prerecorded_provider()

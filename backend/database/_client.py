@@ -10,7 +10,6 @@ from google.cloud import firestore
 from database.document_ids import document_id_from_seed
 from database.google_credentials import (
     customer_data_service_account,
-    customer_entitlement_service_account,
     prepare_google_credentials,
 )
 

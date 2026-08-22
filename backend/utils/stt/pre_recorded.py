@@ -1096,16 +1096,12 @@ class ParakeetPrerecordedProvider(PrerecordedSTTProvider):
 
 def get_prerecorded_provider(language: Optional[str] = 'en') -> PrerecordedSTTProvider:
     """Construct exactly the language-aware provider selected for telemetry."""
-    # MOSS is an explicit provider selection. Missing/unsafe operator
-    # configuration must fail closed instead of silently selecting a managed
-    # provider with a different authority.
-    from utils.moss_pipeline.prerecorded_provider import (
-        MossPrerecordedProvider,
-        moss_prerecorded_requested,
-        require_moss_prerecorded,
-    )
+    # Missing/unsafe operator configuration must fail closed instead of
+    # silently selecting a managed provider with a different authority.
+    service, _provider_language, model = get_prerecorded_service(language)
+    if service == PrerecordedSTTService.MOSS:
+        from utils.moss_pipeline.prerecorded_provider import MossPrerecordedProvider, require_moss_prerecorded
 
-    if moss_prerecorded_requested():
         require_moss_prerecorded()
         return MossPrerecordedProvider()
     if service == PrerecordedSTTService.MLX_MOSS_DIARIZE:

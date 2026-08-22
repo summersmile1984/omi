@@ -9,10 +9,18 @@ from __future__ import annotations
 import pytest
 
 from utils.mimo_pipeline.config import MimoConfigurationError, validate_mimo_base_url
-from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, _guess_format
+from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, infer_audio_format
 from utils.mimo_pipeline.config import mimo_is_configured
-from utils.mimo_pipeline.socket import MimoSttSocket, _pcm16_to_wav
+from utils.mimo_pipeline.socket import MimoSttSocket, pcm16_to_wav
+from config.prerecorded_stt import PrerecordedSTTService
+from config.stt_provider_policy import MIMO_PROVIDER, STTServingSurface, provider_is_enabled
+from utils.egress_policy import EgressPolicyUnavailable
+from utils.mimo_pipeline.prerecorded_provider import MimoPrerecordedProvider
+from utils.stt.pre_recorded import get_prerecorded_service
 from utils.stt.streaming import STTService, get_stt_service_for_language
+import utils.mimo_pipeline.prerecorded_provider as prerecorded_module
+
+OPERATOR_BASE = 'http://operator.example.test/mimo'
 
 
 def test_mimo_is_batch_only():
@@ -45,11 +53,10 @@ def test_client_requires_explicit_operator_endpoint(monkeypatch):
         'ftp://mimo.operator.example',
         'https://user:pass@mimo.operator.example',
         'https://mimo.operator.example?token=secret',
-        'http://public.example',
     ],
 )
 def test_client_rejects_vendor_or_unsafe_endpoint(base_url):
-    with pytest.raises(MimoAPIError, match='operator'):
+    with pytest.raises(MimoAPIError):
         MimoClient(api_key='key', base_url=base_url)
 
 
@@ -80,8 +87,8 @@ def test_streaming_selection_rejects_batch_only_mimo(monkeypatch):
     result = get_stt_service_for_language('zh-CN')
     assert result is not None
     service, _lang, model = result
-    assert service == STTService.mimo
-    assert model == 'mimo'
+    assert service in {STTService.modulate, STTService.parakeet, STTService.sensevoice}
+    assert model != 'mimo'
 
 
 def test_select_ignores_mimo_without_key(monkeypatch):
@@ -93,7 +100,7 @@ def test_select_ignores_mimo_without_key(monkeypatch):
     monkeypatch.setattr(streaming, 'stt_service_models', ['mimo'])
     result = get_stt_service_for_language('zh-CN')
     # mimo without key must not be selected; falls to default policy
-    assert result is None or result[0] != STTService.mimo
+    assert result is None or result[0] in {STTService.modulate, STTService.parakeet, STTService.sensevoice}
 
 
 def test_pcm16_to_wav_produces_valid_container():

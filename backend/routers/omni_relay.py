@@ -15,13 +15,10 @@ from utils.byok import (
     validate_byok_websocket,
 )
 from utils.executors import critical_executor, db_executor, run_blocking
-from utils.llm.capabilities import resolve_model_capability
 from utils.llm.gateway_client import raise_if_gateway_feature_mode_blocks_direct_model_surface
 from utils.llm.capabilities import resolve_model_capability
 from utils.other.endpoints import _verify_ws_auth  # type: ignore[reportPrivateUsage]  # shared WS auth helper, intentionally reused cross-module
-import database.users as users_db
-from models.users import PlanType
-from utils.subscription import get_chat_quota_snapshot, is_trial_paywalled
+from utils.subscription import is_trial_paywalled
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

@@ -17,6 +17,7 @@ import os
 import threading
 import time
 from typing import Any, Dict, Optional, cast
+from urllib.parse import urlsplit
 
 import httpx
 import jwt as pyjwt
@@ -87,7 +88,7 @@ def _fetch_jwks() -> Dict[str, Any]:
     url = _jwks_url()
     with _jwks_lock:
         cached = _jwks
-        if cached is not None and (now - _jwks_fetched_at) < JWKS_CACHE_TTL:
+        if cached is not None and (now - _jwks_fetched_at) < _jwks_cache_ttl():
             return cached
         try:
             resp = httpx.get(url, timeout=_jwks_timeout())
@@ -95,11 +96,11 @@ def _fetch_jwks() -> Dict[str, Any]:
             data = cast(Dict[str, Any], resp.json())
         except Exception as exc:
             # Stale cache is better than failing closed on a transient fetch error
-            if cached is not None:
+            if cached is not None and (now - _jwks_fetched_at) < _jwks_max_stale():
                 logger.warning("JWKS refresh failed, using stale cache: %s", exc)
                 return cached
             raise CertificateFetchError(f"JWKS fetch failed: {exc}") from exc
-        if not isinstance(data, dict) or not isinstance(data.get('keys'), list):
+        if not isinstance(data.get('keys'), list):
             raise CertificateFetchError("JWKS response missing keys")
         _jwks = data
         _jwks_fetched_at = now

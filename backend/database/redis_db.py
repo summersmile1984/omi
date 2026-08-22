@@ -963,20 +963,6 @@ def release_realtime_relay_lease(uid: str, token: str) -> bool:
     return bool(_REALTIME_RELAY_LEASE_RELEASE_LUA(keys=[f'realtime_relay:lease:{uid}'], args=[token]))
 
 
-def try_acquire_realtime_relay_lease(uid: str, token: str, ttl: int) -> bool:
-    """Claim the single cross-instance realtime relay slot for one user."""
-    if not uid or not token or ttl < 1:
-        raise ValueError('uid, token, and a positive ttl are required')
-    return r.set(f'realtime_relay:lease:{uid}', token, ex=ttl, nx=True) is not None
-
-
-def release_realtime_relay_lease(uid: str, token: str) -> bool:
-    """Release only the realtime relay lease still owned by ``token``."""
-    if not uid or not token:
-        return False
-    return bool(_REALTIME_RELAY_LEASE_RELEASE_LUA(keys=[f'realtime_relay:lease:{uid}'], args=[token]))
-
-
 # Atomic TTS rate-limit: burst (sliding-window ZSET) + daily char counter.
 # Returns [status, retry_after_seconds]:
 #   0 = allow, 1 = burst exceeded, 2 = daily char limit exceeded.

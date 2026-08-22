@@ -32,6 +32,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from .config import MimoConfigurationError, resolve_mimo_config, timeout_seconds
+from config.prerecorded_stt import is_private_operator_hostname, is_unsafe_network_hostname
+from utils.egress_policy import assert_http_endpoint_allowed
 
 logger = logging.getLogger(__name__)
 

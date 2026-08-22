@@ -21,7 +21,7 @@ import io
 import logging
 import wave
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -180,7 +180,7 @@ class MossSpeakerPipeline:
             if wav_bytes is None:
                 raise ValueError('file_path or wav_bytes is required')
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-                tmp.write(cast(bytes, wav_bytes))
+                tmp.write(wav_bytes)
                 tmp.flush()
                 file_id = self._client.upload_file(tmp.name)
                 try:

@@ -672,20 +672,6 @@ def _deepgram_is_available() -> bool:
     return _managed_deepgram_client() is not None or bool(get_byok_key('deepgram'))
 
 
-def _sensevoice_available() -> bool:
-    """True when a local SenseVoice model directory is configured."""
-    from utils.sensevoice.socket import SENSEVOICE_MODEL_DIR
-
-    return bool(SENSEVOICE_MODEL_DIR) and os.path.exists(os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx"))
-
-
-def _mimo_available() -> bool:
-    """True when MiMo streaming STT is configured at the call boundary."""
-    from utils.mimo_pipeline.config import mimo_is_configured
-
-    return mimo_is_configured()
-
-
 async def process_audio_dg(
     stream_transcript: Callable[[List[Dict[str, Any]]], None],
     language: str,

@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import uuid
@@ -213,7 +214,7 @@ def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> No
     if not job_id:
         raise ValueError("job_id must be non-empty")
     _enqueue(
-        QUEUE_NAMES["finalization"], f"fin-{job_id}", {"job_id": job_id, "dispatch_generation": dispatch_generation}
+        _queue_names()["finalization"], f"fin-{job_id}", {"job_id": job_id, "dispatch_generation": dispatch_generation}
     )
 
 
@@ -418,13 +419,10 @@ def _worker(queue_name: str) -> None:
             queue_name,
         )
         return
+    handler_url = os.getenv(HANDLER_URL_ENV[queue_name], '').strip()
+    queue_key = _queue_names()[queue_name]
+    poll_seconds = _positive_float_env('QUEUE_REDIS_POLL_SECONDS', 1.0)
     logger.info("worker %s -> %s (blocking on %s)", queue_name, handler_url, queue_key)
-    # redis-py exposes both synchronous and asyncio client overloads through
-    # the same stubs. This worker is intentionally synchronous; keep the
-    # boundary typed as Any so pyright does not infer an awaitable result from
-    # the async overload while the runtime still receives a (key, payload)
-    # tuple from ``Redis.blpop``.
-    r: Any = _r()
     while True:
         if not _process_one(queue_name):
             time.sleep(poll_seconds)

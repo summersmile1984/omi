@@ -12,6 +12,9 @@ from typing import Any, Dict, Iterator, Mapping, NoReturn, Optional
 from urllib.parse import quote, unquote, urlparse
 
 import boto3  # pyright: ignore[reportMissingImports]
+from botocore.config import Config  # pyright: ignore[reportMissingImports]
+from botocore.exceptions import ClientError  # pyright: ignore[reportMissingImports]
+from google.cloud.exceptions import NotFound
 
 logger = logging.getLogger(__name__)
 

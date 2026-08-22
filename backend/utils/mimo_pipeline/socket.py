@@ -24,7 +24,7 @@ from utils.stt.socket import STTSocket
 logger = logging.getLogger(__name__)
 
 
-def _pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
+def pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
     """Wrap raw PCM16 little-endian audio in a WAV container (MiMo wants wav)."""
     with tempfile.SpooledTemporaryFile() as tmp:
         with wave.open(tmp, "wb") as w:
