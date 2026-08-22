@@ -9,6 +9,21 @@ final class DesktopDeploymentProfileTests: XCTestCase {
     XCTAssertEqual(DesktopDeploymentProfile.resolve("unexpected"), .selfHosted)
   }
 
+  func testLegacyDirectNotionExportIsUnavailableForSelfHostedProfile() async {
+    let service = MemoryExportService(deploymentProfile: .selfHosted)
+    do {
+      _ = try await service.exportToNotion(token: "stale-token", parentPageID: "stale-page")
+      XCTFail("self-hosted profile must reject the legacy direct Notion path")
+    } catch let error as MemoryExportError {
+      XCTAssertEqual(
+        error.errorDescription,
+        "This Notion export path is unavailable in the self-hosted deployment. Configure an operator-owned connector instead."
+      )
+    } catch {
+      XCTFail("unexpected error: \(error)")
+    }
+  }
+
   func testSelfHostedPolicyDisablesClientVendorAndManagedServices() {
     XCTAssertEqual(
       DesktopBackendEnvironment.identityProvider(
@@ -180,7 +195,10 @@ final class DesktopDeploymentProfileTests: XCTestCase {
       key: "not-a-real-key",
       deploymentProfile: .selfHosted
     )
-    XCTAssertEqual(status, .failed("Disabled by deployment profile"))
+    guard case .failed(let message) = status else {
+      return XCTFail("self-hosted BYOK validation must fail closed")
+    }
+    XCTAssertTrue(message.contains("backend"))
   }
 
   @MainActor

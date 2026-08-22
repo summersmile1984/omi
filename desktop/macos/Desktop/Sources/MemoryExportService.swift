@@ -791,6 +791,12 @@ enum MemoryExportDestination: String, CaseIterable, Identifiable, Sendable {
 actor MemoryExportService {
   static let shared = MemoryExportService()
 
+  private let deploymentProfile: DesktopDeploymentProfile
+
+  init(deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile) {
+    self.deploymentProfile = deploymentProfile
+  }
+
   private static let authUserIDDefaultsKey = "auth_userId"
   private static let mcpKeyDefaultsKey = "memoryExportMCPApiKey"
   private static let mcpKeyOwnerDefaultsKey = "memoryExportMCPApiKeyOwnerUserId"
@@ -1247,6 +1253,16 @@ actor MemoryExportService {
   }
 
   func exportToNotion(token: String, parentPageID: String) async throws -> MemoryExportResult {
+    // This legacy direct Notion API path is retained for managed-cloud
+    // compatibility, but must share the same deployment boundary as the hosted
+    // MCP connector. Otherwise an imported/stale token could bypass the
+    // connector gate and send memories directly to api.notion.com.
+    guard
+      DesktopModelEgressPolicy.allowsHostedNotionConnector(
+        deploymentProfile: deploymentProfile)
+    else {
+      throw MemoryExportError.unavailableByDeploymentProfile
+    }
     let sanitizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
     let sanitizedParentPageID = parentPageID.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !sanitizedToken.isEmpty, !sanitizedParentPageID.isEmpty else {

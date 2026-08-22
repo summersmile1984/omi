@@ -79,6 +79,7 @@ struct AgentConnectionTestResult: Sendable {
 
 enum MemoryExportError: LocalizedError {
   case noMemories
+  case unavailableByDeploymentProfile
   case invalidNotionConfiguration
   case invalidNotionResponse
   case invalidObsidianVault
@@ -88,6 +89,9 @@ enum MemoryExportError: LocalizedError {
     switch self {
     case .noMemories:
       return "There are no memories available to export yet."
+    case .unavailableByDeploymentProfile:
+      return
+        "This Notion export path is unavailable in the self-hosted deployment. Configure an operator-owned connector instead."
     case .invalidNotionConfiguration:
       return "Enter both a Notion integration token and a parent page ID."
     case .invalidNotionResponse:

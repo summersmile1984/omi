@@ -7,10 +7,14 @@ enum DesktopDeploymentProfile: String, Sendable {
   static func resolve(_ raw: String?) -> DesktopDeploymentProfile {
     guard let raw else { return .omiCloud }
     let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard let profile = DesktopDeploymentProfile(rawValue: normalized) else {
-      preconditionFailure("OMI_DEPLOYMENT_PROFILE must be omi_cloud or self_hosted")
-    }
-    return profile
+    // An unknown profile must never inherit the managed-cloud authority. This
+    // matters when an operator typo or stale bundle metadata reaches a
+    // self-hosted artifact: choosing the restrictive profile keeps every
+    // downstream identity/model/connector gate closed until the profile is
+    // corrected. Missing metadata remains the legacy cloud default for signed
+    // Omi Cloud bundles; packaging gates require an explicit value for
+    // self-hosted releases.
+    return DesktopDeploymentProfile(rawValue: normalized) ?? .selfHosted
   }
 }
 
@@ -558,10 +562,14 @@ enum DesktopBackendEnvironment {
     do {
       return try canonicalSelfHostedOrigin(raw, key: key, requiresHTTPS: requiresHTTPS)
     } catch DesktopDeploymentOriginError.insecure {
-      preconditionFailure("self_hosted production deployment requires HTTPS for \(key)")
+      log("BackendEnvironment: self_hosted deployment rejected insecure \(key)")
     } catch {
-      preconditionFailure("self_hosted deployment requires a valid operator origin for \(key): \(error)")
+      log("BackendEnvironment: self_hosted deployment rejected invalid \(key) (reason=\(error))")
     }
+    // An invalid operator origin is a typed unavailable route, not permission
+    // to recover to an Omi-managed host. Callers treat the empty value as
+    // unavailable and stop before constructing a request.
+    return ""
   }
 
   static func currentEnvironmentValue(_ key: String) -> String? {
