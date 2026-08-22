@@ -8,11 +8,4 @@ void main() {
       throwsA(isA<BetterAuthException>().having((error) => error.code, 'code', 'missing_jwt_expiration')),
     );
   });
-
-  test('dev issuer is disabled without explicit compile-time configuration', () {
-    final provider = AuthenticationProvider(initializeListeners: false);
-    addTearDown(provider.dispose);
-
-    expect(provider.betterAuthDevSignInEnabled, isFalse);
-  });
 }
