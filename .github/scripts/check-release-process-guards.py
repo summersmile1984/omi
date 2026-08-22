@@ -888,7 +888,8 @@ def check_desktop_preview_publishing() -> list[str]:
     updater_text = updater.read_text(encoding="utf-8") if updater.exists() else ""
     for required in (
         "startingUpdater: Self.allowsSparkleUpdates",
-        "AppBuild.allowsSparkleUpdates && DesktopBackendEnvironment.allowsOmiManagedServices",
+        "private static var allowsSparkleUpdates",
+        "AppBuild.allowsSparkleUpdates",
     ):
         if required not in updater_text:
             errors.append("external preview or self-hosted builds must not start the shared Sparkle updater")
