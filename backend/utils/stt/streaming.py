@@ -406,7 +406,9 @@ def deepgram_fallback_model(language: Optional[str]) -> Optional[str]:
     cannot know which ``dg-*`` deployment the runtime actually lists. ``None``
     means Deepgram must not be offered the session at all.
     """
-    if not provider_is_enabled(deepgram_provider_for_runtime(is_dg_self_hosted), STTServingSurface.STREAMING):
+    if not provider_is_enabled(
+        deepgram_provider_for_runtime(_deepgram_self_hosted_enabled()), STTServingSurface.STREAMING
+    ):
         return None
     if not _deepgram_is_available():
         return None
@@ -505,7 +507,7 @@ def get_stt_service_for_language(
             model = model.strip()
             if (
                 model.startswith('dg-')
-                and provider_is_enabled(deepgram_provider_for_runtime(is_dg_self_hosted), surface)
+                and provider_is_enabled(deepgram_provider_for_runtime(_deepgram_self_hosted_enabled()), surface)
                 and _deepgram_is_available()
             ):
                 dg_model = model.replace('dg-', '', 1)
@@ -602,7 +604,24 @@ def should_preserve_filler_words(language: str) -> bool:
 # The endpoint is always set explicitly, never the SDK default.
 DEEPGRAM_CLOUD_ENDPOINT: Final = 'https://api.deepgram.com'
 
+# Keep the historical module attribute as a narrow test/embedding override, but
+# do not use its import-time value as the production authority. Some worker/test
+# entry points load stage-specific environment after this module is imported;
+# freezing the flag here could silently route a self-hosted declaration to
+# api.deepgram.com.
 is_dg_self_hosted = os.getenv('DEEPGRAM_SELF_HOSTED_ENABLED', '').lower() == 'true'
+_initial_dg_self_hosted = is_dg_self_hosted
+
+
+def _deepgram_self_hosted_enabled() -> bool:
+    """Resolve self-hosted mode at the provider-selection call boundary."""
+
+    override = is_dg_self_hosted
+    if override != _initial_dg_self_hosted:
+        return override
+    return os.getenv('DEEPGRAM_SELF_HOSTED_ENABLED', '').strip().lower() == 'true'
+
+
 deepgram: Optional[DeepgramClient] = None
 
 
@@ -635,7 +654,7 @@ _managed_deepgram_ready = False
 
 def _build_managed_deepgram_client() -> Optional[DeepgramClient]:
     """Build the account-owned client, or None when no credential is configured."""
-    if is_dg_self_hosted:
+    if _deepgram_self_hosted_enabled():
         endpoint = _require_self_hosted_deepgram_endpoint(os.getenv('DEEPGRAM_SELF_HOSTED_URL') or '')
         logger.info(f'Using Deepgram self-hosted at: {endpoint}')
         return DeepgramClient(os.getenv('DEEPGRAM_API_KEY') or '', _deepgram_options(endpoint))
@@ -812,7 +831,7 @@ def _deepgram_client_for_request() -> DeepgramClient:
     Self-hosted has no per-user billing and ignores BYOK.
     """
     managed = _managed_deepgram_client()
-    if is_dg_self_hosted:
+    if _deepgram_self_hosted_enabled():
         if managed is None:
             raise RuntimeError('Self-hosted Deepgram is not configured')
         return managed

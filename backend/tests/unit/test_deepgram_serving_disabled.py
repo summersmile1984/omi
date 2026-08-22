@@ -131,6 +131,32 @@ def test_self_hosted_endpoint_must_be_set_when_self_hosting_is_declared():
         streaming._require_self_hosted_deepgram_endpoint('')
 
 
+def test_self_hosted_flag_is_resolved_after_module_import(monkeypatch):
+    """A stage env loaded after import must not fall back to hosted Deepgram."""
+
+    monkeypatch.setattr(streaming, 'is_dg_self_hosted', False)
+    monkeypatch.setattr(streaming, '_initial_dg_self_hosted', False)
+    monkeypatch.setenv('DEEPGRAM_SELF_HOSTED_ENABLED', 'true')
+    monkeypatch.setenv('DEEPGRAM_SELF_HOSTED_URL', 'https://stt.operator.invalid')
+    monkeypatch.setenv('DEEPGRAM_API_KEY', 'operator-key')
+    captured = {}
+
+    class _Client:
+        pass
+
+    def fake_client(api_key, options):
+        captured['api_key'] = api_key
+        captured['endpoint'] = options.url
+        return _Client()
+
+    monkeypatch.setattr(streaming, 'DeepgramClient', fake_client)
+
+    client = streaming._build_managed_deepgram_client()
+
+    assert isinstance(client, _Client)
+    assert captured == {'api_key': 'operator-key', 'endpoint': 'https://stt.operator.invalid'}
+
+
 def test_policy_keeps_hosted_and_self_hosted_deepgram_distinct():
     assert provider_is_enabled(DEEPGRAM_CLOUD_PROVIDER, STTServingSurface.STREAMING)
     assert provider_is_enabled(DEEPGRAM_SELF_HOSTED_PROVIDER, STTServingSurface.STREAMING)
