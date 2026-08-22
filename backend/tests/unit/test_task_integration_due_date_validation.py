@@ -101,3 +101,17 @@ def test_neutral_create_task_is_unavailable_before_firestore_read(app_client, mo
 
     assert resp.status_code == 503
     assert resp.json()['detail']['code'] == 'deployment_capability_unavailable'
+
+
+def test_neutral_task_connection_reads_are_unavailable_before_firestore_read(app_client, monkeypatch):
+    """Neutral clients cannot read persisted vendor tokens or default selection."""
+    client, ti = app_client
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+
+    def unexpected_read(*_args, **_kwargs):
+        raise AssertionError('neutral task connection reads must be rejected before storage access')
+
+    monkeypatch.setattr(ti.users_db, 'get_task_integrations', unexpected_read)
+    monkeypatch.setattr(ti.users_db, 'get_default_task_integration', unexpected_read)
+    assert client.get('/v1/task-integrations').status_code == 503
+    assert client.get('/v1/task-integrations/default').status_code == 503

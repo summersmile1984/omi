@@ -24,6 +24,7 @@ from utils.task_integrations_ops import (
     get_http_client,
     perform_request_with_token_retry,
     require_task_integration_capability,
+    require_task_integrations_surface,
 )
 import logging
 
@@ -37,6 +38,15 @@ def _require_task_integration(app_key: str, operation: str) -> None:
 
     try:
         require_task_integration_capability(app_key, operation)
+    except TaskIntegrationCapabilityUnavailable as error:
+        raise HTTPException(status_code=503, detail=error.as_dict()) from error
+
+
+def _require_task_integrations_surface(operation: str) -> None:
+    """Turn the shared neutral surface guard into a typed HTTP response."""
+
+    try:
+        require_task_integrations_surface(operation)
     except TaskIntegrationCapabilityUnavailable as error:
         raise HTTPException(status_code=503, detail=error.as_dict()) from error
 
@@ -210,6 +220,7 @@ class ClickUpListsResponse(BaseModel):
 @router.get("/v1/task-integrations", response_model=TaskIntegrationsResponse, tags=['task-integrations'])
 def get_task_integrations(uid: str = Depends(auth.get_current_user_uid)):
     """Get all task integration connections for the current user."""
+    _require_task_integrations_surface('list_connections')
     integrations = users_db.get_task_integrations(uid)
     default_app = users_db.get_default_task_integration(uid)
 
@@ -219,6 +230,7 @@ def get_task_integrations(uid: str = Depends(auth.get_current_user_uid)):
 @router.get("/v1/task-integrations/default", response_model=DefaultTaskIntegrationResponse, tags=['task-integrations'])
 def get_default_task_integration(uid: str = Depends(auth.get_current_user_uid)):
     """Get the user's default task integration app."""
+    _require_task_integrations_surface('read_default')
     default_app = users_db.get_default_task_integration(uid)
     return DefaultTaskIntegrationResponse(default_app=default_app)
 

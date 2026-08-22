@@ -67,6 +67,14 @@ def require_task_integration_capability(app_key: str, operation: str) -> None:
         raise TaskIntegrationCapabilityUnavailable(normalized, operation)
 
 
+def require_task_integrations_surface(operation: str) -> None:
+    """Reject neutral reads that could expose persisted vendor credentials."""
+
+    profile = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower().replace('-', '_')
+    if profile in {value.replace('-', '_') for value in NEUTRAL_DEPLOYMENT_PROFILES}:
+        raise TaskIntegrationCapabilityUnavailable('task_integrations', operation)
+
+
 http_client: Optional[httpx.AsyncClient] = None
 
 
