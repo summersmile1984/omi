@@ -155,6 +155,22 @@ class AuthService {
   static String get normalizedIdentityProvider => identityProvider.trim().toLowerCase().replaceAll('-', '_');
   static bool get betterAuthEnabled => normalizedIdentityProvider == 'better_auth';
 
+  /// Reject Firebase-only sign-in paths before they construct a plugin object
+  /// or launch an OAuth URL. Self-hosted builds intentionally have no Firebase
+  /// app, so relying on the caller's UI branch would turn a stale/legacy call
+  /// into either a `core/no-app` crash or an unintended provider request.
+  @visibleForTesting
+  static void ensureFirebaseIdentityEnabled({
+    AppEnvironmentProfile? configuredProfile,
+    bool? configuredFirebaseServicesEnabled,
+  }) {
+    final effectiveProfile = configuredProfile ?? Env.profile;
+    final servicesEnabled = configuredFirebaseServicesEnabled ?? firebaseServicesEnabled;
+    if (effectiveProfile == AppEnvironmentProfile.selfHosted || betterAuthEnabled || !servicesEnabled) {
+      throw StateError('Firebase identity sign-in is unavailable for this deployment profile.');
+    }
+  }
+
   /// Whether the Firebase SDK/data plane may be initialized for this build.
   ///
   /// Managed Firebase builds retain the historical default (`true`), while a
@@ -274,6 +290,7 @@ class AuthService {
 
   /// Google Sign In using the standard google_sign_in package (iOS, Android)
   Future<UserCredential?> signInWithGoogleMobile() async {
+    ensureFirebaseIdentityEnabled();
     // Trigger the authentication flow
     final GoogleSignInAccount? googleUser = await GoogleSignIn(scopes: ['profile', 'email']).signIn();
 
@@ -311,6 +328,7 @@ class AuthService {
   }
 
   Future<UserCredential?> signInWithAppleMobile() async {
+    ensureFirebaseIdentityEnabled();
     try {
       // Sign out the current user first
       Logger.debug('Signing out current user...');
@@ -627,6 +645,7 @@ class AuthService {
   static const _deepLinkChannel = MethodChannel('com.omi/deep_links');
 
   Future<UserCredential?> authenticateWithProvider(String provider) async {
+    ensureFirebaseIdentityEnabled();
     try {
       final state = _generateState();
       final codeVerifier = _generateCodeVerifier();

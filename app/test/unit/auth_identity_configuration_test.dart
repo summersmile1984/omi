@@ -3,6 +3,23 @@ import 'package:omi/env/environment_profile.dart';
 import 'package:omi/services/auth_service.dart';
 
 void main() {
+  test('Firebase-only sign-in entrypoints fail before plugin or URL work in self-hosted', () {
+    expect(
+      () => AuthService.ensureFirebaseIdentityEnabled(
+        configuredProfile: AppEnvironmentProfile.selfHosted,
+        configuredFirebaseServicesEnabled: true,
+      ),
+      throwsStateError,
+    );
+    expect(
+      () => AuthService.ensureFirebaseIdentityEnabled(
+        configuredProfile: AppEnvironmentProfile.localDev,
+        configuredFirebaseServicesEnabled: false,
+      ),
+      throwsStateError,
+    );
+  });
+
   test('self-hosted Better Auth is explicit and Firebase-free', () {
     expect(
       () => AuthService.validateIdentityConfiguration(
