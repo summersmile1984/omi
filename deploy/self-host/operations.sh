@@ -59,6 +59,12 @@ verify_backup() {
   require_runtime
   directory="$(absolute_directory "$1")"
   key_file="$(backup_key_file)"
+  case "$key_file" in
+    "$directory"/*)
+      echo "error: backup key must be stored outside the backup directory" >&2
+      exit 1
+      ;;
+  esac
   git_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   runtime_sha256="$(runtime_fingerprint)"
   config_sha256="$(effective_config_sha256)"
@@ -78,6 +84,14 @@ absolute_directory() {
   local path="$1"
   [[ "$path" == /* && "$path" != "/" ]] || {
     echo "error: backup directory must be an absolute non-root path" >&2
+    exit 1
+  }
+  [[ ! -L "$path" ]] || {
+    echo "error: backup directory must not be a symlink" >&2
+    exit 1
+  }
+  [[ ! -e "$path" || -d "$path" ]] || {
+    echo "error: backup directory must be a directory" >&2
     exit 1
   }
   printf '%s\n' "$path"

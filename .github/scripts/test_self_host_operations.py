@@ -2323,6 +2323,8 @@ class SelfHostOperationsTest(unittest.TestCase):
         script = OPERATIONS.read_text(encoding='utf-8')
         self.assertIn('runtime_fingerprint()', script)
         self.assertIn('migration_fingerprint()', script)
+        self.assertIn('backup key must be stored outside the backup directory', script)
+        self.assertIn('backup directory must not be a symlink', script)
         self.assertIn('--runtime-fingerprint "$runtime_sha256"', script)
         self.assertIn('--config-fingerprint "$config_sha256"', script)
         self.assertIn('--migration-fingerprint "$migration_sha256"', script)
