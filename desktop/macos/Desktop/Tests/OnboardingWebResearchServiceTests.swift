@@ -25,9 +25,18 @@ final class OnboardingWebResearchServiceTests: XCTestCase {
           <a class="result__a" href="https://example.com/result">Example result</a>
           <div class="result__snippet">A bounded public snippet.</div>
           """
-        let response = HTTPURLResponse(
-          url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
-        )!
+        guard let url = request.url else {
+          XCTFail("search request must contain a URL")
+          return (Data(), URLResponse())
+        }
+        guard
+          let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: nil, headerFields: nil
+          )
+        else {
+          XCTFail("HTTP response construction must succeed")
+          return (Data(), URLResponse())
+        }
         return (Data(html.utf8), response)
       }
     )
