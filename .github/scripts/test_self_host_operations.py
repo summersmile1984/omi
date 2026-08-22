@@ -437,7 +437,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             runtime_configuration=EFFECTIVE_PROVIDER_CONFIGURATION,
             source=source,
         )
-        self.assertEqual(attestation['schema_version'], 1)
+        self.assertEqual(attestation['schema_version'], 2)
         self.assertEqual(attestation['status'], 'passed')
         self.assertEqual(attestation['source'], source)
         self.assertEqual(attestation['providers']['generic_llm']['model'], 'operator-llm')
@@ -499,6 +499,8 @@ class SelfHostOperationsTest(unittest.TestCase):
             'endpoint_origin': 'wss://realtime.example.org',
             'transport': 'websocket_relay',
             'wire_protocol': 'openai_realtime_v1',
+            'roundtrip_scope': 'transport_only',
+            'model_provenance_attested': False,
         }
         RUNTIME_EVIDENCE.validate_realtime_probe_identity(probe, EFFECTIVE_PROVIDER_CONFIGURATION)
         mismatched = dict(probe)
@@ -1181,6 +1183,7 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'capture': {
                     'fixture_manifest_match': True,
                     'speaker_embedding': {'status': 'passed'},
+                    'speaker_identity_scope': 'embedding_only',
                     'speaker_diarization': {
                         'status': 'passed',
                         'provider': 'mlx_moss_diarize',
@@ -1226,6 +1229,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                     'endpoint_origin': 'wss://realtime.example.org',
                     'transport': 'websocket_relay',
                     'wire_protocol': 'openai_realtime_v1',
+                    'roundtrip_scope': 'transport_only',
+                    'model_provenance_attested': False,
                 },
                 'tts': {
                     'status': 'passed',
