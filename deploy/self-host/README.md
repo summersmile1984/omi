@@ -879,6 +879,11 @@ Managed OAuth integrations (for example Google Calendar) are unavailable in
 the checked-in neutral profile until an operator-owned integration authority is
 configured; the backend rejects the managed authorization/token hosts before
 creating OAuth state or opening a client.
+The desktop legacy `/v1/config/api-keys` response is also empty in neutral
+mode, even when an inherited `FIREBASE_API_KEY`, Google Calendar key, or legacy
+Anthropic key remains in the environment; those managed credentials cannot be
+used to opt a self-hosted client into vendor SDKs. Configure an explicit
+operator-owned capability instead of reusing this endpoint.
 This guard covers the backend shared HTTP clients only and is not a network
 firewall or a claim of universal socket isolation.
 

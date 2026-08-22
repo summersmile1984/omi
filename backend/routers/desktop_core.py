@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 import database.action_items as action_items_db
 from database import redis_db
+from utils.egress_policy import NEUTRAL_DEPLOYMENT_PROFILES
 from utils.executors import critical_executor, db_executor, run_blocking
 from utils.http_client import get_webhook_client
 from utils.other.endpoints import get_current_user_uid
@@ -94,6 +95,10 @@ async def readiness_check() -> JSONResponse:
 
 @router.get("/v1/config/api-keys")
 def get_api_keys(_: str = Depends(get_current_user_uid)) -> dict[str, str]:
+    # These are legacy managed-service credentials.  A stale env value must
+    # never opt a self-hosted client into a vendor SDK during migration.
+    if os.getenv("OMI_DEPLOYMENT_PROFILE", "").strip().lower() in NEUTRAL_DEPLOYMENT_PROFILES:
+        return {}
     return {
         response_field: value
         for response_field, environment_name in (

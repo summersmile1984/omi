@@ -106,6 +106,20 @@ def test_api_keys_require_firebase_auth_and_omit_unset_values(monkeypatch):
     assert response.json() == {"firebase_api_key": "firebase-key"}
 
 
+def test_api_keys_neutral_profile_never_exposes_managed_keys(monkeypatch):
+    """Ambient legacy credentials cannot opt a self-hosted client into vendor SDKs."""
+
+    monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+    monkeypatch.setenv("FIREBASE_API_KEY", "firebase-key")
+    monkeypatch.setenv("GOOGLE_CALENDAR_API_KEY", "calendar-key")
+    monkeypatch.setenv("DESKTOP_LEGACY_ANTHROPIC_KEY", "anthropic-key")
+
+    response = make_client().get("/v1/config/api-keys")
+
+    assert response.status_code == 200
+    assert response.json() == {}
+
+
 def test_apple_domain_and_sentry_installation_are_public(monkeypatch):
     monkeypatch.setenv("SENTRY_WEBHOOK_SECRET", "secret")
     client = make_client()
