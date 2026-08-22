@@ -20,9 +20,12 @@ final class DesktopDeploymentProfileTests: XCTestCase {
     XCTAssertFalse(DesktopBackendEnvironment.shouldConfigureFirebaseSDK(identityProvider: .betterAuth))
     XCTAssertFalse(
       DesktopModelEgressPolicy.allowsClientDirectVendorEgress(deploymentProfile: .selfHosted))
+    XCTAssertFalse(
+      DesktopModelEgressPolicy.allowsClientDirectWebSearch(deploymentProfile: .selfHosted))
     XCTAssertFalse(DesktopModelEgressPolicy.allowsBYOK(deploymentProfile: .selfHosted))
     XCTAssertFalse(DesktopBackendEnvironment.allowsOmiManagedServices(deploymentProfile: .selfHosted))
     XCTAssertTrue(DesktopModelEgressPolicy.allowsClientDirectVendorEgress(deploymentProfile: .omiCloud))
+    XCTAssertTrue(DesktopModelEgressPolicy.allowsClientDirectWebSearch(deploymentProfile: .omiCloud))
   }
 
   func testSelfHostedBackendRoutesRequireAnExplicitCanonicalOperatorOrigin() {

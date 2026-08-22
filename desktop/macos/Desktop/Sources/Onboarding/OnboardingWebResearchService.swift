@@ -10,7 +10,34 @@ struct OnboardingWebSearchResult: Sendable {
 actor OnboardingWebResearchService {
   static let shared = OnboardingWebResearchService()
 
+  typealias DataLoader = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+  private let deploymentProfile: DesktopDeploymentProfile
+  private let dataLoader: DataLoader
+
+  init(
+    deploymentProfile: DesktopDeploymentProfile = DesktopBackendEnvironment.deploymentProfile,
+    dataLoader: @escaping DataLoader = { request in
+      try await URLSession.shared.data(for: request)
+    }
+  ) {
+    self.deploymentProfile = deploymentProfile
+    self.dataLoader = dataLoader
+  }
+
   func search(queries: [String], maxResultsPerQuery: Int = 3) async -> [OnboardingWebSearchResult] {
+    guard DesktopModelEgressPolicy.allowsClientDirectWebSearch(deploymentProfile: deploymentProfile) else {
+      log("OnboardingWebResearchService: direct web research disabled by self-hosted deployment profile")
+      DesktopDiagnosticsManager.shared.recordFallback(
+        area: "onboarding_web_research",
+        from: "duckduckgo_direct",
+        to: "disabled",
+        reason: "deployment_profile",
+        outcome: .exhausted
+      )
+      return []
+    }
+
     var allResults: [OnboardingWebSearchResult] = []
     var seenURLs = Set<String>()
 
@@ -40,7 +67,7 @@ actor OnboardingWebResearchService {
     request.timeoutInterval = 20
 
     do {
-      let (data, response) = try await URLSession.shared.data(for: request)
+      let (data, response) = try await dataLoader(request)
       guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
         return []
       }

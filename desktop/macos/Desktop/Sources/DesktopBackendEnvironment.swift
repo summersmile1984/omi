@@ -56,6 +56,17 @@ enum DesktopModelEgressPolicy {
     deploymentProfile == .omiCloud
   }
 
+  /// Onboarding enrichment is an optional public-web capability. The managed
+  /// artifact may use its historical DuckDuckGo transport, but a self-hosted
+  /// artifact must not silently turn profile-derived queries into direct
+  /// third-party traffic. Self-host deployments keep web search behind the
+  /// operator backend's explicit SearXNG capability instead.
+  static func allowsClientDirectWebSearch(
+    deploymentProfile: DesktopDeploymentProfile
+  ) -> Bool {
+    deploymentProfile == .omiCloud
+  }
+
   static func allowsBYOK(deploymentProfile: DesktopDeploymentProfile) -> Bool {
     deploymentProfile == .omiCloud
   }
