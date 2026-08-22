@@ -201,6 +201,7 @@ enum ConnectorImportOperations {
     case .cookieDecryptionFailed: return .decryptFailed
     case .networkError: return .network
     case .pythonNotFound: return .unknown
+    case .unavailableByDeploymentProfile: return .unknown
     }
   }
 
@@ -216,6 +217,7 @@ enum ConnectorImportOperations {
     case .configurationError: return .configuration
     case .networkError: return .network
     case .pythonNotFound: return .unknown
+    case .unavailableByDeploymentProfile: return .unknown
     }
   }
 

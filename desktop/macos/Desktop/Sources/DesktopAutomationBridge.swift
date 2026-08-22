@@ -2646,6 +2646,8 @@ final class DesktopAutomationActionRegistry {
           classification = "network"
         case .pythonNotFound:
           classification = "python_not_found"
+        case .unavailableByDeploymentProfile:
+          classification = "deployment_profile"
         }
         return [
           "status": "error",
@@ -2696,6 +2698,8 @@ final class DesktopAutomationActionRegistry {
           classification = "network"
         case .pythonNotFound:
           classification = "python_not_found"
+        case .unavailableByDeploymentProfile:
+          classification = "deployment_profile"
         }
         return [
           "status": "error",
