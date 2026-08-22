@@ -2323,6 +2323,9 @@ class SelfHostOperationsTest(unittest.TestCase):
                     '--expected-runtime-fingerprint',
                     'a' * 64,
                     '--expected-config-fingerprint',
+        self.assertIn('require_clean_source_tree', script)
+        self.assertIn('git -C "$REPO_ROOT" status --porcelain --untracked-files=all', script)
+        self.assertIn('could not verify the source tree', script)
                     'b' * 64,
                     '--expected-migration-fingerprint',
                     'c' * 64,

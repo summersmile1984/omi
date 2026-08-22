@@ -74,10 +74,23 @@ verify_backup() {
 
 require_runtime() {
   command -v docker >/dev/null || { echo "error: docker is required" >&2; exit 1; }
+  require_clean_source_tree
   [[ -f "$ENV_FILE" ]] || { echo "error: environment file not found: $ENV_FILE" >&2; exit 1; }
   [[ "$ENV_FILE" != *.example ]] || { echo "error: operations refuse the checked-in example environment" >&2; exit 1; }
   "$PY" "$CONFIG_CHECKER" --env-file "$ENV_FILE"
   compose config --quiet
+}
+
+require_clean_source_tree() {
+  local status
+  status="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)" || {
+    echo "error: self-host operations could not verify the source tree" >&2
+    exit 1
+  }
+  [[ -z "$status" ]] || {
+    echo "error: self-host operations require a clean source tree; commit or remove untracked/modified files" >&2
+    exit 1
+  }
 }
 
 absolute_directory() {

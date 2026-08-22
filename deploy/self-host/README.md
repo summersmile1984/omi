@@ -406,6 +406,11 @@ keeps the Git revision recorded in the backup manifest aligned with the actual
 Compose/build inputs; the ignored operator `.env.production` and external
 model/key files remain outside that source-tree check.
 
+All state operations also refuse a dirty or untracked source checkout. This
+keeps the Git revision recorded in the backup manifest aligned with the actual
+Compose/build inputs; the ignored operator `.env.production` and external
+model/key files remain outside that source-tree check.
+
 Backups quiesce backend/auth/worker traffic, create a PostgreSQL custom-format
 logical dump, issue a synchronous Redis save, and archive the stopped
 Redis/MinIO/Qdrant/backend-syncing volumes. Each artifact is streamed through
