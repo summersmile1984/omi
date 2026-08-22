@@ -7,7 +7,7 @@ Inherits all rules from the root [`../AGENTS.md`](../AGENTS.md). This file adds 
 ### Flavors
 - **dev**: Android `com.friend.ios.dev`, iOS `com.friend-app-with-wearable.ios12.development` — uses `.dev.env`, Firebase project `based-hardware-dev`
 - **prod**: Android `com.friend.ios`, iOS `com.friend-app-with-wearable.ios12` — uses `.prod.env`, Firebase project `based-hardware-prod`
-- **selfhost**: Android `com.friend.ios.selfhost` and the explicit iOS self-host setup path require operator API/auth/legal/share/MCP origins, Better Auth, and `OMI_FIREBASE_SERVICES_ENABLED=false`; Firebase/Crashlytics/remote FCM are disabled and notifications are local-only.
+- **selfhost**: Android `com.friend.ios.selfhost` and iOS self-host require explicit operator origins, Better Auth, and `OMI_FIREBASE_SERVICES_ENABLED=false`; Firebase/Crashlytics/FCM are off.
 - **raybanDat**: camera-capable iOS target with the same iOS development identity; use `scripts/rayban_dat.sh`, which excludes mcumgr only for that transaction and restores the default graph.
 
 ### Generated Files (never edit manually)
@@ -111,7 +111,7 @@ PR CI runs `flutter test` and an analyzer ratchet (`app/scripts/analyze_ratchet.
 
 ### Token Lifecycle
 1. `getAuthHeader()` in `lib/backend/http/shared.dart` checks token expiry (5-minute buffer)
-2. If expired, calls `AuthService.instance.getIdToken()` through the selected identity provider
+2. If expired, calls `AuthService.instance.getIdToken()` via the selected identity provider
 3. Token stored in SharedPreferencesUtil with expiration timestamp
 4. 401 responses trigger automatic refresh + retry
 
@@ -119,7 +119,7 @@ PR CI runs `flutter test` and an analyzer ratchet (`app/scripts/analyze_ratchet.
 - Google Sign In (`google_sign_in` package)
 - Apple Sign In (`sign_in_with_apple` package, includes PKCE via nonce+sha256)
 - Firebase remains the default identity layer for official builds
-- Self-hosted builds use Better Auth, explicit operator-owned HTTPS origins, and no Firebase services/Google plist. Notifications are local-only by default; an explicit `OMI_PUSH_REGISTRATION_URL` exposes provider-neutral opaque-token registration, while platform token provisioning and delivery remain operator-owned. Build with `scripts/build_ios_self_host_release.sh`; signed env/native identity is in `../deploy/self-host/README.md`. Never embed a server secret in a mobile build
+- Self-hosted builds use Better Auth, explicit operator HTTPS origins, no Firebase/Google plist, and local-only notifications by default. `OMI_PUSH_REGISTRATION_URL` enables opaque-token registration; provisioning/delivery remain operator-owned. See `../deploy/self-host/README.md`; never embed a server secret.
 
 ### Request Headers
 All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash, X-App-Version, plus Bearer token.
@@ -127,10 +127,8 @@ All API requests include: X-Request-Start-Time, X-App-Platform, X-Device-Id-Hash
 ### API Base URLs
 - Dev: configured in `.dev.env` → `Env.apiBaseUrl`
 - Prod: configured in `.prod.env` → `Env.apiBaseUrl`
-- Self-hosted marketplace images resolve only against the signed operator API;
-  managed GitHub/Omi image origins are rejected by `Env.resolveAppImageUrl`.
-- Self-hosted mobile builds never download Whisper from Hugging Face; select a
-  local `.bin` model. Managed profiles retain the existing hosted flows.
+- Self-hosted marketplace images use only the signed operator API; managed GitHub/Omi origins are rejected.
+- Self-hosted mobile builds never download Whisper from Hugging Face; use a local `.bin` model.
 
 ## Codegen Rules
 
