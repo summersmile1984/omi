@@ -281,6 +281,29 @@ def test_capture_inventory_records_generation_hash_metadata_and_private_mode(tmp
     assert manifest.path.stat().st_mode & 0o777 == 0o600
 
 
+def test_capture_inventory_rechecks_source_freeze_before_reading(tmp_path: Path) -> None:
+    source = _FakeSource()
+    source.add('production-speech-profiles', 'tenant-a/profile.wav', b'bytes')
+    plan = _write_plan(tmp_path / 'plan.json')
+    calls = 0
+
+    def expired_freeze() -> None:
+        nonlocal calls
+        calls += 1
+        raise migration.SourceWriteFreezeError('source-write freeze lease expired')
+
+    with pytest.raises(migration.SourceWriteFreezeError, match='expired'):
+        migration.capture_inventory(
+            source,
+            plan,
+            tmp_path / 'inventory.jsonl',
+            source_read_guard=expired_freeze,
+        )
+
+    assert calls == 1
+    assert not (tmp_path / 'inventory.jsonl').exists()
+
+
 def test_resume_rejects_non_private_manifest_and_checkpoint(tmp_path: Path) -> None:
     source, plan, manifest = _captured(tmp_path)
     checkpoint_path = tmp_path / 'checkpoint.json'

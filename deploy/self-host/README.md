@@ -1120,8 +1120,14 @@ deploy/self-host/compose-clean-env.sh deploy/self-host/.env.production \
   --plan /migration/plan.json \
   --manifest /migration/gcs-inventory.jsonl \
   --source-project SOURCE_PROJECT \
-  --source-credentials /migration/gcs-reader.json
+  --source-credentials /migration/gcs-reader.json \
+  --freeze-lease /migration/source-write-freeze.json
 ```
+
+The dry run also requires the active source-write freeze.  The importer
+rechecks that lease before every source list/read boundary, so the immutable
+inventory cannot be created from a window that expired or was issued for a
+different storage authority.
 
 Then start MinIO and apply the resumable streaming copy. The policy must be an
 explicit operator choice and must remain identical for apply and verify:

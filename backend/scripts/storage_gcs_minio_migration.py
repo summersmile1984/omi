@@ -523,8 +523,24 @@ def inventory_source(
     return tuple(records), _inventory(records)
 
 
-def capture_inventory(source: SourceStore, plan: MigrationPlan, manifest_path: Path) -> Manifest:
-    records, inventory = inventory_source(source, plan)
+def capture_inventory(
+    source: SourceStore,
+    plan: MigrationPlan,
+    manifest_path: Path,
+    *,
+    source_read_guard: Callable[[], None] | None = None,
+) -> Manifest:
+    """Capture a source-bound inventory while repeatedly proving the freeze.
+
+    The inventory is the authority for every later apply/resume operation.  A
+    lease check only before the scan would allow a long-running source read to
+    continue after writes resume, producing a manifest that cannot authorize a
+    consistent cutover.  ``inventory_source`` already checks the guard at each
+    list/open boundary; keep the guard optional for hermetic callers while the
+    CLI always supplies the required operator lease.
+    """
+
+    records, inventory = inventory_source(source, plan, source_read_guard=source_read_guard)
     header = {
         'type': 'header',
         'format': MANIFEST_FORMAT,
@@ -1168,16 +1184,16 @@ def _parser() -> argparse.ArgumentParser:
         child.add_argument('--source-project', required=True)
         child.add_argument('--source-credentials', required=True, type=Path)
         child.add_argument('--source-endpoint', default='https://storage.googleapis.com')
+        child.add_argument(
+            '--freeze-lease',
+            required=True,
+            type=Path,
+            help='mode-0600 HMAC lease proving source storage writes are paused',
+        )
         if command in {'apply', 'verify'}:
             child.add_argument('--checkpoint', required=True, type=Path)
             child.add_argument('--target-endpoint', default=os.getenv('MINIO_ENDPOINT', ''))
             child.add_argument('--existing-policy', required=True, choices=sorted(POLICIES))
-            child.add_argument(
-                '--freeze-lease',
-                required=True,
-                type=Path,
-                help='mode-0600 HMAC lease proving source storage writes are paused',
-            )
     return parser
 
 
@@ -1186,8 +1202,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         plan = load_plan(arguments.plan)
         source = _configured_source(arguments)
+
+        def verify_source_write_freeze() -> None:
+            verify_lease(
+                arguments.freeze_lease,
+                source_project=arguments.source_project,
+                source_database='(default)',
+                source_endpoint=source.authority.endpoint,
+                required_scopes={'storage'},
+            )
+
+        verify_source_write_freeze()
         if arguments.command == 'dry-run':
-            manifest = capture_inventory(source, plan, arguments.manifest)
+            manifest = capture_inventory(
+                source,
+                plan,
+                arguments.manifest,
+                source_read_guard=verify_source_write_freeze,
+            )
             result = {
                 'status': 'dry-run-passed',
                 'records': manifest.inventory.count,
@@ -1198,16 +1230,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest = load_manifest(arguments.manifest, plan)
             target = _configured_target(arguments)
 
-            def verify_source_write_freeze() -> None:
-                verify_lease(
-                    arguments.freeze_lease,
-                    source_project=arguments.source_project,
-                    source_database='(default)',
-                    source_endpoint=source.authority.endpoint,
-                    required_scopes={'storage'},
-                )
-
-            verify_source_write_freeze()
             if arguments.command == 'apply':
                 applied = run_apply(
                     source,
