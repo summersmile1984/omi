@@ -10,12 +10,27 @@ void main() {
     );
   });
 
+  test('self-hosted profile disables Firebase before provider validation', () {
+    expect(
+      FirebaseServicesPolicy.enabledForTesting(
+        profile: 'self_hosted',
+        provider: 'firebase',
+        value: 'true',
+      ),
+      isFalse,
+    );
+  });
+
   test('managed Firebase remains opt-in explicit and invalid values fail closed', () {
     expect(FirebaseServicesPolicy.enabledForTesting(provider: 'firebase', value: 'true'), isTrue);
     expect(FirebaseServicesPolicy.enabledForTesting(provider: 'firebase', value: 'false'), isFalse);
     expect(
       () => FirebaseServicesPolicy.enabledForTesting(provider: 'firebase', value: 'maybe'),
       throwsStateError,
+    );
+    expect(
+      FirebaseServicesPolicy.enabledForTesting(provider: 'unexpected-provider', value: 'true'),
+      isFalse,
     );
   });
 

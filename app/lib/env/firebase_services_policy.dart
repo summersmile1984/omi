@@ -6,10 +6,11 @@
 import 'package:omi/env/environment_profile.dart';
 
 final class FirebaseServicesPolicy {
+  static const _profile = String.fromEnvironment('OMI_APP_PROFILE');
   static const _identityProvider = String.fromEnvironment('OMI_AUTH_PROVIDER', defaultValue: 'firebase');
   static const _servicesDefine = String.fromEnvironment('OMI_FIREBASE_SERVICES_ENABLED');
 
-  static bool get enabled => enabledForTesting(provider: _identityProvider, value: _servicesDefine);
+  static bool get enabled => enabledForTesting(profile: _profile, provider: _identityProvider, value: _servicesDefine);
 
   /// Firebase is only a managed-profile capability. Keep this pure so
   /// notification/logger tests can exercise the boundary without initializing
@@ -22,8 +23,12 @@ final class FirebaseServicesPolicy {
   }
 
   /// Pure policy seam used by tests and by build-contract checks.
-  static bool enabledForTesting({required String provider, required String value}) {
+  static bool enabledForTesting({String profile = '', required String provider, required String value}) {
+    final normalizedProfile = profile.trim().toLowerCase().replaceAll('-', '_');
+    if (normalizedProfile == 'self_hosted' || normalizedProfile == 'selfhost') return false;
+
     final normalizedProvider = provider.trim().toLowerCase().replaceAll('-', '_');
+    if (normalizedProvider != 'firebase' && normalizedProvider != 'better_auth') return false;
     switch (value.trim().toLowerCase()) {
       case 'true':
         return true;
