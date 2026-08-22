@@ -116,6 +116,69 @@ import XCTest
         "refresh token must survive a network-layer refresh failure")
     }
 
+    func testSelfHostedBetterAuthSessionRefreshesWithoutFirebaseOrInjectedToken() async throws {
+      let priorProfile = getenv("OMI_DEPLOYMENT_PROFILE").flatMap { String(validatingCString: $0) }
+      let priorProvider = getenv("OMI_AUTH_PROVIDER").flatMap { String(validatingCString: $0) }
+      let priorPythonURL = getenv("OMI_PYTHON_API_URL").flatMap { String(validatingCString: $0) }
+      let priorDesktopURL = getenv("OMI_DESKTOP_API_URL").flatMap { String(validatingCString: $0) }
+      let priorAuthURL = getenv("OMI_AUTH_SERVER_URL").flatMap { String(validatingCString: $0) }
+      let priorMCPURL = getenv("OMI_MCP_API_URL").flatMap { String(validatingCString: $0) }
+      let priorInjectedToken = getenv("OMI_AUTH_API_TOKEN").flatMap { String(validatingCString: $0) }
+      defer {
+        restoreEnvironment("OMI_DEPLOYMENT_PROFILE", priorProfile)
+        restoreEnvironment("OMI_AUTH_PROVIDER", priorProvider)
+        restoreEnvironment("OMI_PYTHON_API_URL", priorPythonURL)
+        restoreEnvironment("OMI_DESKTOP_API_URL", priorDesktopURL)
+        restoreEnvironment("OMI_AUTH_SERVER_URL", priorAuthURL)
+        restoreEnvironment("OMI_MCP_API_URL", priorMCPURL)
+        restoreEnvironment("OMI_AUTH_API_TOKEN", priorInjectedToken)
+      }
+
+      setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted", 1)
+      setenv("OMI_AUTH_PROVIDER", "better_auth", 1)
+      setenv("OMI_PYTHON_API_URL", "https://operator.example", 1)
+      setenv("OMI_DESKTOP_API_URL", "https://operator.example", 1)
+      setenv("OMI_AUTH_SERVER_URL", "https://auth.self-hosted.example", 1)
+      setenv("OMI_MCP_API_URL", "https://operator.example", 1)
+      unsetenv("OMI_AUTH_API_TOKEN")
+
+      let auth = makeAuthWithUserDefaultsStorage()
+      try auth.saveTokens(
+        idToken: "expired-jwt",
+        refreshToken: "operator-session",
+        expiresIn: 0,
+        userId: "better-user",
+        provider: .betterAuth)
+      UserDefaults.standard.set("better-user", forKey: .authUserId)
+
+      let renewedJWT =
+        "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJiZXR0ZXItdXNlciIsInVpZCI6ImJldHRlci11c2VyIiwiZXhwIjozMDAwMDAwMDAwMH0.signature"
+      auth.betterAuthTransport = { request in
+        let path = request.url?.path ?? ""
+        let body: String
+        switch path {
+        case "/api/auth/get-session":
+          body = #"{"user":{"id":"better-user","email":"user@example.com"}}"#
+        case "/api/auth/token":
+          body = "{\"token\":\"\(renewedJWT)\"}"
+        default:
+          throw URLError(.badURL)
+        }
+        let response = try XCTUnwrap(
+          HTTPURLResponse(
+            url: try XCTUnwrap(request.url),
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil))
+        return (Data(body.utf8), response)
+      }
+
+      let token = try await auth.getIdToken(forceRefresh: true)
+      XCTAssertEqual(token, renewedJWT)
+      XCTAssertEqual(UserDefaults.standard.string(forKey: .authIdToken), renewedJWT)
+      XCTAssertEqual(UserDefaults.standard.string(forKey: .authRefreshToken), "operator-session")
+    }
+
     func testRefresh400WithInvalidRefreshTokenClearsSessionAndRecordsHealth() async throws {
       let auth = makeAuthWithUserDefaultsStorage()
       XCTAssertNoThrow(
@@ -207,6 +270,14 @@ import XCTest
       UserDefaults.standard.removeObject(forKey: .authTokenExpiry)
       UserDefaults.standard.removeObject(forKey: .authTokenUserId)
       UserDefaults.standard.removeObject(forKey: .authUserId)
+    }
+
+    private func restoreEnvironment(_ key: String, _ value: String?) {
+      if let value {
+        setenv(key, value, 1)
+      } else {
+        unsetenv(key)
+      }
     }
   }
 #endif

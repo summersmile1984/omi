@@ -2328,9 +2328,6 @@ class AuthService {
 
   /// Refresh the ID token using the refresh token
   private func refreshIdToken(attempt: AuthSessionAttempt) async throws -> String {
-    guard DesktopBackendEnvironment.allowsOmiManagedServices || DesktopLocalProfile.isEnabled else {
-      throw AuthError.invalidConfiguration
-    }
     guard sessionAttemptFence.isCurrent(attempt) else { throw AuthError.notSignedIn }
     guard let refreshToken = storedRefreshToken else {
       throw AuthError.notSignedIn
@@ -2338,6 +2335,13 @@ class AuthService {
 
     if storedAuthProvider == .betterAuth {
       return try await refreshBetterAuthJWT(sessionToken: refreshToken, attempt: attempt)
+    }
+
+    // Firebase refresh remains limited to the managed cloud/local harness.
+    // Better Auth is handled above so a self-hosted session does not inherit
+    // this legacy Firebase authority gate.
+    guard DesktopBackendEnvironment.allowsOmiManagedServices || DesktopLocalProfile.isEnabled else {
+      throw AuthError.invalidConfiguration
     }
 
     let apiKey = try requireFirebaseApiKey()
@@ -2474,12 +2478,18 @@ class AuthService {
     // to the normal Firebase token path.
     let injectedToken = getenv("OMI_AUTH_API_TOKEN").flatMap { String(validatingCString: $0) }
     if DesktopBackendEnvironment.deploymentProfile == .selfHosted {
-      guard let injectedToken,
+      if let injectedToken,
         !injectedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      else {
+      {
+        return injectedToken.trimmingCharacters(in: .whitespacesAndNewlines)
+      }
+      // A signed self-hosted deployment may use either an operator-injected
+      // JWT or its Better Auth session. When the latter is persisted, let the
+      // normal owner-bound refresh path renew it; never fall through to
+      // Firebase when neither credential is available.
+      guard storedAuthProvider == .betterAuth, storedRefreshToken != nil else {
         throw AuthError.invalidConfiguration
       }
-      return injectedToken.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     if let injectedToken, !injectedToken.isEmpty {
       return injectedToken
