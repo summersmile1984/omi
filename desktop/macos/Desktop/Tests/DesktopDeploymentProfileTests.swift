@@ -11,14 +11,17 @@ final class DesktopDeploymentProfileTests: XCTestCase {
 
   func testSelfHostedPolicyDisablesClientVendorAndManagedServices() {
     XCTAssertEqual(
-      DesktopBackendEnvironment.identityProvider(deploymentProfile: .selfHosted),
+      DesktopBackendEnvironment.identityProvider(
+        deploymentProfile: .selfHosted,
+        configuredValue: nil
+      ),
       .betterAuth
     )
-    XCTAssertFalse(DesktopBackendEnvironment.shouldConfigureFirebaseSDK(deploymentProfile: .selfHosted))
+    XCTAssertFalse(DesktopBackendEnvironment.shouldConfigureFirebaseSDK(identityProvider: .betterAuth))
     XCTAssertFalse(
       DesktopModelEgressPolicy.allowsClientDirectVendorEgress(deploymentProfile: .selfHosted))
     XCTAssertFalse(DesktopModelEgressPolicy.allowsBYOK(deploymentProfile: .selfHosted))
-    XCTAssertFalse(DesktopModelEgressPolicy.allowsOmiManagedServices(deploymentProfile: .selfHosted))
+    XCTAssertFalse(DesktopBackendEnvironment.allowsOmiManagedServices(deploymentProfile: .selfHosted))
     XCTAssertTrue(DesktopModelEgressPolicy.allowsClientDirectVendorEgress(deploymentProfile: .omiCloud))
   }
 
@@ -118,6 +121,7 @@ final class DesktopDeploymentProfileTests: XCTestCase {
     XCTAssertEqual(status, .failed("Disabled by deployment profile"))
   }
 
+  @MainActor
   func testSelfHostedAuthUsesOperatorTokenAndDoesNotFallBackToFirebase() async throws {
     let oldProfile = getenv("OMI_DEPLOYMENT_PROFILE").flatMap { String(validatingCString: $0) }
     let oldToken = getenv("OMI_AUTH_API_TOKEN").flatMap { String(validatingCString: $0) }
@@ -136,12 +140,12 @@ final class DesktopDeploymentProfileTests: XCTestCase {
 
     setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted", 1)
     setenv("OMI_AUTH_API_TOKEN", "operator-jwt", 1)
-    let token = try await MainActor.run { try await AuthService.shared.getIdToken() }
+    let token = try await AuthService.shared.getIdToken()
     XCTAssertEqual(token, "operator-jwt")
 
     unsetenv("OMI_AUTH_API_TOKEN")
     do {
-      _ = try await MainActor.run { try await AuthService.shared.getIdToken() }
+      _ = try await AuthService.shared.getIdToken()
       XCTFail("self-hosted auth must not fall back to Firebase without an operator token")
     } catch AuthError.invalidConfiguration {
       // Expected fail-closed behavior.

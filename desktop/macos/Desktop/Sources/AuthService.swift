@@ -314,7 +314,11 @@ class AuthService {
   func configure() async {
     guard !isConfigured else { return }
     isConfigured = true
-    guard DesktopBackendEnvironment.shouldConfigureFirebaseSDK || DesktopLocalProfile.isEnabled else {
+    guard
+      DesktopBackendEnvironment.shouldConfigureFirebaseSDK(
+        identityProvider: DesktopBackendEnvironment.identityProvider
+      ) || DesktopLocalProfile.isEnabled
+    else {
       // Self-hosted auth is supplied by the operator (for example through
       // OMI_AUTH_API_TOKEN). Do not restore or attach a Firebase SDK session,
       // because that would make Firebase the implicit auth authority again.

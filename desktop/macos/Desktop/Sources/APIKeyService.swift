@@ -91,7 +91,7 @@ final class APIKeyService: ObservableObject {
     guard DesktopModelEgressPolicy.allowsBYOK(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
       return nil
     }
-    nonEmpty(UserDefaults.standard.string(forKey: "dev_gemini_api_key")) ?? geminiApiKey
+    return nonEmpty(UserDefaults.standard.string(forKey: "dev_gemini_api_key")) ?? geminiApiKey
   }
 
   var effectiveFirebaseApiKey: String? {
@@ -195,7 +195,7 @@ final class APIKeyService: ObservableObject {
     guard DesktopModelEgressPolicy.allowsBYOK(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
       return nil
     }
-    nonEmptyStatic(UserDefaults.standard.string(forKey: "dev_gemini_api_key"))
+    return nonEmptyStatic(UserDefaults.standard.string(forKey: "dev_gemini_api_key"))
       ?? (getenv("GEMINI_API_KEY").flatMap { String(validatingCString: $0) })
   }
 
@@ -224,7 +224,7 @@ final class APIKeyService: ObservableObject {
     guard DesktopModelEgressPolicy.allowsBYOK(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
       return false
     }
-    BYOKProvider.allCases.allSatisfy { byokKey($0) != nil }
+    return BYOKProvider.allCases.allSatisfy { byokKey($0) != nil }
   }
 
   /// SHA-256 fingerprint of a key, used by the backend to detect when the

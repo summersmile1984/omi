@@ -453,7 +453,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked S
     // local dev uses Auth emulator REST + stored tokens instead).
     let plistPath = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist")
 
-    if !DesktopBackendEnvironment.shouldConfigureFirebaseSDK {
+    if !DesktopBackendEnvironment.shouldConfigureFirebaseSDK(
+      identityProvider: DesktopBackendEnvironment.identityProvider
+    ) {
       log("Self-hosted profile: skipping Firebase SDK configure; use operator auth token")
       AuthState.shared.transition(to: .recoveryRequired)
     } else if DesktopLocalProfile.isEnabled {

@@ -2,6 +2,14 @@
 import Foundation
 
 enum AppBuild {
+  private static let updateChannelDefaultsKey = "update_channel"
+  private static let betaOverwriteMigrationKey = "didMigrateBetaOverwrite_v1"
+  private static let desktopAppcastURL = URL(
+    string: "https://api.omi.me/v2/desktop/appcast.xml?platform=macos"
+  )!
+  private static let channelProbeMainThreadBudget: TimeInterval = 1.5
+  private static let channelProbeRequestTimeout: TimeInterval = 3
+
   /// v0.12.149 release candidate source touch.
   static let productionBundleIdentifier = "com.omi.computer-macos"
   /// The separately-installable beta app ("Omi Beta.app"). A distinct bundle id gives it
@@ -145,7 +153,7 @@ enum AppBuild {
 
   static func allowsSparkleUpdates(deploymentProfile: DesktopDeploymentProfile) -> Bool {
     buildConfiguration.allowsSparkleUpdates
-      && DesktopModelEgressPolicy.allowsOmiManagedServices(deploymentProfile: deploymentProfile)
+      && DesktopBackendEnvironment.allowsOmiManagedServices(deploymentProfile: deploymentProfile)
   }
 
   static var hasValidExternalPreviewConfiguration: Bool {
@@ -231,6 +239,11 @@ enum AppBuild {
       deploymentProfile: DesktopBackendEnvironment.deploymentProfile,
       backendBaseURL: DesktopBackendEnvironment.pythonBaseURL()
     )
+  }
+
+  /// Fail-closed Omi Beta download. Stable Settings uses this instead of flipping Sparkle.
+  static var omiBetaInstallURL: URL {
+    manualDownloadURL(channel: "beta", isBetaIdentity: true)
   }
 
   static func manualDownloadURL(
