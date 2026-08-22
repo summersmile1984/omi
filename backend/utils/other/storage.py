@@ -36,6 +36,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
+
+
+def _neutral_deployment() -> bool:
+    return os.environ.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in NEUTRAL_DEPLOYMENT_PROFILES
+
+
+def _selected_storage_backend() -> str:
+    """Resolve object-storage authority without a neutral GCS fallback."""
+
+    configured = os.environ.get('STORAGE_BACKEND', '').strip().lower()
+    if configured not in {'', 'gcs', 'minio'}:
+        raise RuntimeError(f'unsupported STORAGE_BACKEND={configured!r}')
+    if _neutral_deployment() and configured != 'minio':
+        raise RuntimeError('neutral deployment requires STORAGE_BACKEND=minio')
+    return configured or 'gcs'
+
+
 # Per-request fan-out limits for storage_executor (#7387)
 _STORAGE_CHUNK_SEM = threading.BoundedSemaphore(32)
 # 4 → 2 in #7526 was load-shedding while the pool was full of sleeping
@@ -66,8 +84,9 @@ _storage_client_lock = threading.Lock()
 def _get_storage_client() -> Any:
     """Return the GCS client lazily so importing this module never probes ADC/GCE metadata."""
     global storage_client
+    selected_backend = _selected_storage_backend()
     # MinIO object-storage shim for self-hosted local dev (see storage_minio.py).
-    if os.environ.get('STORAGE_BACKEND', '').strip().lower() == 'minio':
+    if selected_backend == 'minio':
         from utils.other.storage_minio import get_minio_client
 
         return get_minio_client()
@@ -95,7 +114,7 @@ def _public_object_url(bucket_name: Optional[str], path: str) -> str:
     if not bucket_name:
         raise RuntimeError('Object storage bucket is not configured')
     client = _get_storage_client()
-    if os.environ.get('STORAGE_BACKEND', '').strip().lower() == 'minio':
+    if _selected_storage_backend() == 'minio':
         return client.public_url(bucket_name, path)
     return f'https://storage.googleapis.com/{bucket_name}/{path}'
 
@@ -104,7 +123,7 @@ def _object_name_from_public_url(bucket_name: Optional[str], url: str) -> Option
     if not bucket_name:
         return None
     client = _get_storage_client()
-    if os.environ.get('STORAGE_BACKEND', '').strip().lower() == 'minio':
+    if _selected_storage_backend() == 'minio':
         return client.object_name_from_url(bucket_name, url)
     prefix = f'https://storage.googleapis.com/{bucket_name}/'
     return url[len(prefix) :] if url.startswith(prefix) else None
@@ -1609,7 +1628,7 @@ def delete_speech_profile_blob(path: str) -> bool:
 
 
 def _get_signed_url(blob: Any, minutes: int) -> str:
-    provider = os.environ.get('STORAGE_BACKEND', '').strip().lower() or 'gcs'
+    provider = _selected_storage_backend()
     bucket = getattr(getattr(blob, 'bucket', None), 'name', None) or getattr(blob, 'bucket_name', '')
     cache_key = f'{provider}:{bucket}:{blob.name}'
     if cached := get_cached_signed_url(cache_key):

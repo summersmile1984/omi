@@ -27,6 +27,12 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
+
+
+def _neutral_deployment() -> bool:
+    return os.environ.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in NEUTRAL_DEPLOYMENT_PROFILES
+
 
 def _run_query_retry(transport: Any) -> Any:
     """The RunQuery retry policy, resolved from wherever the transport exposes it.
@@ -109,6 +115,13 @@ def _build_firestore_client() -> Any:
         if database:
             kwargs["database"] = database
         return firestore.Client(**kwargs)
+
+    # A neutral/self-hosted process owns customer data through the PostgreSQL
+    # Firestore facade (or an explicitly selected emulator only). Falling
+    # through to ADC here would silently contact the managed Firestore
+    # authority when a direct launch or stale container omitted the shim env.
+    if _neutral_deployment():
+        raise RuntimeError('neutral deployment requires FIRESTORE_PG_DSN or FIRESTORE_EMULATOR_HOST')
 
     customer_data = customer_data_service_account()
     if customer_data is not None:

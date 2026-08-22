@@ -97,6 +97,22 @@ def test_get_firestore_client_builds_lazily_and_caches(monkeypatch):
     build_client.assert_called_once_with()
 
 
+def test_neutral_firestore_client_never_falls_back_to_adc(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('FIRESTORE_PG_DSN', raising=False)
+    monkeypatch.delenv('FIRESTORE_EMULATOR_HOST', raising=False)
+    customer_service_account = MagicMock()
+    firestore_constructor = MagicMock()
+    monkeypatch.setattr(client_module, 'customer_data_service_account', customer_service_account)
+    monkeypatch.setattr(client_module.firestore, 'Client', firestore_constructor)
+
+    with pytest.raises(RuntimeError, match='requires FIRESTORE_PG_DSN or FIRESTORE_EMULATOR_HOST'):
+        client_module._build_firestore_client()
+
+    customer_service_account.assert_not_called()
+    firestore_constructor.assert_not_called()
+
+
 @pytest.fixture
 def fake_firestore():
     store = setup_fake_firestore()

@@ -350,3 +350,23 @@ def test_account_object_reconciliation_covers_all_uid_namespaces_without_prefix_
     assert buckets['postprocessing'].names == ['syncing/u10/job/audio.wav']
     assert buckets['private'].names == ['chunks/u10/c1/1.opus']
     assert buckets['temporal'].names == ['_temp/u10/upload.wav', 'syncing/u10/job/upload.wav']
+
+
+def test_neutral_storage_never_falls_back_to_gcs(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('STORAGE_BACKEND', raising=False)
+    constructor = MagicMock()
+    monkeypatch.setattr(storage.storage, 'Client', constructor)
+
+    with pytest.raises(RuntimeError, match='requires STORAGE_BACKEND=minio'):
+        storage._get_storage_client()
+
+    constructor.assert_not_called()
+
+
+def test_neutral_storage_rejects_explicit_gcs_authority(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'neutral')
+    monkeypatch.setenv('STORAGE_BACKEND', 'gcs')
+
+    with pytest.raises(RuntimeError, match='requires STORAGE_BACKEND=minio'):
+        storage._selected_storage_backend()
