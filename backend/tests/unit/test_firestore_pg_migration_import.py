@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+import os
 import struct
 import subprocess
 import sys
@@ -198,6 +199,20 @@ def test_capture_source_rechecks_freeze_and_cleans_partial_manifest(tmp_path):
     assert calls == 3
     assert not checkpoint_path.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_atomic_checkpoint_write_does_not_follow_stale_temp_symlink(tmp_path):
+    checkpoint_path = tmp_path / 'checkpoint.json'
+    outside = tmp_path / 'outside.json'
+    outside.write_text('keep\n', encoding='utf-8')
+    stale_temp = tmp_path / f'.{checkpoint_path.name}.tmp-{os.getpid()}'
+    stale_temp.symlink_to(outside)
+
+    importer._atomic_json(checkpoint_path, {'status': 'captured'})
+
+    assert outside.read_text(encoding='utf-8') == 'keep\n'
+    assert json.loads(checkpoint_path.read_text(encoding='utf-8')) == {'status': 'captured'}
+    assert checkpoint_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_capture_hash_is_independent_of_depth_first_versus_path_order(monkeypatch, tmp_path):
