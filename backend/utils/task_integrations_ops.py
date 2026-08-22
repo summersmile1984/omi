@@ -12,6 +12,7 @@ import httpx
 from fastapi import HTTPException
 
 import database.users as users_db
+from utils.egress_policy import NEUTRAL_DEPLOYMENT_PROFILES, httpx_request_event_hooks
 from utils.executors import db_executor, run_blocking
 from utils.log_sanitizer import sanitize
 import logging
@@ -25,6 +26,47 @@ OAUTH_CONFIGS = {
     'clickup': {'name': 'ClickUp'},
 }
 
+
+class TaskIntegrationCapabilityUnavailable(Exception):
+    """Typed fail-closed result for vendor task integrations in neutral deployments."""
+
+    code = 'deployment_capability_unavailable'
+    capability = 'task_integrations'
+    reason = 'external_provider_forbidden'
+    retryable = False
+
+    def __init__(self, app_key: str, operation: str):
+        self.app_key = app_key
+        self.operation = operation
+        super().__init__(f'{self.capability}/{self.reason}: {app_key} {operation}')
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            'code': self.code,
+            'capability': self.capability,
+            'reason': self.reason,
+            'provider': self.app_key,
+            'operation': self.operation,
+            'retryable': self.retryable,
+        }
+
+
+def require_task_integration_capability(app_key: str, operation: str) -> None:
+    """Reject vendor-backed task integrations before credentials/state/HTTP are touched.
+
+    The current Todoist, Asana, Google Tasks, and ClickUp adapters are tied to
+    their public vendor OAuth/API authorities.  A neutral deployment cannot
+    silently use those authorities or ambient credentials.  An operator-owned
+    task adapter can be added as a separately reviewed capability later; this
+    guard deliberately does not pretend that a vendor URL is operator-owned.
+    """
+
+    profile = os.getenv('OMI_DEPLOYMENT_PROFILE', '').strip().lower().replace('-', '_')
+    normalized = app_key.strip().lower().replace('-', '_')
+    if profile in {value.replace('-', '_') for value in NEUTRAL_DEPLOYMENT_PROFILES} and normalized in OAUTH_CONFIGS:
+        raise TaskIntegrationCapabilityUnavailable(normalized, operation)
+
+
 http_client: Optional[httpx.AsyncClient] = None
 
 
@@ -32,7 +74,7 @@ def get_http_client() -> httpx.AsyncClient:
     """Get or create the HTTP client instance."""
     global http_client
     if http_client is None:
-        http_client = httpx.AsyncClient(timeout=10.0)
+        http_client = httpx.AsyncClient(timeout=10.0, event_hooks=httpx_request_event_hooks())
     return http_client
 
 
@@ -45,6 +87,7 @@ async def close_http_client():
 
 
 def _build_refresh_request(app_key: str, refresh_token: str) -> dict:
+    require_task_integration_capability(app_key, 'token_refresh')
     name = OAUTH_CONFIGS.get(app_key, {'name': app_key}).get('name', app_key)
     if app_key == 'google_tasks':
         client_id = os.getenv('GOOGLE_TASKS_CLIENT_ID')
@@ -84,6 +127,7 @@ def _build_refresh_request(app_key: str, refresh_token: str) -> dict:
 async def refresh_oauth_token(
     uid: str, app_key: str, integration: dict, client: Optional[httpx.AsyncClient] = None
 ) -> dict:
+    require_task_integration_capability(app_key, 'token_refresh')
     name = OAUTH_CONFIGS.get(app_key, {'name': app_key}).get('name', app_key)
     refresh_token = integration.get('refresh_token')
     if not refresh_token:
@@ -159,6 +203,7 @@ async def ensure_valid_oauth_token(
     refresh_if_missing_expires_at: bool = False,
     client: Optional[httpx.AsyncClient] = None,
 ) -> dict:
+    require_task_integration_capability(app_key, 'token_refresh')
     supports_refresh = app_key in ['google_tasks', 'asana']
     if not supports_refresh:
         return integration
@@ -194,6 +239,7 @@ async def perform_request_with_token_retry(
     request_fn: Callable,
     client: Optional[httpx.AsyncClient] = None,
 ) -> Tuple[Any, dict, Optional[Exception]]:
+    require_task_integration_capability(app_key, 'api_request')
     client = client or get_http_client()
     access_token = integration.get('access_token') or ''
     response = await request_fn(client, access_token)
@@ -224,6 +270,17 @@ async def create_task_internal(
     Returns:
         dict: {"success": bool, "external_task_id": str, "error": str, "error_code": str}
     """
+    try:
+        require_task_integration_capability(app_key, 'create_task')
+    except TaskIntegrationCapabilityUnavailable as error:
+        return {
+            'success': False,
+            'error': str(error),
+            'error_code': error.code,
+            'capability': error.capability,
+            'reason': error.reason,
+        }
+
     if app_key in ['google_tasks', 'asana']:
         integration = await ensure_valid_oauth_token(
             uid,

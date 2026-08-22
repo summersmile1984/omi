@@ -57,7 +57,7 @@ backend/
     sync.py               #   /v1/sync — mobile client data sync (1500 LOC)
     auth.py               #   Google/Apple OAuth callbacks, session management
     users.py              #   Profile, subscription, settings (1200 LOC)
-    task_integrations.py  #   Todoist, Microsoft Tasks sync (1200 LOC)
+    task_integrations.py  #   Todoist/Asana/Google Tasks/ClickUp sync (vendor-only; neutral typed unavailable)
     mcp.py, mcp_sse.py    #   Model Context Protocol server endpoints
     ...                   #   + action_items, goals, knowledge_graph, payment, integrations, etc.
   utils/                  # Business logic — 60+ files (never import from routers/)

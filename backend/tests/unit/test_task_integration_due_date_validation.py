@@ -72,3 +72,32 @@ def test_missing_due_date_is_allowed(app_client, monkeypatch):
 
     assert resp.status_code == 200
     assert created.await_args.kwargs["due_date"] is None
+
+
+def test_neutral_oauth_url_is_unavailable_before_base_url_or_redis_state(app_client, monkeypatch):
+    """Vendor OAuth must not read config or create replay state in self-hosted mode."""
+    client, _ti = app_client
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('BASE_API_URL', raising=False)
+
+    resp = client.get('/v1/task-integrations/todoist/oauth-url')
+
+    assert resp.status_code == 503
+    assert resp.json()['detail']['code'] == 'deployment_capability_unavailable'
+    assert resp.json()['detail']['capability'] == 'task_integrations'
+    assert resp.json()['detail']['reason'] == 'external_provider_forbidden'
+
+
+def test_neutral_create_task_is_unavailable_before_firestore_read(app_client, monkeypatch):
+    """Stored legacy tokens cannot opt a neutral process into a vendor API call."""
+    client, ti = app_client
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+
+    def unexpected_read(*_args, **_kwargs):
+        raise AssertionError('neutral task action must be rejected before reading stored credentials')
+
+    monkeypatch.setattr(ti.users_db, 'get_task_integration', unexpected_read)
+    resp = client.post('/v1/task-integrations/todoist/tasks', json={'title': 'blocked'})
+
+    assert resp.status_code == 503
+    assert resp.json()['detail']['code'] == 'deployment_capability_unavailable'

@@ -129,3 +129,43 @@ async def test_asana_retry_reuses_injected_client_for_refresh_and_retry():
     assert calls[2].args[0] == "https://app.asana.com/api/1.0/tasks"
     assert calls[2].kwargs["headers"]["Authorization"] == "Bearer fresh-token"
     mock_run_blocking.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_neutral_create_task_is_typed_unavailable_before_client_or_token_use(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    client = AsyncMock(spec=httpx.AsyncClient)
+
+    result = await ops.create_task_internal(
+        uid='uid-neutral',
+        app_key='todoist',
+        integration={'connected': True, 'access_token': 'must-not-be-used'},
+        title='must not leave deployment',
+        client=client,
+    )
+
+    assert result == {
+        'success': False,
+        'error': 'task_integrations/external_provider_forbidden: todoist create_task',
+        'error_code': 'deployment_capability_unavailable',
+        'capability': 'task_integrations',
+        'reason': 'external_provider_forbidden',
+    }
+    client.post.assert_not_awaited()
+
+
+def test_neutral_token_refresh_is_rejected_before_credentials_are_read(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'neutral')
+    monkeypatch.setenv('ASANA_CLIENT_SECRET', 'ambient-secret-must-not-be-read')
+
+    with pytest.raises(ops.TaskIntegrationCapabilityUnavailable) as raised:
+        ops._build_refresh_request('asana', 'refresh-token')
+
+    assert raised.value.as_dict() == {
+        'code': 'deployment_capability_unavailable',
+        'capability': 'task_integrations',
+        'reason': 'external_provider_forbidden',
+        'provider': 'asana',
+        'operation': 'token_refresh',
+        'retryable': False,
+    }

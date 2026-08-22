@@ -875,10 +875,14 @@ also caller-configured authorities: add their host names explicitly when
 using those integrations in a neutral deployment. The backend validates these
 authorities before manifest probes, OAuth/MCP requests, or tool execution and
 never treats a cached manifest as permission to bypass the allowlist.
-Managed OAuth integrations (for example Google Calendar) are unavailable in
-the checked-in neutral profile until an operator-owned integration authority is
-configured; the backend rejects the managed authorization/token hosts before
-creating OAuth state or opening a client.
+Managed OAuth integrations (for example Google Calendar) and the legacy task
+integrations (Todoist, Asana, Google Tasks, and ClickUp) are unavailable in the
+checked-in neutral profile. The task adapters are vendor-bound and therefore
+fail with typed `deployment_capability_unavailable` before OAuth state,
+credentials, token refresh, or an API client/request is created; no operator
+replacement is claimed. A separately reviewed operator-owned adapter may be
+added as a new capability. The backend rejects managed authorization/token
+hosts before creating OAuth state or opening a client.
 The desktop legacy `/v1/config/api-keys` response is also empty in neutral
 mode, even when an inherited `FIREBASE_API_KEY`, Google Calendar key, or legacy
 Anthropic key remains in the environment; those managed credentials cannot be
