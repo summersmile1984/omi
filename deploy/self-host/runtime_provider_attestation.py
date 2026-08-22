@@ -15,8 +15,11 @@ import re
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PROVIDER_NAMES = frozenset({'pre_recorded_stt', 'generic_llm', 'embedding', 'realtime'})
+CAPABILITY_ROUTE_NAMES = frozenset(
+    {'stt_diarization', 'realtime', 'speaker_identity', 'tts', 'image_generation', 'file_chat', 'push'}
+)
 ATTESTATION_KEYS = frozenset(
     {
         'schema_version',
@@ -25,6 +28,7 @@ ATTESTATION_KEYS = frozenset(
         'source',
         'runtime_config_matches_reviewed',
         'providers',
+        'capability_routes',
         'external_service_revision',
         'external_model_revision',
         'external_revision_attested',
@@ -221,6 +225,101 @@ def _provider_payload(configuration: Mapping[str, Any]) -> dict[str, dict[str, A
     }
 
 
+def _optional_origin(value: Any, name: str, *, schemes: set[str]) -> str:
+    """Normalize an optional route origin without treating empty as a URL."""
+
+    if value == '':
+        return ''
+    return _safe_origin(value, name, schemes=schemes)
+
+
+def _capability_payload(configuration: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Describe every self-host capability route and its evidence scope.
+
+    The scope fields are deliberately conservative.  In particular, a
+    WebSocket marker proves transport/upstream forwarding only, and the
+    mlx-audio MOSS endpoint does not expose a signed service/model revision.
+    Keeping those facts in the manifest prevents a passing route probe from
+    being misread as model provenance or speaker identity equivalence.
+    """
+
+    config = _configuration(configuration)
+    stt_endpoint = urlsplit(config['mlx_moss_diarize_endpoint'])
+    stt_origin = _safe_origin(
+        f'{stt_endpoint.scheme}://{stt_endpoint.netloc}', 'stt_diarization.endpoint_origin', schemes={'http', 'https'}
+    )
+    tts_provider = _required_text(config.get('tts_provider'), 'tts_provider')
+    tts_model = _model(config.get('tts_model'), 'tts_model')
+    tts_transport = _required_text(config.get('tts_transport'), 'tts_transport')
+    tts_origin = _optional_origin(config.get('tts_endpoint_origin'), 'tts.endpoint_origin', schemes={'http', 'https'})
+    push_provider = _required_text(config.get('push_provider'), 'push_provider')
+    push_model = _model(config.get('push_model'), 'push_model')
+    push_transport = _required_text(config.get('push_transport'), 'push_transport')
+    push_origin = _optional_origin(config.get('push_endpoint_origin'), 'push.endpoint_origin', schemes={'https'})
+    app_icon_transport = _required_text(config.get('app_icon_transport'), 'image_generation.transport')
+    app_icon_origin = _optional_origin(
+        config.get('app_icon_endpoint_origin'), 'image_generation.endpoint_origin', schemes={'http', 'https'}
+    )
+    file_chat_provider = _required_text(config.get('file_chat_provider'), 'file_chat.provider')
+    file_chat_model = _model(config.get('file_chat_model'), 'file_chat.model')
+    file_chat_transport = _required_text(config.get('file_chat_transport'), 'file_chat.transport')
+    speaker_provider = _required_text(config.get('speaker_embedding_provider'), 'speaker_identity.provider')
+    speaker_model = _model(config.get('speaker_embedding_model'), 'speaker_identity.model')
+    return {
+        'stt_diarization': {
+            'provider': config['stt_prerecorded_model'],
+            'model': config['mlx_moss_diarize_model'],
+            'endpoint_origin': stt_origin,
+            'endpoint_path': _safe_path(stt_endpoint.path, 'stt_diarization.endpoint_path'),
+            'transport': 'openai_compatible_multipart',
+            'service_revision_attested': False,
+            'model_revision_attested': False,
+        },
+        'realtime': {
+            'provider': config['realtime_provider'],
+            'model': config['realtime_model'],
+            'endpoint_origin': config['realtime_endpoint_origin'],
+            'transport': config['realtime_transport'],
+            'wire_protocol': config['realtime_wire_protocol'],
+            'roundtrip_scope': 'transport_only',
+            'model_provenance_attested': False,
+        },
+        'speaker_identity': {
+            'provider': speaker_provider,
+            'model': speaker_model,
+            'transport': 'local' if speaker_provider == 'sherpa_onnx' else 'operator_http',
+            'endpoint_origin': '',
+            'identity_scope': 'embedding_only',
+            'enrollment_match_attested': False,
+        },
+        'tts': {
+            'provider': tts_provider,
+            'model': tts_model,
+            'transport': tts_transport,
+            'endpoint_origin': tts_origin,
+        },
+        'image_generation': {
+            'transport': app_icon_transport,
+            'endpoint_origin': app_icon_origin,
+            'model_provenance_attested': False,
+        },
+        'file_chat': {
+            'provider': file_chat_provider,
+            'model': file_chat_model,
+            'transport': file_chat_transport,
+            'endpoint_origin': '',
+        },
+        'push': {
+            'provider': push_provider,
+            'model': push_model,
+            'transport': push_transport,
+            'endpoint_origin': push_origin,
+            'receipt_schema': 'omi.push.receipt.v1',
+            'delivery_scope': 'receipt_required_per_device',
+        },
+    }
+
+
 def build_provider_attestation(
     *,
     expected_configuration: Mapping[str, Any],
@@ -241,6 +340,7 @@ def build_provider_attestation(
         'source': normalized_source,
         'runtime_config_matches_reviewed': True,
         'providers': _provider_payload(runtime),
+        'capability_routes': _capability_payload(runtime),
         # The operator-owned model/realtime/STT services do not expose a
         # signed revision through this gate.  Null is intentional: this must
         # never be populated with the Git revision or a guessed model tag.
@@ -326,11 +426,94 @@ def validate_provider_attestation(
                 raise ValueError('provider attestation generic_llm route has an invalid shape')
             if provider.get('provider') != 'generic' or provider.get('transport') != 'openai_compatible_http':
                 raise ValueError('provider attestation generic_llm route has an unsupported provider')
+    capability_routes = attestation.get('capability_routes')
+    if not isinstance(capability_routes, Mapping) or set(capability_routes) != CAPABILITY_ROUTE_NAMES:
+        raise ValueError('provider attestation is missing a required capability route manifest')
+    for name, route in capability_routes.items():
+        if not isinstance(route, Mapping):
+            raise ValueError(f'provider attestation capability route {name} is not an object')
+        if any(str(key).lower().endswith(('_key', '_secret', '_token', '_password')) for key in route):
+            raise ValueError(f'provider attestation capability route {name} contains credentials')
+        if name in {'stt_diarization', 'speaker_identity', 'tts', 'file_chat', 'push'}:
+            _required_text(route.get('provider'), f'{name}.provider')
+            _model(route.get('model'), f'{name}.model')
+        _required_text(route.get('transport'), f'{name}.transport')
+        endpoint_origin = route.get('endpoint_origin')
+        if endpoint_origin != '':
+            _safe_origin(endpoint_origin, f'{name}.endpoint_origin', schemes={'http', 'https', 'ws', 'wss'})
+        if name == 'stt_diarization':
+            if set(route) != {
+                'provider',
+                'model',
+                'endpoint_origin',
+                'endpoint_path',
+                'transport',
+                'service_revision_attested',
+                'model_revision_attested',
+            }:
+                raise ValueError('provider attestation MOSS route has an invalid shape')
+            if route.get('endpoint_path') != '/v1/audio/transcriptions':
+                raise ValueError('provider attestation MOSS route has an unsupported endpoint path')
+            if route.get('service_revision_attested') is not False or route.get('model_revision_attested') is not False:
+                raise ValueError('provider attestation MOSS route must not claim unavailable revision evidence')
+        elif name == 'realtime':
+            if set(route) != {
+                'provider',
+                'model',
+                'endpoint_origin',
+                'transport',
+                'wire_protocol',
+                'roundtrip_scope',
+                'model_provenance_attested',
+            }:
+                raise ValueError('provider attestation realtime route has an invalid shape')
+            if route.get('roundtrip_scope') != 'transport_only' or route.get('model_provenance_attested') is not False:
+                raise ValueError('provider attestation realtime route has an overstated provenance claim')
+        elif name == 'speaker_identity':
+            if set(route) != {
+                'provider',
+                'model',
+                'transport',
+                'endpoint_origin',
+                'identity_scope',
+                'enrollment_match_attested',
+            }:
+                raise ValueError('provider attestation speaker route has an invalid shape')
+            if route.get('identity_scope') != 'embedding_only' or route.get('enrollment_match_attested') is not False:
+                raise ValueError('provider attestation speaker route has an overstated identity claim')
+        elif name == 'tts':
+            if set(route) != {'provider', 'model', 'transport', 'endpoint_origin'}:
+                raise ValueError('provider attestation TTS route has an invalid shape')
+        elif name == 'image_generation':
+            if set(route) != {'transport', 'endpoint_origin', 'model_provenance_attested'}:
+                raise ValueError('provider attestation image route has an invalid shape')
+            if route.get('model_provenance_attested') is not False:
+                raise ValueError('provider attestation image route must not claim model provenance')
+        elif name == 'file_chat':
+            if set(route) != {'provider', 'model', 'transport', 'endpoint_origin'}:
+                raise ValueError('provider attestation file-chat route has an invalid shape')
+        elif name == 'push':
+            if set(route) != {
+                'provider',
+                'model',
+                'transport',
+                'endpoint_origin',
+                'receipt_schema',
+                'delivery_scope',
+            }:
+                raise ValueError('provider attestation push route has an invalid shape')
+            if (
+                route.get('receipt_schema') != 'omi.push.receipt.v1'
+                or route.get('delivery_scope') != 'receipt_required_per_device'
+            ):
+                raise ValueError('provider attestation push route is not bound to the receipt contract')
     if expected_configuration is not None:
         expected = _configuration(expected_configuration)
         expected_routes = _provider_payload(expected)
         if dict(providers) != expected_routes:
             raise ValueError('provider attestation routes do not match effective provider configuration')
+        if dict(capability_routes) != _capability_payload(expected):
+            raise ValueError('provider attestation capability manifest does not match effective configuration')
 
 
 def validate_realtime_probe_identity(probe: Mapping[str, Any], configuration: Mapping[str, Any]) -> None:
@@ -346,12 +529,14 @@ def validate_realtime_probe_identity(probe: Mapping[str, Any], configuration: Ma
         ),
         'transport': _required_text(configuration.get('realtime_transport'), 'realtime_transport'),
         'wire_protocol': _required_text(configuration.get('realtime_wire_protocol'), 'realtime_wire_protocol'),
+        'roundtrip_scope': 'transport_only',
+        'model_provenance_attested': False,
     }
-    observed_keys = {'provider', 'model', 'endpoint_origin', 'transport', 'wire_protocol'}
+    observed_keys = set(expected)
     if any(key not in probe for key in observed_keys):
         raise ValueError('realtime probe omitted provider route identity')
     observed = {key: probe[key] for key in observed_keys}
-    if observed != {key: expected[key] for key in observed_keys}:
+    if observed != expected:
         raise ValueError('realtime probe route identity does not match reviewed configuration')
 
 

@@ -20,6 +20,7 @@ from utils.notifications import (
     push_notifications_enabled,
     send_notification,
 )
+from config.push_provider import normalize_device_registration, selected_push_provider
 from utils.other import endpoints as auth
 from models.app import App
 
@@ -76,17 +77,28 @@ def save_token(
 ) -> FcmTokenResponse:
     if not push_notifications_enabled():
         raise HTTPException(status_code=503, detail=push_capability_unavailable())
-    platform = x_app_platform or 'unknown'
-    device_hash = x_device_id_hash or 'default'
+    try:
+        registration = normalize_device_registration(
+            token=data.fcm_token,
+            platform=x_app_platform,
+            device_id_hash=x_device_id_hash,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    platform = registration['platform']
+    device_hash = registration['device_id_hash']
 
     # Create key: ios_abc123, android_xyz456, macos_def789
     device_key = f"{platform}_{device_hash}"
 
     token_data: Dict[str, Any] = data.model_dump()
     token_data['device_key'] = device_key
+    token_data['token_schema'] = registration['schema']
+    token_data['token_type'] = registration['token_type']
 
     notification_db.save_token(uid, token_data)
-    return FcmTokenResponse(status='Ok')
+    return FcmTokenResponse(status='Ok', provider=selected_push_provider(), token_schema=registration['schema'])
 
 
 # ******************************************************

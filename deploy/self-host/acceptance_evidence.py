@@ -443,6 +443,8 @@ def build_evidence(
         .get('speaker_embedding', {})
         .get('status')
         == 'passed'
+        and assembled_loop.get('assembled_product_loop', {}).get('capture', {}).get('speaker_identity_scope')
+        == 'embedding_only'
     )
     speaker_diarization = (
         assembled_loop.get('assembled_product_loop', {}).get('capture', {}).get('speaker_diarization', {})

@@ -10,12 +10,50 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+import re
 
 # ``webhook`` is an explicit operator-owned bridge.  Its endpoint, secret-file
 # and receipt contract are validated by ``utils.push_webhook`` before the first
 # request; it never falls through to Firebase.
 SUPPORTED_PUSH_PROVIDERS = frozenset({'firebase', 'disabled', 'webhook'})
 NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
+
+# Device registration is intentionally provider-neutral.  ``fcm_token`` is a
+# released wire-field name, but its value is an opaque registration token and
+# must not be interpreted as an FCM credential by an operator bridge.
+PUSH_DEVICE_TOKEN_SCHEMA = 'omi.push.device-token.v1'
+PUSH_DEVICE_TOKEN_TYPE = 'opaque_registered_token'
+_DEVICE_PLATFORM = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
+_DEVICE_ID_HASH = re.compile(r'^[0-9a-f]{64}$')
+
+
+def normalize_device_registration(
+    *, token: str, platform: str | None = None, device_id_hash: str | None = None
+) -> dict[str, str]:
+    """Validate the provider-neutral mobile token registration contract.
+
+    The backend stores an opaque token and stable device key only.  Firebase,
+    APNs, or an operator webhook owns interpretation of the token after this
+    boundary.  Missing legacy headers remain representable as ``unknown`` and
+    ``default`` so released clients can register without a migration dance.
+    """
+
+    normalized_token = token.strip()
+    if not normalized_token or len(normalized_token.encode('utf-8')) > 4096:
+        raise ValueError('push device token must be non-empty and at most 4096 UTF-8 bytes')
+    normalized_platform = (platform or 'unknown').strip().lower() or 'unknown'
+    if normalized_platform != 'unknown' and not _DEVICE_PLATFORM.fullmatch(normalized_platform):
+        raise ValueError('push device platform must be a lowercase identifier')
+    normalized_device_id = (device_id_hash or 'default').strip().lower() or 'default'
+    if normalized_device_id != 'default' and not _DEVICE_ID_HASH.fullmatch(normalized_device_id):
+        raise ValueError('X-Device-Id-Hash must be a lowercase SHA-256 hex digest')
+    return {
+        'schema': PUSH_DEVICE_TOKEN_SCHEMA,
+        'token_type': PUSH_DEVICE_TOKEN_TYPE,
+        'platform': normalized_platform,
+        'device_id_hash': normalized_device_id,
+        'token': normalized_token,
+    }
 
 
 def selected_push_provider(env: Mapping[str, str] | None = None) -> str:

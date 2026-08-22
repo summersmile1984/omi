@@ -769,6 +769,26 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     text = compose_path.read_text(encoding='utf-8')
     operations_text = DEFAULT_OPERATIONS.read_text(encoding='utf-8')
     snapshot_text = DEFAULT_SNAPSHOT_TOOL.read_text(encoding='utf-8')
+    provider_attestation_text = (ROOT / 'deploy' / 'self-host' / 'runtime_provider_attestation.py').read_text(
+        encoding='utf-8'
+    )
+    push_model_text = (ROOT / 'backend' / 'models' / 'other.py').read_text(encoding='utf-8')
+    if (
+        'SCHEMA_VERSION = 2' not in provider_attestation_text
+        or "'capability_routes'" not in provider_attestation_text
+        or "'roundtrip_scope': 'transport_only'" not in provider_attestation_text
+        or "'identity_scope': 'embedding_only'" not in provider_attestation_text
+        or "'receipt_schema': 'omi.push.receipt.v1'" not in provider_attestation_text
+    ):
+        errors.append(
+            'runtime provider attestation must enforce the capability route manifest and typed evidence scopes'
+        )
+    if (
+        "omi.push.device-token.v1" not in push_model_text
+        or "opaque_registered_token" not in push_model_text
+        or 'token_type' not in push_model_text
+    ):
+        errors.append('mobile token registration must use the provider-neutral opaque-token schema')
     if 'SELF_HOST_BACKUP_KEY_FILE' in text:
         errors.append('Compose must not receive the operations-only backup key path')
     if (
@@ -817,7 +837,9 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
             errors.append(f'{service} contains duplicate environment: {", ".join(duplicate_environment_names)}')
         if service not in ONE_SHOT_SERVICES and '\n    healthcheck:' not in block:
             errors.append(f'{service} must define a healthcheck')
-        if service == 'backend' and not re.search(r'(?s)\n    healthcheck:.*?127\.0\.0\.1:8080/ready(?:["\s]|$)', block):
+        if service == 'backend' and not re.search(
+            r'(?s)\n    healthcheck:.*?127\.0\.0\.1:8080/ready(?:["\s]|$)', block
+        ):
             errors.append('backend healthcheck must probe the dependency-aware /ready endpoint')
         image_match = re.search(r'(?m)^    image:\s*(\S+)', block)
         if image_match and image_match.group(1).endswith(':latest'):

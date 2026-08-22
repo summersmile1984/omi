@@ -104,6 +104,15 @@ idempotency key. No Firebase credential or vendor endpoint is consulted on
 this path. The checked-in profile remains disabled until the operator has
 deployed and exercised that receiver.
 
+Device registration uses the provider-neutral `omi.push.device-token.v1`
+schema. The released JSON field remains `fcm_token` for wire compatibility,
+but it is stored and forwarded only as an opaque `opaque_registered_token`;
+`X-App-Platform` and an optional lowercase SHA-256 `X-Device-Id-Hash` select
+the device slot. The backend never derives an FCM/APNs interpretation from
+this record. A successful registration response reports the selected
+deployment provider and schema, while disabled profiles return the typed
+unavailable response before reading or storing a token.
+
 An operator-owned webhook may be enabled only after the receiver has adopted
 the following reviewed provider contract:
 
@@ -315,10 +324,12 @@ Cutover acceptance additionally sets `SELF_HOST_REQUIRE_ATTESTED_BUILD=true`:
 it cannot start from an existing mutable application-image tag. The final
 `runtime-evidence` check reads the content-addressed image ID, embedded source
 labels, config-hash label, state, and health from each exact running container,
-and records a schema-v1 provider attestation for the actual backend container.
+and records a schema-v2 provider attestation for the actual backend container.
 That attestation binds the effective generic LLM model/origin, embedding
 model/origin/dimension, realtime model/origin/wire protocol, and mlx-audio
-model/origin/path to the reviewed Compose configuration. It requires a
+model/origin/path to the reviewed Compose configuration, and emits a single
+capability-route manifest covering realtime, MOSS diarization, speaker
+embedding, TTS, image generation, file chat, and push delivery. It requires a
 content-addressed image plus exact Git commit/tree/config source identity;
 `--provider-attestation` emits just this redacted record for change evidence.
 Managed official hosts, missing models/origins, injected runtime bindings, and
@@ -326,7 +337,13 @@ credential-bearing fields fail closed. Operator-owned model/realtime/STT
 services do not expose a signed revision through this gate, so the attestation
 records `external_service_revision=null`, `external_model_revision=null`, and
 `external_revision_attested=false`; it never turns a Git revision or model tag
-into a fabricated service revision. The JSON evidence schema (v3) requires
+into a fabricated service revision. The realtime route is explicitly scoped
+to `transport_only`; its WebSocket marker is not model-inference evidence.
+Speaker identity is explicitly scoped to `embedding_only`, not enrollment or
+match equivalence. The MOSS route records both service/model revision claims
+as false because mlx-audio does not expose that provenance; operators must
+pin and attest those artifacts separately. Push is bound to a per-device
+`omi.push.receipt.v1` receipt contract. The JSON evidence schema (v3) requires
 this attestation rather than accepting only a MOSS health claim. Authorization
 also requires the assembled diarization endpoint and model to equal that final
 effective provider configuration. The live replacement smoke additionally

@@ -1,16 +1,22 @@
 from datetime import datetime
-from typing import Any, Callable, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Iterable, List, Literal, Mapping, Optional
 
 from pydantic import BaseModel, Field
 
 
 class SaveFcmTokenRequest(BaseModel):
-    fcm_token: str
-    time_zone: str
+    # ``fcm_token`` is retained as the released JSON field name.  The value is
+    # deliberately typed as an opaque registration token so operator-owned
+    # webhook/APNs bridges do not need to pretend it is an FCM credential.
+    fcm_token: str = Field(min_length=1, max_length=4096, description='Opaque provider-neutral device token')
+    time_zone: str = Field(min_length=1, max_length=128)
+    token_type: Literal['opaque_registered_token'] = 'opaque_registered_token'
 
 
 class FcmTokenResponse(BaseModel):
     status: str
+    provider: str = 'unknown'
+    token_schema: Literal['omi.push.device-token.v1'] = 'omi.push.device-token.v1'
 
 
 class SendNotificationRequest(BaseModel):

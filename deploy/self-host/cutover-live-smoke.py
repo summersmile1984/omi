@@ -447,6 +447,12 @@ async def public_realtime_relay_roundtrip(
         'wire_protocol': 'openai_realtime_v1',
         'client_event_forwarded': True,
         'upstream_response_forwarded': True,
+        # The relay fixture/adapter proves the public WebSocket transport and
+        # upstream event roundtrip only.  It does not expose a signed model
+        # identity or service revision, so this result must not be read as a
+        # real-model provenance claim.
+        'roundtrip_scope': 'transport_only',
+        'model_provenance_attested': False,
     }
     validate_realtime_probe_identity(
         result,
@@ -1349,6 +1355,7 @@ def main() -> int:
                     'mounted_model_artifact_identity': model_artifact_identity,
                     'speaker_identity_product_match_exercised': False,
                     'speaker_identity_functional_equivalence_claimed': False,
+                    'speaker_identity_scope': 'embedding_only',
                 },
                 'understand': {'generic_model_response_marker': True},
                 'realtime_relay': realtime_relay,
