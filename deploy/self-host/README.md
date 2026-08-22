@@ -1015,7 +1015,14 @@ migrates it into the verification grace window, proves both the legacy and new
 tokens verify, proves user/session/account cascade deletion reaches zero, runs
 the same scenario corpus against the emulator and shim,
 and requires a byte-normalized shadow diff. It then writes a JSON evidence file
-whose `authorizes_traffic_change` field is deliberately `false`.
+whose `authorizes_traffic_change` field is deliberately `false`. The evidence
+uses schema 2 and records both the tested Git tree and a SHA-256 of the
+isolated gate runtime (reviewed Compose bytes, project, and assigned ports).
+The record is atomically written as a mode-0600 regular file; an existing
+symlink, non-regular path, or non-private artifact is rejected. This is a
+change record for the disposable migration proof, not production authorization;
+the external acceptance record must still bind the production runtime/config
+and public edge before any route change.
 
 ```bash
 make self-host-migration-gate

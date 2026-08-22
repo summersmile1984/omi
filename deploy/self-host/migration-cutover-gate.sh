@@ -17,6 +17,7 @@ TARGET_SAFETY_CHECK="$REPO_ROOT/backend/scripts/validate_migration_test_targets.
 SOURCE_WRITE_FREEZE_TOOL="$REPO_ROOT/backend/scripts/source_write_freeze.py"
 AGENT_VM_RECONCILE_TOOL="$REPO_ROOT/backend/scripts/agent_vm_reconcile.py"
 AGENT_VM_RECONCILE_TEST="$REPO_ROOT/backend/scripts/test-agent-vm-reconcile.sh"
+MIGRATION_GATE_EVIDENCE_TOOL="$REPO_ROOT/deploy/self-host/migration_gate_evidence.py"
 SHADOW_DIFF="$REPO_ROOT/dev/shadow-diff.sh"
 AUTH_FLOW_SMOKE="$REPO_ROOT/deploy/self-host/auth-flow-smoke.py"
 LEGACY_JWKS_FIXTURE="$REPO_ROOT/auth-server/src/seed-legacy-jwk.js"
@@ -31,7 +32,7 @@ usage() {
 
 self_check() {
   local missing=0 path
-  for path in "$COMPOSE_FILE" "$CHECKER" "$SHADOW_DIFF" "$AUTH_FLOW_SMOKE" "$LEGACY_JWKS_FIXTURE" "$FIRESTORE_PG_MIGRATOR" "$TARGET_SAFETY_CHECK" "$SOURCE_WRITE_FREEZE_TOOL" "$AGENT_VM_RECONCILE_TOOL" "$AGENT_VM_RECONCILE_TEST" "${INTEGRATION_TESTS[@]}"; do
+  for path in "$COMPOSE_FILE" "$CHECKER" "$SHADOW_DIFF" "$AUTH_FLOW_SMOKE" "$LEGACY_JWKS_FIXTURE" "$FIRESTORE_PG_MIGRATOR" "$TARGET_SAFETY_CHECK" "$SOURCE_WRITE_FREEZE_TOOL" "$AGENT_VM_RECONCILE_TOOL" "$AGENT_VM_RECONCILE_TEST" "$MIGRATION_GATE_EVIDENCE_TOOL" "${INTEGRATION_TESTS[@]}"; do
     if [[ ! -f "$path" ]]; then
       echo "error: migration gate dependency missing: $path" >&2
       missing=1
@@ -39,7 +40,7 @@ self_check() {
   done
   [[ "$missing" -eq 0 ]] || return 1
   "$PY" "$CHECKER"
-  "$PY" -m py_compile "$SOURCE_WRITE_FREEZE_TOOL" "$AGENT_VM_RECONCILE_TOOL"
+  "$PY" -m py_compile "$SOURCE_WRITE_FREEZE_TOOL" "$AGENT_VM_RECONCILE_TOOL" "$MIGRATION_GATE_EVIDENCE_TOOL"
   "$AGENT_VM_RECONCILE_TEST"
   echo "migration cutover gate self-check OK"
 }
@@ -77,6 +78,26 @@ done
 if [[ ! -x "$PY" ]]; then
   echo "error: backend interpreter not found at $PY (run make setup-backend or set PYTHON)" >&2
   exit 1
+fi
+
+# Migration evidence is a customer-data change record. Keep its authority
+# explicit and private: do not write through a symlink or accept a path whose
+# permissions would make the result usable as an unaudited cutover artifact.
+if [[ "$EVIDENCE_FILE" != /* || "$EVIDENCE_FILE" == "/" ]]; then
+  echo "error: --evidence must be an absolute non-root path" >&2
+  exit 1
+fi
+if [[ -L "$EVIDENCE_FILE" || ( -e "$EVIDENCE_FILE" && ! -f "$EVIDENCE_FILE" ) ]]; then
+  echo "error: migration evidence must be a regular non-symlink file: $EVIDENCE_FILE" >&2
+  exit 1
+fi
+if [[ -f "$EVIDENCE_FILE" ]]; then
+  evidence_mode="$(stat -f '%Lp' "$EVIDENCE_FILE" 2>/dev/null || true)"
+  [[ "$evidence_mode" == 600 ]] || evidence_mode="$(stat -c '%a' "$EVIDENCE_FILE" 2>/dev/null || true)"
+  [[ "$evidence_mode" == 600 ]] || {
+    echo "error: existing migration evidence must be mode 0600: $EVIDENCE_FILE" >&2
+    exit 1
+  }
 fi
 
 PROJECT="omi-neutrality-gate-${$}"
@@ -187,46 +208,18 @@ FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" \
 "$SHADOW_DIFF"
 
 GATE_GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+GATE_GIT_TREE="$(git -C "$REPO_ROOT" rev-parse HEAD^{tree})" \
 GATE_EVIDENCE_FILE="$EVIDENCE_FILE" \
 GATE_PG_DSN_HOST="${FIRESTORE_PG_DSN#*@}" \
 GATE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
-"$PY" - <<'PY'
-import json
-import os
-from datetime import datetime, timezone
-from pathlib import Path
-
-path = Path(os.environ['GATE_EVIDENCE_FILE'])
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(
-    json.dumps(
-        {
-            'schema_version': 1,
-            'status': 'GO',
-            'checked_at': datetime.now(timezone.utc).isoformat(),
-            'git_sha': os.environ['GATE_GIT_SHA'],
-            'target': {
-                'postgres': os.environ['GATE_PG_DSN_HOST'],
-                'firestore_emulator': os.environ['GATE_EMULATOR_HOST'],
-            },
-            'gates': {
-                'zero_vendor_static_config': 'passed',
-                'better_auth_schema_migration': 'passed',
-                'better_auth_session_jwt_jwks_backend_verification': 'passed',
-                'firestore_pg_versioned_schema_migration': 'passed',
-                'firestore_to_pg_full_path_import_reconciliation': 'passed',
-                'firestore_pg_live_integration': 'passed',
-                'firestore_emulator_shadow_diff': 'passed',
-            },
-            'authorizes_traffic_change': False,
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    + '\n',
-    encoding='utf-8',
-)
-print(f'migration cutover evidence: {path}')
-PY
+GATE_COMPOSE_FILE="$COMPOSE_FILE" \
+GATE_PROJECT="$PROJECT" \
+GATE_MODE="$MANAGED" \
+GATE_PG_PORT="$GATE_PG_PORT" \
+GATE_FIRESTORE_PORT="$GATE_FIRESTORE_PORT" \
+GATE_AUTH_PORT="$GATE_AUTH_PORT" \
+GATE_STORAGE_PORT="$GATE_STORAGE_PORT" \
+GATE_BETTER_AUTH_PORT="$GATE_BETTER_AUTH_PORT" \
+"$PY" "$MIGRATION_GATE_EVIDENCE_TOOL"
 
 echo "GO: contract gates passed. This evidence does not change or authorize a traffic route."

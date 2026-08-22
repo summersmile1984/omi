@@ -24,6 +24,7 @@ COMPOSE_WRAPPER = SCRIPT.with_name('compose-clean-env.sh')
 ZERO_VENDOR_ACCEPTANCE = SCRIPT.with_name('zero-vendor-acceptance.sh')
 EGRESS_POLICY_CONTRACT = SCRIPT.with_name('egress-policy-contract.py')
 EVIDENCE_SCRIPT = SCRIPT.with_name('acceptance_evidence.py')
+MIGRATION_GATE_EVIDENCE_SCRIPT = SCRIPT.with_name('migration_gate_evidence.py')
 EGRESS_POLICY_SPEC = importlib.util.spec_from_file_location('self_host_egress_policy_contract', EGRESS_POLICY_CONTRACT)
 assert EGRESS_POLICY_SPEC and EGRESS_POLICY_SPEC.loader
 EGRESS_POLICY = importlib.util.module_from_spec(EGRESS_POLICY_SPEC)
@@ -48,6 +49,12 @@ PUBLIC_OBJECT_EVIDENCE_SPEC = importlib.util.spec_from_file_location(
 assert PUBLIC_OBJECT_EVIDENCE_SPEC and PUBLIC_OBJECT_EVIDENCE_SPEC.loader
 PUBLIC_OBJECT_EVIDENCE = importlib.util.module_from_spec(PUBLIC_OBJECT_EVIDENCE_SPEC)
 PUBLIC_OBJECT_EVIDENCE_SPEC.loader.exec_module(PUBLIC_OBJECT_EVIDENCE)
+MIGRATION_GATE_EVIDENCE_SPEC = importlib.util.spec_from_file_location(
+    'self_host_migration_gate_evidence', MIGRATION_GATE_EVIDENCE_SCRIPT
+)
+assert MIGRATION_GATE_EVIDENCE_SPEC and MIGRATION_GATE_EVIDENCE_SPEC.loader
+MIGRATION_GATE_EVIDENCE = importlib.util.module_from_spec(MIGRATION_GATE_EVIDENCE_SPEC)
+MIGRATION_GATE_EVIDENCE_SPEC.loader.exec_module(MIGRATION_GATE_EVIDENCE)
 SOURCE_FREEZE_SCRIPT = SCRIPT.parent.parent.parent / 'backend' / 'scripts' / 'source_write_freeze.py'
 SOURCE_FREEZE_SPEC = importlib.util.spec_from_file_location('self_host_source_write_freeze', SOURCE_FREEZE_SCRIPT)
 assert SOURCE_FREEZE_SPEC and SOURCE_FREEZE_SPEC.loader
@@ -235,6 +242,51 @@ class SelfHostOperationsTest(unittest.TestCase):
         key_file.write_bytes(value)
         key_file.chmod(0o600)
         return key_file
+
+    def test_migration_gate_evidence_binds_tree_runtime_and_private_atomic_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            compose = root / 'compose.yml'
+            compose.write_text('services: {}\n', encoding='utf-8')
+            payload = MIGRATION_GATE_EVIDENCE.build_evidence(
+                git_sha='d' * 40,
+                git_tree='e' * 40,
+                compose_file=compose,
+                project='omi-neutrality-gate-123',
+                mode='1',
+                ports={
+                    'postgres_port': '15434',
+                    'firestore_emulator_port': '18080',
+                    'firebase_auth_emulator_port': '19099',
+                    'firebase_storage_emulator_port': '19199',
+                    'better_auth_port': '19300',
+                },
+                postgres_target='127.0.0.1:15434/omi',
+                firestore_emulator='127.0.0.1:18080',
+                checked_at='2026-08-22T00:00:00+00:00',
+            )
+            self.assertEqual(payload['schema_version'], 2)
+            self.assertEqual(payload['git_tree'], 'e' * 40)
+            self.assertRegex(payload['runtime_config_sha256'], r'^[0-9a-f]{64}$')
+            self.assertFalse(payload['authorizes_traffic_change'])
+
+            evidence = root / 'evidence.json'
+            MIGRATION_GATE_EVIDENCE.write_evidence(evidence, payload)
+            self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o600)
+            self.assertEqual(json.loads(evidence.read_text(encoding='utf-8')), payload)
+
+            symlink = root / 'evidence-link.json'
+            symlink.symlink_to(evidence)
+            with self.assertRaisesRegex(ValueError, 'regular file'):
+                MIGRATION_GATE_EVIDENCE.write_evidence(symlink, payload)
+
+    def test_migration_gate_evidence_refuses_public_existing_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'evidence.json'
+            path.write_text('{}\n', encoding='utf-8')
+            path.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, 'mode 0600'):
+                MIGRATION_GATE_EVIDENCE.write_evidence(path, {})
 
     def test_local_cutover_backend_trusts_the_generated_public_edge_ca(self) -> None:
         overlay = CUTOVER_OVERLAY.read_text(encoding='utf-8')
