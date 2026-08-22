@@ -213,7 +213,7 @@ do not hand-edit those paths to match a specific machine.
   `OMI_MCP_CLAUDE_OAUTH_CLIENT_ID`. Missing public MCP client IDs disable those
   OAuth setup paths; they never select an Omi registration from the backend
   hostname. Missing share config stays on the configured self-hosted backend.
-- Browser-cookie Gmail/Google Calendar connectors are managed-cloud-only. A
+- Browser-cookie Gmail/Google Calendar and hosted Notion MCP connectors are managed-cloud-only. A
   self-hosted bundle returns typed unavailable before reading browser cookies or
   contacting Google; an operator connector must be added as an explicit signed
   capability before enabling that surface.

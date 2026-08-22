@@ -33,17 +33,26 @@ final class NotionMCPConnector: @unchecked Sendable {
     case timedOut
     case badResponse(String)
     case notConnected
+    case unavailableByDeploymentProfile
 
     var errorDescription: String? {
       switch self {
       case .timedOut: return "Notion authorization timed out. Try again."
       case .badResponse(let detail): return "Notion setup failed: \(detail)"
       case .notConnected: return "Connect Notion first."
+      case .unavailableByDeploymentProfile:
+        return "Notion hosted MCP is unavailable in this deployment. Configure an operator-owned connector instead."
       }
     }
   }
 
-  var isConnected: Bool { loadAuth() != nil }
+  static func isAvailable(deploymentProfile: DesktopDeploymentProfile) -> Bool {
+    DesktopModelEgressPolicy.allowsHostedNotionConnector(deploymentProfile: deploymentProfile)
+  }
+
+  var isConnected: Bool {
+    Self.isAvailable(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) && loadAuth() != nil
+  }
 
   var memoriesPageURL: URL? {
     UserDefaults.standard.string(forKey: Self.pageURLKey).flatMap(URL.init(string:))
@@ -60,6 +69,9 @@ final class NotionMCPConnector: @unchecked Sendable {
   /// Full browser OAuth: register a client for a fresh loopback port, open the
   /// consent page, await the redirect, exchange the code, store tokens.
   func connect() async throws {
+    guard Self.isAvailable(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
+      throw ConnectError.unavailableByDeploymentProfile
+    }
     let listener = try OAuthCallbackListener()
     defer { listener.cancel() }
     let redirectURI = "http://localhost:\(listener.port)/callback"
@@ -176,6 +188,9 @@ final class NotionMCPConnector: @unchecked Sendable {
   /// the page exists, creates it (and remembers its id) on first sync or if the
   /// user deleted it.
   func syncMemories(markdown: String) async throws -> URL? {
+    guard Self.isAvailable(deploymentProfile: DesktopBackendEnvironment.deploymentProfile) else {
+      throw ConnectError.unavailableByDeploymentProfile
+    }
     let token = try await validAccessToken()
     let session = try await initializeSession(token: token)
 

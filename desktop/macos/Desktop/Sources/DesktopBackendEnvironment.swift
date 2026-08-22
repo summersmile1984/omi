@@ -51,6 +51,15 @@ enum DesktopModelEgressPolicy {
     deploymentProfile == .omiCloud
   }
 
+  /// Notion's hosted MCP endpoint is a managed-cloud integration. A
+  /// self-hosted artifact must not send exported memories or OAuth material to
+  /// it unless an operator-owned connector is added to the signed profile.
+  static func allowsHostedNotionConnector(
+    deploymentProfile: DesktopDeploymentProfile
+  ) -> Bool {
+    deploymentProfile == .omiCloud
+  }
+
   static func proactiveRoute(
     deploymentProfile: DesktopDeploymentProfile
   ) -> DesktopProactiveModelRoute {

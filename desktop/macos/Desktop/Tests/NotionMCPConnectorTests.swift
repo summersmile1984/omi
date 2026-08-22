@@ -25,4 +25,9 @@ final class NotionMCPConnectorTests: XCTestCase {
     XCTAssertTrue(NotionMCPConnector.needsRefresh(expiresAt: now.addingTimeInterval(120), now: now))
     XCTAssertTrue(NotionMCPConnector.needsRefresh(expiresAt: now.addingTimeInterval(-10), now: now))
   }
+
+  func testHostedNotionConnectorIsManagedCloudOnly() {
+    XCTAssertTrue(NotionMCPConnector.isAvailable(deploymentProfile: .omiCloud))
+    XCTAssertFalse(NotionMCPConnector.isAvailable(deploymentProfile: .selfHosted))
+  }
 }
