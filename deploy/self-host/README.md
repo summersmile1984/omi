@@ -889,6 +889,7 @@ the same public edge lane:
 SELF_HOST_ENV=/etc/omi/self-host.production.env \
 SELF_HOST_EGRESS_POLICY_ARTIFACT=/secure/change-record/application-egress-policy.json \
 SELF_HOST_RECOVERY_EVIDENCE=/secure/change-record/isolated-restore-evidence.json \
+SELF_HOST_MODEL_PROVENANCE_EVIDENCE=/secure/change-record/moss-model-provenance.json \
 SELF_HOST_ACCEPTANCE_EVIDENCE=/secure/change-record/zero-vendor-production.json \
   deploy/self-host/zero-vendor-acceptance.sh --external-cutover-live
 ```
@@ -917,16 +918,28 @@ public relay route as a separate hard capability.
 
 Production authorization also requires an operator-supplied recovery-drill
 evidence file. Set `SELF_HOST_RECOVERY_EVIDENCE` to a non-symlink absolute JSON
-file recorded from an isolated restore host. Its schema-v1 record must bind the
+file recorded from an isolated restore host. Its schema-v3 record must bind the
 backup manifest SHA, source commit/tree, and runtime config SHA to the tested
 stack; report backup verification, restore, post-restore migration, Auth smoke,
-and projection checks as passed; and explicitly attest that key material stayed
-outside the backup and that production KMS/secret-manager custody was used.
-The JSON field is named `production_kms_attested`.
-The gate accepts this as an operator attestation only—it is not a cryptographic
-signature—but missing, partial, local-only, or mismatched recovery evidence can
-never authorize production traffic. A local `--cutover-live` run therefore
-remains a tested-configuration proof, not production authorization.
+and projection checks as passed; identify the restore host and drill timestamps;
+and include a KMS/secret-manager attestation object with a non-secret key
+reference, key version, decrypt verification, and change-record reference. It
+also retains the explicit `production_kms_attested=true` field as the operator's
+declaration that the production key authority was used.
+must also include a signature-verification record for each running
+`auth-server`, `backend`, and `queue-worker` image digest. The gate accepts
+these as operator attestations only—it does not contact KMS or invent a
+signature—so missing, partial, local-only, unsigned, or mismatched evidence
+can never authorize production traffic.
+
+External acceptance also requires `SELF_HOST_MODEL_PROVENANCE_EVIDENCE`, a
+schema-v1 operator record for the configured `mlx_moss_diarize` model. It binds
+the live model id and endpoint origin to the current source/tree/config, records
+the model SHA-256, service revision, source reference, verification method, and
+change-record reference. The repository can validate the contract and binding;
+only the operator can establish the real model registry/cache provenance.
+A local `--cutover-live` run therefore remains a tested-configuration proof,
+not production authorization.
 
 The policy artifact must be UTF-8 JSON with exactly this shape (the artifact is
 review evidence, not a cryptographic signature):

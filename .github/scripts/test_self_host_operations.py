@@ -25,6 +25,7 @@ ZERO_VENDOR_ACCEPTANCE = SCRIPT.with_name('zero-vendor-acceptance.sh')
 EGRESS_POLICY_CONTRACT = SCRIPT.with_name('egress-policy-contract.py')
 EVIDENCE_SCRIPT = SCRIPT.with_name('acceptance_evidence.py')
 MIGRATION_GATE_EVIDENCE_SCRIPT = SCRIPT.with_name('migration_gate_evidence.py')
+OPERATOR_EVIDENCE_SCRIPT = SCRIPT.with_name('operator_evidence.py')
 EGRESS_POLICY_SPEC = importlib.util.spec_from_file_location('self_host_egress_policy_contract', EGRESS_POLICY_CONTRACT)
 assert EGRESS_POLICY_SPEC and EGRESS_POLICY_SPEC.loader
 EGRESS_POLICY = importlib.util.module_from_spec(EGRESS_POLICY_SPEC)
@@ -55,6 +56,10 @@ MIGRATION_GATE_EVIDENCE_SPEC = importlib.util.spec_from_file_location(
 assert MIGRATION_GATE_EVIDENCE_SPEC and MIGRATION_GATE_EVIDENCE_SPEC.loader
 MIGRATION_GATE_EVIDENCE = importlib.util.module_from_spec(MIGRATION_GATE_EVIDENCE_SPEC)
 MIGRATION_GATE_EVIDENCE_SPEC.loader.exec_module(MIGRATION_GATE_EVIDENCE)
+OPERATOR_EVIDENCE_SPEC = importlib.util.spec_from_file_location('self_host_operator_evidence', OPERATOR_EVIDENCE_SCRIPT)
+assert OPERATOR_EVIDENCE_SPEC and OPERATOR_EVIDENCE_SPEC.loader
+OPERATOR_EVIDENCE = importlib.util.module_from_spec(OPERATOR_EVIDENCE_SPEC)
+OPERATOR_EVIDENCE_SPEC.loader.exec_module(OPERATOR_EVIDENCE)
 SOURCE_FREEZE_SCRIPT = SCRIPT.parent.parent.parent / 'backend' / 'scripts' / 'source_write_freeze.py'
 SOURCE_FREEZE_SPEC = importlib.util.spec_from_file_location('self_host_source_write_freeze', SOURCE_FREEZE_SCRIPT)
 assert SOURCE_FREEZE_SPEC and SOURCE_FREEZE_SPEC.loader
@@ -216,7 +221,7 @@ PASSED_LIVE_REPLACEMENT = {
     },
 }
 PASSED_RECOVERY_EVIDENCE = {
-    'schema_version': 1,
+    'schema_version': 3,
     'status': 'passed',
     'scope': 'isolated_restore_host',
     'backup_manifest_sha256': 'f' * 64,
@@ -232,10 +237,93 @@ PASSED_RECOVERY_EVIDENCE = {
     'key_material_outside_backup': True,
     'production_kms_attested': True,
     'key_custody_reference': 'change-ticket/recovery-2026-08-20',
+    'restore_host_reference': 'restore-host/recovery-2026-08-20',
+    'drill_started_at': '2026-08-20T00:00:00+00:00',
+    'drill_completed_at': '2026-08-20T01:00:00+00:00',
+    'kms_attestation': {
+        'provider': 'operator-secret-manager',
+        'key_reference': 'secret://omi/self-host/backup-key',
+        'key_version': '2026-08-20.1',
+        'attestation_reference': 'change-ticket/kms-2026-08-20',
+        'verified_at': '2026-08-20T01:05:00+00:00',
+        'decrypt_verified': True,
+    },
+    'signed_artifacts': [
+        {
+            'artifact': service,
+            'digest': PASSED_RUNTIME_EVIDENCE['runtime_identity']['workloads'][service]['image_id'],
+            'signature_reference': f'cosign-bundle/{service}/2026-08-20',
+            'signer_identity': 'operator-release-signer',
+            'verification_method': 'cosign',
+            'verified_at': '2026-08-20T01:10:00+00:00',
+        }
+        for service in ('auth-server', 'backend', 'queue-worker')
+    ],
+}
+PASSED_MODEL_PROVENANCE = {
+    'schema_version': 1,
+    'status': 'passed',
+    'provider': 'mlx_moss_diarize',
+    'model_id': 'operator-model',
+    'endpoint_origin': 'http://host.docker.internal:5002',
+    'model_sha256': 'a' * 64,
+    'source_reference': 'operator-model-registry/moss/operator-model',
+    'service_revision': 'mlx-audio-2026-08-20.1',
+    'verification_method': 'sha256-manifest',
+    'attestation_reference': 'change-ticket/model-provenance-2026-08-20',
+    'source_git_commit': 'd' * 40,
+    'source_git_tree': 'e' * 40,
+    'runtime_config_sha256': 'c' * 64,
 }
 
 
 class SelfHostOperationsTest(unittest.TestCase):
+    def test_operator_recovery_v3_requires_kms_and_signed_workload_evidence(self) -> None:
+        expected_source = {
+            'source_git_commit': 'd' * 40,
+            'source_git_tree': 'e' * 40,
+            'runtime_config_sha256': 'c' * 64,
+        }
+        expected_artifacts = {
+            service: PASSED_RUNTIME_EVIDENCE['runtime_identity']['workloads'][service]['image_id']
+            for service in ('auth-server', 'backend', 'queue-worker')
+        }
+        normalized = OPERATOR_EVIDENCE.validate_recovery_evidence(
+            PASSED_RECOVERY_EVIDENCE,
+            expected_source=expected_source,
+            expected_artifacts=expected_artifacts,
+        )
+        self.assertEqual(normalized['schema_version'], 3)
+        missing_kms = json.loads(json.dumps(PASSED_RECOVERY_EVIDENCE))
+        missing_kms.pop('kms_attestation')
+        with self.assertRaisesRegex(ValueError, 'incomplete or unexpected schema'):
+            OPERATOR_EVIDENCE.validate_recovery_evidence(missing_kms)
+        wrong_digest = json.loads(json.dumps(PASSED_RECOVERY_EVIDENCE))
+        wrong_digest['signed_artifacts'][0]['digest'] = 'sha256:' + '0' * 64
+        with self.assertRaisesRegex(ValueError, 'does not match the running workload'):
+            OPERATOR_EVIDENCE.validate_recovery_evidence(
+                wrong_digest,
+                expected_source=expected_source,
+                expected_artifacts=expected_artifacts,
+            )
+
+    def test_operator_model_provenance_binds_live_model_and_runtime(self) -> None:
+        expected_source = {
+            'source_git_commit': 'd' * 40,
+            'source_git_tree': 'e' * 40,
+            'runtime_config_sha256': 'c' * 64,
+        }
+        normalized = OPERATOR_EVIDENCE.validate_model_provenance(
+            PASSED_MODEL_PROVENANCE,
+            expected_source=expected_source,
+            expected_model='operator-model',
+            expected_endpoint_origin='http://host.docker.internal:5002',
+        )
+        self.assertEqual(normalized['provider'], 'mlx_moss_diarize')
+        tampered = {**PASSED_MODEL_PROVENANCE, 'service_revision': ''}
+        with self.assertRaisesRegex(ValueError, 'service_revision'):
+            OPERATOR_EVIDENCE.validate_model_provenance(tampered)
+
     def test_acceptance_evidence_writer_is_atomic_private_and_rejects_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1297,6 +1385,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             checked_at='2026-08-20T00:00:00+00:00',
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
             recovery_evidence=PASSED_RECOVERY_EVIDENCE,
+            model_provenance=PASSED_MODEL_PROVENANCE,
         )
         self.assertTrue(external_with_policy['authorizes_production_cutover'])
         self.assertIsNone(external_with_policy['remaining_cutover_reason'])

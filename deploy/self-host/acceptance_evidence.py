@@ -25,29 +25,10 @@ from runtime_provider_attestation import (
     validate_realtime_probe_identity,
     validate_tts_probe_identity,
 )
+from operator_evidence import validate_model_provenance, validate_recovery_evidence
 
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 OBJECT_ID = re.compile(r'^[0-9a-f]{40}$')
-RECOVERY_EVIDENCE_KEYS = frozenset(
-    {
-        'schema_version',
-        'status',
-        'scope',
-        'backup_manifest_sha256',
-        'source_git_commit',
-        'source_git_tree',
-        'runtime_config_sha256',
-        'backup_verified',
-        'restore_completed',
-        'post_restore_migration_passed',
-        'post_restore_auth_smoke_passed',
-        'post_restore_projection_checks_passed',
-        'isolated_restore_host',
-        'key_material_outside_backup',
-        'production_kms_attested',
-        'key_custody_reference',
-    }
-)
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
@@ -309,34 +290,46 @@ def _recovery_evidence_passed(
     git_tree: str,
     runtime_config_sha256: str | None,
 ) -> bool:
-    if not isinstance(recovery_evidence, dict) or set(recovery_evidence) != RECOVERY_EVIDENCE_KEYS:
+    expected_source = {
+        'source_git_commit': git_commit,
+        'source_git_tree': git_tree,
+        'runtime_config_sha256': runtime_config_sha256,
+    }
+    try:
+        validate_recovery_evidence(recovery_evidence, expected_source=expected_source)
+    except (TypeError, ValueError):
         return False
-    if (
-        recovery_evidence.get('schema_version') != 1
-        or recovery_evidence.get('status') != 'passed'
-        or recovery_evidence.get('scope') != 'isolated_restore_host'
-        or recovery_evidence.get('source_git_commit') != git_commit
-        or recovery_evidence.get('source_git_tree') != git_tree
-        or recovery_evidence.get('runtime_config_sha256') != runtime_config_sha256
-        or not isinstance(recovery_evidence.get('backup_manifest_sha256'), str)
-        or SHA256.fullmatch(recovery_evidence['backup_manifest_sha256']) is None
-        or not isinstance(recovery_evidence.get('key_custody_reference'), str)
-        or not recovery_evidence['key_custody_reference'].strip()
-    ):
-        return False
-    return all(
-        recovery_evidence.get(field) is True
-        for field in (
-            'backup_verified',
-            'restore_completed',
-            'post_restore_migration_passed',
-            'post_restore_auth_smoke_passed',
-            'post_restore_projection_checks_passed',
-            'isolated_restore_host',
-            'key_material_outside_backup',
-            'production_kms_attested',
-        )
+    return True
+
+
+def _model_provenance_passed(
+    model_provenance: dict[str, Any] | None,
+    *,
+    assembled_loop: dict[str, Any] | None,
+    git_commit: str,
+    git_tree: str,
+    runtime_config_sha256: str | None,
+) -> bool:
+    capture = (
+        assembled_loop.get('assembled_product_loop', {}).get('capture', {}) if isinstance(assembled_loop, dict) else {}
     )
+    speaker = capture.get('speaker_diarization', {}) if isinstance(capture, dict) else {}
+    route = speaker.get('route', {}) if isinstance(speaker, dict) else {}
+    expected_source = {
+        'source_git_commit': git_commit,
+        'source_git_tree': git_tree,
+        'runtime_config_sha256': runtime_config_sha256,
+    }
+    try:
+        validate_model_provenance(
+            model_provenance,
+            expected_source=expected_source,
+            expected_model=speaker.get('configured_model') if isinstance(speaker, dict) else None,
+            expected_endpoint_origin=route.get('endpoint_origin') if isinstance(route, dict) else None,
+        )
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _git(root: Path, *args: str, environment: dict[str, str] | None = None) -> str:
@@ -388,6 +381,7 @@ def build_evidence(
     checked_at: str,
     runtime_evidence: dict[str, Any] | None = None,
     recovery_evidence: dict[str, Any] | None = None,
+    model_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     git_commit = source_attribution.get('git_commit')
     git_tree = source_attribution.get('git_tree')
@@ -595,6 +589,13 @@ def build_evidence(
         git_tree=git_tree,
         runtime_config_sha256=runtime_config_sha256,
     )
+    model_provenance_passed = _model_provenance_passed(
+        model_provenance,
+        assembled_loop=assembled_loop,
+        git_commit=git_commit,
+        git_tree=git_tree,
+        runtime_config_sha256=runtime_config_sha256,
+    )
     tested_configuration_authorized = bool(
         mode in {'cutover-live', 'external-cutover-live'}
         and isinstance(assembled_loop, dict)
@@ -621,6 +622,7 @@ def build_evidence(
         and tested_configuration_authorized
         and external_edge_passed
         and recovery_drill_passed
+        and model_provenance_passed
         and sentinel_policy_verified
     )
     return {
@@ -646,6 +648,7 @@ def build_evidence(
                 assembled_loop.get('https_origin_and_hairpin', {}) if isinstance(assembled_loop, dict) else 'not_run'
             ),
             'external_recovery_drill': recovery_evidence or 'not_run',
+            'external_model_provenance': model_provenance or 'not_run',
             'live_replacement_services': live_replacement or 'not_run',
             'live_hard_capability_probes': hard_capability_status,
             'live_realtime_runtime_config_binding': realtime_runtime_binding_passed,
@@ -709,7 +712,11 @@ def build_evidence(
                                                                         else (
                                                                             'external_backup_restore_or_kms_evidence_missing'
                                                                             if not recovery_drill_passed
-                                                                            else None
+                                                                            else (
+                                                                                'external_model_provenance_evidence_missing'
+                                                                                if not model_provenance_passed
+                                                                                else None
+                                                                            )
                                                                         )
                                                                     )
                                                                 )
@@ -752,6 +759,7 @@ def main() -> int:
     )
     runtime_evidence = json.loads(os.environ['RUNTIME_EVIDENCE_JSON']) if mode != 'contracts' else None
     recovery_evidence = json.loads(os.environ['RECOVERY_EVIDENCE_JSON']) if mode == 'external-cutover-live' else None
+    model_provenance = json.loads(os.environ['MODEL_PROVENANCE_JSON']) if mode == 'external-cutover-live' else None
     evidence = build_evidence(
         mode=mode,
         source_attribution=json.loads(os.environ['SOURCE_ATTRIBUTION_JSON']),
@@ -760,6 +768,7 @@ def main() -> int:
         checked_at=datetime.now(timezone.utc).isoformat(),
         runtime_evidence=runtime_evidence,
         recovery_evidence=recovery_evidence,
+        model_provenance=model_provenance,
     )
     path = Path(os.environ['ACCEPTANCE_EVIDENCE'])
     _write_private_json(path, evidence)
