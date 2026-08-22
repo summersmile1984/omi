@@ -50,6 +50,8 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     "voice:transcribe": (60, 3600),
     "voice:transcribe_stream": (60, 3600),
     "voice:message": (60, 3600),
+    # Hosted STT proxy — authenticated upload path in routers/stt.py.
+    "stt:transcribe": (60, 3600),
     "file:upload": (40, 3600),
     # Provider-neutral embedding batches for desktop OCR/task/rewind surfaces.
     "model:embeddings": (600, 3600),
