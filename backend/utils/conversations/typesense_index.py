@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, cast
 
 CONVERSATION_KEYWORD_PROVIDER_ENV = 'CONVERSATION_KEYWORD_INDEX_PROVIDER'
 CONVERSATION_COLLECTION_ENV = 'CONVERSATION_TYPESENSE_COLLECTION'
-DEFAULT_CONVERSATION_COLLECTION = 'omi_conversations'
+DEFAULT_CONVERSATION_INDEX_NAME = 'omi_conversations'
 SCHEMA_VERSION = 1
 NEUTRAL_DEPLOYMENT_PROFILES = frozenset({'neutral', 'self_hosted', 'self-hosted'})
 
@@ -68,8 +68,8 @@ def conversation_keyword_index_provider(environ: Mapping[str, str] | None = None
 
 def conversations_collection_name() -> str:
     return (
-        os.getenv(CONVERSATION_COLLECTION_ENV, DEFAULT_CONVERSATION_COLLECTION).strip()
-        or DEFAULT_CONVERSATION_COLLECTION
+        os.getenv(CONVERSATION_COLLECTION_ENV, DEFAULT_CONVERSATION_INDEX_NAME).strip()
+        or DEFAULT_CONVERSATION_INDEX_NAME
     )
 
 
