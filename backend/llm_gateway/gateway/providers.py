@@ -105,8 +105,8 @@ class OpenAICompatibleChatCompletionProvider:
         configured = os.getenv(self._base_url_env, '').strip() if self._base_url_env else ''
         resolved = configured or self._base_url
         if not resolved and self._base_url_env is None:
-            resolved = os.getenv(OPENAI_BASE_URL_ENV_VAR, DEFAULT_OPENAI_BASE_URL)
-        if not resolved or (self._require_base_url and not (configured or self._base_url)):
+            resolved = os.getenv(OPENAI_BASE_URL_ENV_VAR, DEFAULT_OPENAI_BASE_URL).strip()
+        if not resolved or (self._require_base_url and not configured and not self._base_url):
             raise ProviderFailure(FailureClass.INVALID_CONFIG)
         return resolved.rstrip('/')
 
@@ -200,15 +200,6 @@ class OpenAICompatibleChatCompletionProvider:
     async def aclose(self) -> None:
         if self._owns_http_client:
             await self._http_client.aclose()
-
-    def _resolved_base_url(self) -> str:
-        configured = os.getenv(self._base_url_env, '').strip() if self._base_url_env else ''
-        resolved = configured or self._base_url
-        if not resolved and self._base_url_env is None:
-            resolved = os.getenv(OPENAI_BASE_URL_ENV_VAR, DEFAULT_OPENAI_BASE_URL).strip()
-        if not resolved or (self._require_base_url and not configured and not self._base_url):
-            raise ProviderFailure(FailureClass.INVALID_CONFIG)
-        return resolved.rstrip('/')
 
 
 class VertexAccessTokenSupplier:

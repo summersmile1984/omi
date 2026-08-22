@@ -148,7 +148,7 @@ class QdrantVectorStoreAdapter:
 
     provider_id = 'qdrant'
 
-    def __init__(self, client: QdrantClient, *, collection_prefix: str = 'omi') -> None:
+    def __init__(self, client: Any, *, collection_prefix: str = 'omi') -> None:
         self._client = client
         self._collection_prefix = _collection_name(collection_prefix)
 
@@ -342,7 +342,7 @@ def _collection_name(value: str) -> str:
     return normalized
 
 
-def _qdrant_filter(raw: Mapping[str, Any] | None) -> models.Filter | None:
+def _qdrant_filter(raw: Mapping[str, Any] | None) -> Any | None:
     qdrant_models = _load_qdrant_models()
     if not raw:
         return None
@@ -363,7 +363,7 @@ def _qdrant_filter(raw: Mapping[str, Any] | None) -> models.Filter | None:
             continue
         condition, negative = _qdrant_field_condition(key, value)
         (must_not if negative else must).append(condition)
-    return models.Filter(must=must or None, should=should or None, must_not=must_not or None)
+    return qdrant_models.Filter(must=must or None, should=should or None, must_not=must_not or None)
 
 
 def _qdrant_field_condition(key: str, value: Any) -> tuple[Any, bool]:
@@ -371,18 +371,18 @@ def _qdrant_field_condition(key: str, value: Any) -> tuple[Any, bool]:
     if not isinstance(value, Mapping):
         return qdrant_models.FieldCondition(key=key, match=qdrant_models.MatchValue(value=value)), False
     if '$in' in value:
-        return models.FieldCondition(key=key, match=models.MatchAny(any=list(value['$in']))), False
+        return qdrant_models.FieldCondition(key=key, match=qdrant_models.MatchAny(any=list(value['$in']))), False
     if '$nin' in value:
-        return models.FieldCondition(key=key, match=models.MatchAny(any=list(value['$nin']))), True
+        return qdrant_models.FieldCondition(key=key, match=qdrant_models.MatchAny(any=list(value['$nin']))), True
     if '$ne' in value:
-        return models.FieldCondition(key=key, match=models.MatchValue(value=value['$ne'])), True
+        return qdrant_models.FieldCondition(key=key, match=qdrant_models.MatchValue(value=value['$ne'])), True
     if '$eq' in value:
-        return models.FieldCondition(key=key, match=models.MatchValue(value=value['$eq'])), False
+        return qdrant_models.FieldCondition(key=key, match=qdrant_models.MatchValue(value=value['$eq'])), False
     if '$exists' in value:
         exists = value['$exists']
         if not isinstance(exists, bool):
             raise ValueError(f'$exists vector filter for {key!r} requires a boolean')
-        condition = models.IsEmptyCondition(is_empty=models.PayloadField(key=key))
+        condition = qdrant_models.IsEmptyCondition(is_empty=qdrant_models.PayloadField(key=key))
         return condition, exists
     range_values = {
         target: value[source]
@@ -390,7 +390,7 @@ def _qdrant_field_condition(key: str, value: Any) -> tuple[Any, bool]:
         if source in value
     }
     if range_values:
-        return models.FieldCondition(key=key, range=models.Range(**range_values)), False
+        return qdrant_models.FieldCondition(key=key, range=qdrant_models.Range(**range_values)), False
     raise ValueError(f'Unsupported vector filter operator for {key!r}')
 
 
