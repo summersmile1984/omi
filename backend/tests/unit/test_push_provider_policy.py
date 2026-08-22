@@ -15,8 +15,17 @@ def test_managed_profile_preserves_firebase_default() -> None:
     assert selected_push_provider({}) == 'firebase'
 
 
-def test_explicit_provider_wins_profile_default() -> None:
-    assert selected_push_provider({'OMI_DEPLOYMENT_PROFILE': 'neutral', 'PUSH_PROVIDER': 'firebase'}) == 'firebase'
+def test_neutral_profile_rejects_explicit_firebase_provider() -> None:
+    # The selector remains safe for low-level notification callers, while the
+    # startup validator fails loudly on the invalid deployment contract.
+    values = {'OMI_DEPLOYMENT_PROFILE': 'neutral', 'PUSH_PROVIDER': 'firebase'}
+    assert selected_push_provider(values) == 'disabled'
+    with pytest.raises(ValueError, match='PUSH_PROVIDER=firebase is forbidden'):
+        validate_push_provider(values)
+
+
+def test_explicit_provider_wins_managed_profile_default() -> None:
+    assert selected_push_provider({'OMI_DEPLOYMENT_PROFILE': 'managed', 'PUSH_PROVIDER': 'disabled'}) == 'disabled'
     assert selected_push_provider({'PUSH_PROVIDER': 'disabled'}) == 'disabled'
 
 

@@ -86,7 +86,9 @@ The backend also exposes two authenticated desktop model boundaries:
 Push is an explicit optional capability. The checked-in self-host profile sets
 `PUSH_PROVIDER=disabled`; an omitted value in a neutral/self-hosted profile has
 the same result, even when Firebase credentials happen to be present in the
-process environment. The FCM token-registration and notification endpoints
+process environment. Explicit `PUSH_PROVIDER=firebase` is rejected during
+startup, so an inherited Firebase credential cannot opt this profile into
+vendor push. The FCM token-registration and notification endpoints
 return HTTP 503 with the stable
 `deployment_capability_unavailable/push_notifications/disabled_by_deployment`
 payload. Background notification paths use the same gate before token lookup,

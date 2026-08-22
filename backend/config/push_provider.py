@@ -66,16 +66,28 @@ def selected_push_provider(env: Mapping[str, str] | None = None) -> str:
 
     values = os.environ if env is None else env
     configured = (values.get('PUSH_PROVIDER') or '').strip().lower()
-    if configured:
-        return configured
     profile = (values.get('OMI_DEPLOYMENT_PROFILE') or '').strip().lower()
-    return 'disabled' if profile in NEUTRAL_DEPLOYMENT_PROFILES else 'firebase'
+    if profile in NEUTRAL_DEPLOYMENT_PROFILES:
+        # Keep this selector safe when low-level notification helpers are
+        # imported without the normal application startup validation. The
+        # explicit value is still rejected by validate_push_provider so an
+        # invalid production config fails loudly instead of being accepted.
+        if configured == 'firebase':
+            return 'disabled'
+        return configured or 'disabled'
+    return configured or 'firebase'
 
 
 def validate_push_provider(env: Mapping[str, str] | None = None) -> str:
     """Resolve and validate the push provider before any SDK is initialized."""
 
-    provider = selected_push_provider(env)
+    values = os.environ if env is None else env
+    profile = (values.get('OMI_DEPLOYMENT_PROFILE') or '').strip().lower()
+    configured = (values.get('PUSH_PROVIDER') or '').strip().lower()
+    if profile in NEUTRAL_DEPLOYMENT_PROFILES and configured == 'firebase':
+        raise ValueError('PUSH_PROVIDER=firebase is forbidden in neutral/self-hosted deployments')
+
+    provider = selected_push_provider(values)
     if provider not in SUPPORTED_PUSH_PROVIDERS:
         raise ValueError(f'unsupported PUSH_PROVIDER={provider!r}')
     if provider == 'webhook':
