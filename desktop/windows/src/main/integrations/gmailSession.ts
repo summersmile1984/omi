@@ -20,6 +20,7 @@ import {
 import { hasGoogleAuthCookies, buildGmailLoginUrl } from './gmailSessionParse'
 import { installContextMenu } from '../contextMenu'
 import type { GmailSessionStatus, GmailSessionFetchResult } from '../../shared/types'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
 // Persistent partition: cookies survive restarts, stored in Chromium's own encrypted
 // cookie store under userData — we never touch DPAPI or another app's profile.
@@ -36,6 +37,11 @@ const CHROME_UA =
 
 const LOGIN_TIMEOUT_MS = 5 * 60_000
 const HTTP_TIMEOUT_MS = 30_000
+const UNAVAILABLE_MESSAGE = 'Gmail session connectors are unavailable in this deployment profile.'
+
+function allowsGoogleConnector(): boolean {
+  return resolveWindowsDeployment().allowGoogleConnectors
+}
 
 function getGmailSession(): Session {
   return session.fromPartition(PARTITION)
@@ -103,6 +109,9 @@ const readerDeps: GmailReaderDeps = { httpGet, getAuthCookieNames }
  * it is passed to Google as `login_hint` so the window lands on "Continue as <account>".
  */
 export function gmailSessionConnect(email?: string): Promise<GmailSessionStatus> {
+  if (!allowsGoogleConnector()) {
+    return Promise.resolve({ connected: false, message: UNAVAILABLE_MESSAGE })
+  }
   const ses = getGmailSession()
   return new Promise((resolve) => {
     let settled = false
@@ -176,6 +185,9 @@ export function gmailSessionConnect(email?: string): Promise<GmailSessionStatus>
 
 /** Lightweight status: signed in iff the partition holds Google auth cookies. */
 export async function gmailSessionStatus(): Promise<GmailSessionStatus> {
+  if (!allowsGoogleConnector()) {
+    return { connected: false, message: UNAVAILABLE_MESSAGE }
+  }
   const connected = hasGoogleAuthCookies(await getAuthCookieNames())
   return connected
     ? { connected: true }
@@ -187,6 +199,9 @@ export async function gmailSessionFetch(
   query?: string,
   maxResults?: number
 ): Promise<GmailSessionFetchResult> {
+  if (!allowsGoogleConnector()) {
+    return { ok: false, emails: [], error: UNAVAILABLE_MESSAGE }
+  }
   const out = await readRecentEmails(readerDeps, { query, maxResults })
   if (out.ok) return { ok: true, emails: out.emails, source: out.source }
   return { ok: false, emails: [], error: out.error }
@@ -194,6 +209,9 @@ export async function gmailSessionFetch(
 
 /** Verify the session actually reads Gmail right now (network probe via the reader). */
 export async function gmailSessionVerify(): Promise<GmailSessionStatus> {
+  if (!allowsGoogleConnector()) {
+    return { connected: false, message: UNAVAILABLE_MESSAGE }
+  }
   return verifyConnection(readerDeps)
 }
 

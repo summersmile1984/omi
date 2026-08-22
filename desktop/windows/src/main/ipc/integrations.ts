@@ -33,10 +33,14 @@ import type {
   GmailSessionStatus,
   GmailSessionFetchResult
 } from '../../shared/types'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
+
+const GOOGLE_UNAVAILABLE = 'Google connectors are unavailable in this deployment profile.'
 
 // All integrations IPC lives here (3e Sticky Notes + 3d Gmail/Calendar) so
 // concurrent chat/KG work doesn't conflict in index.ts.
 function googleStatus(): GoogleStatus {
+  if (!resolveWindowsDeployment().allowGoogleConnectors) return { connected: false }
   const connected = isConnected()
   return {
     connected,
@@ -49,6 +53,7 @@ export function registerIntegrationsHandlers(): void {
   ipcMain.handle('integrations:stickyNotes:read', async () => readStickyNotes())
 
   ipcMain.handle('integrations:google:connect', async (): Promise<GoogleStatus> => {
+    if (!resolveWindowsDeployment().allowGoogleConnectors) return { connected: false }
     await connect()
     return googleStatus()
   })
@@ -64,6 +69,9 @@ export function registerIntegrationsHandlers(): void {
   ipcMain.handle(
     'integrations:google:gmailFetchNew',
     async (): Promise<FetchNewResult<GmailItem>> => {
+      if (!resolveWindowsDeployment().allowGoogleConnectors) {
+        return { ok: false, items: [], error: GOOGLE_UNAVAILABLE }
+      }
       if (!isConnected()) return { ok: false, items: [], error: 'not_connected' }
       try {
         const all = await fetchGmail()
@@ -77,6 +85,9 @@ export function registerIntegrationsHandlers(): void {
   ipcMain.handle(
     'integrations:google:calendarFetchNew',
     async (): Promise<FetchNewResult<CalendarItem>> => {
+      if (!resolveWindowsDeployment().allowGoogleConnectors) {
+        return { ok: false, items: [], error: GOOGLE_UNAVAILABLE }
+      }
       if (!isConnected()) return { ok: false, items: [], error: 'not_connected' }
       try {
         const all = await fetchCalendar()

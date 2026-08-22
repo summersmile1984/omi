@@ -27,6 +27,7 @@ describe('Windows deployment profile', () => {
       mcpBase: 'https://mcp.example.test',
       allowDirectModelProviders: false,
       allowByok: false,
+      allowGoogleConnectors: false,
       allowCloudConnectors: false
     })
     expect(config.shareBase).toBeUndefined()
@@ -63,6 +64,7 @@ describe('Windows deployment profile', () => {
     expect(config.identityProvider).toBe('firebase')
     expect(config.apiBase).toBe('https://api.omi.me')
     expect(config.allowDirectModelProviders).toBe(true)
+    expect(config.allowGoogleConnectors).toBe(true)
     expect(config.mcpChatgptOAuthClientId).toBe('omi-chatgpt-prod')
     expect(config.mcpClaudeOAuthClientId).toBe('omi-claude-prod')
     expect(rendererCorsUrlPatterns(config)).toEqual([
@@ -81,6 +83,7 @@ describe('Windows deployment profile', () => {
       VITE_OMI_MCP_CHATGPT_OAUTH_CLIENT_ID: 'operator-chatgpt-public'
     })
     expect(config.allowCloudConnectors).toBe(true)
+    expect(config.allowGoogleConnectors).toBe(false)
     expect(config.mcpChatgptOAuthClientId).toBe('operator-chatgpt-public')
     expect(config.mcpClaudeOAuthClientId).toBeUndefined()
   })

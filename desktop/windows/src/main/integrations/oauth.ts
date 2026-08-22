@@ -14,6 +14,7 @@ import {
   isExpired
 } from './oauthPkce'
 import { saveRefreshToken, loadRefreshToken, clearRefreshToken } from './tokenStore'
+import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const GMAIL_PROFILE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/profile'
@@ -22,6 +23,13 @@ const GMAIL_PROFILE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/profil
 // "unverified app" interstitial), Google never redirects to our loopback and
 // the flow would otherwise hang forever. Fail loud after this long instead.
 const LOOPBACK_TIMEOUT_MS = 5 * 60_000
+const UNAVAILABLE_MESSAGE = 'Google connectors are unavailable in this deployment profile.'
+
+function requireGoogleConnector(): void {
+  if (!resolveWindowsDeployment().allowGoogleConnectors) {
+    throw new Error(UNAVAILABLE_MESSAGE)
+  }
+}
 
 // Diagnostics: main-process console.log only reaches the dev-server terminal,
 // which is easy to miss. Also append to userData/google-oauth.log so the flow
@@ -82,6 +90,7 @@ let accessExpiryMs = 0
 
 /** Run the full PKCE loopback flow. Resolves with the connected account email. */
 export async function connect(): Promise<{ email: string }> {
+  requireGoogleConnector()
   oauthLog('connect() invoked', { hasClientSecret: !!clientSecret() })
   const verifier = generateVerifier()
   const challenge = challengeFromVerifier(verifier)
@@ -200,6 +209,7 @@ async function exchangeCode(
 /** A valid access token, refreshing if necessary. Throws 'not_connected' when no
  *  refresh token is stored, 'invalid_grant' when the grant was revoked. */
 export async function getAccessToken(): Promise<string> {
+  requireGoogleConnector()
   if (accessToken && !isExpired(accessExpiryMs)) return accessToken
   const stored = loadRefreshToken()
   if (!stored) throw new Error('not_connected')
@@ -257,9 +267,11 @@ export function disconnect(): void {
 }
 
 export function isConnected(): boolean {
+  if (!resolveWindowsDeployment().allowGoogleConnectors) return false
   return loadRefreshToken() !== null
 }
 
 export function connectedEmail(): string | undefined {
+  if (!resolveWindowsDeployment().allowGoogleConnectors) return undefined
   return loadRefreshToken()?.email
 }

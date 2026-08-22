@@ -31,7 +31,8 @@ Windows self-hosted builds require a separate explicit `.env`; copy
 before a custom build). The prestep fails closed unless the profile selects Better Auth,
 all API/desktop/auth/MCP origins are operator-owned HTTPS origins, and no Firebase or
 Sentry credentials are present. Self-hosted clients disable direct model-provider/BYOK,
-Omi analytics/share/update fallbacks, and hosted OAuth connectors; model/realtime work
+Gmail/Calendar connectors, Omi analytics/share/update fallbacks, and hosted OAuth
+connectors; model/realtime work
 must be advertised by the configured backend. An optional update feed and analytics
 origin/key are accepted only when explicitly configured.
 

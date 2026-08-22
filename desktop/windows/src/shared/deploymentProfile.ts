@@ -18,6 +18,8 @@ export type WindowsDeploymentConfig = {
   mcpClaudeOAuthClientId?: string
   allowDirectModelProviders: boolean
   allowByok: boolean
+  /** Google OAuth/API and Omi-owned Gmail session connectors are cloud-only. */
+  allowGoogleConnectors: boolean
   allowCloudConnectors: boolean
 }
 
@@ -204,6 +206,7 @@ export function resolveWindowsDeployment(
     mcpClaudeOAuthClientId,
     allowDirectModelProviders: profile === 'omi_cloud',
     allowByok: profile === 'omi_cloud',
+    allowGoogleConnectors: profile === 'omi_cloud',
     allowCloudConnectors: Boolean(mcpChatgptOAuthClientId || mcpClaudeOAuthClientId)
   }
 }
