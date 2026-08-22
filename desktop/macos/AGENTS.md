@@ -310,8 +310,8 @@ This creates `/Applications/omi-fix-rewind.app` with bundle ID `com.omi.omi-fix-
   negotiated protocol version, packaged runtime version, and expected protocol.
   A protocol-compatible runtime that omits a required capability is rejected at
   startup; health never reports the expected protocol as if it were negotiated.
-- Run `./scripts/agent-logic-harness.sh --cross-surface-smoke` before building a
-  QA bundle. This is the compact Swift/Node/Python contract gate; reserve full
+- Run `./scripts/agent-logic-harness.sh --cross-surface-smoke` before QA. This is
+  the Swift/Node/Python contract gate; reserve full
   component suites and the live continuity gauntlet for PR readiness.
 
 ### Run Variants & Parallel Worktrees
@@ -467,9 +467,8 @@ timeline identity/open, or pill projection is incomplete until:
    ./scripts/agent-continuity-gauntlet.sh --suite continuity --bundle-id com.omi.omi-gauntlet
    ./scripts/check-gauntlet-evidence-at-head.sh
    ```
-   CI only runs gauntlet `--self-check` (wiring). Live suite is a PR/RC gate,
-   not PR CI. Do not assert exact assistant wording.
-5. **Hermetic e2e** only if a bridge action/surface contract changed. Do not
+   CI runs gauntlet `--self-check` only; live suite is a PR/RC gate.
+5. **Hermetic e2e** only when a bridge action/surface contract changes; never
    expand flow `covers:` lists as fake continuity coverage.
 6. **No second message store** / no new free-text identity format / no
    `suppressNextRecordedTurn`-style dual-write bandage.
