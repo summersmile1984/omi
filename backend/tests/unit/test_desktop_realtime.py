@@ -21,6 +21,32 @@ class _Client:
         return self.response
 
 
+@pytest.mark.parametrize('provider', ['openai', 'gemini'])
+@pytest.mark.asyncio
+async def test_neutral_realtime_never_constructs_official_token_request(monkeypatch, provider):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.setenv('REALTIME_PROVIDER', provider)
+    monkeypatch.setenv('OPENAI_API_KEY', 'ambient-openai-key')
+    monkeypatch.setenv('GEMINI_API_KEY', 'ambient-gemini-key')
+
+    async def fail(*_args, **_kwargs):
+        raise AssertionError('neutral realtime must not construct a vendor token request')
+
+    monkeypatch.setattr(desktop_realtime, '_post_json', fail)
+
+    response = await desktop_realtime.mint_session(
+        desktop_realtime.MintRequest(provider=provider),
+        'user-1',
+    )
+
+    assert response.status_code == 503
+    body = json.loads(response.body)
+    assert body['reason'] == 'model_capability_unavailable'
+    assert body['error'] == 'official_provider_forbidden'
+    assert body['provider'] == provider
+    assert body['retryable'] is False
+
+
 @pytest.mark.asyncio
 async def test_openai_mint_returns_ephemeral_token_and_persists_no_secret(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "platform-key")

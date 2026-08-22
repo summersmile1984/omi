@@ -183,8 +183,24 @@ def test_neutral_realtime_requires_an_explicit_server_provider():
         requested_provider='openai',
         env={**neutral, 'REALTIME_PROVIDER': 'openai', 'REALTIME_MODEL': 'operator-realtime'},
     )
-    assert operator_selected.selected is True
-    assert operator_selected.routes[0].model == 'operator-realtime'
+    assert operator_selected.unavailable_payload()['reason'] == 'official_provider_forbidden'
+
+
+def test_neutral_realtime_rejects_both_hard_coded_vendor_token_routes():
+    for provider in ('openai', 'gemini'):
+        route = resolve_model_capability(
+            'realtime',
+            requested_provider=provider,
+            env={
+                'OMI_DEPLOYMENT_PROFILE': 'self_hosted',
+                'REALTIME_PROVIDER': provider,
+                'REALTIME_MODEL': 'operator-realtime',
+                'OPENAI_API_KEY': 'ambient-openai-key',
+                'GEMINI_API_KEY': 'ambient-gemini-key',
+            },
+        )
+        assert route.selected is False
+        assert route.reason == 'official_provider_forbidden'
 
 
 def test_self_hosted_web_search_selects_only_an_explicit_searxng_endpoint():

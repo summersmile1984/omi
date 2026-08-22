@@ -39,6 +39,9 @@ normal self-host operation.
 The profile deliberately does not ship a default inference vendor. Set
 `GENERIC_OPENAI_BASE_URL` to an operator-selected OpenAI-compatible endpoint and
 set its explicit model/key. Embeddings use that same generic provider boundary.
+Neutral route resolution accepts only this operator-owned `generic` provider for
+chat primaries and fallbacks; explicit OpenAI, Gemini, DeepSeek, OpenRouter, or
+other vendor route ids fail before a direct client is constructed.
 Incremental live STT is pinned to the mounted SenseVoice model. Its adapter
 decodes bounded five-second PCM windows (and VAD utterance boundaries) in the
 sync executor, so it emits before a recording ends without blocking the

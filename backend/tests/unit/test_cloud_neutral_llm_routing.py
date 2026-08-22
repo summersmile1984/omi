@@ -56,6 +56,36 @@ def test_neutral_provider_without_model_does_not_use_ambient_provider_defaults()
         )
 
 
+@pytest.mark.parametrize('provider', ['openai', 'deepseek'])
+def test_neutral_deployment_rejects_explicit_vendor_primary_before_client_construction(provider: str) -> None:
+    with pytest.raises(ValueError, match='not operator-owned'):
+        model_config.resolve_feature_route(
+            'chat_responses',
+            {
+                'OMI_DEPLOYMENT_PROFILE': 'self_hosted',
+                'OMI_LLM_DEFAULT_PROVIDER': provider,
+                'OMI_LLM_DEFAULT_MODEL': 'configured-model',
+                'OPENAI_API_KEY': 'ambient-openai-key',
+                'DEEPSEEK_API_KEY': 'ambient-deepseek-key',
+            },
+        )
+
+
+def test_neutral_deployment_rejects_vendor_fallback_even_with_generic_primary() -> None:
+    with pytest.raises(ValueError, match='fallback provider.*not operator-owned'):
+        model_config.resolve_feature_route(
+            'chat_responses',
+            {
+                'OMI_DEPLOYMENT_PROFILE': 'neutral',
+                'OMI_LLM_DEFAULT_PROVIDER': 'generic',
+                'OMI_LLM_DEFAULT_MODEL': 'operator-model',
+                'OMI_LLM_DEFAULT_FALLBACKS': 'deepseek:fallback-model',
+                'GENERIC_OPENAI_BASE_URL': 'http://model.internal/v1',
+                'GENERIC_OPENAI_API_KEY': 'operator-key',
+            },
+        )
+
+
 def test_direct_route_fallback_only_recovers_transport_failures() -> None:
     primary = _SequencedModel(name='primary', outcome=httpx.ReadTimeout('timed out'))
     fallback = _SequencedModel(name='fallback', outcome='operator response')

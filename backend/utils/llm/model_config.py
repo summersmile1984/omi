@@ -172,6 +172,13 @@ _PROVIDER_DEFAULT_MODELS: Dict[str, Tuple[str, str]] = {
     'mimo': ('MIMO_LLM_MODEL', 'mimo-v2.5'),
 }
 
+# A neutral backend may still use any model served behind an operator-owned
+# OpenAI-compatible endpoint, but the route identity itself must not select a
+# vendor default.  Keeping this allowlist at route resolution is important:
+# LangChain's direct clients are constructed after this boundary and do not
+# inherit the async HTTP egress hook used by the ordinary backend pools.
+_NEUTRAL_ALLOWED_ROUTE_PROVIDERS = frozenset({'generic'})
+
 
 # Features that can't go through get_llm() (non-ChatOpenAI providers).
 _ANTHROPIC_ONLY_FEATURES = {'chat_agent'}
@@ -293,6 +300,16 @@ def _parse_fallbacks(raw: str, *, feature: str) -> Tuple[ProviderRoute, ...]:
     return tuple(routes)
 
 
+def _assert_neutral_route_provider(route: ProviderRoute, *, feature: str, leg: str, neutral: bool) -> None:
+    """Reject vendor route ids before a direct model client can be built."""
+
+    if neutral and route.provider not in _NEUTRAL_ALLOWED_ROUTE_PROVIDERS:
+        raise ValueError(
+            f"Feature '{feature}' {leg} provider '{route.provider}' is not operator-owned; "
+            "use the explicit generic route in a neutral deployment"
+        )
+
+
 def _group_route_override(
     feature: str, values: Mapping[str, str], *, neutral_deployment: bool = False
 ) -> Optional[ProviderRoute]:
@@ -369,8 +386,11 @@ def resolve_feature_route(feature: str, env: Optional[Mapping[str, str]] = None)
                     )
                 primary, source = spec.default, 'profile'
 
+    _assert_neutral_route_provider(primary, feature=feature, leg='primary', neutral=neutral)
     fallback_raw = values.get(spec.fallbacks_env, '').strip() or values.get(DEFAULT_ROUTE_FALLBACKS_ENV, '').strip()
     fallbacks = tuple(route for route in _parse_fallbacks(fallback_raw, feature=feature) if route != primary)
+    for fallback in fallbacks:
+        _assert_neutral_route_provider(fallback, feature=feature, leg='fallback', neutral=neutral)
     return ResolvedFeatureRoute(feature=feature, primary=primary, fallbacks=fallbacks, source=source)
 
 

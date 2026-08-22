@@ -380,6 +380,13 @@ def resolve_model_capability(
             )
         if provider not in {'openai', 'gemini'}:
             return _unavailable(capability, 'unsupported_provider', retryable=False)
+        # The direct realtime handlers below construct the official OpenAI or
+        # Gemini token endpoint from the provider id.  An explicit provider
+        # value must not turn that hard-coded URL into a neutral deployment's
+        # implicit vendor route; self-hosted realtime uses the operator-owned
+        # relay contract instead.
+        if _neutral_deployment(values):
+            return _unavailable(capability, 'official_provider_forbidden', retryable=False)
         if selected and requested and selected != requested:
             return _unavailable(capability, 'provider_not_selected', retryable=False)
         model = values.get('REALTIME_MODEL', '').strip()
