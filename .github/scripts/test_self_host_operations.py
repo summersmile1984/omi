@@ -1176,7 +1176,10 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'public_jwks_kid_present': True,
                 'backend_private_jwks_verification': True,
                 'auth_private_lifecycle_blocked_at_edge': True,
+                'mcp_metadata_exact': True,
+                'backend_principal_provisioned_via_public_profile': True,
                 'wss_public_origin_exercised': True,
+                'realtime_relay_public_wss_exercised': True,
                 'public_object_signed_crud': {'status': 'passed'},
             },
             'assembled_product_loop': {
@@ -1394,6 +1397,29 @@ class SelfHostOperationsTest(unittest.TestCase):
         )
         self.assertTrue(external_with_policy['authorizes_production_cutover'])
         self.assertIsNone(external_with_policy['remaining_cutover_reason'])
+
+        for field in (
+            'mcp_metadata_exact',
+            'backend_principal_provisioned_via_public_profile',
+            'realtime_relay_public_wss_exercised',
+        ):
+            missing_edge_proof = json.loads(json.dumps(assembled))
+            missing_edge_proof['https_origin_and_hairpin'][field] = False
+            rejected_edge_proof = EVIDENCE.build_evidence(
+                mode='external-cutover-live',
+                source_attribution=CLEAN_SOURCE_ATTRIBUTION,
+                live_replacement=PASSED_LIVE_REPLACEMENT,
+                assembled_loop=missing_edge_proof,
+                checked_at='2026-08-20T00:00:00+00:00',
+                runtime_evidence=PASSED_RUNTIME_EVIDENCE,
+                recovery_evidence=PASSED_RECOVERY_EVIDENCE,
+                model_provenance=PASSED_MODEL_PROVENANCE,
+            )
+            self.assertFalse(rejected_edge_proof['authorizes_production_cutover'], field)
+            self.assertEqual(
+                rejected_edge_proof['remaining_cutover_reason'],
+                'external_public_edge_certificate_or_origin_not_verified',
+            )
 
         without_external_edge = json.loads(json.dumps(assembled))
         without_external_edge['https_origin_and_hairpin']['mode'] = 'local'

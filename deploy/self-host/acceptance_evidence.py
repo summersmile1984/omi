@@ -93,7 +93,10 @@ def _external_edge_verified(assembled_loop: dict[str, Any] | None) -> bool:
         and edge.get('public_jwks_kid_present') is True
         and edge.get('backend_private_jwks_verification') is True
         and edge.get('auth_private_lifecycle_blocked_at_edge') is True
+        and edge.get('mcp_metadata_exact') is True
+        and edge.get('backend_principal_provisioned_via_public_profile') is True
         and edge.get('wss_public_origin_exercised') is True
+        and edge.get('realtime_relay_public_wss_exercised') is True
         and all(
             _external_https_origin(edge.get(name))
             for name in ('public_backend_url', 'public_auth_url', 'public_mcp_url', 'public_objects_url')
