@@ -351,6 +351,13 @@ final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
   private var deferredInstall: DeferredUpdateInstall?
   private let checkAttemptTracker = UpdateCheckAttemptTracker()
 
+  /// Sparkle verifies each downloaded archive against the public key baked
+  /// into the signed bundle. The feed URL may vary by deployment, but never
+  /// falls back from an operator authority to Omi's managed feed.
+  func feedURLString(for updater: SPUUpdater) -> String? {
+    AppBuild.updateFeedURL?.absoluteString
+  }
+
   // NOTE: All delegate methods use logSync() to write synchronously to disk.
   // Sparkle may terminate the app immediately after willInstallUpdate / didAbortWithError,
   // so async logging (Task + logQueue.async) would be lost.
@@ -963,7 +970,7 @@ final class UpdaterViewModel: ObservableObject {
   }
 
   private static var allowsSparkleUpdates: Bool {
-    AppBuild.allowsSparkleUpdates && DesktopBackendEnvironment.allowsOmiManagedServices
+    AppBuild.allowsSparkleUpdates
   }
 
   nonisolated static func allowsManualCheck(

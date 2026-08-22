@@ -9,6 +9,7 @@ import 'package:omi/env/firebase_services_policy.dart';
 import 'package:omi/services/notifications/notification_interface.dart';
 import 'package:omi/services/notifications/notification_service_basic.dart' as basic;
 import 'package:omi/services/notifications/notification_service_fcm.dart' as fcm;
+import 'package:omi/services/notifications/notification_service_operator.dart' as operator_notifications;
 import 'package:omi/services/auth_service.dart';
 
 export 'package:omi/services/notifications/notification_interface.dart';
@@ -31,13 +32,21 @@ class NotificationService {
 
   /// Get the singleton notification service instance
   static NotificationInterface get instance {
-    _instance ??= createForDeployment<NotificationInterface>(
+    _instance ??= _createConfiguredService();
+    return _instance!;
+  }
+
+  static NotificationInterface _createConfiguredService() {
+    final operatorPushBaseUrl = Env.operatorPushRegistrationBaseUrl;
+    if (Env.profile == AppEnvironmentProfile.selfHosted && operatorPushBaseUrl != null) {
+      return operator_notifications.createNotificationService(registrationBaseUrl: operatorPushBaseUrl);
+    }
+    return createForDeployment<NotificationInterface>(
       profile: Env.profile,
       firebaseServicesEnabled: AuthService.firebaseServicesEnabled,
       createFirebaseProvider: fcm.createNotificationService,
       createNonFirebaseProvider: basic.createNotificationService,
     );
-    return _instance!;
   }
 
   /// Select a notification implementation before evaluating either factory.

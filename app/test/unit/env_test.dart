@@ -497,6 +497,45 @@ void main() {
         throwsStateError,
       );
     });
+
+    test('self-hosted operator push registration is an explicit origin', () {
+      expect(
+        Env.operatorPushRegistrationBaseUrlForProfile(
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredUrl: 'HTTPS://PUSH.Example.COM:443/',
+        ),
+        'https://push.example.com',
+      );
+      expect(
+        Env.operatorPushRegistrationBaseUrlForProfile(
+          configuredProfile: AppEnvironmentProfile.production,
+          configuredUrl: 'https://push.example.com',
+        ),
+        isNull,
+      );
+      expect(
+        Env.operatorPushRegistrationBaseUrlForProfile(
+          configuredProfile: AppEnvironmentProfile.selfHosted,
+          configuredUrl: null,
+        ),
+        isNull,
+      );
+      for (final invalid in [
+        'http://push.example.com',
+        'https://push.example.com/register',
+        'https://push.example.com/?provider=webhook',
+        'https://www.omi.me',
+      ]) {
+        expect(
+          () => Env.operatorPushRegistrationBaseUrlForProfile(
+            configuredProfile: AppEnvironmentProfile.selfHosted,
+            configuredUrl: invalid,
+          ),
+          throwsStateError,
+          reason: invalid,
+        );
+      }
+    });
   });
 
   test('main invokes the production startup routing seam before services initialize', () {

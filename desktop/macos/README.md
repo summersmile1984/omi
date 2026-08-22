@@ -51,6 +51,19 @@ Self-hosted onboarding does not send profile-derived web-research queries direct
 
 Named bundles derive an isolated bundle ID and OAuth callback URL scheme from `OMI_APP_NAME`. `Omi Dev` keeps `com.omi.desktop-dev` / `omi-computer-dev`, while `OMI_APP_NAME="omi-subagent-test"` uses `com.omi.omi-subagent-test` / `omi-omi-subagent-test`. The app reads that scheme from `CFBundleURLTypes` for OAuth redirects, so parallel dev bundles do not claim the canonical `omi-computer-dev` callback.
 
+### Operator-owned self-hosted updates
+
+A self-hosted macOS artifact may opt into Sparkle only when its signed bundle carries
+`SUPublicEDKey` (a base64-encoded 32-byte Ed25519 public key) and the signed launch
+configuration provides `OMI_UPDATE_FEED_URL`, for example
+`https://updates.example.invalid/omi/macos/appcast.xml`. The feed must be an explicit
+operator HTTPS endpoint with a path and no credentials, query, or fragment; Omi-owned
+hosts are rejected. Sparkle still verifies every downloaded archive against the baked
+public key, so an operator must publish an appcast and ZIPs signed by the matching
+private key. Missing or invalid feed/key metadata leaves updates typed-unavailable;
+there is no fallback to Omi's managed feed. The operator must also smoke-test the signed
+bundle and retain the key-rotation/recovery record outside this repository.
+
 ## License
 
 MIT

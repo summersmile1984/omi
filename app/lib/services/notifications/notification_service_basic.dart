@@ -12,8 +12,8 @@ import 'package:omi/utils/notification_channel_strings.dart';
 
 /// Basic notification service for platforms without Firebase Messaging support
 /// Used by Windows and self-hosted releases; provides local notifications only.
-class _BasicNotificationService implements NotificationInterface {
-  _BasicNotificationService._();
+class BasicNotificationService implements NotificationInterface {
+  BasicNotificationService();
 
   @override
   NotificationDeliveryCapability get deliveryCapability => NotificationDeliveryCapability.localOnly;
@@ -111,6 +111,11 @@ class _BasicNotificationService implements NotificationInterface {
   }
 
   @override
+  Future<void> registerOperatorToken(String token) async {
+    throw UnsupportedError('Operator push registration is unavailable for the local-only provider.');
+  }
+
+  @override
   Future<String> getTimeZone() async {
     final String currentTimeZone = await FlutterTimezone.getLocalTimezone();
     return currentTimeZone;
@@ -162,4 +167,4 @@ class _BasicNotificationService implements NotificationInterface {
 }
 
 /// Factory function to create the basic notification service
-NotificationInterface createNotificationService() => _BasicNotificationService._();
+NotificationInterface createNotificationService() => BasicNotificationService();

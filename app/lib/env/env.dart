@@ -13,6 +13,7 @@ abstract class Env {
   static const termsOfServiceUrl = String.fromEnvironment('OMI_TERMS_URL');
   static const shareBaseUrl = String.fromEnvironment('OMI_SHARE_BASE_URL');
   static const _mcpBaseUrlFromDefine = String.fromEnvironment('OMI_MCP_BASE_URL');
+  static const _operatorPushRegistrationBaseUrlFromDefine = String.fromEnvironment('OMI_PUSH_REGISTRATION_URL');
   static const firebaseAuthEmulatorHost = String.fromEnvironment(
     'OMI_FIREBASE_AUTH_EMULATOR_HOST',
     defaultValue: '127.0.0.1',
@@ -109,6 +110,30 @@ abstract class Env {
   }
 
   static String get mcpSseUrl => '${resolveMcpBaseUrl()}v1/mcp/sse';
+
+  /// Optional operator-owned push registration authority. This is an origin,
+  /// not a provider key: the app sends a platform-issued device token to the
+  /// operator's `/v1/users/fcm-token` endpoint with the Better Auth
+  /// bearer. Missing configuration keeps self-hosted notifications local-only.
+  static String? get operatorPushRegistrationBaseUrl => operatorPushRegistrationBaseUrlForProfile(
+        configuredProfile: profile,
+        configuredUrl: _operatorPushRegistrationBaseUrlFromDefine,
+      );
+
+  @visibleForTesting
+  static String? operatorPushRegistrationBaseUrlForProfile({
+    required AppEnvironmentProfile configuredProfile,
+    String? configuredUrl,
+    bool releaseBuild = true,
+  }) {
+    final value = (configuredUrl ?? '').trim();
+    if (configuredProfile != AppEnvironmentProfile.selfHosted || value.isEmpty) return null;
+    return canonicalSelfHostedOrigin(
+      value,
+      key: 'OMI_PUSH_REGISTRATION_URL',
+      releaseBuild: releaseBuild,
+    );
+  }
 
   /// Managed profiles may offer the legacy Whisper model download flow. A
   /// self-hosted client must never fetch a model from a baked-in vendor

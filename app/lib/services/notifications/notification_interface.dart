@@ -6,11 +6,13 @@ import 'package:omi/backend/schema/message.dart';
 
 enum NotificationDeliveryCapability {
   firebaseRemote,
+  operatorRemote,
   localOnly,
   disabled;
 
   bool get supportsPermissionPrompt => this != disabled;
   bool get supportsRemoteRegistration => this == firebaseRemote;
+  bool get supportsOperatorRegistration => this == operatorRemote;
 }
 
 enum RemoteNotificationActionResult { completed, unsupported }
@@ -40,6 +42,13 @@ abstract class NotificationInterface {
 
   Future<bool> requestNotificationPermissions();
   Future<void> register();
+
+  /// Register an opaque platform token with an explicitly configured
+  /// operator-owned push authority. Firebase implementations do not use this
+  /// seam; the default keeps legacy/local providers typed-unavailable.
+  Future<void> registerOperatorToken(String token) =>
+      Future<void>.error(UnsupportedError('Operator push registration is unavailable for this provider.'));
+
   Future<String> getTimeZone();
   Future<void> saveFcmToken(String? token);
   void saveNotificationToken();
@@ -68,6 +77,12 @@ extension NotificationDeploymentActions on NotificationInterface {
     if (!deliveryCapability.supportsRemoteRegistration) return RemoteNotificationActionResult.unsupported;
     await register();
     saveNotificationToken();
+    return RemoteNotificationActionResult.completed;
+  }
+
+  Future<RemoteNotificationActionResult> registerOperatorTokenIfSupported(String token) async {
+    if (!deliveryCapability.supportsOperatorRegistration) return RemoteNotificationActionResult.unsupported;
+    await registerOperatorToken(token);
     return RemoteNotificationActionResult.completed;
   }
 

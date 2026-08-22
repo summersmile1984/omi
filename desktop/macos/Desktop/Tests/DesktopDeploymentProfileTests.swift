@@ -121,6 +121,59 @@ final class DesktopDeploymentProfileTests: XCTestCase {
     )
   }
 
+  func testSelfHostedUpdateAuthorityRequiresOperatorFeedAndBakedSparkleKey() {
+    let publicKey = Data(repeating: 7, count: 32).base64EncodedString()
+    let authority = AppBuild.resolveUpdateAuthority(
+      deploymentProfile: .selfHosted,
+      feedURLValue: "https://updates.operator.example/macos/appcast.xml",
+      publicKeyValue: publicKey,
+      bundleIdentifier: "com.omi.computer-macos"
+    )
+    XCTAssertEqual(
+      authority,
+      .operatorOwned(URL(string: "https://updates.operator.example/macos/appcast.xml")!)
+    )
+    XCTAssertTrue(
+      AppBuild.allowsSparkleUpdates(deploymentProfile: .selfHosted, authority: authority))
+
+    XCTAssertEqual(
+      AppBuild.resolveUpdateAuthority(
+        deploymentProfile: .selfHosted,
+        feedURLValue: nil,
+        publicKeyValue: publicKey,
+        bundleIdentifier: "com.omi.computer-macos"
+      ),
+      .unavailable(.missingFeedURL)
+    )
+    XCTAssertEqual(
+      AppBuild.resolveUpdateAuthority(
+        deploymentProfile: .selfHosted,
+        feedURLValue: "https://updates.operator.example/macos/appcast.xml",
+        publicKeyValue: "not-a-key",
+        bundleIdentifier: "com.omi.computer-macos"
+      ),
+      .unavailable(.missingPublicKey)
+    )
+    XCTAssertEqual(
+      AppBuild.resolveUpdateAuthority(
+        deploymentProfile: .selfHosted,
+        feedURLValue: "https://api.omi.me/v2/desktop/appcast.xml",
+        publicKeyValue: publicKey,
+        bundleIdentifier: "com.omi.computer-macos"
+      ),
+      .unavailable(.invalidFeedURL)
+    )
+    XCTAssertEqual(
+      AppBuild.resolveUpdateAuthority(
+        deploymentProfile: .selfHosted,
+        feedURLValue: "https://updates.operator.example/macos/appcast.xml?channel=stable",
+        publicKeyValue: publicKey,
+        bundleIdentifier: "com.omi.computer-macos"
+      ),
+      .unavailable(.invalidFeedURL)
+    )
+  }
+
   func testBYOKValidationFailsBeforeProviderRequestInSelfHostedProfile() async {
     let status = await BYOKValidator.validate(
       .openai,

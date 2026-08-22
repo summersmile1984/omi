@@ -95,7 +95,8 @@ flutter build apk --flavor selfhost --release \
   --dart-define=OMI_FIREBASE_SERVICES_ENABLED=false \
   --dart-define=OMI_PRIVACY_URL=https://docs.example.com/privacy \
   --dart-define=OMI_TERMS_URL=https://docs.example.com/terms \
-  --dart-define=OMI_SHARE_BASE_URL=https://share.example.com
+  --dart-define=OMI_SHARE_BASE_URL=https://share.example.com \
+  --dart-define=OMI_PUSH_REGISTRATION_URL=https://push.example.com
 ```
 
 The self-hosted identity flow uses operator Better Auth email endpoints and a
@@ -105,6 +106,14 @@ network local Whisper endpoint are allowed. The Android selfhost flavor has no
 Firebase/Crashlytics native plugin or auto-start registration. The setup script
 rejects `ios selfhost` until an equivalent native iOS target exists, rather than
 falling back to the managed prod target.
+
+Self-hosted notifications remain local-only unless `OMI_PUSH_REGISTRATION_URL`
+is explicitly configured. With that origin, the notification service exposes
+`registerOperatorTokenIfSupported` and posts an opaque platform token to
+`/v1/users/fcm-token` using the Better Auth bearer; the legacy `fcm_token` field
+is wire-compatible but is not interpreted as Firebase by the operator. Token
+provisioning and delivery remain operator-owned. Missing or invalid push config
+is unavailable or fails closed before startup; it never falls back to Firebase.
  
 4. Ensure GitHub SSH access is set up correctly for pulling certificates from repositories. After running the command below, if you're prompted for a passphrase, enter your SSH passphrase — or simply press Enter/Return if you haven't set one.
     ```bash

@@ -131,6 +131,11 @@ class _FCMNotificationService implements NotificationInterface {
   Future<void> register() async {}
 
   @override
+  Future<void> registerOperatorToken(String token) async {
+    throw UnsupportedError('Operator push registration is unavailable for the Firebase provider.');
+  }
+
+  @override
   Future<String> getTimeZone() async {
     final String currentTimeZone = await FlutterTimezone.getLocalTimezone();
     return currentTimeZone;

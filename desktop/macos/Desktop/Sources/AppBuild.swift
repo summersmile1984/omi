@@ -1,6 +1,27 @@
 // v0.12.149 release path advancement marker
 import Foundation
 
+enum DesktopUpdateUnavailableReason: String, Equatable, Sendable {
+  case missingFeedURL
+  case invalidFeedURL
+  case missingPublicKey
+}
+
+enum DesktopUpdateAuthority: Equatable, Sendable {
+  case managed(URL)
+  case operatorOwned(URL)
+  case unavailable(DesktopUpdateUnavailableReason)
+
+  var feedURL: URL? {
+    switch self {
+    case .managed(let url), .operatorOwned(let url): return url
+    case .unavailable: return nil
+    }
+  }
+
+  var isAvailable: Bool { feedURL != nil }
+}
+
 enum AppBuild {
   private static let updateChannelDefaultsKey = "update_channel"
   private static let betaOverwriteMigrationKey = "didMigrateBetaOverwrite_v1"
@@ -148,12 +169,105 @@ enum AppBuild {
   /// Preview artifacts and local named developer bundles never consume the shared Sparkle feed.
   /// The updater additionally checks this at every call site.
   static var allowsSparkleUpdates: Bool {
-    allowsSparkleUpdates(deploymentProfile: DesktopBackendEnvironment.deploymentProfile)
+    allowsSparkleUpdates(
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile,
+      authority: updateAuthority)
   }
 
   static func allowsSparkleUpdates(deploymentProfile: DesktopDeploymentProfile) -> Bool {
     buildConfiguration.allowsSparkleUpdates
       && DesktopBackendEnvironment.allowsOmiManagedServices(deploymentProfile: deploymentProfile)
+  }
+
+  static func allowsSparkleUpdates(
+    deploymentProfile: DesktopDeploymentProfile,
+    authority: DesktopUpdateAuthority
+  ) -> Bool {
+    guard buildConfiguration.allowsSparkleUpdates else { return false }
+    switch (deploymentProfile, authority) {
+    case (.omiCloud, .managed): return true
+    case (.selfHosted, .operatorOwned): return true
+    default: return false
+    }
+  }
+
+  static var updateAuthority: DesktopUpdateAuthority {
+    resolveUpdateAuthority(
+      deploymentProfile: DesktopBackendEnvironment.deploymentProfile,
+      feedURLValue: DesktopBackendEnvironment.currentEnvironmentValue("OMI_UPDATE_FEED_URL"),
+      publicKeyValue: Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+      bundleIdentifier: bundleIdentifier)
+  }
+
+  static var updateFeedURL: URL? { updateAuthority.feedURL }
+
+  /// Resolve the update source before Sparkle is constructed. Operator feeds
+  /// are only enabled when the feed URL is an explicit HTTPS/path endpoint and
+  /// the signed bundle carries a valid 32-byte Sparkle Ed25519 public key.
+  static func resolveUpdateAuthority(
+    deploymentProfile: DesktopDeploymentProfile,
+    feedURLValue: String?,
+    publicKeyValue: String?,
+    bundleIdentifier: String
+  ) -> DesktopUpdateAuthority {
+    guard configuration(bundleIdentifier: bundleIdentifier, infoDictionary: [:]).allowsSparkleUpdates else {
+      return .unavailable(.invalidFeedURL)
+    }
+    if deploymentProfile == .omiCloud {
+      return .managed(desktopAppcastURL)
+    }
+    guard let feedURLValue, !feedURLValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return .unavailable(.missingFeedURL)
+    }
+    guard
+      let feedURL = canonicalOperatorUpdateFeedURL(
+        feedURLValue,
+        bundleIdentifier: bundleIdentifier
+      )
+    else {
+      return .unavailable(.invalidFeedURL)
+    }
+    guard let publicKeyValue,
+      let keyData = Data(base64Encoded: publicKeyValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+      keyData.count == 32
+    else {
+      return .unavailable(.missingPublicKey)
+    }
+    return .operatorOwned(feedURL)
+  }
+
+  static func canonicalOperatorUpdateFeedURL(
+    _ raw: String,
+    bundleIdentifier: String
+  ) -> URL? {
+    guard var components = URLComponents(string: raw),
+      let scheme = components.scheme?.lowercased(),
+      let host = components.host,
+      !host.isEmpty,
+      components.user == nil,
+      components.password == nil,
+      components.query == nil,
+      components.fragment == nil,
+      !components.path.isEmpty,
+      components.path != "/",
+      scheme == "http" || scheme == "https"
+    else { return nil }
+    if scheme == "http" && productionFamilyBundleIdentifiers.contains(bundleIdentifier) {
+      return nil
+    }
+    let origin = components.port.map { "\(scheme)://\(host):\($0)" } ?? "\(scheme)://\(host)"
+    guard
+      let canonicalOrigin = try? DesktopBackendEnvironment.canonicalSelfHostedOrigin(
+        origin,
+        key: "OMI_UPDATE_FEED_URL",
+        requiresHTTPS: productionFamilyBundleIdentifiers.contains(bundleIdentifier)
+      ),
+      let originComponents = URLComponents(string: canonicalOrigin)
+    else { return nil }
+    components.scheme = originComponents.scheme
+    components.host = originComponents.host
+    components.path = components.path.hasPrefix("/") ? components.path : "/\(components.path)"
+    return components.url
   }
 
   static var hasValidExternalPreviewConfiguration: Bool {
@@ -501,7 +615,7 @@ enum AppBuild {
     let session = URLSession(configuration: configuration)
     /// Release path advancement v0.12.149.
     /// Fixture fix validated for release path.
-    session.dataTask(with: desktopAppcastURL) { data, _, _ in
+    session.dataTask(with: updateFeedURL ?? desktopAppcastURL) { data, _, _ in
       defer { session.finishTasksAndInvalidate() }
       guard let data, let xml = String(data: data, encoding: .utf8) else {
         completion(nil)
