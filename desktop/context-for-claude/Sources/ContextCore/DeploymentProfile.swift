@@ -57,6 +57,11 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
   public let authBaseURL: URL
   public let mcpBaseURL: URL
   public let speechModelAuthority: ContextSpeechModelAuthority
+  /// Optional operator-owned Sparkle appcast. A missing value is a typed
+  /// unavailable update capability, not a license to use the managed feed.
+  public let updateFeedURL: URL?
+  /// Optional base64 Ed25519 public key paired with ``updateFeedURL``.
+  public let updatePublicKey: String?
 
   /// Sessions written before provider metadata existed are Firebase sessions.
   /// A self-hosted Better Auth build must make the user sign in to that
@@ -72,7 +77,9 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
     desktopBaseURL: URL(string: "https://desktop-backend-hhibjajaja-uc.a.run.app/")!,
     authBaseURL: URL(string: "https://api.omi.me/")!,
     mcpBaseURL: URL(string: "https://api.omi.me/")!,
-    speechModelAuthority: .managedDownload
+    speechModelAuthority: .managedDownload,
+    updateFeedURL: nil,
+    updatePublicKey: nil
   )
 
   public static let current: ContextDeploymentProfile = {
@@ -148,6 +155,12 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
       requiresHTTPS: enforceHTTPS,
       rejectsManagedOrigin: true
     )
+    let updateFeedURL = try optionalOperatorUpdateFeedURL(
+      value(bundleKey: "OmiUpdateFeedURL", environmentKey: "OMI_UPDATE_FEED_URL"),
+      key: "OMI_UPDATE_FEED_URL",
+      requiresHTTPS: enforceHTTPS)
+    let updatePublicKey = value(
+      bundleKey: "OmiUpdatePublicKey", environmentKey: "OMI_UPDATE_PUBLIC_KEY")
     let rawSpeechMode = value(
       bundleKey: "OmiSpeechModelMode", environmentKey: "OMI_SPEECH_MODEL_MODE")?.lowercased()
     let speechModelAuthority: ContextSpeechModelAuthority
@@ -174,7 +187,9 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
       desktopBaseURL: desktop,
       authBaseURL: auth,
       mcpBaseURL: mcp,
-      speechModelAuthority: speechModelAuthority
+      speechModelAuthority: speechModelAuthority,
+      updateFeedURL: updateFeedURL,
+      updatePublicKey: updatePublicKey
     )
   }
 
@@ -197,6 +212,8 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
       "OmiAllowsInsecureLocalEndpoints",
       "OmiSpeechModelMode",
       "OmiSpeechModelPath",
+      "OmiUpdateFeedURL",
+      "OmiUpdatePublicKey",
     ]
     var values: [String: String] = [:]
     for key in keys {
@@ -236,6 +253,56 @@ public struct ContextDeploymentProfile: Equatable, Sendable {
       components.port = nil
     }
     components.path = "/"
+    guard let url = components.url else { throw ContextDeploymentProfileError.invalidURL(key) }
+    return url
+  }
+
+  /// Canonicalize an operator-owned appcast URL without allowing a pathless
+  /// origin, credentials, query/fragment routing, or an Omi-managed host.
+  public static func canonicalOperatorUpdateFeedURL(
+    _ raw: String,
+    requiresHTTPS: Bool = true
+  ) -> URL? {
+    try? operatorUpdateFeedURL(raw, requiresHTTPS: requiresHTTPS)
+  }
+
+  private static func optionalOperatorUpdateFeedURL(
+    _ raw: String?, key: String, requiresHTTPS: Bool
+  ) throws -> URL? {
+    guard let raw else { return nil }
+    return try operatorUpdateFeedURL(raw, key: key, requiresHTTPS: requiresHTTPS)
+  }
+
+  private static func operatorUpdateFeedURL(
+    _ raw: String,
+    key: String = "OMI_UPDATE_FEED_URL",
+    requiresHTTPS: Bool
+  ) throws -> URL {
+    guard var components = URLComponents(string: raw),
+      let scheme = components.scheme?.lowercased(),
+      let rawHost = components.host,
+      !rawHost.isEmpty,
+      scheme == "http" || scheme == "https",
+      components.user == nil,
+      components.password == nil,
+      components.query == nil,
+      components.fragment == nil,
+      !components.path.isEmpty,
+      components.path != "/"
+    else { throw ContextDeploymentProfileError.invalidURL(key) }
+    if requiresHTTPS, scheme != "https" {
+      throw ContextDeploymentProfileError.insecureReleaseURL(key)
+    }
+    let host = rawHost.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    guard !host.isEmpty else { throw ContextDeploymentProfileError.invalidURL(key) }
+    if isOmiOperatedHost(host) {
+      throw ContextDeploymentProfileError.managedOrigin(key)
+    }
+    components.scheme = scheme
+    components.host = host
+    if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) {
+      components.port = nil
+    }
     guard let url = components.url else { throw ContextDeploymentProfileError.invalidURL(key) }
     return url
   }

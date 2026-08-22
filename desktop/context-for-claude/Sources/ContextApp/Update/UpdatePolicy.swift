@@ -131,15 +131,34 @@ enum UpdatePolicy {
     publicEDKey: String?,
     teamIdentifier: String?,
     isDisabledByEnvironment: Bool,
-    deploymentMode: ContextDeploymentMode = .omiCloud
+    deploymentMode: ContextDeploymentMode = .omiCloud,
+    operatorFeedURL: String? = nil,
+    operatorPublicEDKey: String? = nil
   ) -> Decision {
-    if deploymentMode == .selfHosted { return .refused(.disabledByDeploymentProfile) }
     if isDisabledByEnvironment { return .refused(.disabledByEnvironment) }
     guard bundleIdentifier == shippingBundleIdentifier else {
       return .refused(.notTheShippingBundle)
     }
-    guard isUsableFeedURL(feedURL) else { return .refused(.feedNotConfigured) }
-    guard isConfiguredPublicKey(publicEDKey) else { return .refused(.updateKeyNotConfigured) }
+    let effectiveFeedURL: String?
+    let effectivePublicEDKey: String?
+    if deploymentMode == .selfHosted {
+      guard let operatorFeedURL, isUsableOperatorFeedURL(operatorFeedURL),
+        let operatorPublicEDKey, isConfiguredPublicKey(operatorPublicEDKey)
+      else { return .refused(.disabledByDeploymentProfile) }
+      effectiveFeedURL = operatorFeedURL
+      effectivePublicEDKey = operatorPublicEDKey
+    } else {
+      effectiveFeedURL = feedURL
+      effectivePublicEDKey = publicEDKey
+    }
+    if deploymentMode == .selfHosted {
+      guard isUsableOperatorFeedURL(effectiveFeedURL) else {
+        return .refused(.disabledByDeploymentProfile)
+      }
+    } else {
+      guard isUsableFeedURL(effectiveFeedURL) else { return .refused(.feedNotConfigured) }
+    }
+    guard isConfiguredPublicKey(effectivePublicEDKey) else { return .refused(.updateKeyNotConfigured) }
     guard let teamIdentifier, !teamIdentifier.isEmpty else {
       return .refused(.signedWithoutATeam)
     }
@@ -180,6 +199,14 @@ enum UpdatePolicy {
     else { return false }
 
     return true
+  }
+
+  /// Self-hosted updates may use an operator appcast, but never an Omi
+  /// release host or a URL with routing ambiguity. Sparkle's Ed25519 key
+  /// check is separate and is enforced by ``isConfiguredPublicKey``.
+  static func isUsableOperatorFeedURL(_ feedURL: String?) -> Bool {
+    guard let feedURL else { return false }
+    return ContextDeploymentProfile.canonicalOperatorUpdateFeedURL(feedURL, requiresHTTPS: true) != nil
   }
 
   /// A configured Sparkle EdDSA public key: base64 for exactly 32 bytes, and not the placeholder.
@@ -229,13 +256,21 @@ enum UpdatePolicy {
     bundle: Bundle = .main,
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> Decision {
-    decide(
+    let profile = ContextDeploymentProfile.current
+    let isSelfHosted = profile.mode == .selfHosted
+    return decide(
       bundleIdentifier: bundle.bundleIdentifier,
-      feedURL: bundle.object(forInfoDictionaryKey: "SUFeedURL") as? String,
-      publicEDKey: bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+      feedURL: isSelfHosted
+        ? profile.updateFeedURL?.absoluteString
+        : bundle.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+      publicEDKey: isSelfHosted
+        ? profile.updatePublicKey
+        : bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
       teamIdentifier: currentTeamIdentifier(),
       isDisabledByEnvironment: environment[disableEnvironmentVariable] != nil,
-      deploymentMode: ContextDeploymentProfile.current.mode)
+      deploymentMode: profile.mode,
+      operatorFeedURL: profile.updateFeedURL?.absoluteString,
+      operatorPublicEDKey: profile.updatePublicKey)
   }
 
   /// The Team ID of the certificate this process is signed with, or `nil` when there is none.

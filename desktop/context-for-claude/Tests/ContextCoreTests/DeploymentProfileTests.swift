@@ -23,6 +23,49 @@ final class DeploymentProfileTests: XCTestCase {
     XCTAssertEqual(profile.mcpBaseURL.absoluteString, "http://127.0.0.1:9000/")
     XCTAssertEqual(profile.identityProvider, .betterAuth)
     XCTAssertEqual(profile.speechModelAuthority, .disabled)
+    XCTAssertNil(profile.updateFeedURL)
+    XCTAssertNil(profile.updatePublicKey)
+  }
+
+  func testSelfHostedProfileCarriesOptionalOperatorUpdateAuthority() throws {
+    let key = Data(repeating: 0x2A, count: 32).base64EncodedString()
+    let profile = try ContextDeploymentProfile.resolve(
+      bundleValues: [
+        "OmiDeploymentProfile": "self_hosted",
+        "OmiAuthProvider": "better_auth",
+        "OmiBackendBaseURL": "https://backend.example.test/",
+        "OmiDesktopBaseURL": "https://desktop.example.test/",
+        "OmiAuthBaseURL": "https://auth.example.test/",
+        "OmiMCPBaseURL": "https://mcp.example.test/",
+        "OmiSpeechModelMode": "disabled",
+        "OmiUpdateFeedURL": "HTTPS://updates.example.test:443/context/appcast.xml",
+        "OmiUpdatePublicKey": "  \(key)  ",
+      ],
+      allowsEnvironmentOverrides: false,
+      requiresHTTPS: true)
+
+    XCTAssertEqual(profile.updateFeedURL?.absoluteString, "https://updates.example.test/context/appcast.xml")
+    XCTAssertEqual(profile.updatePublicKey, key)
+  }
+
+  func testSelfHostedProfileRejectsManagedOperatorUpdateFeed() {
+    XCTAssertThrowsError(
+      try ContextDeploymentProfile.resolve(
+        bundleValues: [
+          "OmiDeploymentProfile": "self_hosted",
+          "OmiAuthProvider": "better_auth",
+          "OmiBackendBaseURL": "https://backend.example.test/",
+          "OmiDesktopBaseURL": "https://desktop.example.test/",
+          "OmiAuthBaseURL": "https://auth.example.test/",
+          "OmiMCPBaseURL": "https://mcp.example.test/",
+          "OmiSpeechModelMode": "disabled",
+          "OmiUpdateFeedURL": "https://api.omi.me/updates/appcast.xml",
+        ],
+        allowsEnvironmentOverrides: false,
+        requiresHTTPS: true)
+    ) { error in
+      XCTAssertEqual(error as? ContextDeploymentProfileError, .managedOrigin("OMI_UPDATE_FEED_URL"))
+    }
   }
 
   func testReleaseProfileRejectsInsecureSelfHostedAuth() {

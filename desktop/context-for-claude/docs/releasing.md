@@ -81,6 +81,12 @@ requires a manual reinstall and a coordinated updater change.
 Release mode fails closed if the public key is absent or still the placeholder. Ordinary local
 development builds continue to work without release secrets and remain unable to auto-update.
 
+For an operator-owned self-hosted artifact, set `CONTEXT_UPDATE_FEED_URL` to the complete HTTPS
+appcast path. `scripts/build.sh` writes it to `OmiUpdateFeedURL` and copies the public key to
+`OmiUpdatePublicKey`; both are optional capabilities, and a missing or invalid pair leaves Sparkle
+typed-unavailable rather than selecting the managed GitHub feed. The runtime policy rejects Omi
+managed hosts, credentials, query/fragment routing, pathless origins, and non-32-byte keys.
+
 ### GitHub publication
 
 Create `CONTEXT_GITHUB_TOKEN` as a fine-grained token scoped to the release repository with

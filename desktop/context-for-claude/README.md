@@ -69,6 +69,13 @@ and lose its capture permissions doing it.
 
 Airgap Mode covers the update check like every other remote client (`NetworkEgress.Client`).
 
+Self-hosted bundles keep updates unavailable unless the signed profile carries both an explicit
+operator appcast (`CONTEXT_UPDATE_FEED_URL`, injected as `OmiUpdateFeedURL`) and a matching
+32-byte Sparkle public key (`CONTEXT_SPARKLE_PUBLIC_KEY`, copied to `OmiUpdatePublicKey`). The
+operator URL must be HTTPS, path-scoped, credential-free, and outside Omi-managed hosts. Missing
+or invalid metadata never falls back to the Omi GitHub feed; Sparkle remains unstarted with a typed
+policy refusal.
+
 Cutting a release — including generating the Context-only update key — is
 [`docs/releasing.md`](docs/releasing.md).
 

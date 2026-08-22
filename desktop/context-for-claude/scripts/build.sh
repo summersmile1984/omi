@@ -14,6 +14,7 @@
 #
 # Release-only environment:
 #   CONTEXT_SPARKLE_PUBLIC_KEY       Context's 44-character Ed25519 public key
+#   CONTEXT_UPDATE_FEED_URL          self-hosted operator appcast URL (optional)
 #   CONTEXT_VERSION                  version injected into the built Info.plist
 #   CONTEXT_BUILD_NUMBER             numeric Sparkle build number injected into the built Info.plist
 #   CONTEXT_DEPLOYMENT_PROFILE       omi_cloud (default) or self_hosted
@@ -60,6 +61,7 @@ DO_RELEASE=0
 CONTEXT_VERSION_VALUE="${CONTEXT_VERSION:-}"
 CONTEXT_BUILD_NUMBER_VALUE="${CONTEXT_BUILD_NUMBER:-}"
 SPARKLE_PUBLIC_KEY="${CONTEXT_SPARKLE_PUBLIC_KEY:-}"
+UPDATE_FEED_URL="${CONTEXT_UPDATE_FEED_URL:-}"
 DEPLOYMENT_PROFILE="${CONTEXT_DEPLOYMENT_PROFILE:-omi_cloud}"
 AUTH_PROVIDER="${CONTEXT_AUTH_PROVIDER:-firebase}"
 BACKEND_BASE_URL="${CONTEXT_BACKEND_BASE_URL:-}"
@@ -336,6 +338,16 @@ if [[ "$DEPLOYMENT_PROFILE" == "self_hosted" ]]; then
     /usr/libexec/PlistBuddy -c "Set :OmiDesktopBaseURL $DESKTOP_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :OmiAuthBaseURL $AUTH_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :OmiMCPBaseURL $MCP_BASE_URL" "$APP_BUNDLE/Contents/Info.plist"
+    if [[ -n "$UPDATE_FEED_URL" ]]; then
+        [[ "$UPDATE_FEED_URL" == https://* ]] \
+            || die "CONTEXT_UPDATE_FEED_URL must use HTTPS for a self-hosted artifact"
+        /usr/libexec/PlistBuddy -c "Set :OmiUpdateFeedURL $UPDATE_FEED_URL" \
+            "$APP_BUNDLE/Contents/Info.plist"
+    fi
+    if [[ -n "$SPARKLE_PUBLIC_KEY" ]]; then
+        /usr/libexec/PlistBuddy -c "Set :OmiUpdatePublicKey $SPARKLE_PUBLIC_KEY" \
+            "$APP_BUNDLE/Contents/Info.plist"
+    fi
     if [[ "$SPEECH_MODEL_MODE" == "local" ]]; then
         SPEECH_MODEL_BUNDLE_PATH="SpeechModel"
         rm -rf "$APP_BUNDLE/Contents/Resources/$SPEECH_MODEL_BUNDLE_PATH"

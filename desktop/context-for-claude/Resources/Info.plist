@@ -62,6 +62,13 @@
 	<string>managed_download</string>
 	<key>OmiSpeechModelPath</key>
 	<string></string>
+	<!-- Optional self-hosted update authority. Release build.sh injects these from
+	     CONTEXT_UPDATE_FEED_URL and CONTEXT_SPARKLE_PUBLIC_KEY; empty means the
+	     updater is typed-unavailable rather than falling back to Omi. -->
+	<key>OmiUpdateFeedURL</key>
+	<string></string>
+	<key>OmiUpdatePublicKey</key>
+	<string></string>
 	<key>OmiAllowsInsecureLocalEndpoints</key>
 	<false/>
 	<!-- macOS shows these verbatim in the TCC prompt, so they are written as the app speaking. -->

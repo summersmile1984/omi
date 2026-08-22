@@ -1,3 +1,4 @@
+import ContextCore
 import Foundation
 import XCTest
 
@@ -21,14 +22,20 @@ final class UpdatePolicyTests: XCTestCase {
     feedURL: String? = UpdatePolicyTests.shippingFeed,
     publicEDKey: String? = UpdatePolicyTests.realShapedKey,
     teamIdentifier: String? = "ABCDE12345",
-    isDisabledByEnvironment: Bool = false
+    isDisabledByEnvironment: Bool = false,
+    deploymentMode: ContextDeploymentMode = .omiCloud,
+    operatorFeedURL: String? = nil,
+    operatorPublicEDKey: String? = nil
   ) -> UpdatePolicy.Decision {
     UpdatePolicy.decide(
       bundleIdentifier: bundleIdentifier,
       feedURL: feedURL,
       publicEDKey: publicEDKey,
       teamIdentifier: teamIdentifier,
-      isDisabledByEnvironment: isDisabledByEnvironment)
+      isDisabledByEnvironment: isDisabledByEnvironment,
+      deploymentMode: deploymentMode,
+      operatorFeedURL: operatorFeedURL,
+      operatorPublicEDKey: operatorPublicEDKey)
   }
 
   // MARK: - The shipping build
@@ -48,6 +55,50 @@ final class UpdatePolicyTests: XCTestCase {
         teamIdentifier: "ABCDE12345",
         isDisabledByEnvironment: false,
         deploymentMode: .selfHosted),
+      .refused(.disabledByDeploymentProfile))
+  }
+
+  func testSelfHostedProfileAllowsAnOperatorFeedOnlyWithItsPublicKey() {
+    let operatorFeed = "https://updates.operator.example/context/appcast.xml"
+    XCTAssertTrue(UpdatePolicy.isUsableOperatorFeedURL(operatorFeed))
+    XCTAssertEqual(
+      decide(
+        feedURL: nil,
+        publicEDKey: nil,
+        deploymentMode: .selfHosted,
+        operatorFeedURL: operatorFeed,
+        operatorPublicEDKey: Self.realShapedKey),
+      .allowed)
+  }
+
+  func testSelfHostedProfileRejectsManagedOrUnsignedOperatorUpdateMetadata() {
+    for feed in [
+      nil,
+      "",
+      "http://updates.operator.example/context/appcast.xml",
+      "https://updates.operator.example",
+      "https://updates.operator.example/context/appcast.xml?channel=beta",
+      "https://api.omi.me/context/appcast.xml",
+    ] {
+      let label = feed ?? "nil"
+      XCTAssertFalse(UpdatePolicy.isUsableOperatorFeedURL(feed))
+      XCTAssertEqual(
+        decide(
+          feedURL: nil,
+          publicEDKey: nil,
+          deploymentMode: .selfHosted,
+          operatorFeedURL: feed,
+          operatorPublicEDKey: Self.realShapedKey),
+        .refused(.disabledByDeploymentProfile),
+        "\(label) must not enable self-hosted updates")
+    }
+    XCTAssertEqual(
+      decide(
+        feedURL: nil,
+        publicEDKey: nil,
+        deploymentMode: .selfHosted,
+        operatorFeedURL: "https://updates.operator.example/context/appcast.xml",
+        operatorPublicEDKey: Data(repeating: 0x2A, count: 16).base64EncodedString()),
       .refused(.disabledByDeploymentProfile))
   }
 
@@ -403,6 +454,8 @@ final class UpdatePolicyTests: XCTestCase {
       UpdatePolicy.isConfiguredPublicKey(shippedKey),
       shippedKey != UpdatePolicy.publicKeyPlaceholder,
       "a value that is not the placeholder must be a usable key, and vice versa")
+    XCTAssertEqual(values["OmiUpdateFeedURL"] as? String, "")
+    XCTAssertEqual(values["OmiUpdatePublicKey"] as? String, "")
   }
 
   // MARK: - Helpers
