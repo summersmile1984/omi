@@ -275,6 +275,41 @@ PASSED_MODEL_PROVENANCE = {
     'source_git_tree': 'e' * 40,
     'runtime_config_sha256': 'c' * 64,
 }
+_PASSED_CAPABILITY_ROUTES = {
+    'generic_llm': PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation']['providers']['generic_llm'],
+    'embedding': PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation']['providers']['embedding'],
+    'stt_diarization': PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation']['capability_routes'][
+        'stt_diarization'
+    ],
+    'realtime': PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation']['providers']['realtime'],
+    'speaker_identity': PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation']['capability_routes'][
+        'speaker_identity'
+    ],
+    'tts': PASSED_RUNTIME_EVIDENCE['runtime_identity']['provider_attestation']['capability_routes']['tts'],
+}
+PASSED_CAPABILITY_PROVENANCE = {
+    'schema_version': 1,
+    'status': 'passed',
+    'source_git_commit': 'd' * 40,
+    'source_git_tree': 'e' * 40,
+    'runtime_config_sha256': 'c' * 64,
+    'capabilities': {
+        name: {
+            'provider': route['provider'],
+            'model': route['model'],
+            'endpoint_origin': route['endpoint_origin'],
+            'transport': route['transport'],
+            'model_sha256': 'a' * 64,
+            'service_revision': 'operator-capability-2026-08-20.1',
+            'source_reference': 'operator-registry/capabilities/2026-08-20.1',
+            'verification_method': 'sha256-manifest',
+            'attestation_reference': 'change-ticket/capabilities-2026-08-20',
+            **({'dimension': route['dimension']} if name == 'embedding' else {}),
+            **({'wire_protocol': route['wire_protocol']} if name == 'realtime' else {}),
+        }
+        for name, route in _PASSED_CAPABILITY_ROUTES.items()
+    },
+}
 
 
 class SelfHostOperationsTest(unittest.TestCase):
@@ -1186,6 +1221,7 @@ class SelfHostOperationsTest(unittest.TestCase):
                 'capture': {
                     'fixture_manifest_match': True,
                     'speaker_embedding': {'status': 'passed'},
+                    'speaker_identity_capability': 'sherpa_onnx',
                     'speaker_identity_scope': 'embedding_only',
                     'speaker_diarization': {
                         'status': 'passed',
@@ -1394,6 +1430,7 @@ class SelfHostOperationsTest(unittest.TestCase):
             runtime_evidence=PASSED_RUNTIME_EVIDENCE,
             recovery_evidence=PASSED_RECOVERY_EVIDENCE,
             model_provenance=PASSED_MODEL_PROVENANCE,
+            capability_provenance=PASSED_CAPABILITY_PROVENANCE,
         )
         self.assertTrue(external_with_policy['authorizes_production_cutover'])
         self.assertIsNone(external_with_policy['remaining_cutover_reason'])
@@ -1414,6 +1451,7 @@ class SelfHostOperationsTest(unittest.TestCase):
                 runtime_evidence=PASSED_RUNTIME_EVIDENCE,
                 recovery_evidence=PASSED_RECOVERY_EVIDENCE,
                 model_provenance=PASSED_MODEL_PROVENANCE,
+                capability_provenance=PASSED_CAPABILITY_PROVENANCE,
             )
             self.assertFalse(rejected_edge_proof['authorizes_production_cutover'], field)
             self.assertEqual(
@@ -2323,6 +2361,9 @@ class SelfHostOperationsTest(unittest.TestCase):
         script = OPERATIONS.read_text(encoding='utf-8')
         self.assertIn('runtime_fingerprint()', script)
         self.assertIn('migration_fingerprint()', script)
+        self.assertIn('require_clean_source_tree', script)
+        self.assertIn('git -C "$REPO_ROOT" status --porcelain --untracked-files=all', script)
+        self.assertIn('could not verify the source tree', script)
         self.assertIn('backup key must be stored outside the backup directory', script)
         self.assertIn('backup directory must not be a symlink', script)
         self.assertIn('--runtime-fingerprint "$runtime_sha256"', script)

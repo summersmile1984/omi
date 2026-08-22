@@ -13,6 +13,12 @@ assert SPEC and SPEC.loader
 attestation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(attestation)
 
+OPERATOR_PATH = ROOT / 'deploy' / 'self-host' / 'operator_evidence.py'
+OPERATOR_SPEC = importlib.util.spec_from_file_location('self_host_operator_evidence', OPERATOR_PATH)
+assert OPERATOR_SPEC and OPERATOR_SPEC.loader
+operator_evidence = importlib.util.module_from_spec(OPERATOR_SPEC)
+OPERATOR_SPEC.loader.exec_module(operator_evidence)
+
 
 def _configuration() -> dict[str, object]:
     return {
@@ -107,3 +113,80 @@ def test_realtime_probe_requires_transport_scope_and_no_model_claim() -> None:
     probe['roundtrip_scope'] = 'model_inference'
     with pytest.raises(ValueError, match='route identity'):
         attestation.validate_realtime_probe_identity(probe, config)
+
+
+def test_capability_provenance_covers_and_binds_every_model_route() -> None:
+    config = _configuration()
+    source = {
+        'source_git_commit': 'a' * 40,
+        'source_git_tree': 'b' * 40,
+        'runtime_config_sha256': 'c' * 64,
+    }
+    runtime = attestation.build_provider_attestation(
+        expected_configuration=config,
+        runtime_configuration=config,
+        source={
+            'image_id': 'sha256:' + 'd' * 64,
+            'git_commit': source['source_git_commit'],
+            'git_tree': source['source_git_tree'],
+            'runtime_config_sha256': source['runtime_config_sha256'],
+        },
+    )
+    expected = {
+        'generic_llm': runtime['providers']['generic_llm'],
+        'embedding': runtime['providers']['embedding'],
+        'stt_diarization': runtime['capability_routes']['stt_diarization'],
+        'realtime': runtime['providers']['realtime'],
+        'speaker_identity': runtime['capability_routes']['speaker_identity'],
+        'tts': runtime['capability_routes']['tts'],
+    }
+    common = {
+        'model_sha256': 'e' * 64,
+        'service_revision': 'operator-release-2026-08-22.1',
+        'source_reference': 'registry/operator/2026-08-22.1',
+        'verification_method': 'sha256-manifest',
+        'attestation_reference': 'change-record/model-2026-08-22.1',
+    }
+    capabilities = {
+        name: {
+            'provider': route['provider'],
+            'model': route['model'],
+            'endpoint_origin': route['endpoint_origin'],
+            'transport': route['transport'],
+            **common,
+            **({'dimension': route['dimension']} if name == 'embedding' else {}),
+            **({'wire_protocol': route['wire_protocol']} if name == 'realtime' else {}),
+        }
+        for name, route in expected.items()
+    }
+    payload = {
+        'schema_version': 1,
+        'status': 'passed',
+        **source,
+        'capabilities': capabilities,
+    }
+    normalized = operator_evidence.validate_capability_provenance(
+        payload,
+        expected_source=source,
+        expected_routes=expected,
+    )
+    assert set(normalized['capabilities']) == {
+        'generic_llm',
+        'embedding',
+        'stt_diarization',
+        'realtime',
+        'speaker_identity',
+        'tts',
+    }
+
+    tampered = {**payload, 'capabilities': {**capabilities}}
+    tampered['capabilities']['realtime'] = {
+        **tampered['capabilities']['realtime'],
+        'model': 'unreviewed-relay-model',
+    }
+    with pytest.raises(ValueError, match='does not match the running provider route'):
+        operator_evidence.validate_capability_provenance(
+            tampered,
+            expected_source=source,
+            expected_routes=expected,
+        )

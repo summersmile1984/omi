@@ -24,6 +24,7 @@ SHA256 = re.compile(r'^[0-9a-f]{64}$')
 IMAGE_DIGEST = re.compile(r'^sha256:[0-9a-f]{64}$')
 RECOVERY_SCHEMA_VERSION = 3
 MODEL_PROVENANCE_SCHEMA_VERSION = 1
+CAPABILITY_PROVENANCE_SCHEMA_VERSION = 1
 
 RECOVERY_KEYS = frozenset(
     {
@@ -73,6 +74,47 @@ MODEL_PROVENANCE_KEYS = frozenset(
         'runtime_config_sha256',
     }
 )
+CAPABILITY_PROVENANCE_KEYS = frozenset(
+    {
+        'schema_version',
+        'status',
+        'source_git_commit',
+        'source_git_tree',
+        'runtime_config_sha256',
+        'capabilities',
+    }
+)
+CAPABILITY_NAMES = frozenset(
+    {
+        'generic_llm',
+        'embedding',
+        'stt_diarization',
+        'realtime',
+        'speaker_identity',
+        'tts',
+    }
+)
+CAPABILITY_COMMON_KEYS = frozenset(
+    {
+        'provider',
+        'model',
+        'endpoint_origin',
+        'transport',
+        'model_sha256',
+        'service_revision',
+        'source_reference',
+        'verification_method',
+        'attestation_reference',
+    }
+)
+CAPABILITY_ROUTE_EXTRA_KEYS = {
+    'generic_llm': frozenset(),
+    'embedding': frozenset({'dimension'}),
+    'stt_diarization': frozenset(),
+    'realtime': frozenset({'wire_protocol'}),
+    'speaker_identity': frozenset(),
+    'tts': frozenset(),
+}
 
 
 def _text(value: Any, name: str) -> str:
@@ -251,6 +293,121 @@ def validate_model_provenance(
     return {**payload, 'model_id': model_id, 'endpoint_origin': endpoint_origin, 'verification_method': method}
 
 
+def _capability_endpoint_origin(value: Any, name: str, *, schemes: set[str]) -> str:
+    """Normalize a capability origin while allowing local model routes."""
+
+    if value == '':
+        return ''
+    result = _text(value, name)
+    try:
+        parsed = urlsplit(result)
+        parsed.port
+    except ValueError as error:
+        raise ValueError(f'{name} must be a safe endpoint origin') from error
+    if (
+        parsed.scheme not in schemes
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {'', '/'}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(f'{name} must be a safe endpoint origin')
+    return f'{parsed.scheme}://{parsed.netloc}'
+
+
+def _capability_route(
+    value: Any,
+    name: str,
+    *,
+    expected: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f'{name} capability evidence must be an object')
+    expected_keys = CAPABILITY_COMMON_KEYS | CAPABILITY_ROUTE_EXTRA_KEYS[name]
+    if set(value) != expected_keys:
+        raise ValueError(f'{name} capability evidence has an incomplete or unexpected schema')
+    provider = _text(value.get('provider'), f'{name}.provider')
+    model = _text(value.get('model'), f'{name}.model')
+    transport = _text(value.get('transport'), f'{name}.transport')
+    endpoint_origin = value.get('endpoint_origin')
+    if name == 'realtime':
+        endpoint_origin = _capability_endpoint_origin(endpoint_origin, f'{name}.endpoint_origin', schemes={'ws', 'wss'})
+    else:
+        endpoint_origin = _capability_endpoint_origin(
+            endpoint_origin, f'{name}.endpoint_origin', schemes={'http', 'https'}
+        )
+    model_sha256 = _sha256(value.get('model_sha256'), f'{name}.model_sha256')
+    service_revision = _text(value.get('service_revision'), f'{name}.service_revision')
+    source_reference = _text(value.get('source_reference'), f'{name}.source_reference')
+    verification_method = _text(value.get('verification_method'), f'{name}.verification_method')
+    if verification_method not in {'sha256-manifest', 'signed-release', 'operator-attestation'}:
+        raise ValueError(f'{name} uses an unsupported verification method')
+    attestation_reference = _text(value.get('attestation_reference'), f'{name}.attestation_reference')
+    normalized: dict[str, Any] = {
+        'provider': provider,
+        'model': model,
+        'endpoint_origin': endpoint_origin,
+        'transport': transport,
+        'model_sha256': model_sha256,
+        'service_revision': service_revision,
+        'source_reference': source_reference,
+        'verification_method': verification_method,
+        'attestation_reference': attestation_reference,
+    }
+    if name == 'embedding':
+        dimension = value.get('dimension')
+        if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
+            raise ValueError('embedding.dimension must be a positive integer')
+        normalized['dimension'] = dimension
+    elif name == 'realtime':
+        normalized['wire_protocol'] = _text(value.get('wire_protocol'), 'realtime.wire_protocol')
+        if normalized['wire_protocol'] != 'openai_realtime_v1':
+            raise ValueError('realtime.wire_protocol must be openai_realtime_v1')
+    if expected is not None:
+        identity_keys = ('provider', 'model', 'endpoint_origin', 'transport')
+        for key in identity_keys:
+            if normalized[key] != expected.get(key):
+                raise ValueError(f'{name} capability identity does not match the running provider route')
+        if name == 'embedding' and normalized['dimension'] != expected.get('dimension'):
+            raise ValueError('embedding capability dimension does not match the running provider route')
+        if name == 'realtime' and normalized['wire_protocol'] != expected.get('wire_protocol'):
+            raise ValueError('realtime capability wire protocol does not match the running provider route')
+    return normalized
+
+
+def validate_capability_provenance(
+    payload: Any,
+    *,
+    expected_source: Mapping[str, str] | None = None,
+    expected_routes: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Validate operator provenance for every model-backed capability.
+
+    A green transport probe alone cannot prove that the relay, MOSS service,
+    embedding backend, speaker model, or TTS artifact is the reviewed route.
+    This record carries non-secret model/service identities and is deliberately
+    an operator evidence contract: the repository validates its bindings but
+    never pretends to contact a registry, signer, or KMS.
+    """
+
+    if not isinstance(payload, dict) or set(payload) != CAPABILITY_PROVENANCE_KEYS:
+        raise ValueError('capability provenance evidence has an incomplete or unexpected schema')
+    if payload.get('schema_version') != CAPABILITY_PROVENANCE_SCHEMA_VERSION or payload.get('status') != 'passed':
+        raise ValueError('capability provenance evidence has an unsupported schema or status')
+    _source_binding(payload, expected_source)
+    capabilities = payload.get('capabilities')
+    if not isinstance(capabilities, dict) or set(capabilities) != CAPABILITY_NAMES:
+        raise ValueError('capability provenance evidence must cover every model-backed capability')
+    normalized_capabilities: dict[str, Any] = {}
+    for name in sorted(CAPABILITY_NAMES):
+        expected = expected_routes.get(name) if expected_routes is not None else None
+        normalized_capabilities[name] = _capability_route(capabilities[name], name, expected=expected)
+    return {**payload, 'capabilities': normalized_capabilities}
+
+
 def _load(path: Path) -> Any:
     if not path.is_absolute() or path.is_symlink() or not path.is_file():
         raise ValueError('operator evidence path must be an existing absolute regular non-symlink file')
@@ -260,15 +417,18 @@ def _load(path: Path) -> Any:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest='command', required=True)
-    for name in ('recovery', 'model'):
+    for name in ('recovery', 'model', 'capabilities'):
         command = subparsers.add_parser(name)
         command.add_argument('path', type=Path)
     arguments = parser.parse_args(argv)
     try:
         value = _load(arguments.path)
-        normalized = (
-            validate_recovery_evidence(value) if arguments.command == 'recovery' else validate_model_provenance(value)
-        )
+        if arguments.command == 'recovery':
+            normalized = validate_recovery_evidence(value)
+        elif arguments.command == 'model':
+            normalized = validate_model_provenance(value)
+        else:
+            normalized = validate_capability_provenance(value)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f'ERROR: {error}', file=sys.stderr)
         return 1

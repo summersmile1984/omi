@@ -25,7 +25,11 @@ from runtime_provider_attestation import (
     validate_realtime_probe_identity,
     validate_tts_probe_identity,
 )
-from operator_evidence import validate_model_provenance, validate_recovery_evidence
+from operator_evidence import (
+    validate_capability_provenance,
+    validate_model_provenance,
+    validate_recovery_evidence,
+)
 
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 OBJECT_ID = re.compile(r'^[0-9a-f]{40}$')
@@ -335,6 +339,54 @@ def _model_provenance_passed(
     return True
 
 
+def _capability_provenance_passed(
+    capability_provenance: dict[str, Any] | None,
+    *,
+    provider_attestation: dict[str, Any] | None,
+    git_commit: str,
+    git_tree: str,
+    runtime_config_sha256: str | None,
+) -> bool:
+    """Bind operator model/service identities to every reviewed route."""
+
+    if not isinstance(provider_attestation, dict):
+        return False
+    providers = provider_attestation.get('providers')
+    capability_routes = provider_attestation.get('capability_routes')
+    if not isinstance(providers, dict) or not isinstance(capability_routes, dict):
+        return False
+    expected_routes = {name: providers[name] for name in ('generic_llm', 'embedding', 'realtime') if name in providers}
+    expected_routes.update(
+        {
+            name: capability_routes[name]
+            for name in ('stt_diarization', 'speaker_identity', 'tts')
+            if name in capability_routes
+        }
+    )
+    if set(expected_routes) != {
+        'generic_llm',
+        'embedding',
+        'stt_diarization',
+        'realtime',
+        'speaker_identity',
+        'tts',
+    }:
+        return False
+    try:
+        validate_capability_provenance(
+            capability_provenance,
+            expected_source={
+                'source_git_commit': git_commit,
+                'source_git_tree': git_tree,
+                'runtime_config_sha256': runtime_config_sha256,
+            },
+            expected_routes=expected_routes,
+        )
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _git(root: Path, *args: str, environment: dict[str, str] | None = None) -> str:
     git_environment = {**os.environ, 'GIT_OPTIONAL_LOCKS': '0', **(environment or {})}
     result = subprocess.run(
@@ -385,6 +437,7 @@ def build_evidence(
     runtime_evidence: dict[str, Any] | None = None,
     recovery_evidence: dict[str, Any] | None = None,
     model_provenance: dict[str, Any] | None = None,
+    capability_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     git_commit = source_attribution.get('git_commit')
     git_tree = source_attribution.get('git_tree')
@@ -527,6 +580,13 @@ def build_evidence(
             for value in model_artifacts.values()
         )
     )
+    speaker_identity_route_binding_passed = bool(
+        speaker_embedding_passed
+        and isinstance(effective_provider_configuration, dict)
+        and effective_provider_configuration.get('speaker_embedding_provider')
+        == assembled_loop.get('assembled_product_loop', {}).get('capture', {}).get('speaker_identity_capability')
+        and isinstance(model_artifacts.get('speaker_embedding_model'), dict)
+    )
     assembled_product_loop = (
         assembled_loop.get('assembled_product_loop', {}) if isinstance(assembled_loop, dict) else {}
     )
@@ -601,6 +661,13 @@ def build_evidence(
         git_tree=git_tree,
         runtime_config_sha256=runtime_config_sha256,
     )
+    capability_provenance_passed = _capability_provenance_passed(
+        capability_provenance,
+        provider_attestation=provider_attestation,
+        git_commit=git_commit,
+        git_tree=git_tree,
+        runtime_config_sha256=runtime_config_sha256,
+    )
     tested_configuration_authorized = bool(
         mode in {'cutover-live', 'external-cutover-live'}
         and isinstance(assembled_loop, dict)
@@ -609,6 +676,7 @@ def build_evidence(
         and live_replacement.get('status') == 'passed'
         and long_term_admission_passed
         and speaker_embedding_passed
+        and speaker_identity_route_binding_passed
         and speaker_diarization_passed
         and diarization_runtime_config_binding_passed
         and model_artifact_identity_passed
@@ -628,6 +696,7 @@ def build_evidence(
         and external_edge_passed
         and recovery_drill_passed
         and model_provenance_passed
+        and capability_provenance_passed
         and sentinel_policy_verified
     )
     return {
@@ -654,10 +723,12 @@ def build_evidence(
             ),
             'external_recovery_drill': recovery_evidence or 'not_run',
             'external_model_provenance': model_provenance or 'not_run',
+            'external_capability_provenance': capability_provenance or 'not_run',
             'live_replacement_services': live_replacement or 'not_run',
             'live_hard_capability_probes': hard_capability_status,
             'live_realtime_runtime_config_binding': realtime_runtime_binding_passed,
             'live_tts_runtime_config_binding': tts_runtime_binding_passed,
+            'live_speaker_runtime_config_binding': speaker_identity_route_binding_passed,
             'live_firmware_runtime_config_binding': firmware_runtime_binding_passed,
             'live_generic_model_runtime_config_binding': generic_model_runtime_binding_passed,
             'live_mlx_moss_diarization_provider': speaker_diarization or 'not_run',
@@ -694,33 +765,41 @@ def build_evidence(
                                             'mounted_model_artifact_identity_not_passed'
                                             if not model_artifact_identity_passed
                                             else (
-                                                'public_object_signed_crud_not_passed'
-                                                if not public_object_signed_crud_passed
+                                                'speaker_identity_runtime_config_binding_not_passed'
+                                                if not speaker_identity_route_binding_passed
                                                 else (
-                                                    f'{failed_hard_capability}_not_passed'
-                                                    if failed_hard_capability is not None
+                                                    'public_object_signed_crud_not_passed'
+                                                    if not public_object_signed_crud_passed
                                                     else (
-                                                        'production_service_health_or_runtime_identity_not_passed'
-                                                        if not runtime_health_and_identity_passed
+                                                        f'{failed_hard_capability}_not_passed'
+                                                        if failed_hard_capability is not None
                                                         else (
-                                                            'runtime_provider_attestation_not_passed'
-                                                            if not runtime_provider_attestation_passed
+                                                            'production_service_health_or_runtime_identity_not_passed'
+                                                            if not runtime_health_and_identity_passed
                                                             else (
-                                                                'intended_public_dns_certificate_and_edge_not_exercised'
-                                                                if not external_cutover
+                                                                'runtime_provider_attestation_not_passed'
+                                                                if not runtime_provider_attestation_passed
                                                                 else (
-                                                                    'external_public_edge_certificate_or_origin_not_verified'
-                                                                    if not external_edge_passed
+                                                                    'intended_public_dns_certificate_and_edge_not_exercised'
+                                                                    if not external_cutover
                                                                     else (
-                                                                        'live_sentinel_egress_or_operator_policy_evidence_missing'
-                                                                        if not sentinel_policy_verified
+                                                                        'external_public_edge_certificate_or_origin_not_verified'
+                                                                        if not external_edge_passed
                                                                         else (
-                                                                            'external_backup_restore_or_kms_evidence_missing'
-                                                                            if not recovery_drill_passed
+                                                                            'live_sentinel_egress_or_operator_policy_evidence_missing'
+                                                                            if not sentinel_policy_verified
                                                                             else (
-                                                                                'external_model_provenance_evidence_missing'
-                                                                                if not model_provenance_passed
-                                                                                else None
+                                                                                'external_backup_restore_or_kms_evidence_missing'
+                                                                                if not recovery_drill_passed
+                                                                                else (
+                                                                                    'external_model_provenance_evidence_missing'
+                                                                                    if not model_provenance_passed
+                                                                                    else (
+                                                                                        'external_capability_provenance_evidence_missing'
+                                                                                        if not capability_provenance_passed
+                                                                                        else None
+                                                                                    )
+                                                                                )
                                                                             )
                                                                         )
                                                                     )
@@ -765,6 +844,9 @@ def main() -> int:
     runtime_evidence = json.loads(os.environ['RUNTIME_EVIDENCE_JSON']) if mode != 'contracts' else None
     recovery_evidence = json.loads(os.environ['RECOVERY_EVIDENCE_JSON']) if mode == 'external-cutover-live' else None
     model_provenance = json.loads(os.environ['MODEL_PROVENANCE_JSON']) if mode == 'external-cutover-live' else None
+    capability_provenance = (
+        json.loads(os.environ['CAPABILITY_PROVENANCE_JSON']) if mode == 'external-cutover-live' else None
+    )
     evidence = build_evidence(
         mode=mode,
         source_attribution=json.loads(os.environ['SOURCE_ATTRIBUTION_JSON']),
@@ -774,6 +856,7 @@ def main() -> int:
         runtime_evidence=runtime_evidence,
         recovery_evidence=recovery_evidence,
         model_provenance=model_provenance,
+        capability_provenance=capability_provenance,
     )
     path = Path(os.environ['ACCEPTANCE_EVIDENCE'])
     _write_private_json(path, evidence)

@@ -401,6 +401,11 @@ application callers and runs fresh disposable `auth-migrate` and
 old successful one-shot container is never treated as migration evidence for a
 newly restored database.
 
+All state operations also refuse a dirty or untracked source checkout. This
+keeps the Git revision recorded in the backup manifest aligned with the actual
+Compose/build inputs; the ignored operator `.env.production` and external
+model/key files remain outside that source-tree check.
+
 Backups quiesce backend/auth/worker traffic, create a PostgreSQL custom-format
 logical dump, issue a synchronous Redis save, and archive the stopped
 Redis/MinIO/Qdrant/backend-syncing volumes. Each artifact is streamed through
@@ -971,6 +976,18 @@ change-record reference. The repository can validate the contract and binding;
 only the operator can establish the real model registry/cache provenance.
 A local `--cutover-live` run therefore remains a tested-configuration proof,
 not production authorization.
+
+External acceptance also requires
+`SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE`, validated with
+`operator_evidence.py capabilities`. This schema-v1 record covers the exact
+generic LLM, embedding, MOSS/STT, realtime relay, local speaker and TTS routes.
+Each entry carries a non-secret model digest, service revision, source
+reference, verification method and change-record reference, and is compared
+with the runtime provider attestation's effective provider/model/origin,
+transport, dimension and wire protocol. This prevents a passing relay marker,
+local WAV decode, or embedding dimension from silently authorizing a different
+service or downgraded model. The checker validates the operator evidence; it
+does not claim to contact a registry or signer.
 
 The policy artifact must be UTF-8 JSON with exactly this shape (the artifact is
 review evidence, not a cryptographic signature):

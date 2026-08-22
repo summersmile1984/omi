@@ -772,6 +772,7 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     provider_attestation_text = (ROOT / 'deploy' / 'self-host' / 'runtime_provider_attestation.py').read_text(
         encoding='utf-8'
     )
+    operator_evidence_text = (ROOT / 'deploy' / 'self-host' / 'operator_evidence.py').read_text(encoding='utf-8')
     push_model_text = (ROOT / 'backend' / 'models' / 'other.py').read_text(encoding='utf-8')
     if (
         'SCHEMA_VERSION = 2' not in provider_attestation_text
@@ -783,6 +784,15 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
         errors.append(
             'runtime provider attestation must enforce the capability route manifest and typed evidence scopes'
         )
+    if (
+        'CAPABILITY_PROVENANCE_SCHEMA_VERSION = 1' not in operator_evidence_text
+        or 'CAPABILITY_NAMES' not in operator_evidence_text
+        or 'validate_capability_provenance' not in operator_evidence_text
+        or "'generic_llm'" not in operator_evidence_text
+        or "'stt_diarization'" not in operator_evidence_text
+        or "'speaker_identity'" not in operator_evidence_text
+    ):
+        errors.append('operator capability provenance must cover every model-backed route')
     if (
         "omi.push.device-token.v1" not in push_model_text
         or "opaque_registered_token" not in push_model_text

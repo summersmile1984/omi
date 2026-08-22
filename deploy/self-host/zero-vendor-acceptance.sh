@@ -35,6 +35,7 @@ ASSEMBLED_LOOP_JSON=''
 RUNTIME_EVIDENCE_JSON=''
 RECOVERY_EVIDENCE_JSON=''
 MODEL_PROVENANCE_JSON=''
+CAPABILITY_PROVENANCE_JSON=''
 
 LOOP_TESTS=(
   testing/e2e/test_listen_stt.py
@@ -107,7 +108,14 @@ if [[ "$MODE" != contracts ]]; then
       exit 1
     fi
     "$PY" "$OPERATOR_EVIDENCE_TOOL" model "$SELF_HOST_MODEL_PROVENANCE_EVIDENCE" >/dev/null
+    : "${SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE:?external cutover requires SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE covering every model capability route}"
+    if [[ "$SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE" != /* || ! -f "$SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE" || -L "$SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE" ]]; then
+      echo "ERROR: SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE must be an existing non-symlink absolute JSON file" >&2
+      exit 1
+    fi
+    "$PY" "$OPERATOR_EVIDENCE_TOOL" capabilities "$SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE" >/dev/null
     MODEL_PROVENANCE_JSON="$($PY -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps(value, separators=(",", ":")))' "$SELF_HOST_MODEL_PROVENANCE_EVIDENCE")"
+    CAPABILITY_PROVENANCE_JSON="$($PY -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps(value, separators=(",", ":")))' "$SELF_HOST_CAPABILITY_PROVENANCE_EVIDENCE")"
     RECOVERY_EVIDENCE_JSON="$($PY -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps(value, separators=(",", ":")))' "$SELF_HOST_RECOVERY_EVIDENCE")"
   fi
   export OMI_SOURCE_GIT_COMMIT OMI_SOURCE_GIT_TREE OMI_RUNTIME_CONFIG_SHA256
@@ -203,4 +211,5 @@ ASSEMBLED_LOOP_JSON="$ASSEMBLED_LOOP_JSON" \
 RUNTIME_EVIDENCE_JSON="$RUNTIME_EVIDENCE_JSON" \
 RECOVERY_EVIDENCE_JSON="$RECOVERY_EVIDENCE_JSON" \
 MODEL_PROVENANCE_JSON="$MODEL_PROVENANCE_JSON" \
+CAPABILITY_PROVENANCE_JSON="$CAPABILITY_PROVENANCE_JSON" \
 "$PY" "$EVIDENCE_BUILDER"
