@@ -1,8 +1,8 @@
-/// Build-time policy for the optional Firebase SDK/data plane.
-///
-/// Kept independent from [AuthService] so logging, notifications, and crash
-/// reporting can make the same decision without importing the auth service
-/// (which itself depends on those platform helpers).
+// Build-time policy for the optional Firebase SDK/data plane.
+//
+// Kept independent from AuthService so logging, notifications, and crash
+// reporting can make the same decision without importing the auth service
+// (which itself depends on those platform helpers).
 import 'package:omi/env/environment_profile.dart';
 
 final class FirebaseServicesPolicy {

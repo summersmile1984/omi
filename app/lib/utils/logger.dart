@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:intercom_flutter/intercom_flutter.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
 import 'package:omi/env/environment_profile.dart';
