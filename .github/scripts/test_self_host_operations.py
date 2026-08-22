@@ -503,6 +503,8 @@ class SelfHostOperationsTest(unittest.TestCase):
                 **os.environ,
                 'PATH': f'{bin_dir}:{os.environ["PATH"]}',
                 'FAKE_DOCKER_CALLS': str(call_log),
+                'COMPOSE_PROJECT_NAME': 'ambient-project',
+                'COMPOSE_PROFILES': 'ambient-profile',
                 'MLX_MOSS_DIARIZE_ENDPOINT': 'https://host-injected.example/v1/audio/transcriptions',
                 'MLX_MOSS_DIARIZE_MODEL': 'host-injected-model',
                 'SENSEVOICE_MODEL_HOST_PATH': '/host-injected/sensevoice',
@@ -525,6 +527,24 @@ class SelfHostOperationsTest(unittest.TestCase):
                 self.assertIn(f'{key}=unset', call)
             self.assertIn(f'commit={"d" * 40}', call)
             self.assertIn('cutover=18443', call)
+
+            self.assertNotIn('COMPOSE_PROJECT_NAME=ambient-project', call)
+            self.assertNotIn('COMPOSE_PROFILES=ambient-profile', call)
+
+    def test_migration_gate_clears_ambient_disposable_compose_overrides(self) -> None:
+        source = (SCRIPT.parent / 'migration-cutover-gate.sh').read_text(encoding='utf-8')
+        for key in (
+            'COMPOSE_FILE',
+            'COMPOSE_PROFILES',
+            'COMPOSE_PROJECT_NAME',
+            'DEV_POSTGRES_USER',
+            'DEV_POSTGRES_PASSWORD',
+            'DEV_POSTGRES_DB',
+            'FIRESTORE_EMULATOR_PORT',
+            'FIREBASE_AUTH_EMULATOR_PORT',
+            'FIREBASE_STORAGE_EMULATOR_PORT',
+        ):
+            self.assertIn(f'-u {key}', source)
 
     def test_public_object_acceptance_uses_signed_put_get_delete_on_exact_origin(self) -> None:
         payload = b'public-object-cutover:marker'

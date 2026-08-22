@@ -957,6 +957,13 @@ the artifact's original SHA-256 plus change record remain operator evidence.
 
 ## Firestore-to-PostgreSQL cutover gate
 
+The backend enforces the same authority boundary at runtime: with
+`OMI_DEPLOYMENT_PROFILE=self_hosted`, omitting `FIRESTORE_PG_DSN` (or the
+explicit emulator host used by a local test) fails closed before ADC can reach
+managed Firestore. Object storage is likewise explicit: the self-host profile
+must set `STORAGE_BACKEND=minio`; an omitted or stale value cannot fall back to
+GCS.
+
 ### Source-write freeze lease
 
 The final Firestore and object-storage reconciliations read the source more
@@ -1018,6 +1025,10 @@ and requires a byte-normalized shadow diff. It then writes a JSON evidence file
 whose `authorizes_traffic_change` field is deliberately `false`. The evidence
 uses schema 2 and records both the tested Git tree and a SHA-256 of the
 isolated gate runtime (reviewed Compose bytes, project, and assigned ports).
+The disposable Compose invocation clears ambient `COMPOSE_*`, `DEV_POSTGRES_*`,
+and emulator-port overrides before applying only the gate-owned project and
+ports, so an operator shell cannot silently change the database or emulator
+authority behind the recorded DSN.
 The record is atomically written as a mode-0600 regular file; an existing
 symlink, non-regular path, or non-private artifact is rejected. This is a
 change record for the disposable migration proof, not production authorization;

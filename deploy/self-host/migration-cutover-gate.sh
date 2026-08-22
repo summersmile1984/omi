@@ -108,13 +108,30 @@ GATE_STORAGE_PORT="${MIGRATION_GATE_STORAGE_PORT:-19199}"
 GATE_BETTER_AUTH_PORT="${MIGRATION_GATE_BETTER_AUTH_PORT:-19300}"
 
 compose_gate() {
-  DEV_FIREBASE_CONTAINER_NAME="${PROJECT}-emulators" \
-  DEV_POSTGRES_CONTAINER_NAME="${PROJECT}-postgres" \
-  DEV_POSTGRES_PORT="$GATE_PG_PORT" \
-  FIRESTORE_EMULATOR_PORT="$GATE_FIRESTORE_PORT" \
-  FIREBASE_AUTH_EMULATOR_PORT="$GATE_AUTH_PORT" \
-  FIREBASE_STORAGE_EMULATOR_PORT="$GATE_STORAGE_PORT" \
-  docker compose --project-name "$PROJECT" --file "$COMPOSE_FILE" "$@"
+  # The dev Compose file has defaults for these values.  Clear ambient
+  # overrides before re-applying only the gate-owned project and ports, so an
+  # operator shell cannot silently point the disposable migration at a
+  # different container name, credential, database, or emulator port.
+  env \
+    -u COMPOSE_FILE \
+    -u COMPOSE_PROFILES \
+    -u COMPOSE_PROJECT_NAME \
+    -u DEV_FIREBASE_CONTAINER_NAME \
+    -u DEV_POSTGRES_CONTAINER_NAME \
+    -u DEV_POSTGRES_PORT \
+    -u DEV_POSTGRES_USER \
+    -u DEV_POSTGRES_PASSWORD \
+    -u DEV_POSTGRES_DB \
+    -u FIRESTORE_EMULATOR_PORT \
+    -u FIREBASE_AUTH_EMULATOR_PORT \
+    -u FIREBASE_STORAGE_EMULATOR_PORT \
+    DEV_FIREBASE_CONTAINER_NAME="${PROJECT}-emulators" \
+    DEV_POSTGRES_CONTAINER_NAME="${PROJECT}-postgres" \
+    DEV_POSTGRES_PORT="$GATE_PG_PORT" \
+    FIRESTORE_EMULATOR_PORT="$GATE_FIRESTORE_PORT" \
+    FIREBASE_AUTH_EMULATOR_PORT="$GATE_AUTH_PORT" \
+    FIREBASE_STORAGE_EMULATOR_PORT="$GATE_STORAGE_PORT" \
+    docker compose --project-name "$PROJECT" --file "$COMPOSE_FILE" "$@"
 }
 
 cleanup() {

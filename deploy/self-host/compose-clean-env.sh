@@ -20,6 +20,27 @@ shift 2
 }
 
 clean_env=(env)
+# Compose itself also consumes ambient control variables before it evaluates
+# the reviewed file.  Keep project/file/profile selection owned by this
+# invocation; otherwise a stale shell export can silently select a different
+# project, profile, or interpolation source.  DOCKER_HOST/DOCKER_CONTEXT are
+# intentionally preserved: they select the operator's explicit Docker
+# authority, not the Compose application configuration.
+for key in \
+  COMPOSE_ANSI \
+  COMPOSE_CONFIG \
+  COMPOSE_CONVERT_WINDOWS_PATHS \
+  COMPOSE_ENV_FILES \
+  COMPOSE_FILE \
+  COMPOSE_IGNORE_ORPHANS \
+  COMPOSE_PARALLEL_LIMIT \
+  COMPOSE_PATH_SEPARATOR \
+  COMPOSE_PROFILES \
+  COMPOSE_PROGRESS \
+  COMPOSE_PROJECT_NAME \
+  COMPOSE_REMOVE_ORPHANS; do
+  clean_env+=(-u "$key")
+done
 dotenv_keys="$(python3 -c 'import re,sys; print("\n".join(line.split("=",1)[0].strip() for line in open(sys.argv[1],encoding="utf-8") if "=" in line and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", line.split("=",1)[0].strip())))' "$ENV_FILE")" || {
   echo "error: could not read deployment keys from $ENV_FILE" >&2
   exit 1
