@@ -262,6 +262,32 @@ async def test_explicit_mimo_selection_never_falls_through_to_residual_vendor_ke
 
 
 @pytest.mark.asyncio
+async def test_desktop_neutral_missing_provider_never_falls_through_to_openai(monkeypatch):
+    import routers.desktop_tts_updates as desktop
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('TTS_PROVIDER', raising=False)
+    monkeypatch.setenv('OPENAI_API_KEY', 'must-not-be-used')
+
+    async def desktop_run_blocking(_executor, fn, *_args, **_kwargs):
+        if fn is desktop.is_desktop_trial_paywalled:
+            return False
+        raise AssertionError('missing neutral TTS provider must fail before rate/provider work')
+
+    async def forbidden_openai(*_args, **_kwargs):
+        raise AssertionError('neutral TTS must not construct or call OpenAI')
+
+    monkeypatch.setattr(desktop, 'run_blocking', desktop_run_blocking)
+    monkeypatch.setattr(desktop, '_openai_tts', forbidden_openai)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await desktop.tts_synthesize(desktop.TtsSynthesizeRequest(text='hello', voice_id='alloy'), uid='user-1')
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail['reason'] == 'provider_not_configured'
+
+
+@pytest.mark.asyncio
 async def test_sherpa_tts_uses_only_mounted_files_and_returns_valid_wav(monkeypatch, tmp_path):
     import utils.tts_provider as mod
 

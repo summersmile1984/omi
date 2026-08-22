@@ -105,6 +105,7 @@ async def test_mimo_cannot_bypass_desktop_subscription_gate(monkeypatch):
 
     monkeypatch.setenv('TTS_PROVIDER', 'mimo')
     monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
     monkeypatch.setattr(mod, 'run_blocking', fake_run_blocking)
     monkeypatch.setattr(mod, '_mimo_tts_synthesize', fake_synthesize)
 
@@ -135,6 +136,7 @@ async def test_mimo_cannot_bypass_desktop_tts_rate_limit(monkeypatch):
 
     monkeypatch.setenv('TTS_PROVIDER', 'mimo')
     monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
     monkeypatch.setattr(mod, 'run_blocking', fake_run_blocking)
     monkeypatch.setattr(mod, '_mimo_tts_synthesize', fake_synthesize)
 

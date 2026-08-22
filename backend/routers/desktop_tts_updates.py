@@ -15,6 +15,7 @@ from database._client import get_firestore_client
 from utils.byok import get_byok_key
 from utils.executors import critical_executor, db_executor, run_blocking
 from utils.log_sanitizer import sanitize
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.mimo_pipeline.config import mimo_is_configured
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import is_desktop_trial_paywalled
@@ -84,12 +85,6 @@ def _is_allowed_openai_voice(voice_id: str) -> bool:
 def mimo_tts_enabled() -> bool:
     """True when desktop TTS has an explicit operator endpoint and key."""
     return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and mimo_is_configured()
-
-
-def mimo_tts_selected_but_unavailable() -> bool:
-    """Prevent an invalid explicit MiMo selection from falling through to OpenAI."""
-
-    return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and not mimo_is_configured()
 
 
 async def _mimo_tts_synthesize(text: str) -> bytes:
@@ -213,19 +208,22 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
     if len(text) > _MAX_TTS_CHARS:
         raise HTTPException(status_code=400, detail="text is too long")
 
-    # Cloud-neutral override: MiMo-TTS (self-hosted) when TTS_PROVIDER=mimo.
-    if mimo_tts_selected_but_unavailable():
-        raise HTTPException(status_code=503, detail="MiMo TTS is not configured")
-    if mimo_tts_enabled():
-        try:
-            audio = await _mimo_tts_synthesize(text)
-        except Exception as exc:
-            logger.error("tts_synthesize: MiMo TTS failed uid=%s: %s", uid, sanitize(str(exc)))
-            raise HTTPException(status_code=502, detail="TTS upstream unavailable")
-        return Response(content=audio, media_type="audio/wav")
-
     if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop"):
         raise HTTPException(status_code=403, detail="A paid subscription is required")
+
+    if tts_explicitly_disabled():
+        raise HTTPException(status_code=503, detail=TTS_DISABLED_DETAIL)
+    if tts_provider_missing_in_neutral_deployment():
+        error = ModelCapabilityUnavailableError('tts', 'provider_not_configured', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+
+    selected_provider = selected_tts_provider()
+    if selected_provider not in {'', 'openai', 'mimo', 'openai_compatible', 'sherpa_onnx'}:
+        error = ModelCapabilityUnavailableError('tts', 'unsupported_provider', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
+    if tts_official_provider_forbidden_in_neutral(selected_provider):
+        error = ModelCapabilityUnavailableError('tts', 'official_provider_forbidden', retryable=False)
+        raise HTTPException(status_code=503, detail=error.as_dict())
 
     provider_is_mimo = selected_provider == 'mimo' and mimo_tts_enabled()
     provider_is_compatible = selected_provider == 'openai_compatible'

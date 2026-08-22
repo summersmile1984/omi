@@ -25,6 +25,7 @@ from utils.log_sanitizer import sanitize
 from utils.mimo_pipeline.config import mimo_is_configured
 from utils.other import endpoints as auth
 from utils.executors import run_blocking, critical_executor
+from utils.llm.capabilities import ModelCapabilityUnavailableError
 from utils.tts_policy import (
     TTS_DISABLED_DETAIL,
     tts_explicitly_disabled,
@@ -68,12 +69,6 @@ def _is_mimo_enabled() -> bool:
     return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and mimo_is_configured()
 
 
-def _mimo_selected_but_unavailable() -> bool:
-    """Keep an explicitly selected provider from falling through to a vendor."""
-
-    return os.getenv("TTS_PROVIDER", "").strip().lower() == "mimo" and not mimo_is_configured()
-
-
 @router.post(
     '/v2/tts/synthesize',
     tags=['tts'],
@@ -92,14 +87,6 @@ async def tts_synthesize(
     ),
 ):
     """Proxy a TTS request to the configured provider. Per-user rate limited."""
-    api_key = os.getenv('ELEVENLABS_API_KEY')
-    mimo_enabled = _is_mimo_enabled()
-    if _mimo_selected_but_unavailable():
-        raise HTTPException(status_code=503, detail="MiMo TTS is not configured")
-    if not api_key and not mimo_enabled:
-        logger.error("tts_synthesize: no TTS provider configured (ELEVENLABS_API_KEY or MIMO_API_KEY)")
-        raise HTTPException(status_code=503, detail="TTS service not configured")
-
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
@@ -126,7 +113,7 @@ async def tts_synthesize(
         error = ModelCapabilityUnavailableError('tts', 'official_provider_forbidden', retryable=False)
         raise HTTPException(status_code=503, detail=error.as_dict())
 
-    api_key = os.getenv('ELEVENLABS_API_KEY')
+    api_key = os.getenv('ELEVENLABS_API_KEY', '').strip()
     mimo_enabled = selected_provider == 'mimo' and _is_mimo_enabled()
     compatible_enabled = selected_provider == 'openai_compatible'
     sherpa_enabled = selected_provider == 'sherpa_onnx'
