@@ -1,6 +1,6 @@
 # Cloudflare 适配执行方案
 
-状态：设计基线
+状态：设计基线；CF-00～CF-03/CF-08 首期 staging 骨架已部署并完成冒烟
 工作分支：`codex/cloudflare-adaptation`
 代码基线：`92ee446e89`（`origin/main`）
 调研日期：2026-08-27
@@ -751,3 +751,34 @@ Worker-first 稳定态没有常驻 Container 固定成本。最终预算使用�
 5. 选择一个 streaming ASR surface，在 Realtime Worker PoC 中分别 benchmark Workers AI Deepgram 和当前 Deepgram cloud API；此时不切生产流量。
 
 这一迭代能同时回答最关键的工程问题：FastAPI/Pydantic 纯内核在 Python Worker 的 bundle、内存和冷启动，Edge/Service Binding 的协议，Better Auth 在 Worker/D1 的稳定性，以及 API ASR 的质量与成本。通过这些证据后，CF-04/CF-05 迁移第一个真正的 Worker-native 业务闭环；不需要先部署 Container。
+
+### 16.1 已落地的首期证据（2026-08-27）
+
+代码位于独立 worktree 分支 `codex/cloudflare-adaptation` 的
+`deploy/cloudflare/`，资源名全部带 `omi-cf-` 前缀，未修改已有 Worker、生产
+DNS 或生产数据库。当前 staging 已部署：
+
+- `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由。
+- `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
+- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`，未导入 `backend/main.py`。
+- `omi-cf-api-ai-staging`：FastAPI Python Worker + async `httpx` 外部 embedding API seam；provider 未配置时 fail closed 返回 `503`。
+- `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
+
+已执行并通过：
+
+```text
+npm run typecheck                         # pass
+npm test                                  # 3 tests pass
+uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
+wrangler deploy (staging)                 # five Workers uploaded
+curl /health                              # auth/core/ai/realtime/edge → HTTP 200
+curl /ready                               # auth D1 → ready
+Better Auth sign-up + Edge /v1/cf/probe   # D1 row written, HTTP 200
+unauthenticated API/Realtime requests     # fail closed, HTTP 401
+invalid Realtime HMAC                     # fail closed, HTTP 401
+```
+
+Python Workers 仍属于 Beta；当前 `api-core` 约 8.0 MiB、`api-ai` 约 8.95 MiB
+（上传前 bundle），均低于 10 MiB 压缩 bundle 门槛但应作为后续依赖预算的硬闸门。
+Embedding/ASR 的真实 provider、音频质量基线、Queues/Workflows、R2 对象平面和
+第一个产品 route group 仍按 CF-04～CF-10 单独验收，当前 staging 不宣称生产迁移完成。

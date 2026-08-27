@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS cf_worker_probe (
+  uid TEXT PRIMARY KEY NOT NULL,
+  last_seen_at INTEGER NOT NULL
+);

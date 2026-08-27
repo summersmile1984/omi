@@ -1,0 +1,17 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "omi-cf-edge-staging",
+  "main": "index.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "services": [
+    { "binding": "AUTH", "service": "omi-cf-auth-staging" },
+    { "binding": "API_CORE", "service": "omi-cf-api-core-staging" },
+    { "binding": "API_AI", "service": "omi-cf-api-ai-staging" },
+    { "binding": "REALTIME", "service": "omi-cf-realtime-staging" }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": ""
+  }
+}

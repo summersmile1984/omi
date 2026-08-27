@@ -1,0 +1,11 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "omi-cf-api-ai-staging",
+  "main": "src/entry.py",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["python_workers"],
+  "workers_dev": true,
+  "vars": {
+    "EMBEDDING_MODEL": "text-embedding-3-small"
+  }
+}

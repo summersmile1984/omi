@@ -1,0 +1,9 @@
+# Copy to .dev.vars locally. Never commit real values.
+BETTER_AUTH_SECRET=replace-with-at-least-32-random-bytes
+BETTER_AUTH_URL=http://localhost:8788
+ALLOWED_ORIGINS=http://localhost:3000
+INTERNAL_ASSERTION_SECRET=replace-with-a-different-random-secret
+ASR_WS_URL=
+ASR_API_KEY=
+EMBEDDING_API_BASE_URL=
+EMBEDDING_API_KEY=

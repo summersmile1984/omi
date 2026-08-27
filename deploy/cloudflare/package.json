@@ -1,0 +1,21 @@
+{
+  "name": "omi-cloudflare-workers",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "deploy:staging": "node scripts/deploy.mjs staging"
+  },
+  "dependencies": {
+    "better-auth": "1.6.26",
+    "hono": "4.13.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260827.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.127.0"
+  }
+}
