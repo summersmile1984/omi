@@ -28,6 +28,8 @@ from location_routes import (
     router as location_router,
     set_location_context_consent,
 )
+from action_item_routes import batch_router as action_item_batch_router
+from action_item_routes import router as action_item_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 MAX_ASSET_BODY_BYTES = 25_000_000
@@ -1069,6 +1071,8 @@ async def update_transcription_preferences(request: Request):
 
 
 app.include_router(location_router)
+app.include_router(action_item_batch_router)
+app.include_router(action_item_router)
 
 
 def _firmware_metadata(markdown: str) -> dict[str, object]:

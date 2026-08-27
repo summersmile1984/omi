@@ -11,7 +11,8 @@ The first staging slice contains:
 - `api-core`: a minimal FastAPI/Python Worker composition root with a D1 probe,
   uid-scoped R2 asset API (`/v1/cf/assets/{key}`), uid-scoped transcription
   preferences, onboarding/privacy/notification/location-consent settings, and
-  the public firmware stable/latest/version APIs.
+  the public firmware stable/latest/version APIs. It also exposes a staging-only
+  D1-backed action-item CRUD/reconciliation surface.
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
@@ -189,6 +190,15 @@ GET  /v1/users/ai-profile
 PATCH /v1/users/ai-profile
                               Edge → Python API Core → D1
 GET  /v1/users/profile         Edge → Better Auth → D1
+GET/POST /v1/action-items      Edge → Python API Core → D1
+GET  /v1/action-items/ids      Edge → Python API Core → D1
+PATCH /v1/action-items/batch   Edge → Python API Core → D1
+POST /v1/action-items/batch-delete
+                              Edge → Python API Core → D1
+GET/PATCH/DELETE /v1/action-items/{actionItemId}
+                              Edge → Python API Core → D1
+PATCH /v1/action-items/{actionItemId}/completed
+                              Edge → Python API Core → D1
 ```
 
 Only routes explicitly listed as migrated are sent to the partial Worker
@@ -210,6 +220,15 @@ uid-scoped D1 row with a 30-minute expiry and preserves the legacy success-shape
 response for invalid coordinates. It is staging-only because the legacy chat and
 pusher consumers still read the Redis geolocation key; those consumers must move
 to the D1 authority before production cutover.
+
+The action-item routes provide a D1-backed, uid-scoped CRUD and reconciliation
+projection with content-idempotent create, date-range filtering, completion
+toggle, ordering batch update, and batch deletion. They intentionally do not
+claim vector search, goal/workstream link validation, Apple Reminders sync,
+sharing, FCM/reminder delivery, or legacy conversation-item restoration; those
+side effects remain on the legacy owner until their separate contracts move.
+The route group is staging-only until existing Firestore items are imported and
+all downstream readers use the D1 authority.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
