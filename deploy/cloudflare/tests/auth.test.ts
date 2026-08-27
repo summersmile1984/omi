@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeAuthContext, signAuthContext } from "../workers/shared/auth-context";
 
 const signJWT = vi.fn(async () => ({ token: "jwt-from-workers" }));
 const verifyJWT = vi.fn(async ({ body }: { body: { token: string } }) =>
@@ -21,6 +22,13 @@ const env = (issuerSecret?: string) => ({
   INTERNAL_ASSERTION_SECRET: "internal-secret",
   AUTH_DEV_ISSUER_SECRET: issuerSecret,
 });
+
+function profileEnv(row: Record<string, unknown> | null) {
+  const first = vi.fn(async () => row);
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  return { ...env("issuer-secret"), AUTH_DB: { prepare } as unknown as D1Database };
+}
 
 describe("auth worker Better Auth dev issuer", () => {
   beforeEach(() => {
@@ -93,5 +101,43 @@ describe("auth worker Better Auth dev issuer", () => {
       body: { token: "bridge-token" },
       headers: expect.any(Headers),
     });
+  });
+
+  it("serves the Better Auth identity profile only for a signed edge context", async () => {
+    const context = encodeAuthContext({ uid: "profile-user", authority: "better-auth", requestId: "req-1" });
+    const signature = await signAuthContext(context, "internal-secret");
+    const response = await auth.fetch(
+      new Request("https://auth.test/internal/profile", {
+        headers: {
+          "x-omi-auth-context": context,
+          "x-omi-internal-signature": signature || "",
+        },
+      }),
+      profileEnv({
+        id: "profile-user",
+        name: "Staging User",
+        email: "staging@example.test",
+        createdAt: "2026-08-27T13:51:34.974Z",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      uid: "profile-user",
+      name: "Staging User",
+      email: "staging@example.test",
+      created_at: "2026-08-27T13:51:34.974Z",
+    });
+  });
+
+  it("does not expose a profile for an unknown Better Auth user", async () => {
+    const context = encodeAuthContext({ uid: "missing-user", authority: "better-auth", requestId: "req-2" });
+    const signature = await signAuthContext(context, "internal-secret");
+    const response = await auth.fetch(
+      new Request("https://auth.test/internal/profile", {
+        headers: { "x-omi-auth-context": context, "x-omi-internal-signature": signature || "" },
+      }),
+      profileEnv(null),
+    );
+    expect(response.status).toBe(410);
   });
 });

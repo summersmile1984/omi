@@ -91,6 +91,20 @@ const proxyAuthenticatedCore = async (c: Context<{ Bindings: EdgeEnv; Variables:
   return withRequestId(response, id);
 };
 
+const proxyAuthenticatedAuthProfile = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  const target = new URL(c.req.url);
+  target.protocol = "https:";
+  target.host = "auth.internal";
+  target.pathname = "/internal/profile";
+  const response = await c.env.AUTH.fetch(new Request(target, { method: "GET", headers }));
+  return withRequestId(response, id);
+};
+
 const proxyAuthenticatedAI = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
@@ -118,6 +132,7 @@ app.get("/v1/users/assistant-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/assistant-settings", proxyAuthenticatedCore);
 app.get("/v1/users/ai-profile", proxyAuthenticatedCore);
 app.patch("/v1/users/ai-profile", proxyAuthenticatedCore);
+app.get("/v1/users/profile", proxyAuthenticatedAuthProfile);
 app.get("/v1/users/location-context-consent", proxyAuthenticatedCore);
 app.put("/v1/users/location-context-consent", proxyAuthenticatedCore);
 app.post("/v1/tts/synthesize", proxyAuthenticatedAI);

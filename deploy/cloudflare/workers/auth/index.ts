@@ -3,7 +3,13 @@ import { bearer } from "better-auth/plugins/bearer";
 import { jwt } from "better-auth/plugins/jwt";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import type { AuthContext } from "../shared/auth-context";
+import {
+  AUTH_CONTEXT_HEADER,
+  AUTH_SIGNATURE_HEADER,
+  decodeAuthContext,
+  verifyAuthContextSignature,
+  type AuthContext,
+} from "../shared/auth-context";
 import type { AuthEnv } from "./env";
 
 const app = new Hono<{ Bindings: AuthEnv }>();
@@ -63,6 +69,15 @@ function payloadUid(payload: unknown): string | null {
   if (typeof uid === "string" && uid.length > 0) return uid;
   const subject = (payload as { sub?: unknown }).sub;
   return typeof subject === "string" && subject.length > 0 ? subject : null;
+}
+
+function profileCreatedAt(value: unknown): string | null {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  return null;
 }
 
 app.use("/api/auth/*", async (c, next) => {
@@ -162,6 +177,39 @@ app.post("/internal/verify", async (c) => {
     return c.json(result);
   } catch {
     return c.json({ error: "unauthorized" }, 401);
+  }
+});
+
+// The Edge has already authenticated the caller and forwards a signed context.
+// Keep the identity read beside Better Auth's D1 tables instead of giving the
+// Python API worker a write-capable binding to the auth database.
+app.get("/internal/profile", async (c) => {
+  const encodedContext = c.req.header(AUTH_CONTEXT_HEADER);
+  const signature = c.req.header(AUTH_SIGNATURE_HEADER) || null;
+  if (
+    !encodedContext ||
+    !(await verifyAuthContextSignature(encodedContext, signature, c.env.INTERNAL_ASSERTION_SECRET))
+  ) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const context = decodeAuthContext(encodedContext);
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const row = await c.env.AUTH_DB.prepare(
+      "SELECT id, name, email, createdAt FROM user WHERE id = ?",
+    ).bind(context.uid).first<{ id?: unknown; name?: unknown; email?: unknown; createdAt?: unknown }>();
+    if (!row) return c.json({ detail: "User not found" }, 410);
+
+    const uid = typeof row.id === "string" && row.id.length > 0 ? row.id : context.uid;
+    return c.json({
+      uid,
+      email: typeof row.email === "string" ? row.email : null,
+      name: typeof row.name === "string" ? row.name : null,
+      created_at: profileCreatedAt(row.createdAt),
+    });
+  } catch {
+    return c.json({ error: "profile_unavailable" }, 503);
   }
 });
 

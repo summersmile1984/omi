@@ -44,6 +44,32 @@ describe("edge gateway", () => {
     expect(forwarded?.get("x-omi-internal-signature")).toBeTruthy();
   });
 
+  it("keeps the users profile read beside Better Auth", async () => {
+    let profileRequest: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        profileRequest = request;
+        return Response.json({ uid: "user-1", email: "user@example.test" });
+      }),
+      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/users/profile", { headers: { authorization: "Bearer opaque-session" } }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ uid: "user-1", email: "user@example.test" });
+    expect(profileRequest && new URL(profileRequest.url).pathname).toBe("/internal/profile");
+    expect(profileRequest?.headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(profileRequest?.headers.get("x-omi-internal-signature")).toBeTruthy();
+  });
+
   it("routes the prerecorded STT contract to the API worker", async () => {
     let aiPath = "";
     const env = {
@@ -186,7 +212,7 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/users/profile", { headers: { authorization: "Bearer opaque-session" } }),
+      new Request("https://edge.test/v1/users/unmigrated", { headers: { authorization: "Bearer opaque-session" } }),
       env,
     );
     expect(response.status).toBe(404);
@@ -216,12 +242,12 @@ describe("edge gateway", () => {
     };
     try {
       const response = await edge.fetch(
-        new Request("https://edge.test/v1/users/profile", { headers: { authorization: "Bearer opaque-session" } }),
+        new Request("https://edge.test/v1/users/unmigrated", { headers: { authorization: "Bearer opaque-session" } }),
         env,
       );
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ owner: "legacy" });
-      expect(legacyPath).toBe("/v1/users/profile");
+      expect(legacyPath).toBe("/v1/users/unmigrated");
     } finally {
       globalThis.fetch = originalFetch;
     }

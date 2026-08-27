@@ -175,6 +175,7 @@ PATCH /v1/users/assistant-settings
 GET  /v1/users/ai-profile
 PATCH /v1/users/ai-profile
                               Edge → Python API Core → D1
+GET  /v1/users/profile         Edge → Better Auth → D1
 ```
 
 Only routes explicitly listed as migrated are sent to the partial Worker
@@ -233,6 +234,13 @@ fields. `/v1/users/ai-profile` stores only the low-risk generated profile
 projection with bounded text and metadata; it is intentionally separate from
 entitlements, BYOK, and privacy state. These two routes are staging-only until
 an import/backfill plan for existing Firestore users is approved.
+
+`/v1/users/profile` is an identity-only projection owned by the Better Auth
+Worker. It reads `id`, `name`, `email`, and `createdAt` from the auth D1 user
+table and preserves the legacy 410 response for an unknown user. Firestore-only
+fields such as data-protection level, onboarding answers, and migration status
+are intentionally omitted until their D1 authority and backfill are approved;
+the Flutter client already treats those fields as optional/defaulted.
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must

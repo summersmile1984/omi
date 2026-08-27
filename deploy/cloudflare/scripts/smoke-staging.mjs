@@ -68,6 +68,9 @@ export async function runSmoke({
   const aiProfile = await request(fetchImpl, `${base}/v1/users/ai-profile`, { headers: authHeaders });
   expectStatus("AI profile", aiProfile, 200);
 
+  const profile = await request(fetchImpl, `${base}/v1/users/profile`, { headers: authHeaders });
+  expectStatus("user profile", profile, 200);
+
   // Exercise route ownership and input validation without billable inference.
   const workersAiEmpty = await request(fetchImpl, `${base}/v1/stt/transcribe-workers-ai`, {
     method: "POST",
@@ -100,6 +103,7 @@ export async function runSmoke({
     authenticatedProbe: probe.status,
     assistantSettings: assistantSettings.status,
     aiProfile: aiProfile.status,
+    userProfile: profile.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     ...nativeTtsResult,
   };
