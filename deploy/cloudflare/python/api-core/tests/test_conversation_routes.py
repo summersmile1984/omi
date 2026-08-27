@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from conversation_routes import (  # noqa: E402
     count_conversations,
     get_conversation,
+    get_conversation_photos,
     list_conversations,
     patch_conversation_title,
     set_conversation_starred,
@@ -79,12 +80,20 @@ def signed_headers(secret: str, uid: str = "conversation-user"):
     }
 
 
-def insert_conversation(db: FakeDb, *, uid: str, conversation_id: str, created_at: int, locked: int = 0):
+def insert_conversation(
+    db: FakeDb,
+    *,
+    uid: str,
+    conversation_id: str,
+    created_at: int,
+    locked: int = 0,
+    photos: list[dict[str, object]] | None = None,
+):
     db.connection.execute(
         "INSERT INTO cf_conversations "
         "(uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
-        "starred, discarded, is_locked, deferred, folder_id, structured_json, transcript_segments_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "starred, discarded, is_locked, deferred, folder_id, structured_json, transcript_segments_json, photos_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             uid,
             conversation_id,
@@ -103,6 +112,7 @@ def insert_conversation(db: FakeDb, *, uid: str, conversation_id: str, created_a
             "folder-1",
             json.dumps({"title": conversation_id, "overview": "overview", "category": "work", "action_items": [{"description": "task"}], "events": [{"title": "event"}]}),
             json.dumps([{"id": "segment-1", "text": "hello", "start": 0, "end": 1, "is_user": True}]),
+            json.dumps(photos or []),
         ),
     )
     db.connection.commit()
@@ -155,6 +165,33 @@ def test_conversation_projection_detail_count_uid_isolation_and_validation():
     invalid = asyncio.run(list_conversations(FakeRequest(env, signed_headers(secret), {"limit": "0"})))
     assert invalid.status_code == 400
     unauthorized = asyncio.run(count_conversations(FakeRequest(env, {})))
+    assert unauthorized.status_code == 401
+
+
+def test_canonical_conversation_photos_are_uid_scoped_and_locked_rows_fail_closed():
+    secret = "conversation-secret"
+    db = FakeDb()
+    photos = [{"id": "photo-1", "base64": "abc", "description": "cat", "discarded": False}]
+    insert_conversation(db, uid="conversation-user", conversation_id="with-photos", created_at=200, photos=photos)
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="locked-photos",
+        created_at=100,
+        locked=1,
+        photos=photos,
+    )
+    insert_conversation(db, uid="other-user", conversation_id="with-photos", created_at=300, photos=photos)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    result = asyncio.run(get_conversation_photos(FakeRequest(env, signed_headers(secret)), "with-photos"))
+    assert result == photos
+    assert asyncio.run(get_conversation_photos(FakeRequest(env, signed_headers(secret)), "locked-photos")) == []
+    missing = asyncio.run(get_conversation_photos(FakeRequest(env, signed_headers(secret)), "missing"))
+    assert missing.status_code == 404
+    invalid = asyncio.run(get_conversation_photos(FakeRequest(env, signed_headers(secret)), "x" * 257))
+    assert invalid.status_code == 400
+    unauthorized = asyncio.run(get_conversation_photos(FakeRequest(env, {}), "with-photos"))
     assert unauthorized.status_code == 401
 
 

@@ -225,6 +225,7 @@ app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
 app.get("/v1/conversations", proxyAuthenticatedCore);
 app.get("/v1/conversations/count", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/photos", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/title", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/starred", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/action-items", proxyAuthenticatedCore);

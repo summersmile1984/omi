@@ -185,6 +185,8 @@ GET  /v1/conversations       Edge → Python API Core → D1 canonical conversat
 GET  /v1/conversations/count
 GET  /v1/conversations/{conversationId}
                               canonical read projection; writes/finalization remain legacy
+GET  /v1/conversations/{conversationId}/photos
+                              bounded photo projection; locked rows fail closed
 PATCH /v1/conversations/{conversationId}/title
 PATCH /v1/conversations/{conversationId}/starred
                               canonical metadata mutations → D1

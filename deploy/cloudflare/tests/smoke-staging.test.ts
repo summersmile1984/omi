@@ -41,7 +41,9 @@ describe("staging smoke helpers", () => {
           : url.includes("/v1/conversations?") ||
               url.endsWith("/v1/conversations") ||
               url.endsWith("/v1/conversations/count")
-                    ? 200
+                ? 200
+                : url.includes("/v1/conversations/") && url.endsWith("/photos")
+                  ? 404
                   : url.endsWith("/v1/users/assistant-settings") ||
                       url.endsWith("/v1/users/ai-profile") ||
                       url.endsWith("/v1/users/training-data-opt-in") ||
@@ -78,6 +80,7 @@ describe("staging smoke helpers", () => {
       authenticatedProbe: 200,
       conversations: 200,
       conversationCount: 200,
+      conversationPhotos: 404,
       assistantSettings: 200,
       aiProfile: 200,
       trainingDataOptIn: 200,
@@ -95,7 +98,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(25);
+    expect(calls).toHaveLength(26);
     expect(
       calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init
         ?.method,
@@ -126,6 +129,8 @@ describe("staging smoke helpers", () => {
       ) {
         return new Response(null, { status: 200 });
       }
+      if (url.includes("/v1/conversations/") && url.endsWith("/photos"))
+        return new Response(null, { status: 404 });
       if (
         url.endsWith("/v1/users/assistant-settings") ||
         url.endsWith("/v1/users/ai-profile") ||

@@ -460,6 +460,31 @@ async def get_conversation(request: Request, conversation_id: str):
     return _response(row, detail=True)
 
 
+@router.get("/v1/conversations/{conversation_id}/photos")
+async def get_conversation_photos(request: Request, conversation_id: str):
+    """Read the bounded photo projection without touching the legacy subcollection."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        row = await _first_conversation(request.scope["env"], str(context["uid"]), conversation_id)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    if row is None:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    # Locked conversations fail closed for image payloads. The projection is
+    # intentionally bounded at write time; filter malformed imported values so
+    # the canonical List[ConversationPhoto] contract remains stable.
+    if _bool(row.get("is_locked")):
+        return []
+    return [
+        photo for photo in _json_list(row.get("photos_json")) if isinstance(photo, dict)
+    ][:MAX_SEGMENTS]
+
+
 @router.patch("/v1/conversations/{conversation_id}/title")
 @router.patch("/v1/cf/conversations/{conversation_id}/title")
 async def patch_conversation_title(request: Request, conversation_id: str):

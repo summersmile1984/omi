@@ -122,6 +122,12 @@ export async function runSmoke({
     { headers: authHeaders },
   );
   expectStatus("canonical conversation count", conversationCount, 200);
+  const conversationPhotos = await request(
+    fetchImpl,
+    `${base}/v1/conversations/cf-smoke-photo-probe-${Date.now()}/photos`,
+    { headers: authHeaders },
+  );
+  expectStatus("canonical conversation photos missing-row", conversationPhotos, 404);
 
   const assistantSettings = await request(
     fetchImpl,
@@ -275,6 +281,7 @@ export async function runSmoke({
     authenticatedProbe: probe.status,
     conversations: conversations.status,
     conversationCount: conversationCount.status,
+    conversationPhotos: conversationPhotos.status,
     assistantSettings: assistantSettings.status,
     aiProfile: aiProfile.status,
     trainingDataOptIn: trainingDataOptIn.status,
