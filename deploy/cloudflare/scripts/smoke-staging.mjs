@@ -180,6 +180,16 @@ export async function runSmoke({
     conversationActionItemDescription,
     404,
   );
+  const conversationActionItemDelete = await request(
+    fetchImpl,
+    `${base}/v1/conversations/cf-smoke-action-item-delete-probe-${Date.now()}/action-items`,
+    {
+      method: "DELETE",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ description: "missing", completed: false }),
+    },
+  );
+  expectStatus("canonical conversation action-item delete missing-row", conversationActionItemDelete, 404);
   const conversationRecording = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-recording-probe-${Date.now()}/recording`,
@@ -356,6 +366,7 @@ export async function runSmoke({
     conversationEvents: conversationEvents.status,
     conversationActionItems: conversationActionItems.status,
     conversationActionItemDescription: conversationActionItemDescription.status,
+    conversationActionItemDelete: conversationActionItemDelete.status,
     conversationRecording: conversationRecording.status,
     segmentText: segmentText.status,
     assistantSettings: assistantSettings.status,

@@ -477,6 +477,12 @@ D1 batch. The path index remains a compatibility component (the legacy handler
 uses the description pair as the identity); deletion and reminder side effects
 remain on the legacy owner.
 
+`DELETE /v1/conversations/{conversation_id}/action-items` removes all matching
+description entries from the structured projection and standalone D1 action-item
+rows in one batch. The legacy `completed` field is accepted for wire
+compatibility but does not alter the description identity; reminder/export
+cleanup remains a separate downstream contract.
+
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event
 reads, and calendar writes remain on the legacy integration service; tokens are

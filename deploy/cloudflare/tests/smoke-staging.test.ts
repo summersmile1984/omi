@@ -103,6 +103,7 @@ describe("staging smoke helpers", () => {
       conversationEvents: 404,
       conversationActionItems: 404,
       conversationActionItemDescription: 404,
+      conversationActionItemDelete: 404,
       conversationRecording: 404,
       segmentText: 404,
       assistantSettings: 200,
@@ -122,7 +123,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(34);
+    expect(calls).toHaveLength(35);
     expect(
       calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init
         ?.method,

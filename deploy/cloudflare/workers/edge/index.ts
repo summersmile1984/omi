@@ -237,6 +237,7 @@ app.patch("/v1/conversations/:conversationId/starred", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/action-items", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/action-items/count", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/action-items", proxyAuthenticatedCore);
+app.delete("/v1/conversations/:conversationId/action-items", proxyAuthenticatedCore);
 app.patch(
   "/v1/conversations/:conversationId/action-items/:actionItemIdx",
   proxyAuthenticatedCore,

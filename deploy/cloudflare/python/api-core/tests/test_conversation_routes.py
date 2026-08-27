@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from conversation_routes import (  # noqa: E402
     count_conversations,
+    delete_conversation_action_item,
     get_conversation,
     get_conversation_analytics,
     get_conversation_photos,
@@ -600,6 +601,80 @@ def test_canonical_conversation_action_item_description_updates_both_projections
                 FakeRequest(env, {}, body={"old_description": "task", "description": "x"}),
                 "action-description",
                 "0",
+            )
+        ).status_code
+        == 401
+    )
+
+
+def test_canonical_conversation_action_item_delete_removes_both_projections():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="action-delete", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-action-delete", created_at=100, locked=1)
+    db.connection.execute(
+        "INSERT INTO cf_action_items (uid, id, description, status, completed, conversation_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("conversation-user", "item-delete", "task", "active", 0, "action-delete", 200, 200),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    deleted = asyncio.run(
+        delete_conversation_action_item(
+            FakeRequest(env, signed_headers(secret), body={"description": "task", "completed": False}),
+            "action-delete",
+        )
+    )
+    assert deleted == {"status": "Ok"}
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "action-delete"))
+    assert detail["structured"]["action_items"] == []
+    standalone = db.connection.execute(
+        "SELECT COUNT(*) FROM cf_action_items WHERE uid = ? AND id = ?",
+        ("conversation-user", "item-delete"),
+    ).fetchone()
+    assert standalone[0] == 0
+    assert (
+        asyncio.run(
+            delete_conversation_action_item(
+                FakeRequest(env, signed_headers(secret), body={"description": "missing", "completed": False}),
+                "action-delete",
+            )
+        )
+        == {"status": "Ok"}
+    )
+    assert (
+        asyncio.run(
+            delete_conversation_action_item(
+                FakeRequest(env, signed_headers(secret), body={"description": "task", "completed": False}),
+                "locked-action-delete",
+            )
+        ).status_code
+        == 402
+    )
+    assert (
+        asyncio.run(
+            delete_conversation_action_item(
+                FakeRequest(env, signed_headers(secret), body={"description": "task"}),
+                "action-delete",
+            )
+        ).status_code
+        == 400
+    )
+    assert (
+        asyncio.run(
+            delete_conversation_action_item(
+                FakeRequest(env, signed_headers(secret), body={"description": "task", "completed": False}),
+                "missing",
+            )
+        ).status_code
+        == 404
+    )
+    assert (
+        asyncio.run(
+            delete_conversation_action_item(
+                FakeRequest(env, {}, body={"description": "task", "completed": False}),
+                "action-delete",
             )
         ).status_code
         == 401

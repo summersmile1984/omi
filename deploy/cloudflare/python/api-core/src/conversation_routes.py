@@ -157,6 +157,15 @@ class ConversationActionItemDescriptionUpdate(BaseModel):
     description: str = Field(min_length=1, max_length=MAX_ACTION_ITEM_DESCRIPTION_LENGTH)
 
 
+class ConversationActionItemDelete(BaseModel):
+    """Description identity retained for the legacy conversation delete route."""
+
+    model_config = {"extra": "ignore"}
+
+    description: str = Field(min_length=1, max_length=MAX_ACTION_ITEM_DESCRIPTION_LENGTH)
+    completed: bool
+
+
 def _auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
@@ -972,6 +981,58 @@ async def patch_conversation_action_item_description(request: Request, conversat
                     "UPDATE cf_action_items SET description = ?, updated_at = ? "
                     "WHERE uid = ? AND conversation_id = ? AND description = ? AND deleted = 0"
                 ).bind(update.description, now, uid, conversation_id, update.old_description),
+            ]
+        )
+    except Exception:
+        return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
+    return {"status": "Ok"}
+
+
+@router.delete("/v1/conversations/{conversation_id}/action-items")
+async def delete_conversation_action_item(request: Request, conversation_id: str):
+    """Delete matching action-item projections with the legacy description identity."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        raw = await request.body()
+        if len(raw) > 32_000:
+            return JSONResponse({"error": "action-item body too large"}, status_code=413)
+        delete = ConversationActionItemDelete.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError, TypeError):
+        return JSONResponse({"error": "invalid action-item deletion"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        structured = _json_object(existing.get("structured_json"))
+        raw_items = structured.get("action_items")
+        items = raw_items if isinstance(raw_items, list) else []
+        structured["action_items"] = [
+            item
+            for item in items
+            if not (isinstance(item, dict) and item.get("description") == delete.description)
+        ]
+        now = int(time.time())
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare(
+                    "UPDATE cf_conversations SET structured_json = ?, updated_at = ? WHERE uid = ? AND id = ?"
+                ).bind(_dump_json(structured, "structured"), now, uid, conversation_id),
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND description = ?"
+                ).bind(uid, conversation_id, delete.description),
             ]
         )
     except Exception:
