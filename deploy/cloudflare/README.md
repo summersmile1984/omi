@@ -151,7 +151,9 @@ Python Worker's native `AI` binding and `@cf/openai/whisper-large-v3-turbo`.
 It does not claim the legacy multipart/diarization contract; clients must send
 `audio/*` (or `application/octet-stream`) as the body. The existing
 `/v1/stt/transcribe` route remains the hosted provider seam for diarization and
-the legacy segment response.
+the legacy segment response. The Python boundary converts the bounded request
+body to the base64 form expected by the Workers AI Whisper model, so clients do
+not need to know the binding's FFI representation.
 
 `/v1/auto/model-pick` uses a shared D1 24-hour cache. Without the upstream key,
 an upstream failure, or an unusable model response it returns the existing

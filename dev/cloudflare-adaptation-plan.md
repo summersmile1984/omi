@@ -795,6 +795,14 @@ desktop TTS POST                         # OpenAI-compatible provider proxy → 
 auto model pick GET                     # D1 24h cache + provider/default provenance → 200/401
 ```
 
+On 2026-08-28 the native ASR seam was exercised through the Edge Worker with a
+locally generated 0.1-second silent WAV: the authenticated raw-audio request
+returned HTTP 200 with normalized text, segments, word timing, language, and
+model metadata. The same route rejected an authenticated multipart request with
+HTTP 415, while an unauthenticated request returned HTTP 401. This is a runtime
+binding smoke test, not a multilingual WER or latency qualification; those
+benchmarks remain a CF-08 release gate.
+
 Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules
 均约 8.0 MiB，实际 gzip 上传约 2.0 MiB，应继续作为依赖预算的硬闸门。
 Embedding/ASR 的真实 provider、音频质量基线以及更多产品 route group 仍按
