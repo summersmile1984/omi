@@ -771,7 +771,7 @@ DNS 或生产数据库。当前 staging 已部署：
 ```text
 npm run typecheck                         # pass
 npm test                                  # 4 files / 12 tests pass
-uvx uv==0.12.3 run pytest -q             # api-core: 10, api-ai: 4 tests pass
+uvx uv==0.12.3 run pytest -q             # api-core: 11, api-ai: 9 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
 curl /health                              # auth/core/ai/realtime/edge → HTTP 200
