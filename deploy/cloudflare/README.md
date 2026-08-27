@@ -133,6 +133,15 @@ printf '%s' "$TTS_API_KEY" | npx wrangler secret put TTS_API_KEY --name omi-cf-a
 printf '%s' "$ARTIFICIALANALYSIS_API_KEY" | npx wrangler secret put ARTIFICIALANALYSIS_API_KEY --name omi-cf-api-ai-staging
 ```
 
+`/v1/stt/transcribe-async` is an additive staging route for clients that can
+send a raw audio body. It accepts at most 5 MB, stages the bytes under an
+uid-scoped temporary R2 key, records an idempotent D1 job, and lets the Queue
+consumer run native Workers AI Whisper. The object is deleted after a terminal
+result; the poll response contains only the bounded normalized transcription.
+This route does not claim the legacy `/v2/sync-local-files` conversation,
+memory, or diarization pipeline, so it must not be used as a production
+replacement until those authorities have their own migration contract.
+
 Do not point these commands at production names from this worktree. The
 staging smoke surface is:
 
@@ -144,6 +153,10 @@ GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
+POST /v1/stt/transcribe-async
+                              Edge → Jobs → R2 → Queue → Workers AI Whisper
+GET  /v1/stt/transcribe-async/{jobId}
+                              Edge → Jobs → uid-scoped D1 result
 POST /v1/embeddings-workers-ai
                               Edge → Python API AI → Workers AI BGE binding
 POST /v1/translate           Edge → Python API AI → Workers AI m2m100 translation

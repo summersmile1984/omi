@@ -238,6 +238,27 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v1/stt/transcribe-async
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2, queue-jobs, workers-ai-binding]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/stt/transcribe-async/:jobId
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2, queue-jobs, workers-ai-binding]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/stt/transcribe-workers-ai
     owner: api-ai
     runtime: python-worker

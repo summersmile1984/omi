@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import edge from "../workers/edge/index";
 
-const service = (handler: (request: Request) => Promise<Response> | Response) => ({ fetch: handler }) as Fetcher;
+const service = (handler: (request: Request) => Promise<Response> | Response) =>
+  ({ fetch: handler }) as Fetcher;
 
 describe("edge gateway", () => {
   it("serves a versioned health response", async () => {
-    const response = await edge.fetch(new Request("https://edge.test/health"), {} as never);
+    const response = await edge.fetch(
+      new Request("https://edge.test/health"),
+      {} as never,
+    );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "ok", service: "edge", version: "cf-00" });
+    expect(await response.json()).toEqual({
+      status: "ok",
+      service: "edge",
+      version: "cf-00",
+    });
   });
 
   it("strips caller auth headers before forwarding verified context", async () => {
@@ -55,19 +63,30 @@ describe("edge gateway", () => {
         profileRequest = request;
         return Response.json({ uid: "user-1", email: "user@example.test" });
       }),
-      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
       API_AI: service(() => Response.json({ status: "ok" })),
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/users/profile", { headers: { authorization: "Bearer opaque-session" } }),
+      new Request("https://edge.test/v1/users/profile", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
       env,
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ uid: "user-1", email: "user@example.test" });
-    expect(profileRequest && new URL(profileRequest.url).pathname).toBe("/internal/profile");
+    expect(await response.json()).toEqual({
+      uid: "user-1",
+      email: "user@example.test",
+    });
+    expect(profileRequest && new URL(profileRequest.url).pathname).toBe(
+      "/internal/profile",
+    );
     expect(profileRequest?.headers.get("x-omi-auth-context")).toBeTruthy();
-    expect(profileRequest?.headers.get("x-omi-internal-signature")).toBeTruthy();
+    expect(
+      profileRequest?.headers.get("x-omi-internal-signature"),
+    ).toBeTruthy();
   });
 
   it("routes developer webhook configuration to the authenticated core worker", async () => {
@@ -88,15 +107,20 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/users/developer/webhook/realtime_transcript/enable", {
-        method: "POST",
-        headers: { authorization: "Bearer opaque-session" },
-      }),
+      new Request(
+        "https://edge.test/v1/users/developer/webhook/realtime_transcript/enable",
+        {
+          method: "POST",
+          headers: { authorization: "Bearer opaque-session" },
+        },
+      ),
       env,
     );
     expect(response.status).toBe(200);
     expect(coreRequests).toHaveLength(1);
-    expect(new URL(coreRequests[0].url).pathname).toBe("/v1/users/developer/webhook/realtime_transcript/enable");
+    expect(new URL(coreRequests[0].url).pathname).toBe(
+      "/v1/users/developer/webhook/realtime_transcript/enable",
+    );
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
@@ -110,23 +134,91 @@ describe("edge gateway", () => {
         }
         return Response.json({ status: "ok" });
       }),
-      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
       API_AI: service((request) => {
         aiPath = new URL(request.url).pathname;
-        return Response.json({ error: "transcription provider is not configured" }, { status: 503 });
+        return Response.json(
+          { error: "transcription provider is not configured" },
+          { status: 503 },
+        );
       }),
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
       new Request("https://edge.test/v1/stt/transcribe", {
         method: "POST",
-        headers: { authorization: "Bearer opaque-session", "content-type": "multipart/form-data" },
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "multipart/form-data",
+        },
         body: "audio",
       }),
       env,
     );
     expect(response.status).toBe(503);
     expect(aiPath).toBe("/v1/stt/transcribe");
+  });
+
+  it("routes async native transcription bodies to the jobs worker and rewrites status reads", async () => {
+    const jobRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
+      API_AI: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+      JOBS: service(async (request) => {
+        jobRequests.push(request);
+        return Response.json(
+          { status: request.method === "POST" ? "queued" : "completed" },
+          { status: 202 },
+        );
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/stt/transcribe-async", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "audio/wav",
+          "idempotency-key": "capture-1",
+        },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      env,
+    );
+    expect(response.status).toBe(202);
+    expect(jobRequests).toHaveLength(1);
+    expect(new URL(jobRequests[0].url).pathname).toBe(
+      "/v1/cf/transcription-jobs",
+    );
+    expect(jobRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(jobRequests[0].headers.get("idempotency-key")).toBe("capture-1");
+    expect(new Uint8Array(await jobRequests[0].arrayBuffer())).toEqual(
+      new Uint8Array([1, 2, 3]),
+    );
+
+    const status = await edge.fetch(
+      new Request("https://edge.test/v1/stt/transcribe-async/job-1", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+    expect(status.status).toBe(202);
+    expect(new URL(jobRequests[1].url).pathname).toBe(
+      "/v1/cf/transcription-jobs/job-1",
+    );
   });
 
   it("routes the translation contract to the API AI worker", async () => {
@@ -139,7 +231,9 @@ describe("edge gateway", () => {
         }
         return Response.json({ status: "ok" });
       }),
-      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
       API_AI: service((request) => {
         aiPath = new URL(request.url).pathname;
         return Response.json({ translations: [] });
@@ -149,8 +243,14 @@ describe("edge gateway", () => {
     const response = await edge.fetch(
       new Request("https://edge.test/v1/translate", {
         method: "POST",
-        headers: { authorization: "Bearer opaque-session", "content-type": "application/json" },
-        body: JSON.stringify({ contents: ["hello"], target_language_code: "zh" }),
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: ["hello"],
+          target_language_code: "zh",
+        }),
       }),
       env,
     );
@@ -168,17 +268,25 @@ describe("edge gateway", () => {
         }
         return Response.json({ status: "ok" });
       }),
-      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
       API_AI: service((request) => {
         aiPath = new URL(request.url).pathname;
-        return new Response("audio", { status: 200, headers: { "content-type": "audio/mpeg" } });
+        return new Response("audio", {
+          status: 200,
+          headers: { "content-type": "audio/mpeg" },
+        });
       }),
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
       new Request("https://edge.test/v1/tts/synthesize-workers-ai", {
         method: "POST",
-        headers: { authorization: "Bearer opaque-session", "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ text: "hello" }),
       }),
       env,
@@ -197,8 +305,12 @@ describe("edge gateway", () => {
         }
         return Response.json({ status: "ok" });
       }),
-      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
-      API_AI: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
+      API_AI: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
       REALTIME: service((request) => {
         realtimePaths.push(new URL(request.url).pathname);
         return Response.json({ status: "ok" });
@@ -211,7 +323,9 @@ describe("edge gateway", () => {
       "/v1/omni/relay",
     ]) {
       const response = await edge.fetch(
-        new Request(`https://edge.test${path}`, { headers: { authorization: "Bearer opaque-session" } }),
+        new Request(`https://edge.test${path}`, {
+          headers: { authorization: "Bearer opaque-session" },
+        }),
         env,
       );
       expect(response.status).toBe(200);
@@ -242,7 +356,9 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/users/unmigrated", { headers: { authorization: "Bearer opaque-session" } }),
+      new Request("https://edge.test/v1/users/unmigrated", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
       env,
     );
     expect(response.status).toBe(404);
@@ -267,12 +383,15 @@ describe("edge gateway", () => {
     };
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (request) => {
-      legacyPath = new URL(request instanceof Request ? request.url : request).pathname;
+      legacyPath = new URL(request instanceof Request ? request.url : request)
+        .pathname;
       return Response.json({ owner: "legacy" });
     };
     try {
       const response = await edge.fetch(
-        new Request("https://edge.test/v1/users/unmigrated", { headers: { authorization: "Bearer opaque-session" } }),
+        new Request("https://edge.test/v1/users/unmigrated", {
+          headers: { authorization: "Bearer opaque-session" },
+        }),
         env,
       );
       expect(response.status).toBe(200);
@@ -300,7 +419,8 @@ describe("edge gateway", () => {
     };
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (request) => {
-      legacyPath = new URL(request instanceof Request ? request.url : request).pathname;
+      legacyPath = new URL(request instanceof Request ? request.url : request)
+        .pathname;
       return Response.json({ owner: "legacy" });
     };
     try {

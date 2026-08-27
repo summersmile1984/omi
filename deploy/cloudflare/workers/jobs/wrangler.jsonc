@@ -8,11 +8,19 @@
     {
       "binding": "APP_DB",
       "database_name": "omi-cf-app-staging",
-      "migrations_dir": "../../migrations/app"
-    }
+      "migrations_dir": "../../migrations/app",
+    },
   ],
+  "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "omi-cf-staging" }],
+  "ai": { "binding": "AI" },
   "queues": {
     "producers": [{ "binding": "JOBS", "queue": "omi-cf-jobs-staging" }],
-    "consumers": [{ "queue": "omi-cf-jobs-staging", "max_batch_size": 10, "max_batch_timeout": 5 }]
-  }
+    "consumers": [
+      {
+        "queue": "omi-cf-jobs-staging",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+      },
+    ],
+  },
 }
