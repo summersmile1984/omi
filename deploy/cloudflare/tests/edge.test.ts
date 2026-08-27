@@ -73,6 +73,35 @@ describe("edge gateway", () => {
     expect(aiPath).toBe("/v1/stt/transcribe");
   });
 
+  it("routes the translation contract to the API AI worker", async () => {
+    let aiPath = "";
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_AI: service((request) => {
+        aiPath = new URL(request.url).pathname;
+        return Response.json({ translations: [] });
+      }),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/translate", {
+        method: "POST",
+        headers: { authorization: "Bearer opaque-session", "content-type": "application/json" },
+        body: JSON.stringify({ contents: ["hello"], target_language_code: "zh" }),
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(aiPath).toBe("/v1/translate");
+  });
+
   it("keeps every realtime contract on the realtime binding", async () => {
     const realtimePaths: string[] = [];
     const env = {

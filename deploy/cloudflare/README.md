@@ -114,6 +114,7 @@ GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
+POST /v1/translate           Edge → Python API AI → Workers AI m2m100 translation
 POST /v1/tts/synthesize      Edge → Python API AI → hosted OpenAI-compatible TTS API
 GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
 GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible AI API
@@ -168,6 +169,12 @@ It does not claim the legacy multipart/diarization contract; clients must send
 the legacy segment response. The Python boundary converts the bounded request
 body to the base64 form expected by the Workers AI Whisper model, so clients do
 not need to know the binding's FFI representation.
+
+`/v1/translate` preserves the standalone NLLB request/response shape while
+using the native `@cf/meta/m2m100-1.2b` binding in staging. The Worker explicitly
+limits this route to English, Chinese, French, Spanish, Arabic, Russian, German,
+Japanese, Portuguese, and Hindi; the legacy NLLB service remains the fallback
+for other languages until quality and coverage are qualified.
 
 `/v1/auto/model-pick` uses a shared D1 24-hour cache. Without the upstream key,
 an upstream failure, or an unusable model response it returns the existing

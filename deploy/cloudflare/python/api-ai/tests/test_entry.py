@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import entry  # noqa: E402
 
-from entry import _provider_url, transcribe, transcribe_workers_ai, tts_synthesize  # noqa: E402
+from entry import _provider_url, transcribe, transcribe_workers_ai, translate_workers_ai, tts_synthesize  # noqa: E402
 
 
 class FakeRequest:
@@ -165,6 +165,88 @@ def test_workers_ai_transcribe_fails_closed_without_binding():
     )
 
     response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "workers ai is not configured"}
+
+
+def test_workers_ai_translation_preserves_nllb_contract_and_maps_language_names():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = []
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls.append((model, payload))
+            return {"translated_text": "你好"}
+
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            WORKERS_AI_TRANSLATION_MODEL="@cf/meta/m2m100-1.2b",
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {
+            "contents": ["hello"],
+            "source_language_code": "en-US",
+            "target_language_code": "zh-Hans",
+        },
+        url="https://api.test/v1/translate",
+    )
+
+    response = asyncio.run(translate_workers_ai(request))
+
+    assert response["translations"] == [{"translated_text": "你好", "detected_language_code": "en"}]
+    assert response["model"] == "@cf/meta/m2m100-1.2b"
+    assert response["latency_ms"] >= 0
+    assert calls == [
+        (
+            "@cf/meta/m2m100-1.2b",
+            {"text": "hello", "source_lang": "english", "target_lang": "chinese"},
+        )
+    ]
+
+
+def test_workers_ai_translation_rejects_unsupported_language():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=object()),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"contents": ["hello"], "target_language_code": "ko"},
+        url="https://api.test/v1/translate",
+    )
+
+    response = asyncio.run(translate_workers_ai(request))
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {"error": "unsupported target language"}
+
+
+def test_workers_ai_translation_fails_closed_without_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"contents": ["hello"], "target_language_code": "fr"},
+        url="https://api.test/v1/translate",
+    )
+
+    response = asyncio.run(translate_workers_ai(request))
 
     assert response.status_code == 503
     assert json.loads(response.body) == {"error": "workers ai is not configured"}

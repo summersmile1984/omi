@@ -1,5 +1,6 @@
 import base64
 import json
+import time
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -22,6 +23,9 @@ app.include_router(auto_model_router)
 
 MAX_TRANSCRIPTION_BODY_BYTES = 25_000_000
 MAX_WORKERS_AI_AUDIO_BYTES = 5_000_000
+MAX_TRANSLATION_ITEMS = 32
+MAX_TRANSLATION_TEXT_CHARS = 4_096
+MAX_TRANSLATION_TOTAL_CHARS = 32_000
 MAX_AI_BODY_BYTES = 8_000_000
 MAX_AI_RESPONSE_BYTES = 12_000_000
 MAX_TTS_CHARS = 4_096
@@ -34,6 +38,33 @@ class TtsSynthesizeRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TTS_CHARS)
     voice_id: str
     instructions: str | None = None
+
+
+class TranslationRequest(BaseModel):
+    contents: list[str] = Field(..., max_length=MAX_TRANSLATION_ITEMS)
+    target_language_code: str
+    source_language_code: str | None = None
+    request_id: str | None = None
+
+
+# m2m100's published Workers AI surface currently documents these languages.
+# Keep the native route's capability claim explicit; the legacy NLLB service
+# remains the fallback for its broader language matrix.
+WORKERS_AI_TRANSLATION_LANGUAGES = {
+    "en": "english",
+    "zh": "chinese",
+    "fr": "french",
+    "es": "spanish",
+    "ar": "arabic",
+    "ru": "russian",
+    "de": "german",
+    "ja": "japanese",
+    "pt": "portuguese",
+    "hi": "hindi",
+}
+WORKERS_AI_TRANSLATION_LANGUAGE_ALIASES = {
+    language: code for code, language in WORKERS_AI_TRANSLATION_LANGUAGES.items()
+}
 
 
 def auth_context(request: Request) -> dict[str, object] | None:
@@ -156,7 +187,16 @@ def _workers_ai_result_mapping(result: object) -> dict[str, object]:
         if isinstance(converted, dict):
             return converted
     fields: dict[str, object] = {}
-    for field in ("text", "word_count", "words", "segments", "vtt", "detected_language", "transcription_info"):
+    for field in (
+        "text",
+        "translated_text",
+        "word_count",
+        "words",
+        "segments",
+        "vtt",
+        "detected_language",
+        "transcription_info",
+    ):
         value = getattr(result, field, None)
         value_to_py = getattr(value, "to_py", None)
         if callable(value_to_py):
@@ -164,6 +204,87 @@ def _workers_ai_result_mapping(result: object) -> dict[str, object]:
         if value is not None:
             fields[field] = value
     return fields
+
+
+def _normalize_workers_ai_language(raw: object) -> tuple[str, str] | None:
+    if not isinstance(raw, str):
+        return None
+    normalized = raw.strip().lower().replace("_", "-")
+    if not normalized:
+        return None
+    base = normalized.split("-", 1)[0]
+    code = base if base in WORKERS_AI_TRANSLATION_LANGUAGES else WORKERS_AI_TRANSLATION_LANGUAGE_ALIASES.get(base)
+    if code is None:
+        return None
+    return code, WORKERS_AI_TRANSLATION_LANGUAGES[code]
+
+
+@app.post("/v1/translate")
+async def translate_workers_ai(request: Request):
+    """Translate a bounded batch using the native Workers AI m2m100 binding.
+
+    The request and response deliberately match the standalone NLLB service so
+    callers can switch the Edge route without learning a second contract. This
+    route only advertises the language subset documented by the bound model;
+    broader languages and quality qualification remain on the legacy service.
+    """
+    if not auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = TranslationRequest.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid translation request"}, status_code=400)
+    if any(len(content) > MAX_TRANSLATION_TEXT_CHARS for content in payload.contents):
+        return JSONResponse({"error": "translation content is too long"}, status_code=413)
+    if sum(len(content) for content in payload.contents) > MAX_TRANSLATION_TOTAL_CHARS:
+        return JSONResponse({"error": "translation request is too large"}, status_code=413)
+
+    target = _normalize_workers_ai_language(payload.target_language_code)
+    if target is None:
+        return JSONResponse({"error": "unsupported target language"}, status_code=400)
+    source = _normalize_workers_ai_language(payload.source_language_code) if payload.source_language_code else None
+    if payload.source_language_code and source is None:
+        return JSONResponse({"error": "unsupported source language"}, status_code=400)
+    if not payload.contents:
+        return {
+            "translations": [],
+            "model": getattr(request.scope["env"], "WORKERS_AI_TRANSLATION_MODEL", "@cf/meta/m2m100-1.2b"),
+            "latency_ms": 0,
+        }
+
+    env = request.scope["env"]
+    ai = getattr(env, "AI", None)
+    if ai is None:
+        return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
+    model = getattr(env, "WORKERS_AI_TRANSLATION_MODEL", "@cf/meta/m2m100-1.2b")
+    source_code, source_name = source or ("", "english")
+    _, target_name = target
+    started = time.perf_counter()
+    translations: list[dict[str, str]] = []
+    try:
+        for content in payload.contents:
+            result = await ai.run(
+                model,
+                {"text": content, "source_lang": source_name, "target_lang": target_name},
+            )
+            result_payload = _workers_ai_result_mapping(result)
+            translated = result_payload.get("translated_text")
+            if not isinstance(translated, str):
+                return JSONResponse({"error": "workers ai returned an invalid translation"}, status_code=502)
+            translations.append(
+                {
+                    "translated_text": translated,
+                    "detected_language_code": source_code,
+                }
+            )
+    except Exception:
+        return JSONResponse({"error": "workers ai translation unavailable"}, status_code=502)
+
+    return {
+        "translations": translations,
+        "model": model,
+        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+    }
 
 
 @app.post("/v1/stt/transcribe-workers-ai")
