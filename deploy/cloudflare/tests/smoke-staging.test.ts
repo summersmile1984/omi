@@ -31,6 +31,8 @@ describe("staging smoke helpers", () => {
               url.endsWith("/v1/scores") ||
               url.endsWith("/v1/focus-sessions") ||
               url.endsWith("/v1/focus-stats") ||
+              url.endsWith("/v1/screen-activity") ||
+              url.endsWith("/v1/screen-activity/summary") ||
               url.endsWith("/v1/users/geolocation")
             ? 200
             : 400;
@@ -54,12 +56,14 @@ describe("staging smoke helpers", () => {
       scores: 200,
       focusSessions: 200,
       focusStats: 200,
+      screenActivity: 200,
+      screenActivitySummary: 200,
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(16);
-    expect(calls[14].init?.method).toBe("PATCH");
-    expect(calls[15].init?.method).toBe("POST");
+    expect(calls).toHaveLength(18);
+    expect(calls[16].init?.method).toBe("PATCH");
+    expect(calls[17].init?.method).toBe("POST");
   });
 
   it("can opt into a real native TTS response check", async () => {
@@ -78,6 +82,8 @@ describe("staging smoke helpers", () => {
         url.endsWith("/v1/scores") ||
         url.endsWith("/v1/focus-sessions") ||
         url.endsWith("/v1/focus-stats") ||
+        url.endsWith("/v1/screen-activity") ||
+        url.endsWith("/v1/screen-activity/summary") ||
         url.endsWith("/v1/users/geolocation")
       ) {
         return new Response(null, { status: 200 });

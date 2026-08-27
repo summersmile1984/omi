@@ -256,8 +256,14 @@ score sources, so they remain staging-only with the action-item projection.
 The focus-session routes (`POST/GET/DELETE /v1/focus-sessions` and
 `GET /v1/focus-stats`) use a uid-scoped D1 event table. They preserve the legacy
 focused/distraction duration defaults and top-five aggregation, but do not claim
-screen-activity capture, focus inference, or notification side effects; those
-remain on the legacy owner until separately migrated.
+screen-activity vector search, focus inference, or notification side effects.
+
+The text-only screen-activity routes (`POST /v1/screen-activity/sync`,
+`GET /v1/screen-activity`, and `GET /v1/screen-activity/summary`) use an
+idempotent uid/device-scoped D1 upsert and bounded date/app queries. Incoming
+embeddings are accepted for client compatibility but are not stored or searched;
+vector lifecycle, paid semantic search, and MCP advanced search remain on the
+legacy owner until their contracts move.
 
 The People routes migrate uid-scoped person id/name metadata with idempotent
 create, list, rename, and delete operations. The response keeps the existing

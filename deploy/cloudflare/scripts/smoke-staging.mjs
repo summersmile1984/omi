@@ -99,6 +99,14 @@ export async function runSmoke({
   const focusStats = await request(fetchImpl, `${base}/v1/focus-stats`, { headers: authHeaders });
   expectStatus("focus stats", focusStats, 200);
 
+  const screenActivity = await request(fetchImpl, `${base}/v1/screen-activity`, { headers: authHeaders });
+  expectStatus("screen activity", screenActivity, 200);
+
+  const screenActivitySummary = await request(fetchImpl, `${base}/v1/screen-activity/summary`, {
+    headers: authHeaders,
+  });
+  expectStatus("screen activity summary", screenActivitySummary, 200);
+
   // Exercise geolocation route ownership without persisting location data.
   // The legacy contract intentionally returns 200 for invalid coordinates.
   const invalidGeolocation = await request(fetchImpl, `${base}/v1/users/geolocation`, {
@@ -149,6 +157,8 @@ export async function runSmoke({
     scores: scores.status,
     focusSessions: focusSessions.status,
     focusStats: focusStats.status,
+    screenActivity: screenActivity.status,
+    screenActivitySummary: screenActivitySummary.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     ...nativeTtsResult,

@@ -35,10 +35,12 @@ from goal_routes import router as goal_router
 from folder_routes import router as folder_router
 from score_routes import router as score_router
 from focus_routes import router as focus_router
+from screen_activity_routes import router as screen_activity_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
 app.include_router(focus_router)
+app.include_router(screen_activity_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
 MAX_VOCABULARY_ITEMS = 100
 MAX_ASSISTANT_SETTINGS_BYTES = 64_000
