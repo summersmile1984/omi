@@ -491,6 +491,13 @@ def test_ai_profile_partial_update_round_trips_and_rejects_oversized_text():
     assert oversized.status_code == 400
 
 
+def test_assistant_and_ai_profile_routes_fail_closed_without_auth():
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET="test-secret")
+    for handler in (entry.get_assistant_settings, entry.update_assistant_settings, entry.get_ai_profile, entry.update_ai_profile):
+        response = asyncio.run(handler(FakeRequest(env, {}, {})))
+        assert response.status_code == 401
+
+
 def test_location_context_consent_requires_disclosure_and_expires_after_thirty_days(monkeypatch):
     secret = "test-secret"
     encoded, signature = signed_context(secret, uid="location-user")
