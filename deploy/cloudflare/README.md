@@ -82,6 +82,8 @@ printf '%s' "$ASR_API_BASE_URL" | npx wrangler secret put ASR_API_BASE_URL --nam
 printf '%s' "$ASR_API_KEY" | npx wrangler secret put ASR_API_KEY --name omi-cf-api-ai-staging
 printf '%s' "$EMBEDDING_API_BASE_URL" | npx wrangler secret put EMBEDDING_API_BASE_URL --name omi-cf-api-ai-staging
 printf '%s' "$EMBEDDING_API_KEY" | npx wrangler secret put EMBEDDING_API_KEY --name omi-cf-api-ai-staging
+printf '%s' "$TTS_API_BASE_URL" | npx wrangler secret put TTS_API_BASE_URL --name omi-cf-api-ai-staging
+printf '%s' "$TTS_API_KEY" | npx wrangler secret put TTS_API_KEY --name omi-cf-api-ai-staging
 ```
 
 Do not point these commands at production names from this worktree. The
@@ -93,6 +95,7 @@ GET  /ready                   auth D1 readiness
 POST /api/auth/sign-up/email  Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
+POST /v1/tts/synthesize      Edge → Python API AI → hosted OpenAI-compatible TTS API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
@@ -130,6 +133,10 @@ The location-consent route is staging-only while legacy chat still reads its
 Firestore consent projection. Do not cut this route over in production until
 that downstream consumer has moved to the D1 authority and passed its privacy
 regression contract.
+
+The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
+contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
+until its rate-limit and provider-shape migration is verified separately.
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must

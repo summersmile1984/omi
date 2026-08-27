@@ -91,6 +91,16 @@ const proxyAuthenticatedCore = async (c: Context<{ Bindings: EdgeEnv; Variables:
   return withRequestId(response, id);
 };
 
+const proxyAuthenticatedAI = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  const response = await c.env.API_AI.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+};
+
 app.all("/v1/cf/probe", proxyAuthenticatedCore);
 app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
 app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);
@@ -105,6 +115,7 @@ app.get("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.get("/v1/users/location-context-consent", proxyAuthenticatedCore);
 app.put("/v1/users/location-context-consent", proxyAuthenticatedCore);
+app.post("/v1/tts/synthesize", proxyAuthenticatedAI);
 
 app.all("/*", async (c) => {
   const id = requestId(c.req.raw);

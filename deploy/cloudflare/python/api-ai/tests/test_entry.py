@@ -11,19 +11,20 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import entry  # noqa: E402
 
-from entry import _provider_url, transcribe  # noqa: E402
+from entry import _provider_url, transcribe, tts_synthesize  # noqa: E402
 
 
 class FakeRequest:
-    def __init__(self, env, headers):
+    def __init__(self, env, headers, json_body=None):
         self.scope = {"env": env}
         self.headers = headers
+        self.json_body = json_body or {"input": "hello"}
 
     async def body(self):
         return b"audio"
 
     async def json(self):
-        return {"input": "hello"}
+        return self.json_body
 
 
 def signed_context(secret: str) -> tuple[str, str]:
@@ -127,3 +128,64 @@ def test_embeddings_uses_worker_fetch_for_provider(monkeypatch):
     assert json.loads(response.body) == {"data": [{"embedding": [0.1, 0.2]}]}
     assert calls["url"] == "https://embedding.example.test/v1/embeddings"
     assert json.loads(calls["options"]["body"]) == {"model": "embed-model", "input": "hello"}
+
+
+def test_tts_validates_contract_and_returns_provider_audio(monkeypatch):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            TTS_API_BASE_URL="https://tts.example.test/",
+            TTS_API_KEY="key",
+            TTS_MODEL="tts-model",
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+        },
+        {"text": " hello ", "voice_id": "sage", "instructions": "be warm"},
+    )
+
+    class FakeResponse:
+        status = 200
+
+        async def arrayBuffer(self):
+            return b"ID3-mp3"
+
+    calls = {}
+
+    async def fake_fetch(url, **options):
+        calls["url"] = url
+        calls["options"] = options
+        return FakeResponse()
+
+    monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
+    response = asyncio.run(tts_synthesize(request))
+
+    assert response.status_code == 200
+    assert response.media_type == "audio/mpeg"
+    assert response.body == b"ID3-mp3"
+    assert calls["url"] == "https://tts.example.test/v1/audio/speech"
+    assert json.loads(calls["options"]["body"]) == {
+        "model": "tts-model",
+        "input": "hello",
+        "voice": "sage",
+        "response_format": "mp3",
+        "instructions": "be warm",
+    }
+
+
+def test_tts_rejects_unsupported_voice_before_provider_call():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, TTS_API_BASE_URL="https://tts.example.test", TTS_API_KEY="key"),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "voice_id": "not-a-voice"},
+    )
+
+    response = asyncio.run(tts_synthesize(request))
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {"error": "voice_id is not supported"}
