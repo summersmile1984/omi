@@ -489,7 +489,7 @@ routes:
     auth_authority: better-auth
     dependencies: [d1-app]
     protocol: http
-    idempotency: required
+    idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
