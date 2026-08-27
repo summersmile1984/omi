@@ -258,6 +258,40 @@ describe("edge gateway", () => {
     expect(aiPath).toBe("/v1/translate");
   });
 
+  it("routes realtime mint and usage contracts to the API AI worker", async () => {
+    const aiPaths: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_AI: service(async (request) => {
+        aiPaths.push(new URL(request.url).pathname);
+        return Response.json({ provider: "openai", token: "ephemeral" });
+      }),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    for (const path of ["/v2/realtime/session", "/v2/realtime/usage"]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer opaque-session",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ provider: "openai" }),
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(aiPaths).toEqual(["/v2/realtime/session", "/v2/realtime/usage"]);
+  });
+
   it("routes the native Workers AI TTS contract to the API AI worker", async () => {
     let aiPath = "";
     const env = {

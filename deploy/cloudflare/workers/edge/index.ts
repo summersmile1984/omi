@@ -212,6 +212,8 @@ const proxyAuthenticatedAI = async (
 };
 
 app.get("/v1/config/api-keys", proxyAuthenticatedCore);
+app.post("/v2/realtime/session", proxyAuthenticatedAI);
+app.post("/v2/realtime/usage", proxyAuthenticatedAI);
 app.post("/v1/stt/transcribe-async", proxyAuthenticatedAsyncTranscription);
 app.get(
   "/v1/stt/transcribe-async/:jobId",

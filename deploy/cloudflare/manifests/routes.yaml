@@ -238,6 +238,28 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v2/realtime/session
+    owner: api-ai
+    runtime: edge-worker
+    target_runtime: external-api
+    auth_authority: better-auth
+    dependencies: [d1-app, external-openai-realtime-api, external-gemini-live-api]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/realtime/usage
+    owner: api-ai
+    runtime: edge-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/stt/transcribe-async
     owner: jobs
     runtime: edge-worker

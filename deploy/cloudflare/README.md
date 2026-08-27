@@ -153,6 +153,8 @@ GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
+POST /v2/realtime/session     Edge → Python API AI → OpenAI/Gemini ephemeral token API
+POST /v2/realtime/usage       Edge → Python API AI → D1 usage projection
 POST /v1/stt/transcribe-async
                               Edge → Jobs → R2 → Queue → Workers AI Whisper
 GET  /v1/stt/transcribe-async/{jobId}
@@ -433,6 +435,14 @@ using the native `@cf/meta/m2m100-1.2b` binding in staging. The Worker explicitl
 limits this route to English, Chinese, French, Spanish, Arabic, Russian, German,
 Japanese, Portuguese, and Hindi; the legacy NLLB service remains the rollback
 target for other languages until quality and coverage are qualified.
+
+`/v2/realtime/session` keeps the desktop ephemeral-token contract but calls the
+configured OpenAI or Gemini mint API through the Python Worker's `workers.fetch`
+FFI. Only a SHA-256 token hash and provider metadata enter D1; the token itself
+is returned once to the authenticated client and is never logged or persisted.
+`/v2/realtime/usage` writes uid/day token and micro-dollar aggregates to D1,
+while the realtime WebSocket protocol remains owned by the separate Realtime
+Worker/DO surface.
 
 `/v1/auto/model-pick` uses a shared D1 24-hour cache. Without the upstream key,
 an upstream failure, or an unusable model response it returns the existing
