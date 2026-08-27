@@ -168,6 +168,10 @@ GET  /v1/users/private-cloud-sync
 POST /v1/users/private-cloud-sync
 GET  /v1/users/notification-settings
 PATCH /v1/users/notification-settings
+GET  /v1/users/daily-summary-settings
+PATCH /v1/users/daily-summary-settings
+GET  /v1/users/mentor-notification-settings
+PATCH /v1/users/mentor-notification-settings
 GET  /v1/users/location-context-consent
 PUT  /v1/users/location-context-consent
 GET  /v1/users/assistant-settings
@@ -241,6 +245,14 @@ table and preserves the legacy 410 response for an unknown user. Firestore-only
 fields such as data-protection level, onboarding answers, and migration status
 are intentionally omitted until their D1 authority and backfill are approved;
 the Flutter client already treats those fields as optional/defaulted.
+
+`/v1/users/daily-summary-settings` and
+`/v1/users/mentor-notification-settings` store notification preferences in the
+staging app D1 database with the legacy defaults (22:00 local and frequency 0)
+and bounded values. The legacy daily-summary scheduler and mentor notifier
+still read Firestore, so these routes remain staging-only until those consumers
+move to the D1 authority; the Edge fallback can be restored without a client
+change.
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must

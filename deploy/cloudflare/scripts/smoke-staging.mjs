@@ -71,6 +71,14 @@ export async function runSmoke({
   const profile = await request(fetchImpl, `${base}/v1/users/profile`, { headers: authHeaders });
   expectStatus("user profile", profile, 200);
 
+  const dailySummarySettings = await request(fetchImpl, `${base}/v1/users/daily-summary-settings`, { headers: authHeaders });
+  expectStatus("daily summary settings", dailySummarySettings, 200);
+
+  const mentorNotificationSettings = await request(fetchImpl, `${base}/v1/users/mentor-notification-settings`, {
+    headers: authHeaders,
+  });
+  expectStatus("mentor notification settings", mentorNotificationSettings, 200);
+
   // Exercise route ownership and input validation without billable inference.
   const workersAiEmpty = await request(fetchImpl, `${base}/v1/stt/transcribe-workers-ai`, {
     method: "POST",
@@ -104,6 +112,8 @@ export async function runSmoke({
     assistantSettings: assistantSettings.status,
     aiProfile: aiProfile.status,
     userProfile: profile.status,
+    dailySummarySettings: dailySummarySettings.status,
+    mentorNotificationSettings: mentorNotificationSettings.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     ...nativeTtsResult,
   };

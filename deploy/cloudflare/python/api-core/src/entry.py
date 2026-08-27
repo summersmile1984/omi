@@ -33,6 +33,8 @@ MAX_ASSET_BODY_BYTES = 25_000_000
 MAX_VOCABULARY_ITEMS = 100
 MAX_ASSISTANT_SETTINGS_BYTES = 64_000
 MAX_AI_PROFILE_TEXT_LENGTH = 50_000
+DEFAULT_DAILY_SUMMARY_HOUR_LOCAL = 22
+DEFAULT_MENTOR_NOTIFICATION_FREQUENCY = 0
 
 
 def auth_context(request: Request) -> dict[str, object] | None:
@@ -100,6 +102,15 @@ class OnboardingStateUpdate(BaseModel):
 class NotificationSettingsUpdate(BaseModel):
     enabled: bool | None = None
     frequency: int | None = Field(default=None, ge=0, le=5)
+
+
+class DailySummarySettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    hour: int | None = Field(default=None, ge=0, le=23)
+
+
+class MentorNotificationSettingsUpdate(BaseModel):
+    frequency: int = Field(ge=0, le=5)
 
 
 class AssistantSettingsUpdate(BaseModel):
@@ -314,6 +325,62 @@ async def _save_notification_settings(env: object, uid: str, settings: dict[str,
         uid,
         int(bool(settings["enabled"])),
         int(settings["frequency"]),
+        now,
+        now,
+    ).run()
+
+
+def _daily_summary_settings(row: object | None) -> dict[str, object]:
+    if not isinstance(row, dict):
+        return {"enabled": True, "hour": DEFAULT_DAILY_SUMMARY_HOUR_LOCAL}
+    raw_hour = row.get("daily_summary_hour_local")
+    hour = raw_hour if isinstance(raw_hour, int) and 0 <= raw_hour <= 23 else DEFAULT_DAILY_SUMMARY_HOUR_LOCAL
+    return {
+        "enabled": bool(row.get("daily_summary_enabled"))
+        if row.get("daily_summary_enabled") is not None
+        else True,
+        "hour": hour,
+    }
+
+
+def _mentor_notification_settings(row: object | None) -> dict[str, object]:
+    if not isinstance(row, dict):
+        return {"frequency": DEFAULT_MENTOR_NOTIFICATION_FREQUENCY}
+    raw_frequency = row.get("mentor_notification_frequency")
+    frequency = (
+        raw_frequency
+        if isinstance(raw_frequency, int) and 0 <= raw_frequency <= 5
+        else DEFAULT_MENTOR_NOTIFICATION_FREQUENCY
+    )
+    return {"frequency": frequency}
+
+
+async def _load_notification_preferences(env: object, uid: str) -> dict[str, object]:
+    row = await env.APP_DB.prepare(
+        "SELECT daily_summary_enabled, daily_summary_hour_local, mentor_notification_frequency "
+        "FROM cf_user_notification_preferences WHERE uid = ?"
+    ).bind(uid).first()
+    return {
+        "daily_summary_enabled": _daily_summary_settings(row)["enabled"],
+        "daily_summary_hour_local": _daily_summary_settings(row)["hour"],
+        "mentor_notification_frequency": _mentor_notification_settings(row)["frequency"],
+    }
+
+
+async def _save_notification_preferences(env: object, uid: str, settings: dict[str, object]) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_notification_preferences "
+        "(uid, daily_summary_enabled, daily_summary_hour_local, mentor_notification_frequency, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET daily_summary_enabled = excluded.daily_summary_enabled, "
+        "daily_summary_hour_local = excluded.daily_summary_hour_local, "
+        "mentor_notification_frequency = excluded.mentor_notification_frequency, updated_at = excluded.updated_at"
+    ).bind(
+        uid,
+        int(bool(settings["daily_summary_enabled"])),
+        int(settings["daily_summary_hour_local"]),
+        int(settings["mentor_notification_frequency"]),
         now,
         now,
     ).run()
@@ -538,6 +605,61 @@ async def update_notification_settings(request: Request):
         settings["frequency"] = update.frequency
     await _save_notification_settings(env, uid, settings)
     return await _load_notification_settings(env, uid)
+
+
+@app.get("/v1/users/daily-summary-settings")
+async def get_daily_summary_settings(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    settings = await _load_notification_preferences(request.scope["env"], str(context["uid"]))
+    return {"enabled": settings["daily_summary_enabled"], "hour": settings["daily_summary_hour_local"]}
+
+
+@app.patch("/v1/users/daily-summary-settings")
+async def update_daily_summary_settings(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = DailySummarySettingsUpdate.model_validate(await _bounded_json(request, 4_000))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid daily summary settings"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    settings = await _load_notification_preferences(env, uid)
+    if update.enabled is not None:
+        settings["daily_summary_enabled"] = update.enabled
+    if update.hour is not None:
+        settings["daily_summary_hour_local"] = update.hour
+    await _save_notification_preferences(env, uid, settings)
+    return {"status": "ok"}
+
+
+@app.get("/v1/users/mentor-notification-settings")
+async def get_mentor_notification_settings(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    settings = await _load_notification_preferences(request.scope["env"], str(context["uid"]))
+    return {"frequency": settings["mentor_notification_frequency"]}
+
+
+@app.patch("/v1/users/mentor-notification-settings")
+async def update_mentor_notification_settings(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = MentorNotificationSettingsUpdate.model_validate(await _bounded_json(request, 4_000))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid mentor notification settings"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    settings = await _load_notification_preferences(env, uid)
+    settings["mentor_notification_frequency"] = update.frequency
+    await _save_notification_preferences(env, uid, settings)
+    return {"status": "ok"}
 
 
 @app.get("/v1/users/assistant-settings")

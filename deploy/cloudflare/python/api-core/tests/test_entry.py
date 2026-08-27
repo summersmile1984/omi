@@ -20,6 +20,7 @@ class FakeDb:
         self.onboarding_row = None
         self.privacy_row = None
         self.notification_row = None
+        self.notification_preferences_row = None
         self.location_row = None
         self.assistant_settings_row = None
         self.ai_profile_row = None
@@ -47,6 +48,8 @@ class FakeStatement:
             return self.db.privacy_row
         if self.sql.startswith("SELECT notifications_enabled"):
             return self.db.notification_row
+        if self.sql.startswith("SELECT daily_summary_enabled"):
+            return self.db.notification_preferences_row
         if self.sql.startswith("SELECT status, purpose, disclosed_providers_json"):
             return self.db.location_row
         if self.sql.startswith("SELECT settings_json"):
@@ -105,6 +108,24 @@ class FakeStatement:
                 "uid": uid,
                 "notifications_enabled": notifications_enabled,
                 "notification_frequency": notification_frequency,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_notification_preferences"):
+            (
+                uid,
+                daily_summary_enabled,
+                daily_summary_hour_local,
+                mentor_notification_frequency,
+                created_at,
+                updated_at,
+            ) = self.args
+            self.db.notification_preferences_row = {
+                "uid": uid,
+                "daily_summary_enabled": daily_summary_enabled,
+                "daily_summary_hour_local": daily_summary_hour_local,
+                "mentor_notification_frequency": mentor_notification_frequency,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
@@ -438,6 +459,35 @@ def test_notification_settings_preserve_defaults_and_validate_frequency():
     assert invalid.status_code == 400
 
 
+def test_daily_and_mentor_notification_preferences_round_trip_with_legacy_defaults():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="notification-preferences-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET=secret)
+
+    assert asyncio.run(entry.get_daily_summary_settings(FakeRequest(env, headers))) == {"enabled": True, "hour": 22}
+    assert asyncio.run(entry.get_mentor_notification_settings(FakeRequest(env, headers))) == {"frequency": 0}
+
+    assert asyncio.run(
+        entry.update_daily_summary_settings(FakeRequest(env, headers, {"enabled": False, "hour": 0}))
+    ) == {"status": "ok"}
+    assert asyncio.run(entry.update_mentor_notification_settings(FakeRequest(env, headers, {"frequency": 5}))) == {
+        "status": "ok"
+    }
+    assert asyncio.run(entry.get_daily_summary_settings(FakeRequest(env, headers))) == {"enabled": False, "hour": 0}
+    assert asyncio.run(entry.get_mentor_notification_settings(FakeRequest(env, headers))) == {"frequency": 5}
+
+    invalid_hour = asyncio.run(entry.update_daily_summary_settings(FakeRequest(env, headers, {"hour": 24})))
+    assert invalid_hour.status_code == 400
+    invalid_frequency = asyncio.run(
+        entry.update_mentor_notification_settings(FakeRequest(env, headers, {"frequency": 6}))
+    )
+    assert invalid_frequency.status_code == 400
+
+
 def test_assistant_settings_deep_merge_sections_and_preserve_uid_scope():
     secret = "test-secret"
     encoded, signature = signed_context(secret, uid="assistant-user")
@@ -493,7 +543,16 @@ def test_ai_profile_partial_update_round_trips_and_rejects_oversized_text():
 
 def test_assistant_and_ai_profile_routes_fail_closed_without_auth():
     env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET="test-secret")
-    for handler in (entry.get_assistant_settings, entry.update_assistant_settings, entry.get_ai_profile, entry.update_ai_profile):
+    for handler in (
+        entry.get_assistant_settings,
+        entry.update_assistant_settings,
+        entry.get_ai_profile,
+        entry.update_ai_profile,
+        entry.get_daily_summary_settings,
+        entry.update_daily_summary_settings,
+        entry.get_mentor_notification_settings,
+        entry.update_mentor_notification_settings,
+    ):
         response = asyncio.run(handler(FakeRequest(env, {}, {})))
         assert response.status_code == 401
 

@@ -20,7 +20,11 @@ describe("staging smoke helpers", () => {
         ? 200
         : url.endsWith("/v1/cf/probe")
           ? (init?.headers ? 200 : 401)
-          : url.endsWith("/v1/users/assistant-settings") || url.endsWith("/v1/users/ai-profile") || url.endsWith("/v1/users/profile")
+          : url.endsWith("/v1/users/assistant-settings") ||
+              url.endsWith("/v1/users/ai-profile") ||
+              url.endsWith("/v1/users/profile") ||
+              url.endsWith("/v1/users/daily-summary-settings") ||
+              url.endsWith("/v1/users/mentor-notification-settings")
             ? 200
             : 400;
       return new Response(null, { status });
@@ -35,17 +39,25 @@ describe("staging smoke helpers", () => {
       assistantSettings: 200,
       aiProfile: 200,
       userProfile: 200,
+      dailySummarySettings: 200,
+      mentorNotificationSettings: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(7);
-    expect(calls[6].init?.method).toBe("POST");
+    expect(calls).toHaveLength(9);
+    expect(calls[8].init?.method).toBe("POST");
   });
 
   it("can opt into a real native TTS response check", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
       if (url.endsWith("/health")) return new Response(null, { status: 200 });
       if (url.endsWith("/v1/cf/probe")) return new Response(null, { status: init?.headers ? 200 : 401 });
-      if (url.endsWith("/v1/users/assistant-settings") || url.endsWith("/v1/users/ai-profile") || url.endsWith("/v1/users/profile")) {
+      if (
+        url.endsWith("/v1/users/assistant-settings") ||
+        url.endsWith("/v1/users/ai-profile") ||
+        url.endsWith("/v1/users/profile") ||
+        url.endsWith("/v1/users/daily-summary-settings") ||
+        url.endsWith("/v1/users/mentor-notification-settings")
+      ) {
         return new Response(null, { status: 200 });
       }
       if (url.endsWith("/v1/stt/transcribe-workers-ai")) return new Response(null, { status: 400 });
