@@ -130,6 +130,23 @@ class ConversationEventsStateUpdate(BaseModel):
         return self
 
 
+class ConversationActionItemsStateUpdate(BaseModel):
+    """Parallel action-item indexes and completion flags used by legacy clients."""
+
+    model_config = {"extra": "ignore"}
+
+    items_idx: list[int] = Field(max_length=100)
+    values: list[bool] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def validate_parallel_arrays(self) -> "ConversationActionItemsStateUpdate":
+        if len(self.items_idx) != len(self.values):
+            raise ValueError("items_idx and values must have the same length")
+        if any(index < 0 for index in self.items_idx):
+            raise ValueError("action-item indexes must be non-negative")
+        return self
+
+
 def _auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
@@ -816,6 +833,78 @@ async def patch_conversation_events(request: Request, conversation_id: str):
         ).bind(_dump_json(structured, "structured"), int(time.time()), uid, conversation_id).run()
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    return {"status": "Ok"}
+
+
+@router.patch("/v1/conversations/{conversation_id}/action-items")
+async def patch_conversation_action_items(request: Request, conversation_id: str):
+    """Update indexed action-item completion in the D1 conversation projection."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        raw = await request.body()
+        if len(raw) > 32_000:
+            return JSONResponse({"error": "action-item body too large"}, status_code=413)
+        update = ConversationActionItemsStateUpdate.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError, TypeError):
+        return JSONResponse({"error": "invalid action-item update"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        structured = _json_object(existing.get("structured_json"))
+        raw_items = structured.get("action_items")
+        items = raw_items if isinstance(raw_items, list) else []
+        updated_descriptions: dict[str, bool] = {}
+        now = datetime.now(timezone.utc).isoformat()
+        conversation_created_at = _iso(existing.get("created_at"))
+        for index, value in zip(update.items_idx, update.values):
+            if index >= len(items) or not isinstance(items[index], dict):
+                continue
+            item = items[index]
+            item["completed"] = value
+            item["completed_at"] = now if value else None
+            item.setdefault("created_at", conversation_created_at)
+            description = item.get("description")
+            if isinstance(description, str) and description:
+                updated_descriptions[description] = value
+        structured["action_items"] = items
+
+        statements = [
+            env.APP_DB.prepare(
+                "UPDATE cf_conversations SET structured_json = ?, updated_at = ? WHERE uid = ? AND id = ?"
+            ).bind(_dump_json(structured, "structured"), int(time.time()), uid, conversation_id)
+        ]
+        for description, value in updated_descriptions.items():
+            statements.append(
+                env.APP_DB.prepare(
+                    "UPDATE cf_action_items SET completed = ?, status = ?, completed_at = ?, updated_at = ? "
+                    "WHERE uid = ? AND conversation_id = ? AND description = ? AND deleted = 0"
+                ).bind(
+                    int(value),
+                    "completed" if value else "active",
+                    int(time.time()) if value else None,
+                    int(time.time()),
+                    uid,
+                    conversation_id,
+                    description,
+                )
+            )
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
     return {"status": "Ok"}
 
 

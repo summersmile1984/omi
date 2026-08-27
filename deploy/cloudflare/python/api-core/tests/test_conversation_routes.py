@@ -17,6 +17,7 @@ from conversation_routes import (  # noqa: E402
     get_conversation_transcripts,
     conversation_has_recording,
     list_conversations,
+    patch_conversation_action_items,
     patch_conversation_events,
     patch_conversation_segment_text,
     patch_conversation_title,
@@ -31,11 +32,17 @@ class FakeDb:
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
         self.connection.executescript((migration_dir / "0017_people.sql").read_text())
+        self.connection.executescript((migration_dir / "0016_action_items.sql").read_text())
         self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
         self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
+
+    async def batch(self, statements):
+        for statement in statements:
+            self.connection.execute(statement.sql, statement.args)
+        self.connection.commit()
 
 
 class FakeBucket:
@@ -440,6 +447,80 @@ def test_canonical_conversation_events_update_is_bounded_and_preserves_index_sem
             patch_conversation_events(
                 FakeRequest(env, {}, body={"events_idx": [0], "values": [True]}),
                 "events",
+            )
+        ).status_code
+        == 401
+    )
+
+
+def test_canonical_conversation_action_item_state_updates_projection_and_standalone_rows():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="action-items", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-action-items", created_at=100, locked=1)
+    db.connection.execute(
+        "INSERT INTO cf_action_items (uid, id, description, status, completed, conversation_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("conversation-user", "item-1", "task", "active", 0, "action-items", 200, 200),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    updated = asyncio.run(
+        patch_conversation_action_items(
+            FakeRequest(env, signed_headers(secret), body={"items_idx": [0, 99], "values": [True, False]}),
+            "action-items",
+        )
+    )
+    assert updated == {"status": "Ok"}
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "action-items"))
+    assert detail["structured"]["action_items"][0]["completed"] is True
+    standalone = db.connection.execute(
+        "SELECT completed, status FROM cf_action_items WHERE uid = ? AND id = ?",
+        ("conversation-user", "item-1"),
+    ).fetchone()
+    assert tuple(standalone) == (1, "completed")
+    assert (
+        asyncio.run(
+            patch_conversation_action_items(
+                FakeRequest(env, signed_headers(secret), body={"items_idx": [0], "values": []}),
+                "action-items",
+            )
+        ).status_code
+        == 400
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_action_items(
+                FakeRequest(env, signed_headers(secret), body={"items_idx": [-1], "values": [True]}),
+                "action-items",
+            )
+        ).status_code
+        == 400
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_action_items(
+                FakeRequest(env, signed_headers(secret), body={"items_idx": [0], "values": [True]}),
+                "locked-action-items",
+            )
+        ).status_code
+        == 402
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_action_items(
+                FakeRequest(env, signed_headers(secret), body={"items_idx": [0], "values": [True]}),
+                "missing",
+            )
+        ).status_code
+        == 404
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_action_items(
+                FakeRequest(env, {}, body={"items_idx": [0], "values": [True]}),
+                "action-items",
             )
         ).status_code
         == 401

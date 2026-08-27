@@ -465,6 +465,12 @@ of indexed events in the structured D1 projection. It preserves the legacy
 parallel-array and out-of-range-index behavior, rejects malformed input, and
 does not claim calendar/integration fanout.
 
+`PATCH /v1/conversations/{conversation_id}/action-items` updates indexed
+completion flags in the structured projection and mirrors matching standalone
+`cf_action_items` rows in one D1 batch. The bounded route preserves the legacy
+index behavior; reminder delivery, exports, and other external side effects
+remain outside this Worker authority.
+
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event
 reads, and calendar writes remain on the legacy integration service; tokens are

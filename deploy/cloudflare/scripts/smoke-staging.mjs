@@ -156,6 +156,16 @@ export async function runSmoke({
     },
   );
   expectStatus("canonical conversation events missing-row", conversationEvents, 404);
+  const conversationActionItems = await request(
+    fetchImpl,
+    `${base}/v1/conversations/cf-smoke-action-items-probe-${Date.now()}/action-items`,
+    {
+      method: "PATCH",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ items_idx: [0], values: [true] }),
+    },
+  );
+  expectStatus("canonical conversation action items missing-row", conversationActionItems, 404);
   const conversationRecording = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-recording-probe-${Date.now()}/recording`,
@@ -330,6 +340,7 @@ export async function runSmoke({
     conversationTranscripts: conversationTranscripts.status,
     conversationAnalytics: conversationAnalytics.status,
     conversationEvents: conversationEvents.status,
+    conversationActionItems: conversationActionItems.status,
     conversationRecording: conversationRecording.status,
     segmentText: segmentText.status,
     assistantSettings: assistantSettings.status,

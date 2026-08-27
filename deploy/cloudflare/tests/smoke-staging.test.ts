@@ -52,6 +52,8 @@ describe("staging smoke helpers", () => {
                   ? 404
                 : url.includes("/v1/conversations/") && url.endsWith("/events")
                   ? 404
+                : url.includes("/v1/conversations/") && url.endsWith("/action-items")
+                  ? 404
                 : url.includes("/v1/conversations/") && url.endsWith("/recording")
                     ? 404
                   : url.includes("/v1/conversations/") && url.endsWith("/segments/text")
@@ -97,6 +99,7 @@ describe("staging smoke helpers", () => {
       conversationTranscripts: 404,
       conversationAnalytics: 404,
       conversationEvents: 404,
+      conversationActionItems: 404,
       conversationRecording: 404,
       segmentText: 404,
       assistantSettings: 200,
@@ -116,7 +119,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(32);
+    expect(calls).toHaveLength(33);
     expect(
       calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init
         ?.method,
@@ -156,6 +159,8 @@ describe("staging smoke helpers", () => {
       if (url.includes("/v1/conversations/") && url.endsWith("/analytics"))
         return new Response(null, { status: 404 });
       if (url.includes("/v1/conversations/") && url.endsWith("/events"))
+        return new Response(null, { status: 404 });
+      if (url.includes("/v1/conversations/") && url.endsWith("/action-items"))
         return new Response(null, { status: 404 });
       if (url.includes("/v1/conversations/") && url.endsWith("/recording"))
         return new Response(null, { status: 404 });
