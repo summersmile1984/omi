@@ -1,15 +1,16 @@
+import json
 from typing import Any
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 try:
-    from workers import asgi
+    from workers import asgi, fetch as worker_fetch
 except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodide's `js` module.
     if error.name != "js":
         raise
     asgi = None  # type: ignore[assignment]
+    worker_fetch = None  # type: ignore[assignment]
 
 from internal_auth import decode_context
 
@@ -43,13 +44,18 @@ async def embeddings(request: Request) -> Any:
         return JSONResponse({"error": "embedding provider is not configured"}, status_code=503)
     body = await request.json()
     model = body.get("model") or getattr(env, "EMBEDDING_MODEL", "text-embedding-3-small")
-    async with httpx.AsyncClient(timeout=25.0) as client:
-        response = await client.post(
+    if worker_fetch is None:
+        return JSONResponse({"error": "worker fetch is unavailable"}, status_code=503)
+    try:
+        response = await worker_fetch(
             f"{base_url.rstrip('/')}/v1/embeddings",
+            method="POST",
             headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
-            json={"model": model, "input": body.get("input")},
+            body=json.dumps({"model": model, "input": body.get("input")}),
         )
-    return JSONResponse(response.json(), status_code=response.status_code)
+        return JSONResponse(await response.json(), status_code=int(response.status))
+    except (OSError, TypeError, ValueError):
+        return JSONResponse({"error": "embedding upstream unavailable"}, status_code=502)
 
 
 def _provider_url(base_url: str, path: str) -> str:
@@ -85,15 +91,18 @@ async def transcribe(request: Request):
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(_provider_url(base_url, "/v2/transcribe"), headers=headers, content=body)
-    except httpx.HTTPError:
+        if worker_fetch is None:
+            return JSONResponse({"error": "worker fetch is unavailable"}, status_code=503)
+        response = await worker_fetch(
+            _provider_url(base_url, "/v2/transcribe"), method="POST", headers=headers, body=body
+        )
+    except (OSError, TypeError, ValueError):
         return JSONResponse({"error": "transcription upstream unavailable"}, status_code=502)
 
     content_type = response.headers.get("content-type", "application/json")
     if content_type.startswith("application/json"):
         try:
-            return JSONResponse(response.json(), status_code=response.status_code)
+            return JSONResponse(await response.json(), status_code=int(response.status))
         except ValueError:
             return JSONResponse({"error": "transcription upstream returned invalid JSON"}, status_code=502)
     return JSONResponse({"error": "transcription upstream returned unsupported content"}, status_code=502)

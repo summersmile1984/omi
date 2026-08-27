@@ -8,9 +8,11 @@ The first staging slice contains:
 
 - `edge`: public routing, request IDs, trusted auth context and legacy fallback.
 - `auth`: Hono + Better Auth + D1, with request-scoped auth construction.
-- `api-core`: a minimal FastAPI/Python Worker composition root and D1 probe.
-- `api-core`: a minimal FastAPI/Python Worker composition root, D1 probe, and
-  uid-scoped R2 asset API (`/v1/cf/assets/{key}`).
+- `api-core`: a minimal FastAPI/Python Worker composition root with a D1 probe,
+  uid-scoped R2 asset API (`/v1/cf/assets/{key}`), and the public firmware
+  stable/latest/version APIs.
+- `api-core`: a public firmware stable-release API backed by the GitHub Releases
+  API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
 - `realtime`: the Durable Object/ASR protocol seam; no model is run locally.
 
@@ -67,7 +69,9 @@ done
 ```
 
 The AI and realtime paths are API-first. They intentionally return `503` until
-their provider is configured; no ASR/model process runs inside a Worker. Add
+their provider is configured; no ASR/model process runs inside a Worker. The
+Python Workers use Cloudflare's native `workers.fetch` for outbound calls so
+they do not depend on Pyodide socket/DNS support. Add
 the provider endpoint/key as Worker secrets when a staging provider is chosen:
 
 ```bash
@@ -91,6 +95,9 @@ POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
+GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
+GET  /v2/firmware/latest      Edge → Python API Core → GitHub Releases API
+GET  /v2/firmware/version     Edge → Python API Core → GitHub Releases API
 ```
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.

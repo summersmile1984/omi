@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { requestId, withRequestId } from "../shared/request-id";
 import { attachAuthContext, stripUntrustedHeaders, verifyBearer } from "./auth";
@@ -13,6 +14,16 @@ app.use("*", async (c, next) => {
 });
 
 app.get("/health", (c) => c.json({ status: "ok", service: "edge", version: "cf-00" }));
+
+const proxyPublicFirmware = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
+  const id = requestId(c.req.raw);
+  const response = await c.env.API_CORE.fetch(new Request(c.req.raw, { headers: stripUntrustedHeaders(c.req.raw) }));
+  return withRequestId(response, id);
+};
+
+app.get("/v2/firmware/stable", proxyPublicFirmware);
+app.get("/v2/firmware/latest", proxyPublicFirmware);
+app.get("/v2/firmware/version", proxyPublicFirmware);
 
 app.all("/api/auth/*", async (c) => {
   const id = requestId(c.req.raw);

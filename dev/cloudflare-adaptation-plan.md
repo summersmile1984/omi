@@ -83,7 +83,7 @@ Cloudflare 适配不应另写一套 STT 路由策略，而应把现有 provider 
 | Paid Worker 单次 CPU 最多 5 分钟，默认 30 秒 | HTTP 编排可放 Worker；模型推理、重音频处理和大批量任务走 API、Queues/Workflows |
 | 单次请求最多 6 个同时外连 | 聚合 API 必须控制连接扇出、复用或分阶段执行 |
 | Python Workers 当前为 Beta | 固定 `workers-py`、`pywrangler`、Wrangler 和 compatibility date；本地 workerd 通过后还必须执行真实 staging deploy/smoke |
-| Python Workers 基于 Pyodide | 只使用官方可用包、纯 Python 包或 PyEmscripten wheel；HTTP 使用 async `httpx`/`aiohttp` |
+| Python Workers 基于 Pyodide | 只使用官方可用包、纯 Python 包或 PyEmscripten wheel；出站 HTTP 使用 `workers.fetch`/JS FFI，避免标准 socket/DNS |
 | Worker 文件系统是临时内存文件系统 | 持久对象进入 R2；任务进度进入 D1/DO；不能依赖 `/app/syncing` |
 | D1 单库 10 GB、单线程执行 | 认证和合格业务域适合 D1；热点状态进 DO，大数据域需要拆分或显式 PostgreSQL 逃生口 |
 | KV 最终一致，其他 PoP 传播可能超过 60 秒 | KV 只放可过期缓存/配置；锁、唯一连接、配额和强一致会话进入 Durable Objects |
@@ -269,7 +269,7 @@ Worker 数量多不等于需要手工逐个发布。Cloudflare 目录使用一�
 - 使用 `from workers import asgi` 和 `Default = asgi.entrypoint(app)` 暴露 FastAPI ASGI 应用。
 - 只导入 Pydantic model、纯业务函数、prompt、异步 HTTP 编排和 Worker-compatible adapter。
 - 从 `request.scope["env"]` 或请求依赖获取 D1/R2/Service binding，禁止在 import 时读取远端配置或创建客户端。
-- 使用 async `httpx`/`aiohttp` 或 JS FFI/binding；禁止 executor、thread、multiprocessing 和同步 cloud SDK。
+- 使用 `workers.fetch`/JS FFI 或 Cloudflare binding；禁止 executor、thread、multiprocessing 和同步 cloud SDK。
 - 将本地文件限制为有大小上限的请求级临时数据；持久对象写入 R2。
 - 对 CPU、内存、bundle、cold start 和 6 个外连限制建立 CI/预发布门槛。
 
@@ -760,20 +760,20 @@ DNS 或生产数据库。当前 staging 已部署：
 
 - `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由。
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
-- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe` 与 uid-scoped R2 asset API，未导入 `backend/main.py`。
-- `omi-cf-api-ai-staging`：FastAPI Python Worker + async `httpx` 外部 embedding/预录音 ASR API seam；provider 未配置时 fail closed 返回 `503`。
+- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API 与公开 firmware stable/latest/version APIs，未导入 `backend/main.py`。
+- `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR API seam；provider 未配置时 fail closed 返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：11 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：14 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 3 files / 7 tests pass
-uvx uv==0.12.3 run pytest -q             # api-ai: 2 tests pass
+npm test                                  # 4 files / 9 tests pass
+uvx uv==0.12.3 run pytest -q             # api-core: 3, api-ai: 4 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
-wrangler deploy (staging)                 # five Workers uploaded
+wrangler deploy (staging)                 # six Workers uploaded
 curl /health                              # auth/core/ai/realtime/edge → HTTP 200
 curl /ready                               # auth D1 → ready
 Better Auth sign-up + Edge /v1/cf/probe   # D1 row written, HTTP 200
@@ -784,9 +784,10 @@ authenticated realtime contracts          # non-WS requests HTTP 426
 R2 PUT → GET → DELETE                      # body round-trip, then HTTP 404
 Jobs enqueue duplicate → one ledger row    # queue/D1 idempotency contract
 Queue consumer                          # status=completed, attempts=1
+public firmware stable/latest/version   # GitHub Releases API → HTTP 200/metadata
 ```
 
-Python Workers 仍属于 Beta；当前 `api-core` 约 8.0 MiB、`api-ai` 约 8.95 MiB
-（上传前 bundle），均低于 10 MiB 压缩 bundle 门槛但应作为后续依赖预算的硬闸门。
-Embedding/ASR 的真实 provider、音频质量基线、Queues/Workflows、R2 对象平面和
-第一个产品 route group 仍按 CF-04～CF-10 单独验收，当前 staging 不宣称生产迁移完成。
+Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules
+均约 8.0 MiB，实际 gzip 上传约 2.0 MiB，应继续作为依赖预算的硬闸门。
+Embedding/ASR 的真实 provider、音频质量基线以及更多产品 route group 仍按
+CF-04～CF-10 单独验收；当前 staging 不宣称生产迁移完成。
