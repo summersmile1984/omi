@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import sys
+from urllib.parse import urlsplit
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -15,10 +16,13 @@ from entry import _provider_url, transcribe, tts_synthesize  # noqa: E402
 
 
 class FakeRequest:
-    def __init__(self, env, headers, json_body=None):
+    def __init__(self, env, headers, json_body=None, *, method="POST", url="https://api.test/v1/tts/synthesize"):
         self.scope = {"env": env}
         self.headers = headers
         self.json_body = json_body or {"input": "hello"}
+        self.method = method
+        parsed_url = urlsplit(url)
+        self.url = type("Url", (), {"path": parsed_url.path, "query": parsed_url.query})()
 
     async def body(self):
         return b"audio"
@@ -128,6 +132,60 @@ def test_embeddings_uses_worker_fetch_for_provider(monkeypatch):
     assert json.loads(response.body) == {"data": [{"embedding": [0.1, 0.2]}]}
     assert calls["url"] == "https://embedding.example.test/v1/embeddings"
     assert json.loads(calls["options"]["body"]) == {"model": "embed-model", "input": "hello"}
+
+
+def test_ai_proxy_maps_path_and_query_to_fixed_provider(monkeypatch):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI_API_BASE_URL="https://ai.example.test", AI_API_KEY="key"),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+            "authorization": "Bearer client-token",
+        },
+        {"prompt": "hello"},
+        url="https://api.test/v1/ai/chat/completions?stream=false",
+    )
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        async def arrayBuffer(self):
+            return b'{"choices": []}'
+
+    calls = {}
+
+    async def fake_fetch(url, **options):
+        calls["url"] = url
+        calls["options"] = options
+        return FakeResponse()
+
+    monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
+    response = asyncio.run(entry.ai_proxy(request, "chat/completions"))
+
+    assert response.status_code == 200
+    assert response.body == b'{"choices": []}'
+    assert calls["url"] == "https://ai.example.test/chat/completions?stream=false"
+    assert calls["options"]["headers"] == {"authorization": "Bearer key", "content-type": "application/json"}
+    assert calls["options"]["body"] == b"audio"
+
+
+def test_ai_proxy_fails_closed_when_provider_is_missing():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        url="https://api.test/v1/ai/chat/completions",
+    )
+
+    response = asyncio.run(entry.ai_proxy(request, "chat/completions"))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "ai provider is not configured"}
 
 
 def test_tts_validates_contract_and_returns_provider_audio(monkeypatch):

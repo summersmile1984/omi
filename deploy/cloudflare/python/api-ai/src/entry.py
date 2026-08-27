@@ -20,6 +20,8 @@ app = FastAPI(title="Omi Cloudflare AI API", version="0.1.0")
 app.include_router(auto_model_router)
 
 MAX_TRANSCRIPTION_BODY_BYTES = 25_000_000
+MAX_AI_BODY_BYTES = 8_000_000
+MAX_AI_RESPONSE_BYTES = 12_000_000
 MAX_TTS_CHARS = 4_096
 OPENAI_TTS_VOICES = frozenset(
     {"alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse", "marin", "cedar"}
@@ -69,6 +71,72 @@ async def embeddings(request: Request) -> Any:
         return JSONResponse(await response.json(), status_code=int(response.status))
     except (OSError, TypeError, ValueError):
         return JSONResponse({"error": "embedding upstream unavailable"}, status_code=502)
+
+
+def _ai_upstream_url(base_url: str, request: Request) -> str:
+    """Map `/v1/ai/*` to a fixed provider base without accepting a URL from the client."""
+    path = request.url.path
+    suffix = path[len("/v1/ai") :] if path.startswith("/v1/ai") else "/"
+    if not suffix:
+        suffix = "/"
+    query = request.url.query
+    url = f"{base_url.rstrip('/')}/{suffix.lstrip('/')}"
+    return f"{url}?{query}" if query else url
+
+
+def _ai_request_headers(request: Request, api_key: str) -> dict[str, str]:
+    """Forward only protocol headers; never forward client credentials to the provider."""
+    headers = {"authorization": f"Bearer {api_key}"}
+    for name in ("content-type", "accept"):
+        value = request.headers.get(name)
+        if value:
+            headers[name] = value
+    return headers
+
+
+@app.api_route("/v1/ai/{path:path}", methods=["GET", "POST"])
+async def ai_proxy(request: Request, path: str):
+    """Proxy an authenticated API-compatible AI request to one configured provider.
+
+    The client cannot select a host: `AI_API_BASE_URL` is a Worker secret and the
+    route only appends the path after `/v1/ai`. This keeps provider SDKs and local
+    model runtimes out of the Python Worker while allowing OpenAI-compatible LLM
+    and tool endpoints to share the existing Edge/API-AI deployment surface.
+    """
+    if not auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    base_url = getattr(env, "AI_API_BASE_URL", None)
+    api_key = getattr(env, "AI_API_KEY", None)
+    if not base_url or not api_key:
+        return JSONResponse({"error": "ai provider is not configured"}, status_code=503)
+
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_AI_BODY_BYTES:
+        return JSONResponse({"error": "ai request body too large"}, status_code=413)
+    body = b""
+    if request.method != "GET":
+        body = await request.body()
+        if len(body) > MAX_AI_BODY_BYTES:
+            return JSONResponse({"error": "ai request body too large"}, status_code=413)
+
+    if worker_fetch is None:
+        return JSONResponse({"error": "worker fetch is unavailable"}, status_code=503)
+    try:
+        response = await worker_fetch(
+            _ai_upstream_url(base_url, request),
+            method=request.method,
+            headers=_ai_request_headers(request, api_key),
+            body=body if request.method != "GET" else None,
+        )
+        response_body = bytes(await response.arrayBuffer())
+    except (OSError, TypeError, ValueError):
+        return JSONResponse({"error": "ai upstream unavailable"}, status_code=502)
+    if len(response_body) > MAX_AI_RESPONSE_BYTES:
+        return JSONResponse({"error": "ai upstream response too large"}, status_code=502)
+
+    content_type = response.headers.get("content-type", "application/json")
+    return Response(content=response_body, status_code=int(response.status), media_type=content_type)
 
 
 def _provider_url(base_url: str, path: str) -> str:
