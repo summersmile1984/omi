@@ -5,5 +5,17 @@ export function requestId(request: Request): string {
 export function withRequestId(response: Response, id: string): Response {
   const headers = new Headers(response.headers);
   headers.set("x-request-id", id);
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  if (response.status === 101 && response.webSocket) {
+    return new Response(null, {
+      status: 101,
+      statusText: response.statusText,
+      headers,
+      webSocket: response.webSocket,
+    });
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
