@@ -15,6 +15,13 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
     worker_fetch = None  # type: ignore[assignment]
 
 from internal_auth import decode_context
+from language_policy import (
+    ACCEPTED_LANGUAGE_BASES,
+    LANGUAGE_NAME_TO_BASE,
+    MODULATE_SUPPORTED_LANGUAGES,
+    PRIMARY_LANGUAGE_OPTIONS,
+)
+from firmware_policy import DEVICE_PREFIXES, FIRMWARE_TAG_PATTERN
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 MAX_ASSET_BODY_BYTES = 25_000_000
@@ -155,93 +162,6 @@ PRIMARY_LANGUAGE_OPTIONS = (
     ("ur", "Urdu"),
     ("vi", "Vietnamese"),
 )
-LANGUAGE_NAME_TO_BASE = {
-    "afrikaans": "af",
-    "albanian": "sq",
-    "arabic": "ar",
-    "azerbaijani": "az",
-    "basque": "eu",
-    "belarusian": "be",
-    "bengali": "bn",
-    "bosnian": "bs",
-    "brazilian portuguese": "pt",
-    "bulgarian": "bg",
-    "cantonese": "zh",
-    "catalan": "ca",
-    "chinese": "zh",
-    "chinese simplified": "zh",
-    "chinese traditional": "zh",
-    "croatian": "hr",
-    "czech": "cs",
-    "danish": "da",
-    "dutch": "nl",
-    "english": "en",
-    "estonian": "et",
-    "farsi": "fa",
-    "filipino": "tl",
-    "finnish": "fi",
-    "flemish": "nl",
-    "french": "fr",
-    "galician": "gl",
-    "german": "de",
-    "greek": "el",
-    "gujarati": "gu",
-    "hebrew": "he",
-    "hindi": "hi",
-    "hungarian": "hu",
-    "indonesian": "id",
-    "italian": "it",
-    "japanese": "ja",
-    "kannada": "kn",
-    "kazakh": "kk",
-    "korean": "ko",
-    "latvian": "lv",
-    "lithuanian": "lt",
-    "macedonian": "mk",
-    "malay": "ms",
-    "malayalam": "ml",
-    "maltese": "mt",
-    "mandarin": "zh",
-    "marathi": "mr",
-    "norwegian": "no",
-    "persian": "fa",
-    "polish": "pl",
-    "portuguese": "pt",
-    "punjabi": "pa",
-    "romanian": "ro",
-    "russian": "ru",
-    "serbian": "sr",
-    "simplified chinese": "zh",
-    "slovak": "sk",
-    "slovenian": "sl",
-    "spanish": "es",
-    "swahili": "sw",
-    "swedish": "sv",
-    "tagalog": "tl",
-    "tamil": "ta",
-    "telugu": "te",
-    "thai": "th",
-    "turkish": "tr",
-    "ukrainian": "uk",
-    "urdu": "ur",
-    "vietnamese": "vi",
-    "welsh": "cy",
-}
-FIRMWARE_TAG_PATTERN = re.compile(
-    r"^(?:Omi_CV1|Omi_DK2|OmiGlass|OpenGlass|Friend)_v[0-9]+(?:\.[0-9]+){1,2}$", re.IGNORECASE
-)
-DEVICE_PREFIXES = {
-    "Omi DevKit 2": "Omi_DK2",
-    "Friend DevKit 1": "Friend",
-    "Friend": "Friend",
-    "OpenGlass": "OpenGlass",
-    "Omi CV 1": "Omi_CV1",
-    "OMI Glass": "OmiGlass",
-    "OmiGlass": "OmiGlass",
-    "nrf5340": "Omi_CV1",
-}
-
-
 def auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
