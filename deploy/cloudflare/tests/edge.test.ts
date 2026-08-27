@@ -109,4 +109,63 @@ describe("edge gateway", () => {
       "/v1/omni/relay",
     ]);
   });
+
+  it("does not send an unmigrated authenticated route to the partial API worker", async () => {
+    let coreCalls = 0;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => {
+        coreCalls += 1;
+        return Response.json({ status: "unexpected" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/users/onboarding", { headers: { authorization: "Bearer opaque-session" } }),
+      env,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "route not migrated" });
+    expect(coreCalls).toBe(0);
+  });
+
+  it("falls an unmigrated route back to legacy when configured", async () => {
+    let legacyPath = "";
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "unexpected" })),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (request) => {
+      legacyPath = new URL(request instanceof Request ? request.url : request).pathname;
+      return Response.json({ owner: "legacy" });
+    };
+    try {
+      const response = await edge.fetch(
+        new Request("https://edge.test/v1/users/onboarding", { headers: { authorization: "Bearer opaque-session" } }),
+        env,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ owner: "legacy" });
+      expect(legacyPath).toBe("/v1/users/onboarding");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

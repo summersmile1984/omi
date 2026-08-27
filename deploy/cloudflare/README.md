@@ -106,6 +106,12 @@ PATCH /v1/users/language
                               Edge → Python API Core → D1
 ```
 
+Only routes explicitly listed as migrated are sent to the partial Worker
+implementations. Authenticated routes that are not yet migrated use
+`LEGACY_BACKEND_URL` when configured; staging without that binding returns
+`404 route not migrated` instead of silently treating the partial Worker as the
+owner.
+
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must
 use a stable `jobId`, so retry or duplicate delivery cannot create a second

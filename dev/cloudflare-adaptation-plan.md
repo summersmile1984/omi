@@ -764,13 +764,13 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR API seam；provider 未配置时 fail closed 返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：19 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：20 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 4 files / 9 tests pass
+npm test                                  # 4 files / 11 tests pass
 uvx uv==0.12.3 run pytest -q             # api-core: 7, api-ai: 4 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded

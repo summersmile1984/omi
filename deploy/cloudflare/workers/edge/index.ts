@@ -91,6 +91,8 @@ const proxyAuthenticatedCore = async (c: Context<{ Bindings: EdgeEnv; Variables:
   return withRequestId(response, id);
 };
 
+app.all("/v1/cf/probe", proxyAuthenticatedCore);
+app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
 app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);
 app.all("/v1/users/available-languages", proxyAuthenticatedCore);
 app.all("/v1/users/language", proxyAuthenticatedCore);
@@ -109,11 +111,6 @@ app.all("/*", async (c) => {
     const response = await c.env.API_AI.fetch(new Request(c.req.raw, { headers }));
     return withRequestId(response, id);
   }
-  if (auth) {
-    // Manifest owners for /v1/* (including /v1/cf/assets/*) are api-core.
-    const response = await c.env.API_CORE.fetch(new Request(c.req.raw, { headers }));
-    return withRequestId(response, id);
-  }
   if (envLegacy(c.env)) {
     const legacy = new URL(c.req.url);
     legacy.protocol = new URL(c.env.LEGACY_BACKEND_URL!).protocol;
@@ -121,6 +118,7 @@ app.all("/*", async (c) => {
     const response = await fetch(new Request(legacy, { method: c.req.method, headers, body: c.req.raw.body }));
     return withRequestId(response, id);
   }
+  if (auth) return c.json({ error: "route not migrated" }, 404);
   return c.json({ error: "unauthorized" }, 401);
 });
 
