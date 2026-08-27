@@ -32,6 +32,7 @@ from action_item_routes import batch_router as action_item_batch_router
 from action_item_routes import router as action_item_router
 from people_routes import router as people_router
 from goal_routes import router as goal_router
+from folder_routes import router as folder_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 MAX_ASSET_BODY_BYTES = 25_000_000
@@ -1077,6 +1078,7 @@ app.include_router(action_item_batch_router)
 app.include_router(action_item_router)
 app.include_router(people_router)
 app.include_router(goal_router)
+app.include_router(folder_router)
 
 
 def _firmware_metadata(markdown: str) -> dict[str, object]:

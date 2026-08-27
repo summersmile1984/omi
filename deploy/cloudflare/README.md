@@ -212,6 +212,10 @@ GET/PATCH/DELETE /v1/goals/{goalId}
                               Edge → Python API Core → D1
 PATCH /v1/goals/{goalId}/progress
                               Edge → Python API Core → D1
+GET/POST /v1/folders        Edge → Python API Core → D1
+GET/PATCH/DELETE /v1/folders/{folderId}
+                              Edge → Python API Core → D1
+POST /v1/folders/reorder    Edge → Python API Core → D1
 ```
 
 Only routes explicitly listed as migrated are sent to the partial Worker
@@ -254,6 +258,12 @@ delete. Focus-cap transactions, relationship lifecycle/events, progress
 history, and AI advice/suggestion remain on legacy until their stronger
 workflow contracts are migrated; this route group is staging-only pending goal
 backfill and downstream reader cutover.
+
+The folder routes migrate system/custom folder metadata and ordering to D1. They
+do not yet move conversation documents, recompute conversation counts, or serve
+folder conversation listings; deleting a folder is therefore allowed only on
+the staging projection and must remain on legacy for production until the
+conversation authority moves.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
