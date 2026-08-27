@@ -685,6 +685,12 @@ class SharedPreferencesUtil {
 
   set tokenExpirationTime(int value) => saveInt('tokenExpirationTime', value);
 
+  /// True when the cached token was issued by the non-release Better Auth
+  /// staging bridge rather than Firebase Auth.
+  bool get usesBetterAuth => getBool('usesBetterAuth');
+
+  set usesBetterAuth(bool value) => saveBool('usesBetterAuth', value);
+
   String get email => getString('email');
 
   set email(String value) => saveString('email', value);
@@ -706,6 +712,7 @@ class SharedPreferencesUtil {
     if (ownerUid.isNotEmpty) _scopeLegacyUserData(ownerUid);
     authToken = '';
     tokenExpirationTime = 0;
+    usesBetterAuth = false;
     uid = '';
     email = '';
     givenName = '';

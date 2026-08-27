@@ -810,6 +810,18 @@ benchmarks remain a CF-08 release gate.
 以 `speaker=luna` 返回 `audio/mpeg`，下载 6,896 bytes。TTS 路由是新增的
 staging-only additive seam；现有 voice ID 合约仍未切换。
 
+同日补齐了 Flutter 调试客户端的 Better Auth staging 连续性：Auth Worker
+增加了 secret-gated `/auth-issue`，仅在配置 `AUTH_DEV_ISSUER_SECRET` 时存在，
+并复用 Better Auth JWT plugin 签发 24 小时 token；Flutter 只在非 release 且显式
+提供 `OMI_AUTH_SERVER_URL` 与 `OMI_AUTH_DEV_ISSUER_SECRET` 时启用，持久化 issuer
+标记并在 Firebase 初始 `null` 事件中保留有效缓存。该桥接不改变 release Firebase
+身份路径，也不把 issuer secret 写入仓库。
+
+真实 staging 串联随后以 `/api/auth/sign-up/email` 创建隔离测试用户、调用
+`/auth-issue`、再以返回 JWT 请求 Edge `/v1/cf/probe`，最终为 HTTP 200；Auth
+Worker 的内部验证同时兼容数据库 session bearer 与 JWT plugin 的
+`verifyJWT`（JWT bridge 不创建 Better Auth session 行）。
+
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt
 into the authenticated D1/input-boundary checks with an explicitly supplied

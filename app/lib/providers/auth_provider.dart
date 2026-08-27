@@ -15,6 +15,7 @@ import 'package:omi/providers/base_provider.dart';
 import 'package:omi/services/account_cutover/account_cutover_runtime.dart';
 import 'package:omi/services/auth_service.dart';
 import 'package:omi/services/auth/auth_token_result.dart';
+import 'package:omi/services/auth/better_auth_session.dart';
 import 'package:omi/services/notifications.dart';
 import 'package:omi/utils/auth/clear_user_state.dart';
 import 'package:omi/utils/alerts/app_snackbar.dart';
@@ -72,7 +73,16 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   AuthenticationProvider({bool initializeListeners = true}) {
+    _restoreBetterAuthSession();
     if (initializeListeners) _initializeAuthListeners();
+  }
+
+  void _restoreBetterAuthSession() {
+    if (!betterAuthDevSignInEnabled || !AuthService.instance.hasUsableBetterAuthSession()) return;
+    final preferences = SharedPreferencesUtil();
+    authToken = preferences.authToken;
+    _betterAuthSession = true;
+    AuthService.instance.markAuthenticatedUser(preferences.uid);
   }
 
   void _initializeAuthListeners() {
@@ -103,9 +113,19 @@ class AuthenticationProvider extends BaseProvider {
         AuthService.instance.handleAuthUserChanged(user?.uid);
         if (user == null) {
           Logger.debug('User is currently signed out or the token has been revoked!');
-          SharedPreferencesUtil().authToken = '';
-          SharedPreferencesUtil().tokenExpirationTime = 0;
-          authToken = null;
+          // Firebase emits an initial null user even when the debug-only
+          // Better Auth bridge has a valid cached session. Preserve that
+          // independent session; explicit sign-out clears its marker first.
+          if (AuthService.instance.hasUsableBetterAuthSession()) {
+            authToken = SharedPreferencesUtil().authToken;
+            _betterAuthSession = true;
+          } else {
+            SharedPreferencesUtil().authToken = '';
+            SharedPreferencesUtil().tokenExpirationTime = 0;
+            SharedPreferencesUtil().usesBetterAuth = false;
+            authToken = null;
+            _betterAuthSession = false;
+          }
         } else {
           Logger.debug('User is signed in at ${DateTime.now()} with user ${user.uid}');
           try {
@@ -140,7 +160,15 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   bool isSignedIn() {
-    if (_betterAuthSession && authToken != null && authToken!.isNotEmpty) return true;
+    if (_betterAuthSession &&
+        authToken != null &&
+        isBetterAuthSessionUsable(
+          token: authToken!,
+          uid: SharedPreferencesUtil().uid,
+          expirationTime: SharedPreferencesUtil().tokenExpirationTime,
+        )) {
+      return true;
+    }
     return !_requiresReauthentication && _auth.currentUser != null && !_auth.currentUser!.isAnonymous;
   }
 
@@ -160,7 +188,7 @@ class AuthenticationProvider extends BaseProvider {
   }
 
   /// Dev-only Better Auth sign-in for the cloud-neutral fork. Bypasses
-  /// Firebase Auth entirely: calls the self-hosted auth-server /auth-issue,
+  /// Firebase Auth entirely: calls the configured auth worker /auth-issue,
   /// stores the returned JWT as the API auth token, and marks this session as
   /// an authenticated Better Auth session so the rest of the app treats it
   /// like a signed-in user (backend verifies the JWT via AUTH_PROVIDER=better_auth).
@@ -183,9 +211,11 @@ class AuthenticationProvider extends BaseProvider {
           SharedPreferencesUtil().authToken = credential.token;
           SharedPreferencesUtil().tokenExpirationTime = DateTime.now().millisecondsSinceEpoch + (24 * 60 * 60 * 1000);
           SharedPreferencesUtil().uid = credential.uid;
+          SharedPreferencesUtil().usesBetterAuth = true;
           authToken = credential.token;
           _betterAuthSession = true;
           _requiresReauthentication = false;
+          AuthService.instance.markAuthenticatedUser(credential.uid);
           PlatformManager.instance.analytics.identify();
           notifyListeners();
           onSignIn();

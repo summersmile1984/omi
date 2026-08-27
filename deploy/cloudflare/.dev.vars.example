@@ -3,6 +3,8 @@ BETTER_AUTH_SECRET=replace-with-at-least-32-random-bytes
 BETTER_AUTH_URL=http://localhost:8788
 ALLOWED_ORIGINS=http://localhost:3000
 INTERNAL_ASSERTION_SECRET=replace-with-a-different-random-secret
+# Debug-only Flutter bridge; leave empty for normal local auth.
+AUTH_DEV_ISSUER_SECRET=
 ASR_WS_URL=
 ASR_API_KEY=
 ASR_API_BASE_URL=

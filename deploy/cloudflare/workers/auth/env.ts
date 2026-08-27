@@ -4,4 +4,6 @@ export type AuthEnv = {
   BETTER_AUTH_URL?: string;
   ALLOWED_ORIGINS?: string;
   INTERNAL_ASSERTION_SECRET?: string;
+  /** Optional staging-only bridge for the Flutter Better Auth dev sign-in. */
+  AUTH_DEV_ISSUER_SECRET?: string;
 };

@@ -83,9 +83,21 @@ printf '%s' "$cf_auth_secret" | npx wrangler secret put BETTER_AUTH_SECRET --nam
 printf '%s' "$BETTER_AUTH_URL" | npx wrangler secret put BETTER_AUTH_URL --name omi-cf-auth-staging
 cf_internal_secret="$(openssl rand -base64 48)"
 for worker_name in omi-cf-auth-staging omi-cf-edge-staging omi-cf-api-core-staging omi-cf-api-ai-staging omi-cf-realtime-staging omi-cf-jobs-staging; do
-  printf '%s' "$cf_internal_secret" | npx wrangler secret put INTERNAL_ASSERTION_SECRET --name "$worker_name"
+printf '%s' "$cf_internal_secret" | npx wrangler secret put INTERNAL_ASSERTION_SECRET --name "$worker_name"
 done
+# Optional, staging-only Flutter Better Auth bridge (never use in a release build).
+cf_dev_issuer_secret="$(openssl rand -base64 48)"
+printf '%s' "$cf_dev_issuer_secret" | npx wrangler secret put AUTH_DEV_ISSUER_SECRET --name omi-cf-auth-staging
 ```
+
+The `/auth-issue` bridge is hidden (`404`) unless `AUTH_DEV_ISSUER_SECRET` is
+configured. It accepts only a matching bearer secret and a bounded `uid`, then
+uses Better Auth's JWT plugin to mint the same 24-hour token shape as the local
+development bridge. The Flutter client enables this path only when both
+`OMI_AUTH_SERVER_URL` and `OMI_AUTH_DEV_ISSUER_SECRET` are supplied to a
+non-release build; do not put the issuer secret in a release build or commit it.
+Point `OMI_AUTH_SERVER_URL` at the Auth Worker URL and `OMI_API_BASE_URL` at the
+Edge Worker URL when exercising the app against staging.
 
 The AI and realtime paths are API-first. They intentionally return `503` until
 their provider is configured; no ASR/model process runs inside a Worker. The
