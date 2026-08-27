@@ -99,6 +99,18 @@ non-release build; do not put the issuer secret in a release build or commit it.
 Point `OMI_AUTH_SERVER_URL` at the Auth Worker URL and `OMI_API_BASE_URL` at the
 Edge Worker URL when exercising the app against staging.
 
+For a local debug run against the deployed staging slice, keep the issuer
+secret in your shell only:
+
+```bash
+flutter run --flavor prod \
+  --dart-define=OMI_APP_PROFILE=localProd \
+  --dart-define=OMI_API_BASE_URL=https://omi-cf-edge-staging.summersmile1984.workers.dev/ \
+  --dart-define=OMI_AUTH_SERVER_URL=https://omi-cf-auth-staging.summersmile1984.workers.dev \
+  --dart-define=OMI_AUTH_DEV_ISSUER_SECRET="$cf_dev_issuer_secret" \
+  --dart-define=OMI_AUTH_DEV_UID=mobile-better-auth-staging
+```
+
 The AI and realtime paths are API-first. They intentionally return `503` until
 their provider is configured; no ASR/model process runs inside a Worker. The
 Python Workers use Cloudflare's native `workers.fetch` for outbound calls so
