@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { verifyStagingHealth } from "./deploy-health.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const envName = process.argv[2] || "staging";
@@ -69,4 +70,6 @@ deployPython("python/api-ai");
 deployTypeScript("workers/realtime/wrangler.jsonc");
 deployTypeScript("workers/jobs/wrangler.jsonc");
 deployTypeScript("workers/edge/wrangler.jsonc");
-console.log("Staging release complete. Configure INTERNAL_ASSERTION_SECRET on auth, edge, api-core, api-ai, realtime and jobs before exercising authenticated routes.");
+const health = await verifyStagingHealth();
+console.log(`Staging release complete. Health checks passed: ${JSON.stringify(health)}.`);
+console.log("Configure INTERNAL_ASSERTION_SECRET on auth, edge, api-core, api-ai, realtime and jobs before exercising authenticated routes.");

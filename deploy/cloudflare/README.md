@@ -54,6 +54,11 @@ npm run deploy:staging
 npm run smoke:staging
 ```
 
+`deploy:staging` applies the isolated migrations, publishes Workers in dependency
+order, then checks Edge, Auth `/ready`, and every internal Worker `/health` before
+reporting success. A release is considered incomplete if any readiness check is
+not HTTP 200; no Dashboard-by-Dashboard confirmation is required.
+
 `smoke:staging` checks Edge health by default. To enable the authenticated
 checks, provide a staging Better Auth token through an environment variable or
 an explicit JSON token file:
