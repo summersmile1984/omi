@@ -189,6 +189,8 @@ GET  /v1/conversations/{conversationId}
                               canonical read projection; writes/finalization remain legacy
 GET  /v1/conversations/{conversationId}/photos
                               bounded photo projection; locked rows fail closed
+GET  /v1/conversations/{conversationId}/recording
+                              R2 head check for uid/{conversationId}.wav; no download
 PATCH /v1/conversations/{conversationId}/segments/text
                               bounded D1 transcript edit with updated-at CAS
 PATCH /v1/conversations/{conversationId}/title

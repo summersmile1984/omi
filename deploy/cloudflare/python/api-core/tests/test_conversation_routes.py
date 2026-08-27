@@ -13,6 +13,7 @@ from conversation_routes import (  # noqa: E402
     count_conversations,
     get_conversation,
     get_conversation_photos,
+    conversation_has_recording,
     list_conversations,
     patch_conversation_segment_text,
     patch_conversation_title,
@@ -31,6 +32,14 @@ class FakeDb:
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
+
+
+class FakeBucket:
+    def __init__(self):
+        self.keys: set[str] = set()
+
+    async def head(self, key):
+        return {"key": key} if key in self.keys else None
 
 
 class FakeStatement:
@@ -265,6 +274,29 @@ def test_canonical_segment_text_update_is_uid_scoped_locked_and_compare_and_set(
         )
     )
     assert unauthorized.status_code == 401
+
+
+def test_canonical_recording_existence_uses_uid_scoped_r2_and_locked_rows_fail_closed():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="recorded", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="unrecorded", created_at=150)
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-recording", created_at=100, locked=1)
+    bucket = FakeBucket()
+    bucket.keys.add("conversation-user/recorded.wav")
+    env = type("Env", (), {"APP_DB": db, "ASSETS": bucket, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    exists = asyncio.run(conversation_has_recording(FakeRequest(env, signed_headers(secret)), "recorded"))
+    assert exists == {"has_recording": True}
+    absent = asyncio.run(conversation_has_recording(FakeRequest(env, signed_headers(secret)), "unrecorded"))
+    assert absent == {"has_recording": False}
+    locked = asyncio.run(conversation_has_recording(FakeRequest(env, signed_headers(secret)), "locked-recording"))
+    assert locked.status_code == 402
+    missing = asyncio.run(conversation_has_recording(FakeRequest(env, signed_headers(secret)), "missing"))
+    assert missing.status_code == 404
+    no_bucket = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+    unavailable = asyncio.run(conversation_has_recording(FakeRequest(no_bucket, signed_headers(secret)), "recorded"))
+    assert unavailable.status_code == 503
 
 
 def test_conversation_projection_write_is_idempotent_and_bounded():

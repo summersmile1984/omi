@@ -495,6 +495,37 @@ async def get_conversation_photos(request: Request, conversation_id: str):
     ][:MAX_SEGMENTS]
 
 
+@router.get("/v1/conversations/{conversation_id}/recording")
+async def conversation_has_recording(request: Request, conversation_id: str):
+    """Check the canonical R2 recording object without downloading it."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    try:
+        row = await _first_conversation(env, uid, conversation_id)
+        if row is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(row.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        bucket = getattr(env, "ASSETS", None)
+        if bucket is None or not callable(getattr(bucket, "head", None)):
+            return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
+        # This key matches the legacy recording namespace (`uid/id.wav`) while
+        # keeping the object behind the uid-scoped R2 binding.
+        metadata = await bucket.head(f"{uid}/{conversation_id}.wav")
+    except Exception:
+        return JSONResponse({"error": "recordings unavailable"}, status_code=503)
+    return {"has_recording": metadata is not None}
+
+
 @router.patch("/v1/conversations/{conversation_id}/segments/text")
 async def patch_conversation_segment_text(request: Request, conversation_id: str):
     """Update one transcript segment with an updated-at compare-and-set."""
