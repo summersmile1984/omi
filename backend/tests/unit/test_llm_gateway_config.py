@@ -43,6 +43,9 @@ def test_gateway_uses_the_same_provider_model_as_the_direct_profile():
     assert config.route_artifacts['route.chat_agent.model_config.001'].primary.model == 'claude-sonnet-4-6'
     assert config.route_artifacts['route.memory_l2.model_config.001'].provider_options['reasoning_effort'] == 'medium'
     assert config.route_artifacts['route.chat_agent.model_config.001'].provider_options == {}
+    assert config.route_artifacts['route.wake_word_adjudication.model_config.001'].provider_options == {
+        'reasoning_effort': 'high'
+    }
     chat_agent_lane = config.lanes['omi:auto:chat-agent']
     assert chat_agent_lane.surface == Surface.ANTHROPIC_MESSAGES
     assert chat_agent_lane.capabilities.streaming is True

@@ -15,6 +15,7 @@ from routers import (
     desktop_core,
     desktop_deprecated,
     desktop_proxy,
+    metrics,
     desktop_proactivity,
     desktop_realtime,
     model_capabilities,
@@ -24,6 +25,7 @@ from routers import (
 from utils.env_loader import firebase_admin_options, load_backend_env
 from utils.http_client import close_all_clients
 from utils.identity import identity_provider
+from utils.metrics import start_metrics_sidecar_server, stop_metrics_sidecar_server
 
 
 def _initialize_firebase_admin() -> None:
@@ -60,10 +62,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     prepare_google_credentials()
     if identity_provider() == 'firebase':
         _initialize_firebase_admin()
+    start_metrics_sidecar_server()
     try:
         yield
     finally:
         await close_all_clients()
+        stop_metrics_sidecar_server()
 
 
 def _cors_allowed_origins_from_env() -> list[str]:
@@ -98,6 +102,7 @@ def _build_app() -> FastAPI:
     app.include_router(desktop_screen_crisp.router)
     app.include_router(desktop_tts_updates.router)
     app.include_router(desktop_deprecated.router)
+    app.include_router(metrics.router)
     return app
 
 

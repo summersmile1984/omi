@@ -34,11 +34,12 @@ from fastapi.websockets import WebSocketDisconnect
 import database.users as users_db
 from models.conversation_photo import ConversationPhoto
 from models.message_event import PhotoDescribedEvent, PhotoProcessingEvent
+from models.transcript_segment import SpeakerIdentityStatus
 from utils.aac import AACDecoder
 from utils.llm.openglass import describe_image
 from utils.request_validation import ImageChunkEnvelope
 from utils.speaker_assignment import update_speaker_assignment_maps
-from utils.byok import get_byok_key
+from utils.subscription import request_has_llm_byok_key
 from utils.executors import db_executor, run_blocking
 from utils.transcribe_decisions import should_skip_custom_stt_postprocessing
 from utils.stt.live_failure import (
@@ -61,6 +62,7 @@ from utils.stt.streaming import (
     process_audio_parakeet,
     process_audio_sensevoice,
 )
+from utils.stt.speaker_identity import SpeakerProviderEpoch
 from utils.stt.vad_gate import GatedSTTSocket, VADStreamingGate, VAD_GATE_MODE, is_gate_enabled
 from utils.transcribe_decisions import (
     TARGET_SAMPLE_RATE,
@@ -132,6 +134,7 @@ class ListenReceiver:
         self.last_image_chunk_cleanup = 0.0
         self.decode_failure_streak = 0
         self.decode_stream_reported = False
+        self.speaker_provider_epoch = SpeakerProviderEpoch()
 
     def _capture(self, method: str, *args: Any) -> None:
         """Keep optional dev capture out of the production audio failure domain."""
@@ -184,6 +187,12 @@ class ListenReceiver:
         failure to Parakeet (#11306).
         """
         return getattr(self.host.stt_service, 'value', self.host.stt_service)
+
+    def _enqueue_stt_segments(self, segments: List[Dict[str, Any]], provider: Optional[str] = None) -> None:
+        """Persist the provider epoch before local speaker numbers enter the conversation."""
+        self._capture('capture_inbound_stt', segments)
+        self.speaker_provider_epoch.stamp(segments, provider or self._serving_provider())
+        self.host.transcripts.enqueue(segments)
 
     def initialize_decoders(self) -> None:
         request = self.host.request
@@ -353,11 +362,15 @@ class ListenReceiver:
                 for index, config in enumerate(self.channel_configs):
 
                     def callback(segments: List[Dict[str, Any]], channel: ChannelConfig = config) -> None:
-                        self._capture('capture_inbound_stt', segments)
                         for segment in segments:
                             segment['is_user'] = channel.is_user
+                            segment['speaker_identity_status'] = (
+                                SpeakerIdentityStatus.user.value
+                                if channel.is_user
+                                else SpeakerIdentityStatus.not_user.value
+                            )
                             segment['speaker'] = channel.speaker_label
-                        self.host.transcripts.enqueue(segments)
+                        self._enqueue_stt_segments(segments)
 
                     socket = await self._create_stt_socket(callback, TARGET_SAMPLE_RATE)
                     if socket is None:
@@ -385,8 +398,7 @@ class ListenReceiver:
                     logger.exception('VAD gate initialization failed; continuing without it')
 
             def capture_and_enqueue(segments: List[Dict[str, Any]]) -> None:
-                self._capture('capture_inbound_stt', segments)
-                self.host.transcripts.enqueue(segments)
+                self._enqueue_stt_segments(segments)
 
             parakeet_callback = make_stream_callback(capture_and_enqueue, self.vad_gate, False)
             modulate_callback = make_stream_callback(capture_and_enqueue, self.vad_gate, True)
@@ -477,7 +489,7 @@ class ListenReceiver:
             except Exception as error:
                 logger.warning('Custom-STT photo BYOK enrollment lookup failed type=%s', type(error).__name__)
                 byok_active = False
-            has_llm_byok_key = bool(byok_active and (get_byok_key('openai') or get_byok_key('anthropic')))
+            has_llm_byok_key = bool(byok_active and request_has_llm_byok_key())
             skip_photo_description = should_skip_custom_stt_postprocessing(
                 uses_custom_stt=True,
                 has_llm_byok_key=has_llm_byok_key,
@@ -630,10 +642,7 @@ class ListenReceiver:
         elif kind == 'suggested_transcript' and self.host.use_custom_stt:
             segments = payload.get('segments', [])
             provider = payload.get('stt_provider')
-            if provider:
-                for segment in segments:
-                    segment['stt_provider'] = provider
-            self.host.transcripts.enqueue(segments)
+            self._enqueue_stt_segments(segments, provider=provider or 'custom')
         elif kind == 'speaker_assigned':
             await self._handle_speaker_assigned(payload)
         elif kind == 'finalization_reason':

@@ -10,10 +10,12 @@ from langchain_core.messages import AIMessage
 from models.memory_contracts import L1MemoryArchiveClass, L1MemoryArchiveItem
 from models.transcript_segment import TranscriptSegment
 from utils.llm import working_observations
+from utils.llm.conversation_prompt_prefix import ConversationPromptPrefix
 from utils.llm.memories import extract_canonical_l1_memory_candidates
 from utils.llm.working_observations import (
     MAX_WORKING_OBSERVATION_ITEMS,
     WorkingObservationExtractionError,
+    _build_l1_messages,
     extract_l1_memory_archive_items_from_text,
 )
 from utils.llm.usage_tracker import get_current_context
@@ -34,6 +36,40 @@ class FakeLLM:
 class FailingLLM:
     def invoke(self, messages):
         raise RuntimeError("provider unavailable")
+
+
+def _l1_system_prompt() -> str:
+    return _build_l1_messages(
+        "David",
+        "voice_transcript",
+        "A source transcript long enough for prompt construction.",
+        "Return the requested JSON schema.",
+    )[0][1]
+
+
+def test_l1_prompt_drops_unidentified_non_primary_speakers_but_keeps_named_relationships():
+    prompt = _l1_system_prompt()
+
+    assert "Do not emit an item about an unidentified non-primary speaker" in prompt
+    assert "Named people and known roles" in prompt
+    assert '"Sarah", "Mom", "Dr. Patel", "teammate"' in prompt
+    assert "archive the item as about that speaker" not in prompt
+    assert '"unidentified non-primary speaker (speaker_1)"' not in prompt
+
+
+def test_l1_prompt_drops_self_hedging_attribution_instead_of_storing_uncertainty_text():
+    prompt = _l1_system_prompt()
+
+    assert "If attribution is uncertain, do not emit the item" in prompt
+    assert "Do not hedge inside the item text or `about` field" in prompt
+    assert "say so in the item text/about field" not in prompt
+
+
+def test_l1_prompt_excludes_generic_product_descriptions_without_losing_owner_decisions():
+    prompt = _l1_system_prompt()
+
+    assert "Generic descriptions of a product or company" in prompt
+    assert "owner's decision, preference, constraint, plan, or commitment" in prompt
 
 
 def test_canonical_l1_wrapper_keeps_broad_source_aware_candidates_out_of_archive_routes(monkeypatch):
@@ -94,6 +130,66 @@ def test_canonical_l1_wrapper_keeps_broad_source_aware_candidates_out_of_archive
     assert captured["persist_route_outcomes"] is False
     assert "David:" in captured["text"]
     assert "Speaker 1:" in captured["text"]
+
+
+def test_canonical_l1_wrapper_threads_rejection_examples_to_the_prompt_boundary(monkeypatch):
+    captured = []
+
+    def fake_extract(**kwargs):
+        captured.append(kwargs)
+        return []
+
+    feedback = ["The user likes an aisle seat"]
+    monkeypatch.setattr(working_observations, "extract_l1_memory_archive_items_from_text", fake_extract)
+    segments = [
+        TranscriptSegment(
+            id="segment-user",
+            text="I am booking another flight and thinking about seat selection.",
+            speaker="SPEAKER_00",
+            is_user=True,
+            start=0.0,
+            end=4.0,
+        )
+    ]
+
+    extract_canonical_l1_memory_candidates(
+        "user-feedback",
+        "conversation-feedback",
+        segments,
+        user_name="David",
+        language="en",
+        rejected_memory_examples=feedback,
+    )
+
+    assert captured[-1]["rejected_memory_examples"] == tuple(feedback)
+
+
+def test_l1_rejection_examples_stay_after_the_shared_prompt_cache_breakpoint():
+    rejected_text = "The user likes an aisle seat"
+    fake_llm = FakeLLM('{"items": []}')
+    prefix = ConversationPromptPrefix(
+        conversation_id="conversation-cache-feedback",
+        context="FULL TRANSCRIPT\n" + "A long cacheable transcript. " * 300,
+    )
+
+    extract_l1_memory_archive_items_from_text(
+        uid="user-cache-feedback",
+        source_id="conversation-cache-feedback",
+        source_type="voice_transcript",
+        text="A long cacheable transcript.",
+        user_name="David",
+        persist_route_outcomes=False,
+        llm=fake_llm,
+        prompt_prefix=prefix,
+        prompt_cache_enabled=True,
+        rejected_memory_examples=[rejected_text],
+    )
+
+    messages = fake_llm.calls[0]
+    assert messages[1]["content"][0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+    assert rejected_text not in str(messages[:2])
+    assert rejected_text not in str(messages[2])
+    assert rejected_text in str(messages[3])
 
 
 def test_canonical_l1_wrapper_sends_short_voice_transcript_to_broad_extractor(monkeypatch):
@@ -160,7 +256,8 @@ def test_canonical_l1_wrapper_skips_whitespace_transcript_before_rendering_speak
 
 
 def test_l1_archive_extractor_emits_general_archive_items_without_lifecycle_routes():
-    fake_llm = FakeLLM("""
+    fake_llm = FakeLLM(
+        """
         {
           "items": [
             {
@@ -174,7 +271,8 @@ def test_l1_archive_extractor_emits_general_archive_items_without_lifecycle_rout
             }
           ]
         }
-        """)
+        """
+    )
 
     items = extract_l1_memory_archive_items_from_text(
         uid="user_1",
@@ -198,7 +296,8 @@ def test_l1_archive_extractor_emits_general_archive_items_without_lifecycle_rout
 
 
 def test_l1_archive_extractor_converts_secret_risk_to_sensitive_archive():
-    fake_llm = FakeLLM("""
+    fake_llm = FakeLLM(
+        """
         {
           "items": [
             {
@@ -210,7 +309,8 @@ def test_l1_archive_extractor_converts_secret_risk_to_sensitive_archive():
             }
           ]
         }
-        """)
+        """
+    )
 
     items = extract_l1_memory_archive_items_from_text(
         uid="user_1",
@@ -235,7 +335,8 @@ def test_l1_archive_extractor_persists_archive_route_outcomes_with_deterministic
         return outcome
 
     monkeypatch.setattr(working_observations, "persist_non_active_route_outcome", fake_persist)
-    fake_llm = FakeLLM("""
+    fake_llm = FakeLLM(
+        """
         {
           "items": [
             {
@@ -246,7 +347,8 @@ def test_l1_archive_extractor_persists_archive_route_outcomes_with_deterministic
             }
           ]
         }
-        """)
+        """
+    )
 
     items = extract_l1_memory_archive_items_from_text(
         uid="user_1",
@@ -291,7 +393,8 @@ def test_l1_archive_extractor_skips_tiny_sources_without_llm_call():
 
 
 def test_l1_archive_extractor_accepts_short_voice_transcript():
-    fake_llm = FakeLLM("""
+    fake_llm = FakeLLM(
+        """
         {
           "items": [
             {
@@ -303,7 +406,8 @@ def test_l1_archive_extractor_accepts_short_voice_transcript():
             }
           ]
         }
-        """)
+        """
+    )
 
     items = extract_l1_memory_archive_items_from_text(
         uid="user_short",
@@ -377,7 +481,8 @@ def test_l1_archive_extractor_strict_mode_accepts_valid_empty_batch():
 
 
 def test_l1_archive_extractor_accepts_short_security_relevant_sources():
-    fake_llm = FakeLLM("""
+    fake_llm = FakeLLM(
+        """
         {
           "items": [
             {
@@ -388,7 +493,8 @@ def test_l1_archive_extractor_accepts_short_security_relevant_sources():
             }
           ]
         }
-        """)
+        """
+    )
 
     items = extract_l1_memory_archive_items_from_text(
         uid="user_1",
@@ -439,7 +545,8 @@ def test_l1_archive_extractor_deterministically_bounds_dense_provider_output():
 
 
 def test_l1_archive_extractor_deduplicates_within_subject_without_collapsing_other_speakers():
-    fake_llm = FakeLLM("""
+    fake_llm = FakeLLM(
+        """
         {
           "items": [
             {
@@ -465,7 +572,8 @@ def test_l1_archive_extractor_deduplicates_within_subject_without_collapsing_oth
             }
           ]
         }
-        """)
+        """
+    )
 
     items = extract_l1_memory_archive_items_from_text(
         uid="user_subjects",

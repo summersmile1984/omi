@@ -86,6 +86,7 @@ class ResolvedFeatureRoute:
 _TWO_TIER_MODEL_PROFILE: Dict[str, Tuple[str, str]] = {
     # OpenAI — default intelligence
     'conv_action_items': ('gpt-5.6-luna', 'openai'),
+    'wake_word_adjudication': ('gpt-5.6-luna', 'openai'),
     'conv_structure': ('gpt-5.6-luna', 'openai'),
     'conv_app_result': ('gpt-5.6-luna', 'openai'),
     'daily_summary': ('gpt-5.6-luna', 'openai'),
@@ -129,6 +130,7 @@ _TWO_TIER_MODEL_PROFILE: Dict[str, Tuple[str, str]] = {
     'app_integration': ('gemini-2.5-flash-lite', 'gemini'),
     'trends': ('gemini-2.5-flash-lite', 'gemini'),
     'translation': ('gemini-2.5-flash-lite', 'gemini'),
+    'screen_frame_judge': ('gemini-2.5-flash-lite', 'gemini'),
     'chat_agent': ('claude-sonnet-4-6', 'anthropic'),
     'wrapped_analysis': ('gemini-3-flash-preview', 'openrouter'),
     'web_search': ('sonar-pro', 'perplexity'),
@@ -217,6 +219,7 @@ _STRUCTURED_OUTPUT_FEATURES = {
     'trends',
     'what_matters_now',
     'translation',
+    'screen_frame_judge',
 }
 STRUCTURED_OUTPUT_FEATURES = _STRUCTURED_OUTPUT_FEATURES
 

@@ -36,7 +36,9 @@ def test_every_configured_feature_has_a_unique_per_feature_env_contract():
     manifest = get_feature_route_manifest()
 
     assert set(manifest) == get_all_configured_features()
-    assert len(manifest) == 46  # 45 profile workloads plus the pinned fair-use classifier.
+    assert (
+        len(manifest) == 48
+    )  # 47 profile workloads plus the pinned fair-use classifier (upstream route catalog added 2).
     assert len({spec.provider_env for spec in manifest.values()}) == len(manifest)
     assert len({spec.model_env for spec in manifest.values()}) == len(manifest)
     assert len({spec.fallbacks_env for spec in manifest.values()}) == len(manifest)

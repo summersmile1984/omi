@@ -356,7 +356,7 @@ def test_neutral_storage_never_falls_back_to_gcs(monkeypatch):
     monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
     monkeypatch.delenv('STORAGE_BACKEND', raising=False)
     constructor = MagicMock()
-    monkeypatch.setattr(storage.storage, 'Client', constructor)
+    monkeypatch.setattr(storage, 'create_storage_client', constructor)
 
     with pytest.raises(RuntimeError, match='requires STORAGE_BACKEND=minio'):
         storage._get_storage_client()

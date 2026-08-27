@@ -674,6 +674,7 @@ class AuthService {
       }
       loadNameFromBackendIfNeeded()
       APIKeyService.shared.startFetchingKeys()
+      Task { await APIKeyService.shared.reconcileBYOKActivation() }
       Task { await FloatingBarUsageLimiter.shared.fetchPlan() }
     } catch AuthError.notSignedIn {
       guard sessionAttemptFence.isCurrent(attempt) else { return }
@@ -1193,6 +1194,7 @@ class AuthService {
       AnalyticsManager.shared.signInCompleted(provider: provider)
       clearOAuthFlowIfCurrent(flowId: flowId, callbackServer: callbackServer)
       APIKeyService.shared.startFetchingKeys()
+      Task { await APIKeyService.shared.reconcileBYOKActivation() }
       Task { await FloatingBarUsageLimiter.shared.fetchPlan() }
 
       // Start trial polling for the newly signed-in user

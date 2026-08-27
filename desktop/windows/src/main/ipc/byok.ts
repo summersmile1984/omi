@@ -10,6 +10,7 @@
 import { ipcMain, webContents } from 'electron'
 import { ByokKeyStore } from '../agentKernel/byokStore'
 import { deactivateByok, enrollByok, type ByokEnrollResult } from '../agentKernel/byokEnroll'
+import { notifyPiMonoByokChanged } from '../codingAgent/piMonoSession'
 import type { ByokKeys, ByokProvider } from '../../shared/byok'
 import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
 
@@ -41,6 +42,9 @@ function broadcastByokChanged(): void {
   for (const wc of webContents.getAllWebContents()) {
     if (!wc.isDestroyed()) wc.send('byok:changed')
   }
+  // pi-mono bakes OMI_BYOK_* at spawn; a live worker would otherwise keep
+  // sending the previous key set (or none) until it happened to restart.
+  notifyPiMonoByokChanged()
 }
 
 /** Registers the `byok:*` IPC handlers backing the ByokKeyStore. */
@@ -63,8 +67,19 @@ export function registerByokHandlers(): void {
     getStore().clearAll()
     broadcastByokChanged()
   })
+  ipcMain.handle('byok:clearCodex', (): void => {
+    getStore().clearCodexKey()
+  })
   ipcMain.handle('byok:isActive', (): boolean =>
     resolveWindowsDeployment().allowByok ? getStore().isActive() : false
+  )
+  // Providers whose stored key still matches the last successful enrollment —
+  // the validated-capability evidence quota suppression and plan UI must use
+  // (raw key presence is NOT proof: a rejected key stays stored until edited).
+  // Gated like `byok:getAll`: in a self-hosted profile there is no enrollment
+  // evidence to surface.
+  ipcMain.handle('byok:validatedProviders', (): ByokProvider[] =>
+    resolveWindowsDeployment().allowByok ? getStore().validatedProviders() : []
   )
 
   // Validate the stored keys live and reconcile the backend BYOK activation.
@@ -77,6 +92,9 @@ export function registerByokHandlers(): void {
       apiBase: apiBase(),
       token
     })
+    // Mirror the server-known fingerprint set into the store. Absent on a failed
+    // POST (server state unknown) → prior evidence stands, matching the backend.
+    if (result.enrolledFingerprints) getStore().setEnrolledFingerprints(result.enrolledFingerprints)
     broadcastByokChanged()
     return result
   })
@@ -87,5 +105,7 @@ export function registerByokHandlers(): void {
   ipcMain.handle('byok:deactivate', async (_e, token: string): Promise<void> => {
     if (!resolveWindowsDeployment().allowByok) return
     await deactivateByok({ apiBase: apiBase(), token })
+    getStore().clearEnrolledFingerprints()
+    broadcastByokChanged()
   })
 }

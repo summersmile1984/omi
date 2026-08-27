@@ -213,8 +213,13 @@ def enqueue_account_deletion_wipe(wipe_job_id: str) -> None:
 def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> None:
     if not job_id:
         raise ValueError("job_id must be non-empty")
+    # The task identity embeds the dispatch generation so a re-dispatched job
+    # with a new generation is a distinct task and cannot collide with (and be
+    # deduplicated against) the already-claimed prior generation.
     _enqueue(
-        _queue_names()["finalization"], f"fin-{job_id}", {"job_id": job_id, "dispatch_generation": dispatch_generation}
+        _queue_names()["finalization"],
+        f"fin-{job_id}-{dispatch_generation}",
+        {"job_id": job_id, "dispatch_generation": dispatch_generation},
     )
 
 

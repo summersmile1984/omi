@@ -49,11 +49,9 @@ PLATFORM_ROUTES = ("viral-metrics", "dau-trends", "retention/posthog", "k-factor
 # panel-for-panel identical without mislabeling desktop data as mobile.
 # (Floating bar is a macOS-only feature; mobile sends no crash telemetry.)
 DESKTOP_ONLY_TITLES = {
-    "Floating bar sessions per user",
-    "Floating bar queries",
-    "Floating bar notification CTR",
-    "Crash-free rate (today)",
-    "Crash-free rate",
+    "Floating bar sessions per user", "Floating bar queries",
+    "Floating bar notification CTR", "Crash-free rate (today)",
+    "Crash-free rate", "Omi Desktop rating — daily",
 }
 
 # Account-level metrics: computed over every Firestore user (or every device a
@@ -61,26 +59,17 @@ DESKTOP_ONLY_TITLES = {
 # "Notifications enabled" counts all user docs and defaults missing fields to
 # enabled, so scoping it to a platform would silently lie.
 ACCOUNT_LEVEL_TITLES = {
-    "Daily notifications sent",
-    "Notifications sent — last 168 hours",
-    "Weekly notification reach",
-    "Notifications enabled",
+    "Daily notifications sent", "Notifications sent — last 168 hours",
+    "Weekly notification reach", "Notifications enabled",
 }
 
 LINKS = [
-    {
-        "title": title,
-        "type": "link",
-        "url": f"/grafana/d/{uid}/",
-        "icon": "dashboard",
-        "asDropdown": False,
-        "includeVars": False,
-        "keepTime": False,
-        "targetBlank": False,
-        "tags": [],
-        "tooltip": "",
-    }
-    for title, uid in [("All platforms", "omi-tv"), ("macOS", "omi-tv-macos"), ("Mobile", "omi-tv-mobile")]
+    {"title": title, "type": "link", "url": f"/grafana/d/{uid}/", "icon": "dashboard",
+     "asDropdown": False, "includeVars": False, "keepTime": False, "targetBlank": False,
+     "tags": [], "tooltip": ""}
+    for title, uid in [("All platforms", "omi-tv"),
+                       ("macOS", "omi-tv-macos"),
+                       ("Mobile", "omi-tv-mobile")]
 ]
 
 
@@ -178,7 +167,10 @@ def platform_series(panel, path: str, root: str, field: str, series_name: str) -
 
 def keep_series(panel, keep: set[str]) -> None:
     target = panel["targets"][0]
-    target["columns"] = [c for c in target.get("columns", []) if c.get("type") == "timestamp" or c.get("text") in keep]
+    target["columns"] = [
+        c for c in target.get("columns", [])
+        if c.get("type") == "timestamp" or c.get("text") in keep
+    ]
 
 
 def prune_vars_and_titles(dash) -> None:
@@ -234,8 +226,8 @@ def placeholder_panels(dash, titles: set[str]) -> None:
             "options": {
                 "mode": "markdown",
                 "content": "**Desktop-only surface — no mobile equivalent.**\n\n"
-                "This feature exists only in the macOS app; see the "
-                "[macOS board](/grafana/d/omi-tv-macos/).",
+                           "This feature exists only in the macOS app; see the "
+                           "[macOS board](/grafana/d/omi-tv-macos/).",
             },
             "targets": [],
         }
@@ -255,15 +247,131 @@ def user_growth_series(panel, scope: str, field: str, series_name: str) -> None:
     panel["timeFrom"] = "30d"
 
 
-def set_share_tile_description(dash, platform_label: str) -> None:
-    """The share-rate proxy is platform-scoped per board; keep its description
-    honest about which population the denominator counts."""
+
+RELEASES_PATH = "/api/omi/stats/releases?days=30"
+RELEASES_CHART_TITLE = "Releases / day — macOS vs iOS"
+
+
+def releases_chart_panel(panel_id: int) -> dict:
+    """All-board timeline: one chart, two series — release cadence per
+    platform. A multi-day flat zero on either line is the alarm."""
+    return {
+        "id": panel_id,
+        "type": "timeseries",
+        "title": RELEASES_CHART_TITLE,
+        "description": "macOS: GitHub releases tagged -macos (candidates included). "
+                       "iOS: first day a version clears 200 daily App Store users "
+                       "(TestFlight noise excluded); latest verified against the "
+                       "App Store lookup API.",
+        "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "omi-admin-api"},
+        "gridPos": {"x": 0, "y": 999, "w": 24, "h": 6},
+        "timeFrom": "30d",
+        "fieldConfig": {
+            "defaults": {
+                "unit": "short",
+                "min": 0,
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                    "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 70,
+                    "showPoints": "always", "pointSize": 5, "barAlignment": 0,
+                    "stacking": {"mode": "none", "group": "A"},
+                    "axisPlacement": "auto", "gradientMode": "none",
+                    "spanNulls": False,
+                },
+            },
+            "overrides": [
+                {"matcher": {"id": "byName", "options": "macOS releases"},
+                 "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#3b82f6"}}]},
+                {"matcher": {"id": "byName", "options": "iOS releases"},
+                 "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#22c55e"}}]},
+            ],
+        },
+        "options": {
+            "legend": {"displayMode": "list", "placement": "bottom", "showLegend": True},
+            "tooltip": {"mode": "multi", "sort": "none"},
+        },
+        "targets": [{
+            "refId": "A",
+            "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "omi-admin-api"},
+            "type": "json", "source": "url", "parser": "backend", "format": "timeseries",
+            "url": f"{PROXY}{RELEASES_PATH}",
+            "url_options": {"method": "GET", "data": ""},
+            "root_selector": "daily",
+            "columns": [
+                {"selector": "date", "text": "time", "type": "timestamp",
+                 "timestampFormat": "2006-01-02"},
+                {"selector": "macos", "text": "macOS releases", "type": "number"},
+                {"selector": "ios", "text": "iOS releases", "type": "number"},
+            ],
+        }],
+    }
+
+
+def latest_release_stat(panel_id: int, scope: str) -> dict:
+    """Platform-board tile: latest release version + date, with days-since
+    colored green (fresh) → red (3+ days stale)."""
+    key = "macos" if scope == "macos" else "ios"
+    label = "macOS" if scope == "macos" else "Mobile"
+    return {
+        "id": panel_id,
+        "type": "stat",
+        "title": f"Latest {label} release",
+        "description": ("GitHub releases tagged -macos" if scope == "macos"
+                        else "App Store lookup (exact store release)"),
+        "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "omi-admin-api"},
+        "gridPos": {"x": 0, "y": 8, "w": 4, "h": 4},
+        "fieldConfig": {
+            "defaults": {
+                "unit": "short",
+                "thresholds": {"mode": "absolute", "steps": [
+                    {"color": "#22c55e", "value": None},
+                    {"color": "#f59e0b", "value": 2},
+                    {"color": "#ef4444", "value": 3},
+                ]},
+            },
+            "overrides": [{
+                "matcher": {"id": "byName", "options": "days ago"},
+                "properties": [{"id": "unit", "value": "d"}],
+            }],
+        },
+        "options": {
+            "reduceOptions": {"values": False, "calcs": ["lastNotNull"], "fields": "/.*/"},
+            "orientation": "horizontal",
+            "textMode": "value_and_name",
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "text": {"valueSize": 16, "titleSize": 11},
+        },
+        "targets": [{
+            "refId": "A",
+            "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "omi-admin-api"},
+            "type": "json", "source": "url", "parser": "backend", "format": "table",
+            "url": f"{PROXY}{RELEASES_PATH}",
+            "url_options": {"method": "GET", "data": ""},
+            "root_selector": f"latest.{key}",
+            "columns": [
+                {"selector": "display", "text": "release", "type": "string"},
+                {"selector": "daysSince", "text": "days ago", "type": "number"},
+            ],
+        }],
+    }
+
+
+def set_kfactor_tile_description(dash, platform_label: str, scope: str = "all") -> None:
+    """The K-factor tile is platform-scoped per board; keep its description
+    honest about which signals and which population each board counts."""
+    mobile_note = (
+        " Mobile counts summary shares only — the friend-source answer and the "
+        "referral program are desktop-only signals."
+        if scope == "mobile"
+        else ""
+    )
     for panel in dash.get("panels", []):
-        if base_title(panel).startswith("Share rate"):
+        if base_title(panel).startswith("K-factor") and panel.get("type") == "stat":
             panel["description"] = (
-                f"Sharers ÷ new users, last 30d ({platform_label}). True K-factor needs "
-                "referral attribution — not instrumented yet, so this proxies the "
-                "share loop. 0% = no viral loop shipped."
+                f"Viral events (friend signups + referral redemptions + summary shares) "
+                f"÷ first-seen new users, last 30d ({platform_label}).{mobile_note}"
             )
 
 
@@ -292,23 +400,12 @@ def build_platform_board(base, scope: str) -> dict:
     # Mentor "Omi says" pushes are account-level Firestore messages delivered
     # to every device a user has, so notification volume cannot be split by
     # platform either — those panels live on the All-platforms board only.
-    drop_panels(
-        dash,
-        ACCOUNT_LEVEL_TITLES
-        | {
-            "Users → 1M goal",
-            "ARR",
-            "Active subscriptions",
-            "Trialing",
-            "Trials in pipeline",
-            "Conversations",
-            "MRR by product",
-            "MRR over time",
-            "New subscriptions / month",
-            "Message ratings",
-            "Infra cost by service — last 30 days",
-        },
-    )
+    drop_panels(dash, ACCOUNT_LEVEL_TITLES | {
+        "1M goal", "ARR", "Active subscriptions", "Trialing",
+        "Conversations", "MRR by product", "MRR over time",
+        "New subscriptions / month", "Message ratings",
+        "Infra cost by service — last 30 days",
+    })
     if scope == "mobile":
         placeholder_panels(dash, DESKTOP_ONLY_TITLES)
 
@@ -316,24 +413,23 @@ def build_platform_board(base, scope: str) -> dict:
     ticker["title"] = f"{label} users (all-time)"
     ticker["gridPos"]["h"] = 6
     set_stat_query(
-        ticker,
-        set_url_param(VIRAL_PATH, "platform", scope),
-        "summary",
-        "allTimeUsers",
-        f"{label} users",
+        ticker, set_url_param(VIRAL_PATH, "platform", scope),
+        "summary", "allTimeUsers", f"{label} users",
     )
 
     mrr = panel_by_title(dash, "MRR")
     mrr["title"] = f"MRR ({label})"
-    set_stat_query(mrr, PROFIT_PATH, "summary", "mrrDesktop" if scope == "macos" else "mrrMobile", "MRR")
+    set_stat_query(mrr, PROFIT_PATH, "summary",
+                   "mrrDesktop" if scope == "macos" else "mrrMobile", "MRR")
 
     # Signups / daily-new / cumulative all use viral-metrics userGrowth —
     # the same person-deduped PostHog population as the all-time ticker, so
     # the cumulative chart ends exactly at the ticker value.
     viral_scoped = set_url_param(VIRAL_PATH, "platform", scope)
-    signups = panel_by_title(dash, "Signups — last 7 days")
-    signups["title"] = f"{label} signups — last 7 days"
-    set_compare(signups["targets"][0], "url", path=viral_scoped, root="userGrowth", fields="users")
+    signups = panel_by_title(dash, "Signups (7d)")
+    signups["title"] = f"{label} signups (7d)"
+    set_compare(signups["targets"][0], "url",
+                path=viral_scoped, root="userGrowth", fields="users")
 
     daily = panel_by_title(dash, "Daily new users")
     user_growth_series(daily, scope, "users", "New users")
@@ -344,7 +440,11 @@ def build_platform_board(base, scope: str) -> dict:
     user_growth_series(cumulative, scope, "cumulative", "Total users")
     retarget_var(dash, "d_cum", path=viral_scoped, root="userGrowth", fields="users")
 
-    set_share_tile_description(dash, label)
+    set_kfactor_tile_description(dash, label, scope)
+    drop_panels(dash, {RELEASES_CHART_TITLE})
+    kfactor_idx = next(i for i, p in enumerate(dash["panels"])
+                       if base_title(p).startswith("K-factor") and p.get("type") == "stat")
+    dash["panels"].insert(kfactor_idx + 1, latest_release_stat(990, scope))
 
     series_label = "Desktop" if scope == "macos" else "Mobile"
     for title, new_title, series in [
@@ -371,12 +471,15 @@ def build_platform_board(base, scope: str) -> dict:
     retarget_var(dash, "d_prev", fields=exact_field)
 
     if scope == "macos":
-        # Board context makes the (macOS) marker redundant.
-        panel_by_title(dash, "Activation rate (macOS)")["title"] = "Activation rate"
+        # The stat tile is already platform-neutral ("Activation"); board
+        # context makes the All board's "macOS only" marker redundant here.
+        panel_by_title(dash, "Activation")["description"] = (
+            "Firestore: % of signups with a conversation within 7 days — the aha "
+            "moment. Biggest controllable lever — first-5-minutes work."
+        )
         chart = panel_by_title(dash, "Activation (signup → activated, macOS)")
         chart["title"] = "Activation (signup → activated)" + (
-            "  ·  " + chart["title"].split("  ·  ")[1] if "  ·  " in chart["title"] else ""
-        )
+            "  ·  " + chart["title"].split("  ·  ")[1] if "  ·  " in chart["title"] else "")
     if scope == "mobile":
         # Real mobile equivalents of the macOS-titled panels.
         versions_mobile = "/api/omi/stats/macos-versions?platform=mobile"
@@ -394,8 +497,12 @@ def build_platform_board(base, scope: str) -> dict:
         # days of a macOS signup); mobile activation uses PostHog telemetry
         # (first-seen → Memory Created within 7 days) via viral-metrics.
         viral_mobile = set_url_param(VIRAL_PATH, "platform", "mobile")
-        rate = panel_by_title(dash, "Activation rate (macOS)")
-        rate["title"] = "Activation rate"
+        rate = panel_by_title(dash, "Activation")
+        rate["description"] = (
+            "PostHog telemetry: % of first-seen mobile users with a Memory Created "
+            "within 7 days. Not the Firestore signup→conversation definition the "
+            "All and macOS boards use."
+        )
         set_stat_query(rate, viral_mobile, "summary", "activationRate", "Activation")
         chart = panel_by_title(dash, "Activation (signup → activated, macOS)")
         chart["title"] = "Activation (signup → activated)  ·  ${d_act}"
@@ -408,10 +515,8 @@ def build_platform_board(base, scope: str) -> dict:
             {"selector": "activated", "text": "Activated", "type": "number"},
             {"selector": "rate", "text": "Rate", "type": "number"},
         ]
-        chart["description"] = (
-            "First-seen mobile users creating a Memory within 7 days "
-            "(PostHog telemetry; mobile does not emit Sign In Completed)."
-        )
+        chart["description"] = ("First-seen mobile users creating a Memory within 7 days "
+                                "(PostHog telemetry; mobile does not emit Sign In Completed).")
 
     prune_vars_and_titles(dash)
     reflow(dash)
@@ -420,8 +525,10 @@ def build_platform_board(base, scope: str) -> dict:
 
 def main() -> None:
     base = json.loads(BASE_PATH.read_text(encoding="utf-8"))
+    if not any(base_title(p) == RELEASES_CHART_TITLE for p in base["panels"]):
+        base["panels"].append(releases_chart_panel(991))
     apply_tzdates(base)
-    set_share_tile_description(base, "all platforms")
+    set_kfactor_tile_description(base, "all platforms")
     apply_platform(base, "all")
     # The two Firestore-backed activation panels are macOS-scoped by
     # definition; their delta var compares macOS activation to stay coherent.
@@ -434,7 +541,8 @@ def main() -> None:
     BASE_PATH.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
     for dash, name in [(macos, "omi-tv-macos.json"), (mobile, "omi-tv-mobile.json")]:
         (DASH_DIR / name).write_text(json.dumps(dash, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote {name}: {len(dash['panels'])} panels, " f"{len(dash['templating']['list'])} vars")
+        print(f"wrote {name}: {len(dash['panels'])} panels, "
+              f"{len(dash['templating']['list'])} vars")
     print(f"updated omi-tv.json: {len(base['panels'])} panels (NYC tz + _tzdates + platform=all + links)")
 
 

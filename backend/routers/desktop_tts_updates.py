@@ -227,8 +227,10 @@ async def tts_synthesize(request: TtsSynthesizeRequest, uid: str = Depends(get_c
         raise HTTPException(status_code=400, detail="text is required")
     if len(text) > _MAX_TTS_CHARS:
         raise HTTPException(status_code=400, detail="text is too long")
-
-    if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop"):
+    voice_id = request.voice_id.strip()
+    if not _is_allowed_openai_voice(voice_id):
+        raise HTTPException(status_code=400, detail="voice_id is not supported")
+    if await run_blocking(db_executor, is_desktop_trial_paywalled, uid, "desktop", required_byok_provider="openai"):
         raise HTTPException(status_code=403, detail="A paid subscription is required")
 
     if tts_explicitly_disabled():

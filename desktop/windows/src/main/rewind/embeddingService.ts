@@ -41,6 +41,7 @@ import {
   rewindEmbeddingProjectionMatches
 } from '../ipc/db'
 import { resolveWindowsDeployment } from '../../shared/deploymentProfile'
+import { requestFreshSession, tokenLooksExpired } from '../assistants/core/session'
 import { recordFallback } from '../observability/fallback'
 
 /** How often the flush timer checks the queue (the 60s deadline lives in the queue). */
@@ -56,6 +57,43 @@ const BACKFILL_BATCH_DELAY_MS = 200
 const MAX_PENDING = 500
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+function isProxyAuthExpired(error: unknown): boolean {
+  return error instanceof Error && /\bstatus 401\b/.test(error.message)
+}
+
+/** Pull a force-refreshed Firebase token into the Rewind session, in place.
+ *  Same renderer-pull seam the assistants and pi-mono use. Null pull is a no-op.
+ *
+ *  Identity: `configureRewindEmbedSession` owns sign-out / account switch. A pull
+ *  that started under user A must not resurrect A's token after a sign-out, or
+ *  write A's bearer over B's just-pushed session (which would drain A's queued
+ *  OCR under B's account). Generation + object identity are the seam. */
+async function refreshEmbedSession(): Promise<EmbedSession | null> {
+  const mine = generation
+  const previous = session
+  if (!previous) return null
+  const pulled = await requestFreshSession()
+  if (generation !== mine || session !== previous) return session
+  if (!pulled?.token) return session
+  const pulledUid = tokenUid(pulled.token)
+  if (sessionUid !== null && pulledUid !== null && pulledUid !== sessionUid) {
+    return session
+  }
+  session = {
+    token: pulled.token,
+    apiBase: pulled.apiBase ?? session.apiBase,
+    desktopApiBase: pulled.desktopApiBase || session.desktopApiBase
+  }
+  if (pulledUid) sessionUid = pulledUid
+  return session
+}
+
+async function liveEmbedSession(): Promise<EmbedSession | null> {
+  if (!session) return null
+  if (tokenLooksExpired(session.token)) return (await refreshEmbedSession()) ?? session
+  return session
+}
 
 const queue = new EmbedQueue()
 const recentHashes = new RecentHashCache()
@@ -306,16 +344,32 @@ async function flushBatch(
  */
 async function drain(current: EmbedSession, force: boolean): Promise<void> {
   const mine = generation
+  let live = current
+  let retriedAuth = false
   while (queue.size > 0) {
-    if (generation !== mine || session !== current) return // signed out / user changed
+    if (generation !== mine || session !== live) return // signed out / user changed
     const batch = queue.take(EMBED_BATCH_SIZE)
     try {
-      await flushBatch(batch, current, mine)
-    } catch (e) {
+      await flushBatch(batch, live, mine)
+    } catch (caught) {
       // Degrade quietly for the user: these frames stay unembedded (keyword search
       // still finds them) and the sweep moves on — but name the degrade for ops
       // through the shared fallback emitter rather than only a local log.
       if (generation !== mine) return // torn down mid-request; not the new session's failure
+      let error = caught
+      if (!retriedAuth && isProxyAuthExpired(error)) {
+        retriedAuth = true
+        const refreshed = await refreshEmbedSession()
+        if (refreshed && generation === mine && refreshed.token !== live.token) {
+          live = refreshed
+          try {
+            await flushBatch(batch, live, mine)
+            continue
+          } catch (retryErr) {
+            error = retryErr
+          }
+        }
+      }
       for (const item of batch) failedThisLaunch.add(item.frameId)
       recordFallback({
         component: 'other',
@@ -324,7 +378,7 @@ async function drain(current: EmbedSession, force: boolean): Promise<void> {
         reason: 'embed_batch_failed',
         outcome: 'degraded',
         batchSize: batch.length,
-        message: (e as Error).message
+        message: (error as Error).message
       })
       return
     }
@@ -349,7 +403,7 @@ async function flushDue(force = false): Promise<void> {
   // double-send the same frames), while a forced caller still gets its turn.
   const run = async (): Promise<void> => {
     await flushInFlight?.catch(() => {})
-    const current = session
+    const current = await liveEmbedSession()
     if (!current) return
     await drain(current, force)
   }
@@ -361,25 +415,47 @@ async function flushDue(force = false): Promise<void> {
 }
 
 /**
+ * Embed a search query. Self-hosted routes through the provider-neutral
+ * capability endpoint (activating its projection); managed cloud keeps the
+ * legacy Gemini proxy. Returns null when the vector is unusable, never throws.
+ */
+async function embedQueryWith(current: EmbedSession, text: string): Promise<Float32Array | null> {
+  if (resolveWindowsDeployment().profile === 'self_hosted') {
+    const result = await embedCapabilityBatch(current, [text], 'rewind', 'query', 'ns3')
+    const projectionKey = embeddingProjectionKey(result.projection)
+    activateSelfHostedProjection(projectionKey, result.responseGeneration)
+    if (!rewindEmbeddingProjectionMatches(projectionKey)) return null
+    return result.vectors[0]
+  }
+  const vec = await embedOne(current, text, 'RETRIEVAL_QUERY')
+  return vec.length === EMBED_DIM ? vec : null
+}
+
+/**
  * Embed a search query (`RETRIEVAL_QUERY` — the asymmetric counterpart to the
  * stored passages' `RETRIEVAL_DOCUMENT`). Returns null, never throws, when
  * semantic search is unavailable: the caller falls back to keyword-only.
  */
 export async function embedRewindQuery(text: string): Promise<Float32Array | null> {
-  const current = session
-  if (!current || !text.trim()) return null
+  if (!text.trim()) return null
+  const mine = generation
+  const first = await liveEmbedSession()
+  if (!first || generation !== mine) return null
   try {
-    if (resolveWindowsDeployment().profile === 'self_hosted') {
-      const result = await embedCapabilityBatch(current, [text], 'rewind', 'query', 'ns3')
-      const projectionKey = embeddingProjectionKey(result.projection)
-      activateSelfHostedProjection(projectionKey, result.responseGeneration)
-      if (!rewindEmbeddingProjectionMatches(projectionKey)) return null
-      return result.vectors[0]
+    return await embedQueryWith(first, text)
+  } catch (caught) {
+    let error = caught
+    if (isProxyAuthExpired(error) && generation === mine) {
+      const refreshed = await refreshEmbedSession()
+      if (refreshed && generation === mine && refreshed.token !== first.token) {
+        try {
+          return await embedQueryWith(refreshed, text)
+        } catch (retryErr) {
+          error = retryErr
+        }
+      }
     }
-    const vec = await embedOne(current, text, 'RETRIEVAL_QUERY')
-    return vec.length === EMBED_DIM ? vec : null
-  } catch (e) {
-    console.warn(`[rewind-embed] query embed failed, keyword-only: ${(e as Error).message}`)
+    console.warn(`[rewind-embed] query embed failed, keyword-only: ${(error as Error).message}`)
     return null
   }
 }

@@ -448,10 +448,6 @@ MACOS_MODEL_BOUNDARY_REQUIREMENTS = {
         'allowsAgentAdapter(',
         'removeInheritedModelVendorEnvironment(',
     ),
-    'desktop/macos/Desktop/Sources/ProactiveAssistants/Assistants/TaskAgent/TaskAgentManager.swift': (
-        'allowsClaudeTaskAgent(',
-        'AgentError.modelCapabilityUnavailable',
-    ),
 }
 MACOS_DIRECT_MODEL_HOST_ALLOWLIST = {
     'desktop/macos/Desktop/Sources/BYOKValidator.swift',

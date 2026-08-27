@@ -252,7 +252,7 @@ async def _mcp_post(
 
     assert_http_endpoint_allowed(server_url)
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-        resp = await client.post(server_url, json=payload, headers=headers, follow_redirects=True)
+        resp = await client.post(server_url, json=payload, headers=headers, follow_redirects=False)
 
         if resp.status_code == 401:
             raise PermissionError("MCP server returned 401 Unauthorized")
@@ -337,10 +337,10 @@ async def _sse_send_and_receive_inner(
 
     assert_http_endpoint_allowed(sse_url)
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-        async with client.stream("GET", sse_url, headers=headers, follow_redirects=True) as stream:
+        async with client.stream("GET", sse_url, headers=headers, follow_redirects=False) as stream:
             if stream.status_code == 401:
                 raise PermissionError("MCP server returned 401 Unauthorized")
-            if stream.status_code >= 400:
+            if stream.status_code >= 400 or 300 <= stream.status_code < 400:
                 await stream.aread()
                 raise httpx.HTTPStatusError(
                     f"SSE connection failed with {stream.status_code}",
@@ -382,12 +382,18 @@ async def _sse_send_and_receive_inner(
                             if access_token:
                                 post_headers["Authorization"] = f"Bearer {access_token}"
                             for payload in payloads:
-                                await client.post(
+                                post_response = await client.post(
                                     post_endpoint,
                                     json=payload,
                                     headers=post_headers,
-                                    follow_redirects=True,
+                                    follow_redirects=False,
                                 )
+                                if 300 <= post_response.status_code < 400:
+                                    raise httpx.HTTPStatusError(
+                                        f'SSE endpoint redirected with {post_response.status_code}',
+                                        request=post_response.request,
+                                        response=post_response,
+                                    )
 
                         elif event_type == "message" and data_str:
                             try:
@@ -658,6 +664,11 @@ async def _call_mcp_tool_http(
                 break
             else:
                 return "Error: MCP server returned 401 Unauthorized and no refresh token available."
+        except httpx.HTTPStatusError as e:
+            if 300 <= e.response.status_code < 400:
+                raise
+            last_error = e
+            continue
         except Exception as e:
             last_error = e
             continue
@@ -696,6 +707,10 @@ async def _call_mcp_tool_sse(
             resp = await _call_tool_via_sse(server_url, tool_name, arguments, new_tokens["access_token"])
         else:
             return "Error: MCP server returned 401 Unauthorized and no refresh token available."
+    except httpx.HTTPStatusError as e:
+        if 300 <= e.response.status_code < 400:
+            raise
+        return f"Error calling MCP tool via SSE: {e}"
     except Exception as e:
         return f"Error calling MCP tool via SSE: {e}"
 

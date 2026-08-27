@@ -30,7 +30,12 @@ import {
   embeddingProjectionKey,
   type EmbedSession
 } from '../rewind/embeddingClient'
-import { getBackendSession, getSessionEpoch } from '../assistants/core/session'
+import {
+  getBackendSession,
+  getSessionEpoch,
+  isSessionExpired,
+  pullFreshSession
+} from '../assistants/core/session'
 import type { TaskEmbeddingSource } from '../../shared/types'
 import {
   getAllActionItemEmbeddings,
@@ -151,6 +156,37 @@ function isExpectedBackendStop(e: unknown): boolean {
   return /\b(402|429)\b/.test(msg)
 }
 
+function isProxyAuthExpired(error: unknown): boolean {
+  return error instanceof Error && /\bstatus 401\b/.test(error.message)
+}
+
+/** Pre-emptive pull when the shared token is already past skew, then the current
+ *  session. Same class as Rewind's `liveEmbedSession` — the hidden-window push
+ *  can stall, and a locally-expired JWT is a doomed 401. */
+async function liveSession(): Promise<EmbedSession | null> {
+  if (isSessionExpired()) await pullFreshSession()
+  return readSession()
+}
+
+/** Run an embedding call with pull-based freshness: pre-check, then 401 → pull
+ *  + retry once, but only when the epoch did not move (account switch / sign-out
+ *  is the caller's persist-guard, not a hot retry). */
+async function withFreshEmbedSession<T>(run: (session: EmbedSession) => Promise<T>): Promise<T> {
+  const first = await liveSession()
+  if (!first) throw new Error('backend session unavailable')
+  try {
+    return await run(first)
+  } catch (caught) {
+    if (!isProxyAuthExpired(caught)) throw caught
+    const epoch = getSessionEpoch()
+    await pullFreshSession()
+    if (getSessionEpoch() !== epoch) throw caught
+    const second = readSession()
+    if (!second || second.token === first.token) throw caught
+    return await run(second)
+  }
+}
+
 /** Persist one vector as a row BLOB on its source table. */
 function persistEmbedding(source: TaskEmbeddingSource, id: number, vec: Float32Array): void {
   if (source === 'action_item') updateActionItemEmbedding(id, vec)
@@ -224,18 +260,20 @@ export function removeFromIndex(source: TaskEmbeddingSource, id: number): void {
  * caller can fall back. The client L2-normalizes the vector already.
  */
 export async function embedQuery(text: string): Promise<Float32Array | null> {
-  const session = readSession()
-  if (!session || !text.trim()) return null
+  if (!text.trim()) return null
   try {
-    if (resolveWindowsDeployment().profile === 'self_hosted') {
-      const result = await embedSelfHosted(session, [text], 'query')
-      activateProjection(result.projectionKey, result.responseGeneration)
-      if (!taskEmbeddingProjectionMatches(result.projectionKey)) return null
-      activeQueryProjectionKey = result.projectionKey
-      return result.vectors[0]
-    }
-    const vec = await embedOne(session, text, 'RETRIEVAL_QUERY')
-    return vec.length === EMBED_DIM ? vec : null
+    const vec = await withFreshEmbedSession(async (session) => {
+      if (resolveWindowsDeployment().profile === 'self_hosted') {
+        const result = await embedSelfHosted(session, [text], 'query')
+        activateProjection(result.projectionKey, result.responseGeneration)
+        if (!taskEmbeddingProjectionMatches(result.projectionKey)) return null
+        activeQueryProjectionKey = result.projectionKey
+        return result.vectors[0]
+      }
+      const managed = await embedOne(session, text, 'RETRIEVAL_QUERY')
+      return managed.length === EMBED_DIM ? managed : null
+    })
+    return vec ?? null
   } catch (e) {
     console.warn(`[task-embed] query embed failed: ${(e as Error).message}`)
     return null
@@ -276,14 +314,23 @@ export async function generateEmbeddingForTask(
   id: number,
   text: string
 ): Promise<void> {
-  const session = readSession()
-  if (!session || !text.trim()) return
+  if (!text.trim()) return
   const epoch = getSessionEpoch()
   try {
     const selfHosted = resolveWindowsDeployment().profile === 'self_hosted'
-    const result = selfHosted ? await embedSelfHosted(session, [text], 'document') : null
-    const vec = result ? result.vectors[0] : await embedOne(session, text, 'RETRIEVAL_DOCUMENT')
+    const outcome = await withFreshEmbedSession(async (session) => {
+      if (selfHosted) {
+        const result = await embedSelfHosted(session, [text], 'document')
+        return { result, vec: result.vectors[0] }
+      }
+      const managed = await embedOne(session, text, 'RETRIEVAL_DOCUMENT')
+      return { result: null, vec: managed }
+    })
+    // Session re-checked AFTER the (awaited) embed and BEFORE the DB write, with
+    // no await in between — a sign-out/switch that landed during the request
+    // drops the vector instead of writing the previous user's data.
     if (getSessionEpoch() !== epoch) return // session changed mid-request; drop
+    const { result, vec } = outcome
     if (!vec) return
     if (result) activateProjection(result.projectionKey, result.responseGeneration)
     if (!selfHosted && vec.length !== EMBED_DIM) return
@@ -320,8 +367,7 @@ export async function backfillMissing(): Promise<void> {
   let embedded = 0
   for (const source of ['action_item', 'staged_task'] as const) {
     while (embedded < BACKFILL_MAX_PER_LAUNCH) {
-      const session = readSession()
-      if (!session) return // signed out mid-sweep; the next launch resumes it
+      if (!(await liveSession())) return // signed out mid-sweep; the next launch resumes it
       const limit = Math.min(BACKFILL_PAGE, BACKFILL_MAX_PER_LAUNCH - embedded)
       const rows = missingPage(source, limit)
       if (rows.length === 0) break // this source is fully embedded
@@ -331,19 +377,19 @@ export async function backfillMissing(): Promise<void> {
       let projectionKey: string | null = null
       try {
         if (resolveWindowsDeployment().profile === 'self_hosted') {
-          const result = await embedSelfHosted(
-            session,
-            rows.map((r) => r.description),
-            'document'
+          const result = await withFreshEmbedSession((session) =>
+            embedSelfHosted(session, rows.map((r) => r.description), 'document')
           )
           activateProjection(result.projectionKey, result.responseGeneration)
           projectionKey = result.projectionKey
           vectors = result.vectors
         } else {
-          vectors = await embedBatch(
-            session,
-            rows.map((r) => r.description),
-            'RETRIEVAL_DOCUMENT'
+          vectors = await withFreshEmbedSession((session) =>
+            embedBatch(
+              session,
+              rows.map((r) => r.description),
+              'RETRIEVAL_DOCUMENT'
+            )
           )
         }
       } catch (e) {

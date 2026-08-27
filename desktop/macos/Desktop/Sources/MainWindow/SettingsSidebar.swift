@@ -76,6 +76,10 @@ struct SettingsSearchItem: Identifiable {
       name: "Data Retention", subtitle: "How long to keep screen recordings",
       keywords: ["retention", "storage", "delete old", "keep data"], section: .rewind,
       icon: "clock.arrow.circlepath", settingId: "rewind.retention"),
+    SettingsSearchItem(
+      name: "Meeting Screenshots", subtitle: "Add screenshots of what was on screen to meeting notes",
+      keywords: ["meeting", "screenshots", "notes", "banner", "photos"], section: .rewind,
+      icon: "photo.on.rectangle.angled", settingId: "rewind.meetingnotescreenshots"),
 
     // Transcription
     SettingsSearchItem(
@@ -126,17 +130,17 @@ struct SettingsSearchItem: Identifiable {
       keywords: ["memory", "facts", "notify memory"], section: .notifications, icon: "bell",
       settingId: "notifications.memory"),
     SettingsSearchItem(
-      name: "Integration Suggestions",
-      subtitle: "Offer to connect an app when you open one Omi works with",
+      name: "Integration Notifications",
+      subtitle: "Occasionally offer to connect an app Omi can use — Gmail, Notion, ChatGPT",
       keywords: ["integration", "suggestions", "connect", "gmail", "notion", "nudge"],
       section: .notifications, icon: "bell",
       settingId: "notifications.integrationsuggestions"),
     SettingsSearchItem(
-      name: "Reset all suggestion history",
+      name: "Reset Integration Suggestions",
       subtitle: "Clear every integration's suggestion history so Omi can offer them again",
       keywords: ["reset", "integration", "suggestions", "history", "again"],
-      section: .notifications, icon: "bell",
-      settingId: "notifications.integrationsuggestions.reset"),
+      section: .advanced, icon: "wrench.and.screwdriver",
+      settingId: "advanced.troubleshooting.resetintegrationsuggestions"),
     SettingsSearchItem(
       name: "Daily Summary",
       subtitle: "Receive a daily summary of your conversations and activities",
@@ -192,6 +196,12 @@ struct SettingsSearchItem: Identifiable {
       name: "Upgrade Plan", subtitle: "Buy Operator or Architect",
       keywords: ["upgrade", "buy", "pricing", "checkout", "architect", "operator", "unlimited"], section: .planUsage,
       icon: "creditcard", settingId: "planusage.purchase"),
+
+    // Referral
+    SettingsSearchItem(
+      name: "Refer a Friend", subtitle: "Share one free month of Operator",
+      keywords: ["refer", "referral", "friend", "gift", "free month", "share link"],
+      section: .referral, icon: "gift", settingId: "referral.link"),
 
     // About
     SettingsSearchItem(
@@ -391,6 +401,7 @@ enum SettingsSidebarRoutes {
     .permissions,
     .shortcuts,
     .advanced,
+    .referral,
     .about,
   ]
 }
@@ -597,6 +608,7 @@ struct SettingsSidebarItem: View {
     case .floatingBar: return "sparkles"
     case .shortcuts: return "keyboard"
     case .advanced: return "chart.bar"
+    case .referral: return "gift"
     case .about: return "info.circle"
     case .permissions: return PermissionNavSymbol.outline
     }

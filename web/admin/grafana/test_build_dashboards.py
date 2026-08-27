@@ -247,13 +247,81 @@ class AccountLevelLeakTests(unittest.TestCase):
         self.assertTrue(account_level <= all_titles, "All board must keep the account-level panels")
 
 
-class ShareTileDescriptionTests(unittest.TestCase):
-    def test_share_tile_description_names_its_board_scope(self) -> None:
+class ReleasePanelTests(unittest.TestCase):
+    def test_all_board_has_the_two_line_release_chart(self) -> None:
+        panel = next(p for p in load("omi-tv")["panels"]
+                     if build_dashboards.base_title(p) == build_dashboards.RELEASES_CHART_TITLE)
+        target = panel["targets"][0]
+        self.assertIn("/api/omi/stats/releases", target["url"])
+        self.assertIn("_tzdates=date", target["url"])
+        names = [c["text"] for c in target["columns"]]
+        self.assertEqual(names, ["time", "macOS releases", "iOS releases"])
+
+    def test_platform_boards_show_their_latest_release_stat(self) -> None:
+        for uid, root, absent in [("omi-tv-macos", "latest.macos", "latest.ios"),
+                                  ("omi-tv-mobile", "latest.ios", "latest.macos")]:
+            dash = load(uid)
+            titles = [build_dashboards.base_title(p) for p in dash["panels"]]
+            self.assertNotIn(build_dashboards.RELEASES_CHART_TITLE, titles, uid)
+            stat = next(p for p in dash["panels"]
+                        if build_dashboards.base_title(p).startswith("Latest"))
+            self.assertEqual(stat["targets"][0]["root_selector"], root, uid)
+            self.assertNotEqual(stat["targets"][0]["root_selector"], absent, uid)
+
+
+class KFactorTests(unittest.TestCase):
+    """The K-factor surface: stat tile + daily graph + daily/weekly trackers,
+    platform-scoped per board, reading the rebuilt viral-signals payload."""
+
+    def test_kfactor_tile_reads_summary_and_names_its_board_scope(self) -> None:
         for uid, label in [("omi-tv", "all platforms"), ("omi-tv-macos", "macOS"),
                            ("omi-tv-mobile", "Mobile")]:
             panel = next(p for p in load(uid)["panels"]
-                         if build_dashboards.base_title(p).startswith("Share rate"))
+                         if build_dashboards.base_title(p).startswith("K-factor")
+                         and p.get("type") == "stat")
             self.assertIn(f"last 30d ({label})", panel["description"], uid)
+            target = panel["targets"][0]
+            self.assertEqual(target["root_selector"], "summary", uid)
+            self.assertEqual([c["selector"] for c in target["columns"]], ["kFactor"], uid)
+
+    def test_mobile_kfactor_tile_admits_shares_only(self) -> None:
+        panel = next(p for p in load("omi-tv-mobile")["panels"]
+                     if build_dashboards.base_title(p).startswith("K-factor")
+                     and p.get("type") == "stat")
+        self.assertIn("desktop-only", panel["description"])
+
+    def test_every_board_has_the_viral_tracker_panels(self) -> None:
+        for uid, scope in [("omi-tv", "all"), ("omi-tv-macos", "macos"),
+                           ("omi-tv-mobile", "mobile")]:
+            dash = load(uid)
+            for title, root in [("K-factor — daily", "daily"),
+                                ("Viral loop — daily", "daily"),
+                                ("Viral loop — weekly", "weekly")]:
+                panel = next(p for p in dash["panels"]
+                             if build_dashboards.base_title(p) == title)
+                target = panel["targets"][0]
+                self.assertEqual(target["root_selector"], root, f"{uid} {title}")
+                params = urllib.parse.parse_qs(
+                    urllib.parse.urlparse(target["url"]).query)
+                self.assertEqual(params["platform"], [scope], f"{uid} {title}")
+                # The date/week column is routed through the proxy's NYC
+                # rewrite, never parsed as a bare UTC-midnight day.
+                ts_cols = [c for c in target["columns"] if c["type"] == "timestamp"]
+                self.assertEqual(len(ts_cols), 1, f"{uid} {title}")
+                self.assertEqual(ts_cols[0]["timestampFormat"],
+                                 build_dashboards.RFC3339, f"{uid} {title}")
+                self.assertEqual(params["_tzdates"], [ts_cols[0]["selector"]],
+                                 f"{uid} {title}")
+
+    def test_viral_trackers_chart_all_three_signals(self) -> None:
+        for uid in ["omi-tv", "omi-tv-macos", "omi-tv-mobile"]:
+            for title in ["Viral loop — daily", "Viral loop — weekly"]:
+                panel = next(p for p in load(uid)["panels"]
+                             if build_dashboards.base_title(p) == title)
+                selectors = [c["selector"] for c in panel["targets"][0]["columns"]
+                             if c.get("type") != "timestamp"]
+                self.assertEqual(selectors, ["friend", "referral", "shares"],
+                                 f"{uid} {title}")
 
 
 class ExactRevenueTests(unittest.TestCase):
@@ -287,6 +355,32 @@ class BuilderIdempotencyTests(unittest.TestCase):
         self.assertEqual(base, rebuilt)
         self.assertEqual(build_dashboards.build_platform_board(rebuilt, "macos"), load("omi-tv-macos"))
         self.assertEqual(build_dashboards.build_platform_board(rebuilt, "mobile"), load("omi-tv-mobile"))
+
+
+class ApplyPreservesLayoutTests(unittest.TestCase):
+    """An apply must never revert layout the user arranged in the Grafana UI
+    (#12212 era: three same-day applies stamped checked-in gridPos over
+    Nik's manual resizes). Live geometry wins for panels that already exist."""
+
+    def test_live_gridpos_wins_for_existing_panels(self) -> None:
+        import apply_omi_tv_dashboard as apply_mod
+        incoming = [
+            {"id": 7, "gridPos": {"h": 6, "w": 4, "x": 20, "y": 0}},
+            {"id": 992, "gridPos": {"h": 7, "w": 24, "x": 0, "y": 990}},
+        ]
+        live = [
+            {"id": 7, "gridPos": {"h": 9, "w": 12, "x": 0, "y": 3}},  # user resized
+        ]
+        apply_mod.preserve_live_layout(incoming, live)
+        self.assertEqual(incoming[0]["gridPos"], {"h": 9, "w": 12, "x": 0, "y": 3})
+        # A panel new to this apply keeps its authored position.
+        self.assertEqual(incoming[1]["gridPos"], {"h": 7, "w": 24, "x": 0, "y": 990})
+
+    def test_first_apply_of_a_new_board_keeps_authored_layout(self) -> None:
+        import apply_omi_tv_dashboard as apply_mod
+        incoming = [{"id": 1, "gridPos": {"h": 6, "w": 4, "x": 0, "y": 0}}]
+        apply_mod.preserve_live_layout(incoming, [])
+        self.assertEqual(incoming[0]["gridPos"], {"h": 6, "w": 4, "x": 0, "y": 0})
 
 
 if __name__ == "__main__":

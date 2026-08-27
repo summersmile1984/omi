@@ -19,6 +19,7 @@ validate_identity_configuration()
 import firebase_admin
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
 
 from database.google_credentials import prepare_google_credentials
 
@@ -84,6 +85,7 @@ from routers import (
     desktop_realtime,
     model_capabilities,
     desktop_screen_crisp,
+    referrals,
     desktop_tts_updates,
     scores,
     stt,
@@ -94,12 +96,15 @@ from routers import (
     conversation_finalization,
     public_shared_conversation_chat,
     identity_browser,
+    screen_frames,
 )
+from routers.listen.registry import proactive_message_dispatcher
 
 from utils.other.timeout import TimeoutMiddleware
 from utils.observability import log_langsmith_status
 from utils.subscription import validate_stripe_price_ids
 from utils.http_client import close_all_clients
+from utils.metrics import start_metrics_sidecar_server, stop_metrics_sidecar_server
 from utils.executors import (
     drain_background_tasks,
     log_executor_health,
@@ -108,10 +113,12 @@ from utils.executors import (
 )
 from utils.executors import start_background_task
 from utils.cloud_tasks import validate_account_deletion_dispatch_configuration
+from services.conversation_finalization import reconcile_abandoned_byok_finalization_jobs
 from services.conversation_finalization import reconcile_listen_finalization_jobs
 from services.conversation_finalization import reconcile_meeting_receipts
 from services.conversation_finalization import reconcile_stale_processing_conversations
 from services.users.account_deletion import reconcile_pending_deletion_wipes
+from utils.other.local_storage import local_storage_root_from_env
 
 # Log LangSmith tracing status at startup
 log_langsmith_status()
@@ -142,6 +149,11 @@ if _firebase_admin_required:
         firebase_admin.initialize_app(options=_firebase_admin_options)  # type: ignore[reportUnknownMemberType]  # firebase_admin untyped
 
 app = FastAPI()
+
+_local_storage_root = local_storage_root_from_env()
+if _local_storage_root is not None:
+    _local_storage_root.mkdir(parents=True, exist_ok=True)
+    app.mount('/_local/storage', StaticFiles(directory=_local_storage_root), name='local-storage')
 
 # Explicit, default-deny CORS: this API is Bearer-token authenticated (mobile/
 # desktop apps, not ambient browser cookies), so no cross-origin browser
@@ -184,6 +196,7 @@ app.include_router(notifications.router)
 app.include_router(integration.router)
 app.include_router(agents.router)
 app.include_router(users.router)
+app.include_router(referrals.router)
 app.include_router(conversation_finalization.router)
 app.include_router(trends.router)
 
@@ -239,6 +252,7 @@ app.include_router(desktop_realtime.router)
 app.include_router(model_capabilities.router)
 app.include_router(desktop_screen_crisp.router)
 app.include_router(desktop_tts_updates.router)
+app.include_router(screen_frames.router)
 
 
 methods_timeout = {
@@ -272,6 +286,7 @@ app.add_middleware(BYOKMiddleware)
 
 @app.on_event("startup")  # type: ignore[reportDeprecated]  # FastAPI on_event still functional; lifespan migration would change app wiring
 async def startup_event():
+    start_metrics_sidecar_server()
     validate_account_deletion_dispatch_configuration()
     asyncio.create_task(log_executor_health())
     # Drain account-deletion wipes orphaned by a previous deploy/restart. Offloaded
@@ -292,10 +307,18 @@ async def startup_event():
         name='startup_stale_processing_reconcile',
     )
     start_background_task(
+        run_blocking(db_executor, _drain_abandoned_byok_finalization_jobs),
+        name='startup_byok_abandonment_reconcile',
+    )
+    start_background_task(
         run_blocking(db_executor, _drain_meeting_receipts),
         name='startup_meeting_receipt_reconcile',
     )
     start_background_task(_periodic_listen_finalization_reconcile(), name='periodic_listen_finalization_reconcile')
+    start_background_task(
+        proactive_message_dispatcher(),
+        name='proactive_message_dispatcher',
+    )
 
 
 def _drain_pending_deletion_wipes():
@@ -344,6 +367,16 @@ def _drain_stale_processing_conversations():
         logger.error(f"Startup stale-processing reconciliation failed: {e}")
 
 
+def _drain_abandoned_byok_finalization_jobs():
+    """Best-effort disposition of BYOK finalization jobs no live session can claim."""
+    try:
+        result = reconcile_abandoned_byok_finalization_jobs()
+        if result.get('abandoned'):
+            logger.info(f"Startup byok-abandonment reconciliation: {result}")
+    except Exception as e:
+        logger.error(f"Startup byok-abandonment reconciliation failed: {e}")
+
+
 def _drain_meeting_receipts():
     """Best-effort repair of missing meeting receipt intents and historical receipts."""
     try:
@@ -382,6 +415,12 @@ async def _periodic_listen_finalization_reconcile(interval_seconds: int | None =
         except Exception as e:
             logger.error(f"Periodic stale-processing reconciliation failed: {e}")
         try:
+            byok_result = await run_blocking(db_executor, reconcile_abandoned_byok_finalization_jobs)
+            if byok_result.get('abandoned'):
+                logger.info(f"Periodic byok-abandonment reconciliation: {byok_result}")
+        except Exception as e:
+            logger.error(f"Periodic byok-abandonment reconciliation failed: {e}")
+        try:
             receipt_result = await run_blocking(db_executor, reconcile_meeting_receipts)
             if receipt_result.get('repaired') or receipt_result.get('backfilled'):
                 logger.info(f"Periodic meeting-receipt reconciliation: {receipt_result}")
@@ -393,6 +432,7 @@ async def _periodic_listen_finalization_reconcile(interval_seconds: int | None =
 async def shutdown_event():
     await drain_background_tasks(timeout=10.0)
     await close_all_clients()
+    stop_metrics_sidecar_server()
 
 
 paths = ['_temp', '_samples', '_segments', '_speech_profiles']

@@ -148,7 +148,18 @@ def validate_app_endpoints_for_reenable(app_dict: Dict[str, Any], update_dict: D
             # boundary as the shared HTTP pools; otherwise a self-hosted process
             # could probe an arbitrary host before the app is enabled.
             assert_http_endpoint_allowed(url)
-            resp = httpx.request(method, url, json={}, timeout=10.0, follow_redirects=True)
+            # Must match delivery, which pins the destination IP and so cannot follow
+            # redirects. Checking with redirects followed passed endpoints that then
+            # failed on the very first real webhook.
+            resp = httpx.request(method, url, json={}, timeout=10.0, follow_redirects=False)
+            if 300 <= resp.status_code < 400:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f'{label.capitalize()} endpoint redirects ({resp.status_code}). Deliveries do not follow '
+                        'redirects — point it at the final URL before re-enabling.'
+                    ),
+                )
             if require_2xx and (resp.status_code < 200 or resp.status_code >= 300):
                 raise HTTPException(
                     status_code=400,

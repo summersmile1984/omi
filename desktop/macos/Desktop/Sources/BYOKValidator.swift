@@ -32,6 +32,11 @@ enum BYOKValidator {
     let send = transport ?? ping
 
     switch provider {
+    case .openrouter:
+      return await ping(
+        url: URL(string: "https://openrouter.ai/api/v1/auth/key")!,
+        headers: ["Authorization": "Bearer \(trimmed)"]
+      )
     case .openai:
       return await send(
         URL(string: "https://api.openai.com/v1/models")!,

@@ -1,6 +1,6 @@
 {
   "name": "omi-windows",
-  "version": "1.0.34",
+  "version": "1.0.35",
   "description": "An Electron application with React and TypeScript",
   "main": "./out/main/index.js",
   "engines": {
@@ -35,9 +35,9 @@
     "vad:assets": "node scripts/copy-vad-assets.mjs",
     "build:unpack": "npm run build && electron-builder --dir --config electron-builder.config.mjs",
     "build:win": "npm run build && electron-builder --win --x64 --config electron-builder.config.mjs --publish never",
-    "build:selfhost:win": "node scripts/ensure-env.mjs --profile=self_hosted && npm run typecheck && electron-vite build && node scripts/check-self-host-artifact.mjs out && node scripts/patch-bytecode-entry-forward.mjs && node scripts/verify-bytecode.mjs && node scripts/bundle-pimono-extension.mjs && electron-builder --win --x64 --config electron-builder.config.mjs --publish never && node scripts/check-self-host-artifact.mjs out --packaged dist/win-unpacked",
-    "build:mac": "electron-vite build && node scripts/bundle-pimono-extension.mjs && electron-builder --mac --config electron-builder.config.mjs --publish never",
-    "build:linux": "electron-vite build && node scripts/bundle-pimono-extension.mjs && electron-builder --linux --config electron-builder.config.mjs --publish never",
+"build:selfhost:win": "node scripts/ensure-env.mjs --profile=self_hosted && npm run typecheck && electron-vite build && node scripts/check-self-host-artifact.mjs out && node scripts/patch-bytecode-entry-forward.mjs && node scripts/verify-bytecode.mjs && node scripts/bundle-pimono-extension.mjs && electron-builder --win --x64 --config electron-builder.config.mjs --publish never && node scripts/check-self-host-artifact.mjs out --packaged dist/win-unpacked",
+    "build:mac": "npm run build && electron-builder --mac --config electron-builder.config.mjs --publish never",
+    "build:linux": "npm run build && electron-builder --linux --config electron-builder.config.mjs --publish never",
     "pretest": "node scripts/check-node-version.mjs",
     "test": "vitest run",
     "test:watch": "vitest",

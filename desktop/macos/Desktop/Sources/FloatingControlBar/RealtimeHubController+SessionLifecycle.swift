@@ -64,13 +64,13 @@ extension RealtimeHubController {
       return
     }
 
-    if selfHosted {
+if selfHosted {
       guard AuthService.shared.isSignedIn, case .authenticated = ownerScope else {
         log("RealtimeHub: backend relay requires an authenticated owner")
         return
       }
       mintRelayAndConnect(ownerScope: ownerScope)
-    } else if let key = APIKeyService.byokKey(provider.byokProvider) {
+    } else if let key = APIKeyService.selectedRealtimeBYOKKey(for: provider.byokProvider) {
       let fingerprint = APIKeyService.byokFingerprint(key)
       guard
         CredentialHealthManager.shared.canUseBYOK(
