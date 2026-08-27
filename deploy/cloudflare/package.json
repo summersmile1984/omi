@@ -8,6 +8,7 @@
     "pretest": "npm run validate:manifest",
     "test": "vitest run",
     "test:watch": "vitest",
+    "smoke:staging": "node scripts/smoke-staging.mjs",
     "deploy:staging": "npm run validate:manifest && node scripts/deploy.mjs staging"
   },
   "dependencies": {

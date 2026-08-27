@@ -49,7 +49,21 @@ resources and never mutates existing Omi Workers.
 npm test
 npm run typecheck
 npm run deploy:staging
+npm run smoke:staging
 ```
+
+`smoke:staging` checks Edge health by default. To enable the authenticated
+checks, provide a staging Better Auth token through an environment variable or
+an explicit JSON token file:
+
+```bash
+CLOUDFLARE_SMOKE_TOKEN_FILE=/tmp/cf-auth-signup.json npm run smoke:staging
+```
+
+The authenticated smoke verifies unauthenticated rejection, the D1 probe, and
+the Workers AI raw-audio input boundary. It deliberately sends an empty body,
+so it does not invoke billable model inference; use a separate explicit audio
+request for model quality or latency qualification.
 
 The deployment script requires an already authenticated Wrangler session or a
 scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; it never prints

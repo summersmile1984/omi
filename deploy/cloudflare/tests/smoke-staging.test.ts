@@ -1,0 +1,34 @@
+import { describe, expect, it } from "vitest";
+import { parseTokenPayload, resolveEdgeUrl, runSmoke } from "../scripts/smoke-staging.mjs";
+
+describe("staging smoke helpers", () => {
+  it("normalizes a valid edge URL and rejects unsupported protocols", () => {
+    expect(resolveEdgeUrl("https://edge.example.test/")).toBe("https://edge.example.test");
+    expect(() => resolveEdgeUrl("ftp://edge.example.test")).toThrow("http or https");
+  });
+
+  it("requires a non-empty token field", () => {
+    expect(parseTokenPayload('{"token":"secret"}')).toBe("secret");
+    expect(() => parseTokenPayload('{"token":""}')).toThrow("non-empty token");
+  });
+
+  it("checks public, auth, and billable-inference-free boundaries", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      const status = url.endsWith("/health") ? 200 : url.endsWith("/v1/cf/probe") ? (init?.headers ? 200 : 401) : 400;
+      return new Response(null, { status });
+    };
+
+    const result = await runSmoke({ edgeUrl: "https://edge.example.test", token: "token", fetchImpl });
+
+    expect(result).toEqual({
+      edgeHealth: 200,
+      unauthenticatedProbe: 401,
+      authenticatedProbe: 200,
+      workersAiEmptyAudio: 400,
+    });
+    expect(calls).toHaveLength(4);
+    expect(calls[3].init?.method).toBe("POST");
+  });
+});

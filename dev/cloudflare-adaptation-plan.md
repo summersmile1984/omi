@@ -803,6 +803,11 @@ HTTP 415, while an unauthenticated request returned HTTP 401. This is a runtime
 binding smoke test, not a multilingual WER or latency qualification; those
 benchmarks remain a CF-08 release gate.
 
+`deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
+post-deploy check that defaults to non-billable health validation and can opt
+into the authenticated D1/input-boundary checks with an explicitly supplied
+staging token file.
+
 Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules
 均约 8.0 MiB，实际 gzip 上传约 2.0 MiB，应继续作为依赖预算的硬闸门。
 Embedding/ASR 的真实 provider、音频质量基线以及更多产品 route group 仍按
