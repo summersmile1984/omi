@@ -760,18 +760,18 @@ DNS 或生产数据库。当前 staging 已部署：
 
 - `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由。
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
-- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意、短时 geolocation TTL row、daily-summary/mentor notification 偏好、training-data opt-in 状态与 private-sync 联动、FCM token 注册、开发者 webhook 配置/开关状态、assistant-settings 深合并和低风险 ai-profile 投影、客户端 API key 配置读取、公开 firmware stable/latest/version APIs，以及 staging-only 的 D1-backed action-item CRUD/reconciliation、daily/weekly/overall score projection、focus-session CRUD/stats、text-only screen-activity sync/list/summary、calendar onboarding flags、People 元数据 CRUD、goal 元数据/metric/daily-history/progress-events/canonical-list/canonical-create/focus/lifecycle CRUD、work-intent/workstream journal/artifact/checkpoint CRUD 和 folder 元数据/排序 CRUD，未导入 `backend/main.py`。
+- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意、短时 geolocation TTL row、daily-summary/mentor notification 偏好、training-data opt-in 状态与 private-sync 联动、FCM token 注册、开发者 webhook 配置/开关状态、assistant-settings 深合并和低风险 ai-profile 投影、客户端 API key 配置读取、公开 firmware stable/latest/version APIs，以及 staging-only 的 D1-backed action-item CRUD/reconciliation（含 Apple Reminders pending/sync-batch projection）、daily/weekly/overall score projection、focus-session CRUD/stats、text-only screen-activity sync/list/summary、calendar onboarding flags、People 元数据 CRUD、goal 元数据/metric/daily-history/progress-events/canonical-list/canonical-create/focus/lifecycle CRUD、work-intent/workstream journal/artifact/checkpoint CRUD 和 folder 元数据/排序 CRUD，未导入 `backend/main.py`。
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机，并提供 uid-scoped job status read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：110 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：112 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
 npm test                                  # 8 files / 36 tests pass
-uvx uv==0.12.3 run pytest -q             # api-core: 47 tests pass
+uvx uv==0.12.3 run pytest -q             # api-core: 48 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
 curl /health                              # auth/core/ai/realtime/edge → HTTP 200
@@ -805,7 +805,7 @@ auto model pick GET                     # D1 24h cache + provider/default proven
 native Workers AI translation POST      # m2m100 en→zh through Edge → HTTP 200; unsupported language → 400
 native Workers AI TTS POST              # Aura-1 raw MP3 through Edge → HTTP 200/audio-mpeg
 native Workers AI embeddings POST      # BGE text batch, 768-dimension vectors → HTTP 200
-action-item CRUD                       # D1 uid-scoped create/list/update/complete/delete + batch create/reconciliation → verified
+action-item CRUD                       # D1 uid-scoped create/list/update/complete/delete + batch/reconciliation + Reminders sync projections → verified
 people metadata CRUD                   # D1 uid/name-scoped create/list/rename/delete; speech samples stay legacy → verified
 goal metadata CRUD                     # D1 uid-scoped current/all/create/read/update/progress/soft-delete → verified
 goal staging smoke                     # Edge → API Core → D1 goal create/list/update/progress/soft-delete; marker cleaned → verified
@@ -877,6 +877,12 @@ marker 数据；未切生产 reader。
 `If-None-Match` 和完整的 `416` 边界响应。真实 staging smoke 已验证完整读写、
 Range 与 suffix Range（206）、条件 GET（304）、无效 Range（416）、错误 checksum
 （422）以及删除后的 404；测试对象已清理。
+
+同日补齐 Apple Reminders 同步投影：通过 Edge 创建 marker action item，设置
+D1 `sync_requested` 后，`GET /v1/action-items/pending-sync` 返回 pending 项；
+`PATCH /v1/action-items/sync-batch` 更新 `exported`、平台和 reminder id，随后
+清除 pending 并由 synced projection 返回更新项；缺失 id 返回 `missing_ids`，
+marker 已删除。真实 staging 请求状态为 `200/200/200/204`。
 
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt

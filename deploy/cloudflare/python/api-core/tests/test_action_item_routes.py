@@ -16,8 +16,10 @@ from action_item_routes import (  # noqa: E402
     create_action_item,
     delete_action_item,
     get_action_item,
+    get_pending_sync_items,
     list_action_item_ids,
     list_action_items,
+    sync_batch_update,
     toggle_action_item_completion,
     update_action_item,
 )
@@ -148,6 +150,7 @@ def test_action_item_crud_is_uid_scoped_and_idempotent():
 def test_action_item_batch_route_is_registered_before_dynamic_id_route():
     assert [route.path for route in batch_router.routes] == [
         "/v1/action-items/batch",
+        "/v1/action-items/sync-batch",
         "/v1/action-items/batch",
         "/v1/action-items/batch-delete",
     ]
@@ -218,4 +221,56 @@ def test_action_item_batch_create_preserves_order_and_idempotency():
     assert retry["created_count"] == 2
 
     invalid = asyncio.run(batch_create_action_items(FakeRequest(env, headers, [{"description": ""}])))
+    assert invalid.status_code == 400
+
+
+def test_reminders_sync_projection_and_batch_update_are_d1_backed():
+    secret = "action-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+    created = asyncio.run(create_action_item(FakeRequest(env, headers, {"description": "Sync the reminders"})))
+    asyncio.run(
+        env.APP_DB.prepare("UPDATE cf_action_items SET sync_requested = 1 WHERE uid = ? AND id = ?")
+        .bind("action-user", created["id"])
+        .run()
+    )
+
+    pending = asyncio.run(get_pending_sync_items(FakeRequest(env, headers)))
+    assert [item["id"] for item in pending["pending_export"]] == [created["id"]]
+    assert pending["synced_items"] == []
+
+    result = asyncio.run(
+        sync_batch_update(
+            FakeRequest(
+                env,
+                headers,
+                {
+                    "items": [
+                        {
+                            "id": created["id"],
+                            "description": "Sync the reminders now",
+                            "exported": True,
+                            "export_platform": "apple_reminders",
+                            "apple_reminder_id": "reminder-1",
+                        },
+                        {"id": "missing-item", "exported": True},
+                    ]
+                },
+            )
+        )
+    )
+    assert result == {
+        "status": "ok",
+        "updated_count": 1,
+        "updated_ids": [created["id"]],
+        "missing_ids": ["missing-item"],
+        "locked_ids": [],
+        "noop_ids": [],
+    }
+    synced = asyncio.run(get_pending_sync_items(FakeRequest(env, headers)))
+    assert synced["pending_export"] == []
+    assert synced["synced_items"][0]["apple_reminder_id"] == "reminder-1"
+    assert synced["synced_items"][0]["description"] == "Sync the reminders now"
+
+    invalid = asyncio.run(sync_batch_update(FakeRequest(env, headers, {"items": [{"id": ""}]})))
     assert invalid.status_code == 400

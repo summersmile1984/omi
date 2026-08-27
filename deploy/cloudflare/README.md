@@ -197,6 +197,9 @@ PATCH /v1/action-items/batch   Edge → Python API Core → D1
 POST  /v1/action-items/batch   Edge → Python API Core → D1
 POST /v1/action-items/batch-delete
                               Edge → Python API Core → D1
+GET  /v1/action-items/pending-sync
+PATCH /v1/action-items/sync-batch
+                              Edge → Python API Core → D1 Apple Reminders projection
 GET/PATCH/DELETE /v1/action-items/{actionItemId}
                               Edge → Python API Core → D1
 PATCH /v1/action-items/{actionItemId}/completed
@@ -269,7 +272,8 @@ to the D1 authority before production cutover.
 
 The action-item routes provide a D1-backed, uid-scoped CRUD and reconciliation
 projection with content-idempotent create, date-range filtering, completion
-toggle, ordering batch update, and batch deletion. They intentionally do not
+toggle, ordering batch update, Apple Reminders pending/synced projections, sync
+batch updates, and batch deletion. They intentionally do not
 claim vector search, goal/workstream link validation, Apple Reminders sync,
 sharing, FCM/reminder delivery, or legacy conversation-item restoration; those
 side effects remain on the legacy owner until their separate contracts move.

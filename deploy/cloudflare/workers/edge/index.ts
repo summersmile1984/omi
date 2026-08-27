@@ -140,6 +140,8 @@ app.get("/v1/action-items/ids", proxyAuthenticatedCore);
 app.patch("/v1/action-items/batch", proxyAuthenticatedCore);
 app.post("/v1/action-items/batch", proxyAuthenticatedCore);
 app.post("/v1/action-items/batch-delete", proxyAuthenticatedCore);
+app.get("/v1/action-items/pending-sync", proxyAuthenticatedCore);
+app.patch("/v1/action-items/sync-batch", proxyAuthenticatedCore);
 app.get("/v1/daily-score", proxyAuthenticatedCore);
 app.get("/v1/scores", proxyAuthenticatedCore);
 app.post("/v1/focus-sessions", proxyAuthenticatedCore);

@@ -131,6 +131,24 @@ class ActionItemUpdate(BaseModel):
         return self
 
 
+class SyncBatchItem(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
+    description: str | None = Field(default=None, min_length=1, max_length=MAX_DESCRIPTION_LENGTH)
+    completed: bool | None = None
+    due_at: datetime | None = None
+    exported: bool | None = None
+    export_platform: str | None = Field(default=None, max_length=MAX_EXPORT_PLATFORM_LENGTH)
+    apple_reminder_id: str | None = Field(default=None, max_length=MAX_REMINDER_ID_LENGTH)
+
+
+class SyncBatchRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    items: list[SyncBatchItem] = Field(default_factory=list, max_length=100)
+
+
 def _auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
@@ -434,6 +452,50 @@ async def list_action_items(request: Request):
     }
 
 
+@router.get("/v1/action-items/pending-sync")
+async def get_pending_sync_items(request: Request):
+    """Return the two D1 projections consumed by Apple Reminders sync."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        pending = (
+            await env.APP_DB.prepare(
+                "SELECT id, description, status, completed, goal_id, workstream_id, owner, due_at, due_confidence, "
+                "source, provenance_json, priority, sort_order, indent_level, recurrence_rule, recurrence_parent_id, "
+                "created_at, updated_at, completed_at, superseded_by, conversation_id, is_locked, exported, export_date, "
+                "export_platform, apple_reminder_id FROM cf_action_items "
+                "WHERE uid = ? AND sync_requested = 1 AND exported = 0 AND deleted = 0 "
+                "ORDER BY updated_at DESC LIMIT 50"
+            )
+            .bind(uid)
+            .all()
+        )
+        synced = (
+            await env.APP_DB.prepare(
+                "SELECT id, description, status, completed, goal_id, workstream_id, owner, due_at, due_confidence, "
+                "source, provenance_json, priority, sort_order, indent_level, recurrence_rule, recurrence_parent_id, "
+                "created_at, updated_at, completed_at, superseded_by, conversation_id, is_locked, exported, export_date, "
+                "export_platform, apple_reminder_id FROM cf_action_items "
+                "WHERE uid = ? AND export_platform = 'apple_reminders' AND exported = 1 AND deleted = 0 "
+                "ORDER BY updated_at DESC LIMIT 100"
+            )
+            .bind(uid)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "action items unavailable"}, status_code=503)
+    pending_rows = pending.get("results", []) if isinstance(pending, dict) else []
+    synced_rows = synced.get("results", []) if isinstance(synced, dict) else []
+    return {
+        "pending_export": [_response(row) for row in pending_rows if isinstance(row, dict)],
+        "synced_items": [_response(row) for row in synced_rows if isinstance(row, dict)],
+    }
+
+
 @router.get("/v1/action-items/ids")
 async def list_action_item_ids(request: Request):
     context = _auth_context(request)
@@ -614,6 +676,63 @@ async def batch_update_action_items(request: Request):
         }
     except (ValidationError, ValueError, TypeError):
         return JSONResponse({"error": "invalid action item batch"}, status_code=400)
+
+
+@batch_router.patch("/v1/action-items/sync-batch")
+async def sync_batch_update(request: Request):
+    """Apply the bounded Apple Reminders reconciliation payload in D1."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await _bounded_json(request)
+        payload = SyncBatchRequest.model_validate(body)
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid action item sync batch"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    updated_ids: list[str] = []
+    missing_ids: list[str] = []
+    locked_ids: list[str] = []
+    noop_ids: list[str] = []
+    try:
+        for item in payload.items:
+            existing = await _first_item(env, uid, item.id)
+            if existing is None:
+                missing_ids.append(item.id)
+                continue
+            if _bool(existing.get("is_locked")):
+                locked_ids.append(item.id)
+                continue
+            fields = {name: getattr(item, name) for name in item.model_fields_set if name != "id"}
+            if not fields:
+                noop_ids.append(item.id)
+                continue
+            update = ActionItemUpdate.model_validate(fields)
+            row = await _apply_update(env, uid, item.id, update)
+            if row is None:
+                missing_ids.append(item.id)
+                continue
+            if fields.get("exported") is True:
+                await env.APP_DB.prepare(
+                    "UPDATE cf_action_items SET sync_requested = 0, updated_at = ? "
+                    "WHERE uid = ? AND id = ? AND deleted = 0"
+                ).bind(int(time.time()), uid, item.id).run()
+                row = await _first_item(env, uid, item.id)
+            updated_ids.append(item.id)
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid action item sync batch"}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "action items unavailable"}, status_code=503)
+    return {
+        "status": "ok",
+        "updated_count": len(updated_ids),
+        "updated_ids": updated_ids,
+        "missing_ids": missing_ids,
+        "locked_ids": locked_ids,
+        "noop_ids": noop_ids,
+    }
 
 
 @batch_router.post("/v1/action-items/batch")
