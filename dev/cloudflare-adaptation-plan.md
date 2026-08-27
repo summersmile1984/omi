@@ -1,6 +1,6 @@
 # Cloudflare 适配执行方案
 
-状态：设计基线；CF-00～CF-03/CF-08 首期 staging 骨架已部署并完成冒烟
+状态：实施中；CF-00～CF-03/CF-04～CF-08 首期 staging 切片已部署并完成冒烟，生产路由仍未切换
 工作分支：`codex/cloudflare-adaptation`
 代码基线：`92ee446e89`（`origin/main`）
 调研日期：2026-08-27
