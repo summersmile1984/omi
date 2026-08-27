@@ -273,6 +273,12 @@ and uses uid+id upserts. It only writes SQL to stdout. Review the output and
 apply it explicitly to the isolated staging database with Wrangler; the command
 does not connect to Firestore or production by itself.
 
+`CLOUDFLARE_SMOKE_TOKEN_FILE=/path/to/staging-token.json npm run benchmark:staging`
+warms and samples six non-mutating staging endpoints, reporting p50/p95/max and
+an optional p95 budget (`CLOUDFLARE_BENCHMARK_P95_MS`, default 4 seconds). It is
+report-only by default; set `CLOUDFLARE_BENCHMARK_ENFORCE=1` to make a budget
+exceedance fail the command.
+
 The People routes migrate uid-scoped person id/name metadata with idempotent
 create, list, rename, and delete operations. The response keeps the existing
 Person shape, but speech sample URLs are empty until sample objects and signed

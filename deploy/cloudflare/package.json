@@ -9,6 +9,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "backfill:d1": "node scripts/backfill-d1.mjs",
+    "benchmark:staging": "node scripts/benchmark-staging.mjs",
     "smoke:staging": "node scripts/smoke-staging.mjs",
     "deploy:staging": "npm run validate:manifest && node scripts/deploy.mjs staging"
   },
