@@ -205,6 +205,13 @@ GET/PATCH/DELETE /v1/users/people/{personId}
                               Edge → Python API Core → D1
 PATCH /v1/users/people/{personId}/name
                               Edge → Python API Core → D1
+GET  /v1/goals             Edge → Python API Core → D1
+GET  /v1/goals/all         Edge → Python API Core → D1
+POST /v1/goals             Edge → Python API Core → D1
+GET/PATCH/DELETE /v1/goals/{goalId}
+                              Edge → Python API Core → D1
+PATCH /v1/goals/{goalId}/progress
+                              Edge → Python API Core → D1
 ```
 
 Only routes explicitly listed as migrated are sent to the partial Worker
@@ -240,6 +247,13 @@ The People routes migrate uid-scoped person id/name metadata with idempotent
 create, list, rename, and delete operations. The response keeps the existing
 Person shape, but speech sample URLs are empty until sample objects and signed
 URL generation move from GCS to R2; the route group is therefore staging-only.
+
+The goal routes migrate uid-scoped goal metadata and metric projection with
+current/all listing, create/read/update, progress updates, and soft-abandon
+delete. Focus-cap transactions, relationship lifecycle/events, progress
+history, and AI advice/suggestion remain on legacy until their stronger
+workflow contracts are migrated; this route group is staging-only pending goal
+backfill and downstream reader cutover.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
