@@ -222,6 +222,7 @@ app.get(
 app.post("/v1/embeddings-workers-ai", proxyAuthenticatedAI);
 app.all("/v1/cf/probe", proxyAuthenticatedCore);
 app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
+app.post("/v1/cf/conversations", proxyAuthenticatedCore);
 app.get("/v1/cf/conversations", proxyAuthenticatedCore);
 app.get("/v1/cf/conversations/count", proxyAuthenticatedCore);
 app.get("/v1/cf/conversations/:conversationId", proxyAuthenticatedCore);

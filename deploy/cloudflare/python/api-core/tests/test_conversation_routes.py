@@ -9,15 +9,21 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from conversation_routes import count_conversations, get_conversation, list_conversations  # noqa: E402
+from conversation_routes import (  # noqa: E402
+    count_conversations,
+    get_conversation,
+    list_conversations,
+    store_conversation_projection,
+)
 
 
 class FakeDb:
     def __init__(self):
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
-        migration = Path(__file__).parents[3] / "migrations/app/0032_conversations.sql"
-        self.connection.executescript(migration.read_text())
+        migration_dir = Path(__file__).parents[3] / "migrations/app"
+        self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
+        self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -41,12 +47,21 @@ class FakeStatement:
         rows = self.connection.execute(self.sql, self.args).fetchall()
         return {"results": [dict(row) for row in rows]}
 
+    async def run(self):
+        cursor = self.connection.execute(self.sql, self.args)
+        self.connection.commit()
+        return {"meta": {"changes": cursor.rowcount}}
+
 
 class FakeRequest:
-    def __init__(self, env, headers, query=None):
+    def __init__(self, env, headers, query=None, body=None):
         self.scope = {"env": env}
         self.headers = headers
         self.query_params = query or {}
+        self._body = body
+
+    async def body(self):
+        return json.dumps(self._body).encode()
 
 
 def signed_headers(secret: str, uid: str = "conversation-user"):
@@ -139,3 +154,38 @@ def test_conversation_projection_detail_count_uid_isolation_and_validation():
     assert invalid.status_code == 400
     unauthorized = asyncio.run(count_conversations(FakeRequest(env, {})))
     assert unauthorized.status_code == 401
+
+
+def test_conversation_projection_write_is_idempotent_and_bounded():
+    secret = "conversation-secret"
+    db = FakeDb()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+    body = {
+        "id": "write-1",
+        "created_at": "2026-08-28T10:00:00Z",
+        "started_at": "2026-08-28T10:00:00Z",
+        "finished_at": "2026-08-28T10:01:00Z",
+        "source": "desktop",
+        "language": "en",
+        "structured": {"title": "First", "overview": "Draft"},
+        "transcript_segments": [{"id": "s-1", "text": "hello", "start": 0, "end": 1, "is_user": True}],
+        "private_cloud_sync_enabled": True,
+    }
+    first = asyncio.run(store_conversation_projection(FakeRequest(env, signed_headers(secret), body=body)))
+    assert first == {"conversation_id": "write-1", "status": "stored"}
+    second = asyncio.run(
+        store_conversation_projection(
+            FakeRequest(env, signed_headers(secret), body={**body, "structured": {"title": "Updated"}})
+        )
+    )
+    assert second == first
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "write-1"))
+    assert detail["structured"]["title"] == "Updated"
+    assert detail["private_cloud_sync_enabled"] is True
+
+    invalid = asyncio.run(
+        store_conversation_projection(
+            FakeRequest(env, signed_headers(secret), body={**body, "status": "unknown"})
+        )
+    )
+    assert invalid.status_code == 400
