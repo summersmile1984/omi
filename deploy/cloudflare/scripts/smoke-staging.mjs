@@ -110,6 +110,19 @@ export async function runSmoke({
   });
   expectStatus("authenticated probe", probe, 200);
 
+  const conversations = await request(
+    fetchImpl,
+    `${base}/v1/cf/conversations?limit=10`,
+    { headers: authHeaders },
+  );
+  expectStatus("conversation projection list", conversations, 200);
+  const conversationCount = await request(
+    fetchImpl,
+    `${base}/v1/cf/conversations/count`,
+    { headers: authHeaders },
+  );
+  expectStatus("conversation projection count", conversationCount, 200);
+
   const assistantSettings = await request(
     fetchImpl,
     `${base}/v1/users/assistant-settings`,
@@ -260,6 +273,8 @@ export async function runSmoke({
     unauthenticatedAnnouncementsAdmin: unauthenticatedAnnouncementsAdmin.status,
     unauthenticatedAsyncTranscription: unauthenticatedAsyncTranscription.status,
     authenticatedProbe: probe.status,
+    conversations: conversations.status,
+    conversationCount: conversationCount.status,
     assistantSettings: assistantSettings.status,
     aiProfile: aiProfile.status,
     trainingDataOptIn: trainingDataOptIn.status,

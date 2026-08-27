@@ -46,6 +46,67 @@ const TABLES = {
     integers: ["size", "created_at", "updated_at"],
     json: [],
   },
+  cf_conversations: {
+    key_columns: ["uid", "id"],
+    required: ["uid", "id", "created_at"],
+    columns: [
+      "uid",
+      "id",
+      "created_at",
+      "updated_at",
+      "started_at",
+      "finished_at",
+      "source",
+      "language",
+      "status",
+      "visibility",
+      "starred",
+      "discarded",
+      "is_locked",
+      "deferred",
+      "folder_id",
+      "client_device_id",
+      "client_platform",
+      "structured_json",
+      "transcript_segments_json",
+      "photos_json",
+      "audio_files_json",
+      "conversation_audio_json",
+      "apps_results_json",
+      "suggested_apps_json",
+      "geolocation_json",
+      "external_data_json",
+      "calendar_event_json",
+    ],
+    defaults: {
+      source: "omi",
+      status: "completed",
+      visibility: "private",
+      starred: 0,
+      discarded: 0,
+      is_locked: 0,
+      deferred: 0,
+      structured_json: "{}",
+      transcript_segments_json: "[]",
+      photos_json: "[]",
+      audio_files_json: "[]",
+      apps_results_json: "[]",
+      suggested_apps_json: "[]",
+    },
+    integers: ["created_at", "updated_at", "started_at", "finished_at"],
+    json: [
+      "structured_json",
+      "transcript_segments_json",
+      "photos_json",
+      "audio_files_json",
+      "conversation_audio_json",
+      "apps_results_json",
+      "suggested_apps_json",
+      "geolocation_json",
+      "external_data_json",
+      "calendar_event_json",
+    ],
+  },
   cf_action_items: {
     required: ["uid", "id", "description", "created_at", "updated_at"],
     columns: [
@@ -377,6 +438,9 @@ const TABLES = {
 const BOOL_COLUMNS = new Set([
   "completed",
   "is_locked",
+  "starred",
+  "discarded",
+  "deferred",
   "exported",
   "sync_requested",
   "deleted",
@@ -465,6 +529,24 @@ export function normalizeRow(table, input) {
     row.success_criteria_json = row.success_criteria;
   }
   if (row.content !== undefined && row.content_json === undefined) row.content_json = row.content;
+  if (row.structured !== undefined && row.structured_json === undefined) row.structured_json = row.structured;
+  if (row.transcript_segments !== undefined && row.transcript_segments_json === undefined) {
+    row.transcript_segments_json = row.transcript_segments;
+  }
+  if (row.photos !== undefined && row.photos_json === undefined) row.photos_json = row.photos;
+  if (row.audio_files !== undefined && row.audio_files_json === undefined) row.audio_files_json = row.audio_files;
+  if (row.conversation_audio !== undefined && row.conversation_audio_json === undefined) {
+    row.conversation_audio_json = row.conversation_audio;
+  }
+  if (row.apps_results !== undefined && row.apps_results_json === undefined) row.apps_results_json = row.apps_results;
+  if (row.suggested_summarization_apps !== undefined && row.suggested_apps_json === undefined) {
+    row.suggested_apps_json = row.suggested_summarization_apps;
+  }
+  if (row.geolocation !== undefined && row.geolocation_json === undefined) row.geolocation_json = row.geolocation;
+  if (row.external_data !== undefined && row.external_data_json === undefined) row.external_data_json = row.external_data;
+  if (row.calendar_event !== undefined && row.calendar_event_json === undefined) {
+    row.calendar_event_json = row.calendar_event;
+  }
   if (row.targeting !== undefined && row.targeting_json === undefined) row.targeting_json = row.targeting;
   if (row.display !== undefined && row.display_json === undefined) row.display_json = row.display;
   if (row.device_models !== undefined && row.device_models_json === undefined) row.device_models_json = row.device_models;

@@ -1,0 +1,141 @@
+import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import sqlite3
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+
+from conversation_routes import count_conversations, get_conversation, list_conversations  # noqa: E402
+
+
+class FakeDb:
+    def __init__(self):
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.row_factory = sqlite3.Row
+        migration = Path(__file__).parents[3] / "migrations/app/0032_conversations.sql"
+        self.connection.executescript(migration.read_text())
+
+    def prepare(self, sql):
+        return FakeStatement(self.connection, sql)
+
+
+class FakeStatement:
+    def __init__(self, connection, sql):
+        self.connection = connection
+        self.sql = sql
+        self.args = ()
+
+    def bind(self, *args):
+        self.args = args
+        return self
+
+    async def first(self):
+        row = self.connection.execute(self.sql, self.args).fetchone()
+        return dict(row) if row is not None else None
+
+    async def all(self):
+        rows = self.connection.execute(self.sql, self.args).fetchall()
+        return {"results": [dict(row) for row in rows]}
+
+
+class FakeRequest:
+    def __init__(self, env, headers, query=None):
+        self.scope = {"env": env}
+        self.headers = headers
+        self.query_params = query or {}
+
+
+def signed_headers(secret: str, uid: str = "conversation-user"):
+    raw = json.dumps(
+        {"uid": uid, "authority": "better-auth", "requestId": "conversation-test"},
+        separators=(",", ":"),
+    ).encode()
+    encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
+    return {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": base64.urlsafe_b64encode(signature).decode().rstrip("="),
+    }
+
+
+def insert_conversation(db: FakeDb, *, uid: str, conversation_id: str, created_at: int, locked: int = 0):
+    db.connection.execute(
+        "INSERT INTO cf_conversations "
+        "(uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
+        "starred, discarded, is_locked, deferred, folder_id, structured_json, transcript_segments_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            uid,
+            conversation_id,
+            created_at,
+            created_at,
+            created_at,
+            created_at + 60,
+            "omi",
+            "en",
+            "completed",
+            "private",
+            1,
+            0,
+            locked,
+            0,
+            "folder-1",
+            json.dumps({"title": conversation_id, "overview": "overview", "category": "work", "action_items": [{"description": "task"}], "events": [{"title": "event"}]}),
+            json.dumps([{"id": "segment-1", "text": "hello", "start": 0, "end": 1, "is_user": True}]),
+        ),
+    )
+    db.connection.commit()
+
+
+def test_conversation_projection_lists_filters_and_redacts_list_details():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="new", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="locked", created_at=100, locked=1)
+    insert_conversation(db, uid="other-user", conversation_id="other", created_at=300)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    listed = asyncio.run(
+        list_conversations(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                {"limit": "10", "starred": "true", "folder_id": "folder-1"},
+            )
+        )
+    )
+    assert [item["id"] for item in listed] == ["new", "locked"]
+    assert listed[0]["transcript_segments"] == []
+    assert listed[0]["structured"]["title"] == "new"
+    assert listed[1]["structured"]["action_items"] == []
+
+    filtered = asyncio.run(
+        list_conversations(FakeRequest(env, signed_headers(secret), {"include_discarded": "false", "sources": "friend"}))
+    )
+    assert filtered == []
+
+
+def test_conversation_projection_detail_count_uid_isolation_and_validation():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="conv-1", created_at=200)
+    insert_conversation(db, uid="other-user", conversation_id="conv-1", created_at=300)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "conv-1"))
+    assert detail["id"] == "conv-1"
+    assert detail["transcript_segments"][0]["text"] == "hello"
+    assert detail["structured"]["action_items"] == [{"description": "task"}]
+
+    count = asyncio.run(count_conversations(FakeRequest(env, signed_headers(secret))))
+    assert count == {"count": 1}
+    missing = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "missing"))
+    assert missing.status_code == 404
+    invalid = asyncio.run(list_conversations(FakeRequest(env, signed_headers(secret), {"limit": "0"})))
+    assert invalid.status_code == 400
+    unauthorized = asyncio.run(count_conversations(FakeRequest(env, {})))
+    assert unauthorized.status_code == 401

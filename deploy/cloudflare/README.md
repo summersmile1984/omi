@@ -176,6 +176,10 @@ WS   /v4/listen               Edge → Realtime → Durable Object → ASR API s
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata/checksum
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
 GET  /v1/cf/jobs/{jobId}      Edge → Jobs Worker → uid-scoped D1 job status
+GET  /v1/cf/conversations     Edge → Python API Core → D1 conversation projection
+GET  /v1/cf/conversations/count
+GET  /v1/cf/conversations/{conversationId}
+                              bounded list/count/detail reads with uid isolation
 GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/latest      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/version     Edge → Python API Core → GitHub Releases API
@@ -342,7 +346,8 @@ legacy owner until their contracts move.
 
 `npm run backfill:d1 -- --input export.ndjson` generates a transactional SQL
 backfill from newline-delimited records. Every record must name one of the
-whitelisted D1 tables and carries `{ "table": "cf_action_items", "row": { ... } }`;
+whitelisted D1 tables (including `cf_conversations`) and carries
+`{ "table": "cf_action_items", "row": { ... } }`;
 the generator validates uid/id, normalizes timestamps/booleans/JSON, escapes SQL,
 and uses uid+id upserts. It only writes SQL to stdout. Review the output and
 apply it explicitly to the isolated staging database with Wrangler; the command
@@ -398,6 +403,15 @@ do not yet move conversation documents, recompute conversation counts, or serve
 folder conversation listings; deleting a folder is therefore allowed only on
 the staging projection and must remain on legacy for production until the
 conversation authority moves.
+
+The additive `/v1/cf/conversations` routes read an explicit D1 conversation
+projection (indexed metadata plus bounded JSON transcript/structured fields).
+List responses never include transcript segments, and locked rows redact derived
+content. The projection is populated only by the reviewed backfill/import
+workflow; conversation finalization, memory extraction, merge, semantic search,
+audio deletion, and downstream integration fanout remain legacy-owned. Do not
+switch the canonical `/v1/conversations` routes until those write authorities
+and readers have moved together.
 
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event

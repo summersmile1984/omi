@@ -177,6 +177,30 @@ describe("D1 backfill SQL generator", () => {
     expect(sql).toContain("ON CONFLICT(uid, object_key) DO UPDATE SET content_type = excluded.content_type");
   });
 
+  it("renders conversation projections from Firestore-shaped nested fields", () => {
+    const sql = renderBackfillSql([
+      {
+        table: "cf_conversations",
+        row: {
+          uid: "u",
+          id: "conversation-1",
+          created_at: "2026-08-28T10:00:00Z",
+          started_at: "2026-08-28T09:59:00Z",
+          finished_at: "2026-08-28T10:01:00Z",
+          structured: { title: "A conversation", overview: "Summary", action_items: [] },
+          transcript_segments: [{ id: "segment-1", text: "hello", is_user: true, start: 0, end: 1 }],
+          starred: true,
+        },
+      },
+    ]);
+    expect(sql).toContain("structured_json");
+    expect(sql).toContain("transcript_segments_json");
+    expect(sql).toContain("ON CONFLICT(uid, id) DO UPDATE SET created_at = excluded.created_at");
+    expect(() => renderBackfillSql([
+      { table: "cf_conversations", row: { uid: "u", id: "conversation-1" } },
+    ])).toThrow("missing created_at");
+  });
+
   it("renders announcement content and per-user dismissal projections", () => {
     const sql = renderBackfillSql([
       {

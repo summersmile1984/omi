@@ -222,6 +222,9 @@ app.get(
 app.post("/v1/embeddings-workers-ai", proxyAuthenticatedAI);
 app.all("/v1/cf/probe", proxyAuthenticatedCore);
 app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
+app.get("/v1/cf/conversations", proxyAuthenticatedCore);
+app.get("/v1/cf/conversations/count", proxyAuthenticatedCore);
+app.get("/v1/cf/conversations/:conversationId", proxyAuthenticatedCore);
 app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);
 app.all("/v1/users/available-languages", proxyAuthenticatedCore);
 app.all("/v1/users/language", proxyAuthenticatedCore);

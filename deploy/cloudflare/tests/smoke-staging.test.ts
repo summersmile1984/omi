@@ -38,6 +38,10 @@ describe("staging smoke helpers", () => {
                 ? 403
                 : url.endsWith("/v1/stt/transcribe-async")
                   ? 401
+                  : url.includes("/v1/cf/conversations?") ||
+                      url.endsWith("/v1/cf/conversations") ||
+                      url.endsWith("/v1/cf/conversations/count")
+                    ? 200
                   : url.endsWith("/v1/users/assistant-settings") ||
                       url.endsWith("/v1/users/ai-profile") ||
                       url.endsWith("/v1/users/training-data-opt-in") ||
@@ -72,6 +76,8 @@ describe("staging smoke helpers", () => {
       unauthenticatedAnnouncementsAdmin: 403,
       unauthenticatedAsyncTranscription: 401,
       authenticatedProbe: 200,
+      conversations: 200,
+      conversationCount: 200,
       assistantSettings: 200,
       aiProfile: 200,
       trainingDataOptIn: 200,
@@ -89,7 +95,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(23);
+    expect(calls).toHaveLength(25);
     expect(
       calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init
         ?.method,
@@ -113,6 +119,13 @@ describe("staging smoke helpers", () => {
         return new Response(null, { status: 403 });
       if (url.endsWith("/v1/stt/transcribe-async"))
         return new Response(null, { status: 401 });
+      if (
+        url.includes("/v1/cf/conversations?") ||
+        url.endsWith("/v1/cf/conversations") ||
+        url.endsWith("/v1/cf/conversations/count")
+      ) {
+        return new Response(null, { status: 200 });
+      }
       if (
         url.endsWith("/v1/users/assistant-settings") ||
         url.endsWith("/v1/users/ai-profile") ||
