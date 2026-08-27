@@ -9,6 +9,8 @@ The first staging slice contains:
 - `edge`: public routing, request IDs, trusted auth context and legacy fallback.
 - `auth`: Hono + Better Auth + D1, with request-scoped auth construction.
 - `api-core`: a minimal FastAPI/Python Worker composition root and D1 probe.
+- `api-core`: a minimal FastAPI/Python Worker composition root, D1 probe, and
+  uid-scoped R2 asset API (`/v1/cf/assets/{key}`).
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
 - `realtime`: the Durable Object/ASR protocol seam; no model is run locally.
 
@@ -85,4 +87,5 @@ POST /api/auth/sign-up/email  Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
+R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata
 ```

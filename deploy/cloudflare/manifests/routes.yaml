@@ -100,3 +100,14 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: ANY
+    path: /v1/cf/assets/*
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2]
+    protocol: http
+    idempotency: required
+    rollout: staging-only
+    rollback: edge-route-to-legacy

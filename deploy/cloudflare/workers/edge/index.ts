@@ -75,7 +75,7 @@ app.all("/*", async (c) => {
     return withRequestId(response, id);
   }
   if (auth) {
-    // Manifest owner for the authenticated /v1/* fallback is api-core.
+    // Manifest owners for /v1/* (including /v1/cf/assets/*) are api-core.
     const response = await c.env.API_CORE.fetch(new Request(c.req.raw, { headers }));
     return withRequestId(response, id);
   }
