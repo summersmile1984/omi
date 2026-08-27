@@ -23,6 +23,9 @@ for (const route of routes) {
   const key = `${route.method} ${route.path}`;
   if (duplicateKeys.has(key)) throw new Error(`duplicate route: ${key}`);
   duplicateKeys.add(key);
+  if (route.path === "/v1/*" && route.target_runtime !== "legacy") {
+    throw new Error("broad /v1/* ownership is forbidden; add each migrated route explicitly");
+  }
   if (!allowedTargetRuntimes.has(route.target_runtime)) {
     throw new Error(`unsupported target_runtime for ${key}: ${route.target_runtime}`);
   }
