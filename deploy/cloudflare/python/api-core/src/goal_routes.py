@@ -530,6 +530,13 @@ async def list_goals(request: Request):
     return [_response(row) for row in rows if isinstance(row, dict)]
 
 
+@router.get("/v1/goals/canonical/list")
+async def list_canonical_goals(request: Request):
+    """Generation-fenced clients share the same uid-scoped D1 projection."""
+
+    return await list_goals(request)
+
+
 @router.post("/v1/goals")
 async def create_goal(request: Request):
     context = _auth_context(request)
@@ -567,6 +574,82 @@ async def create_goal(request: Request):
     except Exception:
         return JSONResponse({"error": "goals unavailable"}, status_code=503)
     return _response(row) if row else JSONResponse({"error": "goal unavailable"}, status_code=503)
+
+
+@router.post("/v1/goals/canonical")
+async def create_canonical_goal(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        goal = GoalCreate.model_validate(await _bounded_json(request))
+        payload = goal.model_dump(mode="json", exclude_none=True)
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid goal"}, status_code=400)
+    mutation = _mutation_inputs(request, payload)
+    if mutation is None:
+        return JSONResponse({"error": "Idempotency-Key and X-Account-Generation are required"}, status_code=400)
+    key, account_generation, request_hash = mutation
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    operation = "goal-create"
+    raw_goal_id = f"{uid}\x1f{account_generation}\x1f{operation}\x1f{key}".encode("utf-8")
+    goal_id = f"goal_{hashlib.sha256(raw_goal_id).hexdigest()[:12]}"
+    try:
+        stored, conflict = await _load_mutation(env, uid, operation, key, account_generation, request_hash)
+        if conflict:
+            return conflict
+        if stored is not None:
+            return stored
+        now = int(time.time())
+        metric = goal.metric.model_dump(mode="json") if goal.metric is not None else None
+        is_active = 0 if goal.status in {GoalStatus.achieved, GoalStatus.abandoned} else 1
+        result = _response(
+            {
+                "id": goal_id,
+                "title": goal.title,
+                "desired_outcome": goal.desired_outcome,
+                "why_it_matters": goal.why_it_matters,
+                "success_criteria_json": json.dumps(goal.success_criteria, ensure_ascii=False),
+                "horizon_at": _epoch(goal.horizon_at),
+                "status": goal.status.value,
+                "focus_rank": None,
+                "metric_json": json.dumps(metric, ensure_ascii=False) if metric is not None else None,
+                "source": goal.source.value,
+                "relationship_disposition": GoalRelationshipDisposition.retain.value,
+                "is_active": is_active,
+                "latest_progress_sequence": 0,
+                "ended_at": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        statements = [
+            env.APP_DB.prepare(
+                "INSERT INTO cf_goals (uid, id, title, desired_outcome, why_it_matters, success_criteria_json, horizon_at, "
+                "status, focus_rank, metric_json, source, relationship_disposition, is_active, latest_progress_sequence, "
+                "ended_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'retain', ?, 0, NULL, ?, ?)"
+            ).bind(
+                uid,
+                goal_id,
+                goal.title,
+                goal.desired_outcome,
+                goal.why_it_matters,
+                json.dumps(goal.success_criteria, ensure_ascii=False),
+                _epoch(goal.horizon_at),
+                goal.status.value,
+                json.dumps(metric, ensure_ascii=False) if metric is not None else None,
+                goal.source.value,
+                is_active,
+                now,
+                now,
+            ),
+            _mutation_statement(env, uid, operation, key, account_generation, request_hash, result, now),
+        ]
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    return result
 
 
 @router.get("/v1/goals/{goal_id}/history")
@@ -638,9 +721,11 @@ async def append_goal_progress_event(request: Request, goal_id: str):
             "evidence_refs_json": json.dumps(
                 [reference.model_dump(mode="json") for reference in event.evidence_refs], ensure_ascii=False
             ),
-            "metric_json": json.dumps(event.metric.model_dump(mode="json"), ensure_ascii=False)
-            if event.metric is not None
-            else None,
+            "metric_json": (
+                json.dumps(event.metric.model_dump(mode="json"), ensure_ascii=False)
+                if event.metric is not None
+                else None
+            ),
             "created_at": now,
         }
         result = _event_response(event_row)

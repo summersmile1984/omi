@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from goal_routes import (  # noqa: E402
     append_goal_progress_event,
+    create_canonical_goal,
     create_goal,
     delete_goal,
     focus_goal,
@@ -19,6 +20,7 @@ from goal_routes import (  # noqa: E402
     get_goal_history,
     list_goals,
     list_goal_progress_events,
+    list_canonical_goals,
     transition_goal_lifecycle,
     unfocus_goal,
     update_goal,
@@ -181,6 +183,28 @@ def test_goal_metadata_and_progress_are_uid_scoped():
     assert ended[0]["is_active"] is False
 
 
+def test_canonical_goal_create_and_list_use_generation_scoped_receipt():
+    secret = "goal-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    body = {
+        "title": "Canonical goal",
+        "desired_outcome": "A generation-safe goal",
+        "metric": {"type": "numeric", "current": 0, "target": 5, "unit": "steps"},
+    }
+    headers = mutation_headers(secret, "canonical-create", generation=3)
+    created = asyncio.run(create_canonical_goal(FakeRequest(env, headers, body)))
+    assert created["id"].startswith("goal_")
+    assert created["metric"]["target"] == 5
+    replay = asyncio.run(create_canonical_goal(FakeRequest(env, headers, body)))
+    assert replay == created
+    conflict = asyncio.run(create_canonical_goal(FakeRequest(env, headers, {**body, "title": "Conflict"})))
+    assert conflict.status_code == 409
+    listed = asyncio.run(list_canonical_goals(FakeRequest(env, signed_headers(secret))))
+    assert [goal["id"] for goal in listed] == [created["id"]]
+    missing_headers = asyncio.run(create_canonical_goal(FakeRequest(env, signed_headers(secret), body)))
+    assert missing_headers.status_code == 400
+
+
 def test_goal_routes_reject_invalid_progress_and_empty_update():
     secret = "goal-secret"
     env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
@@ -245,7 +269,12 @@ def test_goal_progress_event_append_list_and_receipt_idempotency():
         )
     )
     assert invalid_scope.status_code == 400
-    assert asyncio.run(list_goal_progress_events(FakeRequest(env, headers, query={"limit": "0"}), created["id"])).status_code == 400
+    assert (
+        asyncio.run(
+            list_goal_progress_events(FakeRequest(env, headers, query={"limit": "0"}), created["id"])
+        ).status_code
+        == 400
+    )
 
 
 def test_goal_focus_cap_lifecycle_and_idempotency_are_d1_scoped():

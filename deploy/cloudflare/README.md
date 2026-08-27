@@ -208,6 +208,8 @@ PATCH /v1/users/people/{personId}/name
 GET  /v1/goals             Edge → Python API Core → D1
 GET  /v1/goals/all         Edge → Python API Core → D1
 POST /v1/goals             Edge → Python API Core → D1
+GET  /v1/goals/canonical/list
+POST /v1/goals/canonical   Edge → Python API Core → D1 mutation + receipt
 GET/PATCH/DELETE /v1/goals/{goalId}
                               Edge → Python API Core → D1
 PATCH /v1/goals/{goalId}/progress
@@ -300,7 +302,9 @@ URL generation move from GCS to R2; the route group is therefore staging-only.
 
 The goal routes migrate uid-scoped goal metadata and metric projection with
 current/all listing, create/read/update, progress updates, and soft-abandon
-delete. Daily progress history is stored in a uid/goal/date D1 projection and
+delete. The canonical generation-scoped list/create surfaces now share this D1
+projection; canonical create uses a deterministic goal id and mutation receipt
+for safe retries. Daily progress history is stored in a uid/goal/date D1 projection and
 served by the history route. Progress event feeds now append validated evidence
 and metric events to a uid/goal sequence in D1; explicit event writes use a D1
 mutation receipt, while the existing progress route emits a `metric_update`
