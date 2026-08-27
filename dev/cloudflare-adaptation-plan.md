@@ -764,14 +764,14 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，支持稳定 `jobId` 的 `probe` 与 raw-audio `transcribe` kind；后者用临时 R2 对象、幂等键和最多三次 Workers AI 重试完成异步 Whisper 投影，并提供 uid-scoped job status/result read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：154 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：155 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 10 files / 58 tests pass
-api-core/.venv/bin/pytest -q              # api-core: 73 tests pass
+npm test                                  # 10 files / 59 tests pass
+api-core/.venv/bin/pytest -q              # api-core: 74 tests pass
 api-ai/.venv/bin/pytest -q                # api-ai: 30 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
@@ -823,6 +823,7 @@ conversation action-item reads         # canonical list/count from uid-scoped st
 - conversation analytics reads         # canonical uid-scoped D1 transcript + people projection for talk time/word count/WPM/share; locked rows fail closed; speech-profile side effects remain legacy → unit + edge verified
 - conversation event flags             # canonical bounded D1 structured event created flags with legacy index semantics; locked rows fail closed; integration fanout remains legacy → unit + edge verified
 - conversation summary update          # canonical D1 default overview/app-summary mutation; uid-scoped app identity and locked-row fail-closed behavior → unit + edge verified
+- conversation calendar unlink          # canonical D1-only calendar_event_json unlink; Google Calendar/OAuth mutation remains legacy-owned → unit + edge verified
 - conversation action-item status      # canonical D1 structured + standalone action-item completion update with one batch; locked rows fail closed; reminder delivery remains legacy → unit + edge verified
 - conversation action-item description # canonical D1 structured + standalone description update with one batch; locked rows fail closed; deletion/reminder side effects remain legacy → unit + edge verified
 - conversation action-item delete      # canonical D1 structured + standalone description delete with one batch; locked rows fail closed; reminder/export side effects remain legacy → unit + edge verified

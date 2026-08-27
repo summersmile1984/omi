@@ -232,6 +232,10 @@ app.get("/v1/conversations/:conversationId/analytics", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/recording", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/events", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/summary", proxyAuthenticatedCore);
+app.delete(
+  "/v1/conversations/:conversationId/calendar-event",
+  proxyAuthenticatedCore,
+);
 app.patch("/v1/conversations/:conversationId/segments/text", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/title", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/starred", proxyAuthenticatedCore);

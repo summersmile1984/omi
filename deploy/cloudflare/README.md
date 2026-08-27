@@ -471,6 +471,11 @@ keeps app-summary identity uid-scoped, rejects missing app entries, and fails
 closed for locked conversations; LLM regeneration and downstream enrichment
 remain legacy-owned.
 
+`DELETE /v1/conversations/{conversation_id}/calendar-event` clears only the
+local `calendar_event_json` link in the D1 projection. It intentionally does not
+call Google Calendar or mutate the external event; link creation and OAuth
+ownership remain in the legacy integration service.
+
 `PATCH /v1/conversations/{conversation_id}/action-items` updates indexed
 completion flags in the structured projection and mirrors matching standalone
 `cf_action_items` rows in one D1 batch. The bounded route preserves the legacy

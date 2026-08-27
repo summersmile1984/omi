@@ -166,6 +166,12 @@ export async function runSmoke({
     },
   );
   expectStatus("canonical conversation summary missing-row", conversationSummary, 404);
+  const conversationCalendarUnlink = await request(
+    fetchImpl,
+    `${base}/v1/conversations/cf-smoke-calendar-link-probe-${Date.now()}/calendar-event`,
+    { method: "DELETE", headers: authHeaders },
+  );
+  expectStatus("canonical conversation calendar unlink missing-row", conversationCalendarUnlink, 404);
   const conversationActionItems = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-action-items-probe-${Date.now()}/action-items`,
@@ -375,6 +381,7 @@ export async function runSmoke({
     conversationAnalytics: conversationAnalytics.status,
     conversationEvents: conversationEvents.status,
     conversationSummary: conversationSummary.status,
+    conversationCalendarUnlink: conversationCalendarUnlink.status,
     conversationActionItems: conversationActionItems.status,
     conversationActionItemDescription: conversationActionItemDescription.status,
     conversationActionItemDelete: conversationActionItemDelete.status,

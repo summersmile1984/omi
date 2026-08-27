@@ -23,6 +23,7 @@ from conversation_routes import (  # noqa: E402
     patch_conversation_events,
     patch_conversation_segment_text,
     patch_conversation_summary,
+    unlink_conversation_calendar_event,
     patch_conversation_title,
     set_conversation_starred,
     store_conversation_projection,
@@ -521,6 +522,36 @@ def test_canonical_conversation_summary_updates_default_and_app_projections():
         asyncio.run(
             patch_conversation_summary(FakeRequest(env, {}, body={"content": "nope"}), "summaries")
         ).status_code
+        == 401
+    )
+
+
+def test_canonical_conversation_calendar_unlink_clears_d1_projection():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="calendar-link", created_at=200)
+    db.connection.execute(
+        "UPDATE cf_conversations SET calendar_event_json = ? WHERE uid = ? AND id = ?",
+        (json.dumps({"event_id": "event-1", "summary": "Meeting"}), "conversation-user", "calendar-link"),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    result = asyncio.run(
+        unlink_conversation_calendar_event(FakeRequest(env, signed_headers(secret)), "calendar-link")
+    )
+    assert result == {"status": "Ok"}
+    row = db.connection.execute(
+        "SELECT calendar_event_json FROM cf_conversations WHERE uid = ? AND id = ?",
+        ("conversation-user", "calendar-link"),
+    ).fetchone()
+    assert row[0] is None
+    assert (
+        asyncio.run(unlink_conversation_calendar_event(FakeRequest(env, signed_headers(secret)), "missing")).status_code
+        == 404
+    )
+    assert (
+        asyncio.run(unlink_conversation_calendar_event(FakeRequest(env, {},), "calendar-link")).status_code
         == 401
     )
 

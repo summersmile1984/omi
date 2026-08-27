@@ -1103,6 +1103,28 @@ async def patch_conversation_summary(request: Request, conversation_id: str):
     return {"status": "Ok"}
 
 
+@router.delete("/v1/conversations/{conversation_id}/calendar-event")
+async def unlink_conversation_calendar_event(request: Request, conversation_id: str):
+    """Remove the local calendar-event link from the D1 conversation projection."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        if await _first_conversation(env, uid, conversation_id) is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        await env.APP_DB.prepare(
+            "UPDATE cf_conversations SET calendar_event_json = NULL, updated_at = ? WHERE uid = ? AND id = ?"
+        ).bind(int(time.time()), uid, conversation_id).run()
+    except Exception:
+        return JSONResponse({"error": "conversation calendar link unavailable"}, status_code=503)
+    return {"status": "Ok"}
+
+
 @router.patch("/v1/conversations/{conversation_id}/title")
 @router.patch("/v1/cf/conversations/{conversation_id}/title")
 async def patch_conversation_title(request: Request, conversation_id: str):
