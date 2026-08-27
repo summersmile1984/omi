@@ -31,4 +31,20 @@ describe("staging smoke helpers", () => {
     expect(calls).toHaveLength(4);
     expect(calls[3].init?.method).toBe("POST");
   });
+
+  it("can opt into a real native TTS response check", async () => {
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/health")) return new Response(null, { status: 200 });
+      if (url.endsWith("/v1/cf/probe")) return new Response(null, { status: init?.headers ? 200 : 401 });
+      if (url.endsWith("/v1/stt/transcribe-workers-ai")) return new Response(null, { status: 400 });
+      return new Response(new Uint8Array([0xff, 0xfb]), {
+        status: 200,
+        headers: { "content-type": "audio/mpeg" },
+      });
+    };
+
+    await expect(
+      runSmoke({ edgeUrl: "https://edge.example.test", token: "token", nativeTts: true, fetchImpl }),
+    ).resolves.toMatchObject({ nativeTts: 200, nativeTtsBytes: 2 });
+  });
 });

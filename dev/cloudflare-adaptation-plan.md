@@ -813,7 +813,9 @@ staging-only additive seam；现有 voice ID 合约仍未切换。
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt
 into the authenticated D1/input-boundary checks with an explicitly supplied
-staging token file.
+staging token file. `CLOUDFLARE_SMOKE_NATIVE_TTS=1` additionally performs an
+explicit, billable Aura-1 audio response check and asserts `audio/mpeg` plus a
+non-empty body.
 
 Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules
 均约 8.0 MiB，实际 gzip 上传约 2.0 MiB，应继续作为依赖预算的硬闸门。

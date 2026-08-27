@@ -42,7 +42,12 @@ function expectStatus(label, response, expected) {
   }
 }
 
-export async function runSmoke({ edgeUrl = resolveEdgeUrl(), token = null, fetchImpl = fetch } = {}) {
+export async function runSmoke({
+  edgeUrl = resolveEdgeUrl(),
+  token = null,
+  nativeTts = process.env.CLOUDFLARE_SMOKE_NATIVE_TTS === "1",
+  fetchImpl = fetch,
+} = {}) {
   const base = resolveEdgeUrl(edgeUrl);
   const health = await request(fetchImpl, `${base}/health`);
   expectStatus("edge health", health, 200);
@@ -65,11 +70,30 @@ export async function runSmoke({ edgeUrl = resolveEdgeUrl(), token = null, fetch
   });
   expectStatus("Workers AI empty audio", workersAiEmpty, 400);
 
+  let nativeTtsResult = {};
+  if (nativeTts) {
+    const response = await fetchImpl(`${base}/v1/tts/synthesize-workers-ai`, {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ text: "cloudflare smoke", speaker: "luna" }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const body = await response.arrayBuffer();
+    expectStatus("Workers AI native TTS", response, 200);
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.startsWith("audio/mpeg")) {
+      throw new Error(`Workers AI native TTS expected audio/mpeg, received ${contentType || "missing content type"}`);
+    }
+    if (body.byteLength === 0) throw new Error("Workers AI native TTS returned empty audio");
+    nativeTtsResult = { nativeTts: response.status, nativeTtsBytes: body.byteLength };
+  }
+
   return {
     ...result,
     unauthenticatedProbe: unauthenticated.status,
     authenticatedProbe: probe.status,
     workersAiEmptyAudio: workersAiEmpty.status,
+    ...nativeTtsResult,
   };
 }
 

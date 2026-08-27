@@ -60,6 +60,10 @@ an explicit JSON token file:
 CLOUDFLARE_SMOKE_TOKEN_FILE=/tmp/cf-auth-signup.json npm run smoke:staging
 ```
 
+To deliberately exercise billable native TTS as part of that authenticated
+smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
+`audio/mpeg` response and is opt-in.
+
 The authenticated smoke verifies unauthenticated rejection, the D1 probe, and
 the Workers AI raw-audio input boundary. It deliberately sends an empty body,
 so it does not invoke billable model inference; use a separate explicit audio
