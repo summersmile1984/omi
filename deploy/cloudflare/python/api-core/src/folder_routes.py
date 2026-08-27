@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from conversation_routes import _CONVERSATION_SELECT, _first_conversation, _response as _conversation_response
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -85,6 +86,12 @@ class FolderReorder(BaseModel):
         if any(not item or len(item) > MAX_ID_LENGTH for item in self.folder_ids):
             raise ValueError("invalid folder id")
         return self
+
+
+class ConversationFolderMove(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    folder_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -252,6 +259,89 @@ async def get_folder(request: Request, folder_id: str):
     except Exception:
         return JSONResponse({"error": "folders unavailable"}, status_code=503)
     return _response(row) if row else JSONResponse({"error": "folder not found"}, status_code=404)
+
+
+@router.get("/v1/folders/{folder_id}/conversations")
+async def list_folder_conversations(request: Request, folder_id: str):
+    """List the bounded conversation projection belonging to one D1 folder."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not folder_id or len(folder_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid folder id"}, status_code=400)
+    params = request.query_params
+    try:
+        limit = int(params.get("limit", "100"))
+        offset = int(params.get("offset", "0"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid pagination"}, status_code=400)
+    if not 1 <= limit <= 1000 or not 0 <= offset <= 100_000:
+        return JSONResponse({"error": "invalid pagination"}, status_code=400)
+    raw_include_discarded = params.get("include_discarded", "false")
+    if raw_include_discarded.lower() not in {"true", "false"}:
+        return JSONResponse({"error": "invalid include_discarded"}, status_code=400)
+    include_discarded = raw_include_discarded.lower() == "true"
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        if await _first_folder(env, uid, folder_id) is None:
+            return JSONResponse({"error": "folder not found"}, status_code=404)
+        where = "WHERE uid = ? AND folder_id = ?"
+        if not include_discarded:
+            where += " AND discarded = 0"
+        rows = await env.APP_DB.prepare(
+            _CONVERSATION_SELECT + where + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        ).bind(uid, folder_id, limit, offset).all()
+    except Exception:
+        return JSONResponse({"error": "folder conversations unavailable"}, status_code=503)
+    results = rows.get("results", []) if isinstance(rows, dict) else []
+    return [_conversation_response(row, detail=False) for row in results if isinstance(row, dict)]
+
+
+@router.patch("/v1/conversations/{conversation_id}/folder")
+async def move_conversation_to_folder(request: Request, conversation_id: str):
+    """Move a conversation and refresh D1 folder counts in one batch."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        move = ConversationFolderMove.model_validate(await _bounded_json(request))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid folder move"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        conversation = await _first_conversation(env, uid, conversation_id)
+        if conversation is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(conversation.get("is_locked")):
+            return JSONResponse({"error": "paid plan required"}, status_code=402)
+        if move.folder_id is not None and await _first_folder(env, uid, move.folder_id) is None:
+            return JSONResponse({"error": "folder not found"}, status_code=404)
+        now = int(time.time())
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare(
+                    "UPDATE cf_conversations SET folder_id = ?, updated_at = ? WHERE uid = ? AND id = ?"
+                ).bind(move.folder_id, now, uid, conversation_id),
+                env.APP_DB.prepare(
+                    "UPDATE cf_folders SET conversation_count = ("
+                    "SELECT COUNT(*) FROM cf_conversations c "
+                    "WHERE c.uid = cf_folders.uid AND c.folder_id = cf_folders.id AND c.discarded = 0"
+                    ") WHERE uid = ?"
+                ).bind(uid),
+            ]
+        )
+        updated = await _first_conversation(env, uid, conversation_id)
+    except Exception:
+        return JSONResponse({"error": "folder conversations unavailable"}, status_code=503)
+    if updated is None:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return {"status": "ok", "conversation": _conversation_response(updated, detail=True)}
 
 
 @router.patch("/v1/folders/{folder_id}")

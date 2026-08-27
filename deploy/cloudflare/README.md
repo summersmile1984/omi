@@ -289,6 +289,10 @@ GET/POST /v1/folders        Edge → Python API Core → D1
 GET/PATCH/DELETE /v1/folders/{folderId}
                               Edge → Python API Core → D1
 POST /v1/folders/reorder    Edge → Python API Core → D1
+GET /v1/folders/{folderId}/conversations
+                              Edge → Python API Core → D1 conversation projection
+PATCH /v1/conversations/{conversationId}/folder
+                              Edge → Python API Core → D1 folder move + count refresh
 GET  /v1/calendar/onboarding/status
                               Edge → Python API Core → D1 flags
 POST /v1/calendar/onboarding/skip
@@ -409,11 +413,11 @@ multi-range and unsatisfiable requests return `416`. The Worker still buffers
 the bounded 25 MB compatibility surface; large-object multipart migration and
 signed URL issuance remain separate R2 cutover work.
 
-The folder routes migrate system/custom folder metadata and ordering to D1. They
-do not yet move conversation documents, recompute conversation counts, or serve
-folder conversation listings; deleting a folder is therefore allowed only on
-the staging projection and must remain on legacy for production until the
-conversation authority moves.
+The folder routes migrate system/custom folder metadata and ordering to D1.
+Folder conversation listing and single-conversation moves now use the D1
+conversation projection and refresh non-discarded folder counts transactionally;
+bulk move and folder deletion side effects remain staging-only until the
+conversation authority moves in production.
 
 The conversation routes use an explicit D1 projection (indexed metadata plus
 bounded JSON transcript/structured fields). The POST `/v1/cf/conversations`

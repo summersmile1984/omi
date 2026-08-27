@@ -13,7 +13,9 @@ from folder_routes import (  # noqa: E402
     create_folder,
     delete_folder,
     get_folder,
+    list_folder_conversations,
     list_folders,
+    move_conversation_to_folder,
     reorder_folders,
     update_folder,
 )
@@ -23,11 +25,23 @@ class FakeDb:
     def __init__(self):
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
-        migration = Path(__file__).parents[3] / "migrations/app/0019_folders.sql"
-        self.connection.executescript(migration.read_text())
+        migration_dir = Path(__file__).parents[3] / "migrations/app"
+        self.connection.executescript((migration_dir / "0019_folders.sql").read_text())
+        self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
+        self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
+
+    async def batch(self, statements):
+        self.connection.execute("BEGIN")
+        try:
+            for statement in statements:
+                self.connection.execute(statement.sql, statement.args)
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
 
 
 class FakeStatement:
@@ -52,8 +66,6 @@ class FakeStatement:
         cursor = self.connection.execute(self.sql, self.args)
         self.connection.commit()
         return {"meta": {"changes": cursor.rowcount}}
-
-
 class FakeRequest:
     def __init__(self, env, headers, body=None, query=None):
         self.scope = {"env": env}
@@ -136,3 +148,70 @@ def test_folder_routes_enforce_system_and_uid_boundaries():
 
     other = asyncio.run(get_folder(FakeRequest(env, signed_headers(secret, "other-user")), system["id"]))
     assert other.status_code == 404
+
+
+def test_folder_conversation_projection_lists_and_moves_with_count_refresh():
+    secret = "folder-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+    folders = asyncio.run(list_folders(FakeRequest(env, headers)))
+    source_folder = folders[0]
+    target_folder = asyncio.run(create_folder(FakeRequest(env, headers, {"name": "Research"})))
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_conversations (uid, id, created_at, source, status, visibility, folder_id, structured_json) "
+        "VALUES (?, ?, ?, 'omi', 'completed', 'private', ?, ?)",
+        ("folder-user", "conv-1", 200, source_folder["id"], json.dumps({"title": "Folder conversation"})),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_conversations (uid, id, created_at, source, status, visibility, folder_id, is_locked) "
+        "VALUES (?, ?, ?, 'omi', 'completed', 'private', ?, 1)",
+        ("folder-user", "conv-locked", 100, source_folder["id"]),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_conversations (uid, id, created_at, source, status, visibility, folder_id, discarded) "
+        "VALUES (?, ?, ?, 'omi', 'completed', 'private', ?, 1)",
+        ("folder-user", "conv-discarded", 50, source_folder["id"]),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_conversations (uid, id, created_at, source, status, visibility, folder_id) "
+        "VALUES (?, ?, ?, 'omi', 'completed', 'private', ?)",
+        ("other-user", "conv-foreign", 300, source_folder["id"]),
+    )
+    env.APP_DB.connection.commit()
+
+    listed = asyncio.run(list_folder_conversations(FakeRequest(env, headers), source_folder["id"]))
+    assert [conversation["id"] for conversation in listed] == ["conv-1", "conv-locked"]
+    listed_without_discarded = asyncio.run(
+        list_folder_conversations(FakeRequest(env, headers, query={"include_discarded": "false"}), source_folder["id"])
+    )
+    assert [conversation["id"] for conversation in listed_without_discarded] == ["conv-1", "conv-locked"]
+    invalid = asyncio.run(
+        list_folder_conversations(FakeRequest(env, headers, query={"limit": "0"}), source_folder["id"])
+    )
+    assert invalid.status_code == 400
+
+    moved = asyncio.run(
+        move_conversation_to_folder(
+            FakeRequest(env, headers, body={"folder_id": target_folder["id"]}),
+            "conv-1",
+        )
+    )
+    assert moved["status"] == "ok"
+    assert moved["conversation"]["folder_id"] == target_folder["id"]
+    assert asyncio.run(list_folder_conversations(FakeRequest(env, headers), target_folder["id"]))[0]["id"] == "conv-1"
+    source_after = asyncio.run(get_folder(FakeRequest(env, headers), source_folder["id"]))
+    target_after = asyncio.run(get_folder(FakeRequest(env, headers), target_folder["id"]))
+    assert source_after["conversation_count"] == 1
+    assert target_after["conversation_count"] == 1
+
+    locked = asyncio.run(
+        move_conversation_to_folder(
+            FakeRequest(env, headers, body={"folder_id": target_folder["id"]}),
+            "conv-locked",
+        )
+    )
+    assert locked.status_code == 402
+    missing_folder = asyncio.run(
+        move_conversation_to_folder(FakeRequest(env, headers, body={"folder_id": "missing"}), "conv-1")
+    )
+    assert missing_folder.status_code == 404
