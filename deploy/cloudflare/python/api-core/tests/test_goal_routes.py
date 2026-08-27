@@ -14,6 +14,7 @@ from goal_routes import (  # noqa: E402
     delete_goal,
     get_current_goal,
     get_goal,
+    get_goal_history,
     list_goals,
     update_goal,
     update_goal_progress,
@@ -26,9 +27,22 @@ class FakeDb:
         self.connection.row_factory = sqlite3.Row
         migration = Path(__file__).parents[3] / "migrations/app/0018_goals.sql"
         self.connection.executescript(migration.read_text())
+        history_migration = Path(__file__).parents[3] / "migrations/app/0023_goal_progress_history.sql"
+        self.connection.executescript(history_migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
+
+    async def batch(self, statements):
+        self.connection.execute("BEGIN")
+        try:
+            for statement in statements:
+                self.connection.execute(statement.sql, statement.args)
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return []
 
 
 class FakeStatement:
@@ -126,6 +140,14 @@ def test_goal_metadata_and_progress_are_uid_scoped():
     assert progress["metric"]["current"] == 25
     assert progress["current_value"] == 25
 
+    history = asyncio.run(get_goal_history(FakeRequest(env, headers, query={"days": "30"}), created["id"]))
+    assert len(history) == 1
+    assert history[0]["value"] == 25
+    asyncio.run(update_goal_progress(FakeRequest(env, headers, query={"current_value": "30"}), created["id"]))
+    history = asyncio.run(get_goal_history(FakeRequest(env, headers), created["id"]))
+    assert len(history) == 1
+    assert history[0]["value"] == 30
+
     other = asyncio.run(get_goal(FakeRequest(env, signed_headers(secret, "other-user")), created["id"]))
     assert other.status_code == 404
 
@@ -147,3 +169,5 @@ def test_goal_routes_reject_invalid_progress_and_empty_update():
     assert invalid_progress.status_code == 400
     invalid_update = asyncio.run(update_goal(FakeRequest(env, headers, {}), created["id"]))
     assert invalid_update.status_code == 400
+    invalid_days = asyncio.run(get_goal_history(FakeRequest(env, headers, query={"days": "0"}), created["id"]))
+    assert invalid_days.status_code == 400

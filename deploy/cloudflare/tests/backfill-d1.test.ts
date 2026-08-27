@@ -82,4 +82,17 @@ describe("D1 backfill SQL generator", () => {
       "cf_user_calendar_onboarding",
     );
   });
+
+  it("renders history rows with their three-column uid-scoped key", () => {
+    const sql = renderBackfillSql([
+      {
+        table: "cf_goal_progress_history",
+        row: { uid: "u", goal_id: "g", date: "2026-08-28", value: 25, recorded_at: 1 },
+      },
+    ]);
+    expect(sql).toContain("ON CONFLICT(uid, goal_id, date) DO UPDATE SET value = excluded.value");
+    expect(() => renderBackfillSql([
+      { table: "cf_goal_progress_history", row: { uid: "u", goal_id: "g", date: "2026-08-28", value: 25 } },
+    ])).toThrow("missing recorded_at");
+  });
 });

@@ -164,6 +164,7 @@ app.delete("/v1/users/people/:personId", proxyAuthenticatedCore);
 app.get("/v1/goals", proxyAuthenticatedCore);
 app.post("/v1/goals", proxyAuthenticatedCore);
 app.get("/v1/goals/all", proxyAuthenticatedCore);
+app.get("/v1/goals/:goalId/history", proxyAuthenticatedCore);
 app.get("/v1/goals/:goalId", proxyAuthenticatedCore);
 app.patch("/v1/goals/:goalId", proxyAuthenticatedCore);
 app.patch("/v1/goals/:goalId/progress", proxyAuthenticatedCore);

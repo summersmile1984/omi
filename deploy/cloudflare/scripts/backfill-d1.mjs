@@ -193,6 +193,14 @@ const TABLES = {
     integers: ["created_at", "updated_at"],
     json: [],
   },
+  cf_goal_progress_history: {
+    key_columns: ["uid", "goal_id", "date"],
+    required: ["uid", "goal_id", "date", "value", "recorded_at"],
+    columns: ["uid", "goal_id", "date", "value", "recorded_at"],
+    defaults: {},
+    integers: ["recorded_at"],
+    json: [],
+  },
 };
 
 const BOOL_COLUMNS = new Set([
@@ -289,9 +297,11 @@ export function normalizeRow(table, input) {
       fail(`${table} row is missing ${required}`);
     }
   }
-  if (typeof row.uid !== "string" || row.uid.length === 0 || row.uid.length > 256) fail(`${table}.uid is invalid`);
-  if (spec.key_columns?.includes("id") !== false && (typeof row.id !== "string" || row.id.length === 0 || row.id.length > 256)) {
-    fail(`${table}.id is invalid`);
+  const keyColumns = spec.key_columns || ["uid", "id"];
+  for (const keyColumn of keyColumns) {
+    if (typeof row[keyColumn] !== "string" || row[keyColumn].length === 0 || row[keyColumn].length > 256) {
+      fail(`${table}.${keyColumn} is invalid`);
+    }
   }
   const normalized = {};
   for (const column of spec.columns) {

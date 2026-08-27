@@ -1,9 +1,9 @@
 """D1-backed goal metadata routes for the isolated Cloudflare profile.
 
-This first goal slice owns the durable metadata and metric projection used by
-the released clients. Focus-cap transactions, relationship lifecycle events,
-progress history/events, and AI advice/suggestion routes remain on the legacy
-owner until their stronger workflow contracts are migrated.
+This goal slice owns the durable metadata, metric projection, and daily progress
+history used by the released clients. Focus-cap transactions, relationship
+lifecycle events, progress event feeds, and AI advice/suggestion routes remain
+on the legacy owner until their stronger workflow contracts are migrated.
 """
 
 from __future__ import annotations
@@ -282,6 +282,29 @@ async def _first_goal(env: object, uid: str, goal_id: str) -> dict[str, object] 
     return row if isinstance(row, dict) else None
 
 
+def _history_response(row: dict[str, object]) -> dict[str, object]:
+    try:
+        value = float(row.get("value", 0))
+    except (TypeError, ValueError):
+        value = 0.0
+    return {
+        "date": str(row.get("date") or ""),
+        "value": value,
+        "recorded_at": _iso(row.get("recorded_at")),
+    }
+
+
+def _query_days(request: Request) -> int | None:
+    raw = getattr(request, "query_params", {}).get("days")
+    if raw is None or raw == "":
+        return 30
+    try:
+        days = int(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return days if 1 <= days <= 365 else None
+
+
 @router.get("/v1/goals")
 async def get_current_goal(request: Request):
     context = _auth_context(request)
@@ -363,6 +386,35 @@ async def create_goal(request: Request):
     except Exception:
         return JSONResponse({"error": "goals unavailable"}, status_code=503)
     return _response(row) if row else JSONResponse({"error": "goal unavailable"}, status_code=503)
+
+
+@router.get("/v1/goals/{goal_id}/history")
+async def get_goal_history(request: Request, goal_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid goal id"}, status_code=400)
+    days = _query_days(request)
+    if days is None:
+        return JSONResponse({"error": "invalid days"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    try:
+        if await _first_goal(env, uid, goal_id) is None:
+            return JSONResponse({"error": "goal not found"}, status_code=404)
+        result = (
+            await env.APP_DB.prepare(
+                "SELECT date, value, recorded_at FROM cf_goal_progress_history "
+                "WHERE uid = ? AND goal_id = ? ORDER BY date DESC LIMIT ?"
+            )
+            .bind(uid, goal_id, days)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    return [_history_response(row) for row in rows if isinstance(row, dict)]
 
 
 @router.get("/v1/goals/{goal_id}")
@@ -487,9 +539,16 @@ async def update_goal_progress(request: Request, goal_id: str):
             "unit": None,
         }
         metric["current"] = current_value
-        await env.APP_DB.prepare("UPDATE cf_goals SET metric_json = ?, updated_at = ? WHERE uid = ? AND id = ?").bind(
-            json.dumps(metric, ensure_ascii=False), int(time.time()), uid, goal_id
-        ).run()
+        now = int(time.time())
+        today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+        goal_update = env.APP_DB.prepare(
+            "UPDATE cf_goals SET metric_json = ?, updated_at = ? WHERE uid = ? AND id = ?"
+        ).bind(json.dumps(metric, ensure_ascii=False), now, uid, goal_id)
+        history_upsert = env.APP_DB.prepare(
+            "INSERT INTO cf_goal_progress_history (uid, goal_id, date, value, recorded_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(uid, goal_id, date) DO UPDATE SET value = excluded.value, recorded_at = excluded.recorded_at"
+        ).bind(uid, goal_id, today, current_value, now)
+        await env.APP_DB.batch([goal_update, history_upsert])
         row = await _first_goal(env, uid, goal_id)
     except Exception:
         return JSONResponse({"error": "goals unavailable"}, status_code=503)
