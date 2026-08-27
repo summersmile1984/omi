@@ -638,6 +638,16 @@ async def get_conversation(request: Request, conversation_id: str):
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
     if not isinstance(row, dict):
         return JSONResponse({"error": "conversation not found"}, status_code=404)
+    source = request.query_params.get("source")
+    if source is not None and source != "omi":
+        return JSONResponse({"error": "only source=omi is supported"}, status_code=400)
+    raw_include_discarded = request.query_params.get("include_discarded", "true").lower()
+    if raw_include_discarded not in {"true", "false"}:
+        return JSONResponse({"error": "invalid include_discarded"}, status_code=400)
+    if source == "omi" and row.get("source") != "omi":
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    if raw_include_discarded == "false" and _bool(row.get("discarded")):
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
     # Locked conversations preserve metadata but never expose transcript or
     # derived action/event content; `_response` applies that redaction.
     return _response(row, detail=True)

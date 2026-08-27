@@ -204,6 +204,55 @@ def test_conversation_projection_detail_count_uid_isolation_and_validation():
     assert unauthorized.status_code == 401
 
 
+def test_conversation_detail_honors_source_and_discarded_filters():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="source-omi", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="source-other", created_at=100)
+    db.connection.execute(
+        "UPDATE cf_conversations SET source = ?, discarded = 1 WHERE uid = ? AND id = ?",
+        ("friend", "conversation-user", "source-other"),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    assert (
+        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "source-omi")).get("id")
+        == "source-omi"
+    )
+    assert (
+        asyncio.run(
+            get_conversation(FakeRequest(env, signed_headers(secret), query={"source": "friend"}), "source-omi")
+        ).status_code
+        == 400
+    )
+    assert (
+        asyncio.run(
+            get_conversation(FakeRequest(env, signed_headers(secret), query={"source": "omi"}), "source-other")
+        ).status_code
+        == 404
+    )
+    assert (
+        asyncio.run(
+            get_conversation(
+                FakeRequest(env, signed_headers(secret), query={"include_discarded": "false"}), "source-other"
+            )
+        ).status_code
+        == 404
+    )
+    assert asyncio.run(
+        get_conversation(FakeRequest(env, signed_headers(secret), query={"include_discarded": "true"}), "source-other")
+    )["discarded"] is True
+    assert (
+        asyncio.run(
+            get_conversation(
+                FakeRequest(env, signed_headers(secret), query={"include_discarded": "maybe"}), "source-omi"
+            )
+        ).status_code
+        == 400
+    )
+
+
 def test_canonical_conversation_photos_are_uid_scoped_and_locked_rows_fail_closed():
     secret = "conversation-secret"
     db = FakeDb()

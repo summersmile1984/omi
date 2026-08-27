@@ -186,7 +186,8 @@ GET  /v1/account/cutover/control
                               Edge → Python API Core → D1 account migration control projection
 GET  /v1/conversations/count
 GET  /v1/conversations/{conversationId}
-                              canonical read projection; writes/finalization remain legacy
+                              canonical read projection with source/include_discarded filters;
+                              writes/finalization remain legacy
 GET  /v1/conversations/{conversationId}/photos
                               bounded photo projection; locked rows fail closed
 GET  /v1/conversations/{conversationId}/transcripts

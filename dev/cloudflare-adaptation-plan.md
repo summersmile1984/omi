@@ -833,6 +833,7 @@ screen activity text sync/list/summary # D1 idempotent upsert and bounded aggreg
 calendar onboarding status/skip/reset # D1 flags only; OAuth tokens/events stay legacy; uid-scoped idempotency → unit verified
 calendar meeting metadata CRUD      # D1 natural-key upsert and bounded date reads; legacy conversation reader remains Firestore → staging candidate
 conversation D1 projection         # pre-transcribed uid/id upsert + bounded canonical list/count/detail/title/starred/folder/task reads with locked-row redaction; finalization/memory/search remain legacy → staging candidate
+conversation detail filters           # canonical source=omi and include_discarded query parity with uid-scoped D1 reads → unit verified
 desktop realtime session/usage       # provider token mint via workers.fetch; hashed session + token-cost usage in D1 → staging candidate
 staging deploy health gate           # one command publishes six Workers, then checks Edge/Auth-ready/Core/AI/Realtime/Jobs → verified
 goal daily progress history         # D1 uid/goal/date upsert, bounded history read, uid isolation → unit verified
