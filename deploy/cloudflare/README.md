@@ -247,6 +247,18 @@ side effects remain on the legacy owner until their separate contracts move.
 The route group is staging-only until existing Firestore items are imported and
 all downstream readers use the D1 authority.
 
+`GET /v1/daily-score` and `GET /v1/scores` are read-only D1 projections over the
+migrated action items. They preserve the legacy UTC day window, seven-day
+created-at window, completion rounding, deleted-row exclusion, and default-tab
+selection. They do not claim conversation-derived analytics or other legacy
+score sources, so they remain staging-only with the action-item projection.
+
+The focus-session routes (`POST/GET/DELETE /v1/focus-sessions` and
+`GET /v1/focus-stats`) use a uid-scoped D1 event table. They preserve the legacy
+focused/distraction duration defaults and top-five aggregation, but do not claim
+screen-activity capture, focus inference, or notification side effects; those
+remain on the legacy owner until separately migrated.
+
 The People routes migrate uid-scoped person id/name metadata with idempotent
 create, list, rename, and delete operations. The response keeps the existing
 Person shape, but speech sample URLs are empty until sample objects and signed

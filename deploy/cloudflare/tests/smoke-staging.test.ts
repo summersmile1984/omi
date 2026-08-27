@@ -27,6 +27,10 @@ describe("staging smoke helpers", () => {
               url.endsWith("/v1/users/profile") ||
               url.endsWith("/v1/users/daily-summary-settings") ||
               url.endsWith("/v1/users/mentor-notification-settings") ||
+              url.endsWith("/v1/daily-score") ||
+              url.endsWith("/v1/scores") ||
+              url.endsWith("/v1/focus-sessions") ||
+              url.endsWith("/v1/focus-stats") ||
               url.endsWith("/v1/users/geolocation")
             ? 200
             : 400;
@@ -46,12 +50,16 @@ describe("staging smoke helpers", () => {
       userProfile: 200,
       dailySummarySettings: 200,
       mentorNotificationSettings: 200,
+      dailyScore: 200,
+      scores: 200,
+      focusSessions: 200,
+      focusStats: 200,
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(12);
-    expect(calls[10].init?.method).toBe("PATCH");
-    expect(calls[11].init?.method).toBe("POST");
+    expect(calls).toHaveLength(16);
+    expect(calls[14].init?.method).toBe("PATCH");
+    expect(calls[15].init?.method).toBe("POST");
   });
 
   it("can opt into a real native TTS response check", async () => {
@@ -66,6 +74,10 @@ describe("staging smoke helpers", () => {
         url.endsWith("/v1/users/profile") ||
         url.endsWith("/v1/users/daily-summary-settings") ||
         url.endsWith("/v1/users/mentor-notification-settings") ||
+        url.endsWith("/v1/daily-score") ||
+        url.endsWith("/v1/scores") ||
+        url.endsWith("/v1/focus-sessions") ||
+        url.endsWith("/v1/focus-stats") ||
         url.endsWith("/v1/users/geolocation")
       ) {
         return new Response(null, { status: 200 });

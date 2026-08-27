@@ -87,6 +87,18 @@ export async function runSmoke({
   });
   expectStatus("mentor notification settings", mentorNotificationSettings, 200);
 
+  const dailyScore = await request(fetchImpl, `${base}/v1/daily-score`, { headers: authHeaders });
+  expectStatus("daily score", dailyScore, 200);
+
+  const scores = await request(fetchImpl, `${base}/v1/scores`, { headers: authHeaders });
+  expectStatus("scores", scores, 200);
+
+  const focusSessions = await request(fetchImpl, `${base}/v1/focus-sessions`, { headers: authHeaders });
+  expectStatus("focus sessions", focusSessions, 200);
+
+  const focusStats = await request(fetchImpl, `${base}/v1/focus-stats`, { headers: authHeaders });
+  expectStatus("focus stats", focusStats, 200);
+
   // Exercise geolocation route ownership without persisting location data.
   // The legacy contract intentionally returns 200 for invalid coordinates.
   const invalidGeolocation = await request(fetchImpl, `${base}/v1/users/geolocation`, {
@@ -133,6 +145,10 @@ export async function runSmoke({
     userProfile: profile.status,
     dailySummarySettings: dailySummarySettings.status,
     mentorNotificationSettings: mentorNotificationSettings.status,
+    dailyScore: dailyScore.status,
+    scores: scores.status,
+    focusSessions: focusSessions.status,
+    focusStats: focusStats.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     ...nativeTtsResult,
