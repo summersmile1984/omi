@@ -12,10 +12,13 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from goal_routes import (  # noqa: E402
     create_goal,
     delete_goal,
+    focus_goal,
     get_current_goal,
     get_goal,
     get_goal_history,
     list_goals,
+    transition_goal_lifecycle,
+    unfocus_goal,
     update_goal,
     update_goal_progress,
 )
@@ -29,6 +32,8 @@ class FakeDb:
         self.connection.executescript(migration.read_text())
         history_migration = Path(__file__).parents[3] / "migrations/app/0023_goal_progress_history.sql"
         self.connection.executescript(history_migration.read_text())
+        mutation_migration = Path(__file__).parents[3] / "migrations/app/0024_goal_mutations.sql"
+        self.connection.executescript(mutation_migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -91,6 +96,12 @@ def signed_headers(secret: str, uid: str = "goal-user"):
         "x-omi-auth-context": encoded,
         "x-omi-internal-signature": base64.urlsafe_b64encode(signature).decode().rstrip("="),
     }
+
+
+def mutation_headers(secret: str, key: str, generation: int = 0, uid: str = "goal-user"):
+    headers = signed_headers(secret, uid)
+    headers.update({"idempotency-key": key, "x-account-generation": str(generation)})
+    return headers
 
 
 def test_goal_metadata_and_progress_are_uid_scoped():
@@ -171,3 +182,97 @@ def test_goal_routes_reject_invalid_progress_and_empty_update():
     assert invalid_update.status_code == 400
     invalid_days = asyncio.run(get_goal_history(FakeRequest(env, headers, query={"days": "0"}), created["id"]))
     assert invalid_days.status_code == 400
+
+
+def test_goal_focus_cap_lifecycle_and_idempotency_are_d1_scoped():
+    secret = "goal-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    goals = [create_goal(FakeRequest(env, signed_headers(secret), {"title": f"Goal {index}"})) for index in range(6)]
+    created = [asyncio.run(goal) if asyncio.iscoroutine(goal) else goal for goal in goals]
+
+    focused = []
+    for index, goal in enumerate(created[:5]):
+        response = asyncio.run(
+            focus_goal(FakeRequest(env, mutation_headers(secret, f"focus-{index}"), {"focus_rank": None}), goal["id"])
+        )
+        assert response["status"] == "focused"
+        assert response["focus_rank"] == index
+        focused.append(response)
+
+    full = asyncio.run(focus_goal(FakeRequest(env, mutation_headers(secret, "focus-six"), {}), created[5]["id"]))
+    assert full.status_code == 409
+    replacement = asyncio.run(
+        focus_goal(
+            FakeRequest(
+                env,
+                mutation_headers(secret, "focus-six-replace"),
+                {"replacement_goal_id": created[0]["id"]},
+            ),
+            created[5]["id"],
+        )
+    )
+    assert replacement["status"] == "focused"
+    assert replacement["focus_rank"] == 0
+    assert (
+        asyncio.run(
+            get_goal(
+                FakeRequest(
+                    env,
+                    signed_headers(secret),
+                ),
+                created[0]["id"],
+            )
+        )["status"]
+        == "background"
+    )
+
+    retry = asyncio.run(
+        focus_goal(
+            FakeRequest(env, mutation_headers(secret, "focus-six-replace"), {"replacement_goal_id": created[0]["id"]}),
+            created[5]["id"],
+        )
+    )
+    assert retry == replacement
+    conflict = asyncio.run(
+        focus_goal(FakeRequest(env, mutation_headers(secret, "focus-six-replace"), {"focus_rank": 1}), created[5]["id"])
+    )
+    assert conflict.status_code == 409
+
+    unfocused = asyncio.run(unfocus_goal(FakeRequest(env, mutation_headers(secret, "unfocus-six")), created[5]["id"]))
+    assert unfocused["status"] == "background"
+    paused = asyncio.run(
+        transition_goal_lifecycle(
+            FakeRequest(
+                env,
+                mutation_headers(secret, "pause-six"),
+                {"status": "paused", "relationship_disposition": "retain"},
+            ),
+            created[5]["id"],
+        )
+    )
+    assert paused["status"] == "paused"
+    ended = asyncio.run(
+        transition_goal_lifecycle(
+            FakeRequest(
+                env,
+                mutation_headers(secret, "end-six"),
+                {"status": "achieved", "relationship_disposition": "retain"},
+            ),
+            created[5]["id"],
+        )
+    )
+    assert ended["status"] == "achieved"
+    assert ended["is_active"] is False
+    detached = asyncio.run(
+        transition_goal_lifecycle(
+            FakeRequest(
+                env,
+                mutation_headers(secret, "detach-six"),
+                {"status": "abandoned", "relationship_disposition": "detach"},
+            ),
+            created[5]["id"],
+        )
+    )
+    assert detached.status_code == 409
+    missing_headers = asyncio.run(focus_goal(FakeRequest(env, signed_headers(secret), {}), created[1]["id"]))
+    assert missing_headers.status_code == 400

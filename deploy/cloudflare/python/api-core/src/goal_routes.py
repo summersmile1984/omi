@@ -1,13 +1,15 @@
 """D1-backed goal metadata routes for the isolated Cloudflare profile.
 
-This goal slice owns the durable metadata, metric projection, and daily progress
-history used by the released clients. Focus-cap transactions, relationship
-lifecycle events, progress event feeds, and AI advice/suggestion routes remain
-on the legacy owner until their stronger workflow contracts are migrated.
+This goal slice owns the durable metadata, metric projection, daily progress
+history, focus-cap mutations, and retain-only lifecycle transitions used by the
+released clients. Relationship detach, progress event feeds, and AI
+advice/suggestion routes remain on the legacy owner until their stronger
+workflow contracts are migrated.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -25,6 +27,8 @@ router = APIRouter()
 
 MAX_REQUEST_BYTES = 100_000
 MAX_ID_LENGTH = 256
+MAX_IDEMPOTENCY_KEY_LENGTH = 256
+FOCUS_CAP = 5
 
 
 class GoalType(str, Enum):
@@ -45,6 +49,36 @@ class GoalSource(str, Enum):
     user = "user"
     ai_suggested = "ai_suggested"
     imported = "imported"
+
+
+class GoalRelationshipDisposition(str, Enum):
+    retain = "retain"
+    detach = "detach"
+
+
+class FocusGoalUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    replacement_goal_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+    focus_rank: int | None = Field(default=None, ge=0, le=FOCUS_CAP - 1)
+
+
+class GoalLifecycleUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    status: GoalStatus
+    relationship_disposition: GoalRelationshipDisposition
+
+    @model_validator(mode="after")
+    def validate_terminal_status(self) -> "GoalLifecycleUpdate":
+        if self.status not in {GoalStatus.paused, GoalStatus.achieved, GoalStatus.abandoned}:
+            raise ValueError("goal lifecycle transition must pause or end the goal")
+        return self
 
 
 class GoalMetric(BaseModel):
@@ -305,6 +339,67 @@ def _query_days(request: Request) -> int | None:
     return days if 1 <= days <= 365 else None
 
 
+def _mutation_inputs(request: Request, payload: object) -> tuple[str, int, str] | None:
+    key = request.headers.get("idempotency-key")
+    raw_generation = request.headers.get("x-account-generation")
+    if not key or len(key) > MAX_IDEMPOTENCY_KEY_LENGTH or not raw_generation:
+        return None
+    try:
+        account_generation = int(raw_generation)
+    except (TypeError, ValueError):
+        return None
+    if account_generation < 0:
+        return None
+    request_hash = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return key, account_generation, request_hash
+
+
+async def _load_mutation(
+    env: object,
+    uid: str,
+    operation: str,
+    key: str,
+    account_generation: int,
+    request_hash: str,
+) -> tuple[dict[str, object] | None, JSONResponse | None]:
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT account_generation, request_hash, result_json FROM cf_goal_mutations "
+            "WHERE uid = ? AND operation = ? AND idempotency_key = ?"
+        )
+        .bind(uid, operation, key)
+        .first()
+    )
+    if not isinstance(row, dict):
+        return None, None
+    if row.get("account_generation") != account_generation or row.get("request_hash") != request_hash:
+        return None, JSONResponse({"error": "idempotency key reused with different request"}, status_code=409)
+    try:
+        result = json.loads(str(row.get("result_json") or ""))
+    except (TypeError, ValueError):
+        return None, JSONResponse({"error": "goal mutation receipt unavailable"}, status_code=503)
+    return result if isinstance(result, dict) else None, None
+
+
+def _mutation_statement(
+    env: object,
+    uid: str,
+    operation: str,
+    key: str,
+    account_generation: int,
+    request_hash: str,
+    result: dict[str, object],
+    now: int,
+) -> object:
+    return env.APP_DB.prepare(
+        "INSERT INTO cf_goal_mutations "
+        "(uid, operation, idempotency_key, account_generation, request_hash, result_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).bind(uid, operation, key, account_generation, request_hash, json.dumps(result, ensure_ascii=False), now)
+
+
 @router.get("/v1/goals")
 async def get_current_goal(request: Request):
     context = _auth_context(request)
@@ -415,6 +510,195 @@ async def get_goal_history(request: Request, goal_id: str):
         return JSONResponse({"error": "goals unavailable"}, status_code=503)
     rows = result.get("results", []) if isinstance(result, dict) else []
     return [_history_response(row) for row in rows if isinstance(row, dict)]
+
+
+@router.post("/v1/goals/{goal_id}/focus")
+async def focus_goal(request: Request, goal_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid goal id"}, status_code=400)
+    try:
+        update = FocusGoalUpdate.model_validate(await _bounded_json(request))
+        payload = update.model_dump(mode="json")
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid focus request"}, status_code=400)
+    mutation = _mutation_inputs(request, payload)
+    if mutation is None:
+        return JSONResponse({"error": "Idempotency-Key and X-Account-Generation are required"}, status_code=400)
+    key, account_generation, request_hash = mutation
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    operation = f"goal-focus:{goal_id}"
+    try:
+        stored, conflict = await _load_mutation(env, uid, operation, key, account_generation, request_hash)
+        if conflict:
+            return conflict
+        if stored is not None:
+            return stored
+        target = await _first_goal(env, uid, goal_id)
+        if target is None:
+            return JSONResponse({"error": "goal not found"}, status_code=404)
+        if target.get("status") in {GoalStatus.achieved.value, GoalStatus.abandoned.value}:
+            return JSONResponse({"error": "ended goals cannot be focused"}, status_code=409)
+        focused_result = (
+            await env.APP_DB.prepare("SELECT id, status, focus_rank FROM cf_goals WHERE uid = ? AND status = 'focused'")
+            .bind(uid)
+            .all()
+        )
+        focused_rows = [
+            row
+            for row in (focused_result.get("results", []) if isinstance(focused_result, dict) else [])
+            if isinstance(row, dict)
+        ]
+        focused = [row for row in focused_rows if row.get("id") != goal_id]
+        occupied = {int(row["focus_rank"]) for row in focused if isinstance(row.get("focus_rank"), (int, float))}
+        replacement_id = update.replacement_goal_id
+        if len(focused) >= FOCUS_CAP:
+            if replacement_id is None:
+                return JSONResponse({"error": "focus set is full; replacement_goal_id is required"}, status_code=409)
+            replacement = next((row for row in focused if row.get("id") == replacement_id), None)
+            if replacement is None:
+                return JSONResponse({"error": "replacement_goal_id must name a focused goal"}, status_code=409)
+            previous_rank = replacement.get("focus_rank")
+            if isinstance(previous_rank, (int, float)):
+                occupied.discard(int(previous_rank))
+        if target.get("status") == GoalStatus.focused.value and update.focus_rank in {None, target.get("focus_rank")}:
+            result = _response(target)
+            now = int(time.time())
+            await env.APP_DB.batch(
+                [_mutation_statement(env, uid, operation, key, account_generation, request_hash, result, now)]
+            )
+            return result
+        requested_rank = update.focus_rank
+        if requested_rank is None:
+            requested_rank = next((rank for rank in range(FOCUS_CAP) if rank not in occupied), 0)
+        if requested_rank in occupied:
+            return JSONResponse({"error": "focus_rank is already occupied"}, status_code=409)
+        now = int(time.time())
+        patched_target = dict(target)
+        patched_target.update(
+            {"status": GoalStatus.focused.value, "focus_rank": requested_rank, "is_active": 1, "updated_at": now}
+        )
+        result = _response(patched_target)
+        statements = []
+        if replacement_id is not None and len(focused) >= FOCUS_CAP:
+            statements.append(
+                env.APP_DB.prepare(
+                    "UPDATE cf_goals SET status = 'background', focus_rank = NULL, updated_at = ? WHERE uid = ? AND id = ?"
+                ).bind(now, uid, replacement_id)
+            )
+        statements.append(
+            env.APP_DB.prepare(
+                "UPDATE cf_goals SET status = 'focused', focus_rank = ?, is_active = 1, updated_at = ? "
+                "WHERE uid = ? AND id = ?"
+            ).bind(requested_rank, now, uid, goal_id)
+        )
+        statements.append(_mutation_statement(env, uid, operation, key, account_generation, request_hash, result, now))
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    return result
+
+
+@router.delete("/v1/goals/{goal_id}/focus")
+async def unfocus_goal(request: Request, goal_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid goal id"}, status_code=400)
+    mutation = _mutation_inputs(request, {})
+    if mutation is None:
+        return JSONResponse({"error": "Idempotency-Key and X-Account-Generation are required"}, status_code=400)
+    key, account_generation, request_hash = mutation
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    operation = f"goal-unfocus:{goal_id}"
+    try:
+        stored, conflict = await _load_mutation(env, uid, operation, key, account_generation, request_hash)
+        if conflict:
+            return conflict
+        if stored is not None:
+            return stored
+        target = await _first_goal(env, uid, goal_id)
+        if target is None:
+            return JSONResponse({"error": "goal not found"}, status_code=404)
+        now = int(time.time())
+        patched_target = dict(target)
+        if target.get("status") == GoalStatus.focused.value:
+            patched_target.update({"status": GoalStatus.background.value, "focus_rank": None, "updated_at": now})
+        result = _response(patched_target)
+        statements = []
+        if target.get("status") == GoalStatus.focused.value:
+            statements.append(
+                env.APP_DB.prepare(
+                    "UPDATE cf_goals SET status = 'background', focus_rank = NULL, updated_at = ? WHERE uid = ? AND id = ?"
+                ).bind(now, uid, goal_id)
+            )
+        statements.append(_mutation_statement(env, uid, operation, key, account_generation, request_hash, result, now))
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    return result
+
+
+@router.post("/v1/goals/{goal_id}/lifecycle")
+async def transition_goal_lifecycle(request: Request, goal_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid goal id"}, status_code=400)
+    try:
+        update = GoalLifecycleUpdate.model_validate(await _bounded_json(request))
+        payload = update.model_dump(mode="json")
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid lifecycle request"}, status_code=400)
+    mutation = _mutation_inputs(request, payload)
+    if mutation is None:
+        return JSONResponse({"error": "Idempotency-Key and X-Account-Generation are required"}, status_code=400)
+    key, account_generation, request_hash = mutation
+    if update.relationship_disposition == GoalRelationshipDisposition.detach:
+        return JSONResponse({"error": "relationship detach requires the legacy workstream authority"}, status_code=409)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    operation = f"goal-lifecycle:{goal_id}"
+    try:
+        stored, conflict = await _load_mutation(env, uid, operation, key, account_generation, request_hash)
+        if conflict:
+            return conflict
+        if stored is not None:
+            return stored
+        target = await _first_goal(env, uid, goal_id)
+        if target is None:
+            return JSONResponse({"error": "goal not found"}, status_code=404)
+        now = int(time.time())
+        terminal = update.status in {GoalStatus.achieved, GoalStatus.abandoned}
+        patched_target = dict(target)
+        patched_target.update(
+            {
+                "status": update.status.value,
+                "focus_rank": None,
+                "is_active": 0 if terminal else 1,
+                "relationship_disposition": GoalRelationshipDisposition.retain.value,
+                "updated_at": now,
+                "ended_at": now if terminal else None,
+            }
+        )
+        result = _response(patched_target)
+        statements = [
+            env.APP_DB.prepare(
+                "UPDATE cf_goals SET status = ?, focus_rank = NULL, is_active = ?, relationship_disposition = 'retain', "
+                "updated_at = ?, ended_at = ? WHERE uid = ? AND id = ?"
+            ).bind(update.status.value, 0 if terminal else 1, now, now if terminal else None, uid, goal_id),
+            _mutation_statement(env, uid, operation, key, account_generation, request_hash, result, now),
+        ]
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    return result
 
 
 @router.get("/v1/goals/{goal_id}")

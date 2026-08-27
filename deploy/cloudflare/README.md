@@ -214,6 +214,10 @@ PATCH /v1/goals/{goalId}/progress
                               Edge → Python API Core → D1
 GET  /v1/goals/{goalId}/history
                               Edge → Python API Core → D1
+POST /v1/goals/{goalId}/focus
+DELETE /v1/goals/{goalId}/focus
+POST /v1/goals/{goalId}/lifecycle
+                              Edge → Python API Core → D1 mutation + receipt
 GET/POST /v1/folders        Edge → Python API Core → D1
 GET/PATCH/DELETE /v1/folders/{folderId}
                               Edge → Python API Core → D1
@@ -294,10 +298,14 @@ URL generation move from GCS to R2; the route group is therefore staging-only.
 The goal routes migrate uid-scoped goal metadata and metric projection with
 current/all listing, create/read/update, progress updates, and soft-abandon
 delete. Daily progress history is stored in a uid/goal/date D1 projection and
-served by the history route; focus-cap transactions, relationship lifecycle or
-event feeds, and AI advice/suggestion remain on legacy until their stronger
-workflow contracts are migrated. This route group is staging-only pending goal
-backfill and downstream reader cutover.
+served by the history route; focus-cap and retain-only lifecycle mutations are
+stored in a D1 mutation receipt and applied as one batch. Relationship detach,
+progress event feeds, and AI advice/suggestion remain on legacy until their
+stronger workflow contracts are migrated. Focus/unfocus/lifecycle writes require
+`Idempotency-Key` and `X-Account-Generation`; the five-slot focus cap and
+replacement rule are enforced in a D1 batch, while relationship `detach` fails
+closed until the workstream projection also moves. This route group is
+staging-only pending goal backfill and downstream reader cutover.
 
 The folder routes migrate system/custom folder metadata and ordering to D1. They
 do not yet move conversation documents, recompute conversation counts, or serve
