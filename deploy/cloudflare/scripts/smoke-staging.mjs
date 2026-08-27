@@ -71,6 +71,11 @@ export async function runSmoke({
   const trainingDataOptIn = await request(fetchImpl, `${base}/v1/users/training-data-opt-in`, { headers: authHeaders });
   expectStatus("training data opt-in", trainingDataOptIn, 200);
 
+  const developerWebhooksStatus = await request(fetchImpl, `${base}/v1/users/developer/webhooks/status`, {
+    headers: authHeaders,
+  });
+  expectStatus("developer webhooks status", developerWebhooksStatus, 200);
+
   const profile = await request(fetchImpl, `${base}/v1/users/profile`, { headers: authHeaders });
   expectStatus("user profile", profile, 200);
 
@@ -115,6 +120,7 @@ export async function runSmoke({
     assistantSettings: assistantSettings.status,
     aiProfile: aiProfile.status,
     trainingDataOptIn: trainingDataOptIn.status,
+    developerWebhooksStatus: developerWebhooksStatus.status,
     userProfile: profile.status,
     dailySummarySettings: dailySummarySettings.status,
     mentorNotificationSettings: mentorNotificationSettings.status,

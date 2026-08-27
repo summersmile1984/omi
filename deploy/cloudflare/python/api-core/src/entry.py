@@ -36,8 +36,16 @@ MAX_AI_PROFILE_TEXT_LENGTH = 50_000
 MAX_FCM_TOKEN_LENGTH = 4_096
 MAX_TIME_ZONE_LENGTH = 128
 MAX_DEVICE_KEY_COMPONENT_LENGTH = 128
+MAX_WEBHOOK_URL_LENGTH = 4_096
 DEFAULT_DAILY_SUMMARY_HOUR_LOCAL = 22
 DEFAULT_MENTOR_NOTIFICATION_FREQUENCY = 0
+WEBHOOK_TYPES = frozenset({
+    "audio_bytes",
+    "audio_bytes_websocket",
+    "realtime_transcript",
+    "memory_created",
+    "day_summary",
+})
 
 
 def auth_context(request: Request) -> dict[str, object] | None:
@@ -119,6 +127,10 @@ class MentorNotificationSettingsUpdate(BaseModel):
 class FcmTokenUpdate(BaseModel):
     fcm_token: str = Field(min_length=1, max_length=MAX_FCM_TOKEN_LENGTH)
     time_zone: str = Field(min_length=1, max_length=MAX_TIME_ZONE_LENGTH)
+
+
+class DeveloperWebhookUpdate(BaseModel):
+    url: str = Field(max_length=MAX_WEBHOOK_URL_LENGTH)
 
 
 class AssistantSettingsUpdate(BaseModel):
@@ -341,6 +353,41 @@ async def _save_fcm_token(env: object, uid: str, device_key: str, token: str, ti
         "ON CONFLICT(uid, device_key) DO UPDATE SET token = excluded.token, time_zone = excluded.time_zone, "
         "updated_at = excluded.updated_at"
     ).bind(uid, device_key, token, time_zone, now, now).run()
+
+
+def _valid_webhook_type(value: str) -> bool:
+    return value in WEBHOOK_TYPES
+
+
+def _webhook_is_configured(webhook_type: str, url: str) -> bool:
+    candidate = url.split(",", 1)[0] if webhook_type == "audio_bytes" else url
+    return bool(candidate.strip())
+
+
+async def _load_developer_webhook(env: object, uid: str, webhook_type: str) -> dict[str, object]:
+    row = await env.APP_DB.prepare(
+        "SELECT url, enabled FROM cf_user_developer_webhooks WHERE uid = ? AND webhook_type = ?"
+    ).bind(uid, webhook_type).first()
+    if not isinstance(row, dict):
+        return {"url": "", "enabled": False}
+    url = str(row.get("url") or "")
+    return {"url": url, "enabled": bool(row.get("enabled")) and _webhook_is_configured(webhook_type, url)}
+
+
+async def _save_developer_webhook(
+    env: object,
+    uid: str,
+    webhook_type: str,
+    url: str,
+    enabled: bool,
+) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_developer_webhooks "
+        "(uid, webhook_type, url, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid, webhook_type) DO UPDATE SET url = excluded.url, enabled = excluded.enabled, "
+        "updated_at = excluded.updated_at"
+    ).bind(uid, webhook_type, url, int(enabled), now, now).run()
 
 
 def _notification_settings(row: object | None) -> dict[str, object]:
@@ -673,6 +720,77 @@ async def save_fcm_token(request: Request):
     device_key = f"{platform}_{device_hash}"
     await _save_fcm_token(request.scope["env"], str(context["uid"]), device_key, update.fcm_token, update.time_zone)
     return {"status": "Ok"}
+
+
+@app.post("/v1/users/developer/webhook/{wtype}")
+async def set_developer_webhook(request: Request, wtype: str):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _valid_webhook_type(wtype):
+        return JSONResponse({"error": "invalid webhook type"}, status_code=400)
+    try:
+        update = DeveloperWebhookUpdate.model_validate(await _bounded_json(request, 8_192))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid webhook"}, status_code=400)
+    url = update.url
+    await _save_developer_webhook(
+        request.scope["env"],
+        str(context["uid"]),
+        wtype,
+        url,
+        _webhook_is_configured(wtype, url),
+    )
+    return {"status": "ok"}
+
+
+@app.get("/v1/users/developer/webhook/{wtype}")
+async def get_developer_webhook(request: Request, wtype: str):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _valid_webhook_type(wtype):
+        return JSONResponse({"error": "invalid webhook type"}, status_code=400)
+    row = await _load_developer_webhook(request.scope["env"], str(context["uid"]), wtype)
+    return {"url": row["url"]}
+
+
+@app.post("/v1/users/developer/webhook/{wtype}/disable")
+async def disable_developer_webhook(request: Request, wtype: str):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _valid_webhook_type(wtype):
+        return JSONResponse({"error": "invalid webhook type"}, status_code=400)
+    row = await _load_developer_webhook(request.scope["env"], str(context["uid"]), wtype)
+    await _save_developer_webhook(request.scope["env"], str(context["uid"]), wtype, str(row["url"]), False)
+    return {"status": "ok"}
+
+
+@app.post("/v1/users/developer/webhook/{wtype}/enable")
+async def enable_developer_webhook(request: Request, wtype: str):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _valid_webhook_type(wtype):
+        return JSONResponse({"error": "invalid webhook type"}, status_code=400)
+    row = await _load_developer_webhook(request.scope["env"], str(context["uid"]), wtype)
+    enabled = _webhook_is_configured(wtype, str(row["url"]))
+    await _save_developer_webhook(request.scope["env"], str(context["uid"]), wtype, str(row["url"]), enabled)
+    return {"status": "ok"}
+
+
+@app.get("/v1/users/developer/webhooks/status")
+async def get_developer_webhooks_status(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    return {
+        webhook_type: (await _load_developer_webhook(env, uid, webhook_type))["enabled"]
+        for webhook_type in ("audio_bytes", "memory_created", "realtime_transcript", "day_summary")
+    }
 
 
 @app.get("/v1/users/notification-settings")

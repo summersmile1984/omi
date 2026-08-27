@@ -169,6 +169,8 @@ POST /v1/users/private-cloud-sync
 GET  /v1/users/training-data-opt-in
 POST /v1/users/training-data-opt-in
 POST /v1/users/fcm-token
+ANY  /v1/users/developer/webhook/*
+GET  /v1/users/developer/webhooks/status
 GET  /v1/users/notification-settings
 PATCH /v1/users/notification-settings
 GET  /v1/users/daily-summary-settings
@@ -260,6 +262,14 @@ notifier until that provider boundary is migrated.
 response. Tokens are not returned by any public route. The legacy FCM sender
 still owns delivery until it can read the D1 token authority with an explicit
 provider and deletion contract.
+
+Developer webhook configuration routes now use the staging D1 table
+`cf_user_developer_webhooks`; supported types are `audio_bytes`,
+`audio_bytes_websocket`, `realtime_transcript`, `memory_created`, and
+`day_summary`. URL/configuration status is isolated from delivery health. The
+legacy webhook sender still reads Redis, so these settings are staging-only
+until delivery is moved to a Worker/Queue consumer with retry and disable
+semantics.
 
 `/v1/users/daily-summary-settings` and
 `/v1/users/mentor-notification-settings` store notification preferences in the

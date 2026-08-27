@@ -21,6 +21,7 @@ class FakeDb:
         self.privacy_row = None
         self.training_data_opt_in_row = None
         self.fcm_token_row = None
+        self.webhook_rows = {}
         self.notification_row = None
         self.notification_preferences_row = None
         self.location_row = None
@@ -50,6 +51,9 @@ class FakeStatement:
             return self.db.privacy_row
         if self.sql.startswith("SELECT status FROM cf_user_training_data_opt_in"):
             return self.db.training_data_opt_in_row
+        if self.sql.startswith("SELECT url, enabled FROM cf_user_developer_webhooks"):
+            uid, webhook_type = self.args
+            return self.db.webhook_rows.get((uid, webhook_type))
         if self.sql.startswith("SELECT notifications_enabled"):
             return self.db.notification_row
         if self.sql.startswith("SELECT daily_summary_enabled"):
@@ -123,6 +127,17 @@ class FakeStatement:
                 "device_key": device_key,
                 "token": token,
                 "time_zone": time_zone,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_developer_webhooks"):
+            uid, webhook_type, url, enabled, created_at, updated_at = self.args
+            self.db.webhook_rows[(uid, webhook_type)] = {
+                "uid": uid,
+                "webhook_type": webhook_type,
+                "url": url,
+                "enabled": enabled,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
@@ -533,6 +548,53 @@ def test_fcm_token_registration_scopes_and_sanitizes_device_key():
     assert invalid.status_code == 400
 
 
+def test_developer_webhook_configuration_and_toggle_state_round_trip():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="webhook-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET=secret)
+
+    assert asyncio.run(entry.get_developer_webhook(FakeRequest(env, headers), "realtime_transcript")) == {"url": ""}
+    configured = asyncio.run(
+        entry.set_developer_webhook(
+            FakeRequest(env, headers, {"url": "https://webhook.example.test/transcript"}),
+            "realtime_transcript",
+        )
+    )
+    assert configured == {"status": "ok"}
+    assert asyncio.run(entry.get_developer_webhook(FakeRequest(env, headers), "realtime_transcript")) == {
+        "url": "https://webhook.example.test/transcript"
+    }
+    assert asyncio.run(entry.get_developer_webhooks_status(FakeRequest(env, headers))) == {
+        "audio_bytes": False,
+        "memory_created": False,
+        "realtime_transcript": True,
+        "day_summary": False,
+    }
+
+    assert asyncio.run(entry.disable_developer_webhook(FakeRequest(env, headers), "realtime_transcript")) == {
+        "status": "ok"
+    }
+    assert asyncio.run(entry.enable_developer_webhook(FakeRequest(env, headers), "realtime_transcript")) == {
+        "status": "ok"
+    }
+
+    assert asyncio.run(
+        entry.set_developer_webhook(FakeRequest(env, headers, {"url": ",5"}), "audio_bytes")
+    ) == {"status": "ok"}
+    assert asyncio.run(entry.get_developer_webhooks_status(FakeRequest(env, headers)))["audio_bytes"] is False
+
+    invalid_type = asyncio.run(entry.get_developer_webhook(FakeRequest(env, headers), "unknown"))
+    assert invalid_type.status_code == 400
+    invalid_url = asyncio.run(
+        entry.set_developer_webhook(FakeRequest(env, headers, {"url": "x" * 4_097}), "day_summary")
+    )
+    assert invalid_url.status_code == 400
+
+
 def test_notification_settings_preserve_defaults_and_validate_frequency():
     secret = "test-secret"
     encoded, signature = signed_context(secret, uid="notifications-user")
@@ -646,6 +708,11 @@ def test_assistant_and_ai_profile_routes_fail_closed_without_auth():
         entry.get_training_data_opt_in,
         entry.set_training_data_opt_in,
         entry.save_fcm_token,
+        lambda request: entry.set_developer_webhook(request, "realtime_transcript"),
+        lambda request: entry.get_developer_webhook(request, "realtime_transcript"),
+        lambda request: entry.disable_developer_webhook(request, "realtime_transcript"),
+        lambda request: entry.enable_developer_webhook(request, "realtime_transcript"),
+        entry.get_developer_webhooks_status,
         entry.get_daily_summary_settings,
         entry.update_daily_summary_settings,
         entry.get_mentor_notification_settings,
