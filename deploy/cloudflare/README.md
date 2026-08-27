@@ -181,6 +181,10 @@ GET  /v1/cf/conversations     Edge → Python API Core → D1 conversation proje
 GET  /v1/cf/conversations/count
 GET  /v1/cf/conversations/{conversationId}
                               bounded list/count/detail reads with uid isolation
+GET  /v1/conversations       Edge → Python API Core → D1 canonical conversation list
+GET  /v1/conversations/count
+GET  /v1/conversations/{conversationId}
+                              canonical read projection; writes/finalization remain legacy
 GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/latest      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/version     Edge → Python API Core → GitHub Releases API
@@ -408,16 +412,16 @@ folder conversation listings; deleting a folder is therefore allowed only on
 the staging projection and must remain on legacy for production until the
 conversation authority moves.
 
-The additive `/v1/cf/conversations` routes use an explicit D1 conversation
-projection (indexed metadata plus bounded JSON transcript/structured fields).
-The POST accepts a pre-transcribed, bounded conversation and upserts by the
-uid/id key; it does not run LLM enrichment. List responses never include
+The conversation routes use an explicit D1 projection (indexed metadata plus
+bounded JSON transcript/structured fields). The POST `/v1/cf/conversations`
+staging ingress accepts a pre-transcribed, bounded conversation and upserts by
+the uid/id key; it does not run LLM enrichment. Canonical GET list/count/detail
+routes now read this projection in staging. List responses never include
 transcript segments, and locked rows redact derived content. Rows can also be
-loaded by the reviewed backfill/import workflow. Conversation finalization,
-memory extraction, merge, semantic search, audio deletion, and downstream
-integration fanout remain legacy-owned. Do not switch the canonical
-`/v1/conversations` routes until those write authorities and readers have moved
-together.
+loaded by the reviewed backfill/import workflow. Conversation writes,
+finalization, memory extraction, merge, semantic search, audio deletion, and
+downstream integration fanout remain legacy-owned; production reader cutover
+still requires those write authorities and readers to move together.
 
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event

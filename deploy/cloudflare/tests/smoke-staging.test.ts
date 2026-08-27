@@ -38,9 +38,9 @@ describe("staging smoke helpers", () => {
                 ? 403
                 : url.endsWith("/v1/stt/transcribe-async")
                   ? 401
-                  : url.includes("/v1/cf/conversations?") ||
-                      url.endsWith("/v1/cf/conversations") ||
-                      url.endsWith("/v1/cf/conversations/count")
+          : url.includes("/v1/conversations?") ||
+              url.endsWith("/v1/conversations") ||
+              url.endsWith("/v1/conversations/count")
                     ? 200
                   : url.endsWith("/v1/users/assistant-settings") ||
                       url.endsWith("/v1/users/ai-profile") ||
@@ -120,9 +120,9 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stt/transcribe-async"))
         return new Response(null, { status: 401 });
       if (
-        url.includes("/v1/cf/conversations?") ||
-        url.endsWith("/v1/cf/conversations") ||
-        url.endsWith("/v1/cf/conversations/count")
+        url.includes("/v1/conversations?") ||
+        url.endsWith("/v1/conversations") ||
+        url.endsWith("/v1/conversations/count")
       ) {
         return new Response(null, { status: 200 });
       }

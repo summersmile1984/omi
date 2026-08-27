@@ -378,6 +378,7 @@ async def store_conversation_projection(request: Request):
     return {"conversation_id": projection.id, "status": "stored"}
 
 
+@router.get("/v1/conversations")
 @router.get("/v1/cf/conversations")
 async def list_conversations(request: Request):
     context = _auth_context(request)
@@ -403,6 +404,7 @@ async def list_conversations(request: Request):
     return [_response(row, detail=False) for row in results if isinstance(row, dict)]
 
 
+@router.get("/v1/conversations/count")
 @router.get("/v1/cf/conversations/count")
 async def count_conversations(request: Request):
     context = _auth_context(request)
@@ -419,6 +421,7 @@ async def count_conversations(request: Request):
     return {"count": int(row.get("count") or 0) if isinstance(row, dict) else 0}
 
 
+@router.get("/v1/conversations/{conversation_id}")
 @router.get("/v1/cf/conversations/{conversation_id}")
 async def get_conversation(request: Request, conversation_id: str):
     context = _auth_context(request)

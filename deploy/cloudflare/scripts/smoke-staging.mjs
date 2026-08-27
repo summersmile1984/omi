@@ -112,16 +112,16 @@ export async function runSmoke({
 
   const conversations = await request(
     fetchImpl,
-    `${base}/v1/cf/conversations?limit=10`,
+    `${base}/v1/conversations?limit=10`,
     { headers: authHeaders },
   );
-  expectStatus("conversation projection list", conversations, 200);
+  expectStatus("canonical conversation list", conversations, 200);
   const conversationCount = await request(
     fetchImpl,
-    `${base}/v1/cf/conversations/count`,
+    `${base}/v1/conversations/count`,
     { headers: authHeaders },
   );
-  expectStatus("conversation projection count", conversationCount, 200);
+  expectStatus("canonical conversation count", conversationCount, 200);
 
   const assistantSettings = await request(
     fetchImpl,
