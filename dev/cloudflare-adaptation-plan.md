@@ -813,6 +813,7 @@ folder metadata CRUD                   # D1 system/custom folder create/list/upd
 daily/weekly/overall scores            # D1 action-item projection, UTC windows and deleted-row exclusion → unit verified
 focus sessions/stats                   # D1 uid-scoped event log, duration defaults and top-five aggregation → unit verified
 screen activity text sync/list/summary # D1 idempotent upsert and bounded aggregate reads; vectors stay legacy → unit verified
+backfill SQL generator                 # whitelisted uid/id upserts, type normalization and transactional dry-run → unit verified
 ```
 
 On 2026-08-28 the native ASR seam was exercised through the Edge Worker with a

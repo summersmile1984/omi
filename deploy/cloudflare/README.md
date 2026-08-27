@@ -265,6 +265,14 @@ embeddings are accepted for client compatibility but are not stored or searched;
 vector lifecycle, paid semantic search, and MCP advanced search remain on the
 legacy owner until their contracts move.
 
+`npm run backfill:d1 -- --input export.ndjson` generates a transactional SQL
+backfill from newline-delimited records. Every record must name one of the
+whitelisted D1 tables and carries `{ "table": "cf_action_items", "row": { ... } }`;
+the generator validates uid/id, normalizes timestamps/booleans/JSON, escapes SQL,
+and uses uid+id upserts. It only writes SQL to stdout. Review the output and
+apply it explicitly to the isolated staging database with Wrangler; the command
+does not connect to Firestore or production by itself.
+
 The People routes migrate uid-scoped person id/name metadata with idempotent
 create, list, rename, and delete operations. The response keeps the existing
 Person shape, but speech sample URLs are empty until sample objects and signed
