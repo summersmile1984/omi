@@ -101,6 +101,7 @@ const proxyAuthenticatedAI = async (c: Context<{ Bindings: EdgeEnv; Variables: E
   return withRequestId(response, id);
 };
 
+app.get("/v1/config/api-keys", proxyAuthenticatedCore);
 app.all("/v1/cf/probe", proxyAuthenticatedCore);
 app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
 app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);

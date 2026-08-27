@@ -62,6 +62,24 @@ async def probe(request: Request):
     return {"status": "ok", "service": "api-core", "auth": context, "probe": row}
 
 
+@app.get("/v1/config/api-keys")
+async def api_keys(request: Request) -> dict[str, str]:
+    """Expose only explicitly configured client-facing API keys to an authed user."""
+    if not auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    configured_keys = (
+        ("firebase_api_key", "FIREBASE_API_KEY"),
+        ("google_calendar_api_key", "GOOGLE_CALENDAR_API_KEY"),
+        ("anthropic_api_key", "DESKTOP_LEGACY_ANTHROPIC_KEY"),
+    )
+    return {
+        response_field: value
+        for response_field, environment_name in configured_keys
+        if (value := getattr(env, environment_name, None)) is not None
+    }
+
+
 class TranscriptionPreferencesUpdate(BaseModel):
     single_language_mode: bool | None = None
     vocabulary: list[str] | None = None

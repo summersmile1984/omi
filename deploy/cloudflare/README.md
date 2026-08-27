@@ -107,6 +107,7 @@ JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 l
 GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/latest      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/version     Edge → Python API Core → GitHub Releases API
+GET  /v1/config/api-keys      Edge → Python API Core → Worker client-key vars
 GET  /v1/users/transcription-preferences
 PATCH /v1/users/transcription-preferences
 GET  /v1/users/available-languages

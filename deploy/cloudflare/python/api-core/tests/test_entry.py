@@ -172,6 +172,35 @@ KEY_VALUE_END -->"""
     assert _firmware_response("Omi_CV1", release)["zip_url"] == "https://example.test/fw.zip"
 
 
+def test_api_keys_returns_only_configured_client_keys():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            FIREBASE_API_KEY="firebase-public",
+            GOOGLE_CALENDAR_API_KEY="calendar-public",
+        ),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+    )
+
+    result = asyncio.run(entry.api_keys(request))
+
+    assert result == {
+        "firebase_api_key": "firebase-public",
+        "google_calendar_api_key": "calendar-public",
+    }
+
+
+def test_api_keys_rejects_missing_auth():
+    request = FakeRequest(SimpleNamespace(INTERNAL_ASSERTION_SECRET="test-secret"), {})
+
+    response = asyncio.run(entry.api_keys(request))
+
+    assert response.status_code == 401
+    assert json.loads(response.body) == {"error": "unauthorized"}
+
+
 def test_firmware_route_uses_worker_fetch(monkeypatch):
     release = {
         "tag_name": "Omi_CV1_v3.0.21",
