@@ -201,6 +201,24 @@ const TABLES = {
     integers: ["recorded_at"],
     json: [],
   },
+  cf_goal_progress_events: {
+    key_columns: ["uid", "event_id"],
+    required: ["uid", "event_id", "goal_id", "sequence", "kind", "summary", "created_at"],
+    columns: [
+      "uid",
+      "event_id",
+      "goal_id",
+      "sequence",
+      "kind",
+      "summary",
+      "evidence_refs_json",
+      "metric_json",
+      "created_at",
+    ],
+    defaults: { evidence_refs_json: "[]" },
+    integers: ["sequence", "created_at"],
+    json: ["evidence_refs_json", "metric_json"],
+  },
 };
 
 const BOOL_COLUMNS = new Set([

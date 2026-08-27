@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from goal_routes import (  # noqa: E402
+    append_goal_progress_event,
     create_goal,
     delete_goal,
     focus_goal,
@@ -17,6 +18,7 @@ from goal_routes import (  # noqa: E402
     get_goal,
     get_goal_history,
     list_goals,
+    list_goal_progress_events,
     transition_goal_lifecycle,
     unfocus_goal,
     update_goal,
@@ -34,6 +36,8 @@ class FakeDb:
         self.connection.executescript(history_migration.read_text())
         mutation_migration = Path(__file__).parents[3] / "migrations/app/0024_goal_mutations.sql"
         self.connection.executescript(mutation_migration.read_text())
+        events_migration = Path(__file__).parents[3] / "migrations/app/0025_goal_progress_events.sql"
+        self.connection.executescript(events_migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -154,10 +158,17 @@ def test_goal_metadata_and_progress_are_uid_scoped():
     history = asyncio.run(get_goal_history(FakeRequest(env, headers, query={"days": "30"}), created["id"]))
     assert len(history) == 1
     assert history[0]["value"] == 25
+    events = asyncio.run(list_goal_progress_events(FakeRequest(env, headers), created["id"]))
+    assert len(events) == 1
+    assert events[0]["sequence"] == 1
+    assert events[0]["kind"] == "metric_update"
+    assert events[0]["metric"]["current"] == 25
     asyncio.run(update_goal_progress(FakeRequest(env, headers, query={"current_value": "30"}), created["id"]))
     history = asyncio.run(get_goal_history(FakeRequest(env, headers), created["id"]))
     assert len(history) == 1
     assert history[0]["value"] == 30
+    events = asyncio.run(list_goal_progress_events(FakeRequest(env, headers), created["id"]))
+    assert [event["sequence"] for event in events] == [2, 1]
 
     other = asyncio.run(get_goal(FakeRequest(env, signed_headers(secret, "other-user")), created["id"]))
     assert other.status_code == 404
@@ -182,6 +193,59 @@ def test_goal_routes_reject_invalid_progress_and_empty_update():
     assert invalid_update.status_code == 400
     invalid_days = asyncio.run(get_goal_history(FakeRequest(env, headers, query={"days": "0"}), created["id"]))
     assert invalid_days.status_code == 400
+
+
+def test_goal_progress_event_append_list_and_receipt_idempotency():
+    secret = "goal-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+    created = asyncio.run(create_goal(FakeRequest(env, headers, {"title": "Ship the chapter"})))
+    event_body = {
+        "kind": "milestone",
+        "summary": "Finished the first chapter",
+        "evidence_refs": [{"kind": "external", "id": "note-1", "scope": "canonical"}],
+        "metric": {"type": "numeric", "current": 1, "target": 10, "unit": "chapters"},
+    }
+    event_headers = mutation_headers(secret, "event-1")
+    appended = asyncio.run(append_goal_progress_event(FakeRequest(env, event_headers, event_body), created["id"]))
+    assert appended["event_id"].startswith("gpe_")
+    assert appended["sequence"] == 1
+    assert appended["kind"] == "milestone"
+    assert appended["evidence_refs"][0]["scope"] == "canonical"
+    assert appended["metric"]["current"] == 1
+
+    replay = asyncio.run(append_goal_progress_event(FakeRequest(env, event_headers, event_body), created["id"]))
+    assert replay == appended
+    conflict = asyncio.run(
+        append_goal_progress_event(
+            FakeRequest(env, event_headers, {**event_body, "summary": "different"}),
+            created["id"],
+        )
+    )
+    assert conflict.status_code == 409
+
+    listed = asyncio.run(list_goal_progress_events(FakeRequest(env, headers, query={"limit": "1"}), created["id"]))
+    assert listed == [appended]
+    assert asyncio.run(get_goal(FakeRequest(env, headers), created["id"]))["metric"]["current"] == 1
+
+    missing_headers = asyncio.run(append_goal_progress_event(FakeRequest(env, headers, event_body), created["id"]))
+    assert missing_headers.status_code == 400
+    invalid_scope = asyncio.run(
+        append_goal_progress_event(
+            FakeRequest(
+                env,
+                mutation_headers(secret, "event-invalid-scope"),
+                {
+                    "kind": "evidence",
+                    "summary": "Local evidence",
+                    "evidence_refs": [{"kind": "screen", "id": "screen-1", "scope": "device_local"}],
+                },
+            ),
+            created["id"],
+        )
+    )
+    assert invalid_scope.status_code == 400
+    assert asyncio.run(list_goal_progress_events(FakeRequest(env, headers, query={"limit": "0"}), created["id"])).status_code == 400
 
 
 def test_goal_focus_cap_lifecycle_and_idempotency_are_d1_scoped():

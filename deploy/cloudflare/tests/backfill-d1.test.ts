@@ -95,4 +95,27 @@ describe("D1 backfill SQL generator", () => {
       { table: "cf_goal_progress_history", row: { uid: "u", goal_id: "g", date: "2026-08-28", value: 25 } },
     ])).toThrow("missing recorded_at");
   });
+
+  it("renders goal progress events with the uid/event id key and JSON projections", () => {
+    const sql = renderBackfillSql([
+      {
+        table: "cf_goal_progress_events",
+        row: {
+          uid: "u",
+          event_id: "gpe-1",
+          goal_id: "g",
+          sequence: 1,
+          kind: "evidence",
+          summary: "Captured evidence",
+          evidence_refs_json: [{ kind: "external", id: "source-1", scope: "canonical" }],
+          created_at: "2026-08-28T10:00:00Z",
+        },
+      },
+    ]);
+    expect(sql).toContain("ON CONFLICT(uid, event_id) DO UPDATE SET goal_id = excluded.goal_id");
+    expect(sql).toContain("evidence_refs_json");
+    expect(() => renderBackfillSql([
+      { table: "cf_goal_progress_events", row: { uid: "u", event_id: "gpe-1", goal_id: "g" } },
+    ])).toThrow("missing sequence");
+  });
 });

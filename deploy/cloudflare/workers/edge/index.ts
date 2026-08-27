@@ -165,6 +165,8 @@ app.get("/v1/goals", proxyAuthenticatedCore);
 app.post("/v1/goals", proxyAuthenticatedCore);
 app.get("/v1/goals/all", proxyAuthenticatedCore);
 app.get("/v1/goals/:goalId/history", proxyAuthenticatedCore);
+app.post("/v1/goals/:goalId/progress-events", proxyAuthenticatedCore);
+app.get("/v1/goals/:goalId/progress-events", proxyAuthenticatedCore);
 app.post("/v1/goals/:goalId/focus", proxyAuthenticatedCore);
 app.delete("/v1/goals/:goalId/focus", proxyAuthenticatedCore);
 app.post("/v1/goals/:goalId/lifecycle", proxyAuthenticatedCore);

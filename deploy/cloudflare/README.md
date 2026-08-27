@@ -214,6 +214,9 @@ PATCH /v1/goals/{goalId}/progress
                               Edge → Python API Core → D1
 GET  /v1/goals/{goalId}/history
                               Edge → Python API Core → D1
+POST /v1/goals/{goalId}/progress-events
+GET  /v1/goals/{goalId}/progress-events
+                              Edge → Python API Core → D1 event log + receipt
 POST /v1/goals/{goalId}/focus
 DELETE /v1/goals/{goalId}/focus
 POST /v1/goals/{goalId}/lifecycle
@@ -298,14 +301,18 @@ URL generation move from GCS to R2; the route group is therefore staging-only.
 The goal routes migrate uid-scoped goal metadata and metric projection with
 current/all listing, create/read/update, progress updates, and soft-abandon
 delete. Daily progress history is stored in a uid/goal/date D1 projection and
-served by the history route; focus-cap and retain-only lifecycle mutations are
-stored in a D1 mutation receipt and applied as one batch. Relationship detach,
-progress event feeds, and AI advice/suggestion remain on legacy until their
-stronger workflow contracts are migrated. Focus/unfocus/lifecycle writes require
+served by the history route. Progress event feeds now append validated evidence
+and metric events to a uid/goal sequence in D1; explicit event writes use a D1
+mutation receipt, while the existing progress route emits a `metric_update`
+event in the same batch as the metric and daily-history projection. Focus-cap and
+retain-only lifecycle mutations are stored in a D1 mutation receipt and applied
+as one batch. Relationship detach and AI advice/suggestion remain on legacy
+until their stronger workflow contracts are migrated. Focus/unfocus/lifecycle
+writes require
 `Idempotency-Key` and `X-Account-Generation`; the five-slot focus cap and
 replacement rule are enforced in a D1 batch, while relationship `detach` fails
 closed until the workstream projection also moves. This route group is
-staging-only pending goal backfill and downstream reader cutover.
+staging-only pending goal/event backfill and downstream reader cutover.
 
 The folder routes migrate system/custom folder metadata and ordering to D1. They
 do not yet move conversation documents, recompute conversation counts, or serve

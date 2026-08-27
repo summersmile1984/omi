@@ -1,8 +1,8 @@
 """D1-backed goal metadata routes for the isolated Cloudflare profile.
 
 This goal slice owns the durable metadata, metric projection, daily progress
-history, focus-cap mutations, and retain-only lifecycle transitions used by the
-released clients. Relationship detach, progress event feeds, and AI
+history, focus-cap mutations, retain-only lifecycle transitions, and progress
+event feed used by the released clients. Relationship detach and AI
 advice/suggestion routes remain on the legacy owner until their stronger
 workflow contracts are migrated.
 """
@@ -96,6 +96,63 @@ class GoalMetric(BaseModel):
         if self.min is not None and self.max is not None and self.min > self.max:
             raise ValueError("metric min must not exceed max")
         return self
+
+
+class GoalProgressEventKind(str, Enum):
+    evidence = "evidence"
+    metric_update = "metric_update"
+    milestone = "milestone"
+    status_change = "status_change"
+
+
+class EvidenceKind(str, Enum):
+    conversation = "conversation"
+    memory_item = "memory_item"
+    workstream_event = "workstream_event"
+    artifact = "artifact"
+    chat_message = "chat_message"
+    local_screen = "local_screen"
+    external = "external"
+
+
+class EvidenceScope(str, Enum):
+    canonical = "canonical"
+    device_local = "device_local"
+
+
+class EvidenceRef(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    kind: EvidenceKind
+    id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    version: str | None = Field(default=None, max_length=128)
+    scope: EvidenceScope
+    device_id: str | None = Field(default=None, min_length=1, max_length=128)
+    excerpt_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    transcript_segment_ids: list[str] | None = Field(default=None, max_length=100)
+    start_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    end_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "EvidenceRef":
+        if self.scope == EvidenceScope.device_local and not self.device_id:
+            raise ValueError("device_local evidence requires device_id")
+        if self.scope == EvidenceScope.canonical and self.device_id is not None:
+            raise ValueError("canonical evidence cannot carry device_id")
+        if self.kind == EvidenceKind.local_screen and self.scope != EvidenceScope.device_local:
+            raise ValueError("local_screen evidence must be device_local")
+        if self.start_seconds is not None and self.end_seconds is not None and self.end_seconds < self.start_seconds:
+            raise ValueError("end_seconds must be greater than or equal to start_seconds")
+        return self
+
+
+class GoalProgressEventCreate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    kind: GoalProgressEventKind
+    summary: str = Field(min_length=1, max_length=1000)
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=50)
+    metric: GoalMetric | None = None
 
 
 class GoalCreate(BaseModel):
@@ -328,6 +385,24 @@ def _history_response(row: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _event_response(row: dict[str, object]) -> dict[str, object]:
+    try:
+        sequence = int(row.get("sequence", 0))
+    except (TypeError, ValueError):
+        sequence = 0
+    metric = _metric({"metric_json": row.get("metric_json")})
+    return {
+        "event_id": str(row.get("event_id") or ""),
+        "goal_id": str(row.get("goal_id") or ""),
+        "sequence": sequence,
+        "kind": str(row.get("kind") or "evidence"),
+        "summary": str(row.get("summary") or ""),
+        "evidence_refs": _json_list(row.get("evidence_refs_json")),
+        "metric": metric,
+        "created_at": _iso(row.get("created_at")),
+    }
+
+
 def _query_days(request: Request) -> int | None:
     raw = getattr(request, "query_params", {}).get("days")
     if raw is None or raw == "":
@@ -337,6 +412,17 @@ def _query_days(request: Request) -> int | None:
     except (TypeError, ValueError):
         return None
     return days if 1 <= days <= 365 else None
+
+
+def _query_limit(request: Request) -> int | None:
+    raw = getattr(request, "query_params", {}).get("limit")
+    if raw is None or raw == "":
+        return 100
+    try:
+        limit = int(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return limit if 1 <= limit <= 500 else None
 
 
 def _mutation_inputs(request: Request, payload: object) -> tuple[str, int, str] | None:
@@ -510,6 +596,121 @@ async def get_goal_history(request: Request, goal_id: str):
         return JSONResponse({"error": "goals unavailable"}, status_code=503)
     rows = result.get("results", []) if isinstance(result, dict) else []
     return [_history_response(row) for row in rows if isinstance(row, dict)]
+
+
+@router.post("/v1/goals/{goal_id}/progress-events")
+async def append_goal_progress_event(request: Request, goal_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid goal id"}, status_code=400)
+    try:
+        event = GoalProgressEventCreate.model_validate(await _bounded_json(request))
+        payload = event.model_dump(mode="json")
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid progress event"}, status_code=400)
+    mutation = _mutation_inputs(request, payload)
+    if mutation is None:
+        return JSONResponse({"error": "Idempotency-Key and X-Account-Generation are required"}, status_code=400)
+    key, account_generation, request_hash = mutation
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    operation = f"goal-progress-event:{goal_id}"
+    event_id = f"gpe_{hashlib.sha256(f'{uid}:{account_generation}:{goal_id}:{key}'.encode()).hexdigest()[:32]}"
+    try:
+        stored, conflict = await _load_mutation(env, uid, operation, key, account_generation, request_hash)
+        if conflict:
+            return conflict
+        if stored is not None:
+            return stored
+        target = await _first_goal(env, uid, goal_id)
+        if target is None:
+            return JSONResponse({"error": "goal not found"}, status_code=404)
+        sequence = int(target.get("latest_progress_sequence") or 0) + 1
+        now = int(time.time())
+        event_row = {
+            "event_id": event_id,
+            "goal_id": goal_id,
+            "sequence": sequence,
+            "kind": event.kind.value,
+            "summary": event.summary,
+            "evidence_refs_json": json.dumps(
+                [reference.model_dump(mode="json") for reference in event.evidence_refs], ensure_ascii=False
+            ),
+            "metric_json": json.dumps(event.metric.model_dump(mode="json"), ensure_ascii=False)
+            if event.metric is not None
+            else None,
+            "created_at": now,
+        }
+        result = _event_response(event_row)
+        patched_goal = dict(target)
+        patched_goal["latest_progress_sequence"] = sequence
+        patched_goal["updated_at"] = now
+        if event.metric is not None:
+            patched_goal["metric_json"] = event_row["metric_json"]
+        goal_update = (
+            env.APP_DB.prepare(
+                "UPDATE cf_goals SET latest_progress_sequence = ?, metric_json = ?, updated_at = ? "
+                "WHERE uid = ? AND id = ?"
+            ).bind(sequence, patched_goal.get("metric_json"), now, uid, goal_id)
+            if event.metric is not None
+            else env.APP_DB.prepare(
+                "UPDATE cf_goals SET latest_progress_sequence = ?, updated_at = ? WHERE uid = ? AND id = ?"
+            ).bind(sequence, now, uid, goal_id)
+        )
+        statements = [
+            env.APP_DB.prepare(
+                "INSERT INTO cf_goal_progress_events "
+                "(uid, event_id, goal_id, sequence, kind, summary, evidence_refs_json, metric_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ).bind(
+                uid,
+                event_id,
+                goal_id,
+                sequence,
+                event_row["kind"],
+                event_row["summary"],
+                event_row["evidence_refs_json"],
+                event_row["metric_json"],
+                now,
+            ),
+            goal_update,
+            _mutation_statement(env, uid, operation, key, account_generation, request_hash, result, now),
+        ]
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    return result
+
+
+@router.get("/v1/goals/{goal_id}/progress-events")
+async def list_goal_progress_events(request: Request, goal_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid goal id"}, status_code=400)
+    limit = _query_limit(request)
+    if limit is None:
+        return JSONResponse({"error": "invalid limit"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    try:
+        if await _first_goal(env, uid, goal_id) is None:
+            return JSONResponse({"error": "goal not found"}, status_code=404)
+        result = (
+            await env.APP_DB.prepare(
+                "SELECT event_id, goal_id, sequence, kind, summary, evidence_refs_json, metric_json, created_at "
+                "FROM cf_goal_progress_events WHERE uid = ? AND goal_id = ? ORDER BY sequence DESC LIMIT ?"
+            )
+            .bind(uid, goal_id, limit)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    return [_event_response(row) for row in rows if isinstance(row, dict)]
 
 
 @router.post("/v1/goals/{goal_id}/focus")
@@ -825,14 +1026,22 @@ async def update_goal_progress(request: Request, goal_id: str):
         metric["current"] = current_value
         now = int(time.time())
         today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+        sequence = int(existing.get("latest_progress_sequence") or 0) + 1
+        event_id = f"gpe_{uuid.uuid4().hex}"
+        metric_json = json.dumps(metric, ensure_ascii=False)
+        event_insert = env.APP_DB.prepare(
+            "INSERT INTO cf_goal_progress_events "
+            "(uid, event_id, goal_id, sequence, kind, summary, evidence_refs_json, metric_json, created_at) "
+            "VALUES (?, ?, ?, ?, 'metric_update', ?, '[]', ?, ?)"
+        ).bind(uid, event_id, goal_id, sequence, "Metric updated", metric_json, now)
         goal_update = env.APP_DB.prepare(
-            "UPDATE cf_goals SET metric_json = ?, updated_at = ? WHERE uid = ? AND id = ?"
-        ).bind(json.dumps(metric, ensure_ascii=False), now, uid, goal_id)
+            "UPDATE cf_goals SET metric_json = ?, latest_progress_sequence = ?, updated_at = ? WHERE uid = ? AND id = ?"
+        ).bind(metric_json, sequence, now, uid, goal_id)
         history_upsert = env.APP_DB.prepare(
             "INSERT INTO cf_goal_progress_history (uid, goal_id, date, value, recorded_at) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(uid, goal_id, date) DO UPDATE SET value = excluded.value, recorded_at = excluded.recorded_at"
         ).bind(uid, goal_id, today, current_value, now)
-        await env.APP_DB.batch([goal_update, history_upsert])
+        await env.APP_DB.batch([event_insert, goal_update, history_upsert])
         row = await _first_goal(env, uid, goal_id)
     except Exception:
         return JSONResponse({"error": "goals unavailable"}, status_code=503)
