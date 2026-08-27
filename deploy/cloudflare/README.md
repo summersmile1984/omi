@@ -216,6 +216,11 @@ GET/POST /v1/folders        Edge → Python API Core → D1
 GET/PATCH/DELETE /v1/folders/{folderId}
                               Edge → Python API Core → D1
 POST /v1/folders/reorder    Edge → Python API Core → D1
+GET  /v1/calendar/onboarding/status
+                              Edge → Python API Core → D1 flags
+POST /v1/calendar/onboarding/skip
+POST /v1/calendar/onboarding/reset
+                              Edge → Python API Core → D1 flags
 ```
 
 Only routes explicitly listed as migrated are sent to the partial Worker
@@ -296,6 +301,13 @@ do not yet move conversation documents, recompute conversation counts, or serve
 folder conversation listings; deleting a folder is therefore allowed only on
 the staging projection and must remain on legacy for production until the
 conversation authority moves.
+
+The calendar onboarding routes expose only a uid-scoped D1 projection of the
+connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event
+reads, and calendar writes remain on the legacy integration service; tokens are
+never returned by these routes. This group is staging-only until existing
+integration rows are backfilled and every downstream OAuth reader has cut over
+to the same authority.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

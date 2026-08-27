@@ -107,6 +107,11 @@ export async function runSmoke({
   });
   expectStatus("screen activity summary", screenActivitySummary, 200);
 
+  const calendarOnboardingStatus = await request(fetchImpl, `${base}/v1/calendar/onboarding/status`, {
+    headers: authHeaders,
+  });
+  expectStatus("calendar onboarding status", calendarOnboardingStatus, 200);
+
   // Exercise geolocation route ownership without persisting location data.
   // The legacy contract intentionally returns 200 for invalid coordinates.
   const invalidGeolocation = await request(fetchImpl, `${base}/v1/users/geolocation`, {
@@ -159,6 +164,7 @@ export async function runSmoke({
     focusStats: focusStats.status,
     screenActivity: screenActivity.status,
     screenActivitySummary: screenActivitySummary.status,
+    calendarOnboardingStatus: calendarOnboardingStatus.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     ...nativeTtsResult,

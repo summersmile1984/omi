@@ -176,6 +176,23 @@ const TABLES = {
     integers: [],
     json: [],
   },
+  cf_user_calendar_onboarding: {
+    key_columns: ["uid"],
+    required: ["uid", "created_at", "updated_at"],
+    columns: [
+      "uid",
+      "connected",
+      "onboarding_skipped",
+      "reauth_required",
+      "has_access_token",
+      "reauth_reason",
+      "created_at",
+      "updated_at",
+    ],
+    defaults: { connected: 0, onboarding_skipped: 0, reauth_required: 0, has_access_token: 0 },
+    integers: ["created_at", "updated_at"],
+    json: [],
+  },
 };
 
 const BOOL_COLUMNS = new Set([
@@ -187,6 +204,10 @@ const BOOL_COLUMNS = new Set([
   "is_active",
   "is_default",
   "is_system",
+  "connected",
+  "onboarding_skipped",
+  "reauth_required",
+  "has_access_token",
 ]);
 const DATE_COLUMNS = new Set([
   "due_at",
@@ -269,7 +290,9 @@ export function normalizeRow(table, input) {
     }
   }
   if (typeof row.uid !== "string" || row.uid.length === 0 || row.uid.length > 256) fail(`${table}.uid is invalid`);
-  if (typeof row.id !== "string" || row.id.length === 0 || row.id.length > 256) fail(`${table}.id is invalid`);
+  if (spec.key_columns?.includes("id") !== false && (typeof row.id !== "string" || row.id.length === 0 || row.id.length > 256)) {
+    fail(`${table}.id is invalid`);
+  }
   const normalized = {};
   for (const column of spec.columns) {
     let value = row[column];
@@ -293,12 +316,13 @@ export function normalizeRow(table, input) {
 }
 
 function insertSql(table, row) {
+  const keyColumns = TABLES[table].key_columns || ["uid", "id"];
   const columns = Object.keys(row);
   const values = columns.map((column) => sqlLiteral(row[column]));
-  const updates = columns.filter((column) => column !== "uid" && column !== "id");
+  const updates = columns.filter((column) => !keyColumns.includes(column));
   const updateClause = updates.length
-    ? ` ON CONFLICT(uid, id) DO UPDATE SET ${updates.map((column) => `${column} = excluded.${column}`).join(", ")}`
-    : " ON CONFLICT(uid, id) DO NOTHING";
+    ? ` ON CONFLICT(${keyColumns.join(", ")}) DO UPDATE SET ${updates.map((column) => `${column} = excluded.${column}`).join(", ")}`
+    : ` ON CONFLICT(${keyColumns.join(", ")}) DO NOTHING`;
   return `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${values.join(", ")})${updateClause};`;
 }
 

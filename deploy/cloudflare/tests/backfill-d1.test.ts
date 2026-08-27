@@ -56,4 +56,30 @@ describe("D1 backfill SQL generator", () => {
       uid: "u", id: "x", description: "bad", completed: false, status: "completed", created_at: 1, updated_at: 1,
     } }])).toThrow("completed action item");
   });
+
+  it("backfills calendar onboarding flags without accepting token material", () => {
+    const normalized = normalizeRow("cf_user_calendar_onboarding", {
+      uid: "u",
+      connected: true,
+      onboarding_skipped: false,
+      reauth_required: true,
+      has_access_token: true,
+      reauth_reason: "token_expired",
+      created_at: 1,
+      updated_at: 2,
+      access_token: "must-not-land-in-d1-projection",
+    });
+    expect(normalized).toMatchObject({
+      uid: "u",
+      connected: 1,
+      onboarding_skipped: 0,
+      reauth_required: 1,
+      has_access_token: 1,
+      reauth_reason: "token_expired",
+    });
+    expect(normalized).not.toHaveProperty("access_token");
+    expect(renderBackfillSql([{ table: "cf_user_calendar_onboarding", row: normalized }])).toContain(
+      "cf_user_calendar_onboarding",
+    );
+  });
 });
