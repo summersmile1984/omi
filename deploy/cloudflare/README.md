@@ -187,6 +187,8 @@ GET  /v1/conversations/{conversationId}
                               canonical read projection; writes/finalization remain legacy
 GET  /v1/conversations/{conversationId}/photos
                               bounded photo projection; locked rows fail closed
+PATCH /v1/conversations/{conversationId}/segments/text
+                              bounded D1 transcript edit with updated-at CAS
 PATCH /v1/conversations/{conversationId}/title
 PATCH /v1/conversations/{conversationId}/starred
                               canonical metadata mutations → D1

@@ -27,6 +27,7 @@ MAX_OFFSET = 100_000
 MAX_FILTER_VALUES = 20
 MAX_JSON_BYTES = 1_000_000
 MAX_WRITE_BYTES = 4_000_000
+MAX_SEGMENT_TEXT_LENGTH = 10_000
 MAX_SEGMENTS = 2_000
 CONVERSATION_STATUSES = frozenset({"in_progress", "processing", "merging", "completed", "failed"})
 CONVERSATION_SOURCES = frozenset(
@@ -100,6 +101,15 @@ class ConversationProjectionWrite(BaseModel):
         if self.started_at and self.finished_at and self.finished_at < self.started_at:
             raise ValueError("finished_at must be after started_at")
         return self
+
+
+class ConversationSegmentTextUpdate(BaseModel):
+    """Bounded text-only edit for one projected transcript segment."""
+
+    model_config = {"extra": "ignore"}
+
+    segment_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
+    text: str = Field(min_length=1, max_length=MAX_SEGMENT_TEXT_LENGTH)
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -483,6 +493,59 @@ async def get_conversation_photos(request: Request, conversation_id: str):
     return [
         photo for photo in _json_list(row.get("photos_json")) if isinstance(photo, dict)
     ][:MAX_SEGMENTS]
+
+
+@router.patch("/v1/conversations/{conversation_id}/segments/text")
+async def patch_conversation_segment_text(request: Request, conversation_id: str):
+    """Update one transcript segment with an updated-at compare-and-set."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        raw = await request.body()
+        if len(raw) > 32_000:
+            return JSONResponse({"error": "segment body too large"}, status_code=413)
+        update = ConversationSegmentTextUpdate.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError, TypeError):
+        return JSONResponse({"error": "invalid segment update"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "Unlimited Plan Required to access this conversation."},
+                status_code=402,
+            )
+        segments = _json_list(existing.get("transcript_segments_json"))
+        found = False
+        for segment in segments:
+            if isinstance(segment, dict) and segment.get("id") == update.segment_id:
+                segment["text"] = update.text
+                found = True
+                break
+        if not found:
+            return JSONResponse({"error": "segment not found"}, status_code=404)
+
+        current_updated_at = int(existing.get("updated_at") or 0)
+        next_updated_at = max(int(time.time()), current_updated_at + 1)
+        encoded_segments = _dump_json(segments, "transcript_segments")
+        result = await env.APP_DB.prepare(
+            "UPDATE cf_conversations SET transcript_segments_json = ?, updated_at = ? "
+            "WHERE uid = ? AND id = ? AND updated_at = ?"
+        ).bind(encoded_segments, next_updated_at, uid, conversation_id, current_updated_at).run()
+        changes = result.get("meta", {}).get("changes", 0) if isinstance(result, dict) else 0
+        if int(changes or 0) != 1:
+            return JSONResponse({"error": "conversation changed, retry"}, status_code=409)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    return {"status": "Ok"}
 
 
 @router.patch("/v1/conversations/{conversation_id}/title")

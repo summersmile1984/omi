@@ -128,6 +128,16 @@ export async function runSmoke({
     { headers: authHeaders },
   );
   expectStatus("canonical conversation photos missing-row", conversationPhotos, 404);
+  const segmentText = await request(
+    fetchImpl,
+    `${base}/v1/conversations/cf-smoke-segment-probe-${Date.now()}/segments/text`,
+    {
+      method: "PATCH",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ segment_id: "missing", text: "probe" }),
+    },
+  );
+  expectStatus("canonical conversation segment text missing-row", segmentText, 404);
 
   const assistantSettings = await request(
     fetchImpl,
@@ -282,6 +292,7 @@ export async function runSmoke({
     conversations: conversations.status,
     conversationCount: conversationCount.status,
     conversationPhotos: conversationPhotos.status,
+    segmentText: segmentText.status,
     assistantSettings: assistantSettings.status,
     aiProfile: aiProfile.status,
     trainingDataOptIn: trainingDataOptIn.status,

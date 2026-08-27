@@ -14,6 +14,7 @@ from conversation_routes import (  # noqa: E402
     get_conversation,
     get_conversation_photos,
     list_conversations,
+    patch_conversation_segment_text,
     patch_conversation_title,
     set_conversation_starred,
     store_conversation_projection,
@@ -192,6 +193,77 @@ def test_canonical_conversation_photos_are_uid_scoped_and_locked_rows_fail_close
     invalid = asyncio.run(get_conversation_photos(FakeRequest(env, signed_headers(secret)), "x" * 257))
     assert invalid.status_code == 400
     unauthorized = asyncio.run(get_conversation_photos(FakeRequest(env, {}), "with-photos"))
+    assert unauthorized.status_code == 401
+
+
+def test_canonical_segment_text_update_is_uid_scoped_locked_and_compare_and_set():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="editable", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="locked", created_at=100, locked=1)
+    insert_conversation(db, uid="other-user", conversation_id="editable", created_at=300)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    updated = asyncio.run(
+        patch_conversation_segment_text(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"segment_id": "segment-1", "text": "edited"},
+            ),
+            "editable",
+        )
+    )
+    assert updated == {"status": "Ok"}
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "editable"))
+    assert detail["transcript_segments"][0]["text"] == "edited"
+
+    locked = asyncio.run(
+        patch_conversation_segment_text(
+            FakeRequest(env, signed_headers(secret), body={"segment_id": "segment-1", "text": "nope"}),
+            "locked",
+        )
+    )
+    assert locked.status_code == 402
+    missing_segment = asyncio.run(
+        patch_conversation_segment_text(
+            FakeRequest(env, signed_headers(secret), body={"segment_id": "missing", "text": "nope"}),
+            "editable",
+        )
+    )
+    assert missing_segment.status_code == 404
+    other_user_update = asyncio.run(
+        patch_conversation_segment_text(
+            FakeRequest(
+                env,
+                signed_headers(secret, "other-user"),
+                body={"segment_id": "segment-1", "text": "nope"},
+            ),
+            "editable",
+        )
+    )
+    assert other_user_update == {"status": "Ok"}
+    assert (
+        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret, "other-user")), "editable"))["transcript_segments"][0]["text"]
+        == "nope"
+    )
+    assert (
+        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "editable"))["transcript_segments"][0]["text"]
+        == "edited"
+    )
+    invalid = asyncio.run(
+        patch_conversation_segment_text(
+            FakeRequest(env, signed_headers(secret), body={"segment_id": "segment-1", "text": ""}),
+            "editable",
+        )
+    )
+    assert invalid.status_code == 400
+    unauthorized = asyncio.run(
+        patch_conversation_segment_text(
+            FakeRequest(env, {}, body={"segment_id": "segment-1", "text": "nope"}),
+            "editable",
+        )
+    )
     assert unauthorized.status_code == 401
 
 
