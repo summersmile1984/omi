@@ -446,6 +446,14 @@ audio deletion, and downstream integration fanout remain legacy-owned;
 production reader cutover still requires those write authorities and readers to
 move together.
 
+`GET /v1/conversations/{conversation_id}/transcripts` reads the bounded
+`transcript_segments_json` projection and returns the same four provider buckets
+as the legacy comparison view (`deepgram`, `soniox`, `speechmatics`, and
+`whisperx`), sorted by segment start time. The importer must preserve
+`stt_provider`; unknown providers are omitted rather than guessed. Locked rows
+return `402`, and provider-specific Firestore writes remain legacy-owned until
+the transcript write/finalization contract is migrated.
+
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event
 reads, and calendar writes remain on the legacy integration service; tokens are

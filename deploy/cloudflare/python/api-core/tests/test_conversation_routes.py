@@ -13,6 +13,7 @@ from conversation_routes import (  # noqa: E402
     count_conversations,
     get_conversation,
     get_conversation_photos,
+    get_conversation_transcripts,
     conversation_has_recording,
     list_conversations,
     patch_conversation_segment_text,
@@ -98,6 +99,7 @@ def insert_conversation(
     created_at: int,
     locked: int = 0,
     photos: list[dict[str, object]] | None = None,
+    transcript_segments: list[dict[str, object]] | None = None,
 ):
     db.connection.execute(
         "INSERT INTO cf_conversations "
@@ -121,7 +123,11 @@ def insert_conversation(
             0,
             "folder-1",
             json.dumps({"title": conversation_id, "overview": "overview", "category": "work", "action_items": [{"description": "task"}], "events": [{"title": "event"}]}),
-            json.dumps([{"id": "segment-1", "text": "hello", "start": 0, "end": 1, "is_user": True}]),
+            json.dumps(
+                transcript_segments
+                if transcript_segments is not None
+                else [{"id": "segment-1", "text": "hello", "start": 0, "end": 1, "is_user": True}]
+            ),
             json.dumps(photos or []),
         ),
     )
@@ -297,6 +303,39 @@ def test_canonical_recording_existence_uses_uid_scoped_r2_and_locked_rows_fail_c
     no_bucket = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
     unavailable = asyncio.run(conversation_has_recording(FakeRequest(no_bucket, signed_headers(secret)), "recorded"))
     assert unavailable.status_code == 503
+
+
+def test_canonical_transcripts_group_imported_providers_and_fail_closed_for_locked_rows():
+    secret = "conversation-secret"
+    db = FakeDb()
+    segments = [
+        {"id": "dg-late", "text": "late", "start": 3, "end": 4, "stt_provider": "deepgram_streaming"},
+        {"id": "dg-early", "text": "early", "start": 1, "end": 2, "stt_provider": "deepgram"},
+        {"id": "sx", "text": "soniox", "start": 2, "end": 3, "stt_provider": "soniox_streaming"},
+        {"id": "sm", "text": "speechmatics", "start": 4, "end": 5, "stt_provider": "speechmatics_streaming"},
+        {"id": "wx", "text": "whisper", "start": 0, "end": 1, "stt_provider": "fal_whisperx"},
+        {"id": "unknown", "text": "ignored", "start": 0, "end": 1, "stt_provider": "provider-x"},
+    ]
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="with-transcripts",
+        created_at=200,
+        transcript_segments=segments,
+    )
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-transcripts", created_at=100, locked=1)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    result = asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "with-transcripts"))
+    assert [item["id"] for item in result["deepgram"]] == ["dg-early", "dg-late"]
+    assert [item["id"] for item in result["soniox"]] == ["sx"]
+    assert [item["id"] for item in result["speechmatics"]] == ["sm"]
+    assert [item["id"] for item in result["whisperx"]] == ["wx"]
+    assert "unknown" not in {item["id"] for items in result.values() for item in items}
+    assert asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "locked-transcripts")).status_code == 402
+    assert asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
+    assert asyncio.run(get_conversation_transcripts(FakeRequest(env, {}), "with-transcripts")).status_code == 401
+    assert asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "x" * 257)).status_code == 400
 
 
 def test_conversation_projection_write_is_idempotent_and_bounded():

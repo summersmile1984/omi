@@ -55,6 +55,7 @@ CONVERSATION_SOURCES = frozenset(
     }
 )
 CONVERSATION_VISIBILITIES = frozenset({"private", "shared", "public"})
+TRANSCRIPT_PROVIDER_BUCKETS = ("deepgram", "soniox", "speechmatics", "whisperx")
 
 
 class ConversationProjectionWrite(BaseModel):
@@ -314,6 +315,32 @@ async def _first_conversation(env: object, uid: str, conversation_id: str) -> di
     return row if isinstance(row, dict) else None
 
 
+def _transcript_provider_bucket(segment: dict[str, object]) -> str | None:
+    """Map imported provider names to the four legacy response buckets."""
+
+    provider = segment.get("stt_provider")
+    if not isinstance(provider, str):
+        return None
+    normalized = provider.strip().lower()
+    if normalized.startswith("deepgram"):
+        return "deepgram"
+    if normalized.startswith("soniox"):
+        return "soniox"
+    if normalized.startswith("speechmatics"):
+        return "speechmatics"
+    if normalized.startswith("fal_whisperx") or normalized.startswith("whisperx"):
+        return "whisperx"
+    return None
+
+
+def _transcript_start(segment: dict[str, object]) -> float:
+    value = segment.get("start", 0)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 @router.post("/v1/cf/conversations")
 async def store_conversation_projection(request: Request):
     context = _auth_context(request)
@@ -493,6 +520,39 @@ async def get_conversation_photos(request: Request, conversation_id: str):
     return [
         photo for photo in _json_list(row.get("photos_json")) if isinstance(photo, dict)
     ][:MAX_SEGMENTS]
+
+
+@router.get("/v1/conversations/{conversation_id}/transcripts")
+async def get_conversation_transcripts(request: Request, conversation_id: str):
+    """Read provider-specific transcript projections without touching Firestore."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        row = await _first_conversation(request.scope["env"], str(context["uid"]), conversation_id)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    if row is None:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    if _bool(row.get("is_locked")):
+        return JSONResponse(
+            {"error": "A paid plan is required to access this conversation."},
+            status_code=402,
+        )
+
+    grouped = {bucket: [] for bucket in TRANSCRIPT_PROVIDER_BUCKETS}
+    for segment in _json_list(row.get("transcript_segments_json"))[:MAX_SEGMENTS]:
+        if not isinstance(segment, dict):
+            continue
+        bucket = _transcript_provider_bucket(segment)
+        if bucket is not None:
+            grouped[bucket].append(segment)
+    for bucket in TRANSCRIPT_PROVIDER_BUCKETS:
+        grouped[bucket].sort(key=_transcript_start)
+    return grouped
 
 
 @router.get("/v1/conversations/{conversation_id}/recording")
