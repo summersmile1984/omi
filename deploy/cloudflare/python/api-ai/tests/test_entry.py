@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import entry  # noqa: E402
 
-from entry import _provider_url, transcribe, tts_synthesize  # noqa: E402
+from entry import _provider_url, transcribe, transcribe_workers_ai, tts_synthesize  # noqa: E402
 
 
 class FakeRequest:
@@ -94,6 +94,77 @@ def test_transcribe_uses_worker_fetch_for_provider(monkeypatch):
     assert json.loads(response.body) == {"text": "hello"}
     assert calls["url"] == "https://asr.example.test/v2/transcribe"
     assert calls["options"]["body"] == b"audio"
+
+
+def test_workers_ai_transcribe_uses_native_binding_and_normalizes_result():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            return {"text": "hello", "word_count": 1, "vtt": "WEBVTT"}
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), WORKERS_AI_ASR_MODEL="@cf/openai/whisper"),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "audio/wav",
+            "content-length": "5",
+        },
+    )
+
+    response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response == {
+        "text": "hello",
+        "segments": [],
+        "detected_language": None,
+        "provider": "workers-ai",
+        "model": "@cf/openai/whisper",
+        "word_count": 1,
+        "vtt": "WEBVTT",
+    }
+    assert calls == {"model": "@cf/openai/whisper", "payload": {"audio": [97, 117, 100, 105, 111]}}
+
+
+def test_workers_ai_transcribe_rejects_multipart_contract():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=object()),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "multipart/form-data; boundary=test",
+        },
+    )
+
+    response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response.status_code == 415
+    assert json.loads(response.body) == {"error": "workers ai transcription expects a raw audio body"}
+
+
+def test_workers_ai_transcribe_fails_closed_without_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "audio/wav",
+        },
+    )
+
+    response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "workers ai is not configured"}
 
 
 def test_embeddings_uses_worker_fetch_for_provider(monkeypatch):

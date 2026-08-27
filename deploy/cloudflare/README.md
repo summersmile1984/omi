@@ -98,6 +98,8 @@ GET  /ready                   auth D1 readiness
 POST /api/auth/sign-up/email  Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
+POST /v1/stt/transcribe-workers-ai
+                              Edge → Python API AI → Workers AI binding (raw audio)
 POST /v1/tts/synthesize      Edge → Python API AI → hosted OpenAI-compatible TTS API
 GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
 GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible AI API
@@ -143,6 +145,13 @@ regression contract.
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
 until its rate-limit and provider-shape migration is verified separately.
+
+`/v1/stt/transcribe-workers-ai` is an additive raw-audio route backed by the
+Python Worker's native `AI` binding and `@cf/openai/whisper-large-v3-turbo`.
+It does not claim the legacy multipart/diarization contract; clients must send
+`audio/*` (or `application/octet-stream`) as the body. The existing
+`/v1/stt/transcribe` route remains the hosted provider seam for diarization and
+the legacy segment response.
 
 `/v1/auto/model-pick` uses a shared D1 24-hour cache. Without the upstream key,
 an upstream failure, or an unusable model response it returns the existing

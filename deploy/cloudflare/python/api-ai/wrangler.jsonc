@@ -5,6 +5,9 @@
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["python_workers"],
   "workers_dev": true,
+  "ai": {
+    "binding": "AI"
+  },
   "d1_databases": [
     {
       "binding": "APP_DB",
@@ -13,6 +16,7 @@
     }
   ],
   "vars": {
-    "EMBEDDING_MODEL": "text-embedding-3-small"
+    "EMBEDDING_MODEL": "text-embedding-3-small",
+    "WORKERS_AI_ASR_MODEL": "@cf/openai/whisper-large-v3-turbo"
   }
 }

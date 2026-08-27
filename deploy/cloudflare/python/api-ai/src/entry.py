@@ -20,6 +20,7 @@ app = FastAPI(title="Omi Cloudflare AI API", version="0.1.0")
 app.include_router(auto_model_router)
 
 MAX_TRANSCRIPTION_BODY_BYTES = 25_000_000
+MAX_WORKERS_AI_AUDIO_BYTES = 5_000_000
 MAX_AI_BODY_BYTES = 8_000_000
 MAX_AI_RESPONSE_BYTES = 12_000_000
 MAX_TTS_CHARS = 4_096
@@ -142,6 +143,80 @@ async def ai_proxy(request: Request, path: str):
 
 def _provider_url(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _workers_ai_result_mapping(result: object) -> dict[str, object]:
+    """Convert a Workers AI FFI result without leaking a JS proxy to FastAPI."""
+    if isinstance(result, dict):
+        return result
+    to_py = getattr(result, "to_py", None)
+    if callable(to_py):
+        converted = to_py()
+        if isinstance(converted, dict):
+            return converted
+    fields: dict[str, object] = {}
+    for field in ("text", "word_count", "words", "segments", "vtt", "detected_language", "transcription_info"):
+        value = getattr(result, field, None)
+        value_to_py = getattr(value, "to_py", None)
+        if callable(value_to_py):
+            value = value_to_py()
+        if value is not None:
+            fields[field] = value
+    return fields
+
+
+@app.post("/v1/stt/transcribe-workers-ai")
+async def transcribe_workers_ai(request: Request):
+    """Transcribe a raw audio body with a native Workers AI binding.
+
+    This is deliberately additive: the existing multipart `/v1/stt/transcribe`
+    contract remains on the configured hosted provider because it supports
+    diarization and the legacy segment shape. This route is a small, bounded
+    Workers AI seam for clients that can send the provider's binary input.
+    """
+    if not auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    content_type = request.headers.get("content-type", "application/octet-stream").lower()
+    if not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
+        return JSONResponse({"error": "workers ai transcription expects a raw audio body"}, status_code=415)
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_WORKERS_AI_AUDIO_BYTES:
+        return JSONResponse({"error": "workers ai audio body too large"}, status_code=413)
+    body = await request.body()
+    if not body:
+        return JSONResponse({"error": "no audio data provided"}, status_code=400)
+    if len(body) > MAX_WORKERS_AI_AUDIO_BYTES:
+        return JSONResponse({"error": "workers ai audio body too large"}, status_code=413)
+
+    env = request.scope["env"]
+    ai = getattr(env, "AI", None)
+    if ai is None:
+        return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
+    model = getattr(env, "WORKERS_AI_ASR_MODEL", "@cf/openai/whisper-large-v3-turbo")
+    try:
+        result = await ai.run(model, {"audio": list(body)})
+        payload = _workers_ai_result_mapping(result)
+    except Exception:
+        return JSONResponse({"error": "workers ai transcription unavailable"}, status_code=502)
+
+    text = payload.get("text")
+    if not isinstance(text, str):
+        return JSONResponse({"error": "workers ai returned an invalid transcription"}, status_code=502)
+    info = payload.get("transcription_info")
+    detected_language = payload.get("detected_language")
+    if detected_language is None and isinstance(info, dict):
+        detected_language = info.get("language")
+    response: dict[str, object] = {
+        "text": text,
+        "segments": payload.get("segments", []),
+        "detected_language": detected_language,
+        "provider": "workers-ai",
+        "model": model,
+    }
+    for field in ("word_count", "words", "vtt"):
+        if field in payload:
+            response[field] = payload[field]
+    return response
 
 
 @app.post("/v1/stt/transcribe")
