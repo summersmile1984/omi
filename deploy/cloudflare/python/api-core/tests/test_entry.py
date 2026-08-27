@@ -18,6 +18,7 @@ class FakeDb:
     def __init__(self):
         self.row = None
         self.onboarding_row = None
+        self.privacy_row = None
 
     def prepare(self, sql):
         return FakeStatement(self, sql)
@@ -38,6 +39,8 @@ class FakeStatement:
             return self.db.row
         if self.sql.startswith("SELECT completed"):
             return self.db.onboarding_row
+        if self.sql.startswith("SELECT store_recording_permission"):
+            return self.db.privacy_row
         raise AssertionError(f"unexpected query: {self.sql}")
 
     async def run(self):
@@ -74,14 +77,25 @@ class FakeStatement:
                 "updated_at": updated_at,
             }
             return
+        if self.sql.startswith("INSERT INTO cf_user_privacy_settings"):
+            uid, store_recording_permission, private_cloud_sync_enabled, created_at, updated_at = self.args
+            self.db.privacy_row = {
+                "uid": uid,
+                "store_recording_permission": store_recording_permission,
+                "private_cloud_sync_enabled": private_cloud_sync_enabled,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
         raise AssertionError(f"unexpected query: {self.sql}")
 
 
 class FakeRequest:
-    def __init__(self, env, headers, body=None):
+    def __init__(self, env, headers, body=None, query=None):
         self.scope = {"env": env}
         self.headers = headers
         self.body = body
+        self.query_params = query or {}
 
     async def json(self):
         return self.body
@@ -277,3 +291,32 @@ def test_onboarding_state_is_partial_and_uid_scoped():
         "acquisition_source": "desktop",
         "device_onboarding_completed": True,
     }
+
+
+def test_privacy_settings_preserve_defaults_and_accept_query_boolean_contract():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="privacy-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET=secret)
+
+    assert asyncio.run(entry.get_store_recording_permission(FakeRequest(env, headers))) == {
+        "store_recording_permission": False
+    }
+    assert asyncio.run(entry.get_private_cloud_sync(FakeRequest(env, headers))) == {"private_cloud_sync_enabled": True}
+
+    assert asyncio.run(
+        entry.set_store_recording_permission(FakeRequest(env, headers, query={"value": "true"}))
+    ) == {"status": "ok"}
+    assert asyncio.run(entry.set_private_cloud_sync(FakeRequest(env, headers, query={"value": "false"}))) == {
+        "status": "ok"
+    }
+    assert asyncio.run(entry.get_store_recording_permission(FakeRequest(env, headers))) == {
+        "store_recording_permission": True
+    }
+    assert asyncio.run(entry.get_private_cloud_sync(FakeRequest(env, headers))) == {"private_cloud_sync_enabled": False}
+
+    invalid = asyncio.run(entry.set_private_cloud_sync(FakeRequest(env, headers, query={"value": "maybe"})))
+    assert invalid.status_code == 400

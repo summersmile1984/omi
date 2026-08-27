@@ -105,6 +105,10 @@ GET  /v1/users/language
 PATCH /v1/users/language
 GET  /v1/users/onboarding
 PATCH /v1/users/onboarding
+GET  /v1/users/store-recording-permission
+POST /v1/users/store-recording-permission
+GET  /v1/users/private-cloud-sync
+POST /v1/users/private-cloud-sync
                               Edge → Python API Core → D1
 ```
 
@@ -113,6 +117,9 @@ implementations. Authenticated routes that are not yet migrated use
 `LEGACY_BACKEND_URL` when configured; staging without that binding returns
 `404 route not migrated` instead of silently treating the partial Worker as the
 owner.
+
+The destructive `DELETE /v1/users/store-recording-permission` operation remains
+on the legacy owner until its R2/GCS recording deletion contract is migrated.
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must

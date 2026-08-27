@@ -168,4 +168,40 @@ describe("edge gateway", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("keeps destructive recording deletion on the legacy fallback", async () => {
+    let legacyPath = "";
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "unexpected" })),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (request) => {
+      legacyPath = new URL(request instanceof Request ? request.url : request).pathname;
+      return Response.json({ owner: "legacy" });
+    };
+    try {
+      const response = await edge.fetch(
+        new Request("https://edge.test/v1/users/store-recording-permission", {
+          method: "DELETE",
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ owner: "legacy" });
+      expect(legacyPath).toBe("/v1/users/store-recording-permission");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

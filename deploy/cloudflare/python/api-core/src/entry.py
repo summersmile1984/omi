@@ -286,6 +286,18 @@ class OnboardingStateUpdate(BaseModel):
     device_onboarding_completed: bool | None = None
 
 
+def _parse_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
 def _transcription_preferences(row: object | None) -> dict[str, object]:
     if not isinstance(row, dict):
         return {
@@ -395,6 +407,53 @@ async def _save_onboarding_state(env: object, uid: str, state: dict[str, object]
     ).run()
 
 
+def _privacy_settings(row: object | None) -> dict[str, object]:
+    if not isinstance(row, dict):
+        return {"store_recording_permission": False, "private_cloud_sync_enabled": True}
+    return {
+        "store_recording_permission": bool(row.get("store_recording_permission")),
+        "private_cloud_sync_enabled": bool(row.get("private_cloud_sync_enabled"))
+        if row.get("private_cloud_sync_enabled") is not None
+        else True,
+    }
+
+
+async def _load_privacy_settings(env: object, uid: str) -> dict[str, object]:
+    row = await env.APP_DB.prepare(
+        "SELECT store_recording_permission, private_cloud_sync_enabled "
+        "FROM cf_user_privacy_settings WHERE uid = ?"
+    ).bind(uid).first()
+    return _privacy_settings(row)
+
+
+async def _save_privacy_settings(env: object, uid: str, settings: dict[str, object]) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_privacy_settings "
+        "(uid, store_recording_permission, private_cloud_sync_enabled, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET store_recording_permission = excluded.store_recording_permission, "
+        "private_cloud_sync_enabled = excluded.private_cloud_sync_enabled, updated_at = excluded.updated_at"
+    ).bind(
+        uid,
+        int(bool(settings["store_recording_permission"])),
+        int(bool(settings["private_cloud_sync_enabled"])),
+        now,
+        now,
+    ).run()
+
+
+async def _query_bool(request: Request, name: str) -> bool | None:
+    raw = request.query_params.get(name)
+    if raw is not None:
+        return _parse_bool(raw)
+    try:
+        body = await request.json()
+    except (TypeError, ValueError):
+        return None
+    return _parse_bool(body)
+
+
 @app.get("/v1/users/available-languages")
 async def available_languages(request: Request):
     if not auth_context(request):
@@ -429,6 +488,56 @@ async def update_onboarding_state(request: Request):
     if update.device_onboarding_completed is not None:
         state["device_onboarding_completed"] = update.device_onboarding_completed
     await _save_onboarding_state(env, uid, state)
+    return {"status": "ok"}
+
+
+@app.get("/v1/users/store-recording-permission")
+async def get_store_recording_permission(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    settings = await _load_privacy_settings(request.scope["env"], str(context["uid"]))
+    return {"store_recording_permission": settings["store_recording_permission"]}
+
+
+@app.post("/v1/users/store-recording-permission")
+async def set_store_recording_permission(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    value = await _query_bool(request, "value")
+    if value is None:
+        return JSONResponse({"error": "invalid boolean value"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    settings = await _load_privacy_settings(env, uid)
+    settings["store_recording_permission"] = value
+    await _save_privacy_settings(env, uid, settings)
+    return {"status": "ok"}
+
+
+@app.get("/v1/users/private-cloud-sync")
+async def get_private_cloud_sync(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    settings = await _load_privacy_settings(request.scope["env"], str(context["uid"]))
+    return {"private_cloud_sync_enabled": settings["private_cloud_sync_enabled"]}
+
+
+@app.post("/v1/users/private-cloud-sync")
+async def set_private_cloud_sync(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    value = await _query_bool(request, "value")
+    if value is None:
+        return JSONResponse({"error": "invalid boolean value"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    settings = await _load_privacy_settings(env, uid)
+    settings["private_cloud_sync_enabled"] = value
+    await _save_privacy_settings(env, uid, settings)
     return {"status": "ok"}
 
 

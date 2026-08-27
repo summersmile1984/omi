@@ -97,6 +97,10 @@ app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);
 app.all("/v1/users/available-languages", proxyAuthenticatedCore);
 app.all("/v1/users/language", proxyAuthenticatedCore);
 app.all("/v1/users/onboarding", proxyAuthenticatedCore);
+app.get("/v1/users/store-recording-permission", proxyAuthenticatedCore);
+app.post("/v1/users/store-recording-permission", proxyAuthenticatedCore);
+app.get("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
+app.post("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
 
 app.all("/*", async (c) => {
   const id = requestId(c.req.raw);
