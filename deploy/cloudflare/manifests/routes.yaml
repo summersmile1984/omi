@@ -100,6 +100,59 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/announcements/all
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/announcements/:announcementId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/announcements
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PUT
+    path: /v1/announcements/:announcementId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/announcements/:announcementId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: POST
     path: /v1/embeddings
     owner: api-ai

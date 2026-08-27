@@ -22,8 +22,10 @@ describe("staging smoke helpers", () => {
           ? 200
           : url.endsWith("/v1/cf/probe")
             ? (init?.headers ? 200 : 401)
-            : url.endsWith("/v1/announcements/pending")
-              ? 401
+          : url.includes("/v1/announcements/pending")
+            ? 401
+            : url.endsWith("/v1/announcements/all")
+              ? 403
               : url.endsWith("/v1/users/assistant-settings") ||
               url.endsWith("/v1/users/ai-profile") ||
               url.endsWith("/v1/users/training-data-opt-in") ||
@@ -51,6 +53,7 @@ describe("staging smoke helpers", () => {
       announcementsGeneral: 200,
       unauthenticatedProbe: 401,
       unauthenticatedAnnouncements: 401,
+      unauthenticatedAnnouncementsAdmin: 403,
       authenticatedProbe: 200,
       assistantSettings: 200,
       aiProfile: 200,
@@ -69,7 +72,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(21);
+    expect(calls).toHaveLength(22);
     expect(calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init?.method).toBe("PATCH");
     expect(calls.find((call) => call.url.endsWith("/v1/stt/transcribe-workers-ai"))?.init?.method).toBe("POST");
   });
@@ -79,7 +82,8 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/health")) return new Response(null, { status: 200 });
       if (url.endsWith("/v1/announcements/general")) return new Response(null, { status: 200 });
       if (url.endsWith("/v1/cf/probe")) return new Response(null, { status: init?.headers ? 200 : 401 });
-      if (url.endsWith("/v1/announcements/pending")) return new Response(null, { status: 401 });
+      if (url.includes("/v1/announcements/pending")) return new Response(null, { status: 401 });
+      if (url.endsWith("/v1/announcements/all")) return new Response(null, { status: 403 });
       if (
         url.endsWith("/v1/users/assistant-settings") ||
         url.endsWith("/v1/users/ai-profile") ||

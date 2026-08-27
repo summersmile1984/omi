@@ -11,11 +11,16 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from announcement_routes import (  # noqa: E402
     _compare_versions,
+    create_announcement,
+    delete_announcement,
     dismiss_announcement,
     get_changelogs,
+    get_announcement,
     get_features,
     get_general_announcements,
     get_pending_announcements,
+    list_all_announcements,
+    update_announcement,
 )
 
 
@@ -210,3 +215,60 @@ def test_pending_announcement_projection_is_uid_scoped_and_dismissible():
         )
     )
     assert [item["id"] for item in other_user] == ["pending-immediate"]
+
+
+def test_announcement_admin_crud_is_secret_gated_and_d1_backed():
+    db = FakeDb()
+    secret = "announcement-admin-secret"
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": "unused", "ANNOUNCEMENTS_ADMIN_KEY": secret})()
+    forbidden = asyncio.run(list_all_announcements(FakeRequest(env, {})))
+    assert forbidden.status_code == 403
+
+    headers = {"x-announcements-admin-key": secret}
+    created = asyncio.run(
+        create_announcement(
+            FakeRequest(
+                env,
+                headers,
+                {
+                    "id": "admin-release",
+                    "type": "feature",
+                    "app_version": "1.0.9",
+                    "content": {"title": "New feature", "steps": []},
+                },
+            )
+        )
+    )
+    assert created["id"] == "admin-release"
+    assert created["type"] == "feature"
+    assert created["content"]["title"] == "New feature"
+
+    duplicate = asyncio.run(
+        create_announcement(
+            FakeRequest(
+                env,
+                headers,
+                {"id": "admin-release", "type": "feature", "content": {"title": "duplicate"}},
+            )
+        )
+    )
+    assert duplicate.status_code == 409
+    listed = asyncio.run(list_all_announcements(FakeRequest(env, headers)))
+    assert [item["id"] for item in listed] == ["admin-release"]
+    loaded = asyncio.run(get_announcement(FakeRequest(env, headers), "admin-release"))
+    assert loaded["active"] is True
+
+    updated = asyncio.run(
+        update_announcement(
+            FakeRequest(env, headers, {"active": False, "content": {"title": "Updated"}}), "admin-release"
+        )
+    )
+    assert updated["active"] is False
+    assert updated["content"]["title"] == "Updated"
+    active_only = asyncio.run(list_all_announcements(FakeRequest(env, headers), active_only=True))
+    assert active_only == []
+
+    deleted = asyncio.run(delete_announcement(FakeRequest(env, headers), "admin-release", soft_delete=False))
+    assert deleted == {"success": True, "message": "Announcement permanently deleted"}
+    missing = asyncio.run(get_announcement(FakeRequest(env, headers), "admin-release"))
+    assert missing.status_code == 404

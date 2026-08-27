@@ -166,6 +166,11 @@ GET  /v1/announcements/general
 GET  /v1/announcements/pending
 POST /v1/announcements/{announcementId}/dismiss
                               Edge → Python API Core → D1 + per-user dismissal
+GET  /v1/announcements/all
+GET  /v1/announcements/{announcementId}
+POST /v1/announcements
+PUT/DELETE /v1/announcements/{announcementId}
+                              Edge → Python API Core → D1 (admin secret)
 GET  /v1/config/api-keys      Edge → Python API Core → Worker client-key vars
 GET  /v1/users/transcription-preferences
 PATCH /v1/users/transcription-preferences
@@ -371,13 +376,14 @@ never returned by these routes. This group is staging-only until existing
 integration rows are backfilled and every downstream OAuth reader has cut over
 to the same authority.
 
-The announcement routes move public changelogs/features/general reads and the
-authenticated pending/dismissal contract to D1. Version comparisons preserve
-the legacy semantic-plus-build behavior (a bare semantic version matches all
-builds), while platform, firmware, device, trigger, time-window, priority, and
-per-user `show_once` filtering are evaluated in the Worker. Publishing/admin
-CRUD remains on the legacy owner until its secret and content backfill contract
-is migrated; staging records can be loaded with the whitelisted backfill tool.
+The announcement routes move public changelogs/features/general reads, the
+authenticated pending/dismissal contract, and secret-gated admin CRUD to D1.
+Version comparisons preserve the legacy semantic-plus-build behavior (a bare
+semantic version matches all builds), while platform, firmware, device,
+trigger, time-window, priority, and per-user `show_once` filtering are evaluated
+in the Worker. Admin routes require the `ANNOUNCEMENTS_ADMIN_KEY` Worker secret
+and remain staging-only until content backfill, key rotation, and rollback
+evidence are approved; records can be loaded with the whitelisted backfill tool.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

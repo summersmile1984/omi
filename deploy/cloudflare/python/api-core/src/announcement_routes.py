@@ -1,20 +1,21 @@
 """D1-backed announcement and release-note routes for the Cloudflare profile.
 
-The admin publishing surface remains on the legacy owner for now.  This module
-owns the public release-note reads and the authenticated pending/dismissal
-contract, so clients can use the Worker without making Firestore or Redis calls.
+The publishing surface is secret-gated and staging-only. This module owns the
+public release-note reads, admin CRUD, and authenticated pending/dismissal
+contract, so clients can use the Worker without Firestore or Redis calls.
 """
 
 from __future__ import annotations
 
 import json
+import hmac
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from internal_auth import decode_context
 
@@ -26,6 +27,8 @@ MAX_ANNOUNCEMENT_ID_LENGTH = 256
 MAX_DEVICE_MODEL_LENGTH = 256
 MAX_ROWS = 500
 MAX_CHANGELOG_LIMIT = 50
+MAX_CONTENT_BYTES = 12_000
+_ANNOUNCEMENT_TYPES = frozenset({"changelog", "feature", "announcement"})
 
 _COLUMNS = (
     "id, type, created_at, active, app_version, firmware_version, device_models_json, expires_at, "
@@ -42,6 +45,34 @@ class DismissAnnouncementRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
     cta_clicked: bool = False
+
+
+class AnnouncementCreateRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    id: str = Field(min_length=1, max_length=MAX_ANNOUNCEMENT_ID_LENGTH)
+    type: str = Field(min_length=1, max_length=32)
+    active: bool = True
+    app_version: str | None = Field(default=None, max_length=MAX_QUERY_LENGTH)
+    firmware_version: str | None = Field(default=None, max_length=MAX_QUERY_LENGTH)
+    device_models: list[str] | None = Field(default=None, max_length=32)
+    expires_at: datetime | None = None
+    targeting: dict[str, object] | None = None
+    display: dict[str, object] | None = None
+    content: dict[str, object] = Field(default_factory=dict)
+
+
+class AnnouncementUpdateRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    active: bool | None = None
+    app_version: str | None = Field(default=None, max_length=MAX_QUERY_LENGTH)
+    firmware_version: str | None = Field(default=None, max_length=MAX_QUERY_LENGTH)
+    device_models: list[str] | None = Field(default=None, max_length=32)
+    expires_at: datetime | None = None
+    targeting: dict[str, object] | None = None
+    display: dict[str, object] | None = None
+    content: dict[str, object] | None = None
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -90,6 +121,9 @@ def _iso(value: object) -> str | None:
 def _epoch_value(value: object) -> int | None:
     if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, datetime):
+        normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(normalized.astimezone(timezone.utc).timestamp())
     if isinstance(value, (int, float)):
         return int(value)
     if not isinstance(value, str) or not value.strip():
@@ -212,6 +246,56 @@ def _version_matches(candidate: str | None, minimum: object, maximum: object) ->
     if maximum and (not candidate or _compare_versions(candidate, str(maximum)) > 0):
         return False
     return True
+
+
+def _validate_type(type_value: str | None) -> bool:
+    return type_value is None or type_value in _ANNOUNCEMENT_TYPES
+
+
+def _json_dump(value: object, default: object) -> str:
+    return json.dumps(default if value is None else value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _admin_key_valid(request: Request) -> bool:
+    expected = getattr(request.scope["env"], "ANNOUNCEMENTS_ADMIN_KEY", None)
+    provided = request.headers.get("x-announcements-admin-key") or request.headers.get("secret-key")
+    return (
+        isinstance(expected, str)
+        and bool(expected)
+        and isinstance(provided, str)
+        and hmac.compare_digest(provided, expected)
+    )
+
+
+def _require_admin(request: Request) -> JSONResponse | None:
+    if not _admin_key_valid(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return None
+
+
+async def _admin_rows(env: object, *, type_value: str | None, active_only: bool) -> list[dict[str, object]]:
+    clauses = []
+    params: list[object] = []
+    if type_value is not None:
+        clauses.append("type = ?")
+        params.append(type_value)
+    if active_only:
+        clauses.append("active = 1")
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    result = (
+        await env.APP_DB.prepare(f"SELECT {_COLUMNS} FROM cf_announcements{where} ORDER BY created_at DESC LIMIT ?")
+        .bind(*params, MAX_ROWS)
+        .all()
+    )
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+async def _admin_row(env: object, announcement_id: str) -> dict[str, object] | None:
+    row = (
+        await env.APP_DB.prepare(f"SELECT {_COLUMNS} FROM cf_announcements WHERE id = ?").bind(announcement_id).first()
+    )
+    return row if isinstance(row, dict) else None
 
 
 def _pending_match(
@@ -428,6 +512,139 @@ async def get_pending_announcements(
         reverse=True,
     )
     return [_record(row) for row in matching]
+
+
+@router.get("/v1/announcements/all")
+async def list_all_announcements(request: Request, announcement_type: str | None = None, active_only: bool = False):
+    forbidden = _require_admin(request)
+    if forbidden:
+        return forbidden
+    if not _validate_type(announcement_type):
+        return JSONResponse({"error": "invalid announcement type"}, status_code=400)
+    try:
+        rows = await _admin_rows(request.scope["env"], type_value=announcement_type, active_only=active_only)
+    except Exception:
+        return JSONResponse({"error": "announcements unavailable"}, status_code=503)
+    return [_record(row) for row in rows]
+
+
+@router.get("/v1/announcements/{announcement_id}")
+async def get_announcement(request: Request, announcement_id: str):
+    forbidden = _require_admin(request)
+    if forbidden:
+        return forbidden
+    if not announcement_id or len(announcement_id) > MAX_ANNOUNCEMENT_ID_LENGTH:
+        return JSONResponse({"error": "invalid announcement id"}, status_code=400)
+    try:
+        row = await _admin_row(request.scope["env"], announcement_id)
+    except Exception:
+        return JSONResponse({"error": "announcements unavailable"}, status_code=503)
+    return _record(row) if row else JSONResponse({"error": "announcement not found"}, status_code=404)
+
+
+@router.post("/v1/announcements")
+async def create_announcement(request: Request):
+    forbidden = _require_admin(request)
+    if forbidden:
+        return forbidden
+    try:
+        payload = AnnouncementCreateRequest.model_validate(await _bounded_json(request))
+        if payload.type not in _ANNOUNCEMENT_TYPES:
+            raise ValueError("invalid announcement type")
+        if len(json.dumps(payload.content, ensure_ascii=False).encode("utf-8")) > MAX_CONTENT_BYTES:
+            raise ValueError("content too large")
+        env = request.scope["env"]
+        if await _admin_row(env, payload.id):
+            return JSONResponse({"error": "announcement already exists"}, status_code=409)
+        now = int(time.time())
+        await env.APP_DB.prepare(
+            "INSERT INTO cf_announcements "
+            "(id, type, created_at, active, app_version, firmware_version, device_models_json, expires_at, "
+            "targeting_json, display_json, content_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ).bind(
+            payload.id,
+            payload.type,
+            now,
+            int(payload.active),
+            payload.app_version,
+            payload.firmware_version,
+            _json_dump(payload.device_models, []),
+            _epoch_value(payload.expires_at),
+            _json_dump(payload.targeting, None),
+            _json_dump(payload.display, None),
+            _json_dump(payload.content, {}),
+        ).run()
+        row = await _admin_row(env, payload.id)
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid announcement"}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "announcements unavailable"}, status_code=503)
+    return _record(row) if row else JSONResponse({"error": "announcement unavailable"}, status_code=503)
+
+
+@router.put("/v1/announcements/{announcement_id}")
+async def update_announcement(request: Request, announcement_id: str):
+    forbidden = _require_admin(request)
+    if forbidden:
+        return forbidden
+    if not announcement_id or len(announcement_id) > MAX_ANNOUNCEMENT_ID_LENGTH:
+        return JSONResponse({"error": "invalid announcement id"}, status_code=400)
+    try:
+        payload = AnnouncementUpdateRequest.model_validate(await _bounded_json(request))
+        values = payload.model_dump(exclude_unset=True)
+        if not values:
+            return JSONResponse({"error": "no fields to update"}, status_code=400)
+        if "content" in values and values["content"] is not None:
+            if len(json.dumps(values["content"], ensure_ascii=False).encode("utf-8")) > MAX_CONTENT_BYTES:
+                raise ValueError("content too large")
+        env = request.scope["env"]
+        if await _admin_row(env, announcement_id) is None:
+            return JSONResponse({"error": "announcement not found"}, status_code=404)
+        updates: dict[str, object] = {}
+        for field in ("active", "app_version", "firmware_version"):
+            if field in values and values[field] is not None:
+                updates[field] = int(values[field]) if field == "active" else values[field]
+        if "device_models" in values and values["device_models"] is not None:
+            updates["device_models_json"] = _json_dump(values["device_models"], [])
+        if "expires_at" in values and values["expires_at"] is not None:
+            updates["expires_at"] = _epoch_value(values["expires_at"])
+        for field in ("targeting", "display", "content"):
+            if field in values and values[field] is not None:
+                updates[f"{field}_json"] = _json_dump(values[field], {})
+        if not updates:
+            return JSONResponse({"error": "no fields to update"}, status_code=400)
+        assignments = ", ".join(f"{field} = ?" for field in updates)
+        await env.APP_DB.prepare(f"UPDATE cf_announcements SET {assignments} WHERE id = ?").bind(
+            *updates.values(), announcement_id
+        ).run()
+        row = await _admin_row(env, announcement_id)
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid announcement update"}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "announcements unavailable"}, status_code=503)
+    return _record(row) if row else JSONResponse({"error": "announcement not found"}, status_code=404)
+
+
+@router.delete("/v1/announcements/{announcement_id}")
+async def delete_announcement(request: Request, announcement_id: str, soft_delete: bool = True):
+    forbidden = _require_admin(request)
+    if forbidden:
+        return forbidden
+    if not announcement_id or len(announcement_id) > MAX_ANNOUNCEMENT_ID_LENGTH:
+        return JSONResponse({"error": "invalid announcement id"}, status_code=400)
+    try:
+        env = request.scope["env"]
+        if await _admin_row(env, announcement_id) is None:
+            return JSONResponse({"error": "announcement not found"}, status_code=404)
+        if soft_delete:
+            await env.APP_DB.prepare("UPDATE cf_announcements SET active = 0 WHERE id = ?").bind(announcement_id).run()
+            message = "Announcement deactivated"
+        else:
+            await env.APP_DB.prepare("DELETE FROM cf_announcements WHERE id = ?").bind(announcement_id).run()
+            message = "Announcement permanently deleted"
+    except Exception:
+        return JSONResponse({"error": "announcements unavailable"}, status_code=503)
+    return {"success": True, "message": message}
 
 
 @router.post("/v1/announcements/{announcement_id}/dismiss")

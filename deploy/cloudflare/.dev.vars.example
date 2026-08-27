@@ -21,3 +21,5 @@ GITHUB_TOKEN=
 FIREBASE_API_KEY=
 GOOGLE_CALENDAR_API_KEY=
 DESKTOP_LEGACY_ANTHROPIC_KEY=
+# Staging-only announcement publishing key; never use a release/client secret here.
+ANNOUNCEMENTS_ADMIN_KEY=

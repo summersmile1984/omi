@@ -59,8 +59,13 @@ export async function runSmoke({
 
   const unauthenticated = await request(fetchImpl, `${base}/v1/cf/probe`);
   expectStatus("unauthenticated probe", unauthenticated, 401);
-  const unauthenticatedAnnouncements = await request(fetchImpl, `${base}/v1/announcements/pending`);
+  const unauthenticatedAnnouncements = await request(
+    fetchImpl,
+    `${base}/v1/announcements/pending?app_version=0.0.0&platform=ios&trigger=app_launch`,
+  );
   expectStatus("unauthenticated announcements", unauthenticatedAnnouncements, 401);
+  const unauthenticatedAnnouncementsAdmin = await request(fetchImpl, `${base}/v1/announcements/all`);
+  expectStatus("unauthenticated announcement admin", unauthenticatedAnnouncementsAdmin, 403);
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, { headers: authHeaders });
@@ -155,6 +160,7 @@ export async function runSmoke({
     ...result,
     unauthenticatedProbe: unauthenticated.status,
     unauthenticatedAnnouncements: unauthenticatedAnnouncements.status,
+    unauthenticatedAnnouncementsAdmin: unauthenticatedAnnouncementsAdmin.status,
     authenticatedProbe: probe.status,
     assistantSettings: assistantSettings.status,
     aiProfile: aiProfile.status,

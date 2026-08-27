@@ -764,14 +764,14 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机，并提供 uid-scoped job status read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：117 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：122 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
 npm test                                  # 8 files / 36 tests pass
-uvx uv==0.12.3 run pytest -q             # api-core: 50 tests pass
+uvx uv==0.12.3 run pytest -q             # api-core: 51 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
 curl /health                              # auth/core/ai/realtime/edge → HTTP 200
@@ -888,8 +888,9 @@ marker 已删除。真实 staging 请求状态为 `200/200/200/204`。
 同日补齐公告/版本更新投影：公告记录和用户 dismiss 记录进入 D1，Worker
 保留 changelog 的语义版本+build 排序、feature/general 筛选，以及 pending
 公告的 trigger、平台、固件/应用版本、设备、时间窗、priority 和 `show_once`
-规则。该组已通过 50 个 API Core 契约测试；发布/admin CRUD 仍保持 legacy，
-待内容回填和发布密钥边界完成后再切 production。
+规则；发布/admin CRUD 也已接入 `ANNOUNCEMENTS_ADMIN_KEY` secret-gated 路由。
+该组已通过 51 个 API Core 契约测试；待内容回填、密钥轮换和 rollback 证据完成
+后再切 production。
 
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt
