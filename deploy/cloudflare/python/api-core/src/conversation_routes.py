@@ -166,6 +166,15 @@ class ConversationActionItemDelete(BaseModel):
     completed: bool
 
 
+class ConversationSummaryUpdate(BaseModel):
+    """Summary content written to the default or app-specific projection."""
+
+    model_config = {"extra": "ignore"}
+
+    app_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+    content: str = Field(min_length=1, max_length=10_000)
+
+
 def _auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
@@ -1037,6 +1046,60 @@ async def delete_conversation_action_item(request: Request, conversation_id: str
         )
     except Exception:
         return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
+    return {"status": "Ok"}
+
+
+@router.patch("/v1/conversations/{conversation_id}/summary")
+async def patch_conversation_summary(request: Request, conversation_id: str):
+    """Update the default overview or one app-specific summary in D1."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        raw = await request.body()
+        if len(raw) > 32_000:
+            return JSONResponse({"error": "summary body too large"}, status_code=413)
+        update = ConversationSummaryUpdate.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError, TypeError):
+        return JSONResponse({"error": "invalid summary update"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        now = int(time.time())
+        if update.app_id is None:
+            structured = _json_object(existing.get("structured_json"))
+            structured["overview"] = update.content
+            await env.APP_DB.prepare(
+                "UPDATE cf_conversations SET structured_json = ?, updated_at = ? WHERE uid = ? AND id = ?"
+            ).bind(_dump_json(structured, "structured"), now, uid, conversation_id).run()
+            return {"status": "Ok"}
+
+        apps_results = _json_list(existing.get("apps_results_json"))
+        found = False
+        for entry in apps_results:
+            if isinstance(entry, dict) and entry.get("app_id") == update.app_id:
+                entry["content"] = update.content
+                found = True
+                break
+        if not found:
+            return JSONResponse({"error": "app summary not found for this conversation"}, status_code=404)
+        await env.APP_DB.prepare(
+            "UPDATE cf_conversations SET apps_results_json = ?, updated_at = ? WHERE uid = ? AND id = ?"
+        ).bind(_dump_json(apps_results, "apps_results"), now, uid, conversation_id).run()
+    except Exception:
+        return JSONResponse({"error": "conversation summaries unavailable"}, status_code=503)
     return {"status": "Ok"}
 
 

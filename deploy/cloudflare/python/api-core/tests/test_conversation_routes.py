@@ -22,6 +22,7 @@ from conversation_routes import (  # noqa: E402
     patch_conversation_action_items,
     patch_conversation_events,
     patch_conversation_segment_text,
+    patch_conversation_summary,
     patch_conversation_title,
     set_conversation_starred,
     store_conversation_projection,
@@ -112,6 +113,7 @@ def insert_conversation(
     locked: int = 0,
     photos: list[dict[str, object]] | None = None,
     transcript_segments: list[dict[str, object]] | None = None,
+    apps_results: list[dict[str, object]] | None = None,
 ):
     db.connection.execute(
         "INSERT INTO cf_conversations "
@@ -143,6 +145,11 @@ def insert_conversation(
             json.dumps(photos or []),
         ),
     )
+    if apps_results is not None:
+        db.connection.execute(
+            "UPDATE cf_conversations SET apps_results_json = ? WHERE uid = ? AND id = ?",
+            (json.dumps(apps_results), uid, conversation_id),
+        )
     db.connection.commit()
 
 
@@ -450,6 +457,69 @@ def test_canonical_conversation_events_update_is_bounded_and_preserves_index_sem
                 FakeRequest(env, {}, body={"events_idx": [0], "values": [True]}),
                 "events",
             )
+        ).status_code
+        == 401
+    )
+
+
+def test_canonical_conversation_summary_updates_default_and_app_projections():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="summaries",
+        created_at=200,
+        apps_results=[{"app_id": "app-1", "content": "old app summary", "title": "App"}],
+    )
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-summary", created_at=100, locked=1)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    default = asyncio.run(
+        patch_conversation_summary(
+            FakeRequest(env, signed_headers(secret), body={"content": "new overview"}),
+            "summaries",
+        )
+    )
+    assert default == {"status": "Ok"}
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "summaries"))
+    assert detail["structured"]["overview"] == "new overview"
+
+    app = asyncio.run(
+        patch_conversation_summary(
+            FakeRequest(env, signed_headers(secret), body={"app_id": "app-1", "content": "new app summary"}),
+            "summaries",
+        )
+    )
+    assert app == {"status": "Ok"}
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "summaries"))
+    assert detail["apps_results"] == [{"app_id": "app-1", "content": "new app summary", "title": "App"}]
+    assert (
+        asyncio.run(
+            patch_conversation_summary(
+                FakeRequest(env, signed_headers(secret), body={"app_id": "missing", "content": "nope"}),
+                "summaries",
+            )
+        ).status_code
+        == 404
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_summary(FakeRequest(env, signed_headers(secret), body={"content": ""}), "summaries")
+        ).status_code
+        == 400
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_summary(
+                FakeRequest(env, signed_headers(secret), body={"content": "nope"}), "locked-summary"
+            )
+        ).status_code
+        == 402
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_summary(FakeRequest(env, {}, body={"content": "nope"}), "summaries")
         ).status_code
         == 401
     )

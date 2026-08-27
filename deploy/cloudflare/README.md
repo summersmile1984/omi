@@ -465,6 +465,12 @@ of indexed events in the structured D1 projection. It preserves the legacy
 parallel-array and out-of-range-index behavior, rejects malformed input, and
 does not claim calendar/integration fanout.
 
+`PATCH /v1/conversations/{conversation_id}/summary` updates either the default
+`structured.overview` or a matching `apps_results_json` entry. The bounded route
+keeps app-summary identity uid-scoped, rejects missing app entries, and fails
+closed for locked conversations; LLM regeneration and downstream enrichment
+remain legacy-owned.
+
 `PATCH /v1/conversations/{conversation_id}/action-items` updates indexed
 completion flags in the structured projection and mirrors matching standalone
 `cf_action_items` rows in one D1 batch. The bounded route preserves the legacy
