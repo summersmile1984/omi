@@ -19,6 +19,7 @@ class FakeDb:
         self.row = None
         self.onboarding_row = None
         self.privacy_row = None
+        self.notification_row = None
 
     def prepare(self, sql):
         return FakeStatement(self, sql)
@@ -41,6 +42,8 @@ class FakeStatement:
             return self.db.onboarding_row
         if self.sql.startswith("SELECT store_recording_permission"):
             return self.db.privacy_row
+        if self.sql.startswith("SELECT notifications_enabled"):
+            return self.db.notification_row
         raise AssertionError(f"unexpected query: {self.sql}")
 
     async def run(self):
@@ -83,6 +86,16 @@ class FakeStatement:
                 "uid": uid,
                 "store_recording_permission": store_recording_permission,
                 "private_cloud_sync_enabled": private_cloud_sync_enabled,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_notification_settings"):
+            uid, notifications_enabled, notification_frequency, created_at, updated_at = self.args
+            self.db.notification_row = {
+                "uid": uid,
+                "notifications_enabled": notifications_enabled,
+                "notification_frequency": notification_frequency,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
@@ -319,4 +332,25 @@ def test_privacy_settings_preserve_defaults_and_accept_query_boolean_contract():
     assert asyncio.run(entry.get_private_cloud_sync(FakeRequest(env, headers))) == {"private_cloud_sync_enabled": False}
 
     invalid = asyncio.run(entry.set_private_cloud_sync(FakeRequest(env, headers, query={"value": "maybe"})))
+    assert invalid.status_code == 400
+
+
+def test_notification_settings_preserve_defaults_and_validate_frequency():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="notifications-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET=secret)
+
+    assert asyncio.run(entry.get_notification_settings(FakeRequest(env, headers))) == {"enabled": True, "frequency": 0}
+    assert asyncio.run(
+        entry.update_notification_settings(FakeRequest(env, headers, {"enabled": False, "frequency": 4}))
+    ) == {"enabled": False, "frequency": 4}
+    assert asyncio.run(entry.update_notification_settings(FakeRequest(env, headers, {"frequency": 2}))) == {
+        "enabled": False,
+        "frequency": 2,
+    }
+    invalid = asyncio.run(entry.update_notification_settings(FakeRequest(env, headers, {"frequency": 6})))
     assert invalid.status_code == 400

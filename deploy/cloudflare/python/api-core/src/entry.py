@@ -4,7 +4,7 @@ import time
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 try:
     from workers import asgi, fetch as worker_fetch
@@ -70,6 +70,11 @@ class OnboardingStateUpdate(BaseModel):
     completed: bool | None = None
     acquisition_source: str | None = None
     device_onboarding_completed: bool | None = None
+
+
+class NotificationSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    frequency: int | None = Field(default=None, ge=0, le=5)
 
 
 def _parse_bool(value: object) -> bool | None:
@@ -229,6 +234,44 @@ async def _save_privacy_settings(env: object, uid: str, settings: dict[str, obje
     ).run()
 
 
+def _notification_settings(row: object | None) -> dict[str, object]:
+    if not isinstance(row, dict):
+        return {"enabled": True, "frequency": 0}
+    raw_frequency = row.get("notification_frequency")
+    frequency = raw_frequency if isinstance(raw_frequency, int) and 0 <= raw_frequency <= 5 else 0
+    return {
+        "enabled": bool(row.get("notifications_enabled"))
+        if row.get("notifications_enabled") is not None
+        else True,
+        "frequency": frequency,
+    }
+
+
+async def _load_notification_settings(env: object, uid: str) -> dict[str, object]:
+    row = await env.APP_DB.prepare(
+        "SELECT notifications_enabled, notification_frequency "
+        "FROM cf_user_notification_settings WHERE uid = ?"
+    ).bind(uid).first()
+    return _notification_settings(row)
+
+
+async def _save_notification_settings(env: object, uid: str, settings: dict[str, object]) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_notification_settings "
+        "(uid, notifications_enabled, notification_frequency, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET notifications_enabled = excluded.notifications_enabled, "
+        "notification_frequency = excluded.notification_frequency, updated_at = excluded.updated_at"
+    ).bind(
+        uid,
+        int(bool(settings["enabled"])),
+        int(settings["frequency"]),
+        now,
+        now,
+    ).run()
+
+
 async def _query_bool(request: Request, name: str) -> bool | None:
     raw = request.query_params.get(name)
     if raw is not None:
@@ -325,6 +368,34 @@ async def set_private_cloud_sync(request: Request):
     settings["private_cloud_sync_enabled"] = value
     await _save_privacy_settings(env, uid, settings)
     return {"status": "ok"}
+
+
+@app.get("/v1/users/notification-settings")
+async def get_notification_settings(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await _load_notification_settings(request.scope["env"], str(context["uid"]))
+
+
+@app.patch("/v1/users/notification-settings")
+async def update_notification_settings(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = NotificationSettingsUpdate.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid notification settings"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    settings = await _load_notification_settings(env, uid)
+    if update.enabled is not None:
+        settings["enabled"] = update.enabled
+    if update.frequency is not None:
+        settings["frequency"] = update.frequency
+    await _save_notification_settings(env, uid, settings)
+    return await _load_notification_settings(env, uid)
 
 
 @app.get("/v1/users/language")

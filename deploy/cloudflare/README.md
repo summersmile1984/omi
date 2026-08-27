@@ -109,6 +109,8 @@ GET  /v1/users/store-recording-permission
 POST /v1/users/store-recording-permission
 GET  /v1/users/private-cloud-sync
 POST /v1/users/private-cloud-sync
+GET  /v1/users/notification-settings
+PATCH /v1/users/notification-settings
                               Edge → Python API Core → D1
 ```
 
