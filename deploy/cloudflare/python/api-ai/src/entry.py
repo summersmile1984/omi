@@ -1,3 +1,4 @@
+import base64
 import json
 from typing import Any
 
@@ -194,7 +195,10 @@ async def transcribe_workers_ai(request: Request):
         return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
     model = getattr(env, "WORKERS_AI_ASR_MODEL", "@cf/openai/whisper-large-v3-turbo")
     try:
-        result = await ai.run(model, {"audio": list(body)})
+        # Workers AI's Whisper binding accepts the binary input as a base64
+        # string. Keeping the conversion here avoids exposing a JS typed-array
+        # requirement to callers of this Python route.
+        result = await ai.run(model, {"audio": base64.b64encode(body).decode("ascii")})
         payload = _workers_ai_result_mapping(result)
     except Exception:
         return JSONResponse({"error": "workers ai transcription unavailable"}, status_code=502)

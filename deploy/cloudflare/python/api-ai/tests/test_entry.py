@@ -128,7 +128,10 @@ def test_workers_ai_transcribe_uses_native_binding_and_normalizes_result():
         "word_count": 1,
         "vtt": "WEBVTT",
     }
-    assert calls == {"model": "@cf/openai/whisper", "payload": {"audio": [97, 117, 100, 105, 111]}}
+    assert calls == {
+        "model": "@cf/openai/whisper",
+        "payload": {"audio": base64.b64encode(b"audio").decode("ascii")},
+    }
 
 
 def test_workers_ai_transcribe_rejects_multipart_contract():
