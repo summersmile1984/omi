@@ -227,6 +227,8 @@ app.get("/v1/conversations/count", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/title", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/starred", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/action-items", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/action-items/count", proxyAuthenticatedCore);
 app.post("/v1/cf/conversations", proxyAuthenticatedCore);
 app.get("/v1/cf/conversations", proxyAuthenticatedCore);
 app.get("/v1/cf/conversations/count", proxyAuthenticatedCore);

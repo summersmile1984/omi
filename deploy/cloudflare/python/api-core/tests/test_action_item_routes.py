@@ -16,6 +16,8 @@ from action_item_routes import (  # noqa: E402
     create_action_item,
     delete_action_item,
     get_action_item,
+    get_conversation_action_items,
+    get_conversation_action_items_count,
     get_pending_sync_items,
     list_action_item_ids,
     list_action_items,
@@ -29,8 +31,10 @@ class FakeDb:
     def __init__(self):
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
-        migration = Path(__file__).parents[3] / "migrations/app/0016_action_items.sql"
-        self.connection.executescript(migration.read_text())
+        migration_dir = Path(__file__).parents[3] / "migrations/app"
+        self.connection.executescript((migration_dir / "0016_action_items.sql").read_text())
+        self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
+        self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -274,3 +278,51 @@ def test_reminders_sync_projection_and_batch_update_are_d1_backed():
 
     invalid = asyncio.run(sync_batch_update(FakeRequest(env, headers, {"items": [{"id": ""}]})))
     assert invalid.status_code == 400
+
+
+def test_conversation_action_item_reads_use_d1_projection_and_locked_boundary():
+    secret = "action-secret"
+    db = FakeDb()
+    db.connection.execute(
+        "INSERT INTO cf_conversations (uid, id, created_at, source, status, visibility) "
+        "VALUES (?, ?, ?, 'omi', 'completed', 'private')",
+        ("action-user", "conversation-1", 200),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_conversations (uid, id, created_at, source, status, visibility, is_locked) "
+        "VALUES (?, ?, ?, 'omi', 'completed', 'private', 1)",
+        ("action-user", "conversation-locked", 100),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+    active = asyncio.run(
+        create_action_item(FakeRequest(env, headers, {"description": "Open task", "conversation_id": "conversation-1"}))
+    )
+    completed = asyncio.run(
+        create_action_item(
+            FakeRequest(
+                env,
+                headers,
+                {"description": "Done task", "conversation_id": "conversation-1", "completed": True},
+            )
+        )
+    )
+    awaitable_delete = env.APP_DB.prepare(
+        "INSERT INTO cf_action_items "
+        "(uid, id, description, status, completed, conversation_id, created_at, updated_at, deleted) "
+        "VALUES (?, ?, ?, 'cancelled', 0, ?, ?, ?, 1)"
+    ).bind("action-user", "deleted-task", "Hidden task", "conversation-1", 300, 300)
+    asyncio.run(awaitable_delete.run())
+
+    listed = asyncio.run(get_conversation_action_items(FakeRequest(env, headers), "conversation-1"))
+    assert listed["conversation_id"] == "conversation-1"
+    assert [item["id"] for item in listed["action_items"]] == [active["id"], completed["id"]]
+    count = asyncio.run(get_conversation_action_items_count(FakeRequest(env, headers), "conversation-1"))
+    assert count == {"total": 2, "completed": 1, "incomplete": 1}
+    locked = asyncio.run(get_conversation_action_items(FakeRequest(env, headers), "conversation-locked"))
+    assert locked.status_code == 402
+    missing = asyncio.run(
+        get_conversation_action_items(FakeRequest(env, signed_headers(secret, "other-user")), "conversation-1")
+    )
+    assert missing.status_code == 404

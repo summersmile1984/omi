@@ -21,6 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from conversation_routes import _first_conversation
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -531,6 +532,68 @@ async def get_action_item(request: Request, action_item_id: str):
         return JSONResponse({"error": "invalid action item id"}, status_code=400)
     row = await _first_item(request.scope["env"], str(context["uid"]), action_item_id)
     return _response(row) if row else JSONResponse({"error": "action item not found"}, status_code=404)
+
+
+@router.get("/v1/conversations/{conversation_id}/action-items")
+async def get_conversation_action_items(request: Request, conversation_id: str):
+    """Read standalone action-item projections linked to one conversation."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        conversation = await _first_conversation(env, uid, conversation_id)
+        if conversation is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(conversation.get("is_locked")):
+            return JSONResponse({"error": "paid plan required"}, status_code=402)
+        result = await env.APP_DB.prepare(
+            "SELECT id, description, status, completed, goal_id, workstream_id, owner, due_at, due_confidence, "
+            "source, provenance_json, priority, sort_order, indent_level, recurrence_rule, recurrence_parent_id, "
+            "created_at, updated_at, completed_at, superseded_by, conversation_id, is_locked, exported, export_date, "
+            "export_platform, apple_reminder_id FROM cf_action_items "
+            "WHERE uid = ? AND conversation_id = ? AND deleted = 0 "
+            "ORDER BY completed ASC, created_at ASC LIMIT 500"
+        ).bind(uid, conversation_id).all()
+    except Exception:
+        return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    return {
+        "action_items": [_response(row) for row in rows if isinstance(row, dict)],
+        "conversation_id": conversation_id,
+    }
+
+
+@router.get("/v1/conversations/{conversation_id}/action-items/count")
+async def get_conversation_action_items_count(request: Request, conversation_id: str):
+    """Return standalone action-item counts for a conversation projection."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        conversation = await _first_conversation(env, uid, conversation_id)
+        if conversation is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(conversation.get("is_locked")):
+            return JSONResponse({"error": "paid plan required"}, status_code=402)
+        row = await env.APP_DB.prepare(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(completed), 0) AS completed "
+            "FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND deleted = 0"
+        ).bind(uid, conversation_id).first()
+    except Exception:
+        return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
+    total = int(row.get("total") or 0) if isinstance(row, dict) else 0
+    completed = int(row.get("completed") or 0) if isinstance(row, dict) else 0
+    return {"total": total, "completed": completed, "incomplete": max(total - completed, 0)}
 
 
 def _update_values(update: ActionItemUpdate) -> dict[str, object]:
