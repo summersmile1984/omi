@@ -28,6 +28,7 @@ MAX_FILTER_VALUES = 20
 MAX_JSON_BYTES = 1_000_000
 MAX_WRITE_BYTES = 4_000_000
 MAX_SEGMENT_TEXT_LENGTH = 10_000
+MAX_ACTION_ITEM_DESCRIPTION_LENGTH = 4_096
 MAX_SEGMENTS = 2_000
 CONVERSATION_STATUSES = frozenset({"in_progress", "processing", "merging", "completed", "failed"})
 CONVERSATION_SOURCES = frozenset(
@@ -145,6 +146,15 @@ class ConversationActionItemsStateUpdate(BaseModel):
         if any(index < 0 for index in self.items_idx):
             raise ValueError("action-item indexes must be non-negative")
         return self
+
+
+class ConversationActionItemDescriptionUpdate(BaseModel):
+    """Description replacement for the legacy conversation action-item editor."""
+
+    model_config = {"extra": "ignore"}
+
+    old_description: str = Field(min_length=1, max_length=MAX_ACTION_ITEM_DESCRIPTION_LENGTH)
+    description: str = Field(min_length=1, max_length=MAX_ACTION_ITEM_DESCRIPTION_LENGTH)
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -903,6 +913,67 @@ async def patch_conversation_action_items(request: Request, conversation_id: str
                 )
             )
         await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
+    return {"status": "Ok"}
+
+
+@router.patch("/v1/conversations/{conversation_id}/action-items/{action_item_idx}")
+async def patch_conversation_action_item_description(request: Request, conversation_id: str, action_item_idx: str):
+    """Update one projected action-item description and its standalone mirror."""
+
+    del action_item_idx  # The legacy path component is retained for wire compatibility.
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        raw = await request.body()
+        if len(raw) > 32_000:
+            return JSONResponse({"error": "action-item body too large"}, status_code=413)
+        update = ConversationActionItemDescriptionUpdate.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError, TypeError):
+        return JSONResponse({"error": "invalid action-item description"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        structured = _json_object(existing.get("structured_json"))
+        raw_items = structured.get("action_items")
+        items = raw_items if isinstance(raw_items, list) else []
+        found = False
+        for item in items:
+            if isinstance(item, dict) and item.get("description") == update.old_description:
+                item["description"] = update.description
+                found = True
+                break
+        if not found:
+            return JSONResponse(
+                {"error": f"Action item with description '{update.old_description}' not found"},
+                status_code=404,
+            )
+        structured["action_items"] = items
+        now = int(time.time())
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare(
+                    "UPDATE cf_conversations SET structured_json = ?, updated_at = ? WHERE uid = ? AND id = ?"
+                ).bind(_dump_json(structured, "structured"), now, uid, conversation_id),
+                env.APP_DB.prepare(
+                    "UPDATE cf_action_items SET description = ?, updated_at = ? "
+                    "WHERE uid = ? AND conversation_id = ? AND description = ? AND deleted = 0"
+                ).bind(update.description, now, uid, conversation_id, update.old_description),
+            ]
+        )
     except Exception:
         return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
     return {"status": "Ok"}

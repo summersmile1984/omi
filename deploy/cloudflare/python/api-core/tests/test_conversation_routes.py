@@ -17,6 +17,7 @@ from conversation_routes import (  # noqa: E402
     get_conversation_transcripts,
     conversation_has_recording,
     list_conversations,
+    patch_conversation_action_item_description,
     patch_conversation_action_items,
     patch_conversation_events,
     patch_conversation_segment_text,
@@ -521,6 +522,84 @@ def test_canonical_conversation_action_item_state_updates_projection_and_standal
             patch_conversation_action_items(
                 FakeRequest(env, {}, body={"items_idx": [0], "values": [True]}),
                 "action-items",
+            )
+        ).status_code
+        == 401
+    )
+
+
+def test_canonical_conversation_action_item_description_updates_both_projections():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="action-description", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-action-description", created_at=100, locked=1)
+    db.connection.execute(
+        "INSERT INTO cf_action_items (uid, id, description, status, completed, conversation_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("conversation-user", "item-description", "task", "active", 0, "action-description", 200, 200),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    updated = asyncio.run(
+        patch_conversation_action_item_description(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"old_description": "task", "description": "renamed task"},
+            ),
+            "action-description",
+            "0",
+        )
+    )
+    assert updated == {"status": "Ok"}
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "action-description"))
+    assert detail["structured"]["action_items"][0]["description"] == "renamed task"
+    standalone = db.connection.execute(
+        "SELECT description FROM cf_action_items WHERE uid = ? AND id = ?",
+        ("conversation-user", "item-description"),
+    ).fetchone()
+    assert standalone[0] == "renamed task"
+    assert (
+        asyncio.run(
+            patch_conversation_action_item_description(
+                FakeRequest(
+                    env,
+                    signed_headers(secret),
+                    body={"old_description": "missing", "description": "renamed"},
+                ),
+                "action-description",
+                "0",
+            )
+        ).status_code
+        == 404
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_action_item_description(
+                FakeRequest(env, signed_headers(secret), body={"old_description": "task", "description": "x"}),
+                "locked-action-description",
+                "0",
+            )
+        ).status_code
+        == 402
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_action_item_description(
+                FakeRequest(env, signed_headers(secret), body={"old_description": "task", "description": "x"}),
+                "missing",
+                "0",
+            )
+        ).status_code
+        == 404
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_action_item_description(
+                FakeRequest(env, {}, body={"old_description": "task", "description": "x"}),
+                "action-description",
+                "0",
             )
         ).status_code
         == 401

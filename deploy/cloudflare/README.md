@@ -471,6 +471,12 @@ completion flags in the structured projection and mirrors matching standalone
 index behavior; reminder delivery, exports, and other external side effects
 remain outside this Worker authority.
 
+`PATCH /v1/conversations/{conversation_id}/action-items/{action_item_idx}`
+updates the first matching action-item description in both projections using one
+D1 batch. The path index remains a compatibility component (the legacy handler
+uses the description pair as the identity); deletion and reminder side effects
+remain on the legacy owner.
+
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event
 reads, and calendar writes remain on the legacy integration service; tokens are
