@@ -21,6 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from action_item_routes import _response as _action_item_response
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -366,6 +367,33 @@ _SELECT = (
     "metric_json, source, relationship_disposition, is_active, latest_progress_sequence, ended_at, created_at, updated_at "
     "FROM cf_goals "
 )
+_DETAIL_WORKSTREAM_SELECT = (
+    "SELECT id, goal_id, title, objective, status, current_state_summary, next_review_at, "
+    "last_meaningful_progress_at, latest_event_sequence, created_at, updated_at "
+    "FROM cf_workstreams "
+)
+_DETAIL_TASK_SELECT = (
+    "SELECT id, description, status, completed, goal_id, workstream_id, owner, due_at, due_confidence, "
+    "source, provenance_json, priority, sort_order, indent_level, recurrence_rule, recurrence_parent_id, "
+    "created_at, updated_at, completed_at, superseded_by, conversation_id, is_locked, exported, export_date, "
+    "export_platform, apple_reminder_id FROM cf_action_items "
+)
+
+
+def _workstream_detail_response(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "workstream_id": str(row.get("id") or ""),
+        "goal_id": row.get("goal_id"),
+        "title": str(row.get("title") or ""),
+        "objective": str(row.get("objective") or ""),
+        "status": str(row.get("status") or "open"),
+        "current_state_summary": str(row.get("current_state_summary") or ""),
+        "next_review_at": _iso(row.get("next_review_at")),
+        "last_meaningful_progress_at": _iso(row.get("last_meaningful_progress_at")),
+        "latest_event_sequence": int(row.get("latest_event_sequence") or 0),
+        "created_at": _iso(row.get("created_at")),
+        "updated_at": _iso(row.get("updated_at")),
+    }
 
 
 async def _first_goal(env: object, uid: str, goal_id: str) -> dict[str, object] | None:
@@ -999,6 +1027,57 @@ async def get_goal(request: Request, goal_id: str):
     except Exception:
         return JSONResponse({"error": "goals unavailable"}, status_code=503)
     return _response(row) if row else JSONResponse({"error": "goal not found"}, status_code=404)
+
+
+@router.get("/v1/goals/{goal_id}/detail")
+async def get_goal_detail(request: Request, goal_id: str):
+    """Return the bounded D1 projection consumed by canonical goal clients."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid goal id"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    try:
+        goal = await _first_goal(env, uid, goal_id)
+        if goal is None:
+            return JSONResponse({"error": "goal not found"}, status_code=404)
+        workstream_result = await (
+            env.APP_DB.prepare(
+                _DETAIL_WORKSTREAM_SELECT
+                + "WHERE uid = ? AND goal_id = ? AND status != 'archived' ORDER BY updated_at DESC LIMIT 100"
+            )
+            .bind(uid, goal_id)
+            .all()
+        )
+        task_result = await (
+            env.APP_DB.prepare(
+                _DETAIL_TASK_SELECT + "WHERE uid = ? AND goal_id = ? AND deleted = 0 ORDER BY created_at ASC LIMIT 500"
+            )
+            .bind(uid, goal_id)
+            .all()
+        )
+        event_result = await (
+            env.APP_DB.prepare(
+                "SELECT event_id, goal_id, sequence, kind, summary, evidence_refs_json, metric_json, created_at "
+                "FROM cf_goal_progress_events WHERE uid = ? AND goal_id = ? ORDER BY sequence DESC LIMIT 100"
+            )
+            .bind(uid, goal_id)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "goal detail unavailable"}, status_code=503)
+    workstream_rows = workstream_result.get("results", []) if isinstance(workstream_result, dict) else []
+    task_rows = task_result.get("results", []) if isinstance(task_result, dict) else []
+    event_rows = event_result.get("results", []) if isinstance(event_result, dict) else []
+    return {
+        "goal": _response(goal),
+        "active_threads": [_workstream_detail_response(row) for row in workstream_rows if isinstance(row, dict)],
+        "tasks": [_action_item_response(row) for row in task_rows if isinstance(row, dict)],
+        "progress_events": [_event_response(row) for row in event_rows if isinstance(row, dict)],
+    }
 
 
 def _update_values(update: GoalUpdate, existing: dict[str, object]) -> dict[str, object]:

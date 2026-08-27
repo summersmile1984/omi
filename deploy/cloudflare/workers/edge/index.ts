@@ -299,6 +299,7 @@ app.patch("/v1/workstreams/:workstreamId", proxyAuthenticatedCore);
 app.post("/v1/goals/:goalId/focus", proxyAuthenticatedCore);
 app.delete("/v1/goals/:goalId/focus", proxyAuthenticatedCore);
 app.post("/v1/goals/:goalId/lifecycle", proxyAuthenticatedCore);
+app.get("/v1/goals/:goalId/detail", proxyAuthenticatedCore);
 app.get("/v1/goals/:goalId", proxyAuthenticatedCore);
 app.patch("/v1/goals/:goalId", proxyAuthenticatedCore);
 app.patch("/v1/goals/:goalId/progress", proxyAuthenticatedCore);

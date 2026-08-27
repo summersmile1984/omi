@@ -253,6 +253,8 @@ GET  /v1/goals/canonical/list
 POST /v1/goals/canonical   Edge → Python API Core → D1 mutation + receipt
 GET/PATCH/DELETE /v1/goals/{goalId}
                               Edge → Python API Core → D1
+GET  /v1/goals/{goalId}/detail
+                              Edge → Python API Core → bounded D1 goal/workstream/task/event projection
 PATCH /v1/goals/{goalId}/progress
                               Edge → Python API Core → D1
 GET  /v1/goals/{goalId}/history
@@ -388,9 +390,10 @@ artifact descriptors, continuation checkpoints, and task/goal-origin work
 intents to D1. Mutating operations use generation-scoped idempotency receipts;
 artifact revisions and checkpoints enforce their monotonic version/sequence
 rules. Workstream search/index refresh and candidate automation remain legacy
-owned, and `GET /v1/goals/{goalId}/detail` remains legacy until its active
-thread reader is cut over. This group is staging-only pending workstream
-backfill and downstream reader cutover.
+owned. The goal detail reader now composes the bounded
+goal/workstream/task/progress-event projections in D1; relationship detach and
+AI advice/suggestion remain legacy-owned. This group is staging-only pending
+workstream backfill and downstream reader cutover.
 
 The R2 asset route stores a SHA-256 integrity projection in D1 alongside the
 uid-scoped object metadata. Uploads can supply `X-Content-SHA256` for fail-closed
