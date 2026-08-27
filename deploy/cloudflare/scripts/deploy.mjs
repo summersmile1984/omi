@@ -69,4 +69,4 @@ deployPython("python/api-ai");
 deployTypeScript("workers/realtime/wrangler.jsonc");
 deployTypeScript("workers/jobs/wrangler.jsonc");
 deployTypeScript("workers/edge/wrangler.jsonc");
-console.log("Staging release complete. Configure INTERNAL_ASSERTION_SECRET on auth, edge, api-core, api-ai and realtime before exercising authenticated routes.");
+console.log("Staging release complete. Configure INTERNAL_ASSERTION_SECRET on auth, edge, api-core, api-ai, realtime and jobs before exercising authenticated routes.");
