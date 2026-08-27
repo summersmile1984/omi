@@ -5,6 +5,7 @@ export type EdgeEnv = {
   API_CORE: Fetcher;
   API_AI: Fetcher;
   REALTIME: Fetcher;
+  JOBS: Fetcher;
   LEGACY_BACKEND_URL?: string;
   BETTER_AUTH_JWKS_URL?: string;
   BETTER_AUTH_ISSUER?: string;

@@ -1,0 +1,18 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "omi-cf-jobs-staging",
+  "main": "index.ts",
+  "compatibility_date": "2026-08-27",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "APP_DB",
+      "database_name": "omi-cf-app-staging",
+      "migrations_dir": "../../migrations/app"
+    }
+  ],
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "omi-cf-jobs-staging" }],
+    "consumers": [{ "queue": "omi-cf-jobs-staging", "max_batch_size": 10, "max_batch_timeout": 5 }]
+  }
+}

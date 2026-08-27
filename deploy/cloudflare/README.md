@@ -32,6 +32,8 @@ Resource names are deliberately isolated from existing account resources:
 
 - D1: `omi-cf-auth-staging`, `omi-cf-app-staging`
 - Workers: `omi-cf-edge-staging`, `omi-cf-auth-staging`, `omi-cf-api-core-staging`, `omi-cf-api-ai-staging`, `omi-cf-realtime-staging`
+- Jobs Worker: `omi-cf-jobs-staging`
+- Queue: `omi-cf-jobs-staging`
 - R2: `omi-cf-staging`
 
 The deploy script only deploys the named staging environment. It applies D1
@@ -88,4 +90,10 @@ GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata
+JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
 ```
+
+The initial queue accepts only the `probe` kind as an infrastructure contract.
+Unknown kinds are acknowledged as failed and recorded in D1; producers must
+use a stable `jobId`, so retry or duplicate delivery cannot create a second
+logical job.

@@ -32,10 +32,17 @@ function r2Exists(name) {
   return result.stdout.split(/\s+/).includes(name);
 }
 
+function queueExists(name) {
+  const result = runQuiet("npx", ["wrangler", "queues", "list"]);
+  if (!result.ok) return false;
+  return result.stdout.split(/\s+/).includes(name);
+}
+
 function ensureResources() {
   if (!d1Exists("omi-cf-auth-staging")) run("npx", ["wrangler", "d1", "create", "omi-cf-auth-staging"]);
   if (!d1Exists("omi-cf-app-staging")) run("npx", ["wrangler", "d1", "create", "omi-cf-app-staging"]);
   if (!r2Exists("omi-cf-staging")) run("npx", ["wrangler", "r2", "bucket", "create", "omi-cf-staging"]);
+  if (!queueExists("omi-cf-jobs-staging")) run("npx", ["wrangler", "queues", "create", "omi-cf-jobs-staging"]);
 }
 
 function applyMigrations() {
@@ -60,5 +67,6 @@ deployTypeScript("workers/auth/wrangler.jsonc");
 deployPython("python/api-core");
 deployPython("python/api-ai");
 deployTypeScript("workers/realtime/wrangler.jsonc");
+deployTypeScript("workers/jobs/wrangler.jsonc");
 deployTypeScript("workers/edge/wrangler.jsonc");
 console.log("Staging release complete. Configure INTERNAL_ASSERTION_SECRET on auth, edge, api-core, api-ai and realtime before exercising authenticated routes.");

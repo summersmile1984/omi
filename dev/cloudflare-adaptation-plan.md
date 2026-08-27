@@ -763,7 +763,8 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe` 与 uid-scoped R2 asset API，未导入 `backend/main.py`。
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + async `httpx` 外部 embedding/预录音 ASR API seam；provider 未配置时 fail closed 返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：10 条首期路由和 8 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。
+- `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：11 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。
 
 已执行并通过：
 
@@ -781,6 +782,8 @@ invalid Realtime HMAC                     # fail closed, HTTP 401
 authenticated /v1/stt/transcribe          # provider 未配置时 HTTP 503
 authenticated realtime contracts          # non-WS requests HTTP 426
 R2 PUT → GET → DELETE                      # body round-trip, then HTTP 404
+Jobs enqueue duplicate → one ledger row    # queue/D1 idempotency contract
+Queue consumer                          # status=completed, attempts=1
 ```
 
 Python Workers 仍属于 Beta；当前 `api-core` 约 8.0 MiB、`api-ai` 约 8.95 MiB

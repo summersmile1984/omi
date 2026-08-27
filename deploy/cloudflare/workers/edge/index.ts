@@ -60,6 +60,16 @@ app.all("/v1/omni/relay", async (c) => {
   return withRequestId(response, id);
 });
 
+app.all("/v1/cf/jobs", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+});
+
 app.all("/*", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
