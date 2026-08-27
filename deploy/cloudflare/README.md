@@ -273,7 +273,17 @@ GET  /v1/calendar/onboarding/status
 POST /v1/calendar/onboarding/skip
 POST /v1/calendar/onboarding/reset
                               Edge → Python API Core → D1 flags
+POST /v1/calendar/meetings
+GET  /v1/calendar/meetings
+GET  /v1/calendar/meetings/{meetingId}
+                              Edge → Python API Core → D1 calendar metadata projection
 ```
+
+The calendar meeting routes use a uid-scoped natural key
+(`calendar_source` + `calendar_event_id`) and store bounded metadata in D1.
+They are staging-only until the legacy conversation context reader is migrated
+to the same authority; the Worker does not pretend to own OAuth tokens, event
+discovery, or conversation finalization yet.
 
 Only routes explicitly listed as migrated are sent to the partial Worker
 implementations. Authenticated routes that are not yet migrated use

@@ -38,6 +38,7 @@ from score_routes import router as score_router
 from focus_routes import router as focus_router
 from screen_activity_routes import router as screen_activity_router
 from calendar_onboarding_routes import router as calendar_onboarding_router
+from calendar_meeting_routes import router as calendar_meeting_router
 from workstream_routes import router as workstream_router
 from announcement_routes import router as announcement_router
 
@@ -46,6 +47,7 @@ app.include_router(score_router)
 app.include_router(focus_router)
 app.include_router(screen_activity_router)
 app.include_router(calendar_onboarding_router)
+app.include_router(calendar_meeting_router)
 app.include_router(workstream_router)
 app.include_router(announcement_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
