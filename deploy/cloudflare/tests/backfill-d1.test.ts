@@ -176,4 +176,28 @@ describe("D1 backfill SQL generator", () => {
     expect(sql).toContain("checksum_sha256");
     expect(sql).toContain("ON CONFLICT(uid, object_key) DO UPDATE SET content_type = excluded.content_type");
   });
+
+  it("renders announcement content and per-user dismissal projections", () => {
+    const sql = renderBackfillSql([
+      {
+        table: "cf_announcements",
+        row: {
+          id: "release-1",
+          type: "announcement",
+          created_at: "2026-08-28T10:00:00Z",
+          content: { title: "A release", body: "Details" },
+          targeting: { trigger: "immediate", platforms: ["ios"] },
+          display: { priority: 3, show_once: true },
+        },
+      },
+      {
+        table: "cf_announcement_dismissals",
+        row: { uid: "u", announcement_id: "release-1", dismissed_at: 2, cta_clicked: true },
+      },
+    ]);
+    expect(sql).toContain("cf_announcements");
+    expect(sql).toContain("content_json");
+    expect(sql).toContain("ON CONFLICT(id) DO UPDATE SET type = excluded.type");
+    expect(sql).toContain("ON CONFLICT(uid, announcement_id) DO UPDATE SET dismissed_at = excluded.dismissed_at");
+  });
 });

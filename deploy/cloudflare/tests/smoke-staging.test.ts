@@ -18,9 +18,13 @@ describe("staging smoke helpers", () => {
       calls.push({ url, init });
       const status = url.endsWith("/health")
         ? 200
-        : url.endsWith("/v1/cf/probe")
-          ? (init?.headers ? 200 : 401)
-          : url.endsWith("/v1/users/assistant-settings") ||
+        : url.endsWith("/v1/announcements/general")
+          ? 200
+          : url.endsWith("/v1/cf/probe")
+            ? (init?.headers ? 200 : 401)
+            : url.endsWith("/v1/announcements/pending")
+              ? 401
+              : url.endsWith("/v1/users/assistant-settings") ||
               url.endsWith("/v1/users/ai-profile") ||
               url.endsWith("/v1/users/training-data-opt-in") ||
               url.endsWith("/v1/users/developer/webhooks/status") ||
@@ -44,7 +48,9 @@ describe("staging smoke helpers", () => {
 
     expect(result).toEqual({
       edgeHealth: 200,
+      announcementsGeneral: 200,
       unauthenticatedProbe: 401,
+      unauthenticatedAnnouncements: 401,
       authenticatedProbe: 200,
       assistantSettings: 200,
       aiProfile: 200,
@@ -63,15 +69,17 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(19);
-    expect(calls[17].init?.method).toBe("PATCH");
-    expect(calls[18].init?.method).toBe("POST");
+    expect(calls).toHaveLength(21);
+    expect(calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init?.method).toBe("PATCH");
+    expect(calls.find((call) => call.url.endsWith("/v1/stt/transcribe-workers-ai"))?.init?.method).toBe("POST");
   });
 
   it("can opt into a real native TTS response check", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
       if (url.endsWith("/health")) return new Response(null, { status: 200 });
+      if (url.endsWith("/v1/announcements/general")) return new Response(null, { status: 200 });
       if (url.endsWith("/v1/cf/probe")) return new Response(null, { status: init?.headers ? 200 : 401 });
+      if (url.endsWith("/v1/announcements/pending")) return new Response(null, { status: 401 });
       if (
         url.endsWith("/v1/users/assistant-settings") ||
         url.endsWith("/v1/users/ai-profile") ||

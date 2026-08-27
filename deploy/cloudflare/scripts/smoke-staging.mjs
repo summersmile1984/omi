@@ -51,12 +51,16 @@ export async function runSmoke({
   const base = resolveEdgeUrl(edgeUrl);
   const health = await request(fetchImpl, `${base}/health`);
   expectStatus("edge health", health, 200);
+  const announcementsGeneral = await request(fetchImpl, `${base}/v1/announcements/general`);
+  expectStatus("public announcements", announcementsGeneral, 200);
 
-  const result = { edgeHealth: health.status };
+  const result = { edgeHealth: health.status, announcementsGeneral: announcementsGeneral.status };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 
   const unauthenticated = await request(fetchImpl, `${base}/v1/cf/probe`);
   expectStatus("unauthenticated probe", unauthenticated, 401);
+  const unauthenticatedAnnouncements = await request(fetchImpl, `${base}/v1/announcements/pending`);
+  expectStatus("unauthenticated announcements", unauthenticatedAnnouncements, 401);
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, { headers: authHeaders });
@@ -150,6 +154,7 @@ export async function runSmoke({
   return {
     ...result,
     unauthenticatedProbe: unauthenticated.status,
+    unauthenticatedAnnouncements: unauthenticatedAnnouncements.status,
     authenticatedProbe: probe.status,
     assistantSettings: assistantSettings.status,
     aiProfile: aiProfile.status,

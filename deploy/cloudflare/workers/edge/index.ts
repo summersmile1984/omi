@@ -15,15 +15,20 @@ app.use("*", async (c, next) => {
 
 app.get("/health", (c) => c.json({ status: "ok", service: "edge", version: "cf-00" }));
 
-const proxyPublicFirmware = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
+const proxyPublicCore = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
   const id = requestId(c.req.raw);
   const response = await c.env.API_CORE.fetch(new Request(c.req.raw, { headers: stripUntrustedHeaders(c.req.raw) }));
   return withRequestId(response, id);
 };
 
+const proxyPublicFirmware = proxyPublicCore;
+
 app.get("/v2/firmware/stable", proxyPublicFirmware);
 app.get("/v2/firmware/latest", proxyPublicFirmware);
 app.get("/v2/firmware/version", proxyPublicFirmware);
+app.get("/v1/announcements/changelogs", proxyPublicCore);
+app.get("/v1/announcements/features", proxyPublicCore);
+app.get("/v1/announcements/general", proxyPublicCore);
 
 app.all("/api/auth/*", async (c) => {
   const id = requestId(c.req.raw);
@@ -134,6 +139,8 @@ app.get("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.post("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.post("/v1/users/fcm-token", proxyAuthenticatedCore);
 app.patch("/v1/users/geolocation", proxyAuthenticatedCore);
+app.get("/v1/announcements/pending", proxyAuthenticatedCore);
+app.post("/v1/announcements/:announcementId/dismiss", proxyAuthenticatedCore);
 app.get("/v1/action-items", proxyAuthenticatedCore);
 app.post("/v1/action-items", proxyAuthenticatedCore);
 app.get("/v1/action-items/ids", proxyAuthenticatedCore);

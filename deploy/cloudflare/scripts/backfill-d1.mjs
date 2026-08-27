@@ -1,6 +1,34 @@
 import { readFile } from "node:fs/promises";
 
 const TABLES = {
+  cf_announcements: {
+    key_columns: ["id"],
+    required: ["id", "type", "created_at"],
+    columns: [
+      "id",
+      "type",
+      "created_at",
+      "active",
+      "app_version",
+      "firmware_version",
+      "device_models_json",
+      "expires_at",
+      "targeting_json",
+      "display_json",
+      "content_json",
+    ],
+    defaults: { active: 1, device_models_json: "[]", content_json: "{}" },
+    integers: ["created_at", "expires_at"],
+    json: ["device_models_json", "targeting_json", "display_json", "content_json"],
+  },
+  cf_announcement_dismissals: {
+    key_columns: ["uid", "announcement_id"],
+    required: ["uid", "announcement_id", "dismissed_at"],
+    columns: ["uid", "announcement_id", "dismissed_at", "cta_clicked"],
+    defaults: { cta_clicked: 0 },
+    integers: ["dismissed_at"],
+    json: [],
+  },
   cf_asset_objects: {
     key_columns: ["uid", "object_key"],
     required: ["uid", "object_key", "content_type", "size", "etag", "created_at", "updated_at"],
@@ -355,6 +383,7 @@ const BOOL_COLUMNS = new Set([
   "is_active",
   "is_default",
   "is_system",
+  "cta_clicked",
   "connected",
   "onboarding_skipped",
   "reauth_required",
@@ -435,6 +464,10 @@ export function normalizeRow(table, input) {
   if (row.success_criteria !== undefined && row.success_criteria_json === undefined) {
     row.success_criteria_json = row.success_criteria;
   }
+  if (row.content !== undefined && row.content_json === undefined) row.content_json = row.content;
+  if (row.targeting !== undefined && row.targeting_json === undefined) row.targeting_json = row.targeting;
+  if (row.display !== undefined && row.display_json === undefined) row.display_json = row.display;
+  if (row.device_models !== undefined && row.device_models_json === undefined) row.device_models_json = row.device_models;
   for (const required of spec.required) {
     if (row[required] === undefined || row[required] === null || row[required] === "") {
       fail(`${table} row is missing ${required}`);

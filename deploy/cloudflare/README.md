@@ -159,6 +159,13 @@ GET  /v1/cf/jobs/{jobId}      Edge → Jobs Worker → uid-scoped D1 job status
 GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/latest      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/version     Edge → Python API Core → GitHub Releases API
+GET  /v1/announcements/changelogs
+GET  /v1/announcements/features
+GET  /v1/announcements/general
+                              Edge → Python API Core → D1 announcement projection
+GET  /v1/announcements/pending
+POST /v1/announcements/{announcementId}/dismiss
+                              Edge → Python API Core → D1 + per-user dismissal
 GET  /v1/config/api-keys      Edge → Python API Core → Worker client-key vars
 GET  /v1/users/transcription-preferences
 PATCH /v1/users/transcription-preferences
@@ -363,6 +370,14 @@ reads, and calendar writes remain on the legacy integration service; tokens are
 never returned by these routes. This group is staging-only until existing
 integration rows are backfilled and every downstream OAuth reader has cut over
 to the same authority.
+
+The announcement routes move public changelogs/features/general reads and the
+authenticated pending/dismissal contract to D1. Version comparisons preserve
+the legacy semantic-plus-build behavior (a bare semantic version matches all
+builds), while platform, firmware, device, trigger, time-window, priority, and
+per-user `show_once` filtering are evaluated in the Worker. Publishing/admin
+CRUD remains on the legacy owner until its secret and content backfill contract
+is migrated; staging records can be loaded with the whitelisted backfill tool.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

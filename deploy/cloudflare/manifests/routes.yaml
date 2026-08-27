@@ -49,6 +49,57 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/announcements/changelogs
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/announcements/features
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/announcements/general
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/announcements/pending
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/announcements/:announcementId/dismiss
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: POST
     path: /v1/embeddings
     owner: api-ai
