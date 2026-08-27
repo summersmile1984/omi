@@ -761,14 +761,16 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由。
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
 - `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`，未导入 `backend/main.py`。
-- `omi-cf-api-ai-staging`：FastAPI Python Worker + async `httpx` 外部 embedding API seam；provider 未配置时 fail closed 返回 `503`。
+- `omi-cf-api-ai-staging`：FastAPI Python Worker + async `httpx` 外部 embedding/预录音 ASR API seam；provider 未配置时 fail closed 返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：10 条首期路由和 8 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 3 tests pass
+npm test                                  # 3 files / 7 tests pass
+uvx uv==0.12.3 run pytest -q             # api-ai: 2 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # five Workers uploaded
 curl /health                              # auth/core/ai/realtime/edge → HTTP 200
@@ -776,6 +778,8 @@ curl /ready                               # auth D1 → ready
 Better Auth sign-up + Edge /v1/cf/probe   # D1 row written, HTTP 200
 unauthenticated API/Realtime requests     # fail closed, HTTP 401
 invalid Realtime HMAC                     # fail closed, HTTP 401
+authenticated /v1/stt/transcribe          # provider 未配置时 HTTP 503
+authenticated realtime contracts          # non-WS requests HTTP 426
 ```
 
 Python Workers 仍属于 Beta；当前 `api-core` 约 8.0 MiB、`api-ai` 约 8.95 MiB

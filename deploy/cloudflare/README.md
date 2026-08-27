@@ -69,6 +69,8 @@ the provider endpoint/key as Worker secrets when a staging provider is chosen:
 ```bash
 printf '%s' "$ASR_WS_URL" | npx wrangler secret put ASR_WS_URL --name omi-cf-realtime-staging
 printf '%s' "$ASR_API_KEY" | npx wrangler secret put ASR_API_KEY --name omi-cf-realtime-staging
+printf '%s' "$ASR_API_BASE_URL" | npx wrangler secret put ASR_API_BASE_URL --name omi-cf-api-ai-staging
+printf '%s' "$ASR_API_KEY" | npx wrangler secret put ASR_API_KEY --name omi-cf-api-ai-staging
 printf '%s' "$EMBEDDING_API_BASE_URL" | npx wrangler secret put EMBEDDING_API_BASE_URL --name omi-cf-api-ai-staging
 printf '%s' "$EMBEDDING_API_KEY" | npx wrangler secret put EMBEDDING_API_KEY --name omi-cf-api-ai-staging
 ```
@@ -81,5 +83,6 @@ GET  /health                  all five Workers
 GET  /ready                   auth D1 readiness
 POST /api/auth/sign-up/email  Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
+POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
 ```

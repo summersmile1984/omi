@@ -4,9 +4,11 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "validate:manifest": "node scripts/validate-manifests.mjs",
+    "pretest": "npm run validate:manifest",
     "test": "vitest run",
     "test:watch": "vitest",
-    "deploy:staging": "node scripts/deploy.mjs staging"
+    "deploy:staging": "npm run validate:manifest && node scripts/deploy.mjs staging"
   },
   "dependencies": {
     "better-auth": "1.6.26",
@@ -16,6 +18,7 @@
     "@cloudflare/workers-types": "5.20260827.1",
     "typescript": "7.0.2",
     "vitest": "4.1.11",
-    "wrangler": "4.127.0"
+    "wrangler": "4.127.0",
+    "yaml": "2.9.0"
   }
 }

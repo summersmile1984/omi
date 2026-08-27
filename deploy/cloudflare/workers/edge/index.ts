@@ -40,17 +40,42 @@ app.all("/v4/listen", async (c) => {
   return withRequestId(response, id);
 });
 
+app.all("/v4/web/listen", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  const response = await c.env.REALTIME.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+});
+
+app.all("/v1/omni/relay", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  const response = await c.env.REALTIME.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+});
+
 app.all("/*", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   const headers = stripUntrustedHeaders(c.req.raw);
   if (auth) await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
 
-  if (c.req.path.startsWith("/v1/ai/") || c.req.path.startsWith("/v1/embeddings")) {
+  if (
+    c.req.path.startsWith("/v1/ai/") ||
+    c.req.path.startsWith("/v1/embeddings") ||
+    c.req.path.startsWith("/v1/stt/")
+  ) {
     const response = await c.env.API_AI.fetch(new Request(c.req.raw, { headers }));
     return withRequestId(response, id);
   }
   if (auth) {
+    // Manifest owner for the authenticated /v1/* fallback is api-core.
     const response = await c.env.API_CORE.fetch(new Request(c.req.raw, { headers }));
     return withRequestId(response, id);
   }

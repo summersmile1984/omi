@@ -1,0 +1,34 @@
+version: 1
+resources:
+  - kind: d1
+    name: omi-cf-auth-staging
+    owner: auth
+    environment: staging
+  - kind: d1
+    name: omi-cf-app-staging
+    owner: api-core
+    environment: staging
+  - kind: r2
+    name: omi-cf-staging
+    owner: api-core
+    environment: staging
+  - kind: worker
+    name: omi-cf-edge-staging
+    owner: edge
+    environment: staging
+  - kind: worker
+    name: omi-cf-auth-staging
+    owner: auth
+    environment: staging
+  - kind: worker
+    name: omi-cf-api-core-staging
+    owner: api-core
+    environment: staging
+  - kind: worker
+    name: omi-cf-api-ai-staging
+    owner: api-ai
+    environment: staging
+  - kind: worker
+    name: omi-cf-realtime-staging
+    owner: realtime
+    environment: staging
