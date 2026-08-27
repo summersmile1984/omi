@@ -280,6 +280,12 @@ class UserLanguageUpdate(BaseModel):
     language: str
 
 
+class OnboardingStateUpdate(BaseModel):
+    completed: bool | None = None
+    acquisition_source: str | None = None
+    device_onboarding_completed: bool | None = None
+
+
 def _transcription_preferences(row: object | None) -> dict[str, object]:
     if not isinstance(row, dict):
         return {
@@ -351,11 +357,79 @@ async def _save_transcription_preferences(env: object, uid: str, current: dict[s
     ).run()
 
 
+def _onboarding_state(row: object | None) -> dict[str, object]:
+    if not isinstance(row, dict):
+        return {"completed": False, "acquisition_source": "", "device_onboarding_completed": False}
+    return {
+        "completed": bool(row.get("completed")),
+        "acquisition_source": str(row.get("acquisition_source") or ""),
+        "device_onboarding_completed": bool(row.get("device_onboarding_completed")),
+    }
+
+
+async def _load_onboarding_state(env: object, uid: str) -> dict[str, object]:
+    row = await env.APP_DB.prepare(
+        "SELECT completed, acquisition_source, device_onboarding_completed "
+        "FROM cf_user_onboarding WHERE uid = ?"
+    ).bind(uid).first()
+    return _onboarding_state(row)
+
+
+async def _save_onboarding_state(env: object, uid: str, state: dict[str, object]) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_onboarding "
+        "(uid, completed, acquisition_source, device_onboarding_completed, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET completed = excluded.completed, "
+        "acquisition_source = excluded.acquisition_source, "
+        "device_onboarding_completed = excluded.device_onboarding_completed, "
+        "updated_at = excluded.updated_at"
+    ).bind(
+        uid,
+        int(bool(state["completed"])),
+        str(state["acquisition_source"]),
+        int(bool(state["device_onboarding_completed"])),
+        now,
+        now,
+    ).run()
+
+
 @app.get("/v1/users/available-languages")
 async def available_languages(request: Request):
     if not auth_context(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return {"languages": [{"code": code, "name": name} for code, name in PRIMARY_LANGUAGE_OPTIONS]}
+
+
+@app.get("/v1/users/onboarding")
+async def get_onboarding_state(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await _load_onboarding_state(request.scope["env"], str(context["uid"]))
+
+
+@app.patch("/v1/users/onboarding")
+async def update_onboarding_state(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = OnboardingStateUpdate.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid onboarding state"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    state = await _load_onboarding_state(env, uid)
+    if update.completed is not None:
+        state["completed"] = update.completed
+    if update.acquisition_source is not None:
+        state["acquisition_source"] = update.acquisition_source
+    if update.device_onboarding_completed is not None:
+        state["device_onboarding_completed"] = update.device_onboarding_completed
+    await _save_onboarding_state(env, uid, state)
+    return {"status": "ok"}
 
 
 @app.get("/v1/users/language")

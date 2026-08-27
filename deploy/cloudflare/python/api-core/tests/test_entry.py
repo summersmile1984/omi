@@ -17,6 +17,7 @@ from entry import DEVICE_PREFIXES, _asset_key, _firmware_metadata, _firmware_res
 class FakeDb:
     def __init__(self):
         self.row = None
+        self.onboarding_row = None
 
     def prepare(self, sql):
         return FakeStatement(self, sql)
@@ -35,31 +36,45 @@ class FakeStatement:
     async def first(self):
         if self.sql.startswith("SELECT single_language_mode"):
             return self.db.row
+        if self.sql.startswith("SELECT completed"):
+            return self.db.onboarding_row
         raise AssertionError(f"unexpected query: {self.sql}")
 
     async def run(self):
-        if not self.sql.startswith("INSERT INTO cf_user_transcription_preferences"):
-            raise AssertionError(f"unexpected query: {self.sql}")
-        (
-            uid,
-            single_language_mode,
-            vocabulary_json,
-            language,
-            uses_custom_stt,
-            custom_stt_since,
-            created_at,
-            updated_at,
-        ) = self.args
-        self.db.row = {
-            "uid": uid,
-            "single_language_mode": single_language_mode,
-            "vocabulary_json": vocabulary_json,
-            "language": language,
-            "uses_custom_stt": uses_custom_stt,
-            "custom_stt_since": custom_stt_since,
-            "created_at": created_at,
-            "updated_at": updated_at,
-        }
+        if self.sql.startswith("INSERT INTO cf_user_transcription_preferences"):
+            (
+                uid,
+                single_language_mode,
+                vocabulary_json,
+                language,
+                uses_custom_stt,
+                custom_stt_since,
+                created_at,
+                updated_at,
+            ) = self.args
+            self.db.row = {
+                "uid": uid,
+                "single_language_mode": single_language_mode,
+                "vocabulary_json": vocabulary_json,
+                "language": language,
+                "uses_custom_stt": uses_custom_stt,
+                "custom_stt_since": custom_stt_since,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_onboarding"):
+            uid, completed, acquisition_source, device_onboarding_completed, created_at, updated_at = self.args
+            self.db.onboarding_row = {
+                "uid": uid,
+                "completed": completed,
+                "acquisition_source": acquisition_source,
+                "device_onboarding_completed": device_onboarding_completed,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        raise AssertionError(f"unexpected query: {self.sql}")
 
 
 class FakeRequest:
@@ -230,3 +245,35 @@ def test_language_route_rejects_unsupported_values():
 
     response = asyncio.run(entry.set_user_language(FakeRequest(env, headers, {"language": "not-a-language"})))
     assert response.status_code == 400
+
+
+def test_onboarding_state_is_partial_and_uid_scoped():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="onboarding-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET=secret)
+
+    initial = asyncio.run(entry.get_onboarding_state(FakeRequest(env, headers)))
+    assert initial == {"completed": False, "acquisition_source": "", "device_onboarding_completed": False}
+
+    updated = asyncio.run(
+        entry.update_onboarding_state(
+            FakeRequest(
+                env,
+                headers,
+                {"completed": True, "acquisition_source": "desktop", "device_onboarding_completed": True},
+            )
+        )
+    )
+    assert updated == {"status": "ok"}
+
+    partial = asyncio.run(entry.update_onboarding_state(FakeRequest(env, headers, {"completed": False})))
+    assert partial == {"status": "ok"}
+    assert asyncio.run(entry.get_onboarding_state(FakeRequest(env, headers))) == {
+        "completed": False,
+        "acquisition_source": "desktop",
+        "device_onboarding_completed": True,
+    }

@@ -103,6 +103,8 @@ PATCH /v1/users/transcription-preferences
 GET  /v1/users/available-languages
 GET  /v1/users/language
 PATCH /v1/users/language
+GET  /v1/users/onboarding
+PATCH /v1/users/onboarding
                               Edge → Python API Core → D1
 ```
 

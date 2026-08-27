@@ -128,7 +128,7 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/users/onboarding", { headers: { authorization: "Bearer opaque-session" } }),
+      new Request("https://edge.test/v1/users/profile", { headers: { authorization: "Bearer opaque-session" } }),
       env,
     );
     expect(response.status).toBe(404);
@@ -158,12 +158,12 @@ describe("edge gateway", () => {
     };
     try {
       const response = await edge.fetch(
-        new Request("https://edge.test/v1/users/onboarding", { headers: { authorization: "Bearer opaque-session" } }),
+        new Request("https://edge.test/v1/users/profile", { headers: { authorization: "Bearer opaque-session" } }),
         env,
       );
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ owner: "legacy" });
-      expect(legacyPath).toBe("/v1/users/onboarding");
+      expect(legacyPath).toBe("/v1/users/profile");
     } finally {
       globalThis.fetch = originalFetch;
     }

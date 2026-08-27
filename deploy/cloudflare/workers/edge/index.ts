@@ -96,6 +96,7 @@ app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
 app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);
 app.all("/v1/users/available-languages", proxyAuthenticatedCore);
 app.all("/v1/users/language", proxyAuthenticatedCore);
+app.all("/v1/users/onboarding", proxyAuthenticatedCore);
 
 app.all("/*", async (c) => {
   const id = requestId(c.req.raw);
