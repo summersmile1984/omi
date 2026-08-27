@@ -9,8 +9,8 @@ The first staging slice contains:
 - `edge`: public routing, request IDs, trusted auth context and legacy fallback.
 - `auth`: Hono + Better Auth + D1, with request-scoped auth construction.
 - `api-core`: a minimal FastAPI/Python Worker composition root with a D1 probe,
-  uid-scoped R2 asset API (`/v1/cf/assets/{key}`), and the public firmware
-  stable/latest/version APIs.
+  uid-scoped R2 asset API (`/v1/cf/assets/{key}`), uid-scoped transcription
+  preferences, and the public firmware stable/latest/version APIs.
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
@@ -98,6 +98,12 @@ JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 l
 GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/latest      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/version     Edge → Python API Core → GitHub Releases API
+GET  /v1/users/transcription-preferences
+PATCH /v1/users/transcription-preferences
+GET  /v1/users/available-languages
+GET  /v1/users/language
+PATCH /v1/users/language
+                              Edge → Python API Core → D1
 ```
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.

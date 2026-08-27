@@ -1,7 +1,10 @@
+import json
 import re
 import time
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, ValidationError
 
 try:
     from workers import asgi, fetch as worker_fetch
@@ -15,6 +18,215 @@ from internal_auth import decode_context
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 MAX_ASSET_BODY_BYTES = 25_000_000
+MAX_VOCABULARY_ITEMS = 100
+MODULATE_SUPPORTED_LANGUAGES = frozenset(
+    {
+        "en",
+        "af",
+        "sq",
+        "ar",
+        "az",
+        "eu",
+        "be",
+        "bn",
+        "bs",
+        "bg",
+        "ca",
+        "zh",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "et",
+        "fi",
+        "fr",
+        "gl",
+        "de",
+        "el",
+        "gu",
+        "he",
+        "hi",
+        "hu",
+        "id",
+        "it",
+        "ja",
+        "kn",
+        "kk",
+        "ko",
+        "lv",
+        "lt",
+        "mk",
+        "ms",
+        "ml",
+        "mr",
+        "no",
+        "fa",
+        "pl",
+        "pt",
+        "pa",
+        "ro",
+        "ru",
+        "sr",
+        "sk",
+        "sl",
+        "es",
+        "sw",
+        "sv",
+        "tl",
+        "ta",
+        "te",
+        "th",
+        "tr",
+        "uk",
+        "ur",
+        "vi",
+        "cy",
+    }
+)
+ACCEPTED_LANGUAGE_BASES = MODULATE_SUPPORTED_LANGUAGES | {"multi", "mt"}
+PRIMARY_LANGUAGE_OPTIONS = (
+    ("en", "English"),
+    ("en-US", "English (US)"),
+    ("en-GB", "English (UK)"),
+    ("en-AU", "English (Australia)"),
+    ("en-NZ", "English (New Zealand)"),
+    ("en-IN", "English (India)"),
+    ("es", "Spanish"),
+    ("es-419", "Spanish (Latin America)"),
+    ("zh", "Chinese (Mandarin, Simplified)"),
+    ("zh-CN", "Chinese (Mandarin, Simplified, CN)"),
+    ("zh-Hans", "Chinese (Mandarin, Simplified, Hans)"),
+    ("hi", "Hindi"),
+    ("pt", "Portuguese"),
+    ("pt-BR", "Portuguese (Brazil)"),
+    ("pt-PT", "Portuguese (Portugal)"),
+    ("ru", "Russian"),
+    ("ja", "Japanese"),
+    ("de", "German"),
+    ("ar", "Arabic"),
+    ("be", "Belarusian"),
+    ("bn", "Bengali"),
+    ("bs", "Bosnian"),
+    ("bg", "Bulgarian"),
+    ("ca", "Catalan"),
+    ("zh-TW", "Chinese (Mandarin, Traditional)"),
+    ("zh-Hant", "Chinese (Mandarin, Traditional, Hant)"),
+    ("zh-HK", "Chinese (Cantonese, Traditional)"),
+    ("hr", "Croatian"),
+    ("cs", "Czech"),
+    ("da", "Danish"),
+    ("da-DK", "Danish (Denmark)"),
+    ("nl", "Dutch"),
+    ("et", "Estonian"),
+    ("fi", "Finnish"),
+    ("nl-BE", "Flemish"),
+    ("fr", "French"),
+    ("fr-CA", "French (Canada)"),
+    ("de-CH", "German (Switzerland)"),
+    ("el", "Greek"),
+    ("he", "Hebrew"),
+    ("hu", "Hungarian"),
+    ("id", "Indonesian"),
+    ("it", "Italian"),
+    ("kn", "Kannada"),
+    ("ko", "Korean"),
+    ("ko-KR", "Korean (Korea)"),
+    ("lv", "Latvian"),
+    ("lt", "Lithuanian"),
+    ("mk", "Macedonian"),
+    ("ms", "Malay"),
+    ("mr", "Marathi"),
+    ("no", "Norwegian"),
+    ("fa", "Persian"),
+    ("pl", "Polish"),
+    ("ro", "Romanian"),
+    ("sr", "Serbian"),
+    ("sk", "Slovak"),
+    ("sl", "Slovenian"),
+    ("sv", "Swedish"),
+    ("sv-SE", "Swedish (Sweden)"),
+    ("tl", "Tagalog"),
+    ("ta", "Tamil"),
+    ("te", "Telugu"),
+    ("th", "Thai"),
+    ("th-TH", "Thai (Thailand)"),
+    ("tr", "Turkish"),
+    ("uk", "Ukrainian"),
+    ("ur", "Urdu"),
+    ("vi", "Vietnamese"),
+)
+LANGUAGE_NAME_TO_BASE = {
+    "afrikaans": "af",
+    "albanian": "sq",
+    "arabic": "ar",
+    "azerbaijani": "az",
+    "basque": "eu",
+    "belarusian": "be",
+    "bengali": "bn",
+    "bosnian": "bs",
+    "brazilian portuguese": "pt",
+    "bulgarian": "bg",
+    "cantonese": "zh",
+    "catalan": "ca",
+    "chinese": "zh",
+    "chinese simplified": "zh",
+    "chinese traditional": "zh",
+    "croatian": "hr",
+    "czech": "cs",
+    "danish": "da",
+    "dutch": "nl",
+    "english": "en",
+    "estonian": "et",
+    "farsi": "fa",
+    "filipino": "tl",
+    "finnish": "fi",
+    "flemish": "nl",
+    "french": "fr",
+    "galician": "gl",
+    "german": "de",
+    "greek": "el",
+    "gujarati": "gu",
+    "hebrew": "he",
+    "hindi": "hi",
+    "hungarian": "hu",
+    "indonesian": "id",
+    "italian": "it",
+    "japanese": "ja",
+    "kannada": "kn",
+    "kazakh": "kk",
+    "korean": "ko",
+    "latvian": "lv",
+    "lithuanian": "lt",
+    "macedonian": "mk",
+    "malay": "ms",
+    "malayalam": "ml",
+    "maltese": "mt",
+    "mandarin": "zh",
+    "marathi": "mr",
+    "norwegian": "no",
+    "persian": "fa",
+    "polish": "pl",
+    "portuguese": "pt",
+    "punjabi": "pa",
+    "romanian": "ro",
+    "russian": "ru",
+    "serbian": "sr",
+    "simplified chinese": "zh",
+    "slovak": "sk",
+    "slovenian": "sl",
+    "spanish": "es",
+    "swahili": "sw",
+    "swedish": "sv",
+    "tagalog": "tl",
+    "tamil": "ta",
+    "telugu": "te",
+    "thai": "th",
+    "turkish": "tr",
+    "ukrainian": "uk",
+    "urdu": "ur",
+    "vietnamese": "vi",
+    "welsh": "cy",
+}
 FIRMWARE_TAG_PATTERN = re.compile(
     r"^(?:Omi_CV1|Omi_DK2|OmiGlass|OpenGlass|Friend)_v[0-9]+(?:\.[0-9]+){1,2}$", re.IGNORECASE
 )
@@ -57,6 +269,151 @@ async def probe(request: Request):
     ).bind(uid).run()
     row = await env.APP_DB.prepare("SELECT uid, last_seen_at FROM cf_worker_probe WHERE uid = ?").bind(uid).first()
     return {"status": "ok", "service": "api-core", "auth": context, "probe": row}
+
+
+class TranscriptionPreferencesUpdate(BaseModel):
+    single_language_mode: bool | None = None
+    vocabulary: list[str] | None = None
+
+
+class UserLanguageUpdate(BaseModel):
+    language: str
+
+
+def _transcription_preferences(row: object | None) -> dict[str, object]:
+    if not isinstance(row, dict):
+        return {
+            "single_language_mode": False,
+            "vocabulary": [],
+            "language": "",
+            "uses_custom_stt": False,
+            "custom_stt_since": None,
+        }
+    try:
+        vocabulary = json.loads(str(row.get("vocabulary_json") or "[]"))
+    except (TypeError, ValueError):
+        vocabulary = []
+    if not isinstance(vocabulary, list) or not all(isinstance(item, str) for item in vocabulary):
+        vocabulary = []
+    return {
+        "single_language_mode": bool(row.get("single_language_mode")),
+        "vocabulary": vocabulary[:MAX_VOCABULARY_ITEMS],
+        "language": str(row.get("language") or ""),
+        "uses_custom_stt": bool(row.get("uses_custom_stt")),
+        "custom_stt_since": row.get("custom_stt_since"),
+    }
+
+
+async def _load_transcription_preferences(env: object, uid: str) -> dict[str, object]:
+    row = await env.APP_DB.prepare(
+        "SELECT single_language_mode, vocabulary_json, language, uses_custom_stt, custom_stt_since "
+        "FROM cf_user_transcription_preferences WHERE uid = ?"
+    ).bind(uid).first()
+    return _transcription_preferences(row)
+
+
+def _normalize_user_language(raw: object) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip()
+    if not candidate:
+        return None
+    base, separator, subtag = candidate.replace("_", "-").partition("-")
+    normalized_base = base.lower()
+    if normalized_base in ACCEPTED_LANGUAGE_BASES:
+        if not separator:
+            return normalized_base
+        if subtag.isalnum() and 2 <= len(subtag) <= 4:
+            return f"{normalized_base}-{subtag}"
+    return LANGUAGE_NAME_TO_BASE.get(candidate.lower())
+
+
+async def _save_transcription_preferences(env: object, uid: str, current: dict[str, object]) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_transcription_preferences "
+        "(uid, single_language_mode, vocabulary_json, language, uses_custom_stt, custom_stt_since, "
+        "created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET single_language_mode = excluded.single_language_mode, "
+        "vocabulary_json = excluded.vocabulary_json, language = excluded.language, "
+        "uses_custom_stt = excluded.uses_custom_stt, custom_stt_since = excluded.custom_stt_since, "
+        "updated_at = excluded.updated_at"
+    ).bind(
+        uid,
+        int(bool(current["single_language_mode"])),
+        json.dumps(current["vocabulary"], ensure_ascii=False),
+        str(current["language"]),
+        int(bool(current["uses_custom_stt"])),
+        current["custom_stt_since"],
+        now,
+        now,
+    ).run()
+
+
+@app.get("/v1/users/available-languages")
+async def available_languages(request: Request):
+    if not auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"languages": [{"code": code, "name": name} for code, name in PRIMARY_LANGUAGE_OPTIONS]}
+
+
+@app.get("/v1/users/language")
+async def get_user_language(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    preferences = await _load_transcription_preferences(request.scope["env"], str(context["uid"]))
+    return {"language": preferences["language"] or None}
+
+
+@app.patch("/v1/users/language")
+async def set_user_language(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = UserLanguageUpdate.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "A supported language code is required"}, status_code=400)
+    language = _normalize_user_language(update.language)
+    if not language:
+        return JSONResponse({"error": "A supported language code is required"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    current = await _load_transcription_preferences(env, uid)
+    current["language"] = language
+    current["single_language_mode"] = language.split("-", 1)[0].lower() not in MODULATE_SUPPORTED_LANGUAGES
+    await _save_transcription_preferences(env, uid, current)
+    return {"status": "ok", "single_language_mode": current["single_language_mode"]}
+
+
+@app.get("/v1/users/transcription-preferences")
+async def get_transcription_preferences(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await _load_transcription_preferences(request.scope["env"], str(context["uid"]))
+
+
+@app.patch("/v1/users/transcription-preferences")
+async def update_transcription_preferences(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = TranscriptionPreferencesUpdate.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid transcription preferences"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    current = await _load_transcription_preferences(env, uid)
+    if update.single_language_mode is not None:
+        current["single_language_mode"] = update.single_language_mode
+    if update.vocabulary is not None:
+        current["vocabulary"] = update.vocabulary[:MAX_VOCABULARY_ITEMS]
+    await _save_transcription_preferences(env, uid, current)
+    return {"status": "ok"}
 
 
 def _firmware_metadata(markdown: str) -> dict[str, object]:

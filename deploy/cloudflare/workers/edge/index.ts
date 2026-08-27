@@ -81,6 +81,20 @@ app.all("/v1/cf/jobs", async (c) => {
   return withRequestId(response, id);
 });
 
+const proxyAuthenticatedCore = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  const response = await c.env.API_CORE.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+};
+
+app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);
+app.all("/v1/users/available-languages", proxyAuthenticatedCore);
+app.all("/v1/users/language", proxyAuthenticatedCore);
+
 app.all("/*", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
