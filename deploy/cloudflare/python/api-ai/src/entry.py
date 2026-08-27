@@ -123,12 +123,13 @@ async def ai_proxy(request: Request, path: str):
     if worker_fetch is None:
         return JSONResponse({"error": "worker fetch is unavailable"}, status_code=503)
     try:
-        response = await worker_fetch(
-            _ai_upstream_url(base_url, request),
-            method=request.method,
-            headers=_ai_request_headers(request, api_key),
-            body=body if request.method != "GET" else None,
-        )
+        fetch_options = {
+            "method": request.method,
+            "headers": _ai_request_headers(request, api_key),
+        }
+        if request.method != "GET":
+            fetch_options["body"] = body
+        response = await worker_fetch(_ai_upstream_url(base_url, request), **fetch_options)
         response_body = bytes(await response.arrayBuffer())
     except (OSError, TypeError, ValueError):
         return JSONResponse({"error": "ai upstream unavailable"}, status_code=502)
