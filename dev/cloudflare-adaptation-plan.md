@@ -760,17 +760,17 @@ DNS 或生产数据库。当前 staging 已部署：
 
 - `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由。
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
-- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知设置表面与公开 firmware stable/latest/version APIs，未导入 `backend/main.py`。
+- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意设置表面与公开 firmware stable/latest/version APIs，未导入 `backend/main.py`。
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR API seam；provider 未配置时 fail closed 返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：28 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：30 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 4 files / 11 tests pass
+npm test                                  # 4 files / 12 tests pass
 uvx uv==0.12.3 run pytest -q             # api-core: 10, api-ai: 4 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
@@ -790,6 +790,8 @@ user language GET/PATCH/catalog          # normalized language + atomic mode upd
 user onboarding GET/PATCH                # partial D1 state update, uid scoped → 200/400/401
 privacy settings GET/POST                # recording/private-sync flags, destructive DELETE stays legacy → verified
 notification settings GET/PATCH          # D1 defaults and bounded frequency → 200/400/401
+location context consent GET/PUT         # D1 consent TTL/revocation + disclosure gate → 200/401/422
+location context consent GET/PUT         # D1 consent TTL/revocation + disclosure gate → 200/400/401/422
 ```
 
 Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules

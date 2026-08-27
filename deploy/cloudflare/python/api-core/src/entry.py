@@ -22,6 +22,11 @@ from language_policy import (
     PRIMARY_LANGUAGE_OPTIONS,
 )
 from firmware_policy import DEVICE_PREFIXES, FIRMWARE_TAG_PATTERN
+from location_routes import (
+    get_location_context_consent,
+    router as location_router,
+    set_location_context_consent,
+)
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 MAX_ASSET_BODY_BYTES = 25_000_000
@@ -454,6 +459,9 @@ async def update_transcription_preferences(request: Request):
         current["vocabulary"] = update.vocabulary[:MAX_VOCABULARY_ITEMS]
     await _save_transcription_preferences(env, uid, current)
     return {"status": "ok"}
+
+
+app.include_router(location_router)
 
 
 def _firmware_metadata(markdown: str) -> dict[str, object]:

@@ -10,7 +10,8 @@ The first staging slice contains:
 - `auth`: Hono + Better Auth + D1, with request-scoped auth construction.
 - `api-core`: a minimal FastAPI/Python Worker composition root with a D1 probe,
   uid-scoped R2 asset API (`/v1/cf/assets/{key}`), uid-scoped transcription
-  preferences, and the public firmware stable/latest/version APIs.
+  preferences, onboarding/privacy/notification/location-consent settings, and
+  the public firmware stable/latest/version APIs.
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
@@ -111,6 +112,8 @@ GET  /v1/users/private-cloud-sync
 POST /v1/users/private-cloud-sync
 GET  /v1/users/notification-settings
 PATCH /v1/users/notification-settings
+GET  /v1/users/location-context-consent
+PUT  /v1/users/location-context-consent
                               Edge → Python API Core → D1
 ```
 
@@ -122,6 +125,11 @@ owner.
 
 The destructive `DELETE /v1/users/store-recording-permission` operation remains
 on the legacy owner until its R2/GCS recording deletion contract is migrated.
+
+The location-consent route is staging-only while legacy chat still reads its
+Firestore consent projection. Do not cut this route over in production until
+that downstream consumer has moved to the D1 authority and passed its privacy
+regression contract.
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must

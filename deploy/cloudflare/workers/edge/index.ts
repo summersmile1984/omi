@@ -103,6 +103,8 @@ app.get("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
 app.post("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
 app.get("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/notification-settings", proxyAuthenticatedCore);
+app.get("/v1/users/location-context-consent", proxyAuthenticatedCore);
+app.put("/v1/users/location-context-consent", proxyAuthenticatedCore);
 
 app.all("/*", async (c) => {
   const id = requestId(c.req.raw);

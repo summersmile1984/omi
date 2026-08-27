@@ -20,6 +20,7 @@ class FakeDb:
         self.onboarding_row = None
         self.privacy_row = None
         self.notification_row = None
+        self.location_row = None
 
     def prepare(self, sql):
         return FakeStatement(self, sql)
@@ -44,6 +45,8 @@ class FakeStatement:
             return self.db.privacy_row
         if self.sql.startswith("SELECT notifications_enabled"):
             return self.db.notification_row
+        if self.sql.startswith("SELECT status, purpose, disclosed_providers_json"):
+            return self.db.location_row
         raise AssertionError(f"unexpected query: {self.sql}")
 
     async def run(self):
@@ -96,6 +99,30 @@ class FakeStatement:
                 "uid": uid,
                 "notifications_enabled": notifications_enabled,
                 "notification_frequency": notification_frequency,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_location_context_consent"):
+            (
+                uid,
+                status,
+                purpose,
+                disclosed_providers_json,
+                granted_at,
+                expires_at,
+                revoked_at,
+                created_at,
+                updated_at,
+            ) = self.args
+            self.db.location_row = {
+                "uid": uid,
+                "status": status,
+                "purpose": purpose,
+                "disclosed_providers_json": disclosed_providers_json,
+                "granted_at": granted_at,
+                "expires_at": expires_at,
+                "revoked_at": revoked_at,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
@@ -354,3 +381,36 @@ def test_notification_settings_preserve_defaults_and_validate_frequency():
     }
     invalid = asyncio.run(entry.update_notification_settings(FakeRequest(env, headers, {"frequency": 6})))
     assert invalid.status_code == 400
+
+
+def test_location_context_consent_requires_disclosure_and_expires_after_thirty_days(monkeypatch):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="location-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET=secret)
+    monkeypatch.setattr(entry.time, "time", lambda: 1_700_000_000)
+
+    initial = asyncio.run(entry.get_location_context_consent(FakeRequest(env, headers)))
+    assert initial["enabled"] is False
+    assert initial["expires_at"] is None
+    assert initial["purpose"] == "chat_city_context"
+
+    rejected = asyncio.run(
+        entry.set_location_context_consent(FakeRequest(env, headers, {"enabled": True, "disclosure_accepted": False}))
+    )
+    assert rejected.status_code == 422
+
+    granted = asyncio.run(
+        entry.set_location_context_consent(FakeRequest(env, headers, {"enabled": True, "disclosure_accepted": True}))
+    )
+    assert granted["enabled"] is True
+    assert granted["expires_at"] == "2023-12-14T22:13:20+00:00"
+
+    revoked = asyncio.run(
+        entry.set_location_context_consent(FakeRequest(env, headers, {"enabled": False}))
+    )
+    assert revoked["enabled"] is False
+    assert revoked["expires_at"] is None
