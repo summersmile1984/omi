@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from action_item_routes import (  # noqa: E402
     batch_router,
+    batch_create_action_items,
     batch_update_action_items,
     create_action_item,
     delete_action_item,
@@ -147,6 +148,7 @@ def test_action_item_crud_is_uid_scoped_and_idempotent():
 def test_action_item_batch_route_is_registered_before_dynamic_id_route():
     assert [route.path for route in batch_router.routes] == [
         "/v1/action-items/batch",
+        "/v1/action-items/batch",
         "/v1/action-items/batch-delete",
     ]
 
@@ -190,3 +192,30 @@ def test_action_item_batch_update_returns_missing_ids():
         )
     )
     assert toggled["completed"] is False
+
+
+def test_action_item_batch_create_preserves_order_and_idempotency():
+    secret = "action-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+    body = [
+        {"description": "First batch item", "sort_order": 1},
+        {"description": "Second batch item", "completed": True},
+    ]
+
+    created = asyncio.run(batch_create_action_items(FakeRequest(env, headers, body)))
+    assert created["created_count"] == 2
+    assert [item["description"] for item in created["action_items"]] == [
+        "First batch item",
+        "Second batch item",
+    ]
+    assert created["action_items"][1]["completed"] is True
+
+    retry = asyncio.run(batch_create_action_items(FakeRequest(env, headers, body)))
+    assert [item["id"] for item in retry["action_items"] if item["description"] == "First batch item"] == [
+        created["action_items"][0]["id"]
+    ]
+    assert retry["created_count"] == 2
+
+    invalid = asyncio.run(batch_create_action_items(FakeRequest(env, headers, [{"description": ""}])))
+    assert invalid.status_code == 400

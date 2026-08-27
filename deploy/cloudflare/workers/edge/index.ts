@@ -138,6 +138,7 @@ app.get("/v1/action-items", proxyAuthenticatedCore);
 app.post("/v1/action-items", proxyAuthenticatedCore);
 app.get("/v1/action-items/ids", proxyAuthenticatedCore);
 app.patch("/v1/action-items/batch", proxyAuthenticatedCore);
+app.post("/v1/action-items/batch", proxyAuthenticatedCore);
 app.post("/v1/action-items/batch-delete", proxyAuthenticatedCore);
 app.get("/v1/action-items/:actionItemId", proxyAuthenticatedCore);
 app.patch("/v1/action-items/:actionItemId", proxyAuthenticatedCore);

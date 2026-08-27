@@ -193,6 +193,7 @@ GET  /v1/users/profile         Edge → Better Auth → D1
 GET/POST /v1/action-items      Edge → Python API Core → D1
 GET  /v1/action-items/ids      Edge → Python API Core → D1
 PATCH /v1/action-items/batch   Edge → Python API Core → D1
+POST  /v1/action-items/batch   Edge → Python API Core → D1
 POST /v1/action-items/batch-delete
                               Edge → Python API Core → D1
 GET/PATCH/DELETE /v1/action-items/{actionItemId}

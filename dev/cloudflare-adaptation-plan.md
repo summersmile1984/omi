@@ -764,7 +764,7 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机，并提供 uid-scoped job status read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：66 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：67 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
@@ -805,7 +805,7 @@ auto model pick GET                     # D1 24h cache + provider/default proven
 native Workers AI translation POST      # m2m100 en→zh through Edge → HTTP 200; unsupported language → 400
 native Workers AI TTS POST              # Aura-1 raw MP3 through Edge → HTTP 200/audio-mpeg
 native Workers AI embeddings POST      # BGE text batch, 768-dimension vectors → HTTP 200
-action-item CRUD                       # D1 uid-scoped create/list/update/complete/delete + batch reconciliation → verified
+action-item CRUD                       # D1 uid-scoped create/list/update/complete/delete + batch create/reconciliation → verified
 people metadata CRUD                   # D1 uid/name-scoped create/list/rename/delete; speech samples stay legacy → verified
 ```
 

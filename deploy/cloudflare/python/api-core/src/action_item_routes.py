@@ -616,6 +616,25 @@ async def batch_update_action_items(request: Request):
         return JSONResponse({"error": "invalid action item batch"}, status_code=400)
 
 
+@batch_router.post("/v1/action-items/batch")
+async def batch_create_action_items(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await _bounded_json(request)
+        if not isinstance(body, list) or len(body) > 50:
+            raise ValueError("invalid batch")
+        items = [ActionItemCreate.model_validate(raw) for raw in body]
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid action item batch"}, status_code=400)
+    try:
+        rows = [await _insert_item(request.scope["env"], str(context["uid"]), item) for item in items]
+    except Exception:
+        return JSONResponse({"error": "action items unavailable"}, status_code=503)
+    return {"action_items": [_response(row) for row in rows], "created_count": len(rows)}
+
+
 @batch_router.post("/v1/action-items/batch-delete")
 async def batch_delete_action_items(request: Request):
     context = _auth_context(request)
