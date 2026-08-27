@@ -142,6 +142,8 @@ GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
+POST /v1/embeddings-workers-ai
+                              Edge → Python API AI → Workers AI BGE binding
 POST /v1/translate           Edge → Python API AI → Workers AI m2m100 translation
 POST /v1/tts/synthesize      Edge → Python API AI → hosted OpenAI-compatible TTS API
 POST /v1/tts/synthesize-workers-ai
@@ -237,6 +239,13 @@ The client cannot choose the destination: `AI_API_BASE_URL` and `AI_API_KEY` are
 Worker secrets, and the proxy only forwards `content-type`/`accept` plus the
 request path after `/v1/ai`. Requests and responses are bounded to keep model
 payloads from turning the Python Worker into an unbounded buffer.
+
+`/v1/embeddings-workers-ai` is an additive text-embedding seam backed by the
+native `@cf/baai/bge-base-en-v1.5` binding. It accepts a bounded string or batch
+and returns OpenAI-style `data[].embedding` vectors. The model's 768-dimensional
+output is intentionally not substituted for the existing external embedding
+model; Vectorize/index compatibility and retrieval quality must be qualified
+before any client or index cutover.
 
 `/v1/users/assistant-settings` stores the partial, sectioned settings document
 as JSON in D1 and deep-merges section updates so a toggle cannot erase sibling

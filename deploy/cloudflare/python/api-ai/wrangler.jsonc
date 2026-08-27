@@ -17,6 +17,7 @@
   ],
   "vars": {
     "EMBEDDING_MODEL": "text-embedding-3-small",
+    "WORKERS_AI_EMBEDDING_MODEL": "@cf/baai/bge-base-en-v1.5",
     "WORKERS_AI_ASR_MODEL": "@cf/openai/whisper-large-v3-turbo",
     "WORKERS_AI_TRANSLATION_MODEL": "@cf/meta/m2m100-1.2b",
     "WORKERS_AI_TTS_MODEL": "@cf/deepgram/aura-1"

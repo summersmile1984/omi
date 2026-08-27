@@ -1,6 +1,7 @@
 import base64
 import inspect
 import json
+import math
 import time
 from typing import Any
 
@@ -24,6 +25,9 @@ app.include_router(auto_model_router)
 
 MAX_TRANSCRIPTION_BODY_BYTES = 25_000_000
 MAX_WORKERS_AI_AUDIO_BYTES = 5_000_000
+MAX_EMBEDDING_ITEMS = 32
+MAX_EMBEDDING_TEXT_CHARS = 4_096
+MAX_EMBEDDING_TOTAL_CHARS = 32_000
 MAX_TRANSLATION_ITEMS = 32
 MAX_TRANSLATION_TEXT_CHARS = 4_096
 MAX_TRANSLATION_TOTAL_CHARS = 32_000
@@ -31,6 +35,7 @@ MAX_AI_BODY_BYTES = 8_000_000
 MAX_AI_RESPONSE_BYTES = 12_000_000
 MAX_TTS_CHARS = 4_096
 MAX_WORKERS_AI_TTS_CHARS = 4_096
+DEFAULT_WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 WORKERS_AI_TTS_SPEAKERS = frozenset(
     {"angus", "asteria", "arcas", "orion", "orpheus", "athena", "luna", "zeus", "perseus", "helios", "hera", "stella"}
 )
@@ -55,6 +60,11 @@ class TranslationRequest(BaseModel):
     target_language_code: str
     source_language_code: str | None = None
     request_id: str | None = None
+
+
+class WorkersAiEmbeddingsRequest(BaseModel):
+    input: str | list[str]
+    model: str | None = None
 
 
 # m2m100's published Workers AI surface currently documents these languages.
@@ -114,6 +124,75 @@ async def embeddings(request: Request) -> Any:
         return JSONResponse(await response.json(), status_code=int(response.status))
     except (OSError, TypeError, ValueError):
         return JSONResponse({"error": "embedding upstream unavailable"}, status_code=502)
+
+
+def _embedding_input(payload: WorkersAiEmbeddingsRequest) -> list[str] | None:
+    values = [payload.input] if isinstance(payload.input, str) else payload.input
+    if not values or len(values) > MAX_EMBEDDING_ITEMS:
+        return None
+    if any(not isinstance(value, str) or len(value) > MAX_EMBEDDING_TEXT_CHARS for value in values):
+        return None
+    if sum(len(value) for value in values) > MAX_EMBEDDING_TOTAL_CHARS:
+        return None
+    return values
+
+
+def _embedding_vectors(result: object) -> list[list[float]] | None:
+    payload = _workers_ai_result_mapping(result)
+    raw_vectors = payload.get("data")
+    if not isinstance(raw_vectors, list):
+        return None
+    vectors: list[list[float]] = []
+    for raw_vector in raw_vectors:
+        if not isinstance(raw_vector, list) or not raw_vector:
+            return None
+        vector: list[float] = []
+        for value in raw_vector:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                return None
+            vector.append(float(value))
+        vectors.append(vector)
+    return vectors
+
+
+@app.post("/v1/embeddings-workers-ai")
+async def embeddings_workers_ai(request: Request):
+    """Generate bounded text embeddings with the native Workers AI BGE binding.
+
+    This route is additive: the existing `/v1/embeddings` provider proxy keeps
+    its configured model and response untouched, while callers can explicitly
+    opt into the fixed 768-dimensional BGE model exposed by Workers AI.
+    """
+    if not auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = WorkersAiEmbeddingsRequest.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid embeddings request"}, status_code=400)
+    values = _embedding_input(payload)
+    if values is None:
+        return JSONResponse({"error": "embedding input is too large or empty"}, status_code=413)
+
+    env = request.scope["env"]
+    ai = getattr(env, "AI", None)
+    if ai is None:
+        return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
+    model = getattr(env, "WORKERS_AI_EMBEDDING_MODEL", DEFAULT_WORKERS_AI_EMBEDDING_MODEL)
+    try:
+        result = await ai.run(model, {"text": values})
+        vectors = _embedding_vectors(result)
+    except Exception:
+        return JSONResponse({"error": "workers ai embeddings unavailable"}, status_code=502)
+    if vectors is None or len(vectors) != len(values):
+        return JSONResponse({"error": "workers ai returned invalid embeddings"}, status_code=502)
+    return {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "embedding": vector, "index": index}
+            for index, vector in enumerate(vectors)
+        ],
+        "model": model,
+    }
 
 
 def _ai_upstream_url(base_url: str, request: Request) -> str:

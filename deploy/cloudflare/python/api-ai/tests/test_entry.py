@@ -14,6 +14,7 @@ import entry  # noqa: E402
 
 from entry import (
     _provider_url,
+    embeddings_workers_ai,
     transcribe,
     transcribe_workers_ai,
     translate_workers_ai,
@@ -295,6 +296,85 @@ def test_embeddings_uses_worker_fetch_for_provider(monkeypatch):
     assert json.loads(response.body) == {"data": [{"embedding": [0.1, 0.2]}]}
     assert calls["url"] == "https://embedding.example.test/v1/embeddings"
     assert json.loads(calls["options"]["body"]) == {"model": "embed-model", "input": "hello"}
+
+
+def test_workers_ai_embeddings_returns_openai_style_vectors():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            return {"data": [[0.1, 0.2], [0.3, 0.4]]}
+
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            WORKERS_AI_EMBEDDING_MODEL="@cf/baai/bge-base-en-v1.5",
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"input": ["hello", "world"]},
+        url="https://api.test/v1/embeddings-workers-ai",
+    )
+
+    response = asyncio.run(embeddings_workers_ai(request))
+
+    assert response == {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "embedding": [0.1, 0.2], "index": 0},
+            {"object": "embedding", "embedding": [0.3, 0.4], "index": 1},
+        ],
+        "model": "@cf/baai/bge-base-en-v1.5",
+    }
+    assert calls == {"model": "@cf/baai/bge-base-en-v1.5", "payload": {"text": ["hello", "world"]}}
+
+
+def test_workers_ai_embeddings_rejects_oversized_input():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=object()),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"input": "x" * 4_097},
+        url="https://api.test/v1/embeddings-workers-ai",
+    )
+
+    response = asyncio.run(embeddings_workers_ai(request))
+
+    assert response.status_code == 413
+    assert json.loads(response.body) == {"error": "embedding input is too large or empty"}
+
+
+def test_workers_ai_embeddings_fails_closed_without_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"input": "hello"},
+        url="https://api.test/v1/embeddings-workers-ai",
+    )
+
+    response = asyncio.run(embeddings_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "workers ai is not configured"}
 
 
 def test_ai_proxy_maps_path_and_query_to_fixed_provider(monkeypatch):
