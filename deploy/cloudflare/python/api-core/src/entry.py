@@ -31,6 +31,8 @@ from location_routes import (
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 MAX_ASSET_BODY_BYTES = 25_000_000
 MAX_VOCABULARY_ITEMS = 100
+MAX_ASSISTANT_SETTINGS_BYTES = 64_000
+MAX_AI_PROFILE_TEXT_LENGTH = 50_000
 
 
 def auth_context(request: Request) -> dict[str, object] | None:
@@ -98,6 +100,28 @@ class OnboardingStateUpdate(BaseModel):
 class NotificationSettingsUpdate(BaseModel):
     enabled: bool | None = None
     frequency: int | None = Field(default=None, ge=0, le=5)
+
+
+class AssistantSettingsUpdate(BaseModel):
+    # The legacy contract accepts partial sections and ignores unknown
+    # top-level fields. Keep section payloads JSON-shaped so D1 never stores
+    # Python-specific values, while preserving forward-compatible settings.
+    model_config = {"extra": "ignore"}
+
+    shared: dict[str, object] | None = None
+    focus: dict[str, object] | None = None
+    task: dict[str, object] | None = None
+    advice: dict[str, object] | None = None
+    memory: dict[str, object] | None = None
+    floating_bar: dict[str, object] | None = None
+    web_search: dict[str, object] | None = None
+    update_channel: str | None = Field(default=None, max_length=50)
+
+
+class AIUserProfileUpdate(BaseModel):
+    profile_text: str | None = Field(default=None, max_length=MAX_AI_PROFILE_TEXT_LENGTH)
+    generated_at: str | None = Field(default=None, max_length=256)
+    data_sources_used: int | None = Field(default=None, ge=0)
 
 
 def _parse_bool(value: object) -> bool | None:
@@ -295,6 +319,88 @@ async def _save_notification_settings(env: object, uid: str, settings: dict[str,
     ).run()
 
 
+def _assistant_settings(row: object | None) -> dict[str, object]:
+    if not isinstance(row, dict):
+        return {}
+    try:
+        settings = json.loads(str(row.get("settings_json") or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return settings if isinstance(settings, dict) else {}
+
+
+async def _load_assistant_settings(env: object, uid: str) -> dict[str, object]:
+    row = await env.APP_DB.prepare(
+        "SELECT settings_json FROM cf_user_assistant_settings WHERE uid = ?"
+    ).bind(uid).first()
+    return _assistant_settings(row)
+
+
+async def _save_assistant_settings(env: object, uid: str, settings: dict[str, object]) -> None:
+    encoded = json.dumps(settings, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > MAX_ASSISTANT_SETTINGS_BYTES:
+        raise ValueError("assistant settings exceed size limit")
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_assistant_settings (uid, settings_json, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?) ON CONFLICT(uid) DO UPDATE SET settings_json = excluded.settings_json, "
+        "updated_at = excluded.updated_at"
+    ).bind(uid, encoded, now, now).run()
+
+
+def _merge_assistant_settings(existing: dict[str, object], update: dict[str, object]) -> dict[str, object]:
+    merged = dict(existing)
+    for key, value in update.items():
+        if value is None:
+            continue
+        existing_section = merged.get(key)
+        if isinstance(value, dict) and isinstance(existing_section, dict):
+            merged[key] = {**existing_section, **value}
+        else:
+            merged[key] = value
+    return merged
+
+
+def _ai_profile(row: object | None) -> dict[str, object] | None:
+    if not isinstance(row, dict):
+        return None
+    profile: dict[str, object] = {}
+    if row.get("profile_text") is not None:
+        profile["profile_text"] = str(row["profile_text"])
+    if row.get("generated_at") is not None:
+        profile["generated_at"] = str(row["generated_at"])
+    if row.get("data_sources_used") is not None:
+        profile["data_sources_used"] = int(row["data_sources_used"])
+    return profile
+
+
+async def _load_ai_profile(env: object, uid: str) -> dict[str, object] | None:
+    row = await env.APP_DB.prepare(
+        "SELECT profile_text, generated_at, data_sources_used "
+        "FROM cf_user_ai_profiles WHERE uid = ?"
+    ).bind(uid).first()
+    return _ai_profile(row)
+
+
+async def _save_ai_profile(env: object, uid: str, profile: dict[str, object]) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_ai_profiles "
+        "(uid, profile_text, generated_at, data_sources_used, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET profile_text = excluded.profile_text, "
+        "generated_at = excluded.generated_at, data_sources_used = excluded.data_sources_used, "
+        "updated_at = excluded.updated_at"
+    ).bind(
+        uid,
+        profile.get("profile_text"),
+        profile.get("generated_at"),
+        profile.get("data_sources_used"),
+        now,
+        now,
+    ).run()
+
+
 async def _query_bool(request: Request, name: str) -> bool | None:
     raw = request.query_params.get(name)
     if raw is not None:
@@ -304,6 +410,19 @@ async def _query_bool(request: Request, name: str) -> bool | None:
     except (TypeError, ValueError):
         return None
     return _parse_bool(body)
+
+
+async def _bounded_json(request: Request, max_bytes: int) -> object:
+    body_reader = getattr(request, "body", None)
+    if callable(body_reader):
+        raw = await body_reader()
+        if len(raw) > max_bytes:
+            raise ValueError("request body exceeds size limit")
+        return json.loads(raw)
+    body = await request.json()
+    if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > max_bytes:
+        raise ValueError("request body exceeds size limit")
+    return body
 
 
 @app.get("/v1/users/available-languages")
@@ -419,6 +538,54 @@ async def update_notification_settings(request: Request):
         settings["frequency"] = update.frequency
     await _save_notification_settings(env, uid, settings)
     return await _load_notification_settings(env, uid)
+
+
+@app.get("/v1/users/assistant-settings")
+async def get_assistant_settings(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await _load_assistant_settings(request.scope["env"], str(context["uid"]))
+
+
+@app.patch("/v1/users/assistant-settings")
+async def update_assistant_settings(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = AssistantSettingsUpdate.model_validate(await _bounded_json(request, MAX_ASSISTANT_SETTINGS_BYTES))
+        update_values = update.model_dump(exclude_unset=True)
+        current = await _load_assistant_settings(request.scope["env"], str(context["uid"]))
+        merged = _merge_assistant_settings(current, update_values)
+        await _save_assistant_settings(request.scope["env"], str(context["uid"]), merged)
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid assistant settings"}, status_code=400)
+    return merged
+
+
+@app.get("/v1/users/ai-profile")
+async def get_ai_profile(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await _load_ai_profile(request.scope["env"], str(context["uid"]))
+
+
+@app.patch("/v1/users/ai-profile")
+async def update_ai_profile(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = AIUserProfileUpdate.model_validate(await _bounded_json(request, MAX_ASSISTANT_SETTINGS_BYTES))
+        values = update.model_dump(exclude_unset=True, exclude_none=True)
+        current = await _load_ai_profile(request.scope["env"], str(context["uid"])) or {}
+        current.update(values)
+        await _save_ai_profile(request.scope["env"], str(context["uid"]), current)
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid AI profile"}, status_code=400)
+    return current
 
 
 @app.get("/v1/users/language")

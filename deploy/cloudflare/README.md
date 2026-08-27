@@ -170,6 +170,10 @@ GET  /v1/users/notification-settings
 PATCH /v1/users/notification-settings
 GET  /v1/users/location-context-consent
 PUT  /v1/users/location-context-consent
+GET  /v1/users/assistant-settings
+PATCH /v1/users/assistant-settings
+GET  /v1/users/ai-profile
+PATCH /v1/users/ai-profile
                               Edge → Python API Core → D1
 ```
 
@@ -222,6 +226,13 @@ The client cannot choose the destination: `AI_API_BASE_URL` and `AI_API_KEY` are
 Worker secrets, and the proxy only forwards `content-type`/`accept` plus the
 request path after `/v1/ai`. Requests and responses are bounded to keep model
 payloads from turning the Python Worker into an unbounded buffer.
+
+`/v1/users/assistant-settings` stores the partial, sectioned settings document
+as JSON in D1 and deep-merges section updates so a toggle cannot erase sibling
+fields. `/v1/users/ai-profile` stores only the low-risk generated profile
+projection with bounded text and metadata; it is intentionally separate from
+entitlements, BYOK, and privacy state. These two routes are staging-only until
+an import/backfill plan for existing Firestore users is approved.
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must

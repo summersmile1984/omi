@@ -21,6 +21,8 @@ class FakeDb:
         self.privacy_row = None
         self.notification_row = None
         self.location_row = None
+        self.assistant_settings_row = None
+        self.ai_profile_row = None
 
     def prepare(self, sql):
         return FakeStatement(self, sql)
@@ -47,6 +49,10 @@ class FakeStatement:
             return self.db.notification_row
         if self.sql.startswith("SELECT status, purpose, disclosed_providers_json"):
             return self.db.location_row
+        if self.sql.startswith("SELECT settings_json"):
+            return self.db.assistant_settings_row
+        if self.sql.startswith("SELECT profile_text, generated_at, data_sources_used"):
+            return self.db.ai_profile_row
         raise AssertionError(f"unexpected query: {self.sql}")
 
     async def run(self):
@@ -123,6 +129,26 @@ class FakeStatement:
                 "granted_at": granted_at,
                 "expires_at": expires_at,
                 "revoked_at": revoked_at,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_assistant_settings"):
+            uid, settings_json, created_at, updated_at = self.args
+            self.db.assistant_settings_row = {
+                "uid": uid,
+                "settings_json": settings_json,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_ai_profiles"):
+            uid, profile_text, generated_at, data_sources_used, created_at, updated_at = self.args
+            self.db.ai_profile_row = {
+                "uid": uid,
+                "profile_text": profile_text,
+                "generated_at": generated_at,
+                "data_sources_used": data_sources_used,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
@@ -410,6 +436,59 @@ def test_notification_settings_preserve_defaults_and_validate_frequency():
     }
     invalid = asyncio.run(entry.update_notification_settings(FakeRequest(env, headers, {"frequency": 6})))
     assert invalid.status_code == 400
+
+
+def test_assistant_settings_deep_merge_sections_and_preserve_uid_scope():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="assistant-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET=secret)
+
+    assert asyncio.run(entry.get_assistant_settings(FakeRequest(env, headers))) == {}
+    first = asyncio.run(
+        entry.update_assistant_settings(
+            FakeRequest(env, headers, {"focus": {"enabled": True, "analysis_prompt": "focus"}, "update_channel": "beta"})
+        )
+    )
+    assert first == {"focus": {"enabled": True, "analysis_prompt": "focus"}, "update_channel": "beta"}
+
+    second = asyncio.run(
+        entry.update_assistant_settings(FakeRequest(env, headers, {"focus": {"enabled": False}}))
+    )
+    assert second == {"focus": {"enabled": False, "analysis_prompt": "focus"}, "update_channel": "beta"}
+    assert asyncio.run(entry.get_assistant_settings(FakeRequest(env, headers))) == second
+
+    invalid = asyncio.run(entry.update_assistant_settings(FakeRequest(env, headers, {"focus": "not-an-object"})))
+    assert invalid.status_code == 400
+
+
+def test_ai_profile_partial_update_round_trips_and_rejects_oversized_text():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="ai-profile-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    env = SimpleNamespace(APP_DB=FakeDb(), INTERNAL_ASSERTION_SECRET=secret)
+
+    assert asyncio.run(entry.get_ai_profile(FakeRequest(env, headers))) is None
+    updated = asyncio.run(
+        entry.update_ai_profile(
+            FakeRequest(env, headers, {"profile_text": "prefers concise answers", "data_sources_used": 3})
+        )
+    )
+    assert updated == {"profile_text": "prefers concise answers", "data_sources_used": 3}
+    assert asyncio.run(entry.update_ai_profile(FakeRequest(env, headers, {"generated_at": "2026-08-28T00:00:00Z"}))) == {
+        "profile_text": "prefers concise answers",
+        "data_sources_used": 3,
+        "generated_at": "2026-08-28T00:00:00Z",
+    }
+
+    oversized = asyncio.run(entry.update_ai_profile(FakeRequest(env, headers, {"profile_text": "x" * 50_001})))
+    assert oversized.status_code == 400
 
 
 def test_location_context_consent_requires_disclosure_and_expires_after_thirty_days(monkeypatch):

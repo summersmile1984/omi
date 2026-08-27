@@ -760,11 +760,11 @@ DNS 或生产数据库。当前 staging 已部署：
 
 - `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由。
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
-- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意设置表面、客户端 API key 配置读取与公开 firmware stable/latest/version APIs，未导入 `backend/main.py`。
+- `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意、assistant-settings 深合并和低风险 ai-profile 投影、客户端 API key 配置读取与公开 firmware stable/latest/version APIs，未导入 `backend/main.py`。
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：35 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：39 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
@@ -791,6 +791,8 @@ user onboarding GET/PATCH                # partial D1 state update, uid scoped �
 privacy settings GET/POST                # recording/private-sync flags, destructive DELETE stays legacy → verified
 notification settings GET/PATCH          # D1 defaults and bounded frequency → 200/400/401
 location context consent GET/PUT         # D1 consent TTL/revocation + disclosure gate → 200/401/422
+assistant settings GET/PATCH              # D1 JSON deep merge, uid scoped → 200/400/401
+AI profile GET/PATCH                      # D1 low-risk projection, bounded text → 200/400/401
 desktop TTS POST                         # OpenAI-compatible provider proxy → 200/400/401/503
 auto model pick GET                     # D1 24h cache + provider/default provenance → 200/401
 native Workers AI translation POST      # m2m100 en→zh through Edge → HTTP 200; unsupported language → 400
@@ -821,6 +823,11 @@ staging-only additive seam；现有 voice ID 合约仍未切换。
 `/auth-issue`、再以返回 JWT 请求 Edge `/v1/cf/probe`，最终为 HTTP 200；Auth
 Worker 的内部验证同时兼容数据库 session bearer 与 JWT plugin 的
 `verifyJWT`（JWT bridge 不创建 Better Auth session 行）。
+
+随后以同一 staging JWT 实测 assistant-settings 的 section partial update（第二次
+更新保留第一次的 `analysis_prompt`）以及 ai-profile 的 partial metadata update；
+两组 GET/PATCH 均经 Edge → API Core → D1 返回 HTTP 200，未授权请求仍由 Edge
+返回 HTTP 401。
 
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt
