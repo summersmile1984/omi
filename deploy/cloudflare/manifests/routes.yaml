@@ -1374,6 +1374,26 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/conversations/:conversationId/title
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/conversations/:conversationId/starred
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/cf/conversations
     owner: api-core

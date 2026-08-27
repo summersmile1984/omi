@@ -290,6 +290,20 @@ def _base_query(request: Request, *, count: bool = False) -> tuple[str, list[obj
     return query, args
 
 
+_CONVERSATION_SELECT = (
+    "SELECT uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
+    "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
+    "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
+    "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json "
+    "FROM cf_conversations "
+)
+
+
+async def _first_conversation(env: object, uid: str, conversation_id: str) -> dict[str, object] | None:
+    row = await env.APP_DB.prepare(_CONVERSATION_SELECT + "WHERE uid = ? AND id = ?").bind(uid, conversation_id).first()
+    return row if isinstance(row, dict) else None
+
+
 @router.post("/v1/cf/conversations")
 async def store_conversation_projection(request: Request):
     context = _auth_context(request)
@@ -444,3 +458,65 @@ async def get_conversation(request: Request, conversation_id: str):
     # Locked conversations preserve metadata but never expose transcript or
     # derived action/event content; `_response` applies that redaction.
     return _response(row, detail=True)
+
+
+@router.patch("/v1/conversations/{conversation_id}/title")
+@router.patch("/v1/cf/conversations/{conversation_id}/title")
+async def patch_conversation_title(request: Request, conversation_id: str):
+    """Update the local conversation title without invoking legacy enrichment."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    title = request.query_params.get("title")
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 500:
+        return JSONResponse({"error": "invalid title"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        structured = _json_object(existing.get("structured_json"))
+        structured["title"] = title.strip()
+        await env.APP_DB.prepare(
+            "UPDATE cf_conversations SET structured_json = ?, updated_at = ? WHERE uid = ? AND id = ?"
+        ).bind(_dump_json(structured, "structured"), int(time.time()), uid, conversation_id).run()
+        row = await _first_conversation(env, uid, conversation_id)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    if row is None:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return {"status": "Ok", "conversation": _response(row, detail=True)}
+
+
+@router.patch("/v1/conversations/{conversation_id}/starred")
+@router.patch("/v1/cf/conversations/{conversation_id}/starred")
+async def set_conversation_starred(request: Request, conversation_id: str):
+    """Persist the uid-scoped starred flag in the conversation projection."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    raw_starred = request.query_params.get("starred")
+    if not isinstance(raw_starred, str) or raw_starred.strip().lower() not in {"true", "false", "1", "0"}:
+        return JSONResponse({"error": "invalid starred"}, status_code=400)
+    starred = 1 if raw_starred.strip().lower() in {"true", "1"} else 0
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        if await _first_conversation(env, uid, conversation_id) is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        await env.APP_DB.prepare(
+            "UPDATE cf_conversations SET starred = ?, updated_at = ? WHERE uid = ? AND id = ?"
+        ).bind(starred, int(time.time()), uid, conversation_id).run()
+        row = await _first_conversation(env, uid, conversation_id)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    if row is None:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return {"status": "Ok", "conversation": _response(row, detail=True)}

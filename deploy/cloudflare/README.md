@@ -185,6 +185,9 @@ GET  /v1/conversations       Edge → Python API Core → D1 canonical conversat
 GET  /v1/conversations/count
 GET  /v1/conversations/{conversationId}
                               canonical read projection; writes/finalization remain legacy
+PATCH /v1/conversations/{conversationId}/title
+PATCH /v1/conversations/{conversationId}/starred
+                              canonical metadata mutations → D1
 GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/latest      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/version     Edge → Python API Core → GitHub Releases API
@@ -418,10 +421,13 @@ staging ingress accepts a pre-transcribed, bounded conversation and upserts by
 the uid/id key; it does not run LLM enrichment. Canonical GET list/count/detail
 routes now read this projection in staging. List responses never include
 transcript segments, and locked rows redact derived content. Rows can also be
-loaded by the reviewed backfill/import workflow. Conversation writes,
-finalization, memory extraction, merge, semantic search, audio deletion, and
-downstream integration fanout remain legacy-owned; production reader cutover
-still requires those write authorities and readers to move together.
+loaded by the reviewed backfill/import workflow. Title and starred metadata
+mutations update the canonical D1 projection in staging. Visibility remains
+legacy-owned because it also maintains public-share and Redis indexes.
+Conversation creation/finalization, memory extraction, merge, semantic search,
+audio deletion, and downstream integration fanout remain legacy-owned;
+production reader cutover still requires those write authorities and readers to
+move together.
 
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event

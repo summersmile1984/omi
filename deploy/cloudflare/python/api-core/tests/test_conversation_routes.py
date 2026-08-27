@@ -13,6 +13,8 @@ from conversation_routes import (  # noqa: E402
     count_conversations,
     get_conversation,
     list_conversations,
+    patch_conversation_title,
+    set_conversation_starred,
     store_conversation_projection,
 )
 
@@ -189,3 +191,46 @@ def test_conversation_projection_write_is_idempotent_and_bounded():
         )
     )
     assert invalid.status_code == 400
+
+
+def test_canonical_conversation_metadata_mutations_are_uid_scoped():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="conv-1", created_at=200)
+    insert_conversation(db, uid="other-user", conversation_id="conv-1", created_at=300)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    renamed = asyncio.run(
+        patch_conversation_title(
+            FakeRequest(env, signed_headers(secret), query={"title": "Updated title"}),
+            "conv-1",
+        )
+    )
+    assert renamed["status"] == "Ok"
+    assert renamed["conversation"]["structured"]["title"] == "Updated title"
+
+    starred = asyncio.run(
+        set_conversation_starred(
+            FakeRequest(env, signed_headers(secret), query={"starred": "true"}),
+            "conv-1",
+        )
+    )
+    assert starred["conversation"]["starred"] is True
+    assert len(asyncio.run(list_conversations(FakeRequest(env, signed_headers(secret), {"starred": "true"})))) == 1
+
+    invalid_title = asyncio.run(
+        patch_conversation_title(FakeRequest(env, signed_headers(secret), query={"title": " "}), "conv-1")
+    )
+    assert invalid_title.status_code == 400
+    invalid_starred = asyncio.run(
+        set_conversation_starred(FakeRequest(env, signed_headers(secret), query={"starred": "maybe"}), "conv-1")
+    )
+    assert invalid_starred.status_code == 400
+    missing = asyncio.run(
+        patch_conversation_title(
+            FakeRequest(env, signed_headers(secret, "other-user"), query={"title": "no leak"}),
+            "conv-1",
+        )
+    )
+    assert missing["conversation"]["structured"]["title"] == "no leak"
+    assert asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "conv-1"))["structured"]["title"] == "Updated title"
