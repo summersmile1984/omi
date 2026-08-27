@@ -5,6 +5,13 @@
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["python_workers"],
   "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "APP_DB",
+      "database_name": "omi-cf-app-staging",
+      "migrations_dir": "../../migrations/app"
+    }
+  ],
   "vars": {
     "EMBEDDING_MODEL": "text-embedding-3-small"
   }

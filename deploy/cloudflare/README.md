@@ -84,6 +84,7 @@ printf '%s' "$EMBEDDING_API_BASE_URL" | npx wrangler secret put EMBEDDING_API_BA
 printf '%s' "$EMBEDDING_API_KEY" | npx wrangler secret put EMBEDDING_API_KEY --name omi-cf-api-ai-staging
 printf '%s' "$TTS_API_BASE_URL" | npx wrangler secret put TTS_API_BASE_URL --name omi-cf-api-ai-staging
 printf '%s' "$TTS_API_KEY" | npx wrangler secret put TTS_API_KEY --name omi-cf-api-ai-staging
+printf '%s' "$ARTIFICIALANALYSIS_API_KEY" | npx wrangler secret put ARTIFICIALANALYSIS_API_KEY --name omi-cf-api-ai-staging
 ```
 
 Do not point these commands at production names from this worktree. The
@@ -96,6 +97,7 @@ POST /api/auth/sign-up/email  Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 POST /v1/tts/synthesize      Edge → Python API AI → hosted OpenAI-compatible TTS API
+GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
@@ -137,6 +139,10 @@ regression contract.
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
 until its rate-limit and provider-shape migration is verified separately.
+
+`/v1/auto/model-pick` uses a shared D1 24-hour cache. Without the upstream key,
+an upstream failure, or an unusable model response it returns the existing
+Gemini default with a provenance reason rather than failing the voice session.
 
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must

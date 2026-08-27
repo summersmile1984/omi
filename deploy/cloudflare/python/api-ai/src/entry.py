@@ -14,8 +14,10 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
     worker_fetch = None  # type: ignore[assignment]
 
 from internal_auth import decode_context
+from auto_model_routes import router as auto_model_router
 
 app = FastAPI(title="Omi Cloudflare AI API", version="0.1.0")
+app.include_router(auto_model_router)
 
 MAX_TRANSCRIPTION_BODY_BYTES = 25_000_000
 MAX_TTS_CHARS = 4_096
