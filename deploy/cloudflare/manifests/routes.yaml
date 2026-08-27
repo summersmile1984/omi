@@ -509,3 +509,13 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/cf/jobs/:jobId
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, queue]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy

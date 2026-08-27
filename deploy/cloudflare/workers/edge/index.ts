@@ -71,7 +71,7 @@ app.all("/v1/omni/relay", async (c) => {
   return withRequestId(response, id);
 });
 
-app.all("/v1/cf/jobs", async (c) => {
+const proxyAuthenticatedJobs = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
@@ -79,7 +79,10 @@ app.all("/v1/cf/jobs", async (c) => {
   await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
   const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
   return withRequestId(response, id);
-});
+};
+
+app.all("/v1/cf/jobs", proxyAuthenticatedJobs);
+app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
 
 const proxyAuthenticatedCore = async (c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>) => {
   const id = requestId(c.req.raw);

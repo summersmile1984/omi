@@ -60,6 +60,47 @@ app.post("/v1/cf/jobs", async (c) => {
   return c.json({ status: "queued", jobId }, 202);
 });
 
+app.get("/v1/cf/jobs/:jobId", async (c) => {
+  const encodedContext = c.req.header("x-omi-auth-context") ?? null;
+  const context = decodeAuthContext(encodedContext);
+  if (
+    !context ||
+    !(await verifyAuthContextSignature(
+      encodedContext || "",
+      c.req.header("x-omi-internal-signature") ?? null,
+      c.env.INTERNAL_ASSERTION_SECRET,
+    ))
+  ) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const jobId = c.req.param("jobId").trim();
+  if (!jobId || jobId.length > 128) return c.json({ error: "invalid job id" }, 400);
+  const row = await c.env.APP_DB.prepare(
+    "SELECT job_id, kind, status, attempts, last_error, created_at, updated_at FROM cf_jobs WHERE job_id = ? AND uid = ?",
+  )
+    .bind(jobId, context.uid)
+    .first<{
+      job_id: string;
+      kind: string;
+      status: string;
+      attempts: number;
+      last_error: string | null;
+      created_at: number;
+      updated_at: number;
+    }>();
+  if (!row) return c.json({ error: "job not found" }, 404);
+  return c.json({
+    jobId: row.job_id,
+    kind: row.kind,
+    status: row.status,
+    attempts: row.attempts,
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+});
+
 export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch<JobMessage>, env: JobsEnv): Promise<void> {

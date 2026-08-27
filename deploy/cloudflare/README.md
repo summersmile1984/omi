@@ -151,6 +151,7 @@ GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible A
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
+GET  /v1/cf/jobs/{jobId}      Edge → Jobs Worker → uid-scoped D1 job status
 GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/latest      Edge → Python API Core → GitHub Releases API
 GET  /v2/firmware/version     Edge → Python API Core → GitHub Releases API
@@ -282,4 +283,6 @@ change.
 The initial queue accepts only the `probe` kind as an infrastructure contract.
 Unknown kinds are acknowledged as failed and recorded in D1; producers must
 use a stable `jobId`, so retry or duplicate delivery cannot create a second
-logical job.
+logical job. `GET /v1/cf/jobs/{jobId}` exposes the state machine without
+returning payload data, and requires the same authenticated uid that created
+the job.
