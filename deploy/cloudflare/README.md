@@ -223,6 +223,18 @@ POST /v1/goals/{goalId}/focus
 DELETE /v1/goals/{goalId}/focus
 POST /v1/goals/{goalId}/lifecycle
                               Edge → Python API Core → D1 mutation + receipt
+POST /v1/work-intents       Edge → Python API Core → D1 workstream + task
+GET/PATCH /v1/workstreams/{workstreamId}
+                              Edge → Python API Core → D1
+GET/POST /v1/workstreams/{workstreamId}/events
+                              Edge → Python API Core → D1 journal + receipt
+GET/POST /v1/workstreams/{workstreamId}/artifacts
+                              Edge → Python API Core → D1 artifact projection
+PATCH /v1/workstreams/{workstreamId}/artifacts/{artifactId}/status
+                              Edge → Python API Core → D1 journal + receipt
+GET /v1/workstreams/{workstreamId}/checkpoints
+PUT /v1/workstreams/{workstreamId}/checkpoints/{runtimeId}
+                              Edge → Python API Core → D1 checkpoint + receipt
 GET/POST /v1/folders        Edge → Python API Core → D1
 GET/PATCH/DELETE /v1/folders/{folderId}
                               Edge → Python API Core → D1
@@ -317,6 +329,15 @@ writes require
 replacement rule are enforced in a D1 batch, while relationship `detach` fails
 closed until the workstream projection also moves. This route group is
 staging-only pending goal/event backfill and downstream reader cutover.
+
+The workstream routes migrate canonical workflow metadata, journal events,
+artifact descriptors, continuation checkpoints, and task/goal-origin work
+intents to D1. Mutating operations use generation-scoped idempotency receipts;
+artifact revisions and checkpoints enforce their monotonic version/sequence
+rules. Workstream search/index refresh and candidate automation remain legacy
+owned, and `GET /v1/goals/{goalId}/detail` remains legacy until its active
+thread reader is cut over. This group is staging-only pending workstream
+backfill and downstream reader cutover.
 
 The folder routes migrate system/custom folder metadata and ordering to D1. They
 do not yet move conversation documents, recompute conversation counts, or serve

@@ -118,4 +118,42 @@ describe("D1 backfill SQL generator", () => {
       { table: "cf_goal_progress_events", row: { uid: "u", event_id: "gpe-1", goal_id: "g" } },
     ])).toThrow("missing sequence");
   });
+
+  it("renders workstream projections and journal rows with domain keys", () => {
+    const sql = renderBackfillSql([
+      {
+        table: "cf_workstreams",
+        row: {
+          uid: "u",
+          id: "ws-1",
+          goal_id: "goal-1",
+          title: "Ship the project",
+          objective: "Publish the first release",
+          status: "open",
+          created_at: 1,
+          updated_at: 2,
+        },
+      },
+      {
+        table: "cf_workstream_events",
+        row: {
+          uid: "u",
+          event_id: "wse-1",
+          workstream_id: "ws-1",
+          sequence: 1,
+          kind: "system",
+          summary: "Started",
+          created_at: 1,
+        },
+      },
+    ]);
+    expect(sql).toContain("ON CONFLICT(uid, id) DO UPDATE SET goal_id = excluded.goal_id");
+    expect(sql).toContain("ON CONFLICT(uid, event_id) DO UPDATE SET workstream_id = excluded.workstream_id");
+    expect(() => renderBackfillSql([
+      {
+        table: "cf_workstreams",
+        row: { uid: "u", id: "ws-1", title: "Incomplete", objective: "Missing status", created_at: 1 },
+      },
+    ])).toThrow("missing status");
+  });
 });

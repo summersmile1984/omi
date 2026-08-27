@@ -40,6 +40,8 @@ class FakeDb:
         self.connection.executescript(mutation_migration.read_text())
         events_migration = Path(__file__).parents[3] / "migrations/app/0025_goal_progress_events.sql"
         self.connection.executescript(events_migration.read_text())
+        workstream_migration = Path(__file__).parents[3] / "migrations/app/0026_workstreams.sql"
+        self.connection.executescript(workstream_migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
