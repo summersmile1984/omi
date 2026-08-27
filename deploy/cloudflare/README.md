@@ -199,6 +199,11 @@ GET/PATCH/DELETE /v1/action-items/{actionItemId}
                               Edge → Python API Core → D1
 PATCH /v1/action-items/{actionItemId}/completed
                               Edge → Python API Core → D1
+GET/POST /v1/users/people   Edge → Python API Core → D1
+GET/PATCH/DELETE /v1/users/people/{personId}
+                              Edge → Python API Core → D1
+PATCH /v1/users/people/{personId}/name
+                              Edge → Python API Core → D1
 ```
 
 Only routes explicitly listed as migrated are sent to the partial Worker
@@ -229,6 +234,11 @@ sharing, FCM/reminder delivery, or legacy conversation-item restoration; those
 side effects remain on the legacy owner until their separate contracts move.
 The route group is staging-only until existing Firestore items are imported and
 all downstream readers use the D1 authority.
+
+The People routes migrate uid-scoped person id/name metadata with idempotent
+create, list, rename, and delete operations. The response keeps the existing
+Person shape, but speech sample URLs are empty until sample objects and signed
+URL generation move from GCS to R2; the route group is therefore staging-only.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
