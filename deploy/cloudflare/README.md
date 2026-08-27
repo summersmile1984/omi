@@ -168,6 +168,7 @@ GET  /v1/users/private-cloud-sync
 POST /v1/users/private-cloud-sync
 GET  /v1/users/training-data-opt-in
 POST /v1/users/training-data-opt-in
+POST /v1/users/fcm-token
 GET  /v1/users/notification-settings
 PATCH /v1/users/notification-settings
 GET  /v1/users/daily-summary-settings
@@ -253,6 +254,12 @@ enables private cloud sync as the legacy route does. The HTTP response remains
 the legacy success/message shape. The notification side effect is intentionally
 not claimed yet: FCM token storage and delivery still belong to the legacy
 notifier until that provider boundary is migrated.
+
+`POST /v1/users/fcm-token` stores one token per sanitized
+`platform + device-id-hash` key in staging D1 and keeps the legacy `{"status":"Ok"}`
+response. Tokens are not returned by any public route. The legacy FCM sender
+still owns delivery until it can read the D1 token authority with an explicit
+provider and deletion contract.
 
 `/v1/users/daily-summary-settings` and
 `/v1/users/mentor-notification-settings` store notification preferences in the

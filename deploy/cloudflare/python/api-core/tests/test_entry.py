@@ -20,6 +20,7 @@ class FakeDb:
         self.onboarding_row = None
         self.privacy_row = None
         self.training_data_opt_in_row = None
+        self.fcm_token_row = None
         self.notification_row = None
         self.notification_preferences_row = None
         self.location_row = None
@@ -111,6 +112,17 @@ class FakeStatement:
                 "uid": uid,
                 "status": status,
                 "requested_at": requested_at,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_fcm_tokens"):
+            uid, device_key, token, time_zone, created_at, updated_at = self.args
+            self.db.fcm_token_row = {
+                "uid": uid,
+                "device_key": device_key,
+                "token": token,
+                "time_zone": time_zone,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
@@ -484,6 +496,43 @@ def test_training_data_opt_in_is_uid_scoped_and_enables_private_sync():
     }
 
 
+def test_fcm_token_registration_scopes_and_sanitizes_device_key():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="notification-token-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+        "x-app-platform": "iOS/17",
+        "x-device-id-hash": "Device+Hash==",
+    }
+    database = FakeDb()
+    env = SimpleNamespace(APP_DB=database, INTERNAL_ASSERTION_SECRET=secret)
+
+    response = asyncio.run(
+        entry.save_fcm_token(
+            FakeRequest(
+                env,
+                headers,
+                {"fcm_token": "fcm-token-value", "time_zone": "Asia/Shanghai"},
+            )
+        )
+    )
+    assert response == {"status": "Ok"}
+    assert database.fcm_token_row == {
+        "uid": "notification-token-user",
+        "device_key": "ios17_devicehash",
+        "token": "fcm-token-value",
+        "time_zone": "Asia/Shanghai",
+        "created_at": database.fcm_token_row["created_at"],
+        "updated_at": database.fcm_token_row["updated_at"],
+    }
+
+    invalid = asyncio.run(
+        entry.save_fcm_token(FakeRequest(env, headers, {"fcm_token": "", "time_zone": "Asia/Shanghai"}))
+    )
+    assert invalid.status_code == 400
+
+
 def test_notification_settings_preserve_defaults_and_validate_frequency():
     secret = "test-secret"
     encoded, signature = signed_context(secret, uid="notifications-user")
@@ -596,6 +645,7 @@ def test_assistant_and_ai_profile_routes_fail_closed_without_auth():
         entry.update_ai_profile,
         entry.get_training_data_opt_in,
         entry.set_training_data_opt_in,
+        entry.save_fcm_token,
         entry.get_daily_summary_settings,
         entry.update_daily_summary_settings,
         entry.get_mentor_notification_settings,

@@ -33,6 +33,9 @@ MAX_ASSET_BODY_BYTES = 25_000_000
 MAX_VOCABULARY_ITEMS = 100
 MAX_ASSISTANT_SETTINGS_BYTES = 64_000
 MAX_AI_PROFILE_TEXT_LENGTH = 50_000
+MAX_FCM_TOKEN_LENGTH = 4_096
+MAX_TIME_ZONE_LENGTH = 128
+MAX_DEVICE_KEY_COMPONENT_LENGTH = 128
 DEFAULT_DAILY_SUMMARY_HOUR_LOCAL = 22
 DEFAULT_MENTOR_NOTIFICATION_FREQUENCY = 0
 
@@ -111,6 +114,11 @@ class DailySummarySettingsUpdate(BaseModel):
 
 class MentorNotificationSettingsUpdate(BaseModel):
     frequency: int = Field(ge=0, le=5)
+
+
+class FcmTokenUpdate(BaseModel):
+    fcm_token: str = Field(min_length=1, max_length=MAX_FCM_TOKEN_LENGTH)
+    time_zone: str = Field(min_length=1, max_length=MAX_TIME_ZONE_LENGTH)
 
 
 class AssistantSettingsUpdate(BaseModel):
@@ -316,6 +324,23 @@ async def _save_training_data_opt_in(env: object, uid: str, status: str) -> None
         "ON CONFLICT(uid) DO UPDATE SET status = excluded.status, requested_at = excluded.requested_at, "
         "updated_at = excluded.updated_at"
     ).bind(uid, status, now, now, now).run()
+
+
+def _device_key_component(value: object, default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    normalized = re.sub(r"[^A-Za-z0-9._-]", "", value).lower()
+    return normalized[:MAX_DEVICE_KEY_COMPONENT_LENGTH] or default
+
+
+async def _save_fcm_token(env: object, uid: str, device_key: str, token: str, time_zone: str) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_fcm_tokens (uid, device_key, token, time_zone, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid, device_key) DO UPDATE SET token = excluded.token, time_zone = excluded.time_zone, "
+        "updated_at = excluded.updated_at"
+    ).bind(uid, device_key, token, time_zone, now, now).run()
 
 
 def _notification_settings(row: object | None) -> dict[str, object]:
@@ -632,6 +657,22 @@ async def set_training_data_opt_in(request: Request):
         "status": "ok",
         "message": "Your request has been submitted for review. We will let you know soon.",
     }
+
+
+@app.post("/v1/users/fcm-token")
+async def save_fcm_token(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = FcmTokenUpdate.model_validate(await _bounded_json(request, 8_192))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid FCM token"}, status_code=400)
+    platform = _device_key_component(request.headers.get("x-app-platform"), "unknown")
+    device_hash = _device_key_component(request.headers.get("x-device-id-hash"), "default")
+    device_key = f"{platform}_{device_hash}"
+    await _save_fcm_token(request.scope["env"], str(context["uid"]), device_key, update.fcm_token, update.time_zone)
+    return {"status": "Ok"}
 
 
 @app.get("/v1/users/notification-settings")
