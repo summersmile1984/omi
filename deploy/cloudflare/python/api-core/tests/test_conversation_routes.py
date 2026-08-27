@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from conversation_routes import (  # noqa: E402
     count_conversations,
     get_conversation,
+    get_conversation_analytics,
     get_conversation_photos,
     get_conversation_transcripts,
     conversation_has_recording,
@@ -28,6 +29,7 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
+        self.connection.executescript((migration_dir / "0017_people.sql").read_text())
         self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
         self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
 
@@ -336,6 +338,48 @@ def test_canonical_transcripts_group_imported_providers_and_fail_closed_for_lock
     assert asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
     assert asyncio.run(get_conversation_transcripts(FakeRequest(env, {}), "with-transcripts")).status_code == 401
     assert asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "x" * 257)).status_code == 400
+
+
+def test_canonical_conversation_analytics_uses_d1_transcripts_and_people_names():
+    secret = "conversation-secret"
+    db = FakeDb()
+    db.connection.execute(
+        "INSERT INTO cf_people (uid, id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ("conversation-user", "person-1", "Alice", 100, 100),
+    )
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="analytics",
+        created_at=200,
+        transcript_segments=[
+            {"id": "u", "text": "one two", "start": 0, "end": 10, "is_user": True},
+            {
+                "id": "p",
+                "text": "hello there friend",
+                "start": 10,
+                "end": 20,
+                "is_user": False,
+                "person_id": "person-1",
+            },
+            {"id": "s", "text": "okay", "start": 20, "end": 25, "is_user": False, "speaker_id": 2},
+        ],
+    )
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-analytics", created_at=100, locked=1)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    result = asyncio.run(get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "analytics"))
+    assert result["conversation_id"] == "analytics"
+    assert result["total_seconds"] == 25.0
+    assert result["total_words"] == 6
+    assert result["words_per_minute"] == 14.4
+    assert result["speakers"][0]["speaker"] == "Alice"
+    assert result["speakers"][0]["talk_seconds"] == 10.0
+    assert result["speakers"][1]["speaker"] == "You"
+    assert result["speakers"][2]["speaker"] == "Speaker 2"
+    assert asyncio.run(get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "locked-analytics")).status_code == 402
+    assert asyncio.run(get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
+    assert asyncio.run(get_conversation_analytics(FakeRequest(env, {}), "analytics")).status_code == 401
 
 
 def test_conversation_projection_write_is_idempotent_and_bounded():

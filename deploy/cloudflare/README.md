@@ -454,6 +454,12 @@ as the legacy comparison view (`deepgram`, `soniox`, `speechmatics`, and
 return `402`, and provider-specific Firestore writes remain legacy-owned until
 the transcript write/finalization contract is migrated.
 
+`GET /v1/conversations/{conversation_id}/analytics` computes the legacy
+per-speaker talk-time, word-count, WPM, and talk-share response from the same
+bounded transcript projection. Person labels are resolved from the uid-scoped
+`cf_people` table; speech-profile extraction and other transcript side effects
+are not part of this read route.
+
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event
 reads, and calendar writes remain on the legacy integration service; tokens are

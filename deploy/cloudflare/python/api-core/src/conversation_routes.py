@@ -341,6 +341,90 @@ def _transcript_start(segment: dict[str, object]) -> float:
         return 0.0
 
 
+def _analytics_number(value: object) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def _person_names(env: object, uid: str, person_ids: set[str]) -> dict[str, str]:
+    """Load only the person names referenced by the bounded transcript projection."""
+
+    names: dict[str, str] = {}
+    ids = sorted(person_ids)
+    for start in range(0, len(ids), 100):
+        chunk = ids[start : start + 100]
+        placeholders = ", ".join("?" for _ in chunk)
+        result = await env.APP_DB.prepare(
+            f"SELECT id, name FROM cf_people WHERE uid = ? AND id IN ({placeholders})"
+        ).bind(uid, *chunk).all()
+        rows = result.get("results", []) if isinstance(result, dict) else []
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("id"), str):
+                names[row["id"]] = str(row.get("name") or "")
+    return names
+
+
+def _conversation_analytics(conversation_id: str, segments: list[dict[str, object]], names: dict[str, str]) -> dict[str, object]:
+    seconds: dict[str, float] = {}
+    words: dict[str, int] = {}
+    labels: dict[str, str] = {}
+    person_ids: dict[str, str | None] = {}
+    is_user_flags: dict[str, bool] = {}
+
+    for segment in segments:
+        if _bool(segment.get("is_user")):
+            key, label, person_id, is_user = "user", "You", None, True
+        else:
+            raw_person_id = segment.get("person_id")
+            person_id = str(raw_person_id) if raw_person_id else None
+            if person_id:
+                key, label, is_user = f"person:{person_id}", names.get(person_id) or "Unknown", False
+            else:
+                speaker_id = segment.get("speaker_id")
+                if speaker_id is not None:
+                    key, label = f"speaker:{speaker_id}", f"Speaker {speaker_id}"
+                else:
+                    speaker = segment.get("speaker") or "SPEAKER_00"
+                    key, label = f"speaker:{speaker}", str(speaker)
+                is_user = False
+        talk_seconds = max(0.0, _analytics_number(segment.get("end")) - _analytics_number(segment.get("start")))
+        text = segment.get("text") if isinstance(segment.get("text"), str) else ""
+        seconds[key] = seconds.get(key, 0.0) + talk_seconds
+        words[key] = words.get(key, 0) + len(text.split())
+        labels[key] = label
+        person_ids[key] = person_id
+        is_user_flags[key] = is_user
+
+    total_seconds = sum(seconds.values())
+    total_words = sum(words.values())
+    speakers: list[dict[str, object]] = []
+    for key, talk_seconds in seconds.items():
+        word_count = words[key]
+        speakers.append(
+            {
+                "speaker": labels[key],
+                "person_id": person_ids[key],
+                "is_user": is_user_flags[key],
+                "talk_seconds": round(talk_seconds, 1),
+                "word_count": word_count,
+                "words_per_minute": round(word_count / (talk_seconds / 60.0), 1) if talk_seconds > 0 else 0.0,
+                "talk_share": round(talk_seconds / total_seconds, 3) if total_seconds > 0 else 0.0,
+                "_sort_talk_seconds": talk_seconds,
+            }
+        )
+    speakers.sort(key=lambda item: (-float(item.pop("_sort_talk_seconds", 0)), -int(item["word_count"]), str(item["speaker"])))
+    return {
+        "conversation_id": conversation_id,
+        "total_seconds": round(total_seconds, 1),
+        "total_words": total_words,
+        "words_per_minute": round(total_words / (total_seconds / 60.0), 1) if total_seconds > 0 else 0.0,
+        "speaker_count": len(speakers),
+        "speakers": speakers,
+    }
+
+
 @router.post("/v1/cf/conversations")
 async def store_conversation_projection(request: Request):
     context = _auth_context(request)
@@ -553,6 +637,42 @@ async def get_conversation_transcripts(request: Request, conversation_id: str):
     for bucket in TRANSCRIPT_PROVIDER_BUCKETS:
         grouped[bucket].sort(key=_transcript_start)
     return grouped
+
+
+@router.get("/v1/conversations/{conversation_id}/analytics")
+async def get_conversation_analytics(request: Request, conversation_id: str):
+    """Compute bounded per-speaker analytics from the D1 transcript projection."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    try:
+        row = await _first_conversation(env, uid, conversation_id)
+        if row is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(row.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        segments = [
+            segment
+            for segment in _json_list(row.get("transcript_segments_json"))[:MAX_SEGMENTS]
+            if isinstance(segment, dict)
+        ]
+        person_ids = {
+            str(segment["person_id"])
+            for segment in segments
+            if segment.get("person_id")
+        }
+        names = await _person_names(env, uid, person_ids)
+        return _conversation_analytics(conversation_id, segments, names)
+    except Exception:
+        return JSONResponse({"error": "conversation analytics unavailable"}, status_code=503)
 
 
 @router.get("/v1/conversations/{conversation_id}/recording")

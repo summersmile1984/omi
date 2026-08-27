@@ -140,6 +140,12 @@ export async function runSmoke({
     { headers: authHeaders },
   );
   expectStatus("canonical conversation transcripts missing-row", conversationTranscripts, 404);
+  const conversationAnalytics = await request(
+    fetchImpl,
+    `${base}/v1/conversations/cf-smoke-analytics-probe-${Date.now()}/analytics`,
+    { headers: authHeaders },
+  );
+  expectStatus("canonical conversation analytics missing-row", conversationAnalytics, 404);
   const conversationRecording = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-recording-probe-${Date.now()}/recording`,
@@ -312,6 +318,7 @@ export async function runSmoke({
     conversationCount: conversationCount.status,
     conversationPhotos: conversationPhotos.status,
     conversationTranscripts: conversationTranscripts.status,
+    conversationAnalytics: conversationAnalytics.status,
     conversationRecording: conversationRecording.status,
     segmentText: segmentText.status,
     assistantSettings: assistantSettings.status,

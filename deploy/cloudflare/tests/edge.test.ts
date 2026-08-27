@@ -284,6 +284,37 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes canonical conversation analytics to the authenticated core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ conversation_id: "conversation-1", speakers: [] });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/conversations/conversation-1/analytics", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(coreRequests).toHaveLength(1);
+    expect(new URL(coreRequests[0].url).pathname).toBe(
+      "/v1/conversations/conversation-1/analytics",
+    );
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes the prerecorded STT contract to the API worker", async () => {
     let aiPath = "";
     const env = {

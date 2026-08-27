@@ -228,6 +228,7 @@ app.get("/v1/conversations/count", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/photos", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/transcripts", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/analytics", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/recording", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/segments/text", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/title", proxyAuthenticatedCore);
