@@ -80,6 +80,17 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/tts/synthesize-workers-ai
+    owner: api-ai
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [workers-ai-binding]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/auto/model-pick
     owner: api-ai

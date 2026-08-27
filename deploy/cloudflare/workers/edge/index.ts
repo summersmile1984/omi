@@ -117,6 +117,7 @@ app.patch("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.get("/v1/users/location-context-consent", proxyAuthenticatedCore);
 app.put("/v1/users/location-context-consent", proxyAuthenticatedCore);
 app.post("/v1/tts/synthesize", proxyAuthenticatedAI);
+app.post("/v1/tts/synthesize-workers-ai", proxyAuthenticatedAI);
 app.get("/v1/auto/model-pick", proxyAuthenticatedAI);
 app.post("/v1/stt/transcribe-workers-ai", proxyAuthenticatedAI);
 app.post("/v1/translate", proxyAuthenticatedAI);

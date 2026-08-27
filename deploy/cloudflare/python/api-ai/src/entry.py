@@ -1,4 +1,5 @@
 import base64
+import inspect
 import json
 import time
 from typing import Any
@@ -29,6 +30,10 @@ MAX_TRANSLATION_TOTAL_CHARS = 32_000
 MAX_AI_BODY_BYTES = 8_000_000
 MAX_AI_RESPONSE_BYTES = 12_000_000
 MAX_TTS_CHARS = 4_096
+MAX_WORKERS_AI_TTS_CHARS = 4_096
+WORKERS_AI_TTS_SPEAKERS = frozenset(
+    {"angus", "asteria", "arcas", "orion", "orpheus", "athena", "luna", "zeus", "perseus", "helios", "hera", "stella"}
+)
 OPENAI_TTS_VOICES = frozenset(
     {"alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse", "marin", "cedar"}
 )
@@ -38,6 +43,11 @@ class TtsSynthesizeRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TTS_CHARS)
     voice_id: str
     instructions: str | None = None
+
+
+class WorkersAiTtsRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_WORKERS_AI_TTS_CHARS)
+    speaker: str = Field(default="angus", min_length=2, max_length=32)
 
 
 class TranslationRequest(BaseModel):
@@ -204,6 +214,35 @@ def _workers_ai_result_mapping(result: object) -> dict[str, object]:
         if value is not None:
             fields[field] = value
     return fields
+
+
+def _coerce_audio_bytes(value: object) -> bytes | None:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value)
+    to_py = getattr(value, "to_py", None)
+    if callable(to_py):
+        converted = to_py()
+        if converted is not value:
+            return _coerce_audio_bytes(converted)
+    return None
+
+
+async def _workers_ai_audio_bytes(result: object) -> bytes | None:
+    """Extract binary model output across Python Workers FFI result shapes."""
+    audio = _coerce_audio_bytes(result)
+    if audio is not None:
+        return audio
+    for method_name in ("bytes", "buffer", "arrayBuffer"):
+        method = getattr(result, method_name, None)
+        if not callable(method):
+            continue
+        value = method()
+        if inspect.isawaitable(value):
+            value = await value
+        audio = _coerce_audio_bytes(value)
+        if audio is not None:
+            return audio
+    return None
 
 
 def _normalize_workers_ai_language(raw: object) -> tuple[str, str] | None:
@@ -437,6 +476,52 @@ async def tts_synthesize(request: Request):
         return JSONResponse({"error": "tts upstream unavailable"}, status_code=502)
     if not audio:
         return JSONResponse({"error": "tts upstream returned empty audio"}, status_code=502)
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+@app.post("/v1/tts/synthesize-workers-ai")
+async def tts_synthesize_workers_ai(request: Request):
+    """Synthesize bounded text using the native Workers AI Aura binding.
+
+    This is additive because Aura exposes its own speaker IDs rather than the
+    existing provider-specific voice IDs. The legacy `/v1/tts/synthesize`
+    contract stays on the external provider until voice parity and quality are
+    qualified.
+    """
+    if not auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = WorkersAiTtsRequest.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid workers ai tts request"}, status_code=400)
+    text = payload.text.strip()
+    if not text:
+        return JSONResponse({"error": "text is required"}, status_code=400)
+    speaker = payload.speaker.strip().lower()
+    if speaker not in WORKERS_AI_TTS_SPEAKERS:
+        return JSONResponse({"error": "unsupported speaker"}, status_code=400)
+
+    env = request.scope["env"]
+    ai = getattr(env, "AI", None)
+    if ai is None:
+        return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
+    model = getattr(env, "WORKERS_AI_TTS_MODEL", "@cf/deepgram/aura-1")
+    try:
+        # `returnRawResponse` keeps the model's MPEG stream intact instead of
+        # forcing a JSON/base64 envelope through the Python FFI boundary.
+        result = await ai.run(
+            model,
+            {"text": text, "speaker": speaker, "encoding": "mp3"},
+            {"returnRawResponse": True},
+        )
+        audio = await _workers_ai_audio_bytes(result)
+    except Exception:
+        # Workers AI surfaces provider/model failures as runtime-specific FFI
+        # exceptions (for example `JsException`), so keep those out of the
+        # ASGI error page and expose the route's stable upstream error.
+        return JSONResponse({"error": "workers ai tts failed"}, status_code=502)
+    if not audio:
+        return JSONResponse({"error": "workers ai tts returned empty audio"}, status_code=502)
     return Response(content=audio, media_type="audio/mpeg")
 
 

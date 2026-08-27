@@ -12,7 +12,14 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import entry  # noqa: E402
 
-from entry import _provider_url, transcribe, transcribe_workers_ai, translate_workers_ai, tts_synthesize  # noqa: E402
+from entry import (
+    _provider_url,
+    transcribe,
+    transcribe_workers_ai,
+    translate_workers_ai,
+    tts_synthesize,
+    tts_synthesize_workers_ai,
+)  # noqa: E402
 
 
 class FakeRequest:
@@ -403,3 +410,91 @@ def test_tts_rejects_unsupported_voice_before_provider_call():
 
     assert response.status_code == 400
     assert json.loads(response.body) == {"error": "voice_id is not supported"}
+
+
+def test_workers_ai_tts_uses_native_binding_and_returns_mp3():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeResponse:
+        async def bytes(self):
+            return b"ID3-mp3"
+
+    class FakeAI:
+        async def run(self, model, payload, options):
+            calls["model"] = model
+            calls["payload"] = payload
+            calls["options"] = options
+            return FakeResponse()
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), WORKERS_AI_TTS_MODEL="@cf/deepgram/aura-1"),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": " hello ", "speaker": "Luna"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 200
+    assert response.media_type == "audio/mpeg"
+    assert response.body == b"ID3-mp3"
+    assert calls == {
+        "model": "@cf/deepgram/aura-1",
+        "payload": {"text": "hello", "speaker": "luna", "encoding": "mp3"},
+        "options": {"returnRawResponse": True},
+    }
+
+
+def test_workers_ai_tts_fails_closed_without_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "workers ai is not configured"}
+
+
+def test_workers_ai_tts_rejects_unknown_speaker():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=object()),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "speaker": "not-a-speaker"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {"error": "unsupported speaker"}
+
+
+def test_workers_ai_tts_normalizes_model_failures_to_502():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class FakeAI:
+        async def run(self, model, payload, options):
+            raise Exception("provider-specific FFI error")
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI()),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 502
+    assert json.loads(response.body) == {"error": "workers ai tts failed"}

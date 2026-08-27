@@ -1,6 +1,6 @@
 # Cloudflare 适配执行方案
 
-状态：实施中；CF-00～CF-03/CF-04～CF-08 首期 staging 切片已部署并完成冒烟，生产路由仍未切换
+状态：实施中；CF-00～CF-03/CF-04～CF-08 首期 staging 切片已部署并完成冒烟，Workers AI ASR、翻译、TTS additive 路由已实测，生产路由仍未切换
 工作分支：`codex/cloudflare-adaptation`
 代码基线：`92ee446e89`（`origin/main`）
 调研日期：2026-08-27
@@ -761,17 +761,17 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由。
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
 - `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意设置表面、客户端 API key 配置读取与公开 firmware stable/latest/version APIs，未导入 `backend/main.py`。
-- `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR 与 m2m100 翻译 seam；provider 未配置时按原契约安全回退或返回 `503`。
+- `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，首期只允许 `probe` kind，用稳定 `jobId` 验证至少一次投递下的幂等状态机。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：34 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：35 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 4 files / 12 tests pass
-uvx uv==0.12.3 run pytest -q             # api-core: 11, api-ai: 9 tests pass
+npm test                                  # 5 files / 17 tests pass
+uvx uv==0.12.3 run pytest -q             # api-core: 13, api-ai: 20 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
 curl /health                              # auth/core/ai/realtime/edge → HTTP 200
@@ -794,6 +794,7 @@ location context consent GET/PUT         # D1 consent TTL/revocation + disclosur
 desktop TTS POST                         # OpenAI-compatible provider proxy → 200/400/401/503
 auto model pick GET                     # D1 24h cache + provider/default provenance → 200/401
 native Workers AI translation POST      # m2m100 en→zh through Edge → HTTP 200; unsupported language → 400
+native Workers AI TTS POST              # Aura-1 raw MP3 through Edge → HTTP 200/audio-mpeg
 ```
 
 On 2026-08-28 the native ASR seam was exercised through the Edge Worker with a
@@ -803,6 +804,11 @@ model metadata. The same route rejected an authenticated multipart request with
 HTTP 415, while an unauthenticated request returned HTTP 401. This is a runtime
 binding smoke test, not a multilingual WER or latency qualification; those
 benchmarks remain a CF-08 release gate.
+
+同日还通过 Edge 实测了 native Workers AI 翻译和 TTS：m2m100 的英文→中文与
+中文→英文请求均返回 HTTP 200，未支持的 `ko` 返回 HTTP 400；Deepgram Aura-1
+以 `speaker=luna` 返回 `audio/mpeg`，下载 6,896 bytes。TTS 路由是新增的
+staging-only additive seam；现有 voice ID 合约仍未切换。
 
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt

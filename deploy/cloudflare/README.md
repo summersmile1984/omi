@@ -107,7 +107,7 @@ Do not point these commands at production names from this worktree. The
 staging smoke surface is:
 
 ```text
-GET  /health                  all five Workers
+GET  /health                  all deployed Workers
 GET  /ready                   auth D1 readiness
 POST /api/auth/sign-up/email  Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
@@ -116,6 +116,8 @@ POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
 POST /v1/translate           Edge → Python API AI → Workers AI m2m100 translation
 POST /v1/tts/synthesize      Edge → Python API AI → hosted OpenAI-compatible TTS API
+POST /v1/tts/synthesize-workers-ai
+                              Edge → Python API AI → Workers AI Aura binding
 GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
 GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible AI API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
@@ -161,6 +163,13 @@ The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
 until its rate-limit and provider-shape migration is verified separately.
 
+`/v1/tts/synthesize-workers-ai` is an additive raw-MP3 route backed by the
+native `@cf/deepgram/aura-1` binding. It accepts bounded `{text, speaker}` JSON
+using the model's documented speaker set and deliberately does not pretend to
+support the existing provider-specific voice IDs. The existing
+`/v1/tts/synthesize` route remains the voice-compatible external API seam until
+voice parity and quality are qualified.
+
 `/v1/stt/transcribe-workers-ai` is an additive raw-audio route backed by the
 Python Worker's native `AI` binding and `@cf/openai/whisper-large-v3-turbo`.
 It does not claim the legacy multipart/diarization contract; clients must send
@@ -173,8 +182,8 @@ not need to know the binding's FFI representation.
 `/v1/translate` preserves the standalone NLLB request/response shape while
 using the native `@cf/meta/m2m100-1.2b` binding in staging. The Worker explicitly
 limits this route to English, Chinese, French, Spanish, Arabic, Russian, German,
-Japanese, Portuguese, and Hindi; the legacy NLLB service remains the fallback
-for other languages until quality and coverage are qualified.
+Japanese, Portuguese, and Hindi; the legacy NLLB service remains the rollback
+target for other languages until quality and coverage are qualified.
 
 `/v1/auto/model-pick` uses a shared D1 24-hour cache. Without the upstream key,
 an upstream failure, or an unusable model response it returns the existing
