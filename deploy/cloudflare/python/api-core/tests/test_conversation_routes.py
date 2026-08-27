@@ -17,6 +17,7 @@ from conversation_routes import (  # noqa: E402
     get_conversation_transcripts,
     conversation_has_recording,
     list_conversations,
+    patch_conversation_events,
     patch_conversation_segment_text,
     patch_conversation_title,
     set_conversation_starred,
@@ -380,6 +381,69 @@ def test_canonical_conversation_analytics_uses_d1_transcripts_and_people_names()
     assert asyncio.run(get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "locked-analytics")).status_code == 402
     assert asyncio.run(get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
     assert asyncio.run(get_conversation_analytics(FakeRequest(env, {}), "analytics")).status_code == 401
+
+
+def test_canonical_conversation_events_update_is_bounded_and_preserves_index_semantics():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="events", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-events", created_at=100, locked=1)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    updated = asyncio.run(
+        patch_conversation_events(
+            FakeRequest(env, signed_headers(secret), body={"events_idx": [0, 99], "values": [True, False]}),
+            "events",
+        )
+    )
+    assert updated == {"status": "Ok"}
+    detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "events"))
+    assert detail["structured"]["events"] == [{"title": "event", "created": True}]
+    assert (
+        asyncio.run(
+            patch_conversation_events(
+                FakeRequest(env, signed_headers(secret), body={"events_idx": [0], "values": []}),
+                "events",
+            )
+        ).status_code
+        == 400
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_events(
+                FakeRequest(env, signed_headers(secret), body={"events_idx": [-1], "values": [True]}),
+                "events",
+            )
+        ).status_code
+        == 400
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_events(
+                FakeRequest(env, signed_headers(secret), body={"events_idx": [0], "values": [True]}),
+                "locked-events",
+            )
+        ).status_code
+        == 402
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_events(
+                FakeRequest(env, signed_headers(secret), body={"events_idx": [0], "values": [True]}),
+                "missing",
+            )
+        ).status_code
+        == 404
+    )
+    assert (
+        asyncio.run(
+            patch_conversation_events(
+                FakeRequest(env, {}, body={"events_idx": [0], "values": [True]}),
+                "events",
+            )
+        ).status_code
+        == 401
+    )
 
 
 def test_conversation_projection_write_is_idempotent_and_bounded():

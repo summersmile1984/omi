@@ -460,6 +460,11 @@ bounded transcript projection. Person labels are resolved from the uid-scoped
 `cf_people` table; speech-profile extraction and other transcript side effects
 are not part of this read route.
 
+`PATCH /v1/conversations/{conversation_id}/events` updates the `created` flags
+of indexed events in the structured D1 projection. It preserves the legacy
+parallel-array and out-of-range-index behavior, rejects malformed input, and
+does not claim calendar/integration fanout.
+
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event
 reads, and calendar writes remain on the legacy integration service; tokens are
