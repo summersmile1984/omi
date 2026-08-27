@@ -126,6 +126,8 @@ app.get("/v1/users/store-recording-permission", proxyAuthenticatedCore);
 app.post("/v1/users/store-recording-permission", proxyAuthenticatedCore);
 app.get("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
 app.post("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
+app.get("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
+app.post("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.get("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.get("/v1/users/daily-summary-settings", proxyAuthenticatedCore);

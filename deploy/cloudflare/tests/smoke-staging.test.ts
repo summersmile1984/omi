@@ -22,6 +22,7 @@ describe("staging smoke helpers", () => {
           ? (init?.headers ? 200 : 401)
           : url.endsWith("/v1/users/assistant-settings") ||
               url.endsWith("/v1/users/ai-profile") ||
+              url.endsWith("/v1/users/training-data-opt-in") ||
               url.endsWith("/v1/users/profile") ||
               url.endsWith("/v1/users/daily-summary-settings") ||
               url.endsWith("/v1/users/mentor-notification-settings")
@@ -38,13 +39,14 @@ describe("staging smoke helpers", () => {
       authenticatedProbe: 200,
       assistantSettings: 200,
       aiProfile: 200,
+      trainingDataOptIn: 200,
       userProfile: 200,
       dailySummarySettings: 200,
       mentorNotificationSettings: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(9);
-    expect(calls[8].init?.method).toBe("POST");
+    expect(calls).toHaveLength(10);
+    expect(calls[9].init?.method).toBe("POST");
   });
 
   it("can opt into a real native TTS response check", async () => {
@@ -54,6 +56,7 @@ describe("staging smoke helpers", () => {
       if (
         url.endsWith("/v1/users/assistant-settings") ||
         url.endsWith("/v1/users/ai-profile") ||
+        url.endsWith("/v1/users/training-data-opt-in") ||
         url.endsWith("/v1/users/profile") ||
         url.endsWith("/v1/users/daily-summary-settings") ||
         url.endsWith("/v1/users/mentor-notification-settings")

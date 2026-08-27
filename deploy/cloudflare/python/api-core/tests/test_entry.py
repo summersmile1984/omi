@@ -19,6 +19,7 @@ class FakeDb:
         self.row = None
         self.onboarding_row = None
         self.privacy_row = None
+        self.training_data_opt_in_row = None
         self.notification_row = None
         self.notification_preferences_row = None
         self.location_row = None
@@ -46,6 +47,8 @@ class FakeStatement:
             return self.db.onboarding_row
         if self.sql.startswith("SELECT store_recording_permission"):
             return self.db.privacy_row
+        if self.sql.startswith("SELECT status FROM cf_user_training_data_opt_in"):
+            return self.db.training_data_opt_in_row
         if self.sql.startswith("SELECT notifications_enabled"):
             return self.db.notification_row
         if self.sql.startswith("SELECT daily_summary_enabled"):
@@ -98,6 +101,16 @@ class FakeStatement:
                 "uid": uid,
                 "store_recording_permission": store_recording_permission,
                 "private_cloud_sync_enabled": private_cloud_sync_enabled,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_training_data_opt_in"):
+            uid, status, requested_at, created_at, updated_at = self.args
+            self.db.training_data_opt_in_row = {
+                "uid": uid,
+                "status": status,
+                "requested_at": requested_at,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
@@ -438,6 +451,39 @@ def test_privacy_settings_preserve_defaults_and_accept_query_boolean_contract():
     assert invalid.status_code == 400
 
 
+def test_training_data_opt_in_is_uid_scoped_and_enables_private_sync():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="training-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    database = FakeDb()
+    database.privacy_row = {
+        "uid": "training-user",
+        "store_recording_permission": 0,
+        "private_cloud_sync_enabled": 0,
+    }
+    env = SimpleNamespace(APP_DB=database, INTERNAL_ASSERTION_SECRET=secret)
+
+    assert asyncio.run(entry.get_training_data_opt_in(FakeRequest(env, headers))) == {
+        "opted_in": False,
+        "status": None,
+    }
+    submitted = asyncio.run(entry.set_training_data_opt_in(FakeRequest(env, headers)))
+    assert submitted == {
+        "status": "ok",
+        "message": "Your request has been submitted for review. We will let you know soon.",
+    }
+    assert asyncio.run(entry.get_training_data_opt_in(FakeRequest(env, headers))) == {
+        "opted_in": True,
+        "status": "pending_review",
+    }
+    assert asyncio.run(entry.get_private_cloud_sync(FakeRequest(env, headers))) == {
+        "private_cloud_sync_enabled": True
+    }
+
+
 def test_notification_settings_preserve_defaults_and_validate_frequency():
     secret = "test-secret"
     encoded, signature = signed_context(secret, uid="notifications-user")
@@ -548,6 +594,8 @@ def test_assistant_and_ai_profile_routes_fail_closed_without_auth():
         entry.update_assistant_settings,
         entry.get_ai_profile,
         entry.update_ai_profile,
+        entry.get_training_data_opt_in,
+        entry.set_training_data_opt_in,
         entry.get_daily_summary_settings,
         entry.update_daily_summary_settings,
         entry.get_mentor_notification_settings,

@@ -166,6 +166,8 @@ GET  /v1/users/store-recording-permission
 POST /v1/users/store-recording-permission
 GET  /v1/users/private-cloud-sync
 POST /v1/users/private-cloud-sync
+GET  /v1/users/training-data-opt-in
+POST /v1/users/training-data-opt-in
 GET  /v1/users/notification-settings
 PATCH /v1/users/notification-settings
 GET  /v1/users/daily-summary-settings
@@ -245,6 +247,12 @@ table and preserves the legacy 410 response for an unknown user. Firestore-only
 fields such as data-protection level, onboarding answers, and migration status
 are intentionally omitted until their D1 authority and backfill are approved;
 the Flutter client already treats those fields as optional/defaulted.
+
+`/v1/users/training-data-opt-in` stores the review state in staging D1 and
+enables private cloud sync as the legacy route does. The HTTP response remains
+the legacy success/message shape. The notification side effect is intentionally
+not claimed yet: FCM token storage and delivery still belong to the legacy
+notifier until that provider boundary is migrated.
 
 `/v1/users/daily-summary-settings` and
 `/v1/users/mentor-notification-settings` store notification preferences in the

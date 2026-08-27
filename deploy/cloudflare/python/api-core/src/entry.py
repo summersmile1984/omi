@@ -292,6 +292,32 @@ async def _save_privacy_settings(env: object, uid: str, settings: dict[str, obje
     ).run()
 
 
+def _training_data_opt_in(row: object | None) -> dict[str, object]:
+    if not isinstance(row, dict):
+        return {"opted_in": False, "status": None}
+    status = row.get("status")
+    if status not in {"pending_review", "approved", "rejected"}:
+        return {"opted_in": False, "status": None}
+    return {"opted_in": True, "status": status}
+
+
+async def _load_training_data_opt_in(env: object, uid: str) -> dict[str, object]:
+    row = await env.APP_DB.prepare(
+        "SELECT status FROM cf_user_training_data_opt_in WHERE uid = ?"
+    ).bind(uid).first()
+    return _training_data_opt_in(row)
+
+
+async def _save_training_data_opt_in(env: object, uid: str, status: str) -> None:
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_training_data_opt_in (uid, status, requested_at, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET status = excluded.status, requested_at = excluded.requested_at, "
+        "updated_at = excluded.updated_at"
+    ).bind(uid, status, now, now, now).run()
+
+
 def _notification_settings(row: object | None) -> dict[str, object]:
     if not isinstance(row, dict):
         return {"enabled": True, "frequency": 0}
@@ -577,6 +603,35 @@ async def set_private_cloud_sync(request: Request):
     settings["private_cloud_sync_enabled"] = value
     await _save_privacy_settings(env, uid, settings)
     return {"status": "ok"}
+
+
+@app.get("/v1/users/training-data-opt-in")
+async def get_training_data_opt_in(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await _load_training_data_opt_in(request.scope["env"], str(context["uid"]))
+
+
+@app.post("/v1/users/training-data-opt-in")
+async def set_training_data_opt_in(request: Request):
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    await _save_training_data_opt_in(env, uid, "pending_review")
+
+    # Opting in requires private sync. Notification delivery remains owned by
+    # the legacy notifier until FCM token storage and delivery are migrated.
+    privacy = await _load_privacy_settings(env, uid)
+    if not privacy["private_cloud_sync_enabled"]:
+        privacy["private_cloud_sync_enabled"] = True
+        await _save_privacy_settings(env, uid, privacy)
+    return {
+        "status": "ok",
+        "message": "Your request has been submitted for review. We will let you know soon.",
+    }
 
 
 @app.get("/v1/users/notification-settings")
