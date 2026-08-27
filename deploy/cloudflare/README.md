@@ -189,10 +189,25 @@ GET  /v1/conversations/{conversationId}
                               canonical read projection; writes/finalization remain legacy
 GET  /v1/conversations/{conversationId}/photos
                               bounded photo projection; locked rows fail closed
+GET  /v1/conversations/{conversationId}/transcripts
+GET  /v1/conversations/{conversationId}/analytics
+                              bounded transcript buckets and D1 speaker analytics
 GET  /v1/conversations/{conversationId}/recording
                               R2 head check for uid/{conversationId}.wav; no download
+GET  /v1/conversations/{conversationId}/action-items
+GET  /v1/conversations/{conversationId}/action-items/count
+                              standalone D1 action-item projection; locked rows fail closed
 PATCH /v1/conversations/{conversationId}/segments/text
                               bounded D1 transcript edit with updated-at CAS
+PATCH /v1/conversations/{conversationId}/events
+PATCH /v1/conversations/{conversationId}/summary
+                              structured event flags and default/app summaries → D1
+DELETE /v1/conversations/{conversationId}/calendar-event
+                              local calendar link removal only; external calendar remains legacy
+PATCH /v1/conversations/{conversationId}/action-items
+PATCH /v1/conversations/{conversationId}/action-items/{actionItemIdx}
+DELETE /v1/conversations/{conversationId}/action-items
+                              action-item state/description/delete projections → D1
 PATCH /v1/conversations/{conversationId}/title
 PATCH /v1/conversations/{conversationId}/starred
                               canonical metadata mutations → D1
