@@ -24,6 +24,7 @@ class FakeDb:
         self.webhook_rows = {}
         self.notification_row = None
         self.notification_preferences_row = None
+        self.geolocation_row = None
         self.location_row = None
         self.assistant_settings_row = None
         self.ai_profile_row = None
@@ -58,6 +59,8 @@ class FakeStatement:
             return self.db.notification_row
         if self.sql.startswith("SELECT daily_summary_enabled"):
             return self.db.notification_preferences_row
+        if self.sql.startswith("SELECT google_place_id, latitude, longitude"):
+            return self.db.geolocation_row
         if self.sql.startswith("SELECT status, purpose, disclosed_providers_json"):
             return self.db.location_row
         if self.sql.startswith("SELECT settings_json"):
@@ -169,6 +172,22 @@ class FakeStatement:
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
+            return
+        if self.sql.startswith("INSERT INTO cf_user_geolocation"):
+            uid, google_place_id, latitude, longitude, address, location_type, updated_at, expires_at = self.args
+            self.db.geolocation_row = {
+                "uid": uid,
+                "google_place_id": google_place_id,
+                "latitude": latitude,
+                "longitude": longitude,
+                "address": address,
+                "location_type": location_type,
+                "updated_at": updated_at,
+                "expires_at": expires_at,
+            }
+            return
+        if self.sql.startswith("DELETE FROM cf_user_geolocation"):
+            self.db.geolocation_row = None
             return
         if self.sql.startswith("INSERT INTO cf_user_location_context_consent"):
             (
@@ -478,6 +497,63 @@ def test_privacy_settings_preserve_defaults_and_accept_query_boolean_contract():
     assert invalid.status_code == 400
 
 
+def test_geolocation_is_uid_scoped_short_lived_and_preserves_success_contract(monkeypatch):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="geolocation-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+    }
+    database = FakeDb()
+    env = SimpleNamespace(APP_DB=database, INTERNAL_ASSERTION_SECRET=secret)
+    monkeypatch.setattr(entry.time, "time", lambda: 1_700_000_000)
+
+    invalid = asyncio.run(
+        entry.set_user_geolocation(
+            FakeRequest(env, headers, {"latitude": 200, "longitude": 10})
+        )
+    )
+    assert invalid == {"status": "ok", "message": "Location ignored because its coordinates are invalid."}
+    assert database.geolocation_row is None
+
+    first = asyncio.run(
+        entry.set_user_geolocation(
+            FakeRequest(
+                env,
+                headers,
+                {
+                    "google_place_id": "place-1",
+                    "latitude": 31.230416,
+                    "longitude": 121.473701,
+                    "address": "Shanghai",
+                    "location_type": "locality",
+                },
+            )
+        )
+    )
+    assert first == {"status": "ok"}
+    assert database.geolocation_row["expires_at"] == 1_700_001_800
+
+    unchanged = asyncio.run(
+        entry.set_user_geolocation(
+            FakeRequest(env, headers, {"latitude": 31.230419, "longitude": 121.473699})
+        )
+    )
+    assert unchanged == {"status": "ok", "message": "Location not changed significantly."}
+
+    changed = asyncio.run(
+        entry.set_user_geolocation(
+            FakeRequest(env, headers, {"latitude": 31.231, "longitude": 121.474})
+        )
+    )
+    assert changed == {"status": "ok"}
+    assert database.geolocation_row["latitude"] == 31.231
+
+    monkeypatch.setattr(entry.time, "time", lambda: 1_700_001_801)
+    assert asyncio.run(entry._load_geolocation(env, "geolocation-user")) is None
+    assert database.geolocation_row is None
+
+
 def test_training_data_opt_in_is_uid_scoped_and_enables_private_sync():
     secret = "test-secret"
     encoded, signature = signed_context(secret, uid="training-user")
@@ -717,6 +793,7 @@ def test_assistant_and_ai_profile_routes_fail_closed_without_auth():
         entry.update_daily_summary_settings,
         entry.get_mentor_notification_settings,
         entry.update_mentor_notification_settings,
+        entry.set_user_geolocation,
     ):
         response = asyncio.run(handler(FakeRequest(env, {}, {})))
         assert response.status_code == 401

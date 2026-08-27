@@ -182,6 +182,7 @@ GET  /v1/users/mentor-notification-settings
 PATCH /v1/users/mentor-notification-settings
 GET  /v1/users/location-context-consent
 PUT  /v1/users/location-context-consent
+PATCH /v1/users/geolocation  Edge → Python API Core → D1 TTL row
 GET  /v1/users/assistant-settings
 PATCH /v1/users/assistant-settings
 GET  /v1/users/ai-profile
@@ -203,6 +204,12 @@ The location-consent route is staging-only while legacy chat still reads its
 Firestore consent projection. Do not cut this route over in production until
 that downstream consumer has moved to the D1 authority and passed its privacy
 regression contract.
+
+`PATCH /v1/users/geolocation` stores only the latest validated coordinates in a
+uid-scoped D1 row with a 30-minute expiry and preserves the legacy success-shaped
+response for invalid coordinates. It is staging-only because the legacy chat and
+pusher consumers still read the Redis geolocation key; those consumers must move
+to the D1 authority before production cutover.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

@@ -87,6 +87,15 @@ export async function runSmoke({
   });
   expectStatus("mentor notification settings", mentorNotificationSettings, 200);
 
+  // Exercise geolocation route ownership without persisting location data.
+  // The legacy contract intentionally returns 200 for invalid coordinates.
+  const invalidGeolocation = await request(fetchImpl, `${base}/v1/users/geolocation`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ latitude: 200, longitude: 0 }),
+  });
+  expectStatus("invalid geolocation", invalidGeolocation, 200);
+
   // Exercise route ownership and input validation without billable inference.
   const workersAiEmpty = await request(fetchImpl, `${base}/v1/stt/transcribe-workers-ai`, {
     method: "POST",
@@ -124,6 +133,7 @@ export async function runSmoke({
     userProfile: profile.status,
     dailySummarySettings: dailySummarySettings.status,
     mentorNotificationSettings: mentorNotificationSettings.status,
+    invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     ...nativeTtsResult,
   };

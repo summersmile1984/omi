@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import time
 
@@ -37,6 +38,10 @@ MAX_FCM_TOKEN_LENGTH = 4_096
 MAX_TIME_ZONE_LENGTH = 128
 MAX_DEVICE_KEY_COMPONENT_LENGTH = 128
 MAX_WEBHOOK_URL_LENGTH = 4_096
+MAX_GOOGLE_PLACE_ID_LENGTH = 512
+MAX_GEOLOCATION_ADDRESS_LENGTH = 2_048
+MAX_LOCATION_TYPE_LENGTH = 128
+GEOLOCATION_TTL_SECONDS = 30 * 60
 DEFAULT_DAILY_SUMMARY_HOUR_LOCAL = 22
 DEFAULT_MENTOR_NOTIFICATION_FREQUENCY = 0
 WEBHOOK_TYPES = frozenset({
@@ -153,6 +158,14 @@ class AIUserProfileUpdate(BaseModel):
     profile_text: str | None = Field(default=None, max_length=MAX_AI_PROFILE_TEXT_LENGTH)
     generated_at: str | None = Field(default=None, max_length=256)
     data_sources_used: int | None = Field(default=None, ge=0)
+
+
+class GeolocationUpdate(BaseModel):
+    google_place_id: str | None = Field(default=None, max_length=MAX_GOOGLE_PLACE_ID_LENGTH)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    address: str | None = Field(default=None, max_length=MAX_GEOLOCATION_ADDRESS_LENGTH)
+    location_type: str | None = Field(default=None, max_length=MAX_LOCATION_TYPE_LENGTH)
 
 
 def _parse_bool(value: object) -> bool | None:
@@ -353,6 +366,45 @@ async def _save_fcm_token(env: object, uid: str, device_key: str, token: str, ti
         "ON CONFLICT(uid, device_key) DO UPDATE SET token = excluded.token, time_zone = excluded.time_zone, "
         "updated_at = excluded.updated_at"
     ).bind(uid, device_key, token, time_zone, now, now).run()
+
+
+async def _load_geolocation(env: object, uid: str, *, now: int | None = None) -> dict[str, object] | None:
+    row = await env.APP_DB.prepare(
+        "SELECT google_place_id, latitude, longitude, address, location_type, updated_at, expires_at "
+        "FROM cf_user_geolocation WHERE uid = ?"
+    ).bind(uid).first()
+    if not isinstance(row, dict):
+        return None
+    current_time = int(time.time()) if now is None else now
+    try:
+        expires_at = int(row["expires_at"])
+    except (KeyError, TypeError, ValueError):
+        expires_at = 0
+    if expires_at <= current_time:
+        await env.APP_DB.prepare("DELETE FROM cf_user_geolocation WHERE uid = ?").bind(uid).run()
+        return None
+    return row
+
+
+async def _save_geolocation(env: object, uid: str, update: GeolocationUpdate, *, now: int | None = None) -> None:
+    current_time = int(time.time()) if now is None else now
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_user_geolocation "
+        "(uid, google_place_id, latitude, longitude, address, location_type, updated_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET google_place_id = excluded.google_place_id, "
+        "latitude = excluded.latitude, longitude = excluded.longitude, address = excluded.address, "
+        "location_type = excluded.location_type, updated_at = excluded.updated_at, expires_at = excluded.expires_at"
+    ).bind(
+        uid,
+        update.google_place_id,
+        update.latitude,
+        update.longitude,
+        update.address,
+        update.location_type,
+        current_time,
+        current_time + GEOLOCATION_TTL_SECONDS,
+    ).run()
 
 
 def _valid_webhook_type(value: str) -> bool:
@@ -720,6 +772,40 @@ async def save_fcm_token(request: Request):
     device_key = f"{platform}_{device_hash}"
     await _save_fcm_token(request.scope["env"], str(context["uid"]), device_key, update.fcm_token, update.time_zone)
     return {"status": "Ok"}
+
+
+@app.patch("/v1/users/geolocation")
+async def set_user_geolocation(request: Request):
+    """Store a short-lived, uid-scoped location used by the chat context seam.
+
+    The legacy route uses a Redis key with a 30-minute TTL and returns a
+    success-shaped response for invalid coordinates. Keep that wire behavior,
+    but make the Worker authority explicit in D1 and never persist malformed
+    or non-finite coordinates.
+    """
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = GeolocationUpdate.model_validate(await _bounded_json(request, 8_192))
+        if not math.isfinite(update.latitude) or not math.isfinite(update.longitude):
+            raise ValueError("coordinates must be finite")
+    except (ValidationError, ValueError, TypeError):
+        return {"status": "ok", "message": "Location ignored because its coordinates are invalid."}
+
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    current = await _load_geolocation(env, uid)
+    if current:
+        try:
+            if round(float(current["latitude"]), 4) == round(update.latitude, 4) and round(
+                float(current["longitude"]), 4
+            ) == round(update.longitude, 4):
+                return {"status": "ok", "message": "Location not changed significantly."}
+        except (KeyError, TypeError, ValueError):
+            pass
+    await _save_geolocation(env, uid, update)
+    return {"status": "ok"}
 
 
 @app.post("/v1/users/developer/webhook/{wtype}")

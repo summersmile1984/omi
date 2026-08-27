@@ -133,6 +133,7 @@ app.post("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
 app.get("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.post("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.post("/v1/users/fcm-token", proxyAuthenticatedCore);
+app.patch("/v1/users/geolocation", proxyAuthenticatedCore);
 app.all("/v1/users/developer/webhook/*", proxyAuthenticatedCore);
 app.get("/v1/users/developer/webhooks/status", proxyAuthenticatedCore);
 app.get("/v1/users/notification-settings", proxyAuthenticatedCore);
