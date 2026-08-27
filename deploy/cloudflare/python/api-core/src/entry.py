@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import re
@@ -59,13 +60,15 @@ MAX_LOCATION_TYPE_LENGTH = 128
 GEOLOCATION_TTL_SECONDS = 30 * 60
 DEFAULT_DAILY_SUMMARY_HOUR_LOCAL = 22
 DEFAULT_MENTOR_NOTIFICATION_FREQUENCY = 0
-WEBHOOK_TYPES = frozenset({
-    "audio_bytes",
-    "audio_bytes_websocket",
-    "realtime_transcript",
-    "memory_created",
-    "day_summary",
-})
+WEBHOOK_TYPES = frozenset(
+    {
+        "audio_bytes",
+        "audio_bytes_websocket",
+        "realtime_transcript",
+        "memory_created",
+        "day_summary",
+    }
+)
 
 
 def auth_context(request: Request) -> dict[str, object] | None:
@@ -220,10 +223,14 @@ def _transcription_preferences(row: object | None) -> dict[str, object]:
 
 
 async def _load_transcription_preferences(env: object, uid: str) -> dict[str, object]:
-    row = await env.APP_DB.prepare(
-        "SELECT single_language_mode, vocabulary_json, language, uses_custom_stt, custom_stt_since "
-        "FROM cf_user_transcription_preferences WHERE uid = ?"
-    ).bind(uid).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT single_language_mode, vocabulary_json, language, uses_custom_stt, custom_stt_since "
+            "FROM cf_user_transcription_preferences WHERE uid = ?"
+        )
+        .bind(uid)
+        .first()
+    )
     return _transcription_preferences(row)
 
 
@@ -277,10 +284,13 @@ def _onboarding_state(row: object | None) -> dict[str, object]:
 
 
 async def _load_onboarding_state(env: object, uid: str) -> dict[str, object]:
-    row = await env.APP_DB.prepare(
-        "SELECT completed, acquisition_source, device_onboarding_completed "
-        "FROM cf_user_onboarding WHERE uid = ?"
-    ).bind(uid).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT completed, acquisition_source, device_onboarding_completed " "FROM cf_user_onboarding WHERE uid = ?"
+        )
+        .bind(uid)
+        .first()
+    )
     return _onboarding_state(row)
 
 
@@ -309,17 +319,21 @@ def _privacy_settings(row: object | None) -> dict[str, object]:
         return {"store_recording_permission": False, "private_cloud_sync_enabled": True}
     return {
         "store_recording_permission": bool(row.get("store_recording_permission")),
-        "private_cloud_sync_enabled": bool(row.get("private_cloud_sync_enabled"))
-        if row.get("private_cloud_sync_enabled") is not None
-        else True,
+        "private_cloud_sync_enabled": (
+            bool(row.get("private_cloud_sync_enabled")) if row.get("private_cloud_sync_enabled") is not None else True
+        ),
     }
 
 
 async def _load_privacy_settings(env: object, uid: str) -> dict[str, object]:
-    row = await env.APP_DB.prepare(
-        "SELECT store_recording_permission, private_cloud_sync_enabled "
-        "FROM cf_user_privacy_settings WHERE uid = ?"
-    ).bind(uid).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT store_recording_permission, private_cloud_sync_enabled "
+            "FROM cf_user_privacy_settings WHERE uid = ?"
+        )
+        .bind(uid)
+        .first()
+    )
     return _privacy_settings(row)
 
 
@@ -350,9 +364,7 @@ def _training_data_opt_in(row: object | None) -> dict[str, object]:
 
 
 async def _load_training_data_opt_in(env: object, uid: str) -> dict[str, object]:
-    row = await env.APP_DB.prepare(
-        "SELECT status FROM cf_user_training_data_opt_in WHERE uid = ?"
-    ).bind(uid).first()
+    row = await env.APP_DB.prepare("SELECT status FROM cf_user_training_data_opt_in WHERE uid = ?").bind(uid).first()
     return _training_data_opt_in(row)
 
 
@@ -384,10 +396,14 @@ async def _save_fcm_token(env: object, uid: str, device_key: str, token: str, ti
 
 
 async def _load_geolocation(env: object, uid: str, *, now: int | None = None) -> dict[str, object] | None:
-    row = await env.APP_DB.prepare(
-        "SELECT google_place_id, latitude, longitude, address, location_type, updated_at, expires_at "
-        "FROM cf_user_geolocation WHERE uid = ?"
-    ).bind(uid).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT google_place_id, latitude, longitude, address, location_type, updated_at, expires_at "
+            "FROM cf_user_geolocation WHERE uid = ?"
+        )
+        .bind(uid)
+        .first()
+    )
     if not isinstance(row, dict):
         return None
     current_time = int(time.time()) if now is None else now
@@ -432,9 +448,13 @@ def _webhook_is_configured(webhook_type: str, url: str) -> bool:
 
 
 async def _load_developer_webhook(env: object, uid: str, webhook_type: str) -> dict[str, object]:
-    row = await env.APP_DB.prepare(
-        "SELECT url, enabled FROM cf_user_developer_webhooks WHERE uid = ? AND webhook_type = ?"
-    ).bind(uid, webhook_type).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT url, enabled FROM cf_user_developer_webhooks WHERE uid = ? AND webhook_type = ?"
+        )
+        .bind(uid, webhook_type)
+        .first()
+    )
     if not isinstance(row, dict):
         return {"url": "", "enabled": False}
     url = str(row.get("url") or "")
@@ -463,18 +483,19 @@ def _notification_settings(row: object | None) -> dict[str, object]:
     raw_frequency = row.get("notification_frequency")
     frequency = raw_frequency if isinstance(raw_frequency, int) and 0 <= raw_frequency <= 5 else 0
     return {
-        "enabled": bool(row.get("notifications_enabled"))
-        if row.get("notifications_enabled") is not None
-        else True,
+        "enabled": bool(row.get("notifications_enabled")) if row.get("notifications_enabled") is not None else True,
         "frequency": frequency,
     }
 
 
 async def _load_notification_settings(env: object, uid: str) -> dict[str, object]:
-    row = await env.APP_DB.prepare(
-        "SELECT notifications_enabled, notification_frequency "
-        "FROM cf_user_notification_settings WHERE uid = ?"
-    ).bind(uid).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT notifications_enabled, notification_frequency " "FROM cf_user_notification_settings WHERE uid = ?"
+        )
+        .bind(uid)
+        .first()
+    )
     return _notification_settings(row)
 
 
@@ -501,9 +522,7 @@ def _daily_summary_settings(row: object | None) -> dict[str, object]:
     raw_hour = row.get("daily_summary_hour_local")
     hour = raw_hour if isinstance(raw_hour, int) and 0 <= raw_hour <= 23 else DEFAULT_DAILY_SUMMARY_HOUR_LOCAL
     return {
-        "enabled": bool(row.get("daily_summary_enabled"))
-        if row.get("daily_summary_enabled") is not None
-        else True,
+        "enabled": bool(row.get("daily_summary_enabled")) if row.get("daily_summary_enabled") is not None else True,
         "hour": hour,
     }
 
@@ -521,10 +540,14 @@ def _mentor_notification_settings(row: object | None) -> dict[str, object]:
 
 
 async def _load_notification_preferences(env: object, uid: str) -> dict[str, object]:
-    row = await env.APP_DB.prepare(
-        "SELECT daily_summary_enabled, daily_summary_hour_local, mentor_notification_frequency "
-        "FROM cf_user_notification_preferences WHERE uid = ?"
-    ).bind(uid).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT daily_summary_enabled, daily_summary_hour_local, mentor_notification_frequency "
+            "FROM cf_user_notification_preferences WHERE uid = ?"
+        )
+        .bind(uid)
+        .first()
+    )
     return {
         "daily_summary_enabled": _daily_summary_settings(row)["enabled"],
         "daily_summary_hour_local": _daily_summary_settings(row)["hour"],
@@ -562,9 +585,9 @@ def _assistant_settings(row: object | None) -> dict[str, object]:
 
 
 async def _load_assistant_settings(env: object, uid: str) -> dict[str, object]:
-    row = await env.APP_DB.prepare(
-        "SELECT settings_json FROM cf_user_assistant_settings WHERE uid = ?"
-    ).bind(uid).first()
+    row = (
+        await env.APP_DB.prepare("SELECT settings_json FROM cf_user_assistant_settings WHERE uid = ?").bind(uid).first()
+    )
     return _assistant_settings(row)
 
 
@@ -607,10 +630,13 @@ def _ai_profile(row: object | None) -> dict[str, object] | None:
 
 
 async def _load_ai_profile(env: object, uid: str) -> dict[str, object] | None:
-    row = await env.APP_DB.prepare(
-        "SELECT profile_text, generated_at, data_sources_used "
-        "FROM cf_user_ai_profiles WHERE uid = ?"
-    ).bind(uid).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT profile_text, generated_at, data_sources_used " "FROM cf_user_ai_profiles WHERE uid = ?"
+        )
+        .bind(uid)
+        .first()
+    )
     return _ai_profile(row)
 
 
@@ -1163,9 +1189,7 @@ def _firmware_candidates(releases: list[dict[str, object]], prefix: str) -> list
         and isinstance(release.get("tag_name"), str)
         and FIRMWARE_TAG_PATTERN.fullmatch(str(release["tag_name"]))
         and str(release["tag_name"]).lower().startswith(prefix.lower() + "_v")
-        and _parse_firmware_version(
-            _firmware_metadata(str(release.get("body") or "")).get("release_firmware_version")
-        )
+        and _parse_firmware_version(_firmware_metadata(str(release.get("body") or "")).get("release_firmware_version"))
     ]
 
 
@@ -1270,9 +1294,7 @@ async def firmware_version(device_model: str, version: str, request: Request):
     matches = [
         release
         for release in _firmware_candidates(releases, prefix)
-        if _parse_firmware_version(
-            _firmware_metadata(str(release.get("body") or "")).get("release_firmware_version")
-        )
+        if _parse_firmware_version(_firmware_metadata(str(release.get("body") or "")).get("release_firmware_version"))
         == target
     ]
     matches.sort(key=lambda release: str(release.get("published_at") or ""), reverse=True)
@@ -1303,6 +1325,62 @@ def _asset_context(request: Request) -> tuple[dict[str, object] | None, object |
     return context, env
 
 
+def _parse_asset_range(raw: str | None, size: int) -> tuple[int, int] | None:
+    """Parse one RFC 7233 byte range against the D1 metadata size.
+
+    R2 supports a single range efficiently. Multiple ranges would require a
+    multipart response assembled in the Worker, which would defeat the object
+    streaming boundary and is intentionally rejected.
+    """
+
+    if not raw:
+        return None
+    if not raw.startswith("bytes=") or "," in raw:
+        raise ValueError("only one bytes range is supported")
+    spec = raw[6:].strip()
+    if "-" not in spec:
+        raise ValueError("malformed bytes range")
+    start_raw, end_raw = spec.split("-", 1)
+    if not start_raw and not end_raw:
+        raise ValueError("malformed bytes range")
+    if size <= 0:
+        raise ValueError("empty object has no satisfiable range")
+    try:
+        if not start_raw:
+            suffix = int(end_raw)
+            if suffix <= 0:
+                raise ValueError("invalid suffix")
+            start = max(0, size - suffix)
+            end = size - 1
+        else:
+            start = int(start_raw)
+            if start < 0 or start >= size:
+                raise ValueError("range starts past object")
+            end = size - 1 if not end_raw else min(size - 1, int(end_raw))
+            if end < start:
+                raise ValueError("range end precedes start")
+    except (TypeError, ValueError) as error:
+        raise ValueError("unsatisfiable bytes range") from error
+    return start, end
+
+
+def _etag_matches(raw: str | None, etag: str) -> bool:
+    if not raw:
+        return False
+    candidate = etag.strip()
+    if not candidate:
+        return False
+    for item in raw.split(","):
+        normalized = item.strip()
+        if normalized == "*":
+            return True
+        if normalized.startswith("W/"):
+            normalized = normalized[2:]
+        if normalized.strip('"') == candidate.strip('"'):
+            return True
+    return False
+
+
 @app.put("/v1/cf/assets/{requested_key:path}")
 async def put_asset(requested_key: str, request: Request):
     context, env = _asset_context(request)
@@ -1319,17 +1397,28 @@ async def put_asset(requested_key: str, request: Request):
     body = await request.body()
     if len(body) > MAX_ASSET_BODY_BYTES:
         return JSONResponse({"error": "asset body too large"}, status_code=413)
+    checksum = hashlib.sha256(body).hexdigest()
+    expected_checksum = request.headers.get("x-content-sha256")
+    if expected_checksum and expected_checksum.strip().lower() != checksum:
+        return JSONResponse({"error": "asset checksum mismatch"}, status_code=422)
     content_type = request.headers.get("content-type", "application/octet-stream")[:200]
     stored = await env.ASSETS.put(key, body, httpMetadata={"contentType": content_type})
     etag = str(getattr(stored, "httpEtag", getattr(stored, "etag", "")))
     now = int(time.time())
     await env.APP_DB.prepare(
-        "INSERT INTO cf_asset_objects (uid, object_key, content_type, size, etag, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "INSERT INTO cf_asset_objects (uid, object_key, content_type, size, etag, checksum_sha256, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(uid, object_key) DO UPDATE SET content_type = excluded.content_type, "
-        "size = excluded.size, etag = excluded.etag, updated_at = excluded.updated_at"
-    ).bind(str(context["uid"]), key, content_type, len(body), etag, now, now).run()
-    return {"status": "ok", "key": requested_key.strip("/"), "size": len(body), "etag": etag}
+        "size = excluded.size, etag = excluded.etag, checksum_sha256 = excluded.checksum_sha256, "
+        "updated_at = excluded.updated_at"
+    ).bind(str(context["uid"]), key, content_type, len(body), etag, checksum, now, now).run()
+    return {
+        "status": "ok",
+        "key": requested_key.strip("/"),
+        "size": len(body),
+        "etag": etag,
+        "checksum_sha256": checksum,
+    }
 
 
 @app.get("/v1/cf/assets/{requested_key:path}")
@@ -1342,19 +1431,44 @@ async def get_asset(requested_key: str, request: Request):
     key = _asset_key(str(context["uid"]), requested_key)
     if not key:
         return JSONResponse({"error": "invalid asset key"}, status_code=400)
-    row = await env.APP_DB.prepare(
-        "SELECT content_type, etag FROM cf_asset_objects WHERE uid = ? AND object_key = ?"
-    ).bind(str(context["uid"]), key).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT content_type, etag, size, checksum_sha256 FROM cf_asset_objects WHERE uid = ? AND object_key = ?"
+        )
+        .bind(str(context["uid"]), key)
+        .first()
+    )
     if not row:
         return JSONResponse({"error": "asset not found"}, status_code=404)
-    stored = await env.ASSETS.get(key)
+    etag = str(row.get("etag") or "")
+    if _etag_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers={"etag": etag})
+    size = int(row.get("size") or 0)
+    try:
+        byte_range = _parse_asset_range(request.headers.get("range"), size)
+    except ValueError:
+        return Response(status_code=416, headers={"content-range": f"bytes */{size}", "accept-ranges": "bytes"})
+    options: dict[str, object] = {}
+    response_headers = {"etag": etag, "accept-ranges": "bytes"}
+    status_code = 200
+    if byte_range is not None:
+        start, end = byte_range
+        options = {"range": {"offset": start, "length": end - start + 1}}
+        response_headers["content-range"] = f"bytes {start}-{end}/{size}"
+        status_code = 206
+    stored = await env.ASSETS.get(key, options) if options else await env.ASSETS.get(key)
     if not stored:
         return JSONResponse({"error": "asset not found"}, status_code=404)
     content = bytes(await stored.arrayBuffer())
+    checksum = str(row.get("checksum_sha256") or "")
+    if checksum:
+        response_headers["x-content-sha256"] = checksum
+    response_headers["content-length"] = str(len(content))
     return Response(
         content=content,
         media_type=str(row["content_type"]),
-        headers={"etag": str(row["etag"]), "content-length": str(len(content))},
+        headers=response_headers,
+        status_code=status_code,
     )
 
 

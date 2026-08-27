@@ -11,7 +11,14 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import entry  # noqa: E402
 
-from entry import DEVICE_PREFIXES, _asset_key, _firmware_metadata, _firmware_response  # noqa: E402
+from entry import (  # noqa: E402
+    DEVICE_PREFIXES,
+    _asset_key,
+    _etag_matches,
+    _firmware_metadata,
+    _firmware_response,
+    _parse_asset_range,
+)
 
 
 class FakeDb:
@@ -28,6 +35,7 @@ class FakeDb:
         self.location_row = None
         self.assistant_settings_row = None
         self.ai_profile_row = None
+        self.asset_row = None
 
     def prepare(self, sql):
         return FakeStatement(self, sql)
@@ -67,9 +75,27 @@ class FakeStatement:
             return self.db.assistant_settings_row
         if self.sql.startswith("SELECT profile_text, generated_at, data_sources_used"):
             return self.db.ai_profile_row
+        if self.sql.startswith("SELECT content_type, etag, size, checksum_sha256"):
+            return self.db.asset_row
         raise AssertionError(f"unexpected query: {self.sql}")
 
     async def run(self):
+        if self.sql.startswith("INSERT INTO cf_asset_objects"):
+            uid, object_key, content_type, size, etag, checksum_sha256, created_at, updated_at = self.args
+            self.db.asset_row = {
+                "uid": uid,
+                "object_key": object_key,
+                "content_type": content_type,
+                "size": size,
+                "etag": etag,
+                "checksum_sha256": checksum_sha256,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("DELETE FROM cf_asset_objects"):
+            self.db.asset_row = None
+            return
         if self.sql.startswith("INSERT INTO cf_user_transcription_preferences"):
             (
                 uid,
@@ -247,6 +273,49 @@ class FakeRequest:
         return self.body
 
 
+class AssetRequest:
+    def __init__(self, env, headers, body=b""):
+        self.scope = {"env": env}
+        self.headers = headers
+        self._body = body
+
+    async def body(self):
+        return self._body
+
+
+class FakeObject:
+    def __init__(self, content: bytes):
+        self.content = content
+
+    async def arrayBuffer(self):
+        return self.content
+
+
+class FakeBucket:
+    def __init__(self):
+        self.objects = {}
+        self.get_calls = []
+
+    async def put(self, key, body, **_kwargs):
+        self.objects[key] = bytes(body)
+        return type("Stored", (), {"httpEtag": '"asset-etag"'})()
+
+    async def get(self, key, options=None):
+        self.get_calls.append((key, options))
+        content = self.objects.get(key)
+        if content is None:
+            return None
+        if isinstance(options, dict) and isinstance(options.get("range"), dict):
+            range_options = options["range"]
+            offset = int(range_options["offset"])
+            length = int(range_options["length"])
+            content = content[offset : offset + length]
+        return FakeObject(content)
+
+    async def delete(self, key):
+        self.objects.pop(key, None)
+
+
 def signed_context(secret: str, uid: str = "user-1") -> tuple[str, str]:
     raw = json.dumps(
         {"uid": uid, "authority": "better-auth", "requestId": "test"},
@@ -261,6 +330,68 @@ def test_asset_keys_are_uid_scoped_and_reject_traversal():
     assert _asset_key("user-1", "audio/clip.wav") == "user-1/audio/clip.wav"
     assert _asset_key("user-1", "../other-user/clip.wav") is None
     assert _asset_key("user-1", "") is None
+
+
+def test_asset_ranges_and_etag_matching_are_bounded():
+    assert _parse_asset_range("bytes=1-3", 6) == (1, 3)
+    assert _parse_asset_range("bytes=4-", 6) == (4, 5)
+    assert _parse_asset_range("bytes=-2", 6) == (4, 5)
+    assert _parse_asset_range(None, 6) is None
+    assert _etag_matches('W/"asset-etag"', '"asset-etag"')
+    assert _etag_matches("*", '"asset-etag"')
+    for value in ("bytes=6-", "bytes=0-1,3-4", "items=0-1"):
+        try:
+            _parse_asset_range(value, 6)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"range should be rejected: {value}")
+
+
+def test_asset_put_get_range_conditional_and_checksum_contract():
+    secret = "asset-secret"
+    encoded, signature = signed_context(secret)
+    db = FakeDb()
+    bucket = FakeBucket()
+    env = SimpleNamespace(APP_DB=db, ASSETS=bucket, INTERNAL_ASSERTION_SECRET=secret)
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+        "content-type": "audio/wav",
+    }
+    payload = b"abcdef"
+    checksum = hashlib.sha256(payload).hexdigest()
+    put = asyncio.run(
+        entry.put_asset(
+            "audio/clip.wav",
+            AssetRequest(env, {**headers, "x-content-sha256": checksum}, payload),
+        )
+    )
+    assert put["checksum_sha256"] == checksum
+    ranged = asyncio.run(
+        entry.get_asset(
+            "audio/clip.wav",
+            AssetRequest(env, {**headers, "range": "bytes=1-3"}),
+        )
+    )
+    assert ranged.status_code == 206
+    assert ranged.body == b"bcd"
+    assert ranged.headers["content-range"] == "bytes 1-3/6"
+    assert ranged.headers["x-content-sha256"] == checksum
+    not_modified = asyncio.run(
+        entry.get_asset(
+            "audio/clip.wav",
+            AssetRequest(env, {**headers, "if-none-match": 'W/"asset-etag"'}),
+        )
+    )
+    assert not_modified.status_code == 304
+    rejected = asyncio.run(
+        entry.put_asset(
+            "audio/rejected.wav",
+            AssetRequest(env, {**headers, "x-content-sha256": "0" * 64}, payload),
+        )
+    )
+    assert rejected.status_code == 422
 
 
 def test_firmware_metadata_preserves_release_contract():
@@ -482,9 +613,9 @@ def test_privacy_settings_preserve_defaults_and_accept_query_boolean_contract():
     }
     assert asyncio.run(entry.get_private_cloud_sync(FakeRequest(env, headers))) == {"private_cloud_sync_enabled": True}
 
-    assert asyncio.run(
-        entry.set_store_recording_permission(FakeRequest(env, headers, query={"value": "true"}))
-    ) == {"status": "ok"}
+    assert asyncio.run(entry.set_store_recording_permission(FakeRequest(env, headers, query={"value": "true"}))) == {
+        "status": "ok"
+    }
     assert asyncio.run(entry.set_private_cloud_sync(FakeRequest(env, headers, query={"value": "false"}))) == {
         "status": "ok"
     }
@@ -508,11 +639,7 @@ def test_geolocation_is_uid_scoped_short_lived_and_preserves_success_contract(mo
     env = SimpleNamespace(APP_DB=database, INTERNAL_ASSERTION_SECRET=secret)
     monkeypatch.setattr(entry.time, "time", lambda: 1_700_000_000)
 
-    invalid = asyncio.run(
-        entry.set_user_geolocation(
-            FakeRequest(env, headers, {"latitude": 200, "longitude": 10})
-        )
-    )
+    invalid = asyncio.run(entry.set_user_geolocation(FakeRequest(env, headers, {"latitude": 200, "longitude": 10})))
     assert invalid == {"status": "ok", "message": "Location ignored because its coordinates are invalid."}
     assert database.geolocation_row is None
 
@@ -535,16 +662,12 @@ def test_geolocation_is_uid_scoped_short_lived_and_preserves_success_contract(mo
     assert database.geolocation_row["expires_at"] == 1_700_001_800
 
     unchanged = asyncio.run(
-        entry.set_user_geolocation(
-            FakeRequest(env, headers, {"latitude": 31.230419, "longitude": 121.473699})
-        )
+        entry.set_user_geolocation(FakeRequest(env, headers, {"latitude": 31.230419, "longitude": 121.473699}))
     )
     assert unchanged == {"status": "ok", "message": "Location not changed significantly."}
 
     changed = asyncio.run(
-        entry.set_user_geolocation(
-            FakeRequest(env, headers, {"latitude": 31.231, "longitude": 121.474})
-        )
+        entry.set_user_geolocation(FakeRequest(env, headers, {"latitude": 31.231, "longitude": 121.474}))
     )
     assert changed == {"status": "ok"}
     assert database.geolocation_row["latitude"] == 31.231
@@ -582,9 +705,7 @@ def test_training_data_opt_in_is_uid_scoped_and_enables_private_sync():
         "opted_in": True,
         "status": "pending_review",
     }
-    assert asyncio.run(entry.get_private_cloud_sync(FakeRequest(env, headers))) == {
-        "private_cloud_sync_enabled": True
-    }
+    assert asyncio.run(entry.get_private_cloud_sync(FakeRequest(env, headers))) == {"private_cloud_sync_enabled": True}
 
 
 def test_fcm_token_registration_scopes_and_sanitizes_device_key():
@@ -658,9 +779,9 @@ def test_developer_webhook_configuration_and_toggle_state_round_trip():
         "status": "ok"
     }
 
-    assert asyncio.run(
-        entry.set_developer_webhook(FakeRequest(env, headers, {"url": ",5"}), "audio_bytes")
-    ) == {"status": "ok"}
+    assert asyncio.run(entry.set_developer_webhook(FakeRequest(env, headers, {"url": ",5"}), "audio_bytes")) == {
+        "status": "ok"
+    }
     assert asyncio.run(entry.get_developer_webhooks_status(FakeRequest(env, headers)))["audio_bytes"] is False
 
     invalid_type = asyncio.run(entry.get_developer_webhook(FakeRequest(env, headers), "unknown"))
@@ -733,14 +854,14 @@ def test_assistant_settings_deep_merge_sections_and_preserve_uid_scope():
     assert asyncio.run(entry.get_assistant_settings(FakeRequest(env, headers))) == {}
     first = asyncio.run(
         entry.update_assistant_settings(
-            FakeRequest(env, headers, {"focus": {"enabled": True, "analysis_prompt": "focus"}, "update_channel": "beta"})
+            FakeRequest(
+                env, headers, {"focus": {"enabled": True, "analysis_prompt": "focus"}, "update_channel": "beta"}
+            )
         )
     )
     assert first == {"focus": {"enabled": True, "analysis_prompt": "focus"}, "update_channel": "beta"}
 
-    second = asyncio.run(
-        entry.update_assistant_settings(FakeRequest(env, headers, {"focus": {"enabled": False}}))
-    )
+    second = asyncio.run(entry.update_assistant_settings(FakeRequest(env, headers, {"focus": {"enabled": False}})))
     assert second == {"focus": {"enabled": False, "analysis_prompt": "focus"}, "update_channel": "beta"}
     assert asyncio.run(entry.get_assistant_settings(FakeRequest(env, headers))) == second
 
@@ -764,7 +885,9 @@ def test_ai_profile_partial_update_round_trips_and_rejects_oversized_text():
         )
     )
     assert updated == {"profile_text": "prefers concise answers", "data_sources_used": 3}
-    assert asyncio.run(entry.update_ai_profile(FakeRequest(env, headers, {"generated_at": "2026-08-28T00:00:00Z"}))) == {
+    assert asyncio.run(
+        entry.update_ai_profile(FakeRequest(env, headers, {"generated_at": "2026-08-28T00:00:00Z"}))
+    ) == {
         "profile_text": "prefers concise answers",
         "data_sources_used": 3,
         "generated_at": "2026-08-28T00:00:00Z",
@@ -825,8 +948,6 @@ def test_location_context_consent_requires_disclosure_and_expires_after_thirty_d
     assert granted["enabled"] is True
     assert granted["expires_at"] == "2023-12-14T22:13:20+00:00"
 
-    revoked = asyncio.run(
-        entry.set_location_context_consent(FakeRequest(env, headers, {"enabled": False}))
-    )
+    revoked = asyncio.run(entry.set_location_context_consent(FakeRequest(env, headers, {"enabled": False})))
     assert revoked["enabled"] is False
     assert revoked["expires_at"] is None

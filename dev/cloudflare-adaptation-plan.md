@@ -770,8 +770,8 @@ DNS 或生产数据库。当前 staging 已部署：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 8 files / 35 tests pass
-uvx uv==0.12.3 run pytest -q             # api-core: 45 tests pass
+npm test                                  # 8 files / 36 tests pass
+uvx uv==0.12.3 run pytest -q             # api-core: 47 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
 curl /health                              # auth/core/ai/realtime/edge → HTTP 200
@@ -871,6 +871,12 @@ workstream D1 projection 随后通过单元契约覆盖并接入 Edge：goal-ori
 创建/重放/冲突、task-origin generation 冲突、journal 追加/列表、artifact 状态、
 checkpoint、update 和最终 projection（HTTP 200/409，journal sequence=4），并清理
 marker 数据；未切生产 reader。
+
+同日补齐 R2 对象完整性投影：`PUT /v1/cf/assets/{key}` 计算并校验
+`X-Content-SHA256`，将 checksum 写入 D1；`GET` 支持单段 bytes Range、
+`If-None-Match` 和完整的 `416` 边界响应。真实 staging smoke 已验证完整读写、
+Range 与 suffix Range（206）、条件 GET（304）、无效 Range（416）、错误 checksum
+（422）以及删除后的 404；测试对象已清理。
 
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt

@@ -9,7 +9,8 @@ The first staging slice contains:
 - `edge`: public routing, request IDs, trusted auth context and legacy fallback.
 - `auth`: Hono + Better Auth + D1, with request-scoped auth construction.
 - `api-core`: a minimal FastAPI/Python Worker composition root with a D1 probe,
-  uid-scoped R2 asset API (`/v1/cf/assets/{key}`), uid-scoped transcription
+  uid-scoped R2 asset API (`/v1/cf/assets/{key}`) with checksum and range
+  semantics, uid-scoped transcription
   preferences, onboarding/privacy/notification/location-consent settings, and
   the public firmware stable/latest/version APIs. It also exposes a staging-only
   D1-backed action-item CRUD/reconciliation surface.
@@ -152,7 +153,7 @@ POST /v1/tts/synthesize-workers-ai
 GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
 GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible AI API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
-R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata
+R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata/checksum
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
 GET  /v1/cf/jobs/{jobId}      Edge → Jobs Worker → uid-scoped D1 job status
 GET  /v2/firmware/stable      Edge → Python API Core → GitHub Releases API
@@ -338,6 +339,13 @@ rules. Workstream search/index refresh and candidate automation remain legacy
 owned, and `GET /v1/goals/{goalId}/detail` remains legacy until its active
 thread reader is cut over. This group is staging-only pending workstream
 backfill and downstream reader cutover.
+
+The R2 asset route stores a SHA-256 integrity projection in D1 alongside the
+uid-scoped object metadata. Uploads can supply `X-Content-SHA256` for fail-closed
+verification; downloads support one `bytes` range and `If-None-Match`, while
+multi-range and unsatisfiable requests return `416`. The Worker still buffers
+the bounded 25 MB compatibility surface; large-object multipart migration and
+signed URL issuance remain separate R2 cutover work.
 
 The folder routes migrate system/custom folder metadata and ordering to D1. They
 do not yet move conversation documents, recompute conversation counts, or serve

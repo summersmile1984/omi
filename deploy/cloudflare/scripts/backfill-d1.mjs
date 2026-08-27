@@ -1,6 +1,23 @@
 import { readFile } from "node:fs/promises";
 
 const TABLES = {
+  cf_asset_objects: {
+    key_columns: ["uid", "object_key"],
+    required: ["uid", "object_key", "content_type", "size", "etag", "created_at", "updated_at"],
+    columns: [
+      "uid",
+      "object_key",
+      "content_type",
+      "size",
+      "etag",
+      "checksum_sha256",
+      "created_at",
+      "updated_at",
+    ],
+    defaults: { checksum_sha256: "" },
+    integers: ["size", "created_at", "updated_at"],
+    json: [],
+  },
   cf_action_items: {
     required: ["uid", "id", "description", "created_at", "updated_at"],
     columns: [

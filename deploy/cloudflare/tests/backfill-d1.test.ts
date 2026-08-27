@@ -156,4 +156,24 @@ describe("D1 backfill SQL generator", () => {
       },
     ])).toThrow("missing status");
   });
+
+  it("renders R2 asset metadata with the integrity checksum", () => {
+    const sql = renderBackfillSql([
+      {
+        table: "cf_asset_objects",
+        row: {
+          uid: "u",
+          object_key: "u/audio/clip.wav",
+          content_type: "audio/wav",
+          size: 6,
+          etag: '"etag"',
+          checksum_sha256: "a".repeat(64),
+          created_at: 1,
+          updated_at: 2,
+        },
+      },
+    ]);
+    expect(sql).toContain("checksum_sha256");
+    expect(sql).toContain("ON CONFLICT(uid, object_key) DO UPDATE SET content_type = excluded.content_type");
+  });
 });
