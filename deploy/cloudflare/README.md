@@ -182,6 +182,8 @@ GET  /v1/cf/conversations/count
 GET  /v1/cf/conversations/{conversationId}
                               bounded list/count/detail reads with uid isolation
 GET  /v1/conversations       Edge → Python API Core → D1 canonical conversation list
+GET  /v1/account/cutover/control
+                              Edge → Python API Core → D1 account migration control projection
 GET  /v1/conversations/count
 GET  /v1/conversations/{conversationId}
                               canonical read projection; writes/finalization remain legacy

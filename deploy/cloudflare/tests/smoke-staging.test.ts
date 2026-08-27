@@ -36,9 +36,11 @@ describe("staging smoke helpers", () => {
               ? 401
               : url.endsWith("/v1/announcements/all")
                 ? 403
-                : url.endsWith("/v1/stt/transcribe-async")
+              : url.endsWith("/v1/stt/transcribe-async")
                   ? 401
-          : url.includes("/v1/conversations?") ||
+              : url.endsWith("/v1/account/cutover/control")
+                ? 200
+              : url.includes("/v1/conversations?") ||
               url.endsWith("/v1/conversations") ||
               url.endsWith("/v1/conversations/count")
                 ? 200
@@ -80,6 +82,7 @@ describe("staging smoke helpers", () => {
       unauthenticatedAnnouncementsAdmin: 403,
       unauthenticatedAsyncTranscription: 401,
       authenticatedProbe: 200,
+      accountCutover: 200,
       conversations: 200,
       conversationCount: 200,
       conversationPhotos: 404,
@@ -101,7 +104,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(27);
+    expect(calls).toHaveLength(28);
     expect(
       calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init
         ?.method,
@@ -125,6 +128,8 @@ describe("staging smoke helpers", () => {
         return new Response(null, { status: 403 });
       if (url.endsWith("/v1/stt/transcribe-async"))
         return new Response(null, { status: 401 });
+      if (url.endsWith("/v1/account/cutover/control"))
+        return new Response(null, { status: 200 });
       if (
         url.includes("/v1/conversations?") ||
         url.endsWith("/v1/conversations") ||

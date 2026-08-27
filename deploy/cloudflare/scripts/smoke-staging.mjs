@@ -109,6 +109,12 @@ export async function runSmoke({
     headers: authHeaders,
   });
   expectStatus("authenticated probe", probe, 200);
+  const accountCutover = await request(
+    fetchImpl,
+    `${base}/v1/account/cutover/control`,
+    { headers: authHeaders },
+  );
+  expectStatus("account cutover control", accountCutover, 200);
 
   const conversations = await request(
     fetchImpl,
@@ -289,6 +295,7 @@ export async function runSmoke({
     unauthenticatedAnnouncementsAdmin: unauthenticatedAnnouncementsAdmin.status,
     unauthenticatedAsyncTranscription: unauthenticatedAsyncTranscription.status,
     authenticatedProbe: probe.status,
+    accountCutover: accountCutover.status,
     conversations: conversations.status,
     conversationCount: conversationCount.status,
     conversationPhotos: conversationPhotos.status,

@@ -220,6 +220,7 @@ app.get(
   proxyAuthenticatedAsyncTranscriptionStatus,
 );
 app.post("/v1/embeddings-workers-ai", proxyAuthenticatedAI);
+app.get("/v1/account/cutover/control", proxyAuthenticatedCore);
 app.all("/v1/cf/probe", proxyAuthenticatedCore);
 app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
 app.get("/v1/conversations", proxyAuthenticatedCore);
