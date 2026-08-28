@@ -116,6 +116,13 @@ export async function runSmoke({
   );
   expectStatus("account cutover control", accountCutover, 200);
 
+  const appSearch = await request(
+    fetchImpl,
+    `${base}/v2/apps/search?limit=1`,
+    { headers: authHeaders },
+  );
+  expectStatus("authenticated app catalog search", appSearch, 200);
+
   const conversations = await request(
     fetchImpl,
     `${base}/v1/conversations?limit=10`,
@@ -374,6 +381,7 @@ export async function runSmoke({
     unauthenticatedAsyncTranscription: unauthenticatedAsyncTranscription.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
+    appSearch: appSearch.status,
     conversations: conversations.status,
     conversationCount: conversationCount.status,
     conversationPhotos: conversationPhotos.status,

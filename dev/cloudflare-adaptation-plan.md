@@ -839,6 +839,7 @@ conversation detail filters           # canonical source=omi and include_discard
 web Worker/vinext staging             # 97% vinext check, Next build, Better Auth email client, AUTH service binding, browser canary ready → HTTP/browser staging verified
 desktop realtime session/usage       # provider token mint via workers.fetch; hashed session + token-cost usage in D1 → usage staging verified; provider token mint remains key-gated
 staging deploy health gate           # one command publishes six Workers, then checks Edge/Auth-ready/Core/AI/Realtime/Jobs → verified
+authenticated staging smoke          # app search ownership plus existing D1/API boundaries → HTTP 200/401/403/404/400 contract passed
 goal daily progress history         # D1 uid/goal/date upsert, bounded history read, uid isolation → unit verified
 goal progress event feed            # validated evidence/metric append/list, sequence projection, receipt idempotency → unit verified
 canonical goal list/create          # generation-scoped D1 list/create, deterministic id and receipt replay → unit verified
