@@ -280,6 +280,21 @@ export async function runSmoke({
   });
   expectStatus("authenticated app catalog search", appSearch, 200);
 
+  const memorySummaryFeedbackResult = await requestJson(
+    fetchImpl,
+    `${base}/v1/users/analytics/memory_summary?memory_id=cf-smoke-missing`,
+    { headers: authHeaders },
+  );
+  const memorySummaryFeedback = memorySummaryFeedbackResult.response;
+  expectStatus(
+    "memory-summary feedback missing-row",
+    memorySummaryFeedback,
+    200,
+  );
+  if (memorySummaryFeedbackResult.body?.has_rating !== false) {
+    throw new Error("memory-summary feedback missing-row must be unrated");
+  }
+
   const conversations = await request(
     fetchImpl,
     `${base}/v1/conversations?limit=10`,
@@ -680,6 +695,7 @@ export async function runSmoke({
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
     appSearch: appSearch.status,
+    memorySummaryFeedback: memorySummaryFeedback.status,
     conversations: conversations.status,
     conversationSearch: conversationSearch.status,
     webProxyConversations: webProxyConversations.status,

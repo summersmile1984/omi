@@ -70,6 +70,9 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/conversations/search")) {
         return new Response(null, { status: 200 });
       }
+      if (url.includes("/v1/users/analytics/memory_summary?")) {
+        return Response.json({ has_rating: false });
+      }
       if (url.endsWith("/api/proxy/v2/messages") && init?.method === "POST") {
         return workersAiChatResponse();
       }
@@ -232,6 +235,7 @@ describe("staging smoke helpers", () => {
       authenticatedProbe: 200,
       accountCutover: 200,
       appSearch: 200,
+      memorySummaryFeedback: 200,
       conversations: 200,
       conversationSearch: 200,
       webProxyConversations: 200,
@@ -276,7 +280,12 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(56);
+    expect(calls).toHaveLength(57);
+    expect(
+      calls.find((call) =>
+        call.url.includes("/v1/users/analytics/memory_summary?"),
+      )?.init?.method,
+    ).toBeUndefined();
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
@@ -354,6 +363,9 @@ describe("staging smoke helpers", () => {
 
   it("fails when a user-facing Web API path cannot reach Edge", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
+      if (url.includes("/v1/users/analytics/memory_summary?")) {
+        return Response.json({ has_rating: false });
+      }
       if (url.endsWith("/v1/cf/probe")) {
         return new Response(null, { status: init?.headers ? 200 : 401 });
       }
@@ -399,6 +411,9 @@ describe("staging smoke helpers", () => {
 
   it("can opt into a real native TTS response check", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
+      if (url.includes("/v1/users/analytics/memory_summary?")) {
+        return Response.json({ has_rating: false });
+      }
       if (url.endsWith("/health")) return new Response(null, { status: 200 });
       if (url.endsWith("/v1/announcements/general"))
         return new Response(null, { status: 200 });
@@ -514,6 +529,9 @@ describe("staging smoke helpers", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      if (url.includes("/v1/users/analytics/memory_summary?")) {
+        return Response.json({ has_rating: false });
+      }
       if (url.endsWith("/v1/cf/probe")) {
         return new Response(null, { status: init?.headers ? 200 : 401 });
       }
@@ -575,6 +593,9 @@ describe("staging smoke helpers", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      if (url.includes("/v1/users/analytics/memory_summary?")) {
+        return Response.json({ has_rating: false });
+      }
       if (url.endsWith("/v1/cf/probe")) {
         return new Response(null, { status: init?.headers ? 200 : 401 });
       }

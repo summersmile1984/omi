@@ -60,6 +60,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_user_developer_webhooks", column: "uid" },
   { table: "cf_user_enabled_apps", column: "uid" },
   { table: "cf_user_fcm_tokens", column: "uid" },
+  { table: "cf_user_feedback", column: "uid" },
   { table: "cf_user_geolocation", column: "uid" },
   { table: "cf_user_location_context_consent", column: "uid" },
   { table: "cf_user_notification_preferences", column: "uid" },

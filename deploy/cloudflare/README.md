@@ -1312,7 +1312,7 @@ intent-to-tombstone transition is atomic, duplicate public requests are
 idempotent, and the scheduled reconciler republishes durable intents whose
 initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 58 product identity-bearing column
+The explicit residual inventory covers 59 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,
@@ -1327,8 +1327,8 @@ intent and all product data for reconciliation. Production account deletion
 remains blocked on production secret provisioning and identity/cutover
 evidence.
 
-Local validation applied all 52 App-D1 migrations with Wrangler (123 SQL
-commands), exercised the real SQLite trigger boundary, and proved that both an
+Local validation applies every App-D1 migration with Wrangler, exercises the
+real SQLite trigger boundary, and proves that both an
 active intent and the tombstone block late writes while expired tombstone
 cleanup restores writes. The TypeScript suite additionally covers the full
 D1/R2 purge, two residual scans, Auth finalization, Queue-send recovery,
@@ -1347,6 +1347,12 @@ response. Tokens are not returned by any public route. The legacy FCM sender
 still owns non-fair-use notifications. Fair-use delivery now reads this D1
 token authority through the leased Jobs outbox and FCM HTTP v1 adapter
 described above.
+
+The memory-summary and chat-message feedback routes store uid-scoped ratings
+in `cf_user_feedback`. Chat feedback also updates the matching D1 message JSON
+in the same batch, preserving the client-visible rating projection. The legacy
+LangSmith submission remains a non-blocking observability side effect and is
+not part of the staging request success boundary.
 
 Developer webhook configuration routes now use the staging D1 table
 `cf_user_developer_webhooks`; supported types are `audio_bytes`,

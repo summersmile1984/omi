@@ -658,6 +658,59 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes uid-scoped feedback reads and writes to the core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    for (const [method, path] of [
+      ["GET", "/v1/users/analytics/memory_summary?memory_id=memory-1"],
+      ["POST", "/v1/users/analytics/memory_summary?memory_id=memory-1&value=1"],
+      [
+        "POST",
+        "/v1/users/analytics/chat_message?message_id=message-1&value=-1",
+      ],
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(coreRequests.map(({ method }) => method)).toEqual([
+      "GET",
+      "POST",
+      "POST",
+    ]);
+    expect(
+      coreRequests.map((request) => new URL(request.url).pathname),
+    ).toEqual([
+      "/v1/users/analytics/memory_summary",
+      "/v1/users/analytics/memory_summary",
+      "/v1/users/analytics/chat_message",
+    ]);
+    expect(
+      coreRequests.every((request) =>
+        Boolean(request.headers.get("x-omi-auth-context")),
+      ),
+    ).toBe(true);
+  });
+
   it("routes conversation projection reads to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

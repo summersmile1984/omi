@@ -150,13 +150,17 @@ describe("Cloudflare account-deletion residual", () => {
   });
 
   it("installs INSERT and UPDATE mutation fences for every authoritative identity table", () => {
-    const migration = readFileSync(
-      path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        "../migrations/app/0052_account_deletion.sql",
-      ),
-      "utf8",
+    const migrationDirectory = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../migrations/app",
     );
+    const migration = readdirSync(migrationDirectory)
+      .filter((filename) => filename.endsWith(".sql"))
+      .sort()
+      .map((filename) =>
+        readFileSync(path.join(migrationDirectory, filename), "utf8"),
+      )
+      .join("\n");
     const triggerBlocks = new Map(
       [
         ...migration.matchAll(
