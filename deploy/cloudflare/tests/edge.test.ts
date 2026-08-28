@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import edge from "../workers/edge/index";
+import { decodeAuthContext } from "../workers/shared/auth-context";
 import { verifyRealtimeTicket } from "../workers/shared/realtime-ticket";
 
 const rawService = (
@@ -171,6 +172,52 @@ describe("edge gateway", () => {
       "/v1/app-capabilities",
       "/v1/app/payment-plans",
     ]);
+  });
+
+  it("keeps task previews public and signs the Better Auth display name for share creation", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({
+            uid: "user-1",
+            authority: "better-auth",
+            displayName: "Alice",
+          });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+    };
+
+    const preview = await edge.fetch(
+      new Request("https://edge.test/v1/action-items/shared/public-token"),
+      env as never,
+    );
+    const share = await edge.fetch(
+      new Request("https://edge.test/v1/action-items/share", {
+        method: "POST",
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+
+    expect(preview.status).toBe(200);
+    expect(share.status).toBe(200);
+    expect(
+      coreRequests.map((request) => new URL(request.url).pathname),
+    ).toEqual([
+      "/v1/action-items/shared/public-token",
+      "/v1/action-items/share",
+    ]);
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeNull();
+    expect(
+      decodeAuthContext(coreRequests[1].headers.get("x-omi-auth-context")),
+    ).toMatchObject({ uid: "user-1", displayName: "Alice" });
   });
 
   it("keeps approved app catalog public while guarding authenticated app reads", async () => {

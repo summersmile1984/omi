@@ -111,6 +111,7 @@ app.get("/v1/app/proactive-notification-scopes", proxyPublicCore);
 app.get("/v1/app-capabilities", proxyPublicCore);
 app.get("/v1/app/payment-plans", proxyPublicCore);
 app.get("/v1/approved-apps", proxyPublicCore);
+app.get("/v1/action-items/shared/:token", proxyPublicCore);
 
 app.all("/api/better-auth/*", async (c) => {
   const id = requestId(c.req.raw);
@@ -542,6 +543,8 @@ app.post("/v1/action-items/batch", proxyAuthenticatedCore);
 app.post("/v1/action-items/batch-delete", proxyAuthenticatedCore);
 app.get("/v1/action-items/pending-sync", proxyAuthenticatedCore);
 app.patch("/v1/action-items/sync-batch", proxyAuthenticatedCore);
+app.post("/v1/action-items/share", proxyAuthenticatedCore);
+app.post("/v1/action-items/accept", proxyAuthenticatedCore);
 app.get("/v1/daily-score", proxyAuthenticatedCore);
 app.get("/v1/scores", proxyAuthenticatedCore);
 app.post("/v1/focus-sessions", proxyAuthenticatedCore);

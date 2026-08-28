@@ -36,6 +36,10 @@ MAX_SOURCE_LENGTH = 64
 MAX_RECURRENCE_RULE_LENGTH = 128
 MAX_EXPORT_PLATFORM_LENGTH = 64
 MAX_REMINDER_ID_LENGTH = 512
+MAX_SHARE_TOKEN_LENGTH = 128
+MAX_SHARE_TASKS = 20
+TASK_SHARE_TTL_SECONDS = 60 * 60 * 24 * 30
+TASK_SHARE_BASE_URL = "https://h.omi.me/tasks"
 
 
 class TaskStatus(str, Enum):
@@ -150,6 +154,18 @@ class SyncBatchRequest(BaseModel):
     items: list[SyncBatchItem] = Field(default_factory=list, max_length=100)
 
 
+class ShareTasksRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    task_ids: list[str] = Field(min_length=1, max_length=MAX_SHARE_TASKS)
+
+
+class AcceptSharedTasksRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    token: str = Field(min_length=1, max_length=MAX_SHARE_TOKEN_LENGTH)
+
+
 def _auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
@@ -208,7 +224,8 @@ def _response(row: dict[str, object]) -> dict[str, object]:
     item_id = str(row.get("id") or "")
     status = str(row.get("status") or ("completed" if _bool(row.get("completed")) else "active"))
     completed = status == TaskStatus.completed.value or _bool(row.get("completed"))
-    return {
+    provenance = _json_list(row.get("provenance_json"))
+    response: dict[str, object] = {
         "id": item_id,
         "task_id": item_id,
         "description": str(row.get("description") or ""),
@@ -220,7 +237,7 @@ def _response(row: dict[str, object]) -> dict[str, object]:
         "due_at": _iso(row.get("due_at")),
         "due_confidence": row.get("due_confidence"),
         "source": str(row.get("source") or "legacy"),
-        "provenance": _json_list(row.get("provenance_json")),
+        "provenance": provenance,
         "priority": row.get("priority"),
         "sort_order": int(row.get("sort_order") or 0),
         "indent_level": int(row.get("indent_level") or 0),
@@ -237,6 +254,21 @@ def _response(row: dict[str, object]) -> dict[str, object]:
         "export_platform": row.get("export_platform"),
         "apple_reminder_id": row.get("apple_reminder_id"),
     }
+    shared_from = next(
+        (
+            entry
+            for entry in provenance
+            if isinstance(entry, dict) and entry.get("kind") == "shared" and isinstance(entry.get("sender_uid"), str)
+        ),
+        None,
+    )
+    if shared_from is not None:
+        response["shared_from"] = {
+            key: shared_from[key]
+            for key in ("token", "sender_uid", "sender_name", "original_task_id")
+            if key in shared_from
+        }
+    return response
 
 
 def _normalized_description(description: str) -> str:
@@ -523,6 +555,227 @@ async def list_action_item_ids(request: Request):
     return body
 
 
+async def _task_share(env: object, token: str, now: int) -> dict[str, object] | None:
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT token, sender_uid, sender_name, expires_at FROM cf_task_shares "
+            "WHERE token = ? AND expires_at > ?"
+        )
+        .bind(token, now)
+        .first()
+    )
+    return row if isinstance(row, dict) else None
+
+
+async def _shared_task_rows(env: object, token: str, now: int) -> list[dict[str, object]]:
+    result = (
+        await env.APP_DB.prepare(
+            "SELECT share.sender_uid, share.sender_name, item.id, item.description, item.due_at "
+            "FROM cf_task_shares AS share "
+            "JOIN cf_task_share_items AS shared_item ON shared_item.token = share.token "
+            "JOIN cf_action_items AS item "
+            "ON item.uid = share.sender_uid AND item.id = shared_item.action_item_id "
+            "WHERE share.token = ? AND share.expires_at > ? AND item.deleted = 0 AND item.is_locked = 0 "
+            "ORDER BY shared_item.ordinal ASC"
+        )
+        .bind(token, now)
+        .all()
+    )
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+@router.post("/v1/action-items/share")
+async def share_action_items(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = ShareTasksRequest.model_validate(await _bounded_json(request))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid share request"}, status_code=400)
+    if len(set(payload.task_ids)) != len(payload.task_ids) or any(
+        not item_id or len(item_id) > MAX_ID_LENGTH for item_id in payload.task_ids
+    ):
+        return JSONResponse({"error": "invalid action item ids"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    placeholders = ", ".join("?" for _ in payload.task_ids)
+    try:
+        result = (
+            await env.APP_DB.prepare(
+                f"SELECT id, is_locked FROM cf_action_items WHERE uid = ? AND deleted = 0 AND id IN ({placeholders})"
+            )
+            .bind(uid, *payload.task_ids)
+            .all()
+        )
+        rows = result.get("results", []) if isinstance(result, dict) else []
+        by_id = {str(row["id"]): row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)}
+        missing = next((item_id for item_id in payload.task_ids if item_id not in by_id), None)
+        if missing is not None:
+            return JSONResponse({"error": f"action item {missing} not found"}, status_code=404)
+        if any(_bool(by_id[item_id].get("is_locked")) for item_id in payload.task_ids):
+            return JSONResponse({"error": "cannot share locked action items"}, status_code=402)
+
+        now = int(time.time())
+        token = uuid.uuid4().hex
+        sender_name = str(context.get("displayName") or "Omi user").strip()[:120] or "Omi user"
+        statements = [
+            env.APP_DB.prepare(
+                "INSERT INTO cf_task_shares (token, sender_uid, sender_name, expires_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?)"
+            ).bind(token, uid, sender_name, now + TASK_SHARE_TTL_SECONDS, now)
+        ]
+        statements.extend(
+            env.APP_DB.prepare(
+                "INSERT INTO cf_task_share_items (token, ordinal, action_item_id) VALUES (?, ?, ?)"
+            ).bind(token, ordinal, item_id)
+            for ordinal, item_id in enumerate(payload.task_ids)
+        )
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "task sharing unavailable"}, status_code=503)
+    return {"url": f"{TASK_SHARE_BASE_URL}/{token}", "token": token}
+
+
+@router.get("/v1/action-items/shared/{token}")
+async def get_shared_action_items(request: Request, token: str):
+    if not token or len(token) > MAX_SHARE_TOKEN_LENGTH:
+        return JSONResponse({"error": "share link expired or not found"}, status_code=404)
+    try:
+        now = int(time.time())
+        share = await _task_share(request.scope["env"], token, now)
+        if share is None:
+            return JSONResponse({"error": "share link expired or not found"}, status_code=404)
+        rows = await _shared_task_rows(request.scope["env"], token, now)
+    except Exception:
+        return JSONResponse({"error": "task sharing unavailable"}, status_code=503)
+    return {
+        "sender_name": str(share.get("sender_name") or "Omi user"),
+        "tasks": [
+            {"description": str(row.get("description") or ""), "due_at": _iso(row.get("due_at"))} for row in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@router.post("/v1/action-items/accept")
+async def accept_shared_action_items(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = AcceptSharedTasksRequest.model_validate(await _bounded_json(request))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid share token"}, status_code=400)
+
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    now = int(time.time())
+    try:
+        share = await _task_share(env, payload.token, now)
+        if share is None:
+            return JSONResponse({"error": "share link expired or not found"}, status_code=404)
+        sender_uid = str(share["sender_uid"])
+        if sender_uid == uid:
+            return JSONResponse({"error": "cannot accept your own shared tasks"}, status_code=400)
+        eligible = await _shared_task_rows(env, payload.token, now)
+        if not eligible:
+            return JSONResponse(
+                {"error": "all shared tasks are locked; a paid plan is required"},
+                status_code=402,
+            )
+
+        nonce = uuid.uuid4().hex
+        copies = [(row, uuid.uuid4().hex) for row in eligible]
+        statements = [
+            env.APP_DB.prepare(
+                "INSERT OR IGNORE INTO cf_task_share_acceptances "
+                "(token, recipient_uid, acceptance_nonce, accepted_at) "
+                "SELECT token, ?, ?, ? FROM cf_task_shares WHERE token = ? AND expires_at > ?"
+            ).bind(uid, nonce, now, payload.token, now)
+        ]
+        for row, item_id in copies:
+            original_id = str(row["id"])
+            provenance = json.dumps(
+                [
+                    {
+                        "kind": "shared",
+                        "token": payload.token,
+                        "sender_uid": sender_uid,
+                        "sender_name": str(share.get("sender_name") or "Omi user"),
+                        "original_task_id": original_id,
+                    }
+                ],
+                ensure_ascii=False,
+            )
+            idempotency_key = hashlib.sha256(
+                f"task-share:{payload.token}:{uid}:{original_id}".encode("utf-8")
+            ).hexdigest()
+            statements.append(
+                env.APP_DB.prepare(
+                    "INSERT INTO cf_action_items "
+                    "(uid, id, description, status, completed, owner, due_at, source, provenance_json, sort_order, "
+                    "indent_level, is_locked, exported, created_at, updated_at, idempotency_key, sync_requested, deleted) "
+                    "SELECT ?, ?, source.description, 'active', 0, 'user', source.due_at, 'shared', ?, 0, 0, 0, 0, "
+                    "?, ?, ?, 0, 0 FROM cf_action_items AS source "
+                    "WHERE source.uid = ? AND source.id = ? AND source.deleted = 0 AND source.is_locked = 0 "
+                    "AND EXISTS (SELECT 1 FROM cf_task_share_acceptances "
+                    "WHERE token = ? AND recipient_uid = ? AND acceptance_nonce = ?)"
+                ).bind(
+                    uid,
+                    item_id,
+                    provenance,
+                    now,
+                    now,
+                    idempotency_key,
+                    sender_uid,
+                    original_id,
+                    payload.token,
+                    uid,
+                    nonce,
+                )
+            )
+        await env.APP_DB.batch(statements)
+
+        acceptance = (
+            await env.APP_DB.prepare(
+                "SELECT acceptance_nonce FROM cf_task_share_acceptances WHERE token = ? AND recipient_uid = ?"
+            )
+            .bind(payload.token, uid)
+            .first()
+        )
+        if not isinstance(acceptance, dict):
+            return JSONResponse({"error": "share link expired or not found"}, status_code=404)
+        if acceptance.get("acceptance_nonce") != nonce:
+            return JSONResponse({"error": "you have already accepted this share"}, status_code=409)
+
+        expected_ids = [item_id for _, item_id in copies]
+        placeholders = ", ".join("?" for _ in expected_ids)
+        result = (
+            await env.APP_DB.prepare(
+                f"SELECT id FROM cf_action_items WHERE uid = ? AND deleted = 0 AND id IN ({placeholders})"
+            )
+            .bind(uid, *expected_ids)
+            .all()
+        )
+        created_rows = result.get("results", []) if isinstance(result, dict) else []
+        created_set = {
+            str(row["id"]) for row in created_rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
+        created = [item_id for item_id in expected_ids if item_id in created_set]
+        if not created:
+            await env.APP_DB.prepare(
+                "DELETE FROM cf_task_share_acceptances "
+                "WHERE token = ? AND recipient_uid = ? AND acceptance_nonce = ?"
+            ).bind(payload.token, uid, nonce).run()
+            return JSONResponse({"error": "shared tasks are no longer available"}, status_code=402)
+    except Exception:
+        return JSONResponse({"error": "task sharing unavailable"}, status_code=503)
+    return {"created": created, "count": len(created)}
+
+
 @router.get("/v1/action-items/{action_item_id}")
 async def get_action_item(request: Request, action_item_id: str):
     context = _auth_context(request)
@@ -551,14 +804,18 @@ async def get_conversation_action_items(request: Request, conversation_id: str):
             return JSONResponse({"error": "conversation not found"}, status_code=404)
         if _bool(conversation.get("is_locked")):
             return JSONResponse({"error": "paid plan required"}, status_code=402)
-        result = await env.APP_DB.prepare(
-            "SELECT id, description, status, completed, goal_id, workstream_id, owner, due_at, due_confidence, "
-            "source, provenance_json, priority, sort_order, indent_level, recurrence_rule, recurrence_parent_id, "
-            "created_at, updated_at, completed_at, superseded_by, conversation_id, is_locked, exported, export_date, "
-            "export_platform, apple_reminder_id FROM cf_action_items "
-            "WHERE uid = ? AND conversation_id = ? AND deleted = 0 "
-            "ORDER BY completed ASC, created_at ASC LIMIT 500"
-        ).bind(uid, conversation_id).all()
+        result = (
+            await env.APP_DB.prepare(
+                "SELECT id, description, status, completed, goal_id, workstream_id, owner, due_at, due_confidence, "
+                "source, provenance_json, priority, sort_order, indent_level, recurrence_rule, recurrence_parent_id, "
+                "created_at, updated_at, completed_at, superseded_by, conversation_id, is_locked, exported, export_date, "
+                "export_platform, apple_reminder_id FROM cf_action_items "
+                "WHERE uid = ? AND conversation_id = ? AND deleted = 0 "
+                "ORDER BY completed ASC, created_at ASC LIMIT 500"
+            )
+            .bind(uid, conversation_id)
+            .all()
+        )
     except Exception:
         return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
     rows = result.get("results", []) if isinstance(result, dict) else []
@@ -585,10 +842,14 @@ async def get_conversation_action_items_count(request: Request, conversation_id:
             return JSONResponse({"error": "conversation not found"}, status_code=404)
         if _bool(conversation.get("is_locked")):
             return JSONResponse({"error": "paid plan required"}, status_code=402)
-        row = await env.APP_DB.prepare(
-            "SELECT COUNT(*) AS total, COALESCE(SUM(completed), 0) AS completed "
-            "FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND deleted = 0"
-        ).bind(uid, conversation_id).first()
+        row = (
+            await env.APP_DB.prepare(
+                "SELECT COUNT(*) AS total, COALESCE(SUM(completed), 0) AS completed "
+                "FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND deleted = 0"
+            )
+            .bind(uid, conversation_id)
+            .first()
+        )
     except Exception:
         return JSONResponse({"error": "conversation action items unavailable"}, status_code=503)
     total = int(row.get("total") or 0) if isinstance(row, dict) else 0

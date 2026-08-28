@@ -17,13 +17,20 @@ const JWT_GRACE_PERIOD_SECONDS = 2 * 24 * 60 * 60;
 type SocialProviderId = "google" | "apple";
 
 function origins(env: AuthEnv): string[] {
-  return (env.ALLOWED_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
+  return (env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function configuredSocialProviders(env: AuthEnv) {
   const providers: {
     google?: { clientId: string; clientSecret: string };
-    apple?: { clientId: string; clientSecret: string; appBundleIdentifier?: string };
+    apple?: {
+      clientId: string;
+      clientSecret: string;
+      appBundleIdentifier?: string;
+    };
   } = {};
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
     providers.google = {
@@ -50,12 +57,20 @@ function configuredSocialProviderIds(env: AuthEnv): SocialProviderId[] {
 function buildAuth(env: AuthEnv, requestUrl: string) {
   const allowedOrigins = origins(env);
   const requestOrigin = new URL(requestUrl).origin;
-  const configuredBaseURL = env.BETTER_AUTH_URL ? new URL(env.BETTER_AUTH_URL).origin : null;
-  const localFallback = /^(https?:\/\/localhost(?::\d+)?|https?:\/\/127\.0\.0\.1(?::\d+)?)$/.test(requestOrigin)
-    ? requestOrigin
+  const configuredBaseURL = env.BETTER_AUTH_URL
+    ? new URL(env.BETTER_AUTH_URL).origin
     : null;
+  const localFallback =
+    /^(https?:\/\/localhost(?::\d+)?|https?:\/\/127\.0\.0\.1(?::\d+)?)$/.test(
+      requestOrigin,
+    )
+      ? requestOrigin
+      : null;
   const baseURL = configuredBaseURL || localFallback;
-  if (!baseURL) throw new Error("BETTER_AUTH_URL must be configured outside local development");
+  if (!baseURL)
+    throw new Error(
+      "BETTER_AUTH_URL must be configured outside local development",
+    );
   const socialProviders = configuredSocialProviders(env);
   const trustedProviders = Object.keys(socialProviders) as SocialProviderId[];
   return betterAuth({
@@ -145,7 +160,9 @@ app.use(`${AUTH_BASE_PATH}/*`, async (c, next) => {
   })(c, next);
 });
 
-app.get("/health", (c) => c.json({ status: "ok", service: "auth", version: "cf-03" }));
+app.get("/health", (c) =>
+  c.json({ status: "ok", service: "auth", version: "cf-03" }),
+);
 
 app.get("/ready", async (c) => {
   try {
@@ -157,7 +174,9 @@ app.get("/ready", async (c) => {
             OR (typeof(expiresAt) IN ('integer', 'real') AND expiresAt > ?)
             OR (typeof(expiresAt) = 'text' AND datetime(expiresAt) > datetime('now'))
          LIMIT 1`,
-      ).bind(Date.now()).first<{ id: string }>();
+      )
+        .bind(Date.now())
+        .first<{ id: string }>();
     let activeKey = await findActiveKey();
     if (!activeKey) {
       const auth = buildAuth(c.env, c.req.url);
@@ -167,10 +186,17 @@ app.get("/ready", async (c) => {
       });
       activeKey = await findActiveKey();
     }
-    if (!activeKey) return c.json({ status: "not_ready", database: "ok", signing_key: "missing" }, 503);
+    if (!activeKey)
+      return c.json(
+        { status: "not_ready", database: "ok", signing_key: "missing" },
+        503,
+      );
     return c.json({ status: "ready", database: "ok", signing_key: "ok" });
   } catch {
-    return c.json({ status: "not_ready", database: "error", signing_key: "error" }, 503);
+    return c.json(
+      { status: "not_ready", database: "error", signing_key: "error" },
+      503,
+    );
   }
 });
 
@@ -199,7 +225,10 @@ app.post("/auth-issue", async (c) => {
   } catch {
     return c.json({ error: "invalid_request" }, 400);
   }
-  const uid = typeof body === "object" && body !== null && "uid" in body ? (body as { uid?: unknown }).uid : null;
+  const uid =
+    typeof body === "object" && body !== null && "uid" in body
+      ? (body as { uid?: unknown }).uid
+      : null;
   if (typeof uid !== "string" || uid.trim().length === 0 || uid.length > 256) {
     return c.json({ error: "invalid_request" }, 400);
   }
@@ -233,17 +262,26 @@ app.post("/internal/verify", async (c) => {
     const sessionHeaders = new Headers({ origin: baseURL });
     if (authorization) sessionHeaders.set("authorization", authorization);
     if (cookie) sessionHeaders.set("cookie", cookie);
-    const sessionRequest = new Request(new URL(`${AUTH_BASE_PATH}/get-session`, baseURL), {
-      headers: sessionHeaders,
-    });
+    const sessionRequest = new Request(
+      new URL(`${AUTH_BASE_PATH}/get-session`, baseURL),
+      {
+        headers: sessionHeaders,
+      },
+    );
     const response = await auth.handler(sessionRequest);
     if (response.ok) {
-      const body = (await response.json()) as { user?: { id?: string } } | null;
+      const body = (await response.json()) as {
+        user?: { id?: string; name?: string };
+      } | null;
       const sessionUid = body?.user?.id;
       if (sessionUid) {
         const result: AuthContext = {
           uid: sessionUid,
           authority: "better-auth",
+          displayName:
+            typeof body?.user?.name === "string" && body.user.name.trim()
+              ? body.user.name.trim().slice(0, 120)
+              : undefined,
           requestId: c.req.header("x-request-id") || "internal",
         };
         return c.json(result);
@@ -261,7 +299,11 @@ app.post("/internal/verify", async (c) => {
     });
     const uid = payloadUid(verified?.payload);
     if (!uid) return c.json({ error: "unauthorized" }, 401);
-    const result: AuthContext = { uid, authority: "better-auth", requestId: c.req.header("x-request-id") || "internal" };
+    const result: AuthContext = {
+      uid,
+      authority: "better-auth",
+      requestId: c.req.header("x-request-id") || "internal",
+    };
     return c.json(result);
   } catch {
     return c.json({ error: "unauthorized" }, 401);
@@ -282,10 +324,18 @@ app.get("/internal/profile", async (c) => {
   try {
     const row = await c.env.AUTH_DB.prepare(
       "SELECT id, name, email, createdAt FROM user WHERE id = ?",
-    ).bind(context.uid).first<{ id?: unknown; name?: unknown; email?: unknown; createdAt?: unknown }>();
+    )
+      .bind(context.uid)
+      .first<{
+        id?: unknown;
+        name?: unknown;
+        email?: unknown;
+        createdAt?: unknown;
+      }>();
     if (!row) return c.json({ detail: "User not found" }, 410);
 
-    const uid = typeof row.id === "string" && row.id.length > 0 ? row.id : context.uid;
+    const uid =
+      typeof row.id === "string" && row.id.length > 0 ? row.id : context.uid;
     return c.json({
       uid,
       email: typeof row.email === "string" ? row.email : null,
@@ -297,9 +347,13 @@ app.get("/internal/profile", async (c) => {
   }
 });
 
-app.on(["GET", "POST", "PUT", "PATCH", "DELETE"], `${AUTH_BASE_PATH}/*`, (c) => {
-  const auth = buildAuth(c.env, c.req.url);
-  return auth.handler(c.req.raw);
-});
+app.on(
+  ["GET", "POST", "PUT", "PATCH", "DELETE"],
+  `${AUTH_BASE_PATH}/*`,
+  (c) => {
+    const auth = buildAuth(c.env, c.req.url);
+    return auth.handler(c.req.raw);
+  },
+);
 
 export default app;

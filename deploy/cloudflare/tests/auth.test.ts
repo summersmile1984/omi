@@ -4,7 +4,9 @@ import { betterAuth } from "better-auth";
 
 const signJWT = vi.fn(async () => ({ token: "jwt-from-workers" }));
 const verifyJWT = vi.fn(async ({ body }: { body: { token: string } }) =>
-  body.token === "bridge-token" ? { payload: { uid: "jwt-user", sub: "jwt-user" } } : { payload: null },
+  body.token === "bridge-token"
+    ? { payload: { uid: "jwt-user", sub: "jwt-user" } }
+    : { payload: null },
 );
 const authHandler = vi.fn(async (_request: Request) => Response.json(null));
 
@@ -29,7 +31,10 @@ function profileEnv(row: Record<string, unknown> | null) {
   const first = vi.fn(async () => row);
   const bind = vi.fn(() => ({ first }));
   const prepare = vi.fn(() => ({ bind }));
-  return { ...env("issuer-secret"), AUTH_DB: { prepare } as unknown as D1Database };
+  return {
+    ...env("issuer-secret"),
+    AUTH_DB: { prepare } as unknown as D1Database,
+  };
 }
 
 function readyEnv(active = true) {
@@ -61,7 +66,10 @@ describe("auth worker Better Auth dev issuer", () => {
   });
 
   it("hides the bridge when no issuer secret is configured", async () => {
-    const response = await auth.fetch(new Request("https://auth.test/auth-issue", { method: "POST" }), env());
+    const response = await auth.fetch(
+      new Request("https://auth.test/auth-issue", { method: "POST" }),
+      env(),
+    );
     expect(response.status).toBe(404);
   });
 
@@ -103,12 +111,19 @@ describe("auth worker Better Auth dev issuer", () => {
     const request = (authorization?: string) =>
       new Request("https://auth.test/auth-issue", {
         method: "POST",
-        headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+        headers: {
+          "content-type": "application/json",
+          ...(authorization ? { authorization } : {}),
+        },
         body: JSON.stringify({ uid: "mobile-user" }),
       });
 
-    expect((await auth.fetch(request(), env("issuer-secret"))).status).toBe(401);
-    expect((await auth.fetch(request("Bearer wrong"), env("issuer-secret"))).status).toBe(401);
+    expect((await auth.fetch(request(), env("issuer-secret"))).status).toBe(
+      401,
+    );
+    expect(
+      (await auth.fetch(request("Bearer wrong"), env("issuer-secret"))).status,
+    ).toBe(401);
     expect(signJWT).not.toHaveBeenCalled();
   });
 
@@ -116,7 +131,10 @@ describe("auth worker Better Auth dev issuer", () => {
     const response = await auth.fetch(
       new Request("https://auth.test/auth-issue", {
         method: "POST",
-        headers: { authorization: "Bearer issuer-secret", "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer issuer-secret",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ uid: "" }),
       }),
       env("issuer-secret"),
@@ -129,13 +147,19 @@ describe("auth worker Better Auth dev issuer", () => {
     const response = await auth.fetch(
       new Request("https://auth.test/auth-issue", {
         method: "POST",
-        headers: { authorization: "Bearer issuer-secret", "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer issuer-secret",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ uid: "mobile-user" }),
       }),
       env("issuer-secret"),
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ token: "jwt-from-workers", uid: "mobile-user" });
+    expect(await response.json()).toEqual({
+      token: "jwt-from-workers",
+      uid: "mobile-user",
+    });
     expect(signJWT).toHaveBeenCalledWith({
       body: { payload: { uid: "mobile-user", sub: "mobile-user" } },
       headers: expect.any(Headers),
@@ -154,7 +178,11 @@ describe("auth worker Better Auth dev issuer", () => {
       env("issuer-secret"),
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ uid: "jwt-user", authority: "better-auth", requestId: "internal" });
+    expect(await response.json()).toEqual({
+      uid: "jwt-user",
+      authority: "better-auth",
+      requestId: "internal",
+    });
     expect(verifyJWT).toHaveBeenCalledWith({
       body: { token: "bridge-token" },
       headers: expect.any(Headers),
@@ -163,7 +191,10 @@ describe("auth worker Better Auth dev issuer", () => {
 
   it("verifies an httpOnly Better Auth session cookie", async () => {
     authHandler.mockResolvedValueOnce(
-      Response.json({ user: { id: "cookie-user" }, session: { id: "session-1" } }),
+      Response.json({
+        user: { id: "cookie-user", name: "Alice" },
+        session: { id: "session-1" },
+      }),
     );
     const response = await auth.fetch(
       new Request("https://auth.test/internal/verify", {
@@ -181,6 +212,7 @@ describe("auth worker Better Auth dev issuer", () => {
     expect(await response.json()).toEqual({
       uid: "cookie-user",
       authority: "better-auth",
+      displayName: "Alice",
       requestId: "cookie-request",
     });
     const sessionRequest = authHandler.mock.calls[0][0] as Request;

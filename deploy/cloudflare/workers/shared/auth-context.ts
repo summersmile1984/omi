@@ -4,6 +4,7 @@ export type AuthAudience = "api-core" | "api-ai" | "auth" | "jobs" | "realtime";
 export type AuthContext = {
   uid: string;
   authority: AuthAuthority;
+  displayName?: string;
   sessionGeneration?: string;
   requestId: string;
 };
@@ -24,7 +25,9 @@ export const AUTH_CONTEXT_LIFETIME_SECONDS = 60;
 const CLOCK_SKEW_SECONDS = 5;
 
 function validAuthority(value: unknown): value is AuthAuthority {
-  return value === "firebase" || value === "better-auth" || value === "internal";
+  return (
+    value === "firebase" || value === "better-auth" || value === "internal"
+  );
 }
 
 function validAudience(value: unknown): value is AuthAudience {
@@ -47,14 +50,18 @@ export function encodeAuthContext(context: SignedAuthContext): string {
     .replace(/=+$/g, "");
 }
 
-export function decodeAuthContext(value: string | null): SignedAuthContext | null {
+export function decodeAuthContext(
+  value: string | null,
+): SignedAuthContext | null {
   if (!value) return null;
   try {
     const padded =
       value.replace(/-/g, "+").replace(/_/g, "/") +
       "===".slice((value.length + 3) % 4);
     const binary = atob(padded);
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const bytes = Uint8Array.from(binary, (character) =>
+      character.charCodeAt(0),
+    );
     const parsed = JSON.parse(
       new TextDecoder().decode(bytes),
     ) as Partial<SignedAuthContext>;

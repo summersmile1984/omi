@@ -439,6 +439,10 @@ POST /v1/action-items/batch-delete
 GET  /v1/action-items/pending-sync
 PATCH /v1/action-items/sync-batch
                               Edge → Python API Core → D1 Apple Reminders projection
+POST /v1/action-items/share
+GET  /v1/action-items/shared/{token}
+POST /v1/action-items/accept
+                              Edge → Python API Core → D1 30-day share + atomic claim
 GET/PATCH/DELETE /v1/action-items/{actionItemId}
                               Edge → Python API Core → D1
 PATCH /v1/action-items/{actionItemId}/completed
@@ -539,8 +543,12 @@ batch updates, and batch deletion. Conversation-scoped list/count reads now use
 the same standalone `conversation_id` projection and preserve locked-row
 access checks. They intentionally do not
 claim vector search, goal/workstream link validation, Apple Reminders sync,
-sharing, FCM/reminder delivery, or legacy conversation-item restoration; those
-side effects remain on the legacy owner until their separate contracts move.
+FCM/reminder delivery, or legacy conversation-item restoration; those side
+effects remain on the legacy owner until their separate contracts move. Task
+sharing is D1-owned in staging: the share snapshot has a 30-day expiry, public
+previews expose only sender name/description/due date, and acceptance plus task
+copies execute in one D1 batch guarded by a unique recipient claim. Better Auth
+display names travel only inside the signed, request-bound Edge assertion.
 The route group is staging-only until existing Firestore items are imported and
 all downstream readers use the D1 authority.
 

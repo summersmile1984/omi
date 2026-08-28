@@ -424,9 +424,13 @@ families:
     key_patterns: ["task_share:{token}", "task_share:{token}:accepted"]
     legacy_features: [get, set, ttl, set-membership, claim-rollback]
     consistency: strongly-consistent
-    target: durable-object
+    target: d1
     target_owner: api-core
-    migration_state: planned
+    migration_state: staging-owned
+    migrated_routes:
+      - POST /v1/action-items/share
+      - GET /v1/action-items/shared/:token
+      - POST /v1/action-items/accept
   - id: chat-share
     source_symbols: [store_chat_share, get_chat_share]
     key_patterns: ["chat_share:{token}"]

@@ -4,12 +4,13 @@ import {
   AUTH_SIGNATURE_HEADER,
   createSignedAuthContext,
 } from "../shared/auth-context";
-import type {
-  AuthAudience,
-  AuthContext,
-} from "../shared/auth-context";
+import type { AuthAudience, AuthContext } from "../shared/auth-context";
 
-export async function verifyBearer(request: Request, env: EdgeEnv, requestId: string): Promise<AuthContext | null> {
+export async function verifyBearer(
+  request: Request,
+  env: EdgeEnv,
+  requestId: string,
+): Promise<AuthContext | null> {
   const authorization = request.headers.get("authorization") || "";
   const cookie = request.headers.get("cookie") || "";
   if (!authorization.startsWith("Bearer ") && !cookie) return null;
@@ -35,11 +36,22 @@ export async function verifyBearer(request: Request, env: EdgeEnv, requestId: st
     if (
       typeof body.uid !== "string" ||
       !body.uid ||
-      (body.authority !== "firebase" && body.authority !== "better-auth" && body.authority !== "internal")
+      (body.authority !== "firebase" &&
+        body.authority !== "better-auth" &&
+        body.authority !== "internal")
     ) {
       return null;
     }
-    return { uid: body.uid, authority: body.authority, sessionGeneration: body.sessionGeneration, requestId };
+    return {
+      uid: body.uid,
+      authority: body.authority,
+      displayName:
+        typeof body.displayName === "string" && body.displayName.trim()
+          ? body.displayName.trim().slice(0, 120)
+          : undefined,
+      sessionGeneration: body.sessionGeneration,
+      requestId,
+    };
   } catch {
     return null;
   }
@@ -50,7 +62,12 @@ export function stripUntrustedHeaders(
   options: { preserveClientAuth?: boolean } = {},
 ): Headers {
   const headers = new Headers(request.headers);
-  for (const key of ["x-omi-auth-context", "x-omi-uid", "x-omi-session-generation", "x-omi-internal-signature"]) {
+  for (const key of [
+    "x-omi-auth-context",
+    "x-omi-uid",
+    "x-omi-session-generation",
+    "x-omi-internal-signature",
+  ]) {
     headers.delete(key);
   }
   if (!options.preserveClientAuth) {
