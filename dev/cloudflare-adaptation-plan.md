@@ -818,7 +818,7 @@ conversation action-item reads         # canonical list/count from uid-scoped st
 - conversation photo reads             # canonical uid-scoped D1 photo projection; locked rows fail closed; legacy photo writes/subcollections remain → unit + staging candidate
 - conversation segment text edit       # canonical bounded D1 transcript edit with updated-at CAS; locked rows fail closed; legacy encryption/provider mirrors remain → unit + edge verified
 - account cutover control              # canonical D1 legacy/migrating/new/stranded control projection; missing=legacy, malformed=503; no automatic transitions → unit + edge verified
-- conversation recording existence     # canonical uid-scoped R2 head check using legacy uid/id.wav namespace; locked rows fail closed; upload/finalization/deletion remain separate → unit + staging candidate
+- conversation recording existence     # canonical uid-scoped R2 head check using legacy uid/id.wav namespace; locked rows fail closed; upload/finalization/deletion remain separate → unit + staging verified
 - conversation transcript reads        # canonical uid-scoped D1 transcript projection grouped by deepgram/soniox/speechmatics/whisperx; locked rows fail closed; provider writes remain legacy → unit + edge verified
 - conversation analytics reads         # canonical uid-scoped D1 transcript + people projection for talk time/word count/WPM/share; locked rows fail closed; speech-profile side effects remain legacy → unit + edge verified
 - conversation event flags             # canonical bounded D1 structured event created flags with legacy index semantics; locked rows fail closed; integration fanout remains legacy → unit + edge verified
