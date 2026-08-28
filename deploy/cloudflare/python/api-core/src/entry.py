@@ -32,6 +32,7 @@ from location_routes import (
 )
 from action_item_routes import batch_router as action_item_batch_router
 from action_item_routes import router as action_item_router
+from account_routes import router as account_router
 from people_routes import router as people_router
 from goal_routes import router as goal_router
 from folder_routes import router as folder_router
@@ -1159,6 +1160,7 @@ async def update_transcription_preferences(request: Request):
 app.include_router(location_router)
 app.include_router(action_item_batch_router)
 app.include_router(action_item_router)
+app.include_router(account_router)
 app.include_router(people_router)
 app.include_router(goal_router)
 app.include_router(folder_router)

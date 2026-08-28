@@ -54,6 +54,7 @@ import {
 import { useAuth } from '@/components/auth/AuthProvider';
 import { useToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/utils';
+import { shouldShowSubscriptionUpgrade } from '@/lib/subscription-ui';
 import { PageHeader } from '@/components/layout/PageHeader';
 import {
   getUserLanguage,
@@ -1121,12 +1122,14 @@ function UsageSectionContent({
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setShowUpgradeOptions(true)}
-                      className="px-5 py-2.5 bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white text-sm font-semibold rounded-xl transition-all shadow-lg shadow-purple-500/20"
-                    >
-                      Upgrade to Unlimited
-                    </button>
+                    {shouldShowSubscriptionUpgrade(subscription) && (
+                      <button
+                        onClick={() => setShowUpgradeOptions(true)}
+                        className="px-5 py-2.5 bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white text-sm font-semibold rounded-xl transition-all shadow-lg shadow-purple-500/20"
+                      >
+                        Upgrade to Unlimited
+                      </button>
+                    )}
                     {subscription?.stripe_subscription_id && (
                       <button
                         onClick={handleManagePayment}

@@ -42,7 +42,9 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0019_folders.sql").read_text())
         self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
         self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
+        self.connection.executescript((migration_dir / "0037_memories.sql").read_text())
         self.connection.executescript((migration_dir / "0040_conversation_search.sql").read_text())
+        self.connection.executescript((migration_dir / "0046_account_usage.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -1044,6 +1046,16 @@ def test_conversation_projection_write_is_idempotent_and_bounded():
     detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "write-1"))
     assert detail["structured"]["title"] == "Updated"
     assert detail["private_cloud_sync_enabled"] is True
+    usage = env.APP_DB.connection.execute(
+        "SELECT transcription_seconds, words_transcribed, insights_gained "
+        "FROM cf_usage_sources WHERE uid = ? AND source_kind = 'conversation' AND source_id = ?",
+        ("conversation-user", "write-1"),
+    ).fetchone()
+    assert dict(usage) == {
+        "transcription_seconds": 60,
+        "words_transcribed": 1,
+        "insights_gained": 0,
+    }
 
     invalid = asyncio.run(
         store_conversation_projection(FakeRequest(env, signed_headers(secret), body={**body, "status": "unknown"}))

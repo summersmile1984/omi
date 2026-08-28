@@ -1,0 +1,256 @@
+import asyncio
+import base64
+from datetime import datetime, timezone
+import hashlib
+import hmac
+import json
+from pathlib import Path
+import sqlite3
+import sys
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+
+from account_routes import get_available_plans, get_user_subscription, get_user_usage  # noqa: E402
+
+
+class FakeDb:
+    def __init__(self):
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.row_factory = sqlite3.Row
+        migration_dir = Path(__file__).parents[3] / "migrations/app"
+        for name in ("0032_conversations.sql", "0037_memories.sql", "0046_account_usage.sql"):
+            self.connection.executescript((migration_dir / name).read_text())
+
+    def prepare(self, sql):
+        return FakeStatement(self.connection, sql)
+
+
+class FakeStatement:
+    def __init__(self, connection, sql):
+        self.connection = connection
+        self.sql = sql
+        self.args = ()
+
+    def bind(self, *args):
+        self.args = args
+        return self
+
+    async def first(self):
+        row = self.connection.execute(self.sql, self.args).fetchone()
+        return dict(row) if row is not None else None
+
+    async def all(self):
+        rows = self.connection.execute(self.sql, self.args).fetchall()
+        return {"results": [dict(row) for row in rows]}
+
+
+class FakeRequest:
+    def __init__(self, env, headers=None, query=None):
+        self.scope = {"env": env}
+        self.headers = headers or {}
+        self.query_params = query or {}
+
+
+def signed_headers(secret: str, uid: str = "account-user", **headers):
+    raw = json.dumps({"uid": uid, "authority": "better-auth"}, separators=(",", ":")).encode()
+    encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
+    return {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": base64.urlsafe_b64encode(signature).decode().rstrip("="),
+        **headers,
+    }
+
+
+def make_env(secret: str):
+    db = FakeDb()
+    return type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+
+def insert_usage(
+    env,
+    *,
+    uid="account-user",
+    kind,
+    source_id,
+    occurred_at,
+    seconds=0,
+    words=0,
+    insights=0,
+    memories=0,
+):
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_usage_sources "
+        "(uid, source_kind, source_id, occurred_at, transcription_seconds, words_transcribed, "
+        "insights_gained, memories_created, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (uid, kind, source_id, occurred_at, seconds, words, insights, memories, occurred_at),
+    )
+    env.APP_DB.connection.commit()
+
+
+def insert_price(env, price_id, plan_id, interval="month"):
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_subscription_prices "
+        "(id, plan_id, title, price_string, interval, unit_amount, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (price_id, plan_id, f"{plan_id} {interval}", "$10/mo", interval, 1000, int(datetime.now().timestamp())),
+    )
+    env.APP_DB.connection.commit()
+
+
+def test_usage_is_authenticated_validated_and_grouped_for_each_period():
+    secret = "account-secret"
+    env = make_env(secret)
+    now = datetime.now(timezone.utc)
+    insert_usage(
+        env,
+        kind="conversation",
+        source_id="conversation-1",
+        occurred_at=int(now.timestamp()),
+        seconds=90,
+        words=12,
+        insights=2,
+    )
+    insert_usage(
+        env,
+        kind="memory",
+        source_id="memory-1",
+        occurred_at=int(now.timestamp()),
+        memories=1,
+    )
+    insert_usage(
+        env,
+        uid="other-user",
+        kind="memory",
+        source_id="other-memory",
+        occurred_at=int(now.timestamp()),
+        memories=9,
+    )
+
+    for period in ("today", "monthly", "yearly", "all_time"):
+        response = asyncio.run(get_user_usage(FakeRequest(env, signed_headers(secret), {"period": period})))
+        assert response[period] == {
+            "transcription_seconds": 90,
+            "words_transcribed": 12,
+            "insights_gained": 2,
+            "memories_created": 1,
+            "speech_seconds": 0,
+        }
+        assert len(response["history"]) == 1
+        assert response["history"][0]["memories_created"] == 1
+
+    assert asyncio.run(get_user_usage(FakeRequest(env))).status_code == 401
+    invalid = asyncio.run(get_user_usage(FakeRequest(env, signed_headers(secret), {"period": "week"})))
+    assert invalid.status_code == 400
+
+
+def test_subscription_defaults_to_basic_and_disables_unconfigured_checkout():
+    secret = "account-secret"
+    env = make_env(secret)
+    insert_usage(
+        env,
+        kind="conversation",
+        source_id="monthly-conversation",
+        occurred_at=int(datetime.now(timezone.utc).timestamp()),
+        seconds=120,
+        words=20,
+    )
+
+    response = asyncio.run(get_user_subscription(FakeRequest(env, signed_headers(secret))))
+
+    assert response["subscription"]["plan"] == "basic"
+    assert response["subscription"]["features"][0] == "1,200 minutes of listening per month"
+    assert response["transcription_seconds_used"] == 120
+    assert response["transcription_seconds_limit"] == 72_000
+    assert response["show_subscription_ui"] is False
+    assert response["available_plans"] == []
+    assert asyncio.run(get_user_subscription(FakeRequest(env))).status_code == 401
+
+
+def test_basic_subscription_enables_checkout_only_after_catalog_is_populated():
+    secret = "account-secret"
+    env = make_env(secret)
+    insert_price(env, "price-plus", "plus")
+
+    response = asyncio.run(get_user_subscription(FakeRequest(env, signed_headers(secret))))
+
+    assert response["subscription"]["plan"] == "basic"
+    assert response["show_subscription_ui"] is True
+
+
+def test_price_catalog_enforces_web_mobile_desktop_and_legacy_neo_audiences():
+    secret = "account-secret"
+    env = make_env(secret)
+    for plan in ("plus", "unlimited_v2", "operator", "architect", "unlimited"):
+        insert_price(env, f"price-{plan}", plan)
+
+    web = asyncio.run(get_available_plans(FakeRequest(env, signed_headers(secret))))
+    assert {plan["plan_id"] for plan in web["plans"]} == {"plus", "unlimited_v2", "operator", "architect"}
+    mobile = asyncio.run(get_available_plans(FakeRequest(env, signed_headers(secret, **{"x-app-platform": "ios"}))))
+    assert {plan["plan_id"] for plan in mobile["plans"]} == {"plus", "unlimited_v2"}
+    desktop = asyncio.run(get_available_plans(FakeRequest(env, signed_headers(secret, **{"x-app-platform": "macos"}))))
+    assert {plan["plan_id"] for plan in desktop["plans"]} == {"operator", "architect"}
+
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_user_subscriptions (uid, plan, status, updated_at) VALUES (?, 'unlimited', 'active', ?)",
+        ("account-user", int(datetime.now().timestamp())),
+    )
+    env.APP_DB.connection.commit()
+    legacy_mobile = asyncio.run(
+        get_available_plans(FakeRequest(env, signed_headers(secret, **{"x-app-platform": "android"})))
+    )
+    assert {plan["plan_id"] for plan in legacy_mobile["plans"]} == {
+        "plus",
+        "unlimited_v2",
+        "unlimited",
+    }
+
+
+def test_imported_subscription_uses_d1_state_and_only_enables_a_populated_catalog():
+    secret = "account-secret"
+    env = make_env(secret)
+    insert_price(env, "price-architect", "architect")
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_user_subscriptions "
+        "(uid, plan, status, current_period_end, stripe_subscription_id, current_price_id, "
+        "features_json, show_subscription_ui, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "account-user",
+            "architect",
+            "active",
+            2_000_000_000,
+            "sub_test",
+            "price-architect",
+            json.dumps(["Imported feature"]),
+            1,
+            int(datetime.now().timestamp()),
+        ),
+    )
+    env.APP_DB.connection.commit()
+
+    response = asyncio.run(get_user_subscription(FakeRequest(env, signed_headers(secret))))
+
+    assert response["subscription"]["plan"] == "architect"
+    assert response["subscription"]["stripe_subscription_id"] == "sub_test"
+    assert response["subscription"]["features"] == ["Imported feature"]
+    assert response["show_subscription_ui"] is True
+    catalog = asyncio.run(get_available_plans(FakeRequest(env, signed_headers(secret))))
+    assert catalog["plans"][0]["is_active"] is True
+
+
+def test_account_reads_fail_closed_when_d1_is_unavailable():
+    secret = "account-secret"
+
+    class FailingDb:
+        def prepare(self, _sql):
+            raise RuntimeError("D1 unavailable")
+
+    env = type("Env", (), {"APP_DB": FailingDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    request = FakeRequest(env, signed_headers(secret))
+
+    usage = asyncio.run(get_user_usage(request))
+    subscription = asyncio.run(get_user_subscription(request))
+    catalog = asyncio.run(get_available_plans(request))
+
+    assert usage.status_code == 503
+    assert subscription.status_code == 503
+    assert catalog.status_code == 503

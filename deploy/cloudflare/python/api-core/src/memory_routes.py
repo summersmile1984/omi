@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from internal_auth import decode_context
+from account_routes import usage_source_statement
 
 router = APIRouter()
 
@@ -274,7 +275,7 @@ async def create_memory(request: Request):
     manually_added = memory.category == "manual"
     tier = "long_term" if manually_added or (memory.durability or "").lower() == "long_term" else "short_term"
     try:
-        await env.APP_DB.prepare(
+        memory_statement = env.APP_DB.prepare(
             "INSERT INTO cf_memories "
             "(uid, id, content, category, visibility, tags_json, headline, predicate, arguments_json, "
             "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
@@ -303,7 +304,17 @@ async def create_memory(request: Request):
             now,
             now,
             now,
-        ).run()
+        )
+        usage_statement = usage_source_statement(
+            env,
+            uid=uid,
+            source_kind="memory",
+            source_id=memory_id,
+            occurred_at=now,
+            memories_created=1,
+            updated_at=now,
+        )
+        await env.APP_DB.batch([memory_statement, usage_statement])
         row = await _first_active(env, uid, memory_id)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)

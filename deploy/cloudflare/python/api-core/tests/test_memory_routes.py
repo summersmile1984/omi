@@ -24,8 +24,9 @@ class FakeDb:
     def __init__(self):
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
-        migration = Path(__file__).parents[3] / "migrations/app/0037_memories.sql"
-        self.connection.executescript(migration.read_text())
+        migration_dir = Path(__file__).parents[3] / "migrations/app"
+        for name in ("0032_conversations.sql", "0037_memories.sql", "0046_account_usage.sql"):
+            self.connection.executescript((migration_dir / name).read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -141,6 +142,11 @@ def test_memory_create_list_filters_and_preserves_canonical_shape_with_uid_isola
     assert manual["arguments"] == {"place": "Shanghai"}
     assert manual["created_at"].endswith("+00:00")
     assert automatic["memory_tier"] == "short_term"
+    usage = env.APP_DB.connection.execute(
+        "SELECT memories_created FROM cf_usage_sources WHERE uid = ? AND source_kind = 'memory'",
+        ("memory-user",),
+    ).fetchall()
+    assert [row["memories_created"] for row in usage] == [1, 1]
 
     listed = asyncio.run(list_memories(FakeRequest(env, signed_headers(secret), {"limit": "10", "offset": "0"})))
     assert {item["id"] for item in listed} == {manual["id"], automatic["id"]}

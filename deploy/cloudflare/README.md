@@ -17,7 +17,8 @@ The first staging slice contains:
   semantics, uid-scoped transcription
   preferences, onboarding/privacy/notification/location-consent settings, and
   the public firmware stable/latest/version APIs. It also exposes staging-only
-  D1-backed action-item and canonical memory CRUD surfaces.
+  D1-backed action-item and canonical memory CRUD surfaces, plus account usage,
+  subscription snapshot, and configured price-catalog reads.
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
@@ -185,7 +186,8 @@ smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
 `audio/mpeg` response and is opt-in.
 
 The authenticated smoke verifies unauthenticated rejection, the D1 probe, the
-conversation list/search, folder/memory shell dependencies, and the
+account usage/subscription/price-catalog reads, conversation list/search,
+folder/memory shell dependencies, and the
 conversation, enabled-app, and memory reads through Web `/api/proxy` so a
 missing Web→Edge binding fails the release. It also sends one real default-text
 chat through Web → Edge → Workers AI, validates the legacy SSE completion, and
@@ -337,6 +339,11 @@ DELETE /v3/memories/batch
                               and there is no Firestore fallback or dual write
 GET  /v1/account/cutover/control
                               Edge → Python API Core → D1 account migration control projection
+GET  /v1/users/me/usage       Edge → Python API Core → D1 idempotent usage sources
+GET  /v1/users/me/subscription
+                              Edge → Python API Core → D1 subscription/usage projection
+GET  /v1/payments/available-plans
+                              Edge → Python API Core → configured D1 price catalog
 GET  /v1/conversations/count
 POST /v1/conversations/search
 GET  /v1/conversations/{conversationId}
@@ -669,6 +676,19 @@ The first staging slice intentionally rejects app/persona chat, attachments,
 and page context with typed `409` responses; RAG/tools, plan entitlements,
 usage accounting, and provider-streamed token delivery remain separate
 qualification boundaries rather than silently degrading to generic chat.
+
+The account read routes use D1 as the isolated staging authority. Conversation
+and memory writes update one idempotent `cf_usage_sources` row in the same D1
+batch as the source projection, and migration `0046_account_usage.sql`
+backfills existing projected rows. Usage periods and history buckets are UTC;
+the legacy per-user timezone lookup is still an explicit parity gap.
+`cf_user_subscriptions` and `cf_subscription_prices` are import/configuration
+tables rather than live Stripe calls. An empty price catalog returns HTTP 200
+with no plans and `show_subscription_ui: false`, so the Web Worker does not
+offer a checkout that cannot succeed. Checkout, upgrade, cancel, customer
+portal, Stripe webhook reconciliation, BYOK/reviewer overrides, chat/phone
+quota projections, and production subscription import remain legacy-owned.
+No staging price IDs are synthesized or copied from production.
 
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging

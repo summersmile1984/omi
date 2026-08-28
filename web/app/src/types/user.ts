@@ -132,6 +132,7 @@ export interface UserSubscription {
   cancel_at_period_end?: boolean;
   current_price_id?: string;
   features?: string[];
+  show_subscription_ui?: boolean;
 }
 
 // Pricing option for a plan (matches backend PricingOption)

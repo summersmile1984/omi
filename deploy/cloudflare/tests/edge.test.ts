@@ -1215,6 +1215,49 @@ describe("edge gateway", () => {
     expect(rateLimitNames).toEqual(["stt:transcribe:user-1"]);
   });
 
+  it("routes account usage, subscription, and price catalog reads to API Core", async () => {
+    const corePaths: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        corePaths.push(new URL(request.url).pathname);
+        expect(request.headers.get("authorization")).toBeNull();
+        expect(request.headers.get("x-omi-auth-context")).toBeTruthy();
+        return Response.json({ status: "ok" });
+      }),
+      API_AI: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+
+    for (const path of [
+      "/v1/users/me/usage?period=monthly",
+      "/v1/users/me/subscription",
+      "/v1/payments/available-plans",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    expect(corePaths).toEqual([
+      "/v1/users/me/usage",
+      "/v1/users/me/subscription",
+      "/v1/payments/available-plans",
+    ]);
+  });
+
   it("routes the app voice-message upload to the API AI worker", async () => {
     let forwarded: Request | undefined;
     const rateLimitNames: string[] = [];

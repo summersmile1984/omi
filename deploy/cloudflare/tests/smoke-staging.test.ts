@@ -187,6 +187,15 @@ describe("staging smoke helpers", () => {
                                                     ) ||
                                                     url.endsWith(
                                                       "/v1/users/geolocation",
+                                                    ) ||
+                                                    url.includes(
+                                                      "/v1/users/me/usage?",
+                                                    ) ||
+                                                    url.endsWith(
+                                                      "/v1/users/me/subscription",
+                                                    ) ||
+                                                    url.endsWith(
+                                                      "/v1/payments/available-plans",
                                                     )
                                                   ? 200
                                                   : 400;
@@ -246,11 +255,14 @@ describe("staging smoke helpers", () => {
       screenActivity: 200,
       screenActivitySummary: 200,
       calendarOnboardingStatus: 200,
+      accountUsage: 200,
+      accountSubscription: 200,
+      availablePlans: 200,
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(49);
+    expect(calls).toHaveLength(52);
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
@@ -438,7 +450,10 @@ describe("staging smoke helpers", () => {
         url.endsWith("/v1/screen-activity") ||
         url.endsWith("/v1/screen-activity/summary") ||
         url.endsWith("/v1/calendar/onboarding/status") ||
-        url.endsWith("/v1/users/geolocation")
+        url.endsWith("/v1/users/geolocation") ||
+        url.includes("/v1/users/me/usage?") ||
+        url.endsWith("/v1/users/me/subscription") ||
+        url.endsWith("/v1/payments/available-plans")
       ) {
         return new Response(null, { status: 200 });
       }

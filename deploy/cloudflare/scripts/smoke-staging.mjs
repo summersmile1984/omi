@@ -559,6 +559,27 @@ export async function runSmoke({
   );
   expectStatus("calendar onboarding status", calendarOnboardingStatus, 200);
 
+  const accountUsage = await request(
+    fetchImpl,
+    `${base}/v1/users/me/usage?period=monthly`,
+    { headers: authHeaders },
+  );
+  expectStatus("account usage", accountUsage, 200);
+
+  const accountSubscription = await request(
+    fetchImpl,
+    `${base}/v1/users/me/subscription`,
+    { headers: authHeaders },
+  );
+  expectStatus("account subscription", accountSubscription, 200);
+
+  const availablePlans = await request(
+    fetchImpl,
+    `${base}/v1/payments/available-plans`,
+    { headers: authHeaders },
+  );
+  expectStatus("available plans", availablePlans, 200);
+
   // Exercise geolocation route ownership without persisting location data.
   // The legacy contract intentionally returns 200 for invalid coordinates.
   const invalidGeolocation = await request(
@@ -667,6 +688,9 @@ export async function runSmoke({
     screenActivity: screenActivity.status,
     screenActivitySummary: screenActivitySummary.status,
     calendarOnboardingStatus: calendarOnboardingStatus.status,
+    accountUsage: accountUsage.status,
+    accountSubscription: accountSubscription.status,
+    availablePlans: availablePlans.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     voiceMessageEmptyAudio: voiceMessageEmpty.status,

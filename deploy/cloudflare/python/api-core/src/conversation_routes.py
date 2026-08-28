@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from internal_auth import decode_context
+from account_routes import usage_source_statement
 
 router = APIRouter()
 
@@ -236,6 +237,27 @@ def _json_value(value: object, fallback: object) -> object:
 def _json_object(value: object) -> dict[str, object]:
     parsed = _json_value(value, {})
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _usage_words(segments: list[dict[str, object]]) -> int:
+    return sum(len(re.findall(r"\S+", str(segment.get("text") or ""))) for segment in segments)
+
+
+def _usage_insights(projection: ConversationProjectionWrite) -> int:
+    count = 0
+    for key in ("title", "overview"):
+        value = projection.structured.get(key)
+        if isinstance(value, str):
+            count += sum(1 for sentence in re.split(r"[.!?]+", value) if len(sentence.split()) > 5)
+    for key in ("action_items", "events"):
+        value = projection.structured.get(key)
+        if isinstance(value, list):
+            count += len(value)
+    for result in projection.apps_results:
+        value = result.get("content")
+        if isinstance(value, str):
+            count += sum(1 for sentence in re.split(r"[.!?]+", value) if len(sentence.split()) > 5)
+    return count
 
 
 def _json_list(value: object) -> list[object]:
@@ -576,7 +598,7 @@ async def store_conversation_projection(request: Request):
     finished_at = _epoch(projection.finished_at)
     env = request.scope["env"]
     try:
-        await env.APP_DB.prepare(
+        conversation_statement = env.APP_DB.prepare(
             "INSERT INTO cf_conversations "
             "(uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
             "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, "
@@ -623,7 +645,22 @@ async def store_conversation_projection(request: Request):
             json_fields["geolocation_json"],
             json_fields["external_data_json"],
             json_fields["calendar_event_json"],
-        ).run()
+        )
+        duration = 0
+        if started_at is not None and finished_at is not None:
+            duration = max(0, min(finished_at - started_at, 7 * 24 * 60 * 60))
+        usage_statement = usage_source_statement(
+            env,
+            uid=uid,
+            source_kind="conversation",
+            source_id=projection.id,
+            occurred_at=finished_at or created_at,
+            transcription_seconds=duration,
+            words_transcribed=_usage_words(projection.transcript_segments),
+            insights_gained=0 if projection.discarded else _usage_insights(projection),
+            updated_at=updated_at,
+        )
+        await env.APP_DB.batch([conversation_statement, usage_statement])
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
     return {"conversation_id": projection.id, "status": "stored"}

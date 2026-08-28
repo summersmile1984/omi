@@ -1372,6 +1372,7 @@ export async function getUserSubscription(): Promise<UserSubscription | null> {
       cancel_at_period_end: response.subscription?.cancel_at_period_end,
       current_price_id: response.subscription?.current_price_id,
       features: response.subscription?.features || [],
+      show_subscription_ui: response.show_subscription_ui,
     };
     return result;
   } catch (error) {
