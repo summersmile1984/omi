@@ -719,6 +719,18 @@ restriction enforcement, admin actions, public case lookup, and production
 state import remain legacy-owned. A successful staging read is not evidence
 that those enforcement authorities have moved.
 
+The 2026-08-28 staging release exercised a generated spoken WAV through the
+raw Workers AI route, the Web/Flutter multipart route, and the Queue route.
+Each provider result contained one timed segment and committed exactly 3,160 ms
+of `sync_fresh` speech. Repeating both synchronous requests with the same
+operation key left source count and total speech unchanged, including a fresh
+multipart boundary; the Queue retry returned the original completed job ID.
+The resulting Fair Use read stayed at `stage=none`, reported 0.2% daily usage,
+and kept Deepgram usage at zero. Realtime interval accumulation and Durable
+Object alarm recovery are covered by the Worker integration suite; the release
+did not claim a live external-ASR fault injection. The isolated account, jobs,
+usage rows, and generated audio were deleted after verification.
+
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging
 owner, while the test/regenerate route computes a deterministic summary from
