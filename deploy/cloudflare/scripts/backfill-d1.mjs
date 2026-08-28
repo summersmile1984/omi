@@ -21,6 +21,32 @@ const TABLES = {
     integers: ["created_at", "expires_at"],
     json: ["device_models_json", "targeting_json", "display_json", "content_json"],
   },
+  cf_app_catalog: {
+    key_columns: ["id"],
+    required: ["id", "data_json", "updated_at"],
+    columns: [
+      "id",
+      "approved",
+      "status",
+      "disabled",
+      "is_popular",
+      "installs",
+      "rating_avg",
+      "rating_count",
+      "data_json",
+      "updated_at",
+    ],
+    defaults: {
+      approved: 0,
+      status: "approved",
+      disabled: 0,
+      is_popular: 0,
+      installs: 0,
+      rating_count: 0,
+    },
+    integers: ["installs", "rating_count", "updated_at"],
+    json: ["data_json"],
+  },
   cf_announcement_dismissals: {
     key_columns: ["uid", "announcement_id"],
     required: ["uid", "announcement_id", "dismissed_at"],
@@ -550,6 +576,7 @@ export function normalizeRow(table, input) {
   if (row.calendar_event !== undefined && row.calendar_event_json === undefined) {
     row.calendar_event_json = row.calendar_event;
   }
+  if (row.data !== undefined && row.data_json === undefined) row.data_json = row.data;
   if (row.targeting !== undefined && row.targeting_json === undefined) row.targeting_json = row.targeting;
   if (row.display !== undefined && row.display_json === undefined) row.display_json = row.display;
   if (row.device_models !== undefined && row.device_models_json === undefined) row.device_models_json = row.device_models;
@@ -582,6 +609,51 @@ export function normalizeRow(table, input) {
     if (normalized.status === "completed" && normalized.completed === undefined) normalized.completed = 1;
     if (normalized.status !== "completed" && normalized.completed === undefined) normalized.completed = 0;
     if (normalized.status === "completed" && normalized.completed !== 1) fail("completed action item must have completed=1");
+  }
+  if (table === "cf_app_catalog") {
+    const raw = normalized.data_json;
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      fail("cf_app_catalog.data_json must contain valid JSON");
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      fail("cf_app_catalog.data_json must contain an object");
+    }
+    const forbidden = new Set([
+      "email",
+      "reviews",
+      "user_review",
+      "persona_prompt",
+      "chat_prompt",
+      "memory_prompt",
+      "payment_product_id",
+      "payment_price_id",
+      "payment_link_id",
+      "money_made",
+      "usage_count",
+      "twitter",
+      "mcp_oauth_tokens",
+    ]);
+    const scan = (value) => {
+      if (!value || typeof value !== "object") return false;
+      for (const [key, nested] of Object.entries(value)) {
+        if (forbidden.has(key) || scan(nested)) return true;
+      }
+      return false;
+    };
+    if (scan(payload)) fail("cf_app_catalog.data_json contains private fields");
+    if (payload.id !== undefined && payload.id !== normalized.id) {
+      fail("cf_app_catalog.data_json id must match id");
+    }
+    if (payload.capabilities !== undefined && (!Array.isArray(payload.capabilities) || payload.capabilities.some((value) => typeof value !== "string"))) {
+      fail("cf_app_catalog.data_json capabilities must be a string array");
+    }
+    if (String(raw).length > 500_000) fail("cf_app_catalog.data_json is too large");
+    if (normalized.installs < 0 || normalized.rating_count < 0) {
+      fail("cf_app_catalog counters must be non-negative");
+    }
   }
   return normalized;
 }

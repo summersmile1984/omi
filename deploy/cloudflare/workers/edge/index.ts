@@ -51,6 +51,7 @@ app.get("/v1/app-categories", proxyPublicCore);
 app.get("/v1/app/proactive-notification-scopes", proxyPublicCore);
 app.get("/v1/app-capabilities", proxyPublicCore);
 app.get("/v1/app/payment-plans", proxyPublicCore);
+app.get("/v1/approved-apps", proxyPublicCore);
 
 app.all("/api/auth/*", async (c) => {
   const id = requestId(c.req.raw);
@@ -216,6 +217,7 @@ const proxyAuthenticatedAI = async (
 };
 
 app.get("/v1/config/api-keys", proxyAuthenticatedCore);
+app.get("/v1/apps/popular", proxyAuthenticatedCore);
 app.post("/v2/realtime/session", proxyAuthenticatedAI);
 app.post("/v2/realtime/usage", proxyAuthenticatedAI);
 app.post("/v1/stt/transcribe-async", proxyAuthenticatedAsyncTranscription);

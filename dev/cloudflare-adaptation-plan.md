@@ -764,7 +764,7 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，支持稳定 `jobId` 的 `probe` 与 raw-audio `transcribe` kind；后者用临时 R2 对象、幂等键和最多三次 Workers AI 重试完成异步 Whisper 投影，并提供 uid-scoped job status/result read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：160 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：162 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
@@ -809,6 +809,7 @@ native Workers AI embeddings POST      # BGE text batch, 768-dimension vectors �
 action-item CRUD                       # D1 uid-scoped create/list/update/complete/delete + batch/reconciliation + Reminders sync projections → verified
 announcements                           # D1 changelog/feature/general + pending targeting + per-user dismiss → unit verified
 static app catalog metadata             # categories/capabilities/notification scopes/payment-plan options; no state or provider dependency → unit + staging verified
+public app catalog projection           # approved/non-disabled/non-persona app rows in D1; private fields rejected at backfill; dynamic writes remain legacy → unit + staging verified
 people metadata CRUD                   # D1 uid/name-scoped create/list/rename/delete; speech samples stay legacy → verified
 goal metadata CRUD                     # D1 uid-scoped current/all/create/read/update/progress/soft-delete → verified
 goal detail projection                 # bounded uid-scoped goal/workstream/task/progress-event composition → verified
@@ -916,6 +917,13 @@ marker 已删除。真实 staging 请求状态为 `200/200/200/204`。
 规则；发布/admin CRUD 也已接入 `ANNOUNCEMENTS_ADMIN_KEY` secret-gated 路由。
 该组已通过 51 个 API Core 契约测试；待内容回填、密钥轮换和 rollback 证据完成
 后再切 production。
+
+随后补齐公开 app catalog projection：`cf_app_catalog` 只保存经过回填校验的
+公开字段，`GET /v1/approved-apps` 与鉴权的 `GET /v1/apps/popular` 从 D1 读取
+approved、非 disabled、非 persona 记录；staging fixture 实测返回 HTTP 200，未
+鉴权 popular 返回 401。回填器会拒绝 reviews、支付标识、凭据和 prompt 等私有
+字段；app 创建、审核、安装计数、订阅、MCP 和用户 review 仍由 legacy authority
+负责。
 
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt

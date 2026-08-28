@@ -46,6 +46,42 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("keeps approved app catalog public while guarding popular reads", async () => {
+    const corePaths: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        corePaths.push(new URL(request.url).pathname);
+        return Response.json([]);
+      }),
+    };
+    const approved = await edge.fetch(
+      new Request("https://edge.test/v1/approved-apps"),
+      env as never,
+    );
+    const popularUnauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/apps/popular"),
+      env as never,
+    );
+    const popular = await edge.fetch(
+      new Request("https://edge.test/v1/apps/popular", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+
+    expect(approved.status).toBe(200);
+    expect(popularUnauthenticated.status).toBe(401);
+    expect(popular.status).toBe(200);
+    expect(corePaths).toEqual(["/v1/approved-apps", "/v1/apps/popular"]);
+  });
+
   it("strips caller auth headers before forwarding verified context", async () => {
     let forwarded: Headers | undefined;
     const env = {

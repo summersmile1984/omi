@@ -265,6 +265,8 @@ GET  /v1/app-capabilities
 GET  /v1/app/payment-plans
                               Edge → Python API Core → static catalog metadata;
                               mutable app records, reviews, and subscriptions remain legacy
+GET  /v1/approved-apps         Edge → Python API Core → approved public app D1 projection
+GET  /v1/apps/popular          Edge → Python API Core → popular public app D1 projection
 GET  /v1/config/api-keys      Edge → Python API Core → Worker client-key vars
 GET  /v1/users/transcription-preferences
 PATCH /v1/users/transcription-preferences
@@ -576,6 +578,13 @@ The app catalog metadata routes (`/v1/app-categories`,
 without D1 or external providers. Mutable app records, reviews, subscriptions,
 MCP credentials, and enable/disable side effects remain legacy-owned until
 their catalog authority and user-installation state are migrated together.
+
+`/v1/approved-apps` and the authenticated `/v1/apps/popular` route read only the
+approved, non-disabled, non-persona records in `cf_app_catalog`. Records enter
+that table through the whitelisted D1 backfill generator, which rejects private
+fields such as reviews, payment identifiers, credentials, and prompts. This
+projection is the first dynamic catalog slice; it does not yet own app creation,
+reviews, install counts, subscriptions, or MCP state.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

@@ -224,4 +224,40 @@ describe("D1 backfill SQL generator", () => {
     expect(sql).toContain("ON CONFLICT(id) DO UPDATE SET type = excluded.type");
     expect(sql).toContain("ON CONFLICT(uid, announcement_id) DO UPDATE SET dismissed_at = excluded.dismissed_at");
   });
+
+  it("renders public app catalog projections while rejecting private app fields", () => {
+    const sql = renderBackfillSql([
+      {
+        table: "cf_app_catalog",
+        row: {
+          id: "app-1",
+          approved: true,
+          is_popular: true,
+          installs: 12,
+          rating_avg: 4.5,
+          rating_count: 3,
+          updated_at: "2026-08-28T10:00:00Z",
+          data: {
+            id: "app-1",
+            name: "Example",
+            capabilities: ["chat", "memories"],
+            description: "Public app",
+          },
+        },
+      },
+    ]);
+    expect(sql).toContain("cf_app_catalog");
+    expect(sql).toContain("data_json");
+    expect(sql).toContain("ON CONFLICT(id) DO UPDATE SET approved = excluded.approved");
+    expect(() => renderBackfillSql([
+      {
+        table: "cf_app_catalog",
+        row: {
+          id: "app-1",
+          updated_at: 1,
+          data: { id: "app-1", email: "private@example.test" },
+        },
+      },
+    ])).toThrow("private fields");
+  });
 });
