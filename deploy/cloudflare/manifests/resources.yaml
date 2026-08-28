@@ -36,6 +36,10 @@ resources:
     name: omi-cf-jobs-staging
     owner: jobs
     environment: staging
+  - kind: queue
+    name: omi-cf-jobs-dlq-staging
+    owner: jobs
+    environment: staging
   - kind: worker
     name: omi-cf-jobs-staging
     owner: jobs

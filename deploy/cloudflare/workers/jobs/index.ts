@@ -7,15 +7,23 @@ const MAX_PAYLOAD_BYTES = 16_000;
 const MAX_TRANSCRIPTION_AUDIO_BYTES = 5_000_000;
 const MAX_TRANSCRIPTION_RESULT_BYTES = 1_000_000;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
+const JOB_LEASE_SECONDS = 15 * 60;
+const QUEUE_RETRY_DELAY_SECONDS = 10;
+const MAX_TRANSCRIPTION_PROVIDER_ATTEMPTS = 3;
 const DEFAULT_WORKERS_AI_ASR_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
 app.get("/health", (c) =>
-  c.json({ status: "ok", service: "jobs", version: "cf-06" }),
+  c.json({ status: "ok", service: "jobs", version: "cf-07" }),
 );
 
-async function requestContext(
-  c: Context<{ Bindings: JobsEnv }>,
-){
+type ExistingJob = {
+  job_id: string;
+  status: string;
+  last_error: string | null;
+  request_fingerprint: string | null;
+};
+
+async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
   return verifyRequestAuthContext(
     c.req.raw,
     "jobs",
@@ -27,6 +35,102 @@ function objectPayload(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+async function sha256Hex(value: string | ArrayBuffer): Promise<string> {
+  const bytes =
+    typeof value === "string" ? new TextEncoder().encode(value) : value;
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+async function requestFingerprint(
+  kind: JobMessage["kind"],
+  payload: Record<string, unknown>,
+): Promise<string> {
+  return sha256Hex(`${kind}\0${stableJson(payload)}`);
+}
+
+async function publishJob(
+  c: Context<{ Bindings: JobsEnv }>,
+  context: { uid: string },
+  jobId: string,
+  kind: JobMessage["kind"],
+  payload: Record<string, unknown>,
+): Promise<Response> {
+  try {
+    await c.env.JOBS.send({ jobId, uid: context.uid, kind, payload });
+  } catch {
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      await c.env.APP_DB.prepare(
+        "UPDATE cf_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND uid = ?",
+      )
+        .bind("queue unavailable", now, jobId, context.uid)
+        .run();
+    } catch {
+      // The request still fails closed. A later exact retry can only repair the
+      // row if D1 recorded the queue publication failure.
+    }
+    return c.json({ error: "queue unavailable" }, 503);
+  }
+  return c.json({ status: "queued", jobId }, 202);
+}
+
+async function resolveExistingJob(
+  c: Context<{ Bindings: JobsEnv }>,
+  context: { uid: string },
+  existing: ExistingJob,
+  kind: JobMessage["kind"],
+  payload: Record<string, unknown>,
+  payloadJson: string,
+  fingerprint: string,
+  identity: "idempotency key" | "job id",
+): Promise<Response> {
+  if (existing.request_fingerprint !== fingerprint) {
+    return c.json({ error: `${identity} reused with different payload` }, 409);
+  }
+  if (
+    existing.status === "failed" &&
+    existing.last_error === "queue unavailable"
+  ) {
+    const now = Math.floor(Date.now() / 1000);
+    const repaired = await c.env.APP_DB.prepare(
+      "UPDATE cf_jobs SET payload_json = ?, status = 'queued', last_error = NULL, updated_at = ? " +
+        "WHERE job_id = ? AND uid = ? AND status = 'failed' AND last_error = 'queue unavailable' AND request_fingerprint = ?",
+    )
+      .bind(payloadJson, now, existing.job_id, context.uid, fingerprint)
+      .run();
+    if (repaired.meta?.changes === 1) {
+      return publishJob(c, context, existing.job_id, kind, payload);
+    }
+    const current = await c.env.APP_DB.prepare(
+      "SELECT job_id, status, last_error, request_fingerprint FROM cf_jobs WHERE job_id = ? AND uid = ?",
+    )
+      .bind(existing.job_id, context.uid)
+      .first<ExistingJob>();
+    if (!current) return c.json({ error: "job id conflict" }, 409);
+    existing = current;
+  }
+  return c.json({
+    status: "already_queued",
+    jobId: existing.job_id,
+    state: existing.status,
+  });
 }
 
 function parseTranscriptionPayload(payload: Record<string, unknown>) {
@@ -57,52 +161,74 @@ async function enqueueJob(
   kind: JobMessage["kind"],
   payload: Record<string, unknown>,
   idempotencyKey: string | null = null,
+  fingerprintOverride: string | null = null,
 ) {
   const payloadJson = JSON.stringify(payload);
   if (payloadJson.length > MAX_PAYLOAD_BYTES)
     return c.json({ error: "job payload too large" }, 413);
 
+  const fingerprint =
+    fingerprintOverride || (await requestFingerprint(kind, payload));
   if (idempotencyKey) {
     const existing = await c.env.APP_DB.prepare(
-      "SELECT job_id, status FROM cf_jobs WHERE uid = ? AND kind = ? AND idempotency_key = ?",
+      "SELECT job_id, status, last_error, request_fingerprint FROM cf_jobs WHERE uid = ? AND kind = ? AND idempotency_key = ?",
     )
       .bind(context.uid, kind, idempotencyKey)
-      .first<{ job_id: string; status: string }>();
-    if (existing)
-      return c.json({
-        status: "already_queued",
-        jobId: existing.job_id,
-        state: existing.status,
-      });
+      .first<ExistingJob>();
+    if (existing) {
+      return resolveExistingJob(
+        c,
+        context,
+        existing,
+        kind,
+        payload,
+        payloadJson,
+        fingerprint,
+        "idempotency key",
+      );
+    }
   }
 
   const now = Math.floor(Date.now() / 1000);
   const inserted = await c.env.APP_DB.prepare(
-    "INSERT INTO cf_jobs (job_id, uid, kind, payload_json, status, attempts, created_at, updated_at, idempotency_key) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?) ON CONFLICT(job_id) DO NOTHING",
+    "INSERT INTO cf_jobs (job_id, uid, kind, payload_json, status, attempts, created_at, updated_at, idempotency_key, request_fingerprint) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
   )
-    .bind(jobId, context.uid, kind, payloadJson, now, now, idempotencyKey)
+    .bind(
+      jobId,
+      context.uid,
+      kind,
+      payloadJson,
+      now,
+      now,
+      idempotencyKey,
+      fingerprint,
+    )
     .run();
   if (inserted.meta?.changes !== 1) {
-    const existing = await c.env.APP_DB.prepare(
-      "SELECT status FROM cf_jobs WHERE job_id = ? AND uid = ?",
-    )
-      .bind(jobId, context.uid)
-      .first<{ status: string }>();
+    const existing = idempotencyKey
+      ? await c.env.APP_DB.prepare(
+          "SELECT job_id, status, last_error, request_fingerprint FROM cf_jobs WHERE uid = ? AND kind = ? AND idempotency_key = ?",
+        )
+          .bind(context.uid, kind, idempotencyKey)
+          .first<ExistingJob>()
+      : await c.env.APP_DB.prepare(
+          "SELECT job_id, status, last_error, request_fingerprint FROM cf_jobs WHERE job_id = ? AND uid = ?",
+        )
+          .bind(jobId, context.uid)
+          .first<ExistingJob>();
     if (!existing) return c.json({ error: "job id conflict" }, 409);
-    return c.json({ status: "already_queued", jobId, state: existing.status });
+    return resolveExistingJob(
+      c,
+      context,
+      existing,
+      kind,
+      payload,
+      payloadJson,
+      fingerprint,
+      idempotencyKey ? "idempotency key" : "job id",
+    );
   }
-
-  try {
-    await c.env.JOBS.send({ jobId, uid: context.uid, kind, payload });
-  } catch {
-    await c.env.APP_DB.prepare(
-      "UPDATE cf_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?",
-    )
-      .bind("queue unavailable", now, jobId)
-      .run();
-    return c.json({ error: "queue unavailable" }, 503);
-  }
-  return c.json({ status: "queued", jobId }, 202);
+  return publishJob(c, context, jobId, kind, payload);
 }
 
 app.post("/v1/cf/jobs", async (c) => {
@@ -134,19 +260,6 @@ app.post("/v1/cf/transcription-jobs", async (c) => {
   if (idempotencyKey && idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
     return c.json({ error: "idempotency key too long" }, 400);
   }
-  if (idempotencyKey) {
-    const existing = await c.env.APP_DB.prepare(
-      "SELECT job_id, status FROM cf_jobs WHERE uid = ? AND kind = 'transcribe' AND idempotency_key = ?",
-    )
-      .bind(context.uid, idempotencyKey)
-      .first<{ job_id: string; status: string }>();
-    if (existing)
-      return c.json({
-        status: "already_queued",
-        jobId: existing.job_id,
-        state: existing.status,
-      });
-  }
 
   const contentType =
     c.req.header("content-type")?.split(";", 1)[0].trim().toLowerCase() ||
@@ -168,13 +281,17 @@ app.post("/v1/cf/transcription-jobs", async (c) => {
   if (!body.byteLength) return c.json({ error: "no audio data provided" }, 400);
   if (body.byteLength > MAX_TRANSCRIPTION_AUDIO_BYTES)
     return c.json({ error: "audio body too large" }, 413);
+  const audioSha256 = await sha256Hex(body);
+  const fingerprint = await sha256Hex(
+    `transcribe\0${contentType}\0${audioSha256}`,
+  );
 
   const jobId = crypto.randomUUID();
   const objectKey = `cf-transcriptions/${context.uid}/${jobId}`;
   try {
     await c.env.ASSETS.put(objectKey, body, {
       httpMetadata: { contentType },
-      customMetadata: { uid: context.uid, jobId },
+      customMetadata: { uid: context.uid, jobId, sha256: audioSha256 },
     });
   } catch {
     return c.json({ error: "audio staging unavailable" }, 503);
@@ -187,14 +304,25 @@ app.post("/v1/cf/transcription-jobs", async (c) => {
       context,
       jobId,
       "transcribe",
-      { objectKey, contentType },
+      { objectKey, contentType, sha256: audioSha256 },
       idempotencyKey,
+      fingerprint,
     );
   } catch {
-    await c.env.ASSETS.delete(objectKey);
+    try {
+      await c.env.ASSETS.delete(objectKey);
+    } catch {
+      return c.json({ error: "audio staging cleanup unavailable" }, 503);
+    }
     return c.json({ error: "transcription job unavailable" }, 503);
   }
-  if (response.status >= 400) await c.env.ASSETS.delete(objectKey);
+  if (response.status !== 202) {
+    try {
+      await c.env.ASSETS.delete(objectKey);
+    } catch {
+      return c.json({ error: "audio staging cleanup unavailable" }, 503);
+    }
+  }
   return response;
 });
 
@@ -282,13 +410,48 @@ function normalizedTranscription(
   return normalized;
 }
 
-async function markJobFailed(env: JobsEnv, jobId: string, error: string) {
+async function markJobFailed(
+  env: JobsEnv,
+  jobId: string,
+  uid: string,
+  error: string,
+) {
   const now = Math.floor(Date.now() / 1000);
   await env.APP_DB.prepare(
-    "UPDATE cf_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?",
+    "UPDATE cf_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ? AND uid = ?",
   )
-    .bind(error, now, jobId)
+    .bind(error, now, jobId, uid)
     .run();
+}
+
+async function cleanupTranscriptionObject(
+  message: Message<JobMessage>,
+  env: JobsEnv,
+): Promise<void> {
+  if (message.body.kind !== "transcribe") return;
+  const payload = parseTranscriptionPayload(message.body.payload);
+  if (
+    payload &&
+    payload.objectKey.startsWith(`cf-transcriptions/${message.body.uid}/`)
+  ) {
+    await env.ASSETS.delete(payload.objectKey);
+  }
+}
+
+async function acknowledgeAfterCleanup(
+  message: Message<JobMessage>,
+  env: JobsEnv,
+): Promise<void> {
+  await cleanupTranscriptionObject(message, env);
+  message.ack();
+}
+
+async function retryTerminalFailure(
+  message: Message<JobMessage>,
+  env: JobsEnv,
+): Promise<void> {
+  await cleanupTranscriptionObject(message, env);
+  message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
 }
 
 async function processTranscription(
@@ -304,22 +467,32 @@ async function processTranscription(
     await markJobFailed(
       env,
       message.body.jobId,
+      message.body.uid,
       "invalid transcription payload",
     );
-    message.ack();
+    message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
     return;
   }
   const object = await env.ASSETS.get(payload.objectKey);
   if (!object) {
-    await markJobFailed(env, message.body.jobId, "staged audio not found");
-    message.ack();
+    await markJobFailed(
+      env,
+      message.body.jobId,
+      message.body.uid,
+      "staged audio not found",
+    );
+    message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
     return;
   }
   const body = await object.arrayBuffer();
   if (!body.byteLength || body.byteLength > MAX_TRANSCRIPTION_AUDIO_BYTES) {
-    await env.ASSETS.delete(payload.objectKey);
-    await markJobFailed(env, message.body.jobId, "staged audio is invalid");
-    message.ack();
+    await markJobFailed(
+      env,
+      message.body.jobId,
+      message.body.uid,
+      "staged audio is invalid",
+    );
+    await retryTerminalFailure(message, env);
     return;
   }
   const model =
@@ -329,76 +502,120 @@ async function processTranscription(
     const normalized = normalizedTranscription(result, model);
     const resultJson = normalized ? JSON.stringify(normalized) : "";
     if (!normalized || resultJson.length > MAX_TRANSCRIPTION_RESULT_BYTES) {
-      await env.ASSETS.delete(payload.objectKey);
       await markJobFailed(
         env,
         message.body.jobId,
+        message.body.uid,
         "workers ai returned invalid transcription",
       );
-      message.ack();
+      await retryTerminalFailure(message, env);
       return;
     }
     await env.APP_DB.prepare(
-      "UPDATE cf_jobs SET status = 'completed', result_json = ?, last_error = NULL, updated_at = ? WHERE job_id = ?",
+      "UPDATE cf_jobs SET status = 'completed', result_json = ?, last_error = NULL, updated_at = ? WHERE job_id = ? AND uid = ?",
     )
-      .bind(resultJson, now, message.body.jobId)
+      .bind(resultJson, now, message.body.jobId, message.body.uid)
       .run();
-    await env.ASSETS.delete(payload.objectKey);
-    message.ack();
+    await acknowledgeAfterCleanup(message, env);
   } catch {
-    if (message.attempts >= 3) {
-      await env.ASSETS.delete(payload.objectKey);
+    if (message.attempts >= MAX_TRANSCRIPTION_PROVIDER_ATTEMPTS) {
       await markJobFailed(
         env,
         message.body.jobId,
+        message.body.uid,
         "workers ai transcription unavailable",
       );
-      message.ack();
+      await retryTerminalFailure(message, env);
       return;
     }
     await env.APP_DB.prepare(
-      "UPDATE cf_jobs SET status = 'queued', last_error = ?, updated_at = ? WHERE job_id = ?",
+      "UPDATE cf_jobs SET status = 'queued', last_error = ?, updated_at = ? WHERE job_id = ? AND uid = ?",
     )
-      .bind("workers ai transcription unavailable", now, message.body.jobId)
+      .bind(
+        "workers ai transcription unavailable",
+        now,
+        message.body.jobId,
+        message.body.uid,
+      )
       .run();
-    message.retry({ delaySeconds: 10 });
+    message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
   }
+}
+
+async function processJobMessage(
+  message: Message<JobMessage>,
+  env: JobsEnv,
+): Promise<void> {
+  const row = await env.APP_DB.prepare(
+    "SELECT status, kind, updated_at FROM cf_jobs WHERE job_id = ? AND uid = ?",
+  )
+    .bind(message.body.jobId, message.body.uid)
+    .first<{ status: string; kind: string; updated_at: number }>();
+  if (!row) {
+    await acknowledgeAfterCleanup(message, env);
+    return;
+  }
+  if (row.status === "completed") {
+    await acknowledgeAfterCleanup(message, env);
+    return;
+  }
+  if (row.status === "failed") {
+    await retryTerminalFailure(message, env);
+    return;
+  }
+  if (row.kind !== message.body.kind) {
+    await markJobFailed(
+      env,
+      message.body.jobId,
+      message.body.uid,
+      "job kind mismatch",
+    );
+    await retryTerminalFailure(message, env);
+    return;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const claimed = await env.APP_DB.prepare(
+    "UPDATE cf_jobs SET status = 'running', attempts = attempts + 1, updated_at = ? " +
+      "WHERE job_id = ? AND uid = ? AND (status = 'queued' OR (status = 'running' AND updated_at <= ?))",
+  )
+    .bind(now, message.body.jobId, message.body.uid, now - JOB_LEASE_SECONDS)
+    .run();
+  if (claimed.meta?.changes !== 1) {
+    message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
+    return;
+  }
+  if (row.kind === "transcribe") {
+    await processTranscription(message, env, now);
+    return;
+  }
+  if (row.kind !== "probe") {
+    await markJobFailed(
+      env,
+      message.body.jobId,
+      message.body.uid,
+      "unsupported job kind",
+    );
+    await retryTerminalFailure(message, env);
+    return;
+  }
+  await env.APP_DB.prepare(
+    "UPDATE cf_jobs SET status = 'completed', updated_at = ? WHERE job_id = ? AND uid = ?",
+  )
+    .bind(now, message.body.jobId, message.body.uid)
+    .run();
+  message.ack();
 }
 
 export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch<JobMessage>, env: JobsEnv): Promise<void> {
     for (const message of batch.messages) {
-      const row = await env.APP_DB.prepare(
-        "SELECT status, kind FROM cf_jobs WHERE job_id = ?",
-      )
-        .bind(message.body.jobId)
-        .first<{ status: string; kind: string }>();
-      if (!row || row.status === "completed") {
-        message.ack();
-        continue;
+      try {
+        await processJobMessage(message, env);
+      } catch {
+        message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
       }
-      const now = Math.floor(Date.now() / 1000);
-      await env.APP_DB.prepare(
-        "UPDATE cf_jobs SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE job_id = ?",
-      )
-        .bind(now, message.body.jobId)
-        .run();
-      if (row.kind === "transcribe" && message.body.kind === "transcribe") {
-        await processTranscription(message, env, now);
-        continue;
-      }
-      if (row.kind !== "probe" || message.body.kind !== "probe") {
-        await markJobFailed(env, message.body.jobId, "unsupported job kind");
-        message.ack();
-        continue;
-      }
-      await env.APP_DB.prepare(
-        "UPDATE cf_jobs SET status = 'completed', updated_at = ? WHERE job_id = ?",
-      )
-        .bind(now, message.body.jobId)
-        .run();
-      message.ack();
     }
   },
 };

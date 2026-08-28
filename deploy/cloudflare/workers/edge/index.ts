@@ -246,12 +246,13 @@ const proxyAuthenticatedAsyncTranscription = async (
   ) {
     return c.json({ error: "audio body too large" }, 413);
   }
-  const body = await c.req.raw.arrayBuffer();
-  if (body.byteLength > MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES) {
-    return c.json({ error: "audio body too large" }, 413);
-  }
   const response = await c.env.JOBS.fetch(
-    new Request(target, { method: "POST", headers, body }),
+    new Request(target, {
+      method: "POST",
+      headers,
+      body: c.req.raw.body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" }),
   );
   return withRequestId(response, id);
 };

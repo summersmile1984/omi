@@ -38,7 +38,7 @@ Resource names are deliberately isolated from existing account resources:
 - D1: `omi-cf-auth-staging`, `omi-cf-app-staging`
 - Workers: `omi-cf-edge-staging`, `omi-cf-auth-staging`, `omi-cf-api-core-staging`, `omi-cf-api-ai-staging`, `omi-cf-realtime-staging`
 - Jobs Worker: `omi-cf-jobs-staging`
-- Queue: `omi-cf-jobs-staging`
+- Queues: `omi-cf-jobs-staging`, `omi-cf-jobs-dlq-staging`
 - R2: `omi-cf-staging`
 
 The deploy script only deploys the named staging environment. It applies D1
@@ -754,9 +754,12 @@ still read Firestore, so these routes remain staging-only until those consumers
 move to the D1 authority; the Edge fallback can be restored without a client
 change.
 
-The initial queue accepts only the `probe` kind as an infrastructure contract.
-Unknown kinds are acknowledged as failed and recorded in D1; producers must
-use a stable `jobId`, so retry or duplicate delivery cannot create a second
-logical job. `GET /v1/cf/jobs/{jobId}` exposes the state machine without
-returning payload data, and requires the same authenticated uid that created
-the job.
+The queue accepts infrastructure `probe` jobs and native Workers AI
+`transcribe` jobs. Producers must use a stable `jobId` or idempotency key;
+reusing either identity with a different request fingerprint is rejected.
+Messages are claimed in D1 per uid, retried independently, and moved to
+`omi-cf-jobs-dlq-staging` after the configured retry limit instead of being
+discarded. Transcription audio is removed after completion or terminal failure;
+an R2 lifecycle rule expires any `cf-transcriptions/` cleanup orphan after one
+day. `GET /v1/cf/jobs/{jobId}` exposes the state machine without returning
+payload data, and requires the same authenticated uid that created the job.
