@@ -14,6 +14,10 @@
       "binding": "AUTH",
       "service": "omi-cf-auth-staging",
     },
+    {
+      "binding": "EDGE",
+      "service": "omi-cf-edge-staging",
+    },
   ],
   "cache": {
     "enabled": true,

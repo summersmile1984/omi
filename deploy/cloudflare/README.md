@@ -57,11 +57,11 @@ npm run smoke:staging
 ### Web Worker staging
 
 The Next.js 16 app has a separate Cloudflare Worker build through vinext. It
-uses the Edge Worker for API/WebSocket traffic and the Auth Worker through a
-service binding (`AUTH`), so Better Auth requests do not make a public
-Worker-to-Worker `workers.dev` fetch. Staging is compiled in Better Auth email
-mode; the existing Firebase client path remains the default for non-staging
-builds.
+uses service bindings for both authenticated API traffic (`EDGE`) and Better
+Auth (`AUTH`), so server-side routes never make public Worker-to-Worker
+`workers.dev` fetches. Browser WebSockets connect to the public Edge Worker
+directly. Staging is compiled in Better Auth email mode; the existing Firebase
+client path remains the default for non-staging builds.
 
 ```bash
 cd web/app
