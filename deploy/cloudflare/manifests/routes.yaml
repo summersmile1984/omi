@@ -2075,6 +2075,37 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/sync/audio/:conversationId/precache
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2]
+    protocol: http
+    idempotency: required
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/sync/audio/:conversationId/urls
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/sync/audio/:conversationId/:audioFileId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: PATCH
     path: /v1/conversations/:conversationId/events
     owner: api-core

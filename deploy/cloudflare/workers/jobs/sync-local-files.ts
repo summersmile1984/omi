@@ -48,6 +48,8 @@ const MAX_TRANSCRIPTION_JSON_BYTES = 1_000_000;
 const MAX_SUMMARY_TRANSCRIPT_CHARS = 60_000;
 const SYNC_RECONCILE_BATCH_SIZE = 25;
 const SYNC_CLEANUP_BATCH_SIZE = 100;
+const MAX_CONVERSATION_AUDIO_JSON_BYTES = 1_000_000;
+const PLAYBACK_INTENT_STALE_SECONDS = 60 * 60;
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type Lane = "fresh" | "backfill";
@@ -166,6 +168,18 @@ type FileTranscription = {
   speech_ms: number;
   duration_ms: number;
   chunk_count: number;
+};
+
+type PlaybackAudioFile = {
+  id: string;
+  uid: string;
+  conversation_id: string;
+  chunk_timestamps: number[];
+  provider: "cloudflare-r2";
+  started_at: string;
+  duration: number;
+  storage_key: string;
+  content_type: "audio/wav";
 };
 
 type StructuredConversation = {
@@ -1121,6 +1135,159 @@ async function transcribeSyncFile(
   return transcription;
 }
 
+function playbackAudioId(
+  job: SyncJobRow,
+  file: SyncFileRow,
+  chunkIndex: number,
+): string {
+  return `cf-${job.content_id.slice(0, 20)}-${file.ordinal}-${chunkIndex}`;
+}
+
+async function privateCloudSyncEnabled(
+  env: JobsEnv,
+  uid: string,
+): Promise<boolean> {
+  const row = await env.APP_DB.prepare(
+    "SELECT private_cloud_sync_enabled FROM cf_user_privacy_settings WHERE uid = ?",
+  )
+    .bind(uid)
+    .first<{ private_cloud_sync_enabled: number }>();
+  return row?.private_cloud_sync_enabled !== 0;
+}
+
+async function persistConversationPlayback(
+  env: JobsEnv,
+  job: SyncJobRow,
+  files: SyncFileRow[],
+  transcriptions: Map<number, FileTranscription>,
+  conversationId: string,
+  now: number,
+): Promise<PlaybackAudioFile[]> {
+  if (!(await privateCloudSyncEnabled(env, job.uid))) return [];
+
+  const playback: PlaybackAudioFile[] = [];
+  for (const file of files) {
+    if (!transcriptions.has(file.ordinal)) continue;
+    const object = await env.ASSETS.get(file.object_key);
+    if (!object)
+      throw new Error("staged sync audio missing before playback persistence");
+    const raw = await object.arrayBuffer();
+    if (!raw.byteLength || raw.byteLength !== file.size)
+      throw new Error(
+        "staged sync audio size mismatch before playback persistence",
+      );
+    const digest = bytesToHex(sha256(new Uint8Array(raw)));
+    if (!safeEqual(digest, file.sha256))
+      throw new Error(
+        "staged sync audio digest mismatch before playback persistence",
+      );
+
+    let chunkIndex = 0;
+    for await (const chunk of decodeWalToWavChunks(raw, {
+      filename: file.filename,
+      captureAt: file.capture_at,
+      codec: file.codec,
+      sampleRate: file.sample_rate,
+      channels: file.channels,
+      frameSize: file.frame_size,
+    })) {
+      const id = playbackAudioId(job, file, chunkIndex);
+      const storageKey = `sync-playback/${job.uid}/${conversationId}/${id}.wav`;
+      await env.APP_DB.prepare(
+        "INSERT INTO cf_sync_playback_objects " +
+          "(uid, storage_key, conversation_id, audio_file_id, job_id, state, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, 'staging', ?, ?) ON CONFLICT(uid, storage_key) DO UPDATE SET " +
+          "conversation_id = excluded.conversation_id, audio_file_id = excluded.audio_file_id, " +
+          "job_id = excluded.job_id, state = CASE WHEN state = 'committed' THEN state ELSE 'staging' END, " +
+          "updated_at = excluded.updated_at",
+      )
+        .bind(job.uid, storageKey, conversationId, id, job.job_id, now, now)
+        .run();
+      await env.ASSETS.put(storageKey, chunk.wav, {
+        httpMetadata: { contentType: "audio/wav" },
+        customMetadata: {
+          uid: job.uid,
+          conversationId,
+          audioFileId: id,
+        },
+      });
+      await env.APP_DB.prepare(
+        "UPDATE cf_sync_playback_objects SET state = 'stored', updated_at = ? " +
+          "WHERE uid = ? AND storage_key = ? AND state <> 'committed'",
+      )
+        .bind(now, job.uid, storageKey)
+        .run();
+      const startedAt = file.capture_at + chunk.startSeconds;
+      playback.push({
+        id,
+        uid: job.uid,
+        conversation_id: conversationId,
+        chunk_timestamps: [startedAt],
+        provider: "cloudflare-r2",
+        started_at: new Date(startedAt * 1_000).toISOString(),
+        duration: chunk.durationSeconds,
+        storage_key: storageKey,
+        content_type: "audio/wav",
+      });
+      chunkIndex += 1;
+    }
+  }
+  if (!playback.length) return [];
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const row = await env.APP_DB.prepare(
+      "SELECT created_at, updated_at, audio_files_json FROM cf_conversations WHERE uid = ? AND id = ?",
+    )
+      .bind(job.uid, conversationId)
+      .first<{
+        created_at: number;
+        updated_at: number | null;
+        audio_files_json: string;
+      }>();
+    if (!row)
+      throw new Error("conversation missing before playback persistence");
+    const current = jsonArray(row.audio_files_json).filter(
+      (value) => objectValue(value) !== null,
+    );
+    const replacementIds = new Set(playback.map((file) => file.id));
+    const merged = [
+      ...current.filter(
+        (value) => !replacementIds.has(String(objectValue(value)?.id || "")),
+      ),
+      ...playback,
+    ];
+    const encoded = JSON.stringify(merged);
+    if (
+      new TextEncoder().encode(encoded).byteLength >
+      MAX_CONVERSATION_AUDIO_JSON_BYTES
+    )
+      throw new Error("conversation playback metadata is too large");
+    const revision = row.updated_at ?? row.created_at;
+    const nextRevision = Math.max(now, revision + 1);
+    const updated = await env.APP_DB.prepare(
+      "UPDATE cf_conversations SET updated_at = ?, private_cloud_sync_enabled = 1, audio_files_json = ?, " +
+        "conversation_audio_json = NULL WHERE uid = ? AND id = ? AND COALESCE(updated_at, created_at) = ? " +
+        "RETURNING id",
+    )
+      .bind(nextRevision, encoded, job.uid, conversationId, revision)
+      .run<{ id: string }>();
+    if (updated.results?.[0]?.id === conversationId) {
+      await Promise.all(
+        playback.map((file) =>
+          env.APP_DB.prepare(
+            "UPDATE cf_sync_playback_objects SET state = 'committed', updated_at = ? " +
+              "WHERE uid = ? AND storage_key = ?",
+          )
+            .bind(nextRevision, job.uid, file.storage_key)
+            .run(),
+        ),
+      );
+      return playback;
+    }
+  }
+  throw new Error("conversation changed during playback persistence");
+}
+
 function summarySchema() {
   return {
     type: "json_schema",
@@ -1657,6 +1824,16 @@ export async function processSyncJobMessage(
       transcriptions,
       now,
     );
+    if (finalized) {
+      await persistConversationPlayback(
+        env,
+        job,
+        files,
+        transcriptions,
+        finalized.id,
+        now,
+      );
+    }
   } catch (error) {
     const messageText = shortError(error);
     if (job.attempts < MAX_PROVIDER_ATTEMPTS) {
@@ -1768,6 +1945,47 @@ export async function cleanupExpiredSyncState(
       "DELETE FROM cf_sync_capture_claims WHERE expires_at <= ?",
     ).bind(now),
   ]);
+}
+
+export async function cleanupOrphanPlaybackObjects(
+  env: JobsEnv,
+  now: number,
+): Promise<void> {
+  const result = await env.APP_DB.prepare(
+    "SELECT uid, storage_key, conversation_id FROM cf_sync_playback_objects " +
+      "WHERE state <> 'committed' AND updated_at <= ? ORDER BY updated_at LIMIT ?",
+  )
+    .bind(now - PLAYBACK_INTENT_STALE_SECONDS, SYNC_CLEANUP_BATCH_SIZE)
+    .all<{ uid: string; storage_key: string; conversation_id: string }>();
+  for (const candidate of result.results || []) {
+    const conversation = await env.APP_DB.prepare(
+      "SELECT audio_files_json FROM cf_conversations WHERE uid = ? AND id = ?",
+    )
+      .bind(candidate.uid, candidate.conversation_id)
+      .first<{ audio_files_json: string }>();
+    const referenced = jsonArray(conversation?.audio_files_json).some(
+      (value) => objectValue(value)?.storage_key === candidate.storage_key,
+    );
+    if (referenced) {
+      await env.APP_DB.prepare(
+        "UPDATE cf_sync_playback_objects SET state = 'committed', updated_at = ? " +
+          "WHERE uid = ? AND storage_key = ?",
+      )
+        .bind(now, candidate.uid, candidate.storage_key)
+        .run();
+      continue;
+    }
+    try {
+      await env.ASSETS.delete(candidate.storage_key);
+    } catch {
+      continue;
+    }
+    await env.APP_DB.prepare(
+      "DELETE FROM cf_sync_playback_objects WHERE uid = ? AND storage_key = ? AND state <> 'committed'",
+    )
+      .bind(candidate.uid, candidate.storage_key)
+      .run();
+  }
 }
 
 export function registerSyncRoutes(

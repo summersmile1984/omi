@@ -6,6 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
@@ -15,9 +16,11 @@ from conversation_routes import (  # noqa: E402
     delete_conversation_action_item,
     get_conversation,
     get_conversation_analytics,
+    get_conversation_audio_urls,
     get_conversation_photos,
     get_conversation_transcripts,
     conversation_has_recording,
+    download_conversation_audio,
     list_conversations,
     patch_conversation_action_item_description,
     patch_conversation_action_items,
@@ -26,6 +29,7 @@ from conversation_routes import (  # noqa: E402
     patch_conversation_summary,
     unlink_conversation_calendar_event,
     patch_conversation_title,
+    precache_conversation_audio,
     search_conversations,
     set_conversation_starred,
     store_conversation_projection,
@@ -58,9 +62,30 @@ class FakeDb:
 class FakeBucket:
     def __init__(self):
         self.keys: set[str] = set()
+        self.objects: dict[str, bytes] = {}
 
     async def head(self, key):
-        return {"key": key} if key in self.keys else None
+        if key in self.objects:
+            return {"key": key, "size": len(self.objects[key])}
+        return {"key": key, "size": 0} if key in self.keys else None
+
+    async def get(self, key, options=None):
+        value = self.objects.get(key)
+        if value is None:
+            return None
+        if options and isinstance(options.get("range"), dict):
+            byte_range = options["range"]
+            offset = int(byte_range["offset"])
+            value = value[offset : offset + int(byte_range["length"])]
+        return FakeStoredObject(value)
+
+
+class FakeStoredObject:
+    def __init__(self, value: bytes):
+        self.value = value
+
+    async def arrayBuffer(self):
+        return self.value
 
 
 class FakeStatement:
@@ -88,11 +113,12 @@ class FakeStatement:
 
 
 class FakeRequest:
-    def __init__(self, env, headers, query=None, body=None):
+    def __init__(self, env, headers, query=None, body=None, url="https://edge.test/"):
         self.scope = {"env": env}
         self.headers = headers
         self.query_params = query or {}
         self._body = body
+        self.url = url
 
     async def body(self):
         return json.dumps(self._body).encode()
@@ -121,6 +147,7 @@ def insert_conversation(
     photos: list[dict[str, object]] | None = None,
     transcript_segments: list[dict[str, object]] | None = None,
     apps_results: list[dict[str, object]] | None = None,
+    audio_files: list[dict[str, object]] | None = None,
 ):
     db.connection.execute(
         "INSERT INTO cf_conversations "
@@ -160,6 +187,11 @@ def insert_conversation(
             json.dumps(photos or []),
         ),
     )
+    if audio_files is not None:
+        db.connection.execute(
+            "UPDATE cf_conversations SET audio_files_json = ? WHERE uid = ? AND id = ?",
+            (json.dumps(audio_files), uid, conversation_id),
+        )
     if apps_results is not None:
         db.connection.execute(
             "UPDATE cf_conversations SET apps_results_json = ? WHERE uid = ? AND id = ?",
@@ -540,6 +572,137 @@ def test_canonical_recording_existence_uses_uid_scoped_r2_and_locked_rows_fail_c
     no_bucket = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
     unavailable = asyncio.run(conversation_has_recording(FakeRequest(no_bucket, signed_headers(secret)), "recorded"))
     assert unavailable.status_code == 503
+
+
+def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
+    secret = "conversation-secret"
+    db = FakeDb()
+    storage_key = "sync-playback/conversation-user/audio-conversation/audio-1.wav"
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="audio-conversation",
+        created_at=200,
+        audio_files=[
+            {
+                "id": "audio-1",
+                "uid": "conversation-user",
+                "conversation_id": "audio-conversation",
+                "chunk_timestamps": [200],
+                "provider": "cloudflare-r2",
+                "started_at": "1970-01-01T00:03:20Z",
+                "duration": 1.25,
+                "storage_key": storage_key,
+                "content_type": "audio/wav",
+            }
+        ],
+    )
+    bucket = FakeBucket()
+    bucket.objects[storage_key] = b"RIFFworker-audio"
+    env = type("Env", (), {"APP_DB": db, "ASSETS": bucket, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    urls = asyncio.run(
+        get_conversation_audio_urls(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                url="https://edge.test/v1/sync/audio/audio-conversation/urls",
+            ),
+            "audio-conversation",
+        )
+    )
+    assert urls["poll_after_ms"] is None
+    assert urls["audio_files"][0]["status"] == "cached"
+    signed_url = urls["audio_files"][0]["signed_url"]
+    parsed = urlsplit(signed_url)
+    assert parsed.path == "/v1/sync/audio/audio-conversation/audio-1"
+    token = parse_qs(parsed.query)["token"][0]
+
+    response = asyncio.run(
+        download_conversation_audio(
+            FakeRequest(
+                env,
+                {"range": "bytes=4-9"},
+                {"token": token},
+                url=signed_url,
+            ),
+            "audio-conversation",
+            "audio-1",
+        )
+    )
+    assert response.status_code == 206
+    assert response.headers["content-range"] == "bytes 4-9/16"
+
+    async def response_body():
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    assert asyncio.run(response_body()) == b"worker"
+
+    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    denied = asyncio.run(
+        download_conversation_audio(
+            FakeRequest(env, {}, {"token": tampered}),
+            "audio-conversation",
+            "audio-1",
+        )
+    )
+    assert denied.status_code == 401
+
+    precached = asyncio.run(
+        precache_conversation_audio(
+            FakeRequest(env, signed_headers(secret)),
+            "audio-conversation",
+        )
+    )
+    assert precached == {"status": "started", "audio_file_count": 1}
+
+
+def test_worker_audio_urls_fail_closed_for_locked_and_missing_objects():
+    secret = "conversation-secret"
+    db = FakeDb()
+    audio_file = {
+        "id": "audio-1",
+        "uid": "conversation-user",
+        "conversation_id": "locked-audio",
+        "chunk_timestamps": [200],
+        "provider": "cloudflare-r2",
+        "duration": 1,
+        "storage_key": "sync-playback/conversation-user/locked-audio/audio-1.wav",
+        "content_type": "audio/wav",
+    }
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="locked-audio",
+        created_at=200,
+        locked=1,
+        audio_files=[audio_file],
+    )
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="missing-audio",
+        created_at=100,
+        audio_files=[{**audio_file, "conversation_id": "missing-audio"}],
+    )
+    bucket = FakeBucket()
+    env = type("Env", (), {"APP_DB": db, "ASSETS": bucket, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    locked = asyncio.run(
+        get_conversation_audio_urls(
+            FakeRequest(env, signed_headers(secret)),
+            "locked-audio",
+        )
+    )
+    assert locked.status_code == 402
+    missing = asyncio.run(
+        get_conversation_audio_urls(
+            FakeRequest(env, signed_headers(secret)),
+            "missing-audio",
+        )
+    )
+    assert missing["audio_files"][0]["status"] == "unavailable"
+    assert missing["audio_files"][0]["signed_url"] is None
 
 
 def test_canonical_transcripts_group_imported_providers_and_fail_closed_for_locked_rows():

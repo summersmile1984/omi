@@ -44,6 +44,7 @@ namespaces:
         "merged/{uid}/{conversation_id}/{audio_file_id}.wav",
         "playback/{uid}/{conversation_id}/{audio_file_id}.mp3",
         "playback/{uid}/{conversation_id}/{audio_file_id}.unavailable",
+        "sync-playback/{uid}/{conversation_id}/{audio_file_id}.wav",
       ]
     data_classification: encrypted-or-customer-audio
     lifecycle: prefix-specific

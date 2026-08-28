@@ -934,6 +934,50 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("authenticates audio metadata while allowing core-verified signed playback", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return new Response("audio", { status: 200 });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+
+    const urls = await edge.fetch(
+      new Request("https://edge.test/v1/sync/audio/conversation-1/urls", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+    expect(urls.status).toBe(200);
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+
+    const playback = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/sync/audio/conversation-1/audio-1?token=core-signed",
+      ),
+      env,
+    );
+    expect(playback.status).toBe(200);
+    expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeNull();
+
+    const unsigned = await edge.fetch(
+      new Request("https://edge.test/v1/sync/audio/conversation-1/audio-1"),
+      env,
+    );
+    expect(unsigned.status).toBe(401);
+    expect(coreRequests).toHaveLength(2);
+  });
+
   it("routes canonical conversation transcripts to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

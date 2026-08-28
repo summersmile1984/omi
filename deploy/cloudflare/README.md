@@ -425,7 +425,12 @@ GET  /v1/conversations/{conversationId}/transcripts
 GET  /v1/conversations/{conversationId}/analytics
                               bounded transcript buckets and D1 speaker analytics
 GET  /v1/conversations/{conversationId}/recording
-                              R2 head check for uid/{conversationId}.wav; no download
+                              R2 head check for Worker playback or imported uid/{id}.wav
+POST /v1/sync/audio/{conversationId}/precache
+GET  /v1/sync/audio/{conversationId}/urls
+GET  /v1/sync/audio/{conversationId}/{audioFileId}
+                              uid-scoped R2 playback metadata, one-hour HMAC URLs,
+                              authenticated fallback, and single-range WAV streaming
 GET  /v1/conversations/{conversationId}/action-items
 GET  /v1/conversations/{conversationId}/action-items/count
                               standalone D1 action-item projection; locked rows fail closed
@@ -867,11 +872,40 @@ triggers over IDs, titles, summaries, categories, and transcript text. Search
 remains uid-scoped, excludes locked rows, and supports the Web pagination,
 discarded, date, and speaker filters. Default conversation deletion removes the
 D1 projection and refreshes folder counts; `cascade=true` fails closed because
-memory retraction and audio cleanup are not yet Worker-owned. Conversation
-creation/finalization, memory extraction, merge, cascade deletion, audio
-deletion, and downstream integration fanout remain legacy-owned; production
-reader cutover still requires those write authorities and readers to move
-together.
+memory retraction and audio cleanup are not yet Worker-owned. Generic
+conversation creation/finalization, memory extraction, merge, cascade deletion,
+audio deletion, and downstream integration fanout remain legacy-owned;
+production reader cutover still requires those write authorities and readers to
+move together. The isolated `/v2/sync-local-files` finalizer is the exception:
+when private cloud sync is enabled, Jobs decodes each accepted WAL into bounded
+WAV windows, stores deterministic `sync-playback/` objects in R2, and commits
+their metadata to the conversation projection before deleting the staging WAL.
+Disabled private cloud sync retains no playback object.
+
+The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
+windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC
+URLs; the download route rechecks the signed uid/conversation/audio identity,
+locked state, D1 ownership, and R2 key prefix, then streams full or single-range
+responses. Tokenless downloads still require Better Auth. Existing imported
+`playback/*.mp3` and `merged/*.wav` objects are readable after the reviewed R2
+copy, but building missing artifacts from legacy chunk inventories and creating
+the dense per-conversation MP3 remain a production-data migration gap. Each R2
+put is fenced by `cf_sync_playback_objects`; the metadata commit promotes the
+intent, while the five-minute Jobs maintenance pass promotes referenced crash
+survivors or deletes stale unreferenced objects after one hour.
+
+Live staging playback evidence on 2026-08-29 used Core version
+`09c48cd8-e595-498e-9269-231c58b1c955`, Jobs version
+`1d2089f5-511a-4aa1-9a24-10acc94cc072`, and Edge version
+`1f0d99d7-83ea-4dbe-b4a5-bbe753430ee1`. A manifest-bound spoken 16 kHz PCM WAL
+completed on `sync_fresh`, persisted one committed `cloudflare-r2` WAV, streamed
+251,130 bytes with a `RIFF` header, and returned exact `206 bytes 0-15/251130`
+for a range request. A tampered token, substituted audio ID, and unsigned
+tokenless request each returned `401`. Repeating the same path after explicitly
+disabling private cloud sync still completed transcription but produced zero
+audio files and no recording object. Both staging WALs were absent after their
+terminal jobs; the exact playback object, D1 fixtures, usage rows, control rows,
+and Better Auth account were deleted and read back at zero after verification.
 
 `GET /v1/conversations/{conversation_id}/transcripts` reads the bounded
 `transcript_segments_json` projection and returns the same four provider buckets

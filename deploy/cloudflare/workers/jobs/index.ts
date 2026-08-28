@@ -13,6 +13,7 @@ import { evaluateFairUseBatch } from "./fair-use-evaluator";
 import { drainFairUseNotifications } from "./firebase-messaging";
 import {
   cleanupExpiredSyncState,
+  cleanupOrphanPlaybackObjects,
   processSyncJobMessage,
   reconcileSyncJobs,
   registerSyncRoutes,
@@ -744,7 +745,11 @@ export default {
     const now = Math.floor(Date.now() / 1_000);
     const syncMaintenance =
       env.SYNC_FRESH && env.SYNC_BACKFILL
-        ? [reconcileSyncJobs(env, now), cleanupExpiredSyncState(env, now)]
+        ? [
+            reconcileSyncJobs(env, now),
+            cleanupExpiredSyncState(env, now),
+            cleanupOrphanPlaybackObjects(env, now),
+          ]
         : [];
     const results = await Promise.allSettled([
       drainAssetCleanup(env),

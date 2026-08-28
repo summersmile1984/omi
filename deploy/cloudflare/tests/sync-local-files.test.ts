@@ -2,7 +2,10 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 import type { JobMessage } from "../workers/jobs/env";
-import { processSyncJobMessage } from "../workers/jobs/sync-local-files";
+import {
+  cleanupOrphanPlaybackObjects,
+  processSyncJobMessage,
+} from "../workers/jobs/sync-local-files";
 
 function wal(frame: Uint8Array): ArrayBuffer {
   const output = new Uint8Array(frame.byteLength + 4);
@@ -12,7 +15,11 @@ function wal(frame: Uint8Array): ArrayBuffer {
 }
 
 function processingHarness(
-  options: { failAsr?: boolean; existingConversation?: boolean } = {},
+  options: {
+    failAsr?: boolean;
+    existingConversation?: boolean;
+    privateCloudSyncEnabled?: boolean;
+  } = {},
 ) {
   const now = Math.floor(Date.now() / 1_000);
   const audio = wal(new Uint8Array(new Int16Array(160).buffer));
@@ -97,6 +104,7 @@ function processingHarness(
       ? [[existingConversation.id, { ...existingConversation }]]
       : [],
   );
+  const playbackLedger = new Map<string, Record<string, unknown>>();
   const usage = new Map<string, Record<string, unknown>>();
   let ledgerStatus = "processing";
 
@@ -116,6 +124,23 @@ function processingHarness(
           weekly_ms: 0,
         };
       }
+      if (
+        sql.startsWith(
+          "SELECT private_cloud_sync_enabled FROM cf_user_privacy_settings",
+        )
+      ) {
+        return options.privateCloudSyncEnabled === false
+          ? { private_cloud_sync_enabled: 0 }
+          : null;
+      }
+      if (
+        sql.startsWith(
+          "SELECT created_at, updated_at, audio_files_json FROM cf_conversations",
+        )
+      ) {
+        const row = conversations.get(String(args[1]));
+        return row ? { ...row } : null;
+      }
       if (sql.includes("FROM cf_conversations"))
         return existingConversation ? { ...existingConversation } : null;
       return null;
@@ -126,6 +151,32 @@ function processingHarness(
       return { results: [] };
     },
     run: async () => {
+      if (sql.startsWith("INSERT INTO cf_sync_playback_objects")) {
+        const key = String(args[1]);
+        const existing = playbackLedger.get(key);
+        playbackLedger.set(key, {
+          uid: args[0],
+          storage_key: key,
+          conversation_id: args[2],
+          audio_file_id: args[3],
+          job_id: args[4],
+          state: existing?.state === "committed" ? "committed" : "staging",
+          updated_at: args[6],
+        });
+        return { meta: { changes: 1 } };
+      }
+      if (sql.startsWith("UPDATE cf_sync_playback_objects SET state =")) {
+        const key = String(args[2]);
+        const row = playbackLedger.get(key);
+        if (row) {
+          playbackLedger.set(key, {
+            ...row,
+            state: sql.includes("'committed'") ? "committed" : "stored",
+            updated_at: args[0],
+          });
+        }
+        return { meta: { changes: row ? 1 : 0 } };
+      }
       if (sql.startsWith("UPDATE cf_sync_jobs SET status = 'running'")) {
         if (job.status !== "queued") return { meta: { changes: 0 } };
         job.status = "running";
@@ -153,18 +204,45 @@ function processingHarness(
         conversations.set(String(args[1]), {
           uid: args[0],
           id: args[1],
+          created_at: args[2],
+          updated_at: args[3],
+          private_cloud_sync_enabled: 0,
           structured_json: args[10],
           transcript_segments_json: args[11],
+          audio_files_json: "[]",
+          conversation_audio_json: null,
         });
         return {
           meta: { changes: 4 },
           results: [{ id: String(args[1]) }],
         };
       }
+      if (
+        sql.startsWith(
+          "UPDATE cf_conversations SET updated_at = ?, private_cloud_sync_enabled = 1",
+        )
+      ) {
+        const id = String(args[3]);
+        const conversation = conversations.get(id);
+        if (
+          !conversation ||
+          Number(conversation.updated_at) !== Number(args[4])
+        )
+          return { meta: { changes: 0 }, results: [] };
+        conversations.set(id, {
+          ...conversation,
+          updated_at: args[0],
+          private_cloud_sync_enabled: 1,
+          audio_files_json: args[1],
+          conversation_audio_json: null,
+        });
+        return { meta: { changes: 1 }, results: [{ id }] };
+      }
       if (sql.startsWith("UPDATE cf_conversations SET updated_at")) {
         const id = String(args[7]);
         conversations.set(id, {
           ...(conversations.get(id) || {}),
+          updated_at: args[0],
           structured_json: args[4],
           transcript_segments_json: args[5],
         });
@@ -222,6 +300,10 @@ function processingHarness(
       delete: async (key: string) => {
         blobs.delete(key);
       },
+      put: async (key: string, value: ArrayBuffer) => {
+        blobs.set(key, value.slice(0));
+        return { key };
+      },
     },
     AI: {
       run: async (model: string) => {
@@ -266,6 +348,7 @@ function processingHarness(
     job,
     file,
     conversations,
+    playbackLedger,
     usage,
     blobs,
     env,
@@ -294,15 +377,42 @@ describe("sync-local-files queue processing", () => {
     expect(
       JSON.parse(String(conversation.transcript_segments_json)),
     ).toHaveLength(1);
+    const audioFiles = JSON.parse(String(conversation.audio_files_json));
+    expect(audioFiles).toHaveLength(1);
+    expect(audioFiles[0]).toMatchObject({
+      provider: "cloudflare-r2",
+      content_type: "audio/wav",
+      conversation_id: conversation.id,
+    });
     expect(harness.usage.get(`fair-use:${"a".repeat(64)}`)).toEqual({
       speech_ms: 10,
     });
-    expect(harness.blobs.size).toBe(0);
+    expect([...harness.blobs.keys()]).toEqual([
+      expect.stringMatching(
+        new RegExp(`^sync-playback/${harness.job.uid}/${conversation.id}/`),
+      ),
+    ]);
+    expect([...harness.playbackLedger.values()]).toEqual([
+      expect.objectContaining({ state: "committed" }),
+    ]);
     expect(JSON.parse(harness.job.result_json || "{}")).toMatchObject({
       outcome: "completed",
       failed_segments: 0,
       successful_segments: 1,
     });
+  });
+
+  it("removes staging bytes without retaining playback when private cloud sync is disabled", async () => {
+    const harness = processingHarness({ privateCloudSyncEnabled: false });
+    await processSyncJobMessage(
+      harness.delivery as never,
+      harness.env as never,
+    );
+
+    expect(harness.job.status).toBe("completed");
+    const conversation = [...harness.conversations.values()][0];
+    expect(JSON.parse(String(conversation.audio_files_json))).toEqual([]);
+    expect(harness.blobs.size).toBe(0);
   });
 
   it("retries provider failures, then records a truthful failed terminal state", async () => {
@@ -345,5 +455,66 @@ describe("sync-local-files queue processing", () => {
     expect(JSON.parse(String(conversation?.structured_json))).toMatchObject({
       title: "Cloudflare sync",
     });
+  });
+});
+
+describe("sync playback reconciliation", () => {
+  it("commits referenced intents and deletes only stale unreferenced objects", async () => {
+    const states = new Map([
+      ["sync-playback/user-1/referenced/audio-1.wav", "stored"],
+      ["sync-playback/user-1/orphan/audio-2.wav", "stored"],
+    ]);
+    const deleted: string[] = [];
+    const database = {
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          all: async () => ({
+            results: [...states.keys()].map((storageKey) => ({
+              uid: "user-1",
+              storage_key: storageKey,
+              conversation_id: storageKey.includes("/referenced/")
+                ? "referenced"
+                : "orphan",
+            })),
+          }),
+          first: async () =>
+            String(args[1]) === "referenced"
+              ? {
+                  audio_files_json: JSON.stringify([
+                    {
+                      id: "audio-1",
+                      storage_key:
+                        "sync-playback/user-1/referenced/audio-1.wav",
+                    },
+                  ]),
+                }
+              : { audio_files_json: "[]" },
+          run: async () => {
+            if (sql.startsWith("UPDATE cf_sync_playback_objects")) {
+              states.set(String(args[2]), "committed");
+            }
+            if (sql.startsWith("DELETE FROM cf_sync_playback_objects")) {
+              states.delete(String(args[1]));
+            }
+            return { meta: { changes: 1 } };
+          },
+        }),
+      }),
+    };
+    const env = {
+      APP_DB: database,
+      ASSETS: {
+        delete: async (key: string) => {
+          deleted.push(key);
+        },
+      },
+    };
+
+    await cleanupOrphanPlaybackObjects(env as never, 10_000);
+
+    expect(states).toEqual(
+      new Map([["sync-playback/user-1/referenced/audio-1.wav", "committed"]]),
+    );
+    expect(deleted).toEqual(["sync-playback/user-1/orphan/audio-2.wav"]);
   });
 });

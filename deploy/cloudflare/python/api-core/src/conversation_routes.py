@@ -10,13 +10,17 @@ rows can also be loaded by the reviewed D1 backfill workflow.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import re
 from datetime import datetime, timezone
 import time
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from internal_auth import decode_context
@@ -35,6 +39,8 @@ MAX_ACTION_ITEM_DESCRIPTION_LENGTH = 4_096
 MAX_SEGMENTS = 2_000
 MAX_SEARCH_QUERY_LENGTH = 500
 MAX_SEARCH_TERMS = 20
+MAX_AUDIO_FILES = 100
+AUDIO_URL_TTL_SECONDS = 60 * 60
 CONVERSATION_STATUSES = frozenset({"in_progress", "processing", "merging", "completed", "failed"})
 CONVERSATION_SOURCES = frozenset(
     {
@@ -447,6 +453,184 @@ def _fts_query(uid: str, value: str) -> str | None:
 async def _first_conversation(env: object, uid: str, conversation_id: str) -> dict[str, object] | None:
     row = await env.APP_DB.prepare(_CONVERSATION_SELECT + "WHERE uid = ? AND id = ?").bind(uid, conversation_id).first()
     return row if isinstance(row, dict) else None
+
+
+def _audio_signing_secret(env: object) -> str | None:
+    value = getattr(env, "AUDIO_URL_SIGNING_SECRET", None) or getattr(env, "INTERNAL_ASSERTION_SECRET", None)
+    return value if isinstance(value, str) and len(value) >= 16 else None
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+
+def _audio_token(env: object, uid: str, conversation_id: str, audio_file_id: str, expires_at: int) -> str | None:
+    secret = _audio_signing_secret(env)
+    if not secret:
+        return None
+    payload = json.dumps(
+        {"u": uid, "c": conversation_id, "a": audio_file_id, "e": expires_at, "v": 1},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    encoded = _b64url(payload)
+    signature = _b64url(hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest())
+    return f"{encoded}.{signature}"
+
+
+def _audio_token_uid(
+    env: object,
+    token: object,
+    conversation_id: str,
+    audio_file_id: str,
+    now: int,
+) -> str | None:
+    secret = _audio_signing_secret(env)
+    if not secret or not isinstance(token, str) or len(token) > 2_048 or token.count(".") != 1:
+        return None
+    encoded, supplied = token.split(".", 1)
+    expected = _b64url(hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest())
+    if not hmac.compare_digest(supplied, expected):
+        return None
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+        expires_at = int(payload["e"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if (
+        payload.get("v") != 1
+        or payload.get("c") != conversation_id
+        or payload.get("a") != audio_file_id
+        or expires_at < now
+        or expires_at > now + AUDIO_URL_TTL_SECONDS + 60
+    ):
+        return None
+    uid = payload.get("u")
+    return uid if isinstance(uid, str) and 0 < len(uid) <= MAX_ID_LENGTH else None
+
+
+def _audio_files(row: dict[str, object]) -> list[dict[str, object]]:
+    return [item for item in _json_list(row.get("audio_files_json"))[:MAX_AUDIO_FILES] if isinstance(item, dict)]
+
+
+def _audio_file(row: dict[str, object], audio_file_id: str) -> dict[str, object] | None:
+    return next((item for item in _audio_files(row) if item.get("id") == audio_file_id), None)
+
+
+def _audio_storage_candidates(
+    uid: str,
+    conversation_id: str,
+    audio_file: dict[str, object],
+) -> list[tuple[str, str]]:
+    prefixes = (
+        f"sync-playback/{uid}/{conversation_id}/",
+        f"playback/{uid}/{conversation_id}/",
+        f"merged/{uid}/{conversation_id}/",
+    )
+    candidates: list[tuple[str, str]] = []
+    explicit = audio_file.get("storage_key")
+    content_type = audio_file.get("content_type")
+    if isinstance(explicit, str) and explicit.startswith(prefixes):
+        candidates.append((explicit, str(content_type or "audio/wav")[:100]))
+    audio_file_id = str(audio_file.get("id") or "")
+    if audio_file_id:
+        candidates.extend(
+            [
+                (f"playback/{uid}/{conversation_id}/{audio_file_id}.mp3", "audio/mpeg"),
+                (f"merged/{uid}/{conversation_id}/{audio_file_id}.wav", "audio/wav"),
+            ]
+        )
+    unique: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate[0] not in seen:
+            unique.append(candidate)
+            seen.add(candidate[0])
+    return unique
+
+
+async def _stored_audio(
+    bucket: object,
+    uid: str,
+    conversation_id: str,
+    audio_file: dict[str, object],
+) -> tuple[str, str, object] | None:
+    for key, content_type in _audio_storage_candidates(uid, conversation_id, audio_file):
+        metadata = await bucket.head(key)
+        if metadata is not None:
+            return key, content_type, metadata
+    return None
+
+
+def _signed_audio_url(
+    request: Request,
+    env: object,
+    uid: str,
+    conversation_id: str,
+    audio_file_id: str,
+) -> str | None:
+    expires_at = int(time.time()) + AUDIO_URL_TTL_SECONDS
+    token = _audio_token(env, uid, conversation_id, audio_file_id, expires_at)
+    if token is None:
+        return None
+    source = urlsplit(str(request.url))
+    path = f"/v1/sync/audio/{quote(conversation_id, safe='')}/{quote(audio_file_id, safe='')}"
+    return urlunsplit((source.scheme, source.netloc, path, urlencode({"token": token}), ""))
+
+
+def _parse_audio_range(raw: str | None, size: int) -> tuple[int, int] | None:
+    if not raw:
+        return None
+    if not raw.startswith("bytes=") or "," in raw or "-" not in raw[6:]:
+        raise ValueError("unsupported range")
+    start_raw, end_raw = raw[6:].strip().split("-", 1)
+    if size <= 0 or (not start_raw and not end_raw):
+        raise ValueError("unsatisfiable range")
+    try:
+        if not start_raw:
+            suffix = int(end_raw)
+            if suffix <= 0:
+                raise ValueError("invalid suffix")
+            return max(0, size - suffix), size - 1
+        start = int(start_raw)
+        end = size - 1 if not end_raw else min(size - 1, int(end_raw))
+    except ValueError as error:
+        raise ValueError("invalid range") from error
+    if start < 0 or start >= size or end < start:
+        raise ValueError("unsatisfiable range")
+    return start, end
+
+
+def _audio_object_size(metadata: object) -> int:
+    value = metadata.get("size") if isinstance(metadata, dict) else getattr(metadata, "size", 0)
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _r2_audio_chunks(stored: object):
+    stream = getattr(stored, "body", None)
+    get_reader = getattr(stream, "getReader", None)
+    if callable(get_reader):
+        reader = get_reader()
+        try:
+            while True:
+                result = await reader.read()
+                if bool(getattr(result, "done", False)):
+                    break
+                value = getattr(result, "value", b"")
+                to_py = getattr(value, "to_py", None)
+                yield bytes(to_py() if callable(to_py) else value)
+        finally:
+            release_lock = getattr(reader, "releaseLock", None)
+            if callable(release_lock):
+                release_lock()
+        return
+    array_buffer = getattr(stored, "arrayBuffer", None)
+    if callable(array_buffer):
+        yield bytes(await array_buffer())
 
 
 def _transcript_provider_bucket(segment: dict[str, object]) -> str | None:
@@ -964,9 +1148,44 @@ async def get_conversation_analytics(request: Request, conversation_id: str):
         return JSONResponse({"error": "conversation analytics unavailable"}, status_code=503)
 
 
-@router.get("/v1/conversations/{conversation_id}/recording")
-async def conversation_has_recording(request: Request, conversation_id: str):
-    """Check the canonical R2 recording object without downloading it."""
+@router.post("/v1/sync/audio/{conversation_id}/precache")
+async def precache_conversation_audio(request: Request, conversation_id: str):
+    """Validate that already-materialized Worker playback objects are ready."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    try:
+        row = await _first_conversation(env, uid, conversation_id)
+        if row is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(row.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        audio_files = _audio_files(row)
+        if not audio_files:
+            return {"status": "no_audio", "message": "No audio files in conversation"}
+        bucket = getattr(env, "ASSETS", None)
+        if bucket is None or not callable(getattr(bucket, "head", None)):
+            return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
+        ready = 0
+        for audio_file in audio_files:
+            if await _stored_audio(bucket, uid, conversation_id, audio_file):
+                ready += 1
+    except Exception:
+        return JSONResponse({"error": "recordings unavailable"}, status_code=503)
+    return {"status": "started", "audio_file_count": ready}
+
+
+@router.get("/v1/sync/audio/{conversation_id}/urls")
+async def get_conversation_audio_urls(request: Request, conversation_id: str):
+    """Return short-lived Worker URLs for uid-scoped R2 playback objects."""
 
     context = _auth_context(request)
     if not context:
@@ -987,9 +1206,152 @@ async def conversation_has_recording(request: Request, conversation_id: str):
         bucket = getattr(env, "ASSETS", None)
         if bucket is None or not callable(getattr(bucket, "head", None)):
             return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
-        # This key matches the legacy recording namespace (`uid/id.wav`) while
-        # keeping the object behind the uid-scoped R2 binding.
-        metadata = await bucket.head(f"{uid}/{conversation_id}.wav")
+        results: list[dict[str, object]] = []
+        for audio_file in _audio_files(row):
+            audio_file_id = str(audio_file.get("id") or "")
+            if not audio_file_id:
+                continue
+            stored = await _stored_audio(bucket, uid, conversation_id, audio_file)
+            if stored is None:
+                results.append(
+                    {
+                        "id": audio_file_id,
+                        "status": "unavailable",
+                        "signed_url": None,
+                        "duration": float(audio_file.get("duration") or 0),
+                    }
+                )
+                continue
+            signed_url = _signed_audio_url(request, env, uid, conversation_id, audio_file_id)
+            if signed_url is None:
+                return JSONResponse({"error": "audio URL signing is not configured"}, status_code=503)
+            results.append(
+                {
+                    "id": audio_file_id,
+                    "status": "cached",
+                    "signed_url": signed_url,
+                    "content_type": stored[1],
+                    "duration": float(audio_file.get("duration") or 0),
+                }
+            )
+    except Exception:
+        return JSONResponse({"error": "recordings unavailable"}, status_code=503)
+    return {"audio_files": results, "conversation_audio": None, "poll_after_ms": None}
+
+
+@router.get("/v1/sync/audio/{conversation_id}/{audio_file_id}")
+async def download_conversation_audio(
+    request: Request,
+    conversation_id: str,
+    audio_file_id: str,
+):
+    """Stream a private R2 playback object through an authenticated or signed URL."""
+
+    if (
+        not conversation_id
+        or len(conversation_id) > MAX_ID_LENGTH
+        or not audio_file_id
+        or len(audio_file_id) > MAX_ID_LENGTH
+    ):
+        return JSONResponse({"error": "invalid audio identity"}, status_code=400)
+    env = request.scope["env"]
+    context = _auth_context(request)
+    uid = (
+        str(context["uid"])
+        if context
+        else _audio_token_uid(
+            env,
+            request.query_params.get("token"),
+            conversation_id,
+            audio_file_id,
+            int(time.time()),
+        )
+    )
+    if not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    requested_format = request.query_params.get("format", "wav")
+    if requested_format != "wav":
+        return JSONResponse({"error": "unsupported audio format"}, status_code=400)
+    try:
+        row = await _first_conversation(env, uid, conversation_id)
+        if row is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(row.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        audio_file = _audio_file(row, audio_file_id)
+        if audio_file is None:
+            return JSONResponse({"error": "audio file not found"}, status_code=404)
+        bucket = getattr(env, "ASSETS", None)
+        if bucket is None or not callable(getattr(bucket, "get", None)):
+            return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
+        resolved = await _stored_audio(bucket, uid, conversation_id, audio_file)
+        if resolved is None:
+            return JSONResponse({"error": "audio file not found"}, status_code=404)
+        storage_key, content_type, metadata = resolved
+        size = _audio_object_size(metadata)
+        try:
+            byte_range = _parse_audio_range(request.headers.get("range"), size)
+        except ValueError:
+            return Response(status_code=416, headers={"content-range": f"bytes */{size}", "accept-ranges": "bytes"})
+        options: dict[str, object] = {}
+        headers = {"accept-ranges": "bytes", "cache-control": "private, max-age=300"}
+        status_code = 200
+        if byte_range is not None:
+            start, end = byte_range
+            options = {"range": {"offset": start, "length": end - start + 1}}
+            headers["content-range"] = f"bytes {start}-{end}/{size}"
+            headers["content-length"] = str(end - start + 1)
+            status_code = 206
+        elif size:
+            headers["content-length"] = str(size)
+        stored = await bucket.get(storage_key, options) if options else await bucket.get(storage_key)
+        if stored is None:
+            return JSONResponse({"error": "audio file not found"}, status_code=404)
+    except Exception:
+        return JSONResponse({"error": "recordings unavailable"}, status_code=503)
+    return StreamingResponse(
+        _r2_audio_chunks(stored),
+        media_type=content_type,
+        headers=headers,
+        status_code=status_code,
+    )
+
+
+@router.get("/v1/conversations/{conversation_id}/recording")
+async def conversation_has_recording(request: Request, conversation_id: str):
+    """Check uid-scoped Worker playback or the canonical imported recording."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    try:
+        row = await _first_conversation(env, uid, conversation_id)
+        if row is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(row.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        bucket = getattr(env, "ASSETS", None)
+        if bucket is None or not callable(getattr(bucket, "head", None)):
+            return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
+        metadata = None
+        for audio_file in _audio_files(row):
+            if await _stored_audio(bucket, uid, conversation_id, audio_file):
+                metadata = True
+                break
+        if metadata is None:
+            # This key matches the legacy recording namespace (`uid/id.wav`)
+            # after its data is copied into the uid-scoped R2 binding.
+            metadata = await bucket.head(f"{uid}/{conversation_id}.wav")
     except Exception:
         return JSONResponse({"error": "recordings unavailable"}, status_code=503)
     return {"has_recording": metadata is not None}

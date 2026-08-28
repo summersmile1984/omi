@@ -392,6 +392,15 @@ const proxyAuthenticatedCore = async (
   return withRequestId(response, id);
 };
 
+const proxyConversationAudioDownload = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  // The core Worker verifies the HMAC token and its uid/conversation/audio
+  // binding. Tokenless fallback downloads retain the normal Better Auth path.
+  if (c.req.query("token")) return proxyPublicCore(c);
+  return proxyAuthenticatedCore(c);
+};
+
 const proxyAuthenticatedAuthProfile = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -479,6 +488,12 @@ app.get(
 app.post("/v2/sync-capture-manifest", proxyAuthenticatedJobs);
 app.post("/v2/sync-local-files", proxyAuthenticatedJobs);
 app.get("/v2/sync-local-files/:jobId", proxyAuthenticatedJobs);
+app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedCore);
+app.get("/v1/sync/audio/:conversationId/urls", proxyAuthenticatedCore);
+app.get(
+  "/v1/sync/audio/:conversationId/:audioFileId",
+  proxyConversationAudioDownload,
+);
 app.post("/v1/embeddings-workers-ai", proxyAuthenticatedAI);
 app.post("/v1/stt/transcribe", proxyAuthenticatedAI);
 app.get("/v1/account/cutover/control", proxyAuthenticatedCore);
