@@ -835,7 +835,7 @@ calendar meeting metadata CRUD      # D1 natural-key upsert and bounded date rea
 conversation D1 projection         # pre-transcribed uid/id upsert + bounded canonical list/count/detail/title/starred/folder/task reads with locked-row redaction; finalization/memory/search remain legacy → staging candidate
 conversation detail filters           # canonical source=omi and include_discarded query parity with uid-scoped D1 reads → unit + staging verified
 web Worker/vinext staging             # 97% vinext check, Next build, Better Auth email client, AUTH service binding, browser canary ready → HTTP/browser staging verified
-desktop realtime session/usage       # provider token mint via workers.fetch; hashed session + token-cost usage in D1 → staging candidate
+desktop realtime session/usage       # provider token mint via workers.fetch; hashed session + token-cost usage in D1 → usage staging verified; provider token mint remains key-gated
 staging deploy health gate           # one command publishes six Workers, then checks Edge/Auth-ready/Core/AI/Realtime/Jobs → verified
 goal daily progress history         # D1 uid/goal/date upsert, bounded history read, uid isolation → unit verified
 goal progress event feed            # validated evidence/metric append/list, sequence projection, receipt idempotency → unit verified
