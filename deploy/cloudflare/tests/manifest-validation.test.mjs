@@ -7,8 +7,13 @@ import {
   validateManifests,
   validateR2NamespaceManifest,
   validateRedisPrimitiveManifest,
+  validateRouteManifest,
   validateVectorNamespaceManifest,
 } from "../scripts/validate-manifests.mjs";
+import {
+  EDGE_RATE_LIMIT_POLICIES,
+  edgeRateLimitPolicyForRequest,
+} from "../workers/edge/rate-limit";
 
 const cloudflareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(cloudflareRoot, "../..");
@@ -39,7 +44,10 @@ describe("Cloudflare migration manifests", () => {
   });
 
   it("fails when a Redis source symbol or a direct Worker Redis dependency is introduced", async () => {
-    const manifest = await loadYaml("redis-primitives.yaml");
+    const [manifest, routes] = await Promise.all([
+      loadYaml("redis-primitives.yaml"),
+      loadYaml("routes.yaml"),
+    ]);
     const redisSource = await readFile(
       resolve(repoRoot, manifest.source),
       "utf8",
@@ -91,6 +99,65 @@ describe("Cloudflare migration manifests", () => {
         directCallerPaths,
       }),
     ).toThrow("must list migrated_policies while staging-partial");
+
+    const mismatchedRoutes = structuredClone(manifest);
+    mismatchedRoutes.families
+      .find((family) => family.id === "request-rate-limits")
+      .migrated_routes.pop();
+    expect(() =>
+      validateRedisPrimitiveManifest(mismatchedRoutes, {
+        redisSource,
+        directCallerPaths,
+        routeManifest: routes,
+      }),
+    ).toThrow("migrated_routes must equal routes.yaml");
+  });
+
+  it("keeps rate-limit dependencies, policy declarations, and Edge matching aligned", async () => {
+    const routes = await loadYaml("routes.yaml");
+    const edgeSource = await readFile(
+      resolve(cloudflareRoot, "workers/edge/index.ts"),
+      "utf8",
+    );
+    const invalid = structuredClone(routes);
+    delete invalid.routes.find(
+      (route) => route.path === "/v1/tts/synthesize",
+    ).rate_limit_policy;
+    expect(() => validateRouteManifest(invalid, edgeSource)).toThrow(
+      "must declare rate_limit_policy",
+    );
+
+    const limitedRoutes = routes.routes.filter(
+      (route) => route.rate_limit_policy,
+    );
+    for (const route of limitedRoutes) {
+      const concretePath = route.path.replace(/:[^/]+/g, "sample-id");
+      expect(
+        edgeRateLimitPolicyForRequest(route.method, concretePath)?.name,
+        `${route.method} ${route.path}`,
+      ).toBe(route.rate_limit_policy);
+    }
+    expect(edgeRateLimitPolicyForRequest("GET", "/v3/memories")).toBeNull();
+  });
+
+  it("keeps migrated Edge limits equal to the backend policy source", async () => {
+    const backendPolicies = await readFile(
+      resolve(repoRoot, "backend/utils/rate_limit_config.py"),
+      "utf8",
+    );
+    for (const [name, policy] of Object.entries(EDGE_RATE_LIMIT_POLICIES)) {
+      const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const match = backendPolicies.match(
+        new RegExp(`["]${escapedName}["]\\s*:\\s*\\((\\d+),\\s*(\\d+)\\)`),
+      );
+      expect(match, name).not.toBeNull();
+      expect(Number(match?.[1]), `${name} max requests`).toBe(
+        policy.maxRequests,
+      );
+      expect(Number(match?.[2]), `${name} window seconds`).toBe(
+        policy.windowSeconds,
+      );
+    }
   });
 
   it("requires re-embedding when a vector projection changes dimensions", async () => {

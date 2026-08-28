@@ -342,9 +342,31 @@ families:
     target: durable-object
     target_owner: edge
     migration_state: staging-partial
-    migrated_policies: ["tts:synthesize"]
+    migrated_policies:
+      - chat:send_message
+      - conversations:search
+      - memories:create
+      - memories:delete
+      - memories:delete_all
+      - memories:delete_batch
+      - memories:modify
+      - stt:transcribe
+      - tts:synthesize
     migrated_routes:
-      ["POST /v1/tts/synthesize", "POST /v1/tts/synthesize-workers-ai"]
+      - POST /v1/conversations/search
+      - POST /v1/stt/transcribe
+      - POST /v1/stt/transcribe-async
+      - POST /v1/stt/transcribe-workers-ai
+      - POST /v1/tts/synthesize
+      - POST /v1/tts/synthesize-workers-ai
+      - POST /v2/messages
+      - DELETE /v3/memories
+      - DELETE /v3/memories/:memoryId
+      - DELETE /v3/memories/batch
+      - PATCH /v3/memories/:memoryId
+      - PATCH /v3/memories/:memoryId/visibility
+      - POST /v3/memories
+      - POST /v3/memories/:memoryId/review
   - id: tts-rate-limits
     source_symbols: [check_tts_rate_limit]
     key_patterns: ["tts:burst:{uid}", "tts:chars:{uid}:{date}"]

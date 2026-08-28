@@ -747,11 +747,17 @@ MCP state, and app-owner writes remain legacy-owned.
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
 until its rate-limit and provider-shape migration is verified separately.
-Both Cloudflare-owned `/v1/tts/synthesize` routes now consume the shared
-`tts:synthesize` 300-request/hour/UID outer limit in the Edge rate-limit Durable
-Object. The object serializes concurrent increments and persists the fixed
-window; a limiter dependency failure preserves the legacy first-party
-fail-open behavior and emits bounded `recordFallback` telemetry.
+Every Cloudflare-owned route that previously consumed a first-party UID request
+limit now uses the Edge rate-limit Durable Object: chat send, prerecorded/native/
+async STT, conversation search, memory create/delete/modify, and both TTS routes.
+The manifest names each route's policy and mechanically checks that it matches
+the Edge matcher. Limits and one-hour windows mirror
+`backend/utils/rate_limit_config.py`; `RATE_LIMIT_BOOST` and
+`RATE_LIMIT_SHADOW_MODE` remain
+available as staging Worker vars. The object serializes concurrent increments
+and persists the fixed window; a limiter dependency failure preserves the
+legacy first-party fail-open behavior and emits bounded `recordFallback`
+telemetry.
 
 `/v1/tts/synthesize-workers-ai` is an additive raw-MP3 route backed by the
 native `@cf/deepgram/aura-1` binding. It accepts bounded `{text, speaker}` JSON

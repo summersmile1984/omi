@@ -32,11 +32,105 @@ export type EdgeRateLimitPolicy = {
   windowSeconds: number;
 };
 
-export const TTS_SYNTHESIZE_RATE_LIMIT: EdgeRateLimitPolicy = {
-  name: "tts:synthesize",
-  maxRequests: 300,
-  windowSeconds: 3600,
-};
+export const EDGE_RATE_LIMIT_POLICIES = {
+  "chat:send_message": {
+    name: "chat:send_message",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
+  "conversations:search": {
+    name: "conversations:search",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
+  "memories:create": {
+    name: "memories:create",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
+  "memories:delete": {
+    name: "memories:delete",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
+  "memories:delete_all": {
+    name: "memories:delete_all",
+    maxRequests: 2,
+    windowSeconds: 3600,
+  },
+  "memories:delete_batch": {
+    name: "memories:delete_batch",
+    maxRequests: 10,
+    windowSeconds: 3600,
+  },
+  "memories:modify": {
+    name: "memories:modify",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
+  "stt:transcribe": {
+    name: "stt:transcribe",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
+  "tts:synthesize": {
+    name: "tts:synthesize",
+    maxRequests: 300,
+    windowSeconds: 3600,
+  },
+} as const satisfies Record<string, EdgeRateLimitPolicy>;
+
+export const TTS_SYNTHESIZE_RATE_LIMIT =
+  EDGE_RATE_LIMIT_POLICIES["tts:synthesize"];
+export const STT_TRANSCRIBE_RATE_LIMIT =
+  EDGE_RATE_LIMIT_POLICIES["stt:transcribe"];
+
+const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
+  ["POST /v1/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],
+  ["POST /v1/tts/synthesize-workers-ai", TTS_SYNTHESIZE_RATE_LIMIT],
+  ["POST /v2/messages", EDGE_RATE_LIMIT_POLICIES["chat:send_message"]],
+  ["POST /v1/stt/transcribe", STT_TRANSCRIBE_RATE_LIMIT],
+  ["POST /v1/stt/transcribe-workers-ai", STT_TRANSCRIBE_RATE_LIMIT],
+  ["POST /v1/stt/transcribe-async", STT_TRANSCRIBE_RATE_LIMIT],
+  [
+    "POST /v1/conversations/search",
+    EDGE_RATE_LIMIT_POLICIES["conversations:search"],
+  ],
+  ["POST /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
+  [
+    "DELETE /v3/memories",
+    EDGE_RATE_LIMIT_POLICIES["memories:delete_all"],
+  ],
+  [
+    "DELETE /v3/memories/batch",
+    EDGE_RATE_LIMIT_POLICIES["memories:delete_batch"],
+  ],
+]);
+
+export function edgeRateLimitPolicyForRequest(
+  method: string,
+  path: string,
+): EdgeRateLimitPolicy | null {
+  const normalizedMethod = method.toUpperCase();
+  const exact = EXACT_ROUTE_POLICIES.get(`${normalizedMethod} ${path}`);
+  if (exact) return exact;
+
+  if (
+    normalizedMethod === "DELETE" &&
+    /^\/v3\/memories\/[^/]+$/.test(path)
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["memories:delete"];
+  }
+  if (
+    (normalizedMethod === "PATCH" &&
+      /^\/v3\/memories\/[^/]+(?:\/visibility)?$/.test(path)) ||
+    (normalizedMethod === "POST" &&
+      /^\/v3\/memories\/[^/]+\/review$/.test(path))
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["memories:modify"];
+  }
+  return null;
+}
 
 export class RateLimitDurableObject {
   constructor(private readonly state: DurableObjectState) {}
@@ -158,6 +252,7 @@ export async function enforceEdgeRateLimit(
   policy: EdgeRateLimitPolicy,
   requestId: string,
 ): Promise<Response | null> {
+  const maxRequests = effectiveMaxRequests(env.RATE_LIMIT_BOOST, policy);
   try {
     const id = env.RATE_LIMITS.idFromName(`${policy.name}:${auth.uid}`);
     const response = await env.RATE_LIMITS.get(id).fetch(
@@ -166,7 +261,7 @@ export async function enforceEdgeRateLimit(
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           policy: policy.name,
-          max_requests: policy.maxRequests,
+          max_requests: maxRequests,
           window_seconds: policy.windowSeconds,
         }),
       }),
@@ -186,9 +281,19 @@ export async function enforceEdgeRateLimit(
       return null;
     }
     if (result.allowed) return null;
+    if (env.RATE_LIMIT_SHADOW_MODE?.toLowerCase() === "true") {
+      console.warn(
+        JSON.stringify({
+          event: "rate_limit_shadow",
+          policy: policy.name,
+          retry_after: result.retryAfter,
+          request_id: requestId,
+        }),
+      );
+      return null;
+    }
     return Response.json(
       {
-        error: "rate_limit_exceeded",
         detail: `Rate limit exceeded. Try again in ${result.retryAfter}s.`,
       },
       {
@@ -212,4 +317,14 @@ export async function enforceEdgeRateLimit(
     });
     return null;
   }
+}
+
+function effectiveMaxRequests(
+  boostValue: string | undefined,
+  policy: EdgeRateLimitPolicy,
+): number {
+  if (boostValue === undefined) return policy.maxRequests;
+  const boost = Number(boostValue);
+  if (!Number.isFinite(boost) || boost <= 0) return policy.maxRequests;
+  return Math.max(1, Math.floor(policy.maxRequests * boost));
 }

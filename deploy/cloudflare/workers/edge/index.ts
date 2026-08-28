@@ -15,9 +15,10 @@ import {
 } from "./cutover";
 import type { EdgeEnv, EdgeVariables } from "./env";
 import {
+  edgeRateLimitPolicyForRequest,
   enforceEdgeRateLimit,
   RateLimitDurableObject,
-  TTS_SYNTHESIZE_RATE_LIMIT,
+  STT_TRANSCRIBE_RATE_LIMIT,
 } from "./rate-limit";
 
 const app = new Hono<{ Bindings: EdgeEnv; Variables: EdgeVariables }>();
@@ -275,6 +276,13 @@ const proxyAuthenticatedAsyncTranscription = async (
     id,
   );
   if (denial) return withRequestId(denial, id);
+  const rateLimitDenial = await enforceEdgeRateLimit(
+    c.env,
+    auth,
+    STT_TRANSCRIBE_RATE_LIMIT,
+    id,
+  );
+  if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
   const headers = new Headers();
   for (const name of ["content-type", "content-length", "idempotency-key"]) {
     const value = c.req.header(name);
@@ -353,6 +361,11 @@ const proxyAuthenticatedCore = async (
     );
     if (denial) return withRequestId(denial, id);
   }
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -404,14 +417,12 @@ const proxyAuthenticatedAI = async (
     id,
   );
   if (denial) return withRequestId(denial, id);
-  if (
-    c.req.path === "/v1/tts/synthesize" ||
-    c.req.path === "/v1/tts/synthesize-workers-ai"
-  ) {
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
     const rateLimitDenial = await enforceEdgeRateLimit(
       c.env,
       auth,
-      TTS_SYNTHESIZE_RATE_LIMIT,
+      policy,
       id,
     );
     if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
@@ -450,6 +461,7 @@ app.get(
   proxyAuthenticatedAsyncTranscriptionStatus,
 );
 app.post("/v1/embeddings-workers-ai", proxyAuthenticatedAI);
+app.post("/v1/stt/transcribe", proxyAuthenticatedAI);
 app.get("/v1/account/cutover/control", proxyAuthenticatedCore);
 app.all("/v1/cf/probe", proxyAuthenticatedCore);
 app.all("/v1/cf/assets/*", proxyAuthenticatedCore);

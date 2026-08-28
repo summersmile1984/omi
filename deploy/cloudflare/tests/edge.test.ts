@@ -33,6 +33,15 @@ const rateLimits = (
     },
   }) as unknown as DurableObjectNamespace;
 
+const allowRateLimit = () =>
+  Response.json({
+    allowed: true,
+    limit: 300,
+    remaining: 299,
+    retryAfter: 0,
+    resetAt: Date.now() + 3_600_000,
+  });
+
 describe("edge gateway", () => {
   it("serves a versioned health response", async () => {
     const response = await edge.fetch(
@@ -476,6 +485,7 @@ describe("edge gateway", () => {
 
   it("routes conversation search and deletion to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
+    const rateLimitNames: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       AUTH: service((request) => {
@@ -490,6 +500,7 @@ describe("edge gateway", () => {
       }),
       API_AI: service(() => Response.json({ status: "ok" })),
       REALTIME: service(() => Response.json({ status: "ok" })),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
     };
     const auth = { authorization: "Bearer opaque-session" };
     expect(
@@ -528,6 +539,7 @@ describe("edge gateway", () => {
         Boolean(request.headers.get("x-omi-auth-context")),
       ),
     ).toBe(true);
+    expect(rateLimitNames).toEqual(["conversations:search:user-1"]);
   });
 
   it("routes canonical conversation photos to the authenticated core worker", async () => {
@@ -563,6 +575,7 @@ describe("edge gateway", () => {
 
   it("routes the canonical memory CRUD surface to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
+    const rateLimitNames: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       AUTH: service((request) => {
@@ -577,6 +590,7 @@ describe("edge gateway", () => {
       }),
       API_AI: service(() => Response.json({ status: "ok" })),
       REALTIME: service(() => Response.json({ status: "ok" })),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
     };
     const authorization = { authorization: "Bearer opaque-session" };
     const cases = [
@@ -620,6 +634,15 @@ describe("edge gateway", () => {
         request.headers.has("x-omi-auth-context"),
       ),
     ).toBe(true);
+    expect(rateLimitNames).toEqual([
+      "memories:create:user-1",
+      "memories:modify:user-1",
+      "memories:modify:user-1",
+      "memories:modify:user-1",
+      "memories:delete_batch:user-1",
+      "memories:delete:user-1",
+      "memories:delete_all:user-1",
+    ]);
   });
 
   it("routes canonical conversation segment text edits to the authenticated core worker", async () => {
@@ -1000,6 +1023,7 @@ describe("edge gateway", () => {
 
   it("routes the prerecorded STT contract to the API worker", async () => {
     let aiPath = "";
+    const rateLimitNames: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       AUTH: service((request) => {
@@ -1019,7 +1043,17 @@ describe("edge gateway", () => {
         );
       }),
       REALTIME: service(() => Response.json({ status: "ok" })),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
     };
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/stt/transcribe", {
+        method: "POST",
+        body: "audio",
+      }),
+      env,
+    );
+    expect(unauthenticated.status).toBe(401);
+    expect(aiPath).toBe("");
     const response = await edge.fetch(
       new Request("https://edge.test/v1/stt/transcribe", {
         method: "POST",
@@ -1033,6 +1067,7 @@ describe("edge gateway", () => {
     );
     expect(response.status).toBe(503);
     expect(aiPath).toBe("/v1/stt/transcribe");
+    expect(rateLimitNames).toEqual(["stt:transcribe:user-1"]);
   });
 
   it("routes account cutover control to the authenticated core worker", async () => {
@@ -1169,6 +1204,7 @@ describe("edge gateway", () => {
 
   it("routes async native transcription bodies to the jobs worker and rewrites status reads", async () => {
     const jobRequests: Request[] = [];
+    const rateLimitNames: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       AUTH: service((request) => {
@@ -1191,6 +1227,7 @@ describe("edge gateway", () => {
           { status: 202 },
         );
       }),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
     };
     const response = await edge.fetch(
       new Request("https://edge.test/v1/stt/transcribe-async", {
@@ -1225,6 +1262,7 @@ describe("edge gateway", () => {
     expect(new URL(jobRequests[1].url).pathname).toBe(
       "/v1/cf/transcription-jobs/job-1",
     );
+    expect(rateLimitNames).toEqual(["stt:transcribe:user-1"]);
   });
 
   it("routes the translation contract to the API AI worker", async () => {

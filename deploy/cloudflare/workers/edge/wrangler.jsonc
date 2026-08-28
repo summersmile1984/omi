@@ -22,5 +22,7 @@
   ],
   "vars": {
     "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",
+    "RATE_LIMIT_BOOST": "1.0",
+    "RATE_LIMIT_SHADOW_MODE": "false",
   },
 }

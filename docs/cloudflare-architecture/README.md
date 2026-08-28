@@ -23,7 +23,7 @@
 | CF-04 R2 | 部分完成 | PUT/GET/range/conditional/checksum/delete smoke | multipart、presigned expiry、迁移中断重放、全量 residual/cutover |
 | CF-05 App D1 | 选定 route group 已验证 | 用户设置、conversation、memory、recap/chat 等投影路由 | 生产规模回放、账户级 authority cutover、全量领域迁移 |
 | CF-06 Queues/Workflows | 部分完成 | transcription Queue、幂等/重复/冲突/终态、DLQ 相关验证 | Workflows、高风险删除/finalization contracts、积压恢复与 replay 证据 |
-| CF-07 Redis primitive 拆分 | 部分完成 | staging 新 Worker 不接 Redis；TTS 外层限流已进入 Edge Durable Object，并覆盖并发、TTL、429 和 fail-open telemetry | 其余 policy、KV cache、锁/连接状态和 Queue primitive 仍待逐 family 迁移 |
+| CF-07 Redis primitive 拆分 | 部分完成 | staging 新 Worker 不接 Redis；当前 Cloudflare-owned 的 14 条限流路由/9 个 policy 已进入 Edge Durable Object，并覆盖并发、TTL、boost/shadow、429 和 fail-open telemetry | 尚未迁移的 legacy route policy，以及 KV cache、锁/连接状态和 Queue primitive 仍待逐 family 迁移 |
 | CF-08 Realtime + ASR | 部分完成 | Realtime DO 协议/WebSocket、Workers AI ASR/STT/TTS/翻译 smoke | 多语言/噪声 WER、首字/final p50/p95/p99、重连、成本、区域与 cohort |
 | CF-09 Vectorize | 部分完成 | embedding seam/768 维路径、现有检索约束已记录 | namespace/backfill/recall/hydrate/delete；3072 维 screenshot embedding 仍不能直接迁移 |
 | CF-10 其余 API 领域 | 部分完成 | 已迁移并声明 owner 的 core/ai 路由 | 大量 legacy route、Firebase/Redis/同步 SDK/复杂 fan-out 仍待领域化改造 |
@@ -33,7 +33,7 @@
 
 ## 本轮验证证据
 
-- Cloudflare TypeScript：15 个文件、106 个测试通过。
+- Cloudflare TypeScript：15 个文件、111 个测试通过。
 - `api-core`：110 个测试通过；`api-ai`：32 个测试通过。
 - Web：7 个测试文件、25 个测试通过。
 - manifest：188 条路由、12 个 staging 资源通过校验。

@@ -758,7 +758,7 @@ Worker-first 稳定态没有常驻 Container 固定成本。最终预算使用�
 `deploy/cloudflare/`，资源名全部带 `omi-cf-` 前缀，未修改已有 Worker、生产
 DNS 或生产数据库。当前 staging 已部署：
 
-- `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由；Edge 自有 RateLimit Durable Object 已接管两条 `/v1/tts/synthesize*` 路由共用的 `tts:synthesize` 300 次/小时/UID 外层窗口，事务串行化并发计数、alarm 清理过期窗口，DO 故障时保留旧 first-party fail-open 行为并记录结构化 fallback。
+- `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由；Edge 自有 RateLimit Durable Object 已接管当前 Cloudflare-owned 路由中原后端具有 UID 限流的 chat send、STT、conversation search、memory mutation、TTS 共 14 条路由/9 个 policy，保留 `RATE_LIMIT_BOOST`/shadow-mode 开关，事务串行化并发计数、alarm 清理过期窗口，DO 故障时保留旧 first-party fail-open 行为并记录结构化 fallback。
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
 - `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意、短时 geolocation TTL row、daily-summary/mentor notification 偏好、training-data opt-in 状态与 private-sync 联动、FCM token 注册、开发者 webhook 配置/开关状态、assistant-settings 深合并和低风险 ai-profile 投影、客户端 API key 配置读取、公开 firmware stable/latest/version APIs、公告/版本更新公开读取与用户 dismiss，以及 staging-only 的 D1-backed action-item CRUD/reconciliation（含 Apple Reminders pending/sync-batch projection）、daily/weekly/overall score projection、focus-session CRUD/stats、text-only screen-activity sync/list/summary、calendar onboarding flags、People 元数据 CRUD、goal 元数据/metric/daily-history/progress-events/canonical-list/canonical-create/focus/lifecycle CRUD、work-intent/workstream journal/artifact/checkpoint CRUD、folder 元数据/排序/bulk move/delete CRUD、daily-summary 列表/详情/删除/visibility/test/regenerate 投影和 app-scoped chat history 读/删投影，未导入 `backend/main.py`。
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
@@ -770,7 +770,7 @@ DNS 或生产数据库。当前 staging 已部署：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 15 files / 106 tests pass
+npm test                                  # 15 files / 111 tests pass
 uvx uv==0.12.3 run pytest -q              # api-core: 110 tests pass
 uvx uv==0.12.3 run pytest -q              # api-ai: 32 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai

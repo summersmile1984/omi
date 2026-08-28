@@ -110,6 +110,28 @@ export function validateRouteManifest(routeManifest, edgeSource) {
         `unsupported target_runtime for ${key}: ${route.target_runtime}`,
       );
     }
+    const dependencies = Array.isArray(route.dependencies)
+      ? route.dependencies
+      : [];
+    const dependsOnRateLimit = dependencies.includes("rate-limit-do");
+    if (route.rate_limit_policy !== undefined) {
+      requiredString(
+        route.rate_limit_policy,
+        `rate-limited route ${key} must declare rate_limit_policy`,
+      );
+      if (!dependsOnRateLimit) {
+        throw new Error(
+          `route ${key} declares rate_limit_policy without rate-limit-do dependency`,
+        );
+      }
+      if (route.auth_authority === "public") {
+        throw new Error(`public route ${key} may not use a UID rate limit`);
+      }
+    } else if (dependsOnRateLimit && route.auth_authority !== "public") {
+      throw new Error(
+        `rate-limited route ${key} must declare rate_limit_policy`,
+      );
+    }
     const routeHint = route.path === "/*" ? "/" : route.path.replace(/\*$/, "");
     const edgeRouteHint = routeHint.replace(/\{([^}]+)\}/g, ":$1");
     const pathSegments = route.path.split("/").filter(Boolean);
@@ -155,7 +177,12 @@ export function discoverRedisSourceSymbols(redisSource) {
 
 export function validateRedisPrimitiveManifest(
   manifest,
-  { redisSource, directCallerPaths = [], workerSources = [] },
+  {
+    redisSource,
+    directCallerPaths = [],
+    workerSources = [],
+    routeManifest,
+  },
 ) {
   if (manifest?.policy?.workers_may_connect_to_redis !== false) {
     throw new Error(
@@ -224,6 +251,10 @@ export function validateRedisPrimitiveManifest(
       requiredStringArray(
         family.migrated_policies,
         `Redis family ${family.id} must list migrated_policies while staging-partial`,
+      );
+      requiredStringArray(
+        family.migrated_routes,
+        `Redis family ${family.id} must list migrated_routes while staging-partial`,
       );
     }
     classifiedSymbols.push(...family.source_symbols);
@@ -304,6 +335,35 @@ export function validateRedisPrimitiveManifest(
     throw new Error(
       `Cloudflare Worker source must not connect to Redis: ${redisWorkerSources.map(({ path }) => path).join(", ")}`,
     );
+  }
+  if (routeManifest) {
+    const requestRateLimits = families.find(
+      (family) => family.id === "request-rate-limits",
+    );
+    if (!requestRateLimits) {
+      throw new Error("Redis manifest must classify request-rate-limits");
+    }
+    const rateLimitedRoutes = routeManifest.routes.filter(
+      (route) => route.rate_limit_policy,
+    );
+    const routeKeys = rateLimitedRoutes
+      .map((route) => `${route.method} ${route.path}`)
+      .sort();
+    const declaredRouteKeys = [...requestRateLimits.migrated_routes].sort();
+    if (JSON.stringify(routeKeys) !== JSON.stringify(declaredRouteKeys)) {
+      throw new Error(
+        "request-rate-limits migrated_routes must equal routes.yaml rate_limit_policy entries",
+      );
+    }
+    const routePolicies = [
+      ...new Set(rateLimitedRoutes.map((route) => route.rate_limit_policy)),
+    ].sort();
+    const declaredPolicies = [...requestRateLimits.migrated_policies].sort();
+    if (JSON.stringify(routePolicies) !== JSON.stringify(declaredPolicies)) {
+      throw new Error(
+        "request-rate-limits migrated_policies must equal routes.yaml rate_limit_policy values",
+      );
+    }
   }
   return families.length;
 }
@@ -609,6 +669,7 @@ export async function validateManifests() {
       redisSource,
       directCallerPaths,
       workerSources,
+      routeManifest,
     }),
     vectorNamespaces: validateVectorNamespaceManifest(
       vectorManifest,

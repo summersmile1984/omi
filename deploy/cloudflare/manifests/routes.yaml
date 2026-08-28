@@ -15,7 +15,7 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: public
-    dependencies: [auth, api-core, api-ai, realtime, jobs]
+    dependencies: [auth, api-core, api-ai, realtime, jobs, rate-limit-do]
     protocol: http
     rollout: staging-only
     rollback: restore-worker-deployment-snapshot
@@ -333,6 +333,7 @@ routes:
     target_runtime: external-api
     auth_authority: better-auth
     dependencies: [external-tts-api, rate-limit-do]
+    rate_limit_policy: tts:synthesize
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -344,6 +345,7 @@ routes:
     target_runtime: python-worker
     auth_authority: better-auth
     dependencies: [workers-ai-binding, rate-limit-do]
+    rate_limit_policy: tts:synthesize
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -374,7 +376,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-ai-api]
+    dependencies: [d1-app, external-ai-api, rate-limit-do]
+    rate_limit_policy: chat:send_message
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -385,7 +388,8 @@ routes:
     runtime: python-worker
     target_runtime: external-api
     auth_authority: better-auth
-    dependencies: [external-asr-api]
+    dependencies: [external-asr-api, rate-limit-do]
+    rate_limit_policy: stt:transcribe
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -430,7 +434,8 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, r2, queue-jobs, workers-ai-binding]
+    dependencies: [d1-app, r2, queue-jobs, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: stt:transcribe
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -451,7 +456,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [workers-ai-binding]
+    dependencies: [workers-ai-binding, rate-limit-do]
+    rate_limit_policy: stt:transcribe
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -1609,7 +1615,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: conversations:search
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1629,7 +1636,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:create
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -1640,7 +1648,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:delete_all
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1650,7 +1659,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:delete_batch
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1660,7 +1670,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:delete
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1670,7 +1681,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:modify
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1680,7 +1692,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:modify
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1690,7 +1703,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:modify
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
