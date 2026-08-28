@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   activeVersionFromStatus,
+  assertValidDeploymentOrder,
   createDeploymentSnapshot,
   rollbackPlan,
+  STAGING_DEPLOYMENTS,
   STAGING_WORKERS,
 } from "../scripts/deployment-state.mjs";
 
@@ -20,7 +22,7 @@ describe("Cloudflare deployment snapshots", () => {
     );
     expect(snapshot.environment).toBe("staging");
     expect(snapshot.createdAt).toBe("2026-08-28T00:00:00.000Z");
-    expect(snapshot.workers["omi-cf-edge-staging"]).toBe("version-5");
+    expect(snapshot.workers["omi-cf-edge-staging"]).toBe("version-6");
     expect(rollbackPlan(snapshot).map((step) => step.workerName)).toEqual([
       "omi-web-app-staging",
       "omi-cf-edge-staging",
@@ -28,6 +30,7 @@ describe("Cloudflare deployment snapshots", () => {
       "omi-cf-realtime-staging",
       "omi-cf-api-ai-staging",
       "omi-cf-api-core-staging",
+      "omi-cf-rate-limit-staging",
       "omi-cf-auth-staging",
     ]);
   });
@@ -44,6 +47,13 @@ describe("Cloudflare deployment snapshots", () => {
         "omi-cf-edge-staging",
       ),
     ).toThrow("exactly one 100% active version");
+  });
+
+  it("requires every service binding owner to deploy before its consumers", () => {
+    expect(() => assertValidDeploymentOrder()).not.toThrow();
+    expect(() =>
+      assertValidDeploymentOrder([...STAGING_DEPLOYMENTS].reverse()),
+    ).toThrow("must deploy after dependency");
   });
 
   it("rejects incomplete or tampered snapshots", () => {

@@ -4,8 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stagingHealthTargets, verifyStagingHealth } from "./deploy-health.mjs";
 import {
+  assertValidDeploymentOrder,
   createDeploymentSnapshot,
   rollbackPlan,
+  STAGING_DEPLOYMENTS,
   STAGING_WORKERS,
 } from "./deployment-state.mjs";
 import { assertAuthenticatedSmokeConfigured } from "./smoke-staging.mjs";
@@ -49,6 +51,7 @@ function qualifyRelease() {
   run("npm", ["test"]);
   for (const config of [
     "workers/auth/wrangler.jsonc",
+    "workers/rate-limit/wrangler.jsonc",
     "workers/realtime/wrangler.jsonc",
     "workers/jobs/wrangler.jsonc",
     "workers/edge/wrangler.jsonc",
@@ -240,6 +243,17 @@ function deployWeb() {
   );
 }
 
+function deployServices() {
+  assertValidDeploymentOrder();
+  for (const deployment of STAGING_DEPLOYMENTS) {
+    if (deployment.runtime === "python") {
+      deployPython(deployment.target);
+    } else {
+      deployTypeScript(deployment.target);
+    }
+  }
+}
+
 console.log(
   "Cloudflare staging release: resources are isolated under omi-cf-*; no production config is loaded.",
 );
@@ -251,12 +265,7 @@ try {
   ensureResources();
   applyMigrations();
   deploymentStarted = true;
-  deployTypeScript("workers/auth/wrangler.jsonc");
-  deployPython("python/api-core");
-  deployPython("python/api-ai");
-  deployTypeScript("workers/realtime/wrangler.jsonc");
-  deployTypeScript("workers/jobs/wrangler.jsonc");
-  deployTypeScript("workers/edge/wrangler.jsonc");
+  deployServices();
   await verifyStagingHealth({
     targets: stagingHealthTargets().filter((target) => target.name === "edge"),
   });

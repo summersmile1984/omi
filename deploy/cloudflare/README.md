@@ -40,11 +40,11 @@ versions are rejected by `pywrangler`.
 Resource names are deliberately isolated from existing account resources:
 
 - D1: `omi-cf-auth-staging`, `omi-cf-app-staging`
-- Workers: `omi-cf-edge-staging`, `omi-cf-auth-staging`, `omi-cf-api-core-staging`, `omi-cf-api-ai-staging`, `omi-cf-realtime-staging`
+- Workers: `omi-cf-edge-staging`, `omi-cf-auth-staging`, `omi-cf-api-core-staging`, `omi-cf-api-ai-staging`, `omi-cf-realtime-staging`, `omi-cf-rate-limit-staging`
 - Jobs Worker: `omi-cf-jobs-staging`
 - Queues: `omi-cf-jobs-staging`, `omi-cf-jobs-dlq-staging`
 - R2: `omi-cf-staging`
-- Durable Objects: Realtime sessions and Edge rate-limit windows
+- Durable Objects: Realtime sessions and standalone rate-limit windows
 
 The deploy script only deploys the named staging environment. It applies D1
 migrations before Workers and deploys Edge last. It never creates production
@@ -748,7 +748,7 @@ The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
 until its rate-limit and provider-shape migration is verified separately.
 Every Cloudflare-owned route that previously consumed a first-party UID request
-limit now uses the Edge rate-limit Durable Object: chat send, prerecorded/native/
+limit now uses the standalone rate-limit Durable Object: chat send, prerecorded/native/
 async STT, conversation search, memory create/delete/modify, and both TTS routes.
 The manifest names each route's policy and mechanically checks that it matches
 the Edge matcher. Limits and one-hour windows mirror
@@ -758,6 +758,19 @@ available as staging Worker vars. The object serializes concurrent increments
 and persists the fixed window; a limiter dependency failure preserves the
 legacy first-party fail-open behavior and emits bounded `recordFallback`
 telemetry.
+
+The desktop TTS fine-grained limiter is also Redis-free in staging. After the
+Python API AI Worker validates the provider-specific request and confirms its
+provider binding, it calls the internal `omi-cf-rate-limit-staging` Durable
+Object directly through a cross-Worker `RATE_LIMITS` binding. Edge uses the
+same object without creating a circular service dependency. Both
+`/v1/tts/synthesize` variants share a
+20-request rolling 60-second window and a 50,000-character UTC-day budget,
+matching `backend/routers/desktop_tts_updates.py`. Invalid/provider-unavailable
+requests do not consume the fine budget, and an unavailable limiter preserves
+the legacy desktop fail-closed `503` behavior. API AI `/health` exercises a
+non-mutating DO RPC so staging readiness verifies the Python-to-TypeScript
+binding without a billable synthesis.
 
 `/v1/tts/synthesize-workers-ai` is an additive raw-MP3 route backed by the
 native `@cf/deepgram/aura-1` binding. It accepts bounded `{text, speaker}` JSON

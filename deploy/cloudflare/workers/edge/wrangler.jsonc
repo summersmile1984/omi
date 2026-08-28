@@ -14,11 +14,16 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "RATE_LIMITS", "class_name": "RateLimitDurableObject" },
+      {
+        "name": "RATE_LIMITS",
+        "class_name": "SharedRateLimitDurableObject",
+        "script_name": "omi-cf-rate-limit-staging",
+      },
     ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["RateLimitDurableObject"] },
+    { "tag": "v2", "deleted_classes": ["RateLimitDurableObject"] },
   ],
   "vars": {
     "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",

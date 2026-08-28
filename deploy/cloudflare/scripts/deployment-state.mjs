@@ -1,12 +1,71 @@
+export const STAGING_DEPLOYMENTS = [
+  {
+    workerName: "omi-cf-auth-staging",
+    runtime: "typescript",
+    target: "workers/auth/wrangler.jsonc",
+  },
+  {
+    workerName: "omi-cf-rate-limit-staging",
+    runtime: "typescript",
+    target: "workers/rate-limit/wrangler.jsonc",
+  },
+  {
+    workerName: "omi-cf-api-core-staging",
+    runtime: "python",
+    target: "python/api-core",
+  },
+  {
+    workerName: "omi-cf-api-ai-staging",
+    runtime: "python",
+    target: "python/api-ai",
+  },
+  {
+    workerName: "omi-cf-realtime-staging",
+    runtime: "typescript",
+    target: "workers/realtime/wrangler.jsonc",
+  },
+  {
+    workerName: "omi-cf-jobs-staging",
+    runtime: "typescript",
+    target: "workers/jobs/wrangler.jsonc",
+  },
+  {
+    workerName: "omi-cf-edge-staging",
+    runtime: "typescript",
+    target: "workers/edge/wrangler.jsonc",
+  },
+];
+
+const STAGING_DEPENDENCIES = {
+  "omi-cf-api-ai-staging": ["omi-cf-rate-limit-staging"],
+  "omi-cf-edge-staging": [
+    "omi-cf-auth-staging",
+    "omi-cf-rate-limit-staging",
+    "omi-cf-api-core-staging",
+    "omi-cf-api-ai-staging",
+    "omi-cf-realtime-staging",
+    "omi-cf-jobs-staging",
+  ],
+};
+
 export const STAGING_WORKERS = [
-  "omi-cf-auth-staging",
-  "omi-cf-api-core-staging",
-  "omi-cf-api-ai-staging",
-  "omi-cf-realtime-staging",
-  "omi-cf-jobs-staging",
-  "omi-cf-edge-staging",
+  ...STAGING_DEPLOYMENTS.map(({ workerName }) => workerName),
   "omi-web-app-staging",
 ];
+
+export function assertValidDeploymentOrder(deployments = STAGING_DEPLOYMENTS) {
+  const seen = new Set();
+  for (const { workerName } of deployments) {
+    for (const dependency of STAGING_DEPENDENCIES[workerName] || []) {
+      if (!seen.has(dependency)) {
+        throw new Error(
+          `${workerName} must deploy after dependency ${dependency}`,
+        );
+      }
+    }
+    seen.add(workerName);
+  }
+}
 
 const ROLLBACK_ORDER = [
   "omi-web-app-staging",
@@ -15,6 +74,7 @@ const ROLLBACK_ORDER = [
   "omi-cf-realtime-staging",
   "omi-cf-api-ai-staging",
   "omi-cf-api-core-staging",
+  "omi-cf-rate-limit-staging",
   "omi-cf-auth-staging",
 ];
 

@@ -17,7 +17,6 @@ import type { EdgeEnv, EdgeVariables } from "./env";
 import {
   edgeRateLimitPolicyForRequest,
   enforceEdgeRateLimit,
-  RateLimitDurableObject,
   STT_TRANSCRIBE_RATE_LIMIT,
 } from "./rate-limit";
 
@@ -419,12 +418,7 @@ const proxyAuthenticatedAI = async (
   if (denial) return withRequestId(denial, id);
   const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
   if (policy) {
-    const rateLimitDenial = await enforceEdgeRateLimit(
-      c.env,
-      auth,
-      policy,
-      id,
-    );
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
     if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
   }
   const headers = stripUntrustedHeaders(c.req.raw);
@@ -709,5 +703,4 @@ function envLegacy(
   );
 }
 
-export { RateLimitDurableObject };
 export default app;

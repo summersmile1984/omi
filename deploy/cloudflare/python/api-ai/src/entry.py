@@ -98,6 +98,73 @@ def auth_context(request: Request) -> dict[str, object] | None:
     )
 
 
+def _rpc_mapping(value: object) -> dict[str, object] | None:
+    if isinstance(value, dict):
+        return value
+    to_py = getattr(value, "to_py", None)
+    if callable(to_py):
+        converted = to_py()
+        if isinstance(converted, dict):
+            return converted
+    status = getattr(value, "status", None)
+    retry_after = getattr(value, "retryAfter", None)
+    if isinstance(status, int) and isinstance(retry_after, (int, float)):
+        return {"status": status, "retryAfter": retry_after}
+    return None
+
+
+def _durable_object_stub(namespace: object, name: str) -> object:
+    get_by_name = getattr(namespace, "getByName", None)
+    if callable(get_by_name):
+        return get_by_name(name)
+    object_id = namespace.idFromName(name)
+    return namespace.get(object_id)
+
+
+async def _enforce_tts_fine_rate_limit(
+    request: Request,
+    context: dict[str, object],
+    char_count: int,
+) -> JSONResponse | None:
+    """Call the standalone rate-limit DO after TTS/provider validation.
+
+    The legacy desktop route fails closed when its Redis limiter is unavailable,
+    so this Cloudflare path returns the same stable 503 instead of synthesizing
+    unmetered audio.
+    """
+    uid = context.get("uid")
+    env = request.scope["env"]
+    namespace = getattr(env, "RATE_LIMITS", None)
+    if not isinstance(uid, str) or not uid or namespace is None:
+        return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+    try:
+        stub = _durable_object_stub(namespace, f"tts:fine:{uid}")
+        result = _rpc_mapping(await stub.checkTts(char_count))
+    except Exception as error:
+        print(
+            json.dumps(
+                {
+                    "event": "dependency_call_failed",
+                    "component": "api-ai",
+                    "dependency": "rate-limit",
+                    "operation": "tts-check",
+                    "error_type": type(error).__name__,
+                }
+            )
+        )
+        return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+    if result is None:
+        return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+    status = result.get("status")
+    if status == 0:
+        return None
+    if status == 1:
+        return JSONResponse({"detail": "TTS burst rate limit exceeded"}, status_code=429)
+    if status == 2:
+        return JSONResponse({"detail": "TTS daily character limit exceeded"}, status_code=429)
+    return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+
+
 @app.middleware("http")
 async def enforce_request_bound_auth_context(request: Request, call_next):
     encoded = request.headers.get("x-omi-auth-context")
@@ -119,7 +186,28 @@ async def enforce_request_bound_auth_context(request: Request, call_next):
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health(request: Request) -> Any:
+    namespace = getattr(request.scope["env"], "RATE_LIMITS", None)
+    if namespace is None:
+        return JSONResponse({"status": "degraded", "dependency": "rate-limit"}, status_code=503)
+    try:
+        raw_result = await _durable_object_stub(namespace, "health:api-ai").health()
+        result = _rpc_mapping(raw_result)
+    except Exception as error:
+        print(
+            json.dumps(
+                {
+                    "event": "dependency_call_failed",
+                    "component": "api-ai",
+                    "dependency": "rate-limit",
+                    "operation": "health",
+                    "error_type": type(error).__name__,
+                }
+            )
+        )
+        result = None
+    if result is None or result.get("status") != "ok":
+        return JSONResponse({"status": "degraded", "dependency": "rate-limit"}, status_code=503)
     return {"status": "ok", "service": "api-ai", "version": "cf-03"}
 
 
@@ -209,10 +297,7 @@ async def embeddings_workers_ai(request: Request):
         return JSONResponse({"error": "workers ai returned invalid embeddings"}, status_code=502)
     return {
         "object": "list",
-        "data": [
-            {"object": "embedding", "embedding": vector, "index": index}
-            for index, vector in enumerate(vectors)
-        ],
+        "data": [{"object": "embedding", "embedding": vector, "index": index} for index, vector in enumerate(vectors)],
         "model": model,
     }
 
@@ -555,7 +640,8 @@ async def transcribe(request: Request):
 @app.post("/v1/tts/synthesize")
 async def tts_synthesize(request: Request):
     """Proxy the desktop OpenAI-compatible TTS contract to a hosted API."""
-    if not auth_context(request):
+    context = auth_context(request)
+    if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         payload = TtsSynthesizeRequest.model_validate(await request.json())
@@ -575,6 +661,9 @@ async def tts_synthesize(request: Request):
     api_key = getattr(env, "TTS_API_KEY", None)
     if not base_url or not api_key:
         return JSONResponse({"error": "tts provider is not configured"}, status_code=503)
+    rate_limit_denial = await _enforce_tts_fine_rate_limit(request, context, len(text))
+    if rate_limit_denial is not None:
+        return rate_limit_denial
     if worker_fetch is None:
         return JSONResponse({"error": "worker fetch is unavailable"}, status_code=503)
     provider_payload = {
@@ -611,7 +700,8 @@ async def tts_synthesize_workers_ai(request: Request):
     contract stays on the external provider until voice parity and quality are
     qualified.
     """
-    if not auth_context(request):
+    context = auth_context(request)
+    if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         payload = WorkersAiTtsRequest.model_validate(await request.json())
@@ -628,6 +718,9 @@ async def tts_synthesize_workers_ai(request: Request):
     ai = getattr(env, "AI", None)
     if ai is None:
         return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
+    rate_limit_denial = await _enforce_tts_fine_rate_limit(request, context, len(text))
+    if rate_limit_denial is not None:
+        return rate_limit_denial
     model = getattr(env, "WORKERS_AI_TTS_MODEL", "@cf/deepgram/aura-1")
     try:
         # `returnRawResponse` keeps the model's MPEG stream intact instead of

@@ -40,6 +40,33 @@ class FakeRequest:
         return self.json_body
 
 
+class FakeRateLimitStub:
+    def __init__(self, owner):
+        self.owner = owner
+
+    async def checkTts(self, char_count):
+        self.owner.calls.append((self.owner.current_name, char_count))
+        if isinstance(self.owner.result, Exception):
+            raise self.owner.result
+        return self.owner.result
+
+    async def health(self):
+        self.owner.health_calls.append(self.owner.current_name)
+        return {"status": "ok", "service": "rate-limit"}
+
+
+class FakeRateLimits:
+    def __init__(self, status=0):
+        self.calls = []
+        self.health_calls = []
+        self.current_name = None
+        self.result = {"status": status, "retryAfter": 60}
+
+    def getByName(self, name):
+        self.current_name = name
+        return FakeRateLimitStub(self)
+
+
 def signed_context(secret: str) -> tuple[str, str]:
     raw = json.dumps({"uid": "user-1"}, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -49,6 +76,21 @@ def signed_context(secret: str) -> tuple[str, str]:
 
 def test_provider_url_normalizes_slashes():
     assert _provider_url("https://asr.example.test/", "/v2/transcribe") == "https://asr.example.test/v2/transcribe"
+
+
+def test_health_checks_the_cross_worker_durable_object_binding():
+    limiter = FakeRateLimits()
+    response = asyncio.run(entry.health(FakeRequest(SimpleNamespace(RATE_LIMITS=limiter), {})))
+
+    assert response == {"status": "ok", "service": "api-ai", "version": "cf-03"}
+    assert limiter.health_calls == ["health:api-ai"]
+
+
+def test_health_fails_closed_without_the_rate_limit_binding():
+    response = asyncio.run(entry.health(FakeRequest(SimpleNamespace(), {})))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"status": "degraded", "dependency": "rate-limit"}
 
 
 def test_chat_messages_fails_closed_with_typed_provider_status():
@@ -454,12 +496,14 @@ def test_ai_proxy_fails_closed_when_provider_is_missing():
 def test_tts_validates_contract_and_returns_provider_audio(monkeypatch):
     secret = "test-secret"
     encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits()
     request = FakeRequest(
         SimpleNamespace(
             INTERNAL_ASSERTION_SECRET=secret,
             TTS_API_BASE_URL="https://tts.example.test/",
             TTS_API_KEY="key",
             TTS_MODEL="tts-model",
+            RATE_LIMITS=limiter,
         ),
         {
             "x-omi-auth-context": encoded,
@@ -495,13 +539,16 @@ def test_tts_validates_contract_and_returns_provider_audio(monkeypatch):
         "response_format": "mp3",
         "instructions": "be warm",
     }
+    assert limiter.calls == [("tts:fine:user-1", 5)]
 
 
 def test_tts_rejects_unsupported_voice_before_provider_call():
     secret = "test-secret"
     encoded, signature = signed_context(secret)
     request = FakeRequest(
-        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, TTS_API_BASE_URL="https://tts.example.test", TTS_API_KEY="key"),
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret, TTS_API_BASE_URL="https://tts.example.test", TTS_API_KEY="key"
+        ),
         {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
         {"text": "hello", "voice_id": "not-a-voice"},
     )
@@ -528,8 +575,14 @@ def test_workers_ai_tts_uses_native_binding_and_returns_mp3():
             calls["options"] = options
             return FakeResponse()
 
+    limiter = FakeRateLimits()
     request = FakeRequest(
-        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), WORKERS_AI_TTS_MODEL="@cf/deepgram/aura-1"),
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            WORKERS_AI_TTS_MODEL="@cf/deepgram/aura-1",
+            RATE_LIMITS=limiter,
+        ),
         {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
         {"text": " hello ", "speaker": "Luna"},
         url="https://api.test/v1/tts/synthesize-workers-ai",
@@ -545,6 +598,7 @@ def test_workers_ai_tts_uses_native_binding_and_returns_mp3():
         "payload": {"text": "hello", "speaker": "luna", "encoding": "mp3"},
         "options": {"returnRawResponse": True},
     }
+    assert limiter.calls == [("tts:fine:user-1", 5)]
 
 
 def test_workers_ai_tts_fails_closed_without_binding():
@@ -588,7 +642,7 @@ def test_workers_ai_tts_normalizes_model_failures_to_502():
             raise Exception("provider-specific FFI error")
 
     request = FakeRequest(
-        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI()),
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), RATE_LIMITS=FakeRateLimits()),
         {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
         {"text": "hello"},
         url="https://api.test/v1/tts/synthesize-workers-ai",
@@ -598,3 +652,73 @@ def test_workers_ai_tts_normalizes_model_failures_to_502():
 
     assert response.status_code == 502
     assert json.loads(response.body) == {"error": "workers ai tts failed"}
+
+
+def test_tts_fine_limit_rejects_burst_before_provider_call(monkeypatch):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits(status=1)
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            TTS_API_BASE_URL="https://tts.example.test",
+            TTS_API_KEY="key",
+            RATE_LIMITS=limiter,
+        ),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "voice_id": "sage"},
+    )
+
+    async def unexpected_fetch(*_args, **_kwargs):
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setattr(entry, "worker_fetch", unexpected_fetch)
+    response = asyncio.run(tts_synthesize(request))
+
+    assert response.status_code == 429
+    assert json.loads(response.body) == {"detail": "TTS burst rate limit exceeded"}
+    assert limiter.calls == [("tts:fine:user-1", 5)]
+
+
+def test_workers_ai_tts_fine_limit_rejects_daily_budget_before_model_call():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits(status=2)
+
+    class UnexpectedAI:
+        async def run(self, *_args, **_kwargs):
+            raise AssertionError("model must not be called")
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=UnexpectedAI(), RATE_LIMITS=limiter),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "speaker": "luna"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 429
+    assert json.loads(response.body) == {"detail": "TTS daily character limit exceeded"}
+
+
+def test_tts_fine_limit_fails_closed_when_durable_object_is_unavailable():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits()
+    limiter.result = RuntimeError("simulated DO outage")
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            TTS_API_BASE_URL="https://tts.example.test",
+            TTS_API_KEY="key",
+            RATE_LIMITS=limiter,
+        ),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "voice_id": "sage"},
+    )
+
+    response = asyncio.run(tts_synthesize(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"detail": "TTS rate limiting is unavailable"}

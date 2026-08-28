@@ -14,6 +14,7 @@ import {
   EDGE_RATE_LIMIT_POLICIES,
   edgeRateLimitPolicyForRequest,
 } from "../workers/edge/rate-limit";
+import { TTS_FINE_RATE_LIMIT } from "../workers/rate-limit/index";
 
 const cloudflareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(cloudflareRoot, "../..");
@@ -120,9 +121,8 @@ describe("Cloudflare migration manifests", () => {
       "utf8",
     );
     const invalid = structuredClone(routes);
-    delete invalid.routes.find(
-      (route) => route.path === "/v1/tts/synthesize",
-    ).rate_limit_policy;
+    delete invalid.routes.find((route) => route.path === "/v1/tts/synthesize")
+      .rate_limit_policy;
     expect(() => validateRouteManifest(invalid, edgeSource)).toThrow(
       "must declare rate_limit_policy",
     );
@@ -157,6 +157,55 @@ describe("Cloudflare migration manifests", () => {
       expect(Number(match?.[2]), `${name} window seconds`).toBe(
         policy.windowSeconds,
       );
+    }
+  });
+
+  it("keeps desktop TTS fine limits and the Python DO binding aligned", async () => {
+    const desktopTtsSource = await readFile(
+      resolve(repoRoot, "backend/routers/desktop_tts_updates.py"),
+      "utf8",
+    );
+    const constant = (name) => {
+      const match = desktopTtsSource.match(
+        new RegExp(`^${name} = ([\\d_]+)$`, "m"),
+      );
+      expect(match, name).not.toBeNull();
+      return Number(match?.[1].replaceAll("_", ""));
+    };
+    expect(TTS_FINE_RATE_LIMIT).toEqual({
+      burstRequests: constant("_TTS_BURST_PER_MINUTE"),
+      burstWindowSeconds: 60,
+      dailyChars: constant("_TTS_DAILY_CHARS"),
+      maxRequestChars: constant("_MAX_TTS_CHARS"),
+    });
+
+    const [apiAiWrangler, edgeWrangler, rateLimitWrangler] = await Promise.all(
+      [
+        "python/api-ai/wrangler.jsonc",
+        "workers/edge/wrangler.jsonc",
+        "workers/rate-limit/wrangler.jsonc",
+      ].map(async (path) =>
+        YAML.parse(await readFile(resolve(cloudflareRoot, path), "utf8")),
+      ),
+    );
+    const sharedBinding = {
+      name: "RATE_LIMITS",
+      class_name: "SharedRateLimitDurableObject",
+      script_name: "omi-cf-rate-limit-staging",
+    };
+    expect(apiAiWrangler.durable_objects.bindings).toContainEqual(
+      sharedBinding,
+    );
+    expect(edgeWrangler.durable_objects.bindings).toContainEqual(sharedBinding);
+    expect(rateLimitWrangler.durable_objects.bindings).toContainEqual({
+      name: "RATE_LIMITS",
+      class_name: "SharedRateLimitDurableObject",
+    });
+    const redis = await loadYaml("redis-primitives.yaml");
+    for (const familyId of ["request-rate-limits", "tts-rate-limits"]) {
+      expect(
+        redis.families.find((family) => family.id === familyId).target_owner,
+      ).toBe("rate-limit");
     }
   });
 

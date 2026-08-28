@@ -340,7 +340,7 @@ families:
     legacy_features: [lua, counter, ttl, reversible-reservation]
     consistency: strongly-consistent
     target: durable-object
-    target_owner: edge
+    target_owner: rate-limit
     migration_state: staging-partial
     migrated_policies:
       - chat:send_message
@@ -373,8 +373,12 @@ families:
     legacy_features: [lua, sorted-set, counter, ttl]
     consistency: strongly-consistent
     target: durable-object
-    target_owner: api-ai
-    migration_state: planned
+    target_owner: rate-limit
+    migration_state: staging-partial
+    migrated_policies: [desktop-tts-burst-and-daily-chars]
+    migrated_routes:
+      - POST /v1/tts/synthesize
+      - POST /v1/tts/synthesize-workers-ai
   - id: write-and-listen-throttles
     source_symbols:
       [

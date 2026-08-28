@@ -3,26 +3,24 @@ import {
   EDGE_RATE_LIMIT_POLICIES,
   edgeRateLimitPolicyForRequest,
   enforceEdgeRateLimit,
-  RateLimitDurableObject,
 } from "../workers/edge/rate-limit";
+import { SharedRateLimitDurableObject } from "../workers/rate-limit/index";
 
 class FakeDurableObjectStorage {
-  private value: unknown;
+  private values = new Map<string, unknown>();
   private transactionTail: Promise<void> = Promise.resolve();
   alarmAt?: number;
 
-  async get<T>(_key: string): Promise<T | undefined> {
-    return this.value as T | undefined;
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.values.get(key) as T | undefined;
   }
 
-  async put(_key: string, value: unknown): Promise<void> {
-    this.value = structuredClone(value);
+  async put(key: string, value: unknown): Promise<void> {
+    this.values.set(key, structuredClone(value));
   }
 
-  async delete(_key: string): Promise<boolean> {
-    const existed = this.value !== undefined;
-    this.value = undefined;
-    return existed;
+  async delete(key: string): Promise<boolean> {
+    return this.values.delete(key);
   }
 
   async setAlarm(timestamp: number): Promise<void> {
@@ -48,9 +46,12 @@ class FakeDurableObjectStorage {
 
 function createLimiter() {
   const storage = new FakeDurableObjectStorage();
-  const limiter = new RateLimitDurableObject({
-    storage,
-  } as unknown as DurableObjectState);
+  const limiter = new SharedRateLimitDurableObject(
+    {
+      storage,
+    } as unknown as DurableObjectState,
+    {} as never,
+  );
   return { limiter, storage };
 }
 
@@ -66,7 +67,15 @@ function checkRequest(maxRequests: number, windowSeconds: number) {
   });
 }
 
-describe("RateLimitDurableObject", () => {
+function ttsCheckRequest(charCount: number) {
+  return new Request("https://rate-limit.internal/tts/check", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ char_count: charCount }),
+  });
+}
+
+describe("SharedRateLimitDurableObject", () => {
   afterEach(() => vi.useRealTimers());
 
   it("serializes concurrent checks so the limit cannot be oversubscribed", async () => {
@@ -134,6 +143,76 @@ describe("RateLimitDurableObject", () => {
 
     expect(malformed.status).toBe(400);
     expect(unbounded.status).toBe(400);
+  });
+
+  it("serializes the TTS rolling burst window without oversubscription", async () => {
+    const { limiter } = createLimiter();
+    const responses = await Promise.all(
+      Array.from({ length: 21 }, () => limiter.fetch(ttsCheckRequest(1))),
+    );
+    const results = await Promise.all(
+      responses.map(
+        (response) =>
+          response.json() as Promise<{
+            status: number;
+            burstRemaining: number;
+          }>,
+      ),
+    );
+
+    expect(results.filter((result) => result.status === 0)).toHaveLength(20);
+    expect(results.filter((result) => result.status === 1)).toEqual([
+      expect.objectContaining({ burstRemaining: 0 }),
+    ]);
+  });
+
+  it("enforces the atomic daily TTS character budget and resets at UTC midnight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T23:59:58Z"));
+    const { limiter } = createLimiter();
+    const responses = await Promise.all(
+      Array.from({ length: 13 }, () => limiter.fetch(ttsCheckRequest(4_096))),
+    );
+    const results = await Promise.all(
+      responses.map(
+        (response) => response.json() as Promise<{ status: number }>,
+      ),
+    );
+
+    expect(results.filter((result) => result.status === 0)).toHaveLength(12);
+    expect(results.filter((result) => result.status === 2)).toHaveLength(1);
+    vi.advanceTimersByTime(2_001);
+    expect(
+      await (await limiter.fetch(ttsCheckRequest(4_096))).json(),
+    ).toMatchObject({ status: 0, dailyCharsRemaining: 45_904 });
+  });
+
+  it("expires the TTS rolling burst while preserving the current UTC-day counter", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T12:00:00Z"));
+    const { limiter, storage } = createLimiter();
+    for (let index = 0; index < 20; index += 1) {
+      expect(
+        await (await limiter.fetch(ttsCheckRequest(10))).json(),
+      ).toMatchObject({ status: 0 });
+    }
+    expect(
+      await (await limiter.fetch(ttsCheckRequest(10))).json(),
+    ).toMatchObject({ status: 1 });
+
+    vi.advanceTimersByTime(60_001);
+    await limiter.alarm();
+    expect(await storage.get("tts-burst")).toBeUndefined();
+    expect(await storage.get("tts-daily")).toMatchObject({ chars: 200 });
+    expect(
+      await (await limiter.fetch(ttsCheckRequest(10))).json(),
+    ).toMatchObject({ status: 0, dailyCharsRemaining: 49_790 });
+  });
+
+  it("rejects invalid TTS character counts", async () => {
+    const { limiter } = createLimiter();
+    expect((await limiter.fetch(ttsCheckRequest(0))).status).toBe(400);
+    expect((await limiter.fetch(ttsCheckRequest(4_097))).status).toBe(400);
   });
 
   it("maps every Cloudflare-owned request shape to the legacy policy", () => {

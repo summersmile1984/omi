@@ -1,0 +1,29 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "omi-cf-rate-limit-staging",
+  "main": "index.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RATE_LIMITS",
+        "class_name": "SharedRateLimitDurableObject",
+      },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RateLimitDurableObject"] },
+    {
+      "tag": "v2",
+      "renamed_classes": [
+        {
+          "from": "RateLimitDurableObject",
+          "to": "SharedRateLimitDurableObject",
+        },
+      ],
+    },
+  ],
+}

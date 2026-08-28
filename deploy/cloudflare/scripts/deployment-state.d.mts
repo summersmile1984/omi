@@ -1,4 +1,15 @@
+export type StagingDeployment = {
+  workerName: string;
+  runtime: "typescript" | "python";
+  target: string;
+};
+
+export const STAGING_DEPLOYMENTS: readonly StagingDeployment[];
 export const STAGING_WORKERS: readonly string[];
+
+export function assertValidDeploymentOrder(
+  deployments?: readonly StagingDeployment[],
+): void;
 
 export type DeploymentSnapshot = {
   version: 1;

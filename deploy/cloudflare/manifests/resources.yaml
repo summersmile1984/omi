@@ -16,9 +16,13 @@ resources:
     name: omi-cf-edge-staging
     owner: edge
     environment: staging
+  - kind: worker
+    name: omi-cf-rate-limit-staging
+    owner: rate-limit
+    environment: staging
   - kind: durable-object
-    name: omi-cf-edge-rate-limits-staging
-    owner: edge
+    name: omi-cf-rate-limit-windows-staging
+    owner: rate-limit
     environment: staging
   - kind: worker
     name: omi-cf-auth-staging
