@@ -159,6 +159,10 @@ export async function runSmoke({
     { headers: authHeaders },
   );
   expectStatus("canonical memory list", memories, 200);
+  const folders = await request(fetchImpl, `${base}/v1/folders`, {
+    headers: authHeaders,
+  });
+  expectStatus("canonical folder list", folders, 200);
   const conversationCount = await request(
     fetchImpl,
     `${base}/v1/conversations/count`,
@@ -457,6 +461,7 @@ export async function runSmoke({
     appSearch: appSearch.status,
     conversations: conversations.status,
     memories: memories.status,
+    folders: folders.status,
     conversationCount: conversationCount.status,
     conversationPhotos: conversationPhotos.status,
     conversationTranscripts: conversationTranscripts.status,
