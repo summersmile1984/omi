@@ -29,7 +29,6 @@ from conversation_routes import (  # noqa: E402
     patch_conversation_summary,
     unlink_conversation_calendar_event,
     patch_conversation_title,
-    precache_conversation_audio,
     search_conversations,
     set_conversation_starred,
     store_conversation_projection,
@@ -685,15 +684,6 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
         )
     )
     assert denied.status_code == 401
-
-    precached = asyncio.run(
-        precache_conversation_audio(
-            FakeRequest(env, signed_headers(secret)),
-            "audio-conversation",
-        )
-    )
-    assert precached == {"status": "started", "audio_file_count": 1}
-
 
 def test_worker_audio_urls_fail_closed_for_locked_and_missing_objects():
     secret = "conversation-secret"

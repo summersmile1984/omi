@@ -36,8 +36,8 @@ namespaces:
     migration_state: inventory-only
   - id: private-cloud-sync
     legacy_env: BUCKET_PRIVATE_CLOUD_SYNC
-    target_binding: PRIVATE_CLOUD_SYNC
-    target_bucket_pattern: omi-cf-private-cloud-sync-{environment}
+    target_binding: ASSETS
+    target_bucket_pattern: omi-cf-{environment}
     object_patterns:
       [
         "chunks/{uid}/{conversation_id}/{timestamp}.{extension}",
@@ -48,7 +48,7 @@ namespaces:
       ]
     data_classification: encrypted-or-customer-audio
     lifecycle: prefix-specific
-    migration_state: inventory-only
+    migration_state: copying
   - id: temporal-sync
     legacy_env: BUCKET_TEMPORAL_SYNC_LOCAL
     target_binding: TEMPORAL_SYNC

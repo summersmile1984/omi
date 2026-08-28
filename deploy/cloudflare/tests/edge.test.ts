@@ -978,6 +978,49 @@ describe("edge gateway", () => {
     expect(coreRequests).toHaveLength(2);
   });
 
+  it("routes legacy audio precache to Jobs as its single rebuild owner", async () => {
+    const jobRequests: Request[] = [];
+    const corePaths: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        corePaths.push(new URL(request.url).pathname);
+        return Response.json({ error: "wrong owner" }, { status: 500 });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+      JOBS: service((request) => {
+        jobRequests.push(request);
+        return Response.json({ status: "started" }, { status: 202 });
+      }),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/sync/audio/conversation-1/precache", {
+        method: "POST",
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(202);
+    expect(jobRequests).toHaveLength(1);
+    expect(new URL(jobRequests[0].url).pathname).toBe(
+      "/v1/sync/audio/conversation-1/precache",
+    );
+    const context = decodeAuthContext(
+      jobRequests[0].headers.get("x-omi-auth-context"),
+    );
+    expect(context).toMatchObject({ uid: "user-1", audience: "jobs" });
+    expect(corePaths).toEqual([]);
+  });
+
   it("routes canonical conversation transcripts to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

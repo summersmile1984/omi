@@ -1153,41 +1153,6 @@ async def get_conversation_analytics(request: Request, conversation_id: str):
         return JSONResponse({"error": "conversation analytics unavailable"}, status_code=503)
 
 
-@router.post("/v1/sync/audio/{conversation_id}/precache")
-async def precache_conversation_audio(request: Request, conversation_id: str):
-    """Validate that already-materialized Worker playback objects are ready."""
-
-    context = _auth_context(request)
-    if not context:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
-        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
-    env = request.scope["env"]
-    uid = str(context["uid"])
-    try:
-        row = await _first_conversation(env, uid, conversation_id)
-        if row is None:
-            return JSONResponse({"error": "conversation not found"}, status_code=404)
-        if _bool(row.get("is_locked")):
-            return JSONResponse(
-                {"error": "A paid plan is required to access this conversation."},
-                status_code=402,
-            )
-        audio_files = _audio_files(row)
-        if not audio_files:
-            return {"status": "no_audio", "message": "No audio files in conversation"}
-        bucket = getattr(env, "ASSETS", None)
-        if bucket is None or not callable(getattr(bucket, "head", None)):
-            return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
-        ready = 0
-        for audio_file in audio_files:
-            if await _stored_audio(bucket, uid, conversation_id, audio_file):
-                ready += 1
-    except Exception:
-        return JSONResponse({"error": "recordings unavailable"}, status_code=503)
-    return {"status": "started", "audio_file_count": ready}
-
-
 @router.get("/v1/sync/audio/{conversation_id}/urls")
 async def get_conversation_audio_urls(request: Request, conversation_id: str):
     """Return short-lived Worker URLs for uid-scoped R2 playback objects."""

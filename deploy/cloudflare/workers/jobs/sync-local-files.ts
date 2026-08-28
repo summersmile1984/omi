@@ -173,7 +173,7 @@ type FileTranscription = {
   chunk_count: number;
 };
 
-type PlaybackAudioFile = {
+export type PlaybackAudioFile = {
   id: string;
   uid: string;
   conversation_id: string;
@@ -188,7 +188,7 @@ type PlaybackAudioFile = {
   pcm_bytes: number;
 };
 
-type ConversationPlayback = {
+export type ConversationPlayback = {
   audio_files_fingerprint: string;
   duration: number;
   captured_duration: number;
@@ -1176,9 +1176,14 @@ async function privateCloudSyncEnabled(
   return row?.private_cloud_sync_enabled !== 0;
 }
 
-async function recordPlaybackIntent(
+export type PlaybackJob = {
+  uid: string;
+  job_id: string;
+};
+
+export async function recordPlaybackIntent(
   env: JobsEnv,
-  job: SyncJobRow,
+  job: PlaybackJob,
   conversationId: string,
   audioFileId: string,
   storageKey: string,
@@ -1204,7 +1209,7 @@ async function recordPlaybackIntent(
     .run();
 }
 
-async function markPlaybackStored(
+export async function markPlaybackStored(
   env: JobsEnv,
   uid: string,
   storageKey: string,
@@ -1304,7 +1309,7 @@ function densePlaybackStream(
   });
 }
 
-function fixedLengthPlaybackStream(
+export function fixedLengthPlaybackStream(
   source: ReadableStream<Uint8Array>,
   expectedLength: number,
 ): {
@@ -1343,9 +1348,9 @@ function fixedLengthPlaybackStream(
   };
 }
 
-async function buildConversationPlayback(
+export async function buildConversationPlayback(
   env: JobsEnv,
-  job: SyncJobRow,
+  job: PlaybackJob,
   conversationId: string,
   conversationStartedAt: number,
   values: unknown[],

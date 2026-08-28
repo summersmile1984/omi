@@ -12,6 +12,14 @@ import type { JobMessage, JobsEnv } from "./env";
 import { evaluateFairUseBatch } from "./fair-use-evaluator";
 import { drainFairUseNotifications } from "./firebase-messaging";
 import {
+  LegacyAudioSourceError,
+  legacyAudioFiles,
+  legacyAudioFilesFingerprint,
+  legacyAudioReadiness,
+  isLegacyAudioPathSegment,
+  rebuildLegacyConversationAudio,
+} from "./legacy-audio-import";
+import {
   cleanupExpiredSyncState,
   cleanupOrphanPlaybackObjects,
   processSyncJobMessage,
@@ -27,6 +35,7 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 const JOB_LEASE_SECONDS = 15 * 60;
 const QUEUE_RETRY_DELAY_SECONDS = 10;
 const MAX_TRANSCRIPTION_PROVIDER_ATTEMPTS = 3;
+const MAX_LEGACY_REBUILD_ATTEMPTS = 3;
 const ASSET_CLEANUP_BATCH_SIZE = 50;
 const DEFAULT_WORKERS_AI_ASR_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
@@ -120,20 +129,30 @@ async function resolveExistingJob(
   payloadJson: string,
   fingerprint: string,
   identity: "idempotency key" | "job id",
+  requeueTerminal = false,
 ): Promise<Response> {
   if (existing.request_fingerprint !== fingerprint) {
     return c.json({ error: `${identity} reused with different payload` }, 409);
   }
-  if (
-    existing.status === "failed" &&
-    existing.last_error === "queue unavailable"
-  ) {
+  const canRepairQueue =
+    existing.status === "failed" && existing.last_error === "queue unavailable";
+  const canRebuildArtifact =
+    requeueTerminal &&
+    (existing.status === "failed" || existing.status === "completed");
+  if (canRepairQueue || canRebuildArtifact) {
     const now = Math.floor(Date.now() / 1000);
     const repaired = await c.env.APP_DB.prepare(
-      "UPDATE cf_jobs SET payload_json = ?, status = 'queued', last_error = NULL, updated_at = ? " +
-        "WHERE job_id = ? AND uid = ? AND status = 'failed' AND last_error = 'queue unavailable' AND request_fingerprint = ?",
+      "UPDATE cf_jobs SET payload_json = ?, status = 'queued', attempts = 0, result_json = NULL, last_error = NULL, updated_at = ? " +
+        "WHERE job_id = ? AND uid = ? AND status = ? AND request_fingerprint = ?",
     )
-      .bind(payloadJson, now, existing.job_id, context.uid, fingerprint)
+      .bind(
+        payloadJson,
+        now,
+        existing.job_id,
+        context.uid,
+        existing.status,
+        fingerprint,
+      )
       .run();
     if (repaired.meta?.changes === 1) {
       return publishJob(c, context, existing.job_id, kind, payload);
@@ -174,6 +193,22 @@ function parseTranscriptionPayload(payload: Record<string, unknown>) {
   return { objectKey, contentType, model };
 }
 
+function parseLegacyAudioRebuildPayload(payload: Record<string, unknown>) {
+  const conversationId =
+    typeof payload.conversationId === "string" ? payload.conversationId : "";
+  const audioFilesFingerprint =
+    typeof payload.audioFilesFingerprint === "string"
+      ? payload.audioFilesFingerprint
+      : "";
+  if (
+    !isLegacyAudioPathSegment(conversationId) ||
+    !/^[a-f0-9]{64}$/.test(audioFilesFingerprint)
+  ) {
+    return null;
+  }
+  return { conversationId, audioFilesFingerprint };
+}
+
 async function enqueueJob(
   c: Context<{ Bindings: JobsEnv }>,
   context: { uid: string },
@@ -182,6 +217,7 @@ async function enqueueJob(
   payload: Record<string, unknown>,
   idempotencyKey: string | null = null,
   fingerprintOverride: string | null = null,
+  requeueTerminal = false,
 ) {
   const payloadJson = JSON.stringify(payload);
   if (payloadJson.length > MAX_PAYLOAD_BYTES)
@@ -205,6 +241,7 @@ async function enqueueJob(
         payloadJson,
         fingerprint,
         "idempotency key",
+        requeueTerminal,
       );
     }
   }
@@ -246,10 +283,106 @@ async function enqueueJob(
       payloadJson,
       fingerprint,
       idempotencyKey ? "idempotency key" : "job id",
+      requeueTerminal,
     );
   }
   return publishJob(c, context, jobId, kind, payload);
 }
+
+type LegacyConversationRow = {
+  is_locked: number;
+  audio_files_json: string;
+  conversation_audio_json: string | null;
+};
+
+app.post("/v1/sync/audio/:conversationId/precache", async (c) => {
+  const context = await requestContext(c);
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  const conversationId = c.req.param("conversationId").trim();
+  if (!isLegacyAudioPathSegment(conversationId))
+    return c.json({ error: "invalid conversation id" }, 400);
+
+  let row: LegacyConversationRow | null;
+  try {
+    row = await c.env.APP_DB.prepare(
+      "SELECT is_locked, audio_files_json, conversation_audio_json FROM cf_conversations WHERE uid = ? AND id = ?",
+    )
+      .bind(context.uid, conversationId)
+      .first<LegacyConversationRow>();
+  } catch {
+    return c.json({ error: "recordings unavailable" }, 503);
+  }
+  if (!row) return c.json({ error: "conversation not found" }, 404);
+  if (row.is_locked) {
+    return c.json(
+      { error: "A paid plan is required to access this conversation." },
+      402,
+    );
+  }
+  const audioFiles = legacyAudioFiles(row.audio_files_json);
+  if (!audioFiles.length) {
+    return c.json({
+      status: "no_audio",
+      message: "No audio files in conversation",
+    });
+  }
+
+  let readiness;
+  try {
+    readiness = await legacyAudioReadiness(
+      c.env,
+      context.uid,
+      conversationId,
+      audioFiles,
+      row.conversation_audio_json,
+    );
+  } catch {
+    return c.json({ error: "recordings unavailable" }, 503);
+  }
+  if (
+    readiness.readyAudioFileCount === readiness.audioFileCount &&
+    readiness.denseReady
+  ) {
+    return c.json({
+      status: "started",
+      audio_file_count: readiness.audioFileCount,
+    });
+  }
+
+  const audioFilesFingerprint = await legacyAudioFilesFingerprint(audioFiles);
+  const identityDigest = await sha256Hex(
+    `${context.uid}\0${conversationId}\0${audioFilesFingerprint}`,
+  );
+  const jobId = `legacy-audio-${identityDigest.slice(0, 48)}`;
+  const response = await enqueueJob(
+    c,
+    context,
+    jobId,
+    "legacy_audio_rebuild",
+    { conversationId, audioFilesFingerprint },
+    `legacy-audio:${identityDigest}`,
+    await requestFingerprint("legacy_audio_rebuild", {
+      conversationId,
+      audioFilesFingerprint,
+    }),
+    true,
+  );
+  if (!response.ok) return response;
+  const queued = (await response.json()) as {
+    jobId?: string;
+    state?: string;
+  };
+  return c.json(
+    {
+      status: "started",
+      audio_file_count: readiness.audioFileCount,
+      ready_audio_file_count: readiness.readyAudioFileCount,
+      job_id: queued.jobId || jobId,
+      ...(queued.state ? { job_state: queued.state } : {}),
+    },
+    response.status === 202 ? 202 : 200,
+  );
+});
 
 app.post("/v1/cf/jobs", async (c) => {
   const context = await requestContext(c);
@@ -606,6 +739,71 @@ async function processTranscription(
   await acknowledgeAfterCleanup(message, env);
 }
 
+async function processLegacyAudioRebuild(
+  message: Message<JobMessage>,
+  env: JobsEnv,
+  now: number,
+): Promise<void> {
+  const payload = parseLegacyAudioRebuildPayload(message.body.payload);
+  if (!payload) {
+    await markJobFailed(
+      env,
+      message.body.jobId,
+      message.body.uid,
+      "invalid legacy audio rebuild payload",
+    );
+    message.ack();
+    return;
+  }
+  try {
+    const result = await rebuildLegacyConversationAudio(
+      env,
+      { uid: message.body.uid, job_id: message.body.jobId },
+      payload.conversationId,
+      payload.audioFilesFingerprint,
+      now,
+    );
+    await env.APP_DB.prepare(
+      "UPDATE cf_jobs SET status = 'completed', result_json = ?, last_error = NULL, updated_at = ? WHERE job_id = ? AND uid = ?",
+    )
+      .bind(JSON.stringify(result), now, message.body.jobId, message.body.uid)
+      .run();
+    message.ack();
+  } catch (error) {
+    if (error instanceof LegacyAudioSourceError) {
+      await markJobFailed(
+        env,
+        message.body.jobId,
+        message.body.uid,
+        error.message,
+      );
+      message.ack();
+      return;
+    }
+    if (message.attempts >= MAX_LEGACY_REBUILD_ATTEMPTS) {
+      await markJobFailed(
+        env,
+        message.body.jobId,
+        message.body.uid,
+        "legacy audio rebuild unavailable",
+      );
+      message.ack();
+      return;
+    }
+    await env.APP_DB.prepare(
+      "UPDATE cf_jobs SET status = 'queued', last_error = ?, updated_at = ? WHERE job_id = ? AND uid = ?",
+    )
+      .bind(
+        "legacy audio rebuild unavailable",
+        now,
+        message.body.jobId,
+        message.body.uid,
+      )
+      .run();
+    message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
+  }
+}
+
 async function processJobMessage(
   message: Message<JobMessage>,
   env: JobsEnv,
@@ -628,6 +826,10 @@ async function processJobMessage(
     return;
   }
   if (row.status === "failed") {
+    if (message.body.kind === "legacy_audio_rebuild") {
+      message.ack();
+      return;
+    }
     await retryTerminalFailure(message, env);
     return;
   }
@@ -655,6 +857,10 @@ async function processJobMessage(
   }
   if (row.kind === "transcribe") {
     await processTranscription(message, env, now);
+    return;
+  }
+  if (row.kind === "legacy_audio_rebuild") {
+    await processLegacyAudioRebuild(message, env, now);
     return;
   }
   if (row.kind !== "probe") {

@@ -121,15 +121,16 @@ function fakeDatabase() {
             if (
               !row ||
               row.uid !== args[3] ||
-              row.status !== "failed" ||
-              row.last_error !== "queue unavailable" ||
-              row.request_fingerprint !== args[4]
+              row.status !== args[4] ||
+              row.request_fingerprint !== args[5]
             ) {
               return { success: true, meta: { changes: 0 } };
             }
             row.payload_json = String(args[0]);
             row.status = "queued";
+            row.attempts = 0;
             row.last_error = null;
+            row.result_json = null;
             row.updated_at = Number(args[1]);
           } else if (sql.includes("status = 'running'")) {
             row = stored.get(String(args[1]));

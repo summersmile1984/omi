@@ -1,6 +1,8 @@
 import { OpusDecoder, type OpusDecoderSampleRate } from "opus-decoder";
 
 const MAX_WAL_FRAME_BYTES = 65_536;
+const MAX_LEGACY_OPUS_PACKETS = 200_000;
+const MAX_LEGACY_OPUS_PCM_BYTES = 64 * 1024 * 1024;
 const MIN_CAPTURE_AT_SECONDS = Date.UTC(2024, 0, 1) / 1000;
 export const PLAYBACK_SAMPLE_RATE = 16_000;
 export const PLAYBACK_CHANNELS = 1;
@@ -205,6 +207,87 @@ function normalizedMono16k(
     );
   }
   return output;
+}
+
+/** Decode the length-prefixed Opus container written by the legacy GCS owner.
+ *
+ * The legacy wire format is little-endian packet_count, original_pcm_bytes,
+ * then repeated uint16 packet length + Opus packet. It is intentionally kept
+ * separate from the WAL decoder: WAL frames use uint32 lengths and carry no
+ * original-length field.
+ */
+export async function decodeLegacyOpusContainer(
+  raw: ArrayBuffer,
+): Promise<Uint8Array> {
+  const bytes = new Uint8Array(raw);
+  if (bytes.byteLength < 8)
+    throw new Error("legacy Opus object has a truncated header");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const packetCount = view.getUint32(0, true);
+  const originalPcmBytes = view.getUint32(4, true);
+  if (!packetCount || packetCount > MAX_LEGACY_OPUS_PACKETS)
+    throw new Error("legacy Opus packet count is invalid");
+  const maximumDecodedBytes = packetCount * 320 * 2;
+  const outputBytes = originalPcmBytes || maximumDecodedBytes;
+  if (
+    outputBytes <= 0 ||
+    outputBytes > maximumDecodedBytes ||
+    outputBytes > MAX_LEGACY_OPUS_PCM_BYTES
+  ) {
+    throw new Error("legacy Opus PCM length is invalid");
+  }
+
+  const packets: Uint8Array[] = [];
+  let offset = 8;
+  for (let index = 0; index < packetCount; index += 1) {
+    if (offset + 2 > bytes.byteLength)
+      throw new Error("legacy Opus object has a truncated packet header");
+    const length = view.getUint16(offset, true);
+    offset += 2;
+    if (!length || offset + length > bytes.byteLength)
+      throw new Error("legacy Opus object has a truncated packet");
+    packets.push(bytes.subarray(offset, offset + length));
+    offset += length;
+  }
+  if (offset !== bytes.byteLength)
+    throw new Error("legacy Opus object has trailing bytes");
+
+  const output = new Int16Array(Math.ceil(outputBytes / 2));
+  let writtenSamples = 0;
+  const decoder = new OpusDecoder({
+    sampleRate: PLAYBACK_SAMPLE_RATE,
+    channels: PLAYBACK_CHANNELS,
+    streamCount: 1,
+    coupledStreamCount: 0,
+    channelMappingTable: [0],
+  });
+  try {
+    await decoder.ready;
+    for (const packet of packets) {
+      const result = decoder.decodeFrame(packet);
+      if (
+        result.errors.length ||
+        !result.samplesDecoded ||
+        !result.channelData.length
+      ) {
+        throw new Error("legacy Opus packet could not be decoded");
+      }
+      const channel = result.channelData[0];
+      for (
+        let sample = 0;
+        sample < result.samplesDecoded && writtenSamples < output.length;
+        sample += 1
+      ) {
+        output[writtenSamples] = floatToPcm16(channel[sample] || 0);
+        writtenSamples += 1;
+      }
+    }
+  } finally {
+    decoder.free();
+  }
+  const decodedBytes = Math.min(writtenSamples * 2, outputBytes);
+  if (!decodedBytes) throw new Error("legacy Opus object decoded no PCM");
+  return new Uint8Array(output.buffer, 0, decodedBytes).slice();
 }
 
 /**

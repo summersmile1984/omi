@@ -488,7 +488,7 @@ app.get(
 app.post("/v2/sync-capture-manifest", proxyAuthenticatedJobs);
 app.post("/v2/sync-local-files", proxyAuthenticatedJobs);
 app.get("/v2/sync-local-files/:jobId", proxyAuthenticatedJobs);
-app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedCore);
+app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedJobs);
 app.get("/v1/sync/audio/:conversationId/urls", proxyAuthenticatedCore);
 app.get(
   "/v1/sync/audio/:conversationId/:audioFileId",

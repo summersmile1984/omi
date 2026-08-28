@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeLegacyOpusContainer,
   decodeWalToWavChunks,
   parseSyncFilename,
   walFrameViews,
@@ -20,6 +21,24 @@ function wal(frames: Uint8Array[]): ArrayBuffer {
 }
 
 describe("sync WAL audio", () => {
+  it("decodes the legacy packet-count Opus container exactly", async () => {
+    const container = new Uint8Array(13);
+    const view = new DataView(container.buffer);
+    view.setUint32(0, 1, true);
+    view.setUint32(4, 640, true);
+    view.setUint16(8, 3, true);
+    container.set([0xf8, 0xff, 0xfe], 10);
+
+    const pcm = await decodeLegacyOpusContainer(container.buffer);
+    expect(pcm.byteLength).toBe(640);
+    expect(pcm.every((value) => value === 0)).toBe(true);
+
+    const trailing = new Uint8Array([...container, 0]);
+    await expect(decodeLegacyOpusContainer(trailing.buffer)).rejects.toThrow(
+      "trailing bytes",
+    );
+  });
+
   it("parses current Opus and PCM sync filenames", () => {
     expect(
       parseSyncFilename(

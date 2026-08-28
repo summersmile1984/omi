@@ -427,6 +427,8 @@ GET  /v1/conversations/{conversationId}/analytics
 GET  /v1/conversations/{conversationId}/recording
                               R2 head check for Worker playback or imported uid/{id}.wav
 POST /v1/sync/audio/{conversationId}/precache
+                              Edge → Jobs → D1/R2 inventory → Queue; idempotently
+                              rebuilds missing legacy playback WAVs from copied chunks
 GET  /v1/sync/audio/{conversationId}/urls
 GET  /v1/sync/audio/{conversationId}/{audioFileId}
                               uid-scoped R2 playback metadata, one-hour HMAC URLs,
@@ -892,11 +894,52 @@ responses. Tokenless downloads still require Better Auth. Existing imported
 `playback/*.mp3` and `merged/*.wav` objects are readable after the reviewed R2
 copy. Worker-native conversations also return the dense WAV through
 `conversation_audio`, so Flutter can use its spans-aware single-artifact path
-without ffmpeg or MP3 encoding. Building missing artifacts from legacy chunk
-inventories remains a production-data migration gap. Each R2 put is fenced by
-`cf_sync_playback_objects`; the metadata commit promotes the intent, while the
-five-minute Jobs maintenance pass promotes referenced crash survivors or
-deletes stale unreferenced objects after one hour.
+without ffmpeg or MP3 encoding. When a copied legacy conversation has no ready
+playback object, `/precache` creates one deterministic Jobs queue item. Jobs
+inventories `chunks/{uid}/{conversation_id}/` in R2 and rebuilds raw `.bin`,
+legacy packet-count `.opus`, encrypted `.enc`/`.opus.enc`, and framed
+`.batch.bin`/`.batch.enc` sources into deterministic `sync-playback/*.wav`
+objects. Opus decoding runs in Worker Wasm and encrypted objects use the same
+HKDF-SHA256/AES-GCM contract as the backend through Workers Web Crypto; there
+is no runtime GCS, filesystem, ffmpeg, or local ASR dependency. Each R2 put is
+fenced by `cf_sync_playback_objects`; the metadata CAS promotes the intent,
+while the five-minute Jobs maintenance pass promotes referenced crash survivors
+or deletes stale unreferenced objects after one hour.
+
+### Legacy private-cloud-sync copy and rebuild
+
+The data plane is intentionally split: Cloudflare's managed migration tools
+copy immutable source bytes, while Jobs interprets and rebuilds them only after
+they are in R2. Configure the GCS bucket identified by
+`BUCKET_PRIVATE_CLOUD_SYNC` as a read-only source and the environment-specific
+`ASSETS` bucket (`omi-cf-{environment}`; currently `omi-cf-staging`) as the
+destination. Jobs and API Core intentionally share this binding so imported
+playback objects and rebuilt WAVs have one readable owner. Use
+[Super Slurper](https://developers.cloudflare.com/r2/data-migration/super-slurper/)
+for the initial `chunks/`, `merged/`, and `playback/` bulk copy with destination
+overwrite disabled. It preserves source objects and metadata and does not delete
+the GCS source. If legacy writes remain active during the copy, configure
+[Sippy for GCS](https://developers.cloudflare.com/r2/data-migration/sippy/)
+first, then run Super Slurper behind it as described in Cloudflare's
+[migration strategy](https://developers.cloudflare.com/r2/data-migration/migration-strategies/).
+
+Use separate narrow GCS credentials and R2 targets for staging and production.
+After the bulk task reports complete, compare source/destination object counts
+and byte totals for each prefix, freeze legacy writes, copy the delta, and run a
+residual scan before changing the namespace state to `staging-owned` or
+`production-owned`. Do not delete the source bucket during this workflow.
+
+Encrypted legacy chunks additionally require the legacy backend encryption
+secret on Jobs only. Supply it through stdin; never place it in Wrangler vars or
+the repository:
+
+```bash
+printf '%s' "$LEGACY_AUDIO_ENCRYPTION_SECRET" | npx wrangler secret put LEGACY_AUDIO_ENCRYPTION_SECRET --name omi-cf-jobs-staging
+```
+
+Remove that Worker secret after the encrypted chunk inventory is drained and
+the residual scan proves every referenced conversation has a readable imported
+or rebuilt playback artifact. Unencrypted imports do not require the secret.
 
 Live staging playback evidence on 2026-08-29 used Core version
 `2fb48e7d-8ac2-4def-a841-64df4b696284`, Jobs version
