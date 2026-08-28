@@ -96,9 +96,11 @@ describe("staging smoke helpers", () => {
                 ? 401
                 : url.endsWith("/v1/announcements/all")
                   ? 403
-                  : url.endsWith("/v1/stt/transcribe-async")
-                    ? 401
-                    : url.includes("/v2/apps/search")
+                  : url.endsWith("/v1/admin/fair-use/flagged")
+                    ? 403
+                    : url.endsWith("/v1/stt/transcribe-async")
+                      ? 401
+                      : url.includes("/v2/apps/search")
                       ? 200
                       : url.includes("/v3/memories?")
                         ? 200
@@ -218,6 +220,7 @@ describe("staging smoke helpers", () => {
       unauthenticatedProbe: 401,
       unauthenticatedAnnouncements: 401,
       unauthenticatedAnnouncementsAdmin: 403,
+      unauthenticatedFairUseAdmin: 403,
       unauthenticatedAsyncTranscription: 401,
       authenticatedProbe: 200,
       accountCutover: 200,
@@ -266,7 +269,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(53);
+    expect(calls).toHaveLength(54);
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
@@ -314,6 +317,9 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/announcements/all")) {
         return new Response(null, { status: 403 });
       }
+      if (url.endsWith("/v1/admin/fair-use/flagged")) {
+        return new Response(null, { status: 403 });
+      }
       if (url.endsWith("/v1/stt/transcribe-async")) {
         return new Response(null, { status: 401 });
       }
@@ -345,6 +351,9 @@ describe("staging smoke helpers", () => {
         return new Response(null, { status: 401 });
       }
       if (url.endsWith("/v1/announcements/all")) {
+        return new Response(null, { status: 403 });
+      }
+      if (url.endsWith("/v1/admin/fair-use/flagged")) {
         return new Response(null, { status: 403 });
       }
       if (url.endsWith("/v1/stt/transcribe-async")) {
@@ -385,6 +394,8 @@ describe("staging smoke helpers", () => {
       if (url.includes("/v1/announcements/pending"))
         return new Response(null, { status: 401 });
       if (url.endsWith("/v1/announcements/all"))
+        return new Response(null, { status: 403 });
+      if (url.endsWith("/v1/admin/fair-use/flagged"))
         return new Response(null, { status: 403 });
       if (url.endsWith("/v1/stt/transcribe-async"))
         return new Response(null, { status: 401 });
@@ -496,6 +507,9 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/announcements/all")) {
         return new Response(null, { status: 403 });
       }
+      if (url.endsWith("/v1/admin/fair-use/flagged")) {
+        return new Response(null, { status: 403 });
+      }
       if (url.endsWith("/v1/stt/transcribe-async")) {
         return new Response(null, { status: 401 });
       }
@@ -549,6 +563,9 @@ describe("staging smoke helpers", () => {
         return new Response(null, { status: 401 });
       }
       if (url.endsWith("/v1/announcements/all")) {
+        return new Response(null, { status: 403 });
+      }
+      if (url.endsWith("/v1/admin/fair-use/flagged")) {
         return new Response(null, { status: 403 });
       }
       if (url.endsWith("/v1/stt/transcribe-async")) {

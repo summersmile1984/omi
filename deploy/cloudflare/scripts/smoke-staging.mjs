@@ -216,6 +216,15 @@ export async function runSmoke({
     unauthenticatedAnnouncementsAdmin,
     403,
   );
+  const unauthenticatedFairUseAdmin = await request(
+    fetchImpl,
+    `${base}/v1/admin/fair-use/flagged`,
+  );
+  expectStatus(
+    "unauthenticated fair use admin",
+    unauthenticatedFairUseAdmin,
+    403,
+  );
   const unauthenticatedAsyncTranscription = await request(
     fetchImpl,
     `${base}/v1/stt/transcribe-async`,
@@ -653,6 +662,7 @@ export async function runSmoke({
     unauthenticatedProbe: unauthenticated.status,
     unauthenticatedAnnouncements: unauthenticatedAnnouncements.status,
     unauthenticatedAnnouncementsAdmin: unauthenticatedAnnouncementsAdmin.status,
+    unauthenticatedFairUseAdmin: unauthenticatedFairUseAdmin.status,
     unauthenticatedAsyncTranscription: unauthenticatedAsyncTranscription.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,

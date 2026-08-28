@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import json
 import re
 import time
 
@@ -19,6 +22,23 @@ UNLIMITED_PLANS = frozenset({"unlimited", "unlimited_v2", "operator", "architect
 RESTRICT_DAILY_DG_MS = 1_800_000
 LIVE_SOURCE_KINDS = ("realtime", "sync_fresh")
 CASE_REFERENCE_PATTERN = re.compile(r"^FU-[A-F0-9]{12}$")
+VALID_STAGES = frozenset({"none", "warning", "throttle", "restrict"})
+MAX_ADMIN_ROWS = 200
+MAX_UID_LENGTH = 256
+MAX_EVENT_ID_LENGTH = 64
+MAX_ADMIN_NOTES_LENGTH = 2_000
+STATE_COLUMNS = (
+    "uid, stage, last_case_ref, throttle_until, restrict_until, updated_at, "
+    "violation_count_7d, violation_count_30d, last_violation_at, "
+    "last_classifier_score, last_classifier_type, cleared_by, cleared_at"
+)
+EVENT_COLUMNS = (
+    "event_id, uid, case_ref, created_at, session_id, trigger, daily_speech_ms, "
+    "three_day_speech_ms, weekly_speech_ms, daily_threshold_ms, "
+    "three_day_threshold_ms, weekly_threshold_ms, classifier_json, "
+    "enforcement_action, previous_stage, new_stage, resolved, resolved_at, "
+    "resolved_by, admin_notes"
+)
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -58,6 +78,99 @@ def _message(stage: str, case_ref: str = "") -> str:
         ),
     }
     return messages.get(stage, messages["none"])
+
+
+def _admin_identity(request: Request) -> str | None:
+    expected = getattr(request.scope["env"], "FAIR_USE_ADMIN_KEY", None)
+    provided = request.headers.get("x-admin-key")
+    if not (
+        isinstance(expected, str) and expected and isinstance(provided, str) and hmac.compare_digest(provided, expected)
+    ):
+        return None
+    return f"admin:{hashlib.sha256(provided.encode()).hexdigest()[:8]}"
+
+
+def _require_admin(request: Request) -> tuple[str | None, JSONResponse | None]:
+    identity = _admin_identity(request)
+    if identity is None:
+        return None, JSONResponse({"detail": "Invalid admin key"}, status_code=403)
+    return identity, None
+
+
+def _bounded_identifier(value: str, maximum: int) -> str | None:
+    normalized = value.strip()
+    return normalized if 0 < len(normalized) <= maximum else None
+
+
+def _rows(result: object) -> list[dict[str, object]]:
+    if not isinstance(result, dict):
+        return []
+    values = result.get("results")
+    if not isinstance(values, list):
+        return []
+    return [row for row in values if isinstance(row, dict)]
+
+
+def _state_payload(row: dict[str, object]) -> dict[str, object]:
+    payload = dict(row)
+    for key in ("throttle_until", "restrict_until", "updated_at", "last_violation_at", "cleared_at"):
+        payload[key] = _timestamp(payload.get(key))
+    payload["id"] = "current"
+    return payload
+
+
+def _event_payload(row: dict[str, object], *, detail: bool = False) -> dict[str, object]:
+    classifier: object = None
+    raw_classifier = row.get("classifier_json")
+    if isinstance(raw_classifier, str) and len(raw_classifier.encode()) <= 32_000:
+        try:
+            parsed = json.loads(raw_classifier)
+            classifier = parsed if isinstance(parsed, dict) else None
+        except (TypeError, ValueError):
+            classifier = None
+    payload: dict[str, object] = {
+        "event_id" if detail else "id": str(row.get("event_id") or ""),
+        "case_ref": str(row.get("case_ref") or ""),
+        "created_at": _timestamp(row.get("created_at")),
+        "session_id": str(row.get("session_id") or ""),
+        "trigger": str(row.get("trigger") or "daily"),
+        "window_speech_ms": {
+            "daily": int(row.get("daily_speech_ms") or 0),
+            "three_day": int(row.get("three_day_speech_ms") or 0),
+            "weekly": int(row.get("weekly_speech_ms") or 0),
+        },
+        "thresholds_ms": {
+            "daily": int(row.get("daily_threshold_ms") or 0),
+            "three_day": int(row.get("three_day_threshold_ms") or 0),
+            "weekly": int(row.get("weekly_threshold_ms") or 0),
+        },
+        "classifier": classifier,
+        "enforcement_action": str(row.get("enforcement_action") or "none"),
+        "previous_stage": str(row.get("previous_stage") or "none"),
+        "new_stage": str(row.get("new_stage") or "none"),
+        "resolved": bool(row.get("resolved")),
+        "resolved_at": _timestamp(row.get("resolved_at")),
+        "resolved_by": str(row.get("resolved_by") or ""),
+        "admin_notes": str(row.get("admin_notes") or ""),
+    }
+    if detail:
+        payload["uid"] = str(row.get("uid") or "")
+    return payload
+
+
+async def _rolling_usage(env: object, uid: str, now: int) -> dict[str, int]:
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT COALESCE(SUM(CASE WHEN occurred_at >= ? THEN speech_ms ELSE 0 END), 0) AS daily_ms, "
+            "COALESCE(SUM(CASE WHEN occurred_at >= ? THEN speech_ms ELSE 0 END), 0) AS three_day_ms, "
+            "COALESCE(SUM(speech_ms), 0) AS weekly_ms FROM cf_fair_use_usage_sources "
+            "WHERE uid = ? AND source_kind IN (?, ?) AND occurred_at >= ?"
+        )
+        .bind(now - 86_400, now - 3 * 86_400, uid, *LIVE_SOURCE_KINDS, now - 7 * 86_400)
+        .first()
+    )
+    row = row if isinstance(row, dict) else {}
+    return {key: max(0, int(row.get(key) or 0)) for key in ("daily_ms", "three_day_ms", "weekly_ms")}
 
 
 async def _projection(env: object, uid: str, now: int) -> dict[str, object]:
@@ -198,3 +311,178 @@ async def get_public_case_status(case_ref: str, request: Request):
         "updated_at": _timestamp(row.get("resolved_at")) or created_at,
         "support_email": "team@basedhardware.com",
     }
+
+
+@router.get("/v1/admin/fair-use/flagged")
+async def get_flagged_users(request: Request, stage: str | None = None, limit: int = 50):
+    _, denial = _require_admin(request)
+    if denial:
+        return denial
+    bounded_limit = max(1, min(int(limit), MAX_ADMIN_ROWS))
+    if stage is not None and (not stage or len(stage) > 20):
+        return JSONResponse({"error": "invalid stage"}, status_code=400)
+    clause = "stage = ?" if stage is not None else "stage IN ('warning', 'throttle', 'restrict')"
+    args: list[object] = [stage] if stage is not None else []
+    try:
+        result = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                f"SELECT {STATE_COLUMNS} FROM cf_fair_use_states WHERE {clause} "
+                "ORDER BY updated_at DESC, uid ASC LIMIT ?"
+            )
+            .bind(*args, bounded_limit)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "fair use admin unavailable"}, status_code=503)
+    return {"users": [_state_payload(row) for row in _rows(result)], "fair_use_enabled": True}
+
+
+@router.get("/v1/admin/fair-use/user/{uid}")
+async def get_user_fair_use_detail(uid: str, request: Request):
+    _, denial = _require_admin(request)
+    if denial:
+        return denial
+    normalized_uid = _bounded_identifier(uid, MAX_UID_LENGTH)
+    if normalized_uid is None:
+        return JSONResponse({"error": "invalid uid"}, status_code=400)
+    now = int(time.time())
+    env = request.scope["env"]
+    try:
+        state = (
+            await env.APP_DB.prepare(f"SELECT {STATE_COLUMNS} FROM cf_fair_use_states WHERE uid = ?")
+            .bind(normalized_uid)
+            .first()
+        )
+        events_result = (
+            await env.APP_DB.prepare(
+                f"SELECT {EVENT_COLUMNS} FROM cf_fair_use_events WHERE uid = ? "
+                "ORDER BY created_at DESC, event_id DESC LIMIT 50"
+            )
+            .bind(normalized_uid)
+            .all()
+        )
+        usage = await _rolling_usage(env, normalized_uid, now)
+    except Exception:
+        return JSONResponse({"error": "fair use admin unavailable"}, status_code=503)
+    return {
+        "uid": normalized_uid,
+        "state": _state_payload(state) if isinstance(state, dict) else {},
+        "events": [_event_payload(row) for row in _rows(events_result)],
+        "current_speech_ms": usage,
+    }
+
+
+@router.post("/v1/admin/fair-use/user/{uid}/resolve-event/{event_id}")
+async def resolve_fair_use_event(uid: str, event_id: str, request: Request, notes: str = ""):
+    admin_id, denial = _require_admin(request)
+    if denial:
+        return denial
+    normalized_uid = _bounded_identifier(uid, MAX_UID_LENGTH)
+    normalized_event_id = _bounded_identifier(event_id, MAX_EVENT_ID_LENGTH)
+    if normalized_uid is None or normalized_event_id is None or len(notes) > MAX_ADMIN_NOTES_LENGTH:
+        return JSONResponse({"error": "invalid fair use event"}, status_code=400)
+    now = int(time.time())
+    try:
+        result = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                "UPDATE cf_fair_use_events SET resolved = 1, resolved_at = ?, resolved_by = ?, admin_notes = ? "
+                "WHERE uid = ? AND event_id = ?"
+            )
+            .bind(now, admin_id, notes, normalized_uid, normalized_event_id)
+            .run()
+        )
+    except Exception:
+        return JSONResponse({"error": "fair use admin unavailable"}, status_code=503)
+    changes = result.get("meta", {}).get("changes", 0) if isinstance(result, dict) else 0
+    if changes != 1:
+        return JSONResponse({"detail": "Fair use event not found"}, status_code=404)
+    return {"status": "resolved"}
+
+
+@router.post("/v1/admin/fair-use/user/{uid}/reset")
+async def reset_user_fair_use(uid: str, request: Request):
+    admin_id, denial = _require_admin(request)
+    if denial:
+        return denial
+    normalized_uid = _bounded_identifier(uid, MAX_UID_LENGTH)
+    if normalized_uid is None:
+        return JSONResponse({"error": "invalid uid"}, status_code=400)
+    now = int(time.time())
+    try:
+        await request.scope["env"].APP_DB.prepare(
+            "INSERT INTO cf_fair_use_states (uid, stage, updated_at, cleared_by, cleared_at) "
+            "VALUES (?, 'none', ?, ?, ?) ON CONFLICT(uid) DO UPDATE SET stage = 'none', "
+            "violation_count_7d = 0, violation_count_30d = 0, last_violation_at = NULL, "
+            "throttle_until = NULL, restrict_until = NULL, last_classifier_score = 0.0, "
+            "last_classifier_type = 'none', evaluation_lease_token = NULL, evaluation_lease_until = NULL, "
+            "next_evaluation_at = NULL, cleared_by = excluded.cleared_by, cleared_at = excluded.cleared_at, "
+            "updated_at = excluded.updated_at"
+        ).bind(normalized_uid, now, admin_id, now).run()
+    except Exception:
+        return JSONResponse({"error": "fair use admin unavailable"}, status_code=503)
+    return {"status": "reset"}
+
+
+@router.post("/v1/admin/fair-use/user/{uid}/set-stage")
+async def set_user_fair_use_stage(uid: str, request: Request, stage: str):
+    admin_id, denial = _require_admin(request)
+    if denial:
+        return denial
+    normalized_uid = _bounded_identifier(uid, MAX_UID_LENGTH)
+    if normalized_uid is None:
+        return JSONResponse({"error": "invalid uid"}, status_code=400)
+    if stage not in VALID_STAGES:
+        return JSONResponse(
+            {"detail": f"Invalid stage. Must be one of: {VALID_STAGES}"},
+            status_code=400,
+        )
+    now = int(time.time())
+    clear = stage == "none"
+    throttle_until = now + 7 * 86_400 if stage == "throttle" else None
+    restrict_until = now + 30 * 86_400 if stage == "restrict" else None
+    try:
+        await request.scope["env"].APP_DB.prepare(
+            "INSERT INTO cf_fair_use_states "
+            "(uid, stage, throttle_until, restrict_until, updated_at, cleared_by, cleared_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uid) DO UPDATE SET stage = excluded.stage, "
+            "throttle_until = excluded.throttle_until, restrict_until = excluded.restrict_until, "
+            "evaluation_lease_token = NULL, evaluation_lease_until = NULL, "
+            "cleared_by = CASE WHEN excluded.stage = 'none' THEN excluded.cleared_by ELSE cf_fair_use_states.cleared_by END, "
+            "cleared_at = CASE WHEN excluded.stage = 'none' THEN excluded.cleared_at ELSE cf_fair_use_states.cleared_at END, "
+            "updated_at = excluded.updated_at"
+        ).bind(
+            normalized_uid,
+            stage,
+            throttle_until,
+            restrict_until,
+            now,
+            admin_id if clear else None,
+            now if clear else None,
+        ).run()
+    except Exception:
+        return JSONResponse({"error": "fair use admin unavailable"}, status_code=503)
+    return {"status": "updated", "stage": stage}
+
+
+@router.get("/v1/admin/fair-use/case/{case_ref}")
+async def lookup_fair_use_case(case_ref: str, request: Request):
+    _, denial = _require_admin(request)
+    if denial:
+        return denial
+    normalized = case_ref.strip().upper()
+    if not CASE_REFERENCE_PATTERN.fullmatch(normalized):
+        return JSONResponse({"detail": f"Case {normalized} not found"}, status_code=404)
+    try:
+        row = (
+            await request.scope["env"]
+            .APP_DB.prepare(f"SELECT {EVENT_COLUMNS} FROM cf_fair_use_events WHERE case_ref = ? LIMIT 1")
+            .bind(normalized)
+            .first()
+        )
+    except Exception:
+        return JSONResponse({"error": "fair use admin unavailable"}, status_code=503)
+    if not isinstance(row, dict):
+        return JSONResponse({"detail": f"Case {normalized} not found"}, status_code=404)
+    return _event_payload(row, detail=True)

@@ -10,7 +10,16 @@ import time
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from fair_use_routes import get_fair_use_status, get_public_case_status  # noqa: E402
+from fair_use_routes import (  # noqa: E402
+    get_fair_use_status,
+    get_flagged_users,
+    get_public_case_status,
+    get_user_fair_use_detail,
+    lookup_fair_use_case,
+    reset_user_fair_use,
+    resolve_fair_use_event,
+    set_user_fair_use_stage,
+)
 
 
 class FakeDb:
@@ -46,6 +55,15 @@ class FakeStatement:
         row = self.connection.execute(self.sql, self.args).fetchone()
         return dict(row) if row is not None else None
 
+    async def all(self):
+        rows = self.connection.execute(self.sql, self.args).fetchall()
+        return {"results": [dict(row) for row in rows]}
+
+    async def run(self):
+        cursor = self.connection.execute(self.sql, self.args)
+        self.connection.commit()
+        return {"meta": {"changes": cursor.rowcount}}
+
 
 class FakeRequest:
     def __init__(self, env, headers=None):
@@ -63,8 +81,12 @@ def signed_headers(secret: str, uid: str = "fair-use-user"):
     }
 
 
-def make_env(secret: str):
-    return type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+def make_env(secret: str, admin_key: str | None = None):
+    return type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret, "FAIR_USE_ADMIN_KEY": admin_key},
+    )()
 
 
 def test_default_status_is_authenticated_and_reports_zero_usage():
@@ -189,3 +211,106 @@ def test_public_case_lookup_exposes_only_case_status_and_support_fields():
     assert "classifier" not in response
     assert asyncio.run(get_public_case_status("invalid", FakeRequest(env))).status_code == 404
     assert asyncio.run(get_public_case_status("FU-000000000000", FakeRequest(env))).status_code == 404
+
+
+def test_admin_routes_fail_closed_for_missing_secret_and_legacy_key():
+    no_secret = make_env("internal")
+    old_key = make_env("internal", admin_key="current-key")
+
+    assert asyncio.run(get_flagged_users(FakeRequest(no_secret, {"x-admin-key": "legacy-key"}))).status_code == 403
+    assert asyncio.run(get_flagged_users(FakeRequest(old_key, {"x-admin-key": "legacy-key"}))).status_code == 403
+    assert asyncio.run(get_flagged_users(FakeRequest(old_key))).status_code == 403
+
+
+def test_admin_routes_manage_d1_state_events_and_usage():
+    admin_key = "fair-use-admin-secret"
+    env = make_env("internal", admin_key=admin_key)
+    headers = {"x-admin-key": admin_key}
+    now = int(time.time())
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_fair_use_states "
+        "(uid, stage, last_case_ref, updated_at, violation_count_7d, violation_count_30d, "
+        "last_classifier_score, last_classifier_type) "
+        "VALUES ('managed-user', 'warning', 'FU-A1B2C3D4E5F6', ?, 1, 2, 1.0, 'free_exhausted')",
+        (now,),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_fair_use_events "
+        "(event_id, uid, case_ref, created_at, trigger, daily_speech_ms, three_day_speech_ms, "
+        "weekly_speech_ms, daily_threshold_ms, three_day_threshold_ms, weekly_threshold_ms, classifier_json, "
+        "enforcement_action, previous_stage, new_stage) "
+        "VALUES ('event-admin', 'managed-user', 'FU-A1B2C3D4E5F6', ?, 'daily', 7200001, 7200001, "
+        "7200001, 7200000, 28800000, 36000000, '{\"usage_type\":\"free_exhausted\"}', "
+        "'warning', 'none', 'warning')",
+        (now,),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_fair_use_usage_sources "
+        "(uid, source_kind, source_id, occurred_at, speech_ms, dg_ms, updated_at) "
+        "VALUES ('managed-user', 'sync_fresh', 'admin-usage', ?, 7200001, 0, ?)",
+        (now, now),
+    )
+    env.APP_DB.connection.commit()
+
+    flagged = asyncio.run(get_flagged_users(FakeRequest(env, headers)))
+    assert [row["uid"] for row in flagged["users"]] == ["managed-user"]
+    assert flagged["users"][0]["id"] == "current"
+    assert flagged["fair_use_enabled"] is True
+
+    detail = asyncio.run(get_user_fair_use_detail("managed-user", FakeRequest(env, headers)))
+    assert detail["state"]["stage"] == "warning"
+    assert detail["events"][0]["id"] == "event-admin"
+    assert detail["events"][0]["classifier"]["usage_type"] == "free_exhausted"
+    assert detail["current_speech_ms"] == {
+        "daily_ms": 7_200_001,
+        "three_day_ms": 7_200_001,
+        "weekly_ms": 7_200_001,
+    }
+
+    case = asyncio.run(lookup_fair_use_case("fu-a1b2c3d4e5f6", FakeRequest(env, headers)))
+    assert case["uid"] == "managed-user"
+    assert case["event_id"] == "event-admin"
+
+    resolved = asyncio.run(
+        resolve_fair_use_event("managed-user", "event-admin", FakeRequest(env, headers), notes="verified")
+    )
+    assert resolved == {"status": "resolved"}
+    event = env.APP_DB.connection.execute(
+        "SELECT resolved, resolved_by, admin_notes FROM cf_fair_use_events WHERE event_id = 'event-admin'"
+    ).fetchone()
+    assert event["resolved"] == 1
+    assert event["resolved_by"].startswith("admin:")
+    assert event["admin_notes"] == "verified"
+
+    updated = asyncio.run(set_user_fair_use_stage("managed-user", FakeRequest(env, headers), stage="restrict"))
+    assert updated == {"status": "updated", "stage": "restrict"}
+    restricted_state = env.APP_DB.connection.execute(
+        "SELECT stage, restrict_until FROM cf_fair_use_states WHERE uid = 'managed-user'"
+    ).fetchone()
+    assert restricted_state["stage"] == "restrict"
+    assert restricted_state["restrict_until"] >= now + 30 * 86_400 - 1
+
+    reset = asyncio.run(reset_user_fair_use("managed-user", FakeRequest(env, headers)))
+    assert reset == {"status": "reset"}
+    state = env.APP_DB.connection.execute(
+        "SELECT stage, violation_count_7d, last_classifier_type, cleared_by FROM cf_fair_use_states "
+        "WHERE uid = 'managed-user'"
+    ).fetchone()
+    assert state["stage"] == "none"
+    assert state["violation_count_7d"] == 0
+    assert state["last_classifier_type"] == "none"
+    assert state["cleared_by"].startswith("admin:")
+
+    created = asyncio.run(reset_user_fair_use("legacy-user-without-state", FakeRequest(env, headers)))
+    assert created == {"status": "reset"}
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT stage FROM cf_fair_use_states WHERE uid = 'legacy-user-without-state'"
+        ).fetchone()["stage"]
+        == "none"
+    )
+
+    invalid_stage = asyncio.run(set_user_fair_use_stage("managed-user", FakeRequest(env, headers), stage="invalid"))
+    assert invalid_stage.status_code == 400
+    missing_event = asyncio.run(resolve_fair_use_event("managed-user", "missing", FakeRequest(env, headers)))
+    assert missing_event.status_code == 404

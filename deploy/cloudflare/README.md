@@ -230,6 +230,8 @@ printf '%s' "$APPLE_CLIENT_SECRET" | npx wrangler secret put APPLE_CLIENT_SECRET
 # Optional, staging-only Flutter Better Auth bridge (never use in a release build).
 cf_dev_issuer_secret="$(openssl rand -base64 48)"
 printf '%s' "$cf_dev_issuer_secret" | npx wrangler secret put AUTH_DEV_ISSUER_SECRET --name omi-cf-auth-staging
+# Independent staging-only credential for the Fair Use support/admin routes.
+printf '%s' "$FAIR_USE_ADMIN_KEY" | npx wrangler secret put FAIR_USE_ADMIN_KEY --name omi-cf-api-core-staging
 # Required only when an isolated staging account has a registered FCM device.
 # Use a staging Firebase service account; never copy production credentials.
 printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | npx wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON --name omi-cf-jobs-staging
@@ -748,9 +750,13 @@ rows with a recoverable lease, uses the FCM HTTP v1 API when the optional
 staging service-account secret is configured, deletes only
 provider-confirmed unregistered tokens, and retries transient failures with
 bounded backoff. An account with no registered device completes the outbox row
-without requiring Firebase credentials. Admin actions and production state
-import remain legacy-owned until their separate authorization and backfill
-boundaries move.
+without requiring Firebase credentials. The six support/admin routes are D1
+backed in staging and require the independent `FAIR_USE_ADMIN_KEY` Worker
+secret; the API compares `X-Admin-Key` in constant time and stores only its
+short hash as the resolving/clearing actor. Dashboard reads, case lookup,
+event resolution, state reset, and manual stage changes never accept a user
+session as admin authority. Production state import remains legacy-owned until
+its reviewed backfill boundary moves.
 
 The 2026-08-28 staging release exercised a generated spoken WAV through the
 raw Workers AI route, the Web/Flutter multipart route, and the Queue route.

@@ -115,6 +115,15 @@ app.get("/v1/apps/:appId/reviews", proxyPublicCore);
 app.get("/v1/action-items/shared/:token", proxyPublicCore);
 app.get("/v2/messages/shared/:token", proxyPublicCore);
 app.get("/v1/fair-use/case/:case_ref/status", proxyPublicCore);
+app.get("/v1/admin/fair-use/flagged", proxyPublicCore);
+app.get("/v1/admin/fair-use/user/:uid", proxyPublicCore);
+app.post(
+  "/v1/admin/fair-use/user/:uid/resolve-event/:event_id",
+  proxyPublicCore,
+);
+app.post("/v1/admin/fair-use/user/:uid/reset", proxyPublicCore);
+app.post("/v1/admin/fair-use/user/:uid/set-stage", proxyPublicCore);
+app.get("/v1/admin/fair-use/case/:case_ref", proxyPublicCore);
 
 app.all("/api/better-auth/*", async (c) => {
   const id = requestId(c.req.raw);
