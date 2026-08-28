@@ -3,7 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
+  ACCOUNT_DELETION_CONTROL_D1_SURFACES,
   ACCOUNT_DELETION_D1_SURFACES,
+  ACCOUNT_DELETION_D1_PURGE_SURFACES,
   ACCOUNT_DELETION_R2_PREFIX_PATTERNS,
   readAccountProductResidual,
 } from "../workers/jobs/account-deletion-residual";
@@ -126,11 +128,67 @@ async function residualHeaders(uid: string, path: string) {
 describe("Cloudflare account-deletion residual", () => {
   it("covers every identity-bearing App-D1 migration column explicitly", () => {
     const planned = new Set(
-      ACCOUNT_DELETION_D1_SURFACES.map(
-        ({ table, column }) => `${table}.${column}`,
-      ),
+      [
+        ...ACCOUNT_DELETION_D1_SURFACES,
+        ...ACCOUNT_DELETION_CONTROL_D1_SURFACES,
+      ].map(({ table, column }) => `${table}.${column}`),
     );
     expect(planned).toEqual(migrationIdentitySurfaces());
+    expect(
+      new Set(
+        ACCOUNT_DELETION_D1_PURGE_SURFACES.map(
+          ({ table, column }) => `${table}.${column}`,
+        ),
+      ),
+    ).toEqual(
+      new Set(
+        ACCOUNT_DELETION_D1_SURFACES.map(
+          ({ table, column }) => `${table}.${column}`,
+        ),
+      ),
+    );
+  });
+
+  it("installs INSERT and UPDATE mutation fences for every authoritative identity table", () => {
+    const migration = readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../migrations/app/0052_account_deletion.sql",
+      ),
+      "utf8",
+    );
+    const triggerBlocks = new Map(
+      [
+        ...migration.matchAll(
+          /CREATE TRIGGER IF NOT EXISTS (adf_[A-Za-z0-9_]+)([\s\S]*?)END;/g,
+        ),
+      ].map((match) => [match[1], match[2]]),
+    );
+    for (const { table, column } of ACCOUNT_DELETION_D1_SURFACES) {
+      if (table === "cf_conversations_fts") continue;
+      const suffix = table.replace(/^cf_/, "");
+      const insert = triggerBlocks.get(`adf_i_${suffix}`) || "";
+      const update = triggerBlocks.get(`adf_u_${suffix}`) || "";
+      expect(insert).toContain(`BEFORE INSERT ON ${table}`);
+      expect(insert).toContain("cf_account_deletion_intents");
+      expect(insert).toContain("cf_account_deletion_tombstones");
+      expect(update).toContain(`BEFORE UPDATE ON ${table}`);
+      expect(update).toContain(`OLD.${column}`);
+      expect(update).toContain(`NEW.${column}`);
+      expect(update).toContain("cf_account_deletion_intents");
+      expect(update).toContain("cf_account_deletion_tombstones");
+    }
+    for (const name of [
+      "adf_i_task_share_items",
+      "adf_u_task_share_items",
+      "adf_i_chat_share_messages",
+      "adf_u_chat_share_messages",
+    ]) {
+      expect(triggerBlocks.get(name)).toContain("cf_account_deletion_intents");
+      expect(triggerBlocks.get(name)).toContain(
+        "cf_account_deletion_tombstones",
+      );
+    }
   });
 
   it("reports an empty account only after every D1 and R2 surface is empty", async () => {

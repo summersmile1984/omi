@@ -60,8 +60,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 197 already match a
-  Cloudflare staging owner and 380 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 198 already match a
+  Cloudflare staging owner and 379 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -1280,30 +1280,44 @@ the Flutter client already treats those fields as optional/defaulted.
 
 The Auth Worker also owns signed internal `GET /internal/users/:uid`,
 `GET /internal/users/:uid/residual`, and `DELETE /internal/users/:uid`
-contracts for the future account-deletion workflow. The delete is idempotent
+contracts used by the staging account-deletion workflow. The delete is idempotent
 and removes the uid's Better Auth session, account, user, and outstanding
 delete-verification rows in one D1 batch, then fails closed unless a residual
 query returns zero for every identity table. These endpoints require a
 60-second assertion bound to the Auth audience, uid, method, and exact path;
 they are not public account-management APIs. Better Auth's public
-`/delete-user` remains explicitly disabled until the Jobs Worker has deleted
-and residual-checked all product D1/R2 namespaces before calling this final
-identity boundary.
+`/delete-user` remains explicitly disabled; only the Jobs Worker may call this
+final identity boundary after product D1/R2 deletion and residual verification.
 
-The Jobs Worker now owns the complementary signed, read-only
-`GET /internal/users/:uid/residual` product boundary. Its explicit inventory
-covers every identity-bearing column introduced by all App-D1 migrations plus
-the seven uid-scoped object prefixes currently stored in `ASSETS`. A schema
-guard fails whenever a later migration adds an identity column without adding
-it to this inventory. D1 queries are parameterized, R2 checks expose presence
-only, and any partial D1 batch or storage error returns 503 rather than an
-incomplete clean result. This does not expose or enable public account
-deletion: the destructive Queue/Workflow, mutation fence, provider cleanup,
-and final Jobs-to-Auth call remain required before Edge can own
-`DELETE /v1/users/delete-account`.
-Local workerd verification against all 51 App-D1 migrations returned 58 D1
-surfaces and seven R2 prefixes: a seeded uid row produced `empty=false`, and
-removing that row produced `empty=true` through the signed HTTP endpoint.
+Edge and Jobs now own a staging-only `DELETE /v1/users/delete-account`
+workflow for Better Auth principals that have a completed, destination-bound
+`isolated-staging-v1` cutover manifest. Jobs writes a durable App-D1 intent
+before publishing an opaque job id to Queue. Migration `0052` installs mutation
+fences that reject later inserts and updates for the uid while either the
+intent or the 25-hour deletion tombstone exists. The consumer deletes the
+seven uid-scoped `ASSETS` prefixes and all inventoried product D1 rows in
+bounded batches, requires two zero-residual scans separated by 30 seconds,
+then calls the signed Auth delete and verifies its identity residual. The D1
+intent-to-tombstone transition is atomic, duplicate public requests are
+idempotent, and the scheduled reconciler republishes durable intents whose
+initial Queue send failed. Queue and DLQ payloads contain no uid.
+
+The explicit residual inventory covers 58 product identity-bearing column
+sites introduced by all App-D1 migrations, two deletion-control surfaces, and
+the seven R2 prefixes. A schema guard fails whenever a later migration adds an
+identity column without extending the inventory. D1 queries are parameterized,
+R2 checks expose presence only, and partial batches, storage errors, or
+non-zero residuals fail closed. Accounts with a Stripe subscription id also
+fail closed before the mutation fence because provider cancellation has not
+yet been implemented; production account deletion remains blocked on that
+provider cleanup and production identity/cutover evidence.
+
+Local validation applied all 52 App-D1 migrations with Wrangler (123 SQL
+commands), exercised the real SQLite trigger boundary, and proved that both an
+active intent and the tombstone block late writes while expired tombstone
+cleanup restores writes. The TypeScript suite additionally covers the full
+D1/R2 purge, two residual scans, Auth finalization, Queue-send recovery,
+Auth-retry recovery, and idempotent repeated deletion.
 
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains

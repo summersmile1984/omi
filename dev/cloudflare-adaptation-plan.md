@@ -888,8 +888,9 @@ key 补上 30 天过期时间。Auth、Edge、Web readiness 均为 HTTP 200，Au
 `cf-connecting-ip` 经 Web service binding 进入 D1 原子限流。完整 authenticated smoke
 和独立 native TTS smoke 通过（TTS HTTP 200，5,015 bytes）；右侧浏览器刷新并遍历
 conversations、memories、tasks、my-apps、chat，新增 console warn/error 为 0。真实
-Google/Apple callback/link 仍需独立 staging OAuth client 凭据后资格检查，账户删除仍因
-产品数据 residual workflow 未迁移而保持禁用，不能据此宣称 CF-03 全部完成。
+Google/Apple callback/link 仍需独立 staging OAuth client 凭据后资格检查。当时账户删除因
+产品数据 residual workflow 未迁移而保持禁用，后续本地实现见下文；不能据此宣称 CF-03
+全部完成。
 
 随后补齐 Auth Worker 的内部用户生命周期边界：签名请求可按 uid 查询身份及
 user/session/account/delete-verification residual，内部删除使用一个 D1 batch 清除这些
@@ -898,12 +899,24 @@ Better Auth 行，删除后 residual 非零会 fail closed；重复调用返回 
 Auth `deleteUser` 仍显式禁用，必须等 Jobs 先删除并 residual-check 产品 D1/R2 数据后，
 才能把这个内部身份删除作为最终步骤接入公开删号流程。
 
-Jobs 已补上对应的 signed、只读 product residual boundary：显式清单覆盖当前全部 App-D1
-migration 中 58 个身份列位点，以及共享 `ASSETS` bucket 中 7 个 uid-scoped 前缀；schema
-guard 会在后续 migration 新增身份列但未登记时失败。D1 batch 不完整、计数异常或 R2
-不可用均返回 503，不会把 partial scan 报成 clean。它目前只是 destructive workflow 的
-可复用验证面；公开 `DELETE /v1/users/delete-account`、删除期间 mutation fence、分批
-D1/R2 purge、外部 provider cleanup 和最终 Jobs→Auth 调用仍未开放。
+Jobs 已补上对应的 product residual boundary：显式清单覆盖当前全部 App-D1 migration 中
+58 个产品身份列位点、2 个删除控制面，以及共享 `ASSETS` bucket 中 7 个 uid-scoped 前缀；
+schema guard 会在后续 migration 新增身份列但未登记时失败。D1 batch 不完整、计数异常或
+R2 不可用均返回 503，不会把 partial scan 报成 clean。
+
+2026-08-29 又在本地完成 staging-only 的公开删号链路：Edge 的
+`DELETE /v1/users/delete-account` 只接收 Better Auth 且完成 `isolated-staging-v1`
+destination-bound cutover 的账号；Jobs 先持久化 D1 intent，再向 Queue 投递不含 uid 的 opaque
+job id。`0052_account_deletion.sql` 在 intent 或 25 小时 tombstone 存续期间阻止该 uid 的
+后续 INSERT 和任意 UPDATE。消费者分批清除 7 个 R2 前缀和全部 App-D1 产品行，间隔 30 秒
+执行两次零 residual 扫描，再调用 Auth 原子删除并验证身份 residual。intent→tombstone 与
+intent 删除在一个 D1 batch 内完成；首次 Queue 发送失败可由定时 reconciler 重新投递，Auth
+失败保留可恢复 intent，重复公开请求不会重复排队。真实本地 Wrangler 已执行全部 52 个
+App migration（123 条 SQL 命令）并验证 intent/tombstone mutation fence；TypeScript 全套
+28 文件 207 测试、API Core 133 测试、API AI 57 测试和 Web 8 文件 33 测试通过，所有 Worker
+dry-run 成功。该批次尚未部署到 live staging；Cloudflare OAuth 需重新授权。存在 Stripe
+subscription id 的账号会在建立 fence 前 fail closed，外部 provider cleanup 与生产身份/
+cutover 证据仍是生产删号的阻塞项。
 
 Firebase 身份导入也已选择性移植为 D1 tooling：导入保留 Firebase uid，只接受 password、
 Google 与 Apple authority，拒绝 disabled、phone、custom claims 和未知 provider；密码使用

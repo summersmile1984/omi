@@ -97,7 +97,7 @@ describe("edge gateway", () => {
       "api-core": "/health",
       "api-ai": "/health",
       realtime: "/health",
-      jobs: "/health",
+      jobs: "/ready",
       "rate-limit": "/health",
     });
 
@@ -111,6 +111,65 @@ describe("edge gateway", () => {
       status: "degraded",
       dependencies: { "api-ai": 503 },
     });
+  });
+
+  it("keeps authenticated deletion reachable without consulting product cutover", async () => {
+    let forwarded: Request | undefined;
+    let productCutoverCalls = 0;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: rawService((request) => {
+        expect(new URL(request.url).pathname).toBe("/internal/verify");
+        return Response.json({
+          uid: "deletion-user",
+          authority: "better-auth",
+        });
+      }),
+      API_CORE: rawService(() => {
+        productCutoverCalls += 1;
+        return Response.json({ error: "account_deleting" }, { status: 409 });
+      }),
+      JOBS: rawService((request) => {
+        forwarded = request;
+        return Response.json({
+          status: "ok",
+          message: "Account deletion started",
+        });
+      }),
+    };
+    const body = JSON.stringify({ reason: "privacy_concerns" });
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/users/delete-account", {
+        method: "DELETE",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+          "x-omi-auth-context": "attacker-context",
+        },
+        body,
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(productCutoverCalls).toBe(0);
+    expect(forwarded?.method).toBe("DELETE");
+    expect(new URL(forwarded?.url || "https://invalid.test").pathname).toBe(
+      "/v1/users/delete-account",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(
+      decodeAuthContext(forwarded?.headers.get("x-omi-auth-context") ?? null),
+    ).toMatchObject({ uid: "deletion-user", authority: "better-auth" });
+    await expect(forwarded?.text()).resolves.toBe(body);
+
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/users/delete-account", {
+        method: "DELETE",
+      }),
+      env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
   });
 
   it("forwards the canonical Better Auth path and browser credentials", async () => {

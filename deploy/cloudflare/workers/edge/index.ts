@@ -45,7 +45,7 @@ app.get("/ready", async (c) => {
     ["api-core", c.env.API_CORE, "/health"],
     ["api-ai", c.env.API_AI, "/health"],
     ["realtime", c.env.REALTIME, "/health"],
-    ["jobs", c.env.JOBS, "/health"],
+    ["jobs", c.env.JOBS, "/ready"],
   ] as const;
   const statuses = Object.fromEntries(
     await Promise.all(
@@ -275,6 +275,28 @@ const proxyAuthenticatedJobs = async (
   return withRequestId(response, id);
 };
 
+// Privacy deletion must remain reachable while ordinary product traffic is
+// fenced. Jobs validates that the account is fully Cloudflare-owned before it
+// persists the deletion intent, so this route intentionally skips the normal
+// account-cutover denial after authenticating the caller.
+const proxyAuthenticatedAccountDeletion = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "jobs",
+    c.req.raw,
+  );
+  const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+};
+
 const proxyAuthenticatedAsyncTranscription = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -357,6 +379,7 @@ const proxyAuthenticatedAsyncTranscriptionStatus = async (
 
 app.all("/v1/cf/jobs", proxyAuthenticatedJobs);
 app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
+app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 
 const proxyAuthenticatedCore = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,

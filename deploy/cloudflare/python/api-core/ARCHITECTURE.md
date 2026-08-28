@@ -32,7 +32,12 @@ verification, and destination binding described by `INV-CUTOVER-1` exist.
 `ACCOUNT_CUTOVER_PROFILE=isolated-staging` may initialize a missing Better Auth
 principal directly as `new`; the initializer writes a completed,
 destination-bound row before returning. Every other missing principal stays
-`legacy`, and malformed or incomplete `new` rows fail closed.
+`legacy`, and malformed or incomplete `new` rows fail closed. A durable account
+deletion intent or live deletion tombstone takes precedence over the cutover
+row and projects the existing client-compatible `migrating` /
+`migration_maintenance` wire fence, with product and legacy writes disabled.
+This keeps already-shipped clients fail closed while the Jobs Worker purges the
+account and prevents a deleted cutover row from reopening writes.
 
 The asset API owns logical metadata in D1 and immutable object versions in R2.
 Every upload creates a durable cleanup task before its R2 write; one D1 batch

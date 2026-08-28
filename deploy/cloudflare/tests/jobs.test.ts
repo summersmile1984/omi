@@ -320,6 +320,41 @@ async function enqueueTranscription(
 }
 
 describe("jobs ingress", () => {
+  it("reports readiness only when Auth and App D1 are ready", async () => {
+    let authStatus = 200;
+    const env = {
+      AUTH: {
+        fetch: async (request: Request) => {
+          expect(new URL(request.url).pathname).toBe("/ready");
+          return new Response(null, { status: authStatus });
+        },
+      },
+      APP_DB: {
+        prepare: (sql: string) => {
+          expect(sql).toBe("SELECT 1 AS ready");
+          return { first: async () => ({ ready: 1 }) };
+        },
+      },
+    };
+    const ready = await jobs.fetch(
+      new Request("https://jobs.test/ready"),
+      env as never,
+    );
+    expect(ready.status).toBe(200);
+    expect(await ready.json()).toEqual({ status: "ready", service: "jobs" });
+
+    authStatus = 503;
+    const degraded = await jobs.fetch(
+      new Request("https://jobs.test/ready"),
+      env as never,
+    );
+    expect(degraded.status).toBe(503);
+    expect(await degraded.json()).toEqual({
+      status: "degraded",
+      service: "jobs",
+    });
+  });
+
   it("rejects forged context before touching the queue", async () => {
     const response = await jobs.fetch(
       new Request("https://jobs.test/v1/cf/jobs", {

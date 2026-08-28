@@ -6,6 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
@@ -17,7 +18,8 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        self.connection.executescript((migration_dir / "0034_account_cutover.sql").read_text())
+        for migration in sorted(migration_dir.glob("*.sql")):
+            self.connection.executescript(migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -218,3 +220,44 @@ def test_new_account_without_completed_destination_binding_fails_closed():
 
     response = asyncio.run(get_account_cutover_control(FakeRequest(env, signed_headers(secret))))
     assert response.status_code == 503
+
+
+def test_account_deletion_intent_and_live_jwt_tombstone_fence_product_traffic():
+    secret = "cutover-secret"
+    db = FakeDb()
+    now = 2_000_000_000
+    db.connection.execute(
+        "INSERT INTO cf_account_cutover "
+        "(uid, state, account_generation, ui_generation, api_generation, checkpoint_phase, "
+        "manifest_id, destination_backend_bound, updated_at) "
+        "VALUES (?, 'new', 1, 1, 1, 'completed', 'isolated-staging-v1', 1, ?)",
+        ("cutover-user", now),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_account_deletion_intents "
+        "(uid, job_id, status, phase, next_attempt_at, created_at, updated_at) "
+        "VALUES (?, ?, 'pending', 'quiescing', ?, ?, ?)",
+        ("cutover-user", "delete-job", now, now, now),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    deleting = asyncio.run(get_account_cutover_control(FakeRequest(env, signed_headers(secret))))
+    assert deleting["state"] == "migrating"
+    assert deleting["deletion_state"] == "deleting"
+    assert deleting["client_action"] == "migration_maintenance"
+    assert deleting["product_traffic_allowed"] is False
+    assert deleting["legacy_writes_allowed"] is False
+
+    db.connection.execute("DELETE FROM cf_account_deletion_intents WHERE uid = ?", ("cutover-user",))
+    db.connection.execute(
+        "INSERT INTO cf_account_deletion_tombstones (uid, completed_at, expires_at) VALUES (?, ?, ?)",
+        ("cutover-user", now, now + 90_000),
+    )
+    db.connection.commit()
+    with patch("account_cutover_routes.time.time", return_value=now):
+        deleted = asyncio.run(get_account_cutover_control(FakeRequest(env, signed_headers(secret))))
+    assert deleted["state"] == "migrating"
+    assert deleted["deletion_state"] == "deleted"
+    assert deleted["client_action"] == "migration_maintenance"
+    assert deleted["product_traffic_allowed"] is False

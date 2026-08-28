@@ -176,6 +176,34 @@ def _control(
     }
 
 
+def _deletion_control(state: str) -> dict[str, object]:
+    if state not in {"deleting", "deleted"}:
+        raise ValueError("invalid account deletion fence")
+    return {
+        "schema_version": 1,
+        "state": "migrating",
+        "deletion_state": state,
+        "account_generation": 0,
+        "ui_generation": 0,
+        "api_generation": 0,
+        "client_action": "migration_maintenance",
+        "offline_queue_instruction": "quarantine",
+        "stranded_new_data": False,
+        "legacy_writes_allowed": False,
+        "product_traffic_allowed": False,
+        "auth_bootstrap_reachable": True,
+        "minimum_supported_builds": [{"platform": item, "minimum_supported_build": 0} for item in PLATFORMS],
+        "migration": {
+            "manifest_id": None,
+            "schema_version": 1,
+            "checkpoint_phase": "paused",
+            "checkpoint_token": None,
+            "destination_backend_bound": False,
+            "stranded_new_data": False,
+        },
+    }
+
+
 async def _initialize_isolated_staging_account(env: object, context: dict[str, object], uid: str) -> bool:
     if getattr(env, "ACCOUNT_CUTOVER_PROFILE", None) != ISOLATED_STAGING_PROFILE:
         return False
@@ -207,6 +235,28 @@ async def _read_cutover_row(env: object, uid: str) -> dict[str, object] | None:
     return row
 
 
+async def _read_account_deletion_fence(env: object, uid: str) -> str | None:
+    now = int(time.time())
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT lifecycle FROM ("
+            "SELECT 'deleting' AS lifecycle, 0 AS priority "
+            "FROM cf_account_deletion_intents WHERE uid = ? "
+            "UNION ALL "
+            "SELECT 'deleted' AS lifecycle, 1 AS priority "
+            "FROM cf_account_deletion_tombstones WHERE uid = ? AND expires_at > ?"
+            ") ORDER BY priority LIMIT 1"
+        )
+        .bind(uid, uid, now)
+        .first()
+    )
+    if row is None:
+        return None
+    if not isinstance(row, dict) or row.get("lifecycle") not in {"deleting", "deleted"}:
+        raise ValueError("invalid account deletion fence row")
+    return str(row["lifecycle"])
+
+
 @router.get("/v1/account/cutover/control")
 async def get_account_cutover_control(request: Request):
     context = _auth_context(request)
@@ -215,6 +265,9 @@ async def get_account_cutover_control(request: Request):
     uid = str(context["uid"])
     try:
         env = request.scope["env"]
+        deletion_state = await _read_account_deletion_fence(env, uid)
+        if deletion_state is not None:
+            return _deletion_control(deletion_state)
         row = await _read_cutover_row(env, uid)
         if row is None and await _initialize_isolated_staging_account(env, context, uid):
             row = await _read_cutover_row(env, uid)

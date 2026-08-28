@@ -77,6 +77,47 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_workstreams", column: "uid" },
 ] satisfies readonly D1IdentitySurface[]);
 
+/**
+ * Minimal control-plane rows intentionally retained while product residuals
+ * are being driven to zero. They are transferred from the live intent to the
+ * short-lived JWT tombstone only after Auth deletion succeeds.
+ */
+export const ACCOUNT_DELETION_CONTROL_D1_SURFACES = Object.freeze([
+  { table: "cf_account_deletion_intents", column: "uid" },
+  { table: "cf_account_deletion_tombstones", column: "uid" },
+] satisfies readonly D1IdentitySurface[]);
+
+const PURGE_PRIORITY = Object.freeze([
+  "cf_task_share_acceptances.recipient_uid",
+  "cf_task_shares.sender_uid",
+  "cf_chat_shares.sender_uid",
+  "cf_app_reviews.reviewer_uid",
+  "cf_app_catalog.owner_uid",
+  "cf_fair_use_notification_outbox.uid",
+  "cf_fair_use_events.uid",
+  "cf_sync_job_files.uid",
+  "cf_sync_jobs.uid",
+] as const);
+
+const PURGE_PRIORITY_SET = new Set<string>(PURGE_PRIORITY);
+
+const PURGE_ORDER = Object.freeze([
+  ...PURGE_PRIORITY,
+  ...ACCOUNT_DELETION_D1_SURFACES.map(
+    ({ table, column }) => `${table}.${column}`,
+  ).filter((key) => !PURGE_PRIORITY_SET.has(key)),
+]);
+
+export const ACCOUNT_DELETION_D1_PURGE_SURFACES = Object.freeze(
+  PURGE_ORDER.map((key) => {
+    const surface = ACCOUNT_DELETION_D1_SURFACES.find(
+      ({ table, column }) => `${table}.${column}` === key,
+    );
+    if (!surface) throw new Error(`unknown account deletion surface ${key}`);
+    return surface;
+  }),
+);
+
 /** User-scoped object families currently stored in the shared ASSETS bucket. */
 export const ACCOUNT_DELETION_R2_PREFIX_PATTERNS = Object.freeze([
   "cf-assets/{uid}/",

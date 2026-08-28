@@ -30,6 +30,12 @@ import {
   readAccountProductResidual,
   validAccountDeletionUid,
 } from "./account-deletion-residual";
+import {
+  cleanupExpiredAccountDeletionTombstones,
+  processAccountDeletionMessage,
+  reconcileAccountDeletions,
+  registerAccountDeletionRoutes,
+} from "./account-deletion";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -47,6 +53,22 @@ app.get("/health", (c) =>
   c.json({ status: "ok", service: "jobs", version: "cf-09" }),
 );
 
+app.get("/ready", async (c) => {
+  try {
+    const [auth, database] = await Promise.all([
+      c.env.AUTH.fetch(new Request("https://auth.internal/ready")),
+      c.env.APP_DB.prepare("SELECT 1 AS ready").first<{ ready?: unknown }>(),
+    ]);
+    await auth.arrayBuffer();
+    if (!auth.ok || Number(database?.ready) !== 1) {
+      return c.json({ status: "degraded", service: "jobs" }, 503);
+    }
+    return c.json({ status: "ready", service: "jobs" });
+  } catch {
+    return c.json({ status: "degraded", service: "jobs" }, 503);
+  }
+});
+
 type ExistingJob = {
   job_id: string;
   status: string;
@@ -63,11 +85,10 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
 }
 
 registerSyncRoutes(app, requestContext);
+registerAccountDeletionRoutes(app, requestContext);
 
-// Account deletion remains disabled at the public Edge until the destructive
-// workflow is complete. This signed read-only boundary gives that workflow one
-// exhaustive product-D1/R2 residual check instead of duplicating table lists at
-// each deletion call site.
+// The same exhaustive product-D1/R2 residual boundary is used by the local
+// deletion state machine and remains available to signed internal audits.
 app.get("/internal/users/:uid/residual", async (c) => {
   const uid = c.req.param("uid");
   if (!validAccountDeletionUid(uid)) {
@@ -831,6 +852,10 @@ async function processJobMessage(
   message: Message<JobMessage>,
   env: JobsEnv,
 ): Promise<void> {
+  if (message.body.kind === "account_delete") {
+    await processAccountDeletionMessage(message, env);
+    return;
+  }
   if (message.body.kind === "sync_local_files") {
     await processSyncJobMessage(message, env);
     return;
@@ -984,6 +1009,8 @@ export default {
       drainAssetCleanup(env),
       evaluateFairUseBatch(env),
       drainFairUseNotifications(env),
+      reconcileAccountDeletions(env, now),
+      cleanupExpiredAccountDeletionTombstones(env, now),
       ...syncMaintenance,
     ]);
     const failure = results.find(

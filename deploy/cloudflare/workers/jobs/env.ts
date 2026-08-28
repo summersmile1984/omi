@@ -1,7 +1,12 @@
 export type JobMessage = {
   jobId: string;
   uid: string;
-  kind: "probe" | "transcribe" | "sync_local_files" | "legacy_audio_rebuild";
+  kind:
+    | "probe"
+    | "transcribe"
+    | "sync_local_files"
+    | "legacy_audio_rebuild"
+    | "account_delete";
   payload: Record<string, unknown>;
 };
 
@@ -10,6 +15,7 @@ export type WorkersAiBinding = {
 };
 
 export type JobsEnv = {
+  AUTH: Fetcher;
   APP_DB: D1Database;
   ASSETS: R2Bucket;
   AI: WorkersAiBinding;
