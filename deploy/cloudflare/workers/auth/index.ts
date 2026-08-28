@@ -215,6 +215,15 @@ function profileCreatedAt(value: unknown): string | null {
   return null;
 }
 
+function authContextCreatedAt(value: unknown): number | undefined {
+  const normalized = profileCreatedAt(value);
+  if (!normalized) return undefined;
+  const milliseconds = Date.parse(normalized);
+  return Number.isFinite(milliseconds) && milliseconds > 0
+    ? Math.floor(milliseconds / 1000)
+    : undefined;
+}
+
 function lifecycleUid(value: string): string | null {
   return value.length > 0 && value.length <= 256 && !value.includes("/")
     ? value
@@ -376,7 +385,7 @@ app.post("/internal/verify", async (c) => {
     const response = await auth.handler(sessionRequest);
     if (response.ok) {
       const body = (await response.json()) as {
-        user?: { id?: string; name?: string };
+        user?: { id?: string; name?: string; createdAt?: unknown };
       } | null;
       const sessionUid = body?.user?.id;
       if (sessionUid) {
@@ -387,6 +396,7 @@ app.post("/internal/verify", async (c) => {
             typeof body?.user?.name === "string" && body.user.name.trim()
               ? body.user.name.trim().slice(0, 120)
               : undefined,
+          accountCreatedAt: authContextCreatedAt(body?.user?.createdAt),
           requestId: c.req.header("x-request-id") || "internal",
         };
         return c.json(result);
@@ -404,9 +414,21 @@ app.post("/internal/verify", async (c) => {
     });
     const uid = payloadUid(verified?.payload);
     if (!uid) return c.json({ error: "unauthorized" }, 401);
+    let accountCreatedAt: number | undefined;
+    try {
+      const user = await c.env.AUTH_DB.prepare(
+        "SELECT createdAt FROM user WHERE id = ?",
+      )
+        .bind(uid)
+        .first<{ createdAt?: unknown }>();
+      accountCreatedAt = authContextCreatedAt(user?.createdAt);
+    } catch {
+      // Creation time is a fail-open trial input, never an auth prerequisite.
+    }
     const result: AuthContext = {
       uid,
       authority: "better-auth",
+      accountCreatedAt,
       requestId: c.req.header("x-request-id") || "internal",
     };
     return c.json(result);

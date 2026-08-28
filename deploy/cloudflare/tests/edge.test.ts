@@ -1473,20 +1473,29 @@ describe("edge gateway", () => {
     expect(rateLimitNames).toEqual(["stt:transcribe:user-1"]);
   });
 
-  it("routes account usage, subscription, and price catalog reads to API Core", async () => {
+  it("routes account usage, chat quota, subscription, and price catalog reads to API Core", async () => {
     const corePaths: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
-          return Response.json({ uid: "user-1", authority: "better-auth" });
+          return Response.json({
+            uid: "user-1",
+            authority: "better-auth",
+            accountCreatedAt: 1_700_000_000,
+          });
         }
         return Response.json({ status: "ok" });
       }),
       API_CORE: service((request) => {
         corePaths.push(new URL(request.url).pathname);
         expect(request.headers.get("authorization")).toBeNull();
-        expect(request.headers.get("x-omi-auth-context")).toBeTruthy();
+        expect(
+          decodeAuthContext(request.headers.get("x-omi-auth-context")),
+        ).toMatchObject({
+          uid: "user-1",
+          accountCreatedAt: 1_700_000_000,
+        });
         return Response.json({ status: "ok" });
       }),
       API_AI: service(() =>
@@ -1498,6 +1507,9 @@ describe("edge gateway", () => {
     for (const path of [
       "/v1/users/me/usage?period=monthly",
       "/v1/users/me/subscription",
+      "/v1/users/me/usage-quota",
+      "/v1/users/me/paywall?platform=desktop",
+      "/v1/users/me/trial",
       "/v1/payments/available-plans",
     ]) {
       const response = await edge.fetch(
@@ -1512,6 +1524,9 @@ describe("edge gateway", () => {
     expect(corePaths).toEqual([
       "/v1/users/me/usage",
       "/v1/users/me/subscription",
+      "/v1/users/me/usage-quota",
+      "/v1/users/me/paywall",
+      "/v1/users/me/trial",
       "/v1/payments/available-plans",
     ]);
   });

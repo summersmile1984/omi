@@ -18,7 +18,7 @@ The first staging slice contains:
   preferences, onboarding/privacy/notification/location-consent settings, and
   the public firmware stable/latest/version APIs. It also exposes staging-only
   D1-backed action-item and canonical memory CRUD surfaces, plus account usage,
-  subscription snapshot, and configured price-catalog reads.
+  chat quota, subscription snapshot, and configured price-catalog reads.
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
@@ -60,8 +60,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 198 already match a
-  Cloudflare staging owner and 379 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 225 already match a
+  Cloudflare staging owner and 352 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -843,8 +843,7 @@ Session create/list/read/update/delete, starred filtering,
 reported-message hiding, idempotent `client_message_id` retries, and monotonic
 desktop journal revisions are Worker-owned in staging. Accepted human
 `desktop_chat` writes also create one idempotent `cf_chat_quota_events` row in
-the message batch; quota reads and enforcement remain a separate cutover
-boundary. Chat sharing stores 30-day D1 tokens and ordered message references
+the message batch. Chat sharing stores 30-day D1 tokens and ordered message references
 beside that projection; its public route exposes only message id, text, sender,
 timestamp, and the explicit sender display name. Creating a new share also
 removes indexed expired shares so D1 preserves the legacy Redis TTL lifecycle.
@@ -853,9 +852,19 @@ session, reads its bounded unreported history, calls the configured Workers AI
 chat model, commits the human/AI exchange plus session count/preview in one D1
 batch, and emits the legacy `data:` plus base64 `done:` SSE contract used by
 Web/mobile clients.
+Before provider work, API AI atomically reserves one D1 quota event. The
+conditional insert is the Free-plan hard-cap boundary, so concurrent requests
+cannot both consume the final monthly slot; paying plans retain the legacy
+overage behavior. D1 failure returns the legacy SSE-visible retry reply without
+saving the human turn or invoking Workers AI. Successful inference settles the
+same event with prompt/completion tokens and USD cost in the exchange batch.
+The default-model price variables follow Cloudflare's published
+[Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/),
+and the synchronous model response exposes the required
+[`usage` object](https://developers.cloudflare.com/workers-ai/models/llama-3.2-3b-instruct/).
 The first staging slice intentionally rejects app/persona chat, attachments,
-and page context with typed `409` responses; RAG/tools, plan entitlements,
-usage accounting, and provider-streamed token delivery remain separate
+and page context with typed `409` responses; RAG/tools, BYOK request overrides,
+and provider-streamed token delivery remain separate
 qualification boundaries rather than silently degrading to generic chat.
 
 The account read routes use D1 as the isolated staging authority. Conversation
@@ -867,9 +876,27 @@ the legacy per-user timezone lookup is still an explicit parity gap.
 tables rather than live Stripe calls. An empty price catalog returns HTTP 200
 with no plans and `show_subscription_ui: false`, so the Web Worker does not
 offer a checkout that cannot succeed. Checkout, upgrade, cancel, customer
-portal, Stripe webhook reconciliation, BYOK/reviewer overrides, chat/phone
-quota projections, and production subscription import remain legacy-owned.
+portal, Stripe webhook reconciliation, BYOK/reviewer overrides, phone quota,
+and production subscription import remain legacy-owned.
 No staging price IDs are synthesized or copied from production.
+
+`GET /v1/users/me/usage-quota` and the mobile subscription projection now read
+the UTC-month `cf_chat_quota_events` authority. Free, Neo, Plus, Unlimited, and
+Operator use the same question limits as the backend contract. Architect uses
+settled provider USD cost; any event whose provider cost is still unknown makes
+that projection return `503` rather than displaying a false zero. This is an
+isolated-staging authority until production subscription and legacy usage
+events are imported.
+
+The Auth Worker includes the Better Auth account creation timestamp in the
+request-bound, audience-bound internal identity assertion. API Core uses that
+signed value for `GET /v1/users/me/paywall`, `GET /v1/users/me/trial`, and the
+desktop quota override without receiving an Auth-D1 binding. The three-day
+paywall remains controlled by `TRIAL_PAYWALL_ENABLED` and defaults off, exactly
+like the backend. It applies only to old Free desktop accounts; paid plans,
+mobile/unknown platforms, missing creation timestamps, and requests carrying
+all four legacy BYOK provider headers fail open. Stored BYOK enrollment and
+fingerprint authority still require a separate production import.
 
 `GET /v1/fair-use/status` reads `cf_fair_use_states` plus idempotent
 `cf_fair_use_usage_sources`. Rolling totals include only `realtime` and

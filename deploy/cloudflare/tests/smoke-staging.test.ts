@@ -220,6 +220,15 @@ describe("staging smoke helpers", () => {
                                                         "/v1/users/me/subscription",
                                                       ) ||
                                                       url.endsWith(
+                                                        "/v1/users/me/usage-quota",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/me/paywall",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/me/trial",
+                                                      ) ||
+                                                      url.endsWith(
                                                         "/v1/payments/available-plans",
                                                       ) ||
                                                       url.endsWith(
@@ -300,7 +309,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(62);
+    expect(calls).toHaveLength(65);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -534,6 +543,9 @@ describe("staging smoke helpers", () => {
         url.endsWith("/v1/users/geolocation") ||
         url.includes("/v1/users/me/usage?") ||
         url.endsWith("/v1/users/me/subscription") ||
+        url.endsWith("/v1/users/me/usage-quota") ||
+        url.endsWith("/v1/users/me/paywall") ||
+        url.endsWith("/v1/users/me/trial") ||
         url.endsWith("/v1/payments/available-plans") ||
         url.endsWith("/v1/fair-use/status")
       ) {

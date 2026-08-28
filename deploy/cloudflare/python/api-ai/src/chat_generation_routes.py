@@ -12,6 +12,15 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from chat_quota import (
+    free_quota_detail,
+    provider_cost_usd,
+    provider_usage,
+    reserve_chat_question,
+    settle_failed_question,
+    settlement_statement,
+    trial_paywall_applies,
+)
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -64,6 +73,18 @@ async def _bounded_payload(request: Request) -> SendMessageRequest:
 def _requested_app_id(request: Request) -> str | None:
     raw = request.query_params.get("app_id") or request.query_params.get("plugin_id")
     return None if raw in {None, "", "null"} else str(raw)
+
+
+def _account_created_at(context: dict[str, object]) -> int | None:
+    value = context.get("accountCreatedAt")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _request_has_all_byok_keys(request: Request) -> bool:
+    return all(
+        bool(str(request.headers.get(f"x-byok-{provider}") or "").strip())
+        for provider in ("openai", "anthropic", "gemini", "deepgram")
+    )
 
 
 def _rpc_mapping(value: object) -> dict[str, object] | None:
@@ -187,8 +208,16 @@ async def _persist_exchange(
     ai_message: dict[str, object],
     created_at: int,
     session_id: str,
+    settlement: object | None = None,
 ) -> None:
-    statements = []
+    session_now = int(time.time())
+    statements = [
+        env.APP_DB.prepare(
+            "INSERT OR IGNORE INTO cf_chat_sessions "
+            "(uid, id, title, preview, created_at, updated_at, app_id, message_count, starred) "
+            "VALUES (?, ?, 'New Chat', NULL, ?, ?, NULL, 0, 0)"
+        ).bind(uid, session_id, session_now, session_now)
+    ]
     for ordinal, message in enumerate((human_message, ai_message)):
         statements.append(
             env.APP_DB.prepare(
@@ -206,10 +235,12 @@ async def _persist_exchange(
             "WHERE uid = ? AND id = ?"
         ).bind(int(time.time()), str(ai_message["text"])[:100], uid, session_id)
     )
+    if settlement is not None:
+        statements.append(settlement)
     await env.APP_DB.batch(statements)
 
 
-async def _acquire_default_session(env: object, uid: str) -> str:
+async def _default_session_id(env: object, uid: str) -> str:
     row = (
         await env.APP_DB.prepare(
             "SELECT id FROM cf_chat_sessions WHERE uid = ? AND app_id IS NULL "
@@ -220,14 +251,7 @@ async def _acquire_default_session(env: object, uid: str) -> str:
     )
     if isinstance(row, dict) and isinstance(row.get("id"), str):
         return str(row["id"])
-    session_id = str(uuid.uuid4())
-    now = int(time.time())
-    await env.APP_DB.prepare(
-        "INSERT INTO cf_chat_sessions "
-        "(uid, id, title, preview, created_at, updated_at, app_id, message_count, starred) "
-        "VALUES (?, ?, 'New Chat', NULL, ?, ?, NULL, 0, 0)"
-    ).bind(uid, session_id, now, now).run()
-    return session_id
+    return str(uuid.uuid4())
 
 
 def _exchange_order_key() -> int:
@@ -247,6 +271,34 @@ async def _response_stream(text: str, message: dict[str, object]):
         json.dumps(response_message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     ).decode("ascii")
     yield f"done: {encoded}\n\n"
+
+
+async def _done_stream(message: dict[str, object]):
+    response_message = {**message, "ask_for_nps": False}
+    encoded = base64.b64encode(
+        json.dumps(response_message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+    yield f"done: {encoded}\n\n"
+
+
+def _quota_exceeded_text(detail: dict[str, object]) -> str:
+    plan = str(detail.get("plan") or "Free")
+    limit = detail.get("limit")
+    if detail.get("unit") == "cost_usd" and isinstance(limit, (int, float)):
+        limit_phrase = f"your ${int(limit)} monthly AI compute budget"
+    elif isinstance(limit, (int, float)):
+        limit_phrase = f"your {int(limit)} monthly chat question limit"
+    else:
+        limit_phrase = "your monthly chat limit"
+    reset_phrase = ""
+    reset_at = detail.get("reset_at")
+    if isinstance(reset_at, (int, float)):
+        reset = datetime.fromtimestamp(int(reset_at), timezone.utc)
+        reset_phrase = f" Your limit resets on {reset.strftime('%B')} {reset.day}."
+    return (
+        f"You've reached {limit_phrase} on the {plan} plan.{reset_phrase}\n\n"
+        "Upgrade your plan to keep chatting, or bring your own API keys in Settings to use Omi free."
+    )
 
 
 @router.post("/v2/messages")
@@ -288,10 +340,74 @@ async def chat_messages(request: Request):
 
     uid = str(context["uid"])
     try:
-        session_id = await _acquire_default_session(env, uid)
+        session_id = await _default_session_id(env, uid)
         history = await _history(env, uid, session_id)
     except Exception:
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
+    human_message_id = str(uuid.uuid4())
+    quota_key = f"v2_messages:{human_message_id}"
+    platform = request.headers.get("x-app-platform")
+    account_created_at = _account_created_at(context)
+    has_byok_keys = _request_has_all_byok_keys(request)
+    try:
+        reserved = await reserve_chat_question(
+            env,
+            uid=uid,
+            idempotency_key=quota_key,
+            message_id=human_message_id,
+            chat_session_id=session_id,
+            platform=platform,
+            account_created_at=account_created_at,
+            has_byok_keys=has_byok_keys,
+        )
+    except Exception:
+        unavailable = _message(
+            message_id=str(uuid.uuid4()),
+            text="Usage accounting is temporarily unavailable. Please retry in a moment — your message was not saved.",
+            sender="ai",
+            created_at=datetime.now(timezone.utc),
+            session_id=session_id,
+        )
+        return StreamingResponse(
+            _done_stream(unavailable),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-store", "x-accel-buffering": "no"},
+        )
+    if not reserved:
+        try:
+            detail = await free_quota_detail(
+                env,
+                uid,
+                force_exhausted=trial_paywall_applies(
+                    env,
+                    platform=platform,
+                    account_created_at=account_created_at,
+                    has_byok_keys=has_byok_keys,
+                ),
+            )
+            now = datetime.now(timezone.utc)
+            human_message = _message(
+                message_id=human_message_id,
+                text=payload.text.strip(),
+                sender="human",
+                created_at=now,
+                session_id=session_id,
+            )
+            quota_message = _message(
+                message_id=str(uuid.uuid4()),
+                text=_quota_exceeded_text(detail),
+                sender="ai",
+                created_at=now + timedelta(microseconds=1),
+                session_id=session_id,
+            )
+            await _persist_exchange(env, uid, human_message, quota_message, _exchange_order_key(), session_id)
+        except Exception:
+            return JSONResponse({"error": "chat quota unavailable"}, status_code=503)
+        return StreamingResponse(
+            _done_stream(quota_message),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-store", "x-accel-buffering": "no"},
+        )
     prompt = [
         {"role": "system", "content": SYSTEM_PROMPT},
         *history,
@@ -308,15 +424,25 @@ async def chat_messages(request: Request):
                 "temperature": 0.4,
             },
         )
-        answer = _response_text(result)
+        mapped_result = _rpc_mapping(result)
+        answer = _response_text(mapped_result)
     except Exception:
+        try:
+            await settle_failed_question(env, uid=uid, idempotency_key=quota_key, model=model)
+        except Exception:
+            pass
         return JSONResponse({"error": "workers ai chat unavailable"}, status_code=502)
-    if answer is None:
+    usage = provider_usage(mapped_result)
+    if answer is None or usage is None:
+        try:
+            await settle_failed_question(env, uid=uid, idempotency_key=quota_key, model=model)
+        except Exception:
+            pass
         return JSONResponse({"error": "workers ai returned an invalid chat response"}, status_code=502)
 
     now = datetime.now(timezone.utc)
     human_message = _message(
-        message_id=str(uuid.uuid4()),
+        message_id=human_message_id,
         text=payload.text.strip(),
         sender="human",
         created_at=now,
@@ -329,9 +455,35 @@ async def chat_messages(request: Request):
         created_at=now + timedelta(microseconds=1),
         session_id=session_id,
     )
+    prompt_tokens, completion_tokens = usage
+    cost_usd = provider_cost_usd(env, prompt_tokens, completion_tokens)
+    settlement = settlement_statement(
+        env,
+        uid=uid,
+        idempotency_key=quota_key,
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_usd=cost_usd,
+    )
     try:
-        await _persist_exchange(env, uid, human_message, ai_message, _exchange_order_key(), session_id)
+        await _persist_exchange(
+            env,
+            uid,
+            human_message,
+            ai_message,
+            _exchange_order_key(),
+            session_id,
+            settlement,
+        )
     except Exception:
+        # The provider has already completed. Preserve its cost even if message
+        # persistence is temporarily unavailable; an Architect projection stays
+        # unavailable if this recovery write also fails instead of undercounting.
+        try:
+            await settlement.run()
+        except Exception:
+            pass
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
 
     return StreamingResponse(

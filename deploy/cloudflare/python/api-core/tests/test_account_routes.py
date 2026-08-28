@@ -10,7 +10,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from account_routes import get_available_plans, get_user_subscription, get_user_usage  # noqa: E402
+from account_routes import (  # noqa: E402
+    get_available_plans,
+    get_user_chat_usage_quota,
+    get_user_paywall_status,
+    get_user_subscription,
+    get_user_trial_status,
+    get_user_usage,
+)
 
 
 class FakeDb:
@@ -18,7 +25,18 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        for name in ("0032_conversations.sql", "0037_memories.sql", "0046_account_usage.sql"):
+        self.connection.executescript(
+            "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
+            "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);"
+        )
+        for name in (
+            "0032_conversations.sql",
+            "0037_memories.sql",
+            "0042_chat_messages.sql",
+            "0046_account_usage.sql",
+            "0054_chat_sessions.sql",
+            "0055_chat_quota_accounting.sql",
+        ):
             self.connection.executescript((migration_dir / name).read_text())
 
     def prepare(self, sql):
@@ -51,8 +69,11 @@ class FakeRequest:
         self.query_params = query or {}
 
 
-def signed_headers(secret: str, uid: str = "account-user", **headers):
-    raw = json.dumps({"uid": uid, "authority": "better-auth"}, separators=(",", ":")).encode()
+def signed_headers(secret: str, uid: str = "account-user", account_created_at=None, **headers):
+    context = {"uid": uid, "authority": "better-auth"}
+    if account_created_at is not None:
+        context["accountCreatedAt"] = account_created_at
+    raw = json.dumps(context, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
     signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
     return {
@@ -93,6 +114,25 @@ def insert_price(env, price_id, plan_id, interval="month"):
         "INSERT INTO cf_subscription_prices "
         "(id, plan_id, title, price_string, interval, unit_amount, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (price_id, plan_id, f"{plan_id} {interval}", "$10/mo", interval, 1000, int(datetime.now().timestamp())),
+    )
+    env.APP_DB.connection.commit()
+
+
+def insert_chat_event(
+    env,
+    event_id,
+    *,
+    uid="account-user",
+    occurred_at=None,
+    cost_usd=0.0,
+    settled=True,
+):
+    now = int(datetime.now(timezone.utc).timestamp()) if occurred_at is None else occurred_at
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_chat_quota_events "
+        "(uid, idempotency_key, source, occurred_at, cost_usd, prompt_tokens, completion_tokens, model, settled_at) "
+        "VALUES (?, ?, 'test', ?, ?, 1, 1, '@cf/test', ?)",
+        (uid, event_id, now, cost_usd, now if settled else None),
     )
     env.APP_DB.connection.commit()
 
@@ -163,7 +203,135 @@ def test_subscription_defaults_to_basic_and_disables_unconfigured_checkout():
     assert response["transcription_seconds_limit"] == 72_000
     assert response["show_subscription_ui"] is False
     assert response["available_plans"] == []
+    assert response["subscription"]["limits"]["chat_questions_per_month"] == 30
+    assert response["chat_quota_used"] == 0.0
+    assert response["chat_quota_unit"] == "questions"
+    assert response["chat_quota_allowed"] is True
     assert asyncio.run(get_user_subscription(FakeRequest(env))).status_code == 401
+
+
+def test_chat_quota_defaults_to_free_counts_only_current_month_and_blocks_at_limit():
+    secret = "account-secret"
+    env = make_env(secret)
+    now = datetime.now(timezone.utc)
+    previous_month = int(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()) - 1
+    insert_chat_event(env, "old", occurred_at=previous_month)
+    insert_chat_event(env, "other", uid="other-user")
+    for index in range(30):
+        insert_chat_event(env, f"current-{index}")
+
+    response = asyncio.run(get_user_chat_usage_quota(FakeRequest(env, signed_headers(secret))))
+
+    assert response == {
+        "plan": "Free",
+        "plan_type": "basic",
+        "unit": "questions",
+        "used": 30.0,
+        "limit": 30.0,
+        "percent": 100.0,
+        "allowed": False,
+        "reset_at": response["reset_at"],
+    }
+    assert response["reset_at"] > int(now.timestamp())
+    assert asyncio.run(get_user_chat_usage_quota(FakeRequest(env))).status_code == 401
+
+
+def test_architect_quota_uses_settled_provider_cost_and_rejects_unknown_cost():
+    secret = "account-secret"
+    env = make_env(secret)
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_user_subscriptions (uid, plan, status, updated_at) "
+        "VALUES ('account-user', 'architect', 'active', ?)",
+        (int(datetime.now(timezone.utc).timestamp()),),
+    )
+    env.APP_DB.connection.commit()
+    insert_chat_event(env, "priced", cost_usd=1.25)
+
+    response = asyncio.run(get_user_chat_usage_quota(FakeRequest(env, signed_headers(secret))))
+
+    assert response["plan"] == "Architect"
+    assert response["unit"] == "cost_usd"
+    assert response["used"] == 1.25
+    assert response["limit"] == 400.0
+    insert_chat_event(env, "pending", cost_usd=None, settled=False)
+    unavailable = asyncio.run(get_user_chat_usage_quota(FakeRequest(env, signed_headers(secret))))
+    assert unavailable.status_code == 503
+    assert json.loads(unavailable.body) == {"error": "chat quota unavailable"}
+
+
+def test_trial_paywall_uses_signed_account_age_desktop_platform_and_byok_escape():
+    secret = "account-secret"
+    env = make_env(secret)
+    env.TRIAL_PAYWALL_ENABLED = "true"
+    now = int(datetime.now(timezone.utc).timestamp())
+    old_headers = signed_headers(
+        secret,
+        account_created_at=now - (4 * 24 * 60 * 60),
+        **{"x-app-platform": "macos"},
+    )
+
+    paywall = asyncio.run(get_user_paywall_status(FakeRequest(env, old_headers)))
+    quota = asyncio.run(get_user_chat_usage_quota(FakeRequest(env, old_headers)))
+    trial = asyncio.run(get_user_trial_status(FakeRequest(env, old_headers)))
+
+    assert paywall == {"paywalled": True}
+    assert quota["used"] == 30.0
+    assert quota["allowed"] is False
+    assert trial["trial_started_at"] == now - (4 * 24 * 60 * 60)
+    assert trial["trial_remaining_seconds"] == 0
+    assert trial["trial_expired"] is True
+    mobile = asyncio.run(
+        get_user_paywall_status(FakeRequest(env, {**old_headers, "x-app-platform": "ios"}, {"platform": "desktop"}))
+    )
+    assert mobile == {"paywalled": False}
+    byok = asyncio.run(
+        get_user_paywall_status(
+            FakeRequest(
+                env,
+                {
+                    **old_headers,
+                    "x-byok-openai": "key",
+                    "x-byok-anthropic": "key",
+                    "x-byok-gemini": "key",
+                    "x-byok-deepgram": "key",
+                },
+            )
+        )
+    )
+    assert byok == {"paywalled": False}
+
+
+def test_trial_routes_fail_open_when_disabled_paid_or_account_age_is_missing():
+    secret = "account-secret"
+    env = make_env(secret)
+    headers = signed_headers(secret, **{"x-app-platform": "desktop"})
+
+    assert asyncio.run(get_user_paywall_status(FakeRequest(env, headers))) == {"paywalled": False}
+    trial = asyncio.run(get_user_trial_status(FakeRequest(env, headers)))
+    assert trial["trial_expired"] is False
+    assert trial["trial_started_at"] is None
+    assert trial["trial_duration_seconds"] == 259_200
+
+    env.TRIAL_PAYWALL_ENABLED = "true"
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_user_subscriptions (uid, plan, status, updated_at) "
+        "VALUES ('account-user', 'operator', 'active', ?)",
+        (int(datetime.now(timezone.utc).timestamp()),),
+    )
+    env.APP_DB.connection.commit()
+    paid = asyncio.run(
+        get_user_paywall_status(
+            FakeRequest(
+                env,
+                signed_headers(
+                    secret,
+                    account_created_at=int(datetime.now(timezone.utc).timestamp()) - 1_000_000,
+                    **{"x-app-platform": "desktop"},
+                ),
+            )
+        )
+    )
+    assert paid == {"paywalled": False}
 
 
 def test_basic_subscription_enables_checkout_only_after_catalog_is_populated():
@@ -250,7 +418,9 @@ def test_account_reads_fail_closed_when_d1_is_unavailable():
     usage = asyncio.run(get_user_usage(request))
     subscription = asyncio.run(get_user_subscription(request))
     catalog = asyncio.run(get_available_plans(request))
+    quota = asyncio.run(get_user_chat_usage_quota(request))
 
     assert usage.status_code == 503
     assert subscription.status_code == 503
     assert catalog.status_code == 503
+    assert quota.status_code == 503

@@ -49,6 +49,12 @@ export async function verifyBearer(
         typeof body.displayName === "string" && body.displayName.trim()
           ? body.displayName.trim().slice(0, 120)
           : undefined,
+      accountCreatedAt:
+        typeof body.accountCreatedAt === "number" &&
+        Number.isInteger(body.accountCreatedAt) &&
+        body.accountCreatedAt > 0
+          ? body.accountCreatedAt
+          : undefined,
       sessionGeneration: body.sessionGeneration,
       requestId,
     };

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createSignedAuthContext,
   decodeAuthContext,
+  encodeAuthContext,
   signAuthContext,
   verifyAuthContextSignature,
   verifyRequestAuthContext,
@@ -10,6 +11,7 @@ import {
 const identity = {
   uid: "user-测试",
   authority: "better-auth" as const,
+  accountCreatedAt: 1_700_000_000,
   requestId: "req-1",
 };
 
@@ -26,6 +28,13 @@ describe("auth context", () => {
     expect(signed).toBeTruthy();
     expect(decodeAuthContext(signed?.encoded || "")).toEqual(signed?.context);
     expect(decodeAuthContext(`${signed?.encoded}!`)).toBeNull();
+
+    const malformed = signed
+      ? { ...signed.context, accountCreatedAt: -1 }
+      : null;
+    expect(
+      decodeAuthContext(malformed ? encodeAuthContext(malformed) : ""),
+    ).toBeNull();
 
     expect(await signAuthContext(signed?.encoded || "", undefined)).toBeNull();
     expect(

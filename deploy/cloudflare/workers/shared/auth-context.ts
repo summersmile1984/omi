@@ -5,6 +5,7 @@ export type AuthContext = {
   uid: string;
   authority: AuthAuthority;
   displayName?: string;
+  accountCreatedAt?: number;
   sessionGeneration?: string;
   requestId: string;
 };
@@ -80,7 +81,11 @@ export function decodeAuthContext(
       typeof parsed.method !== "string" ||
       !parsed.method ||
       typeof parsed.path !== "string" ||
-      !parsed.path.startsWith("/")
+      !parsed.path.startsWith("/") ||
+      (parsed.accountCreatedAt !== undefined &&
+        (typeof parsed.accountCreatedAt !== "number" ||
+          !Number.isInteger(parsed.accountCreatedAt) ||
+          parsed.accountCreatedAt <= 0))
     ) {
       return null;
     }

@@ -654,6 +654,23 @@ export async function runSmoke({
   );
   expectStatus("account subscription", accountSubscription, 200);
 
+  const chatQuota = await request(
+    fetchImpl,
+    `${base}/v1/users/me/usage-quota`,
+    { headers: authHeaders },
+  );
+  expectStatus("chat quota", chatQuota, 200);
+
+  const paywall = await request(fetchImpl, `${base}/v1/users/me/paywall`, {
+    headers: authHeaders,
+  });
+  expectStatus("paywall", paywall, 200);
+
+  const trial = await request(fetchImpl, `${base}/v1/users/me/trial`, {
+    headers: authHeaders,
+  });
+  expectStatus("trial", trial, 200);
+
   const availablePlans = await request(
     fetchImpl,
     `${base}/v1/payments/available-plans`,

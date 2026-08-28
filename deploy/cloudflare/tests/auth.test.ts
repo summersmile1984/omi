@@ -323,6 +323,7 @@ describe("auth worker Better Auth dev issuer", () => {
   });
 
   it("verifies a server-issued JWT when there is no Better Auth database session", async () => {
+    const jwtEnv = profileEnv({ createdAt: "2026-08-29T00:00:00.000Z" });
     const response = await auth.fetch(
       new Request("https://auth.test/internal/verify", {
         method: "POST",
@@ -331,12 +332,13 @@ describe("auth worker Better Auth dev issuer", () => {
           authorization: "Bearer bridge-token",
         },
       }),
-      env("issuer-secret"),
+      jwtEnv,
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       uid: "jwt-user",
       authority: "better-auth",
+      accountCreatedAt: 1_787_961_600,
       requestId: "internal",
     });
     expect(verifyJWT).toHaveBeenCalledWith({
@@ -348,7 +350,11 @@ describe("auth worker Better Auth dev issuer", () => {
   it("verifies an httpOnly Better Auth session cookie", async () => {
     authHandler.mockResolvedValueOnce(
       Response.json({
-        user: { id: "cookie-user", name: "Alice" },
+        user: {
+          id: "cookie-user",
+          name: "Alice",
+          createdAt: "2026-08-29T00:00:00.000Z",
+        },
         session: { id: "session-1" },
       }),
     );
@@ -369,6 +375,7 @@ describe("auth worker Better Auth dev issuer", () => {
       uid: "cookie-user",
       authority: "better-auth",
       displayName: "Alice",
+      accountCreatedAt: 1_787_961_600,
       requestId: "cookie-request",
     });
     const sessionRequest = authHandler.mock.calls[0][0] as Request;

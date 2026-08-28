@@ -61,5 +61,16 @@ Main-chat clear removes the current session atomically, while desktop scoped
 deletes retain the session and decrement its message count. Client message IDs
 are idempotency keys, desktop journal revisions advance monotonically, and an
 accepted human desktop-chat write records its quota event in the message batch.
-App/persona generation, attachments, quota enforcement, and provider telemetry
-remain explicit downstream cutover boundaries.
+`chat_quota.py` projects UTC-month question and provider-cost usage from those
+events and powers both the desktop quota read and mobile subscription fields.
+Free-plan reservation is enforced atomically by API AI before provider work;
+Workers AI token usage settles the event cost with the persisted exchange.
+Unsettled provider costs make Architect projections unavailable instead of
+silently undercounting. App/persona generation and attachments remain explicit
+downstream cutover boundaries.
+
+The Auth Worker places Better Auth account creation time in the signed internal
+identity context. API Core uses that immutable projection for the optional
+three-day desktop trial in quota, paywall, and trial reads; it never receives
+direct access to Auth D1. Missing timestamps and entitlement lookup failures
+preserve the legacy fail-open behavior.

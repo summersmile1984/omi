@@ -9,6 +9,14 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from chat_quota import (
+    chat_quota_snapshot,
+    is_trial_paywalled,
+    plan_policy,
+    request_has_all_byok_keys,
+    subscription_plan,
+    trial_metadata,
+)
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -47,6 +55,11 @@ def _auth_context(request: Request) -> dict[str, object] | None:
         request.headers.get("x-omi-internal-signature"),
         getattr(env, "INTERNAL_ASSERTION_SECRET", None),
     )
+
+
+def _account_created_at(context: dict[str, object]) -> int | None:
+    value = context.get("accountCreatedAt")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 def usage_source_statement(
@@ -239,16 +252,24 @@ async def get_user_subscription(request: Request):
     env = request.scope["env"]
     try:
         row = await _subscription_row(env, uid)
-        plan = str((row or {}).get("plan") or "basic")
+        plan = str((row or {}).get("plan") or "basic") if (row or {}).get("status") == "active" else "basic"
         if plan not in _PAID_PLANS and plan != "basic":
             plan = "basic"
         monthly, _ = await _usage_projection(env, uid, "monthly")
+        chat_quota = await chat_quota_snapshot(
+            env,
+            uid,
+            platform=request.headers.get("x-app-platform"),
+            account_created_at=_account_created_at(context),
+            has_byok_keys=request_has_all_byok_keys(request.headers),
+        )
         catalog = await env.APP_DB.prepare(
             "SELECT COUNT(*) AS count FROM cf_subscription_prices WHERE active = 1"
         ).first()
     except Exception:
         return JSONResponse({"error": "subscription unavailable"}, status_code=503)
     transcription_limit, words_limit, insights_limit = _plan_limits(plan)
+    chat_policy = plan_policy(env, plan)
     features = _json_list((row or {}).get("features_json")) or list(_PLAN_FEATURES[plan])
     catalog_available = int(catalog.get("count") or 0) > 0 if isinstance(catalog, dict) else False
     return {
@@ -265,6 +286,8 @@ async def get_user_subscription(request: Request):
                 "transcription_seconds": transcription_limit or None,
                 "words_transcribed": words_limit or None,
                 "insights_gained": insights_limit or None,
+                "chat_questions_per_month": (int(chat_policy["limit"]) if chat_policy["unit"] == "questions" else None),
+                "chat_cost_usd_per_month": (float(chat_policy["limit"]) if chat_policy["unit"] == "cost_usd" else None),
             },
         },
         "transcription_seconds_used": monthly["transcription_seconds"],
@@ -278,7 +301,70 @@ async def get_user_subscription(request: Request):
         "available_plans": [],
         "show_subscription_ui": catalog_available
         and (bool(row.get("show_subscription_ui")) if row is not None else True),
+        "chat_quota_used": chat_quota["used"],
+        "chat_quota_unit": chat_quota["unit"],
+        "chat_quota_percent": chat_quota["percent"],
+        "chat_quota_allowed": chat_quota["allowed"],
+        "chat_quota_reset_at": chat_quota["reset_at"],
     }
+
+
+@router.get("/v1/users/me/usage-quota")
+async def get_user_chat_usage_quota(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        return await chat_quota_snapshot(
+            request.scope["env"],
+            str(context["uid"]),
+            platform=request.headers.get("x-app-platform"),
+            account_created_at=_account_created_at(context),
+            has_byok_keys=request_has_all_byok_keys(request.headers),
+        )
+    except Exception:
+        return JSONResponse({"error": "chat quota unavailable"}, status_code=503)
+
+
+@router.get("/v1/users/me/paywall")
+async def get_user_paywall_status(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    try:
+        plan = await subscription_plan(env, str(context["uid"]))
+    except Exception:
+        return {"paywalled": False}
+    platform = request.headers.get("x-app-platform") or request.query_params.get("platform")
+    return {
+        "paywalled": is_trial_paywalled(
+            env,
+            plan=plan,
+            platform=platform,
+            account_created_at=_account_created_at(context),
+            has_byok_keys=request_has_all_byok_keys(request.headers),
+        )
+    }
+
+
+@router.get("/v1/users/me/trial")
+async def get_user_trial_status(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    try:
+        plan = await subscription_plan(env, str(context["uid"]))
+    except Exception:
+        # The legacy helper fails open when its entitlement lookup fails.
+        plan = "architect"
+    return trial_metadata(
+        env,
+        plan=plan,
+        account_created_at=_account_created_at(context),
+        has_byok_keys=request_has_all_byok_keys(request.headers),
+    )
 
 
 @router.get("/v1/payments/available-plans")
