@@ -23,11 +23,14 @@ class FakeStatement:
 
 
 class FakeDb:
-    def __init__(self, rows, enabled_rows=None):
+    def __init__(self, rows, enabled_rows=None, review_rows=None):
         self.rows = rows
         self.enabled_rows = enabled_rows or []
+        self.review_rows = review_rows or []
 
     def prepare(self, sql):
+        if "FROM cf_app_reviews" in sql:
+            return FakeStatement(self.review_rows)
         return FakeStatement(self.enabled_rows if "cf_user_enabled_apps" in sql else self.rows)
 
 
@@ -74,6 +77,19 @@ def row(app_id, *, capabilities, popular=0, installs=0, category="other", extern
     }
 
 
+def review_row(app_id: str):
+    return {
+        "app_id": app_id,
+        "reviewer_uid": "reviewer",
+        "score": 5,
+        "review_text": "Excellent",
+        "username": "Alice",
+        "response": "",
+        "rated_at": 1,
+        "responded_at": None,
+    }
+
+
 def test_v2_catalog_supports_capability_category_and_grouped_reads():
     env = type(
         "Env",
@@ -103,6 +119,26 @@ def test_v2_catalog_supports_capability_category_and_grouped_reads():
     grouped_chat = asyncio.run(get_capability_apps_grouped(FakeRequest(env), "chat"))
     assert grouped_chat["meta"]["totalApps"] == 2
     assert grouped_chat["groups"][0]["category"]["id"] == "productivity-lifestyle"
+
+
+def test_v2_catalog_hydrates_d1_reviews_only_when_requested():
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": FakeDb(
+                [row("chat-app", capabilities=["chat"])],
+                review_rows=[review_row("chat-app")],
+            )
+        },
+    )()
+
+    hidden = asyncio.run(get_apps_v2(FakeRequest(env, {"capability": "chat"})))
+    included = asyncio.run(get_apps_v2(FakeRequest(env, {"capability": "chat", "include_reviews": "true"})))
+
+    assert "reviews" not in hidden["data"][0]
+    assert included["data"][0]["reviews"][0]["uid"] == "reviewer"
+    assert included["data"][0]["user_review"] is None
 
 
 def test_v2_catalog_excludes_private_and_sanitizes_external_auth_steps():

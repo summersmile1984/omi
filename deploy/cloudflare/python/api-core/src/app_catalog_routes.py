@@ -1,8 +1,8 @@
 """Static application-catalog metadata that is safe to serve from a Worker.
 
 These endpoints intentionally contain no app records or user state. The
-mutable catalog, reviews, subscriptions, and MCP credentials remain on their
-legacy authority until their database and permission contracts are migrated.
+mutable catalog, subscriptions, and MCP credentials remain on their legacy
+authority; public-app reviews use the separate D1 review projection.
 """
 
 from __future__ import annotations

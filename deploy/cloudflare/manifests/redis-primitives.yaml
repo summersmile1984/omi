@@ -63,7 +63,17 @@ families:
     consistency: durable-authoritative
     target: d1
     target_owner: api-core
-    migration_state: planned
+    migration_state: staging-owned
+    migrated_routes:
+      - GET /v1/approved-apps
+      - GET /v1/apps/popular
+      - GET /v1/apps/:appId
+      - POST /v1/apps/review
+      - PATCH /v1/apps/:appId/review
+      - PATCH /v1/apps/:appId/review/reply
+      - GET /v1/apps/:appId/reviews
+      - GET /v2/apps
+      - GET /v2/apps/capability/:capability_id/grouped
   - id: app-billing-entitlements
     source_symbols:
       [

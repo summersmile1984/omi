@@ -285,6 +285,58 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("keeps app review lists public and signs every review mutation", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "reviewer-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+    };
+
+    const publicList = await edge.fetch(
+      new Request("https://edge.test/v1/apps/app-1/reviews"),
+      env as never,
+    );
+    for (const [method, path] of [
+      ["POST", "/v1/apps/review?app_id=app-1"],
+      ["PATCH", "/v1/apps/app-1/review"],
+      ["PATCH", "/v1/apps/app-1/review/reply"],
+    ] as const) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    expect(publicList.status).toBe(200);
+    expect(
+      coreRequests.map((request) => new URL(request.url).pathname),
+    ).toEqual([
+      "/v1/apps/app-1/reviews",
+      "/v1/apps/review",
+      "/v1/apps/app-1/review",
+      "/v1/apps/app-1/review/reply",
+    ]);
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeNull();
+    for (const request of coreRequests.slice(1)) {
+      expect(
+        decodeAuthContext(request.headers.get("x-omi-auth-context")),
+      ).toMatchObject({ uid: "reviewer-1" });
+    }
+  });
+
   it("routes app installation state through the authenticated core worker", async () => {
     const corePaths: string[] = [];
     const env = {

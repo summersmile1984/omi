@@ -377,7 +377,7 @@ GET  /v1/app/proactive-notification-scopes
 GET  /v1/app-capabilities
 GET  /v1/app/payment-plans
                               Edge → Python API Core → static catalog metadata;
-                              mutable app records, reviews, and subscriptions remain legacy
+                              mutable app records and subscriptions remain legacy
 GET  /v1/approved-apps         Edge → Python API Core → approved public app D1 projection
 GET  /v1/apps/popular          Edge → Python API Core → popular public app D1 projection
 GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
@@ -388,6 +388,11 @@ GET  /v2/apps/search
 GET  /v1/apps/enabled          Edge → Python API Core → uid-scoped D1 install projection
 POST /v1/apps/enable           Edge → Python API Core → idempotent free-app D1 install
 POST /v1/apps/disable          Edge → Python API Core → uid-scoped D1 uninstall
+POST /v1/apps/review
+PATCH /v1/apps/{appId}/review
+PATCH /v1/apps/{appId}/review/reply
+GET  /v1/apps/{appId}/reviews
+                              Edge → Python API Core → D1 public-app reviews
 GET  /v1/config/api-keys      Edge → Python API Core → Worker client-key vars
 GET  /v1/users/transcription-preferences
 PATCH /v1/users/transcription-preferences
@@ -743,8 +748,8 @@ evidence are approved; records can be loaded with the whitelisted backfill tool.
 The app catalog metadata routes (`/v1/app-categories`,
 `/v1/app/proactive-notification-scopes`, `/v1/app-capabilities`, and
 `/v1/app/payment-plans`) are static, public responses and now run in API Core
-without D1 or external providers. Mutable app records, reviews, subscriptions,
-MCP credentials, and enable/disable side effects remain legacy-owned until
+without D1 or external providers. Mutable app records, subscriptions, MCP
+credentials, and enable/disable side effects remain legacy-owned until
 their catalog authority and user-installation state are migrated together. The
 three installation routes below are a deliberately smaller projection: they
 only accept approved public catalog rows that are free and have no external
@@ -758,7 +763,7 @@ projection is the first dynamic catalog slice. `GET /v1/apps/enabled`,
 `POST /v1/apps/enable`, and `POST /v1/apps/disable` project only the
 uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
 install counter for idempotent retries. Paid apps, private/persona apps, setup
-callbacks, app creation, reviews, subscriptions, and MCP state remain
+callbacks, app creation, subscriptions, and MCP state remain
 legacy-owned; no production cutover is implied.
 
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
@@ -768,8 +773,13 @@ the public route has no user context; clients should combine it with
 `/v1/apps/enabled`. Capability-specific grouped-category routes and the
 authenticated `/v2/apps/search` filters are also read from the same projection.
 Search only exposes approved public catalog fields and uid-scoped installed-app
-state; private apps, paid entitlements, setup callbacks, reviews, subscriptions,
-MCP state, and app-owner writes remain legacy-owned.
+state. Public-app reviews now use `cf_app_reviews`; writes update the catalog's
+rating average/count in the same D1 transaction, and catalog reads hydrate
+bounded review lists plus the signed user's own review. `owner_uid` is an
+explicit non-public catalog column, so review writes fail closed until older
+rows are backfilled. Review/reply push notifications remain an external API
+boundary. Private apps, paid entitlements, setup callbacks, subscriptions, MCP
+state, and other app-owner writes remain legacy-owned.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

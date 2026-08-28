@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from app_catalog_routes import _APP_CATEGORIES
 from app_projection_routes import _flag, _public_app
+from app_review_routes import hydrate_app_reviews
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -135,7 +136,12 @@ def _safe_external_integration(value: object) -> dict[str, object] | None:
     return {key: nested for key, nested in value.items() if key in allowed}
 
 
-def _item(app: dict[str, object], *, enabled: bool = False) -> dict[str, object]:
+def _item(
+    app: dict[str, object],
+    *,
+    enabled: bool = False,
+    include_reviews: bool = False,
+) -> dict[str, object]:
     result = {
         key: app.get(key)
         for key in (
@@ -158,6 +164,9 @@ def _item(app: dict[str, object], *, enabled: bool = False) -> dict[str, object]
     }
     result["enabled"] = enabled
     result["external_integration"] = _safe_external_integration(app.get("external_integration"))
+    if include_reviews:
+        result["reviews"] = app.get("reviews", [])
+        result["user_review"] = app.get("user_review")
     return result
 
 
@@ -166,7 +175,13 @@ def _is_notification(app: dict[str, object]) -> bool:
     if "proactive_notification" in caps:
         return True
     external = app.get("external_integration")
-    return "external_integration" in caps and isinstance(external, dict) and not external.get("auth_steps") and "chat" not in caps and "memories" not in caps
+    return (
+        "external_integration" in caps
+        and isinstance(external, dict)
+        and not external.get("auth_steps")
+        and "chat" not in caps
+        and "memories" not in caps
+    )
 
 
 def _capability(app: dict[str, object]) -> str | None:
@@ -211,11 +226,16 @@ def _pagination(total: int, offset: int, limit: int, category: str | None = None
 
 async def _read_apps(request: Request, include_reviews: bool) -> list[dict[str, object]] | JSONResponse:
     try:
-        result = await request.scope["env"].APP_DB.prepare(
-            "SELECT id, approved, disabled, is_popular, installs, rating_avg, rating_count, data_json "
-            "FROM cf_app_catalog WHERE approved = 1 AND disabled = 0 "
-            "ORDER BY is_popular DESC, installs DESC, id ASC LIMIT ?"
-        ).bind(MAX_RESULTS).all()
+        result = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                "SELECT id, approved, disabled, is_popular, installs, rating_avg, rating_count, data_json "
+                "FROM cf_app_catalog WHERE approved = 1 AND disabled = 0 "
+                "ORDER BY is_popular DESC, installs DESC, id ASC LIMIT ?"
+            )
+            .bind(MAX_RESULTS)
+            .all()
+        )
     except Exception:
         return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     rows = result.get("results", []) if isinstance(result, dict) else []
@@ -230,6 +250,20 @@ async def _read_apps(request: Request, include_reviews: bool) -> list[dict[str, 
         if app is None or _flag(app.get("private")):
             continue
         apps.append(app)
+    if include_reviews:
+        context = decode_context(
+            request.headers.get("x-omi-auth-context"),
+            request.headers.get("x-omi-internal-signature"),
+            getattr(request.scope["env"], "INTERNAL_ASSERTION_SECRET", None),
+        )
+        try:
+            await hydrate_app_reviews(
+                request.scope["env"],
+                apps,
+                current_uid=str(context["uid"]) if context else None,
+            )
+        except Exception:
+            return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     return apps
 
 
@@ -244,14 +278,21 @@ async def get_apps_v2(request: Request):
         return apps
 
     if capability:
-        filtered = [app for app in apps if (_flag(app.get("is_popular")) if capability == "popular" else _capability(app) == capability)]
+        filtered = [
+            app
+            for app in apps
+            if (_flag(app.get("is_popular")) if capability == "popular" else _capability(app) == capability)
+        ]
         sorted_apps = _sorted(filtered, popular=capability == "popular")
         return {
-            "data": [_item(app) for app in sorted_apps[offset : offset + limit]],
+            "data": [_item(app, include_reviews=include_reviews) for app in sorted_apps[offset : offset + limit]],
             "pagination": _pagination(len(sorted_apps), offset, limit, capability),
             "capability": {
                 "id": capability,
-                "title": next((item["title"] for item in GROUP_CAPABILITIES if item["id"] == capability), capability.title().replace("_", " ")),
+                "title": next(
+                    (item["title"] for item in GROUP_CAPABILITIES if item["id"] == capability),
+                    capability.title().replace("_", " "),
+                ),
             },
         }
 
@@ -259,11 +300,14 @@ async def get_apps_v2(request: Request):
         filtered = [app for app in apps if str(app.get("category") or "") == category]
         sorted_apps = _sorted(filtered)
         return {
-            "data": [_item(app) for app in sorted_apps[offset : offset + limit]],
+            "data": [_item(app, include_reviews=include_reviews) for app in sorted_apps[offset : offset + limit]],
             "pagination": _pagination(len(sorted_apps), offset, limit, category),
             "category": {
                 "id": category,
-                "title": next((item["title"] for item in _APP_CATEGORIES if item["id"] == category), category.replace("-", " ").title()),
+                "title": next(
+                    (item["title"] for item in _APP_CATEGORIES if item["id"] == category),
+                    category.replace("-", " ").title(),
+                ),
             },
         }
 
@@ -287,7 +331,7 @@ async def get_apps_v2(request: Request):
         groups.append(
             {
                 "capability": capability_item,
-                "data": [_item(app) for app in ordered[offset : offset + limit]],
+                "data": [_item(app, include_reviews=include_reviews) for app in ordered[offset : offset + limit]],
                 "pagination": _pagination(len(ordered), offset, limit, capability_id),
             }
         )
@@ -352,7 +396,7 @@ async def get_capability_apps_grouped(request: Request, capability_id: str):
                     "id": category_id,
                     "title": titles.get(category_id, category_id.replace("-", " ").title()),
                 },
-                "data": [_item(app) for app in _sorted(entries)],
+                "data": [_item(app, include_reviews=include_reviews) for app in _sorted(entries)],
                 "count": len(entries),
             }
         )
@@ -425,16 +469,17 @@ async def search_apps(request: Request):
         return apps
     uid = str(context["uid"])
     try:
-        enabled_result = await request.scope["env"].APP_DB.prepare(
-            "SELECT app_id FROM cf_user_enabled_apps WHERE uid = ?"
-        ).bind(uid).all()
+        enabled_result = (
+            await request.scope["env"]
+            .APP_DB.prepare("SELECT app_id FROM cf_user_enabled_apps WHERE uid = ?")
+            .bind(uid)
+            .all()
+        )
     except Exception:
         return JSONResponse({"error": "enabled apps unavailable"}, status_code=503)
     enabled_rows = enabled_result.get("results", []) if isinstance(enabled_result, dict) else []
     enabled_ids = {
-        str(row["app_id"])
-        for row in enabled_rows
-        if isinstance(row, dict) and isinstance(row.get("app_id"), str)
+        str(row["app_id"]) for row in enabled_rows if isinstance(row, dict) and isinstance(row.get("app_id"), str)
     }
     if my_apps:
         apps = [app for app in apps if str(app.get("uid") or "") == uid]
@@ -470,7 +515,14 @@ async def search_apps(request: Request):
         apps = sorted(apps, key=lambda app: (-int(app.get("installs") or 0), str(app.get("id") or "")))
     elif query and query.strip():
         normalized_query = query.strip().lower()
-        apps = sorted(apps, key=lambda app: (_name_match_tier(app, normalized_query), -int(app.get("installs") or 0), str(app.get("id") or "")))
+        apps = sorted(
+            apps,
+            key=lambda app: (
+                _name_match_tier(app, normalized_query),
+                -int(app.get("installs") or 0),
+                str(app.get("id") or ""),
+            ),
+        )
     else:
         apps = sorted(apps, key=lambda app: (str(app.get("name") or "").lower(), str(app.get("id") or "")))
     return {

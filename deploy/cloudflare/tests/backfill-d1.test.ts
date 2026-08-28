@@ -239,6 +239,7 @@ describe("D1 backfill SQL generator", () => {
           updated_at: "2026-08-28T10:00:00Z",
           data: {
             id: "app-1",
+            uid: "owner-1",
             name: "Example",
             capabilities: ["chat", "memories"],
             description: "Public app",
@@ -248,6 +249,8 @@ describe("D1 backfill SQL generator", () => {
     ]);
     expect(sql).toContain("cf_app_catalog");
     expect(sql).toContain("data_json");
+    expect(sql).toContain("owner_uid");
+    expect(sql).toContain("'owner-1'");
     expect(sql).toContain("ON CONFLICT(id) DO UPDATE SET approved = excluded.approved");
     expect(() => renderBackfillSql([
       {
@@ -259,6 +262,12 @@ describe("D1 backfill SQL generator", () => {
         },
       },
     ])).toThrow("private fields");
+    expect(() => renderBackfillSql([
+      {
+        table: "cf_app_catalog",
+        row: { id: "app-1", owner_uid: "", updated_at: 1, data: { id: "app-1" } },
+      },
+    ])).toThrow("owner_uid is invalid");
   });
 
   it("renders uid-scoped enabled-app projections with an idempotent composite key", () => {

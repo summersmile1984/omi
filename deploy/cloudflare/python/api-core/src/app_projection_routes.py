@@ -14,6 +14,7 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app_review_routes import hydrate_app_reviews
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -113,6 +114,16 @@ async def _read_public_apps(request: Request, *, popular: bool, include_reviews:
         if app is None:  # persona apps are intentionally absent from public catalog reads.
             continue
         apps.append(app)
+    if include_reviews:
+        context = _auth_context(request)
+        try:
+            await hydrate_app_reviews(
+                env,
+                apps,
+                current_uid=str(context["uid"]) if context else None,
+            )
+        except Exception:
+            return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     return apps
 
 
@@ -177,4 +188,8 @@ async def get_app(request: Request, app_id: str):
     if app is None or _flag(app.get("private")):
         return JSONResponse({"detail": "App not found"}, status_code=404)
     app["enabled"] = _flag(result.get("user_enabled"))
+    try:
+        await hydrate_app_reviews(env, [app], current_uid=str(context["uid"]))
+    except Exception:
+        return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     return app

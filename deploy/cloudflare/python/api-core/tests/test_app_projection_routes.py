@@ -27,11 +27,14 @@ class FakeStatement:
 
 
 class FakeDb:
-    def __init__(self, rows, first_row=None):
+    def __init__(self, rows, first_row=None, review_rows=None):
         self.rows = rows
         self.first_row = first_row
+        self.review_rows = review_rows or []
 
-    def prepare(self, _sql):
+    def prepare(self, sql):
+        if "FROM cf_app_reviews" in sql:
+            return FakeStatement(self.review_rows)
         return FakeStatement(self.rows, self.first_row)
 
 
@@ -79,6 +82,19 @@ def catalog_row(app_id: str, *, popular: int = 0, installs: int = 0, disabled: i
     }
 
 
+def review_row(app_id: str, uid: str = "catalog-user"):
+    return {
+        "app_id": app_id,
+        "reviewer_uid": uid,
+        "score": 5,
+        "review_text": "Excellent",
+        "username": "Alice",
+        "response": "Thanks",
+        "rated_at": 1,
+        "responded_at": 2,
+    }
+
+
 def test_approved_projection_filters_disabled_and_persona_apps_and_hides_reviews():
     secret = "catalog-secret"
     rows = [
@@ -98,13 +114,28 @@ def test_approved_projection_filters_disabled_and_persona_apps_and_hides_reviews
 def test_popular_projection_requires_signed_auth_and_can_include_reviews():
     secret = "catalog-secret"
     rows = [catalog_row("popular", popular=1, installs=20)]
-    env = type("Env", (), {"APP_DB": FakeDb(rows), "INTERNAL_ASSERTION_SECRET": secret})()
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb(rows, review_rows=[review_row("popular")]), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
 
     unauthorized = asyncio.run(get_popular_apps(FakeRequest(env)))
     result = asyncio.run(get_popular_apps(FakeRequest(env, signed_headers(secret), {"include_reviews": "true"})))
 
     assert unauthorized.status_code == 401
-    assert result[0]["reviews"] == [{"score": 5}]
+    assert result[0]["reviews"] == [
+        {
+            "uid": "catalog-user",
+            "rated_at": "1970-01-01T00:00:01+00:00",
+            "score": 5.0,
+            "review": "Excellent",
+            "username": "Alice",
+            "response": "Thanks",
+            "responded_at": "1970-01-01T00:00:02+00:00",
+        }
+    ]
+    assert result[0]["user_review"] == result[0]["reviews"][0]
 
 
 def test_catalog_rejects_malformed_query_and_projection_rows():
@@ -144,7 +175,8 @@ def test_single_app_requires_auth_and_returns_user_install_state_without_private
     assert result["id"] == "summary-app"
     assert result["enabled"] is True
     assert result["installs"] == 7
-    assert "reviews" not in result
+    assert result["reviews"] == []
+    assert result["user_review"] is None
 
 
 def test_single_app_hides_unavailable_rows_and_fails_closed_for_malformed_projection():

@@ -33,6 +33,7 @@ const TABLES = {
       "installs",
       "rating_avg",
       "rating_count",
+      "owner_uid",
       "data_json",
       "updated_at",
     ],
@@ -652,6 +653,15 @@ export function normalizeRow(table, input) {
       return false;
     };
     if (scan(payload)) fail("cf_app_catalog.data_json contains private fields");
+    if (normalized.owner_uid === undefined && typeof payload.uid === "string") {
+      normalized.owner_uid = payload.uid;
+    }
+    if (
+      normalized.owner_uid !== undefined &&
+      (typeof normalized.owner_uid !== "string" || normalized.owner_uid.length < 1 || normalized.owner_uid.length > 256)
+    ) {
+      fail("cf_app_catalog.owner_uid is invalid");
+    }
     if (payload.id !== undefined && payload.id !== normalized.id) {
       fail("cf_app_catalog.data_json id must match id");
     }

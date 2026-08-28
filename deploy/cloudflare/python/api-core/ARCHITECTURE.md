@@ -14,6 +14,13 @@ request reaches this Worker. Legacy workstream search/index refresh and
 candidate automation remain outside this package until their own authority and
 backfill contracts are migrated.
 
+`app_review_routes.py` owns public-app review rows and rating aggregates in the
+same D1 transaction. Catalog rows carry a non-public `owner_uid` column so
+self-review and developer-reply authorization fail closed when a legacy
+projection has not been backfilled. Catalog readers hydrate bounded review
+lists from that table; push delivery remains a separate external-provider
+boundary and is not implied by a successful D1 mutation.
+
 `memory_routes.py` is the canonical memory authority only for Better Auth
 accounts created inside the isolated Cloudflare staging profile. It provides
 uid-scoped list/create/edit/review/delete behavior in D1 and retains deletions

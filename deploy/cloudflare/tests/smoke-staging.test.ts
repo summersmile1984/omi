@@ -62,6 +62,8 @@ describe("staging smoke helpers", () => {
         ? 200
         : url.endsWith("/v1/announcements/general")
           ? 200
+          : url.endsWith("/v1/apps/cf-staging-search-app/reviews")
+            ? 200
           : url.endsWith("/v1/cf/probe")
             ? init?.headers
               ? 200
@@ -172,6 +174,7 @@ describe("staging smoke helpers", () => {
     expect(result).toEqual({
       edgeHealth: 200,
       announcementsGeneral: 200,
+      appReviews: 200,
       unauthenticatedProbe: 401,
       unauthenticatedAnnouncements: 401,
       unauthenticatedAnnouncementsAdmin: 403,
@@ -215,7 +218,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(44);
+    expect(calls).toHaveLength(45);
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
@@ -234,7 +237,8 @@ describe("staging smoke helpers", () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
       if (
         url.endsWith("/health") ||
-        url.endsWith("/v1/announcements/general")
+        url.endsWith("/v1/announcements/general") ||
+        url.endsWith("/v1/apps/cf-staging-search-app/reviews")
       ) {
         return new Response(null, { status: 200 });
       }

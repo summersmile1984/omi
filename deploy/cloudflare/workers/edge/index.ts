@@ -111,6 +111,7 @@ app.get("/v1/app/proactive-notification-scopes", proxyPublicCore);
 app.get("/v1/app-capabilities", proxyPublicCore);
 app.get("/v1/app/payment-plans", proxyPublicCore);
 app.get("/v1/approved-apps", proxyPublicCore);
+app.get("/v1/apps/:appId/reviews", proxyPublicCore);
 app.get("/v1/action-items/shared/:token", proxyPublicCore);
 app.get("/v2/messages/shared/:token", proxyPublicCore);
 
@@ -444,6 +445,9 @@ app.post("/v2/messages/share", proxyAuthenticatedCore);
 app.post("/v2/messages", proxyAuthenticatedAI);
 app.get("/v1/apps/popular", proxyAuthenticatedCore);
 app.get("/v1/apps/:appId", proxyAuthenticatedCore);
+app.post("/v1/apps/review", proxyAuthenticatedCore);
+app.patch("/v1/apps/:appId/review", proxyAuthenticatedCore);
+app.patch("/v1/apps/:appId/review/reply", proxyAuthenticatedCore);
 app.get("/v2/apps", proxyPublicCore);
 app.get("/v2/apps/capability/:capability_id/grouped", proxyPublicCore);
 app.get("/v2/apps/search", proxyAuthenticatedCore);

@@ -100,10 +100,16 @@ export async function runSmoke({
     `${base}/v1/announcements/general`,
   );
   expectStatus("public announcements", announcementsGeneral, 200);
+  const appReviews = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-staging-search-app/reviews`,
+  );
+  expectStatus("public app reviews", appReviews, 200);
 
   const result = {
     edgeHealth: health.status,
     announcementsGeneral: announcementsGeneral.status,
+    appReviews: appReviews.status,
   };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 
