@@ -112,6 +112,7 @@ app.get("/v1/app-capabilities", proxyPublicCore);
 app.get("/v1/app/payment-plans", proxyPublicCore);
 app.get("/v1/approved-apps", proxyPublicCore);
 app.get("/v1/action-items/shared/:token", proxyPublicCore);
+app.get("/v2/messages/shared/:token", proxyPublicCore);
 
 app.all("/api/better-auth/*", async (c) => {
   const id = requestId(c.req.raw);
@@ -439,6 +440,7 @@ const proxyAuthenticatedAI = async (
 app.get("/v1/config/api-keys", proxyAuthenticatedCore);
 app.get("/v2/messages", proxyAuthenticatedCore);
 app.delete("/v2/messages", proxyAuthenticatedCore);
+app.post("/v2/messages/share", proxyAuthenticatedCore);
 app.post("/v2/messages", proxyAuthenticatedAI);
 app.get("/v1/apps/popular", proxyAuthenticatedCore);
 app.get("/v1/apps/:appId", proxyAuthenticatedCore);

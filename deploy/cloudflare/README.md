@@ -429,6 +429,9 @@ PATCH /v1/users/ai-profile
                               Edge → Python API Core → D1
 GET  /v1/users/profile         Edge → Better Auth → D1
 GET/DELETE /v2/messages        Edge → Python API Core → D1 chat-history projection
+POST /v2/messages/share
+GET  /v2/messages/shared/{token}
+                              Edge → Python API Core → D1 30-day chat share
 POST /v2/messages              Edge → Python API AI → provider-gated streaming seam (503 until migrated)
 GET/POST /v1/action-items      Edge → Python API Core → D1
 GET  /v1/action-items/ids      Edge → Python API Core → D1
@@ -639,9 +642,13 @@ conversation authority moves in production.
 
 The chat history routes use an explicit uid/app-scoped D1 projection. Empty
 history returns a deterministic Worker-owned greeting, and DELETE clears only
-the selected app scope. Chat generation remains API-AI-owned and returns a
-typed provider-contract `503` until its streaming provider is migrated; this
-keeps the Edge route explicit instead of leaking a catch-all `404`.
+the selected app scope. Chat sharing stores 30-day D1 tokens and ordered message
+references beside that projection; its public route exposes only message id,
+text, sender, timestamp, and the explicit sender display name. Creating a new
+share also removes indexed expired shares so D1 preserves the legacy Redis TTL
+lifecycle. Chat generation remains API-AI-owned and returns a typed
+provider-contract `503` until its streaming provider is migrated; this keeps
+the Edge route explicit instead of leaking a catch-all `404`.
 
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging

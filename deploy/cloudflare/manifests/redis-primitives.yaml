@@ -436,9 +436,12 @@ families:
     key_patterns: ["chat_share:{token}"]
     legacy_features: [get, set, ttl]
     consistency: strongly-consistent
-    target: durable-object
+    target: d1
     target_owner: api-core
-    migration_state: planned
+    migration_state: staging-owned
+    migrated_routes:
+      - POST /v2/messages/share
+      - GET /v2/messages/shared/:token
   - id: daily-summary-lock
     source_symbols: [try_acquire_daily_summary_lock]
     key_patterns: ["users:{uid}:daily_summary_lock:{date}"]

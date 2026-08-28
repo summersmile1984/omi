@@ -174,7 +174,7 @@ describe("edge gateway", () => {
     ]);
   });
 
-  it("keeps task previews public and signs the Better Auth display name for share creation", async () => {
+  it("keeps share previews public and signs the Better Auth display name for share creation", async () => {
     const coreRequests: Request[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
@@ -194,29 +194,42 @@ describe("edge gateway", () => {
       }),
     };
 
-    const preview = await edge.fetch(
-      new Request("https://edge.test/v1/action-items/shared/public-token"),
-      env as never,
-    );
-    const share = await edge.fetch(
-      new Request("https://edge.test/v1/action-items/share", {
-        method: "POST",
-        headers: { authorization: "Bearer opaque-session" },
-      }),
-      env as never,
-    );
+    for (const path of [
+      "/v1/action-items/shared/public-token",
+      "/v2/messages/shared/public-token",
+    ]) {
+      const preview = await edge.fetch(
+        new Request(`https://edge.test${path}`),
+        env as never,
+      );
+      expect(preview.status).toBe(200);
+    }
+    for (const path of ["/v1/action-items/share", "/v2/messages/share"]) {
+      const share = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method: "POST",
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env as never,
+      );
+      expect(share.status).toBe(200);
+    }
 
-    expect(preview.status).toBe(200);
-    expect(share.status).toBe(200);
     expect(
       coreRequests.map((request) => new URL(request.url).pathname),
     ).toEqual([
       "/v1/action-items/shared/public-token",
+      "/v2/messages/shared/public-token",
       "/v1/action-items/share",
+      "/v2/messages/share",
     ]);
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeNull();
+    expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeNull();
     expect(
-      decodeAuthContext(coreRequests[1].headers.get("x-omi-auth-context")),
+      decodeAuthContext(coreRequests[2].headers.get("x-omi-auth-context")),
+    ).toMatchObject({ uid: "user-1", displayName: "Alice" });
+    expect(
+      decodeAuthContext(coreRequests[3].headers.get("x-omi-auth-context")),
     ).toMatchObject({ uid: "user-1", displayName: "Alice" });
   });
 
