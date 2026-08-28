@@ -370,6 +370,7 @@ families:
       - POST /v1/tts/synthesize
       - POST /v1/tts/synthesize-workers-ai
       - POST /v2/messages
+      - POST /v2/voice-message/transcribe
       - DELETE /v3/memories
       - DELETE /v3/memories/:memoryId
       - DELETE /v3/memories/batch

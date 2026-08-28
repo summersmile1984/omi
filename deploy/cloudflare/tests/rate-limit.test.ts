@@ -221,6 +221,7 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v1/stt/transcribe", "stt:transcribe"],
       ["POST", "/v1/stt/transcribe-async", "stt:transcribe"],
       ["POST", "/v1/stt/transcribe-workers-ai", "stt:transcribe"],
+      ["POST", "/v2/voice-message/transcribe", "stt:transcribe"],
       ["POST", "/v1/conversations/search", "conversations:search"],
       ["POST", "/v3/memories", "memories:create"],
       ["DELETE", "/v3/memories", "memories:delete_all"],

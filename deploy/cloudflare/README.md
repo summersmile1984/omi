@@ -296,6 +296,8 @@ GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
+POST /v2/voice-message/transcribe
+                              Edge → Python API AI → Workers AI binding (Web/Flutter multipart or desktop PCM)
 POST /v2/realtime/session     Edge → Python API AI → OpenAI/Gemini ephemeral token API
 POST /v2/realtime/usage       Edge → Python API AI → D1 usage projection
 POST /v1/realtime/web-ticket  Edge cookie session → 30-second signed WebSocket ticket
@@ -834,6 +836,33 @@ It does not claim the legacy multipart/diarization contract; clients must send
 the legacy segment response. The Python boundary converts the bounded request
 body to the base64 form expected by the Workers AI Whisper model, so clients do
 not need to know the binding's FFI representation.
+
+`/v2/voice-message/transcribe` is the staging Worker owner for the existing
+Web/Flutter voice-input contract. It accepts bounded multipart `files` using
+WAV, WebM, or MP4 containers plus the optional `language` field; it also keeps
+the desktop `application/octet-stream` surface for 8–48 kHz, one- or two-channel
+linear16 PCM by adding a WAV header in memory. The 10 MiB audio bound matches the
+Flutter client's existing chunk size, multiple small multipart files are
+combined in request order, and the response preserves `transcript`,
+`stt_provider`, `stt_model`, `outcome`, and optional detected `language`. Empty
+model text is a successful `expected_silence` result. Invalid containers fail
+before inference, and provider/configuration failures use the existing bounded
+transcription error shape without exposing upstream text.
+
+This route intentionally has no local codec/model process or ffmpeg dependency.
+It is not yet production-parity for user-saved language resolution, context
+keywords, the trial paywall, or the legacy daily audio-duration budget. Staging
+therefore retains the Edge `stt:transcribe` 60-request/hour guard and an explicit
+route-to-legacy rollback until those entitlement and usage authorities move to
+D1; the route must not be described as a production cutover before then.
+
+The 2026-08-28 staging release exercised this route through Edge with an
+isolated Better Auth account and a generated spoken WAV. Web-compatible
+multipart and desktop linear16 PCM both returned HTTP 200, `workers-ai`,
+`success`, language `en`, and the same non-empty transcript; an unauthenticated
+request returned HTTP 401. The permanent release smoke separately verifies the
+authenticated empty-audio 400 boundary without billable inference. All test
+account rows and generated audio were deleted after validation.
 
 `/v1/translate` preserves the standalone NLLB request/response shape while
 using the native `@cf/meta/m2m100-1.2b` binding in staging. The Worker explicitly

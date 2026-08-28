@@ -456,6 +456,7 @@ app.post("/v1/apps/enable", proxyAuthenticatedCore);
 app.post("/v1/apps/disable", proxyAuthenticatedCore);
 app.post("/v2/realtime/session", proxyAuthenticatedAI);
 app.post("/v2/realtime/usage", proxyAuthenticatedAI);
+app.post("/v2/voice-message/transcribe", proxyAuthenticatedAI);
 app.post("/v1/stt/transcribe-async", proxyAuthenticatedAsyncTranscription);
 app.get(
   "/v1/stt/transcribe-async/:jobId",

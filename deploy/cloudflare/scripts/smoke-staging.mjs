@@ -125,7 +125,10 @@ async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
     const lines = body.split(/\r?\n/);
     const dataLines = lines.filter((line) => line.startsWith("data: "));
     const doneLines = lines.filter((line) => line.startsWith("done: "));
-    if (dataLines.length === 0 || !dataLines.some((line) => line.slice(6).trim())) {
+    if (
+      dataLines.length === 0 ||
+      !dataLines.some((line) => line.slice(6).trim())
+    ) {
       throw new Error("Web to Workers AI chat returned no response data");
     }
     if (doneLines.length !== 1) {
@@ -139,7 +142,9 @@ async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
         Buffer.from(doneLines[0].slice(6).trim(), "base64").toString("utf8"),
       );
     } catch {
-      throw new Error("Web to Workers AI chat returned an invalid completion frame");
+      throw new Error(
+        "Web to Workers AI chat returned an invalid completion frame",
+      );
     }
     if (
       completedMessage?.sender !== "ai" ||
@@ -149,11 +154,10 @@ async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
       throw new Error("Web to Workers AI chat returned an invalid AI message");
     }
   } finally {
-    chatCleanup = await request(
-      fetchImpl,
-      `${webBase}/api/proxy/v2/messages`,
-      { method: "DELETE", headers: authHeaders },
-    );
+    chatCleanup = await request(fetchImpl, `${webBase}/api/proxy/v2/messages`, {
+      method: "DELETE",
+      headers: authHeaders,
+    });
     expectStatus("Workers AI chat smoke cleanup", chatCleanup, 200);
   }
   return {
@@ -580,6 +584,20 @@ export async function runSmoke({
   );
   expectStatus("Workers AI empty audio", workersAiEmpty, 400);
 
+  const voiceMessageEmpty = await request(
+    fetchImpl,
+    `${base}/v2/voice-message/transcribe`,
+    {
+      method: "POST",
+      headers: {
+        ...authHeaders,
+        "content-type": "application/octet-stream",
+      },
+      body: "",
+    },
+  );
+  expectStatus("voice-message empty audio", voiceMessageEmpty, 400);
+
   let nativeTtsResult = {};
   if (nativeTts) {
     const response = await fetchImpl(`${base}/v1/tts/synthesize-workers-ai`, {
@@ -651,6 +669,7 @@ export async function runSmoke({
     calendarOnboardingStatus: calendarOnboardingStatus.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,
+    voiceMessageEmptyAudio: voiceMessageEmpty.status,
     ...nativeTtsResult,
   };
 }

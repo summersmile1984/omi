@@ -76,6 +76,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ["POST /v1/stt/transcribe", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/stt/transcribe-workers-ai", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/stt/transcribe-async", STT_TRANSCRIBE_RATE_LIMIT],
+  ["POST /v2/voice-message/transcribe", STT_TRANSCRIBE_RATE_LIMIT],
   [
     "POST /v1/conversations/search",
     EDGE_RATE_LIMIT_POLICIES["conversations:search"],
