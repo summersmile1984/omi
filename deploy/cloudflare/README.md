@@ -1290,6 +1290,21 @@ they are not public account-management APIs. Better Auth's public
 and residual-checked all product D1/R2 namespaces before calling this final
 identity boundary.
 
+The Jobs Worker now owns the complementary signed, read-only
+`GET /internal/users/:uid/residual` product boundary. Its explicit inventory
+covers every identity-bearing column introduced by all App-D1 migrations plus
+the seven uid-scoped object prefixes currently stored in `ASSETS`. A schema
+guard fails whenever a later migration adds an identity column without adding
+it to this inventory. D1 queries are parameterized, R2 checks expose presence
+only, and any partial D1 batch or storage error returns 503 rather than an
+incomplete clean result. This does not expose or enable public account
+deletion: the destructive Queue/Workflow, mutation fence, provider cleanup,
+and final Jobs-to-Auth call remain required before Edge can own
+`DELETE /v1/users/delete-account`.
+Local workerd verification against all 51 App-D1 migrations returned 58 D1
+surfaces and seven R2 prefixes: a seeded uid row produced `empty=false`, and
+removing that row produced `empty=true` through the signed HTTP endpoint.
+
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains
 the legacy success/message shape. Its training-data notification side effect is

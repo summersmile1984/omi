@@ -26,6 +26,10 @@ import {
   reconcileSyncJobs,
   registerSyncRoutes,
 } from "./sync-local-files";
+import {
+  readAccountProductResidual,
+  validAccountDeletionUid,
+} from "./account-deletion-residual";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -59,6 +63,25 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
 }
 
 registerSyncRoutes(app, requestContext);
+
+// Account deletion remains disabled at the public Edge until the destructive
+// workflow is complete. This signed read-only boundary gives that workflow one
+// exhaustive product-D1/R2 residual check instead of duplicating table lists at
+// each deletion call site.
+app.get("/internal/users/:uid/residual", async (c) => {
+  const uid = c.req.param("uid");
+  if (!validAccountDeletionUid(uid)) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const context = await requestContext(c);
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  if (context.uid !== uid) return c.json({ error: "forbidden" }, 403);
+  try {
+    return c.json(await readAccountProductResidual(c.env, uid));
+  } catch {
+    return c.json({ error: "product_residual_unavailable" }, 503);
+  }
+});
 
 function objectPayload(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)

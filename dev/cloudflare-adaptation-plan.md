@@ -898,6 +898,13 @@ Better Auth 行，删除后 residual 非零会 fail closed；重复调用返回 
 Auth `deleteUser` 仍显式禁用，必须等 Jobs 先删除并 residual-check 产品 D1/R2 数据后，
 才能把这个内部身份删除作为最终步骤接入公开删号流程。
 
+Jobs 已补上对应的 signed、只读 product residual boundary：显式清单覆盖当前全部 App-D1
+migration 中 58 个身份列位点，以及共享 `ASSETS` bucket 中 7 个 uid-scoped 前缀；schema
+guard 会在后续 migration 新增身份列但未登记时失败。D1 batch 不完整、计数异常或 R2
+不可用均返回 503，不会把 partial scan 报成 clean。它目前只是 destructive workflow 的
+可复用验证面；公开 `DELETE /v1/users/delete-account`、删除期间 mutation fence、分批
+D1/R2 purge、外部 provider cleanup 和最终 Jobs→Auth 调用仍未开放。
+
 Firebase 身份导入也已选择性移植为 D1 tooling：导入保留 Firebase uid，只接受 password、
 Google 与 Apple authority，拒绝 disabled、phone、custom claims 和未知 provider；密码使用
 带 config fingerprint 的 Firebase scrypt envelope，Auth Worker 可验证旧 hash，并在首次
