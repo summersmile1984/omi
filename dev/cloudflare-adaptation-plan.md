@@ -815,7 +815,7 @@ conversation metadata mutations        # canonical title/starred updates through
 goal staging smoke                     # Edge → API Core → D1 goal create/list/update/progress/soft-delete; marker cleaned → verified
 folder metadata CRUD                   # D1 system/custom folder create/list/update/delete/reorder; conversation list/single/bulk move/delete use D1 projection → unit + staging verified
 conversation action-item reads         # canonical list/count from uid-scoped standalone task projection; locked rows fail closed → unit + staging verified
-- conversation photo reads             # canonical uid-scoped D1 photo projection; locked rows fail closed; legacy photo writes/subcollections remain → unit + staging candidate
+- conversation photo reads             # canonical uid-scoped D1 photo projection; locked rows fail closed; legacy photo writes/subcollections remain → unit + staging verified
 - conversation segment text edit       # canonical bounded D1 transcript edit with updated-at CAS; locked rows fail closed; legacy encryption/provider mirrors remain → unit + edge verified
 - account cutover control              # canonical D1 legacy/migrating/new/stranded control projection; missing=legacy, malformed=503; no automatic transitions → unit + edge verified
 - conversation recording existence     # canonical uid-scoped R2 head check using legacy uid/id.wav namespace; locked rows fail closed; upload/finalization/deletion remain separate → unit + staging verified
