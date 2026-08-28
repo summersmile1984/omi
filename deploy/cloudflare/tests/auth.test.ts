@@ -222,6 +222,9 @@ describe("auth worker Better Auth dev issuer", () => {
     expect(sessionRequest.headers.get("cookie")).toBe(
       "__Secure-better-auth.session_token=cookie-session",
     );
+    expect(sessionRequest.headers.get("x-internal-assertion-secret")).toBe(
+      "internal-secret",
+    );
   });
 
   it("uses the same-origin public path, D1 rate limits, and rotating ES256 keys", async () => {
@@ -240,6 +243,7 @@ describe("auth worker Better Auth dev issuer", () => {
         storage: "database",
         window: 60,
         max: 100,
+        customRules: { "/get-session": expect.any(Function) },
       },
       account: {
         encryptOAuthTokens: true,
@@ -252,6 +256,28 @@ describe("auth worker Better Auth dev issuer", () => {
         },
       },
     });
+    const getSessionRateLimit = options?.rateLimit?.customRules?.[
+      "/get-session"
+    ] as (request: Request) => false | { window: number; max: number };
+    expect(
+      getSessionRateLimit(
+        new Request("https://auth.test/api/better-auth/get-session"),
+      ),
+    ).toEqual({ window: 60, max: 100 });
+    expect(
+      getSessionRateLimit(
+        new Request("https://auth.test/api/better-auth/get-session", {
+          headers: { "x-internal-assertion-secret": "internal-secret" },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      getSessionRateLimit(
+        new Request("https://auth.test/api/better-auth/get-session", {
+          headers: { "x-internal-assertion-secret": "wrong" },
+        }),
+      ),
+    ).toEqual({ window: 60, max: 100 });
     const jwtPlugin = options?.plugins?.find((plugin) => plugin.id === "jwt");
     expect(jwtPlugin).toMatchObject({
       options: {

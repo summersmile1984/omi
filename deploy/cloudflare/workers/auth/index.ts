@@ -96,6 +96,16 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
       storage: "database",
       window: 60,
       max: 100,
+      customRules: {
+        "/get-session": (request) =>
+          env.INTERNAL_ASSERTION_SECRET &&
+          constantTimeEqual(
+            request.headers.get("x-internal-assertion-secret") || "",
+            env.INTERNAL_ASSERTION_SECRET,
+          )
+            ? false
+            : { window: 60, max: 100 },
+      },
     },
     advanced: {
       ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
@@ -260,6 +270,7 @@ app.post("/internal/verify", async (c) => {
     const token = bearerToken(c.req.raw);
     const baseURL = c.env.BETTER_AUTH_URL || new URL(c.req.url).origin;
     const sessionHeaders = new Headers({ origin: baseURL });
+    sessionHeaders.set("x-internal-assertion-secret", expected);
     if (authorization) sessionHeaders.set("authorization", authorization);
     if (cookie) sessionHeaders.set("cookie", cookie);
     const sessionRequest = new Request(
