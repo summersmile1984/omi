@@ -87,6 +87,48 @@ describe("Cloudflare migration manifests", () => {
     );
   });
 
+  it("projects prefix-owned Worker routes into the backend inventory", () => {
+    const routeManifest = {
+      routes: [
+        {
+          method: "ANY",
+          path: "/v1/users/developer/webhook/*",
+          owner: "api-core",
+          target_runtime: "python-worker",
+          protocol: "http",
+        },
+      ],
+    };
+    const inventory = {
+      version: 1,
+      source: "backend/main.py",
+      routes: [
+        {
+          method: "POST",
+          path: "/v1/users/developer/webhook/{wtype}/enable",
+          protocol: "http",
+          migration_state: "staging-owned",
+          owner: "api-core",
+          target_runtime: "python-worker",
+        },
+      ],
+    };
+
+    expect(validateBackendRouteInventory(inventory, routeManifest)).toEqual({
+      total: 1,
+      stagingOwned: 1,
+      legacyOwned: 0,
+      blocked: 0,
+    });
+
+    inventory.routes[0].migration_state = "legacy-owned";
+    inventory.routes[0].owner = "legacy";
+    inventory.routes[0].target_runtime = "legacy";
+    expect(() =>
+      validateBackendRouteInventory(inventory, routeManifest),
+    ).toThrow("already owned in routes.yaml");
+  });
+
   it("fails when a Redis source symbol or a direct Worker Redis dependency is introduced", async () => {
     const [manifest, routes] = await Promise.all([
       loadYaml("redis-primitives.yaml"),

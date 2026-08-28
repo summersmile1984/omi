@@ -172,6 +172,7 @@ export function validateBackendRouteInventory(inventory, routeManifest) {
 
   const exactOwners = new Map();
   const anyOwners = new Map();
+  const wildcardOwners = [];
   for (const route of routeManifest.routes) {
     const key = routeShape(route.method, route.path);
     const owners = route.method === "ANY" ? anyOwners : exactOwners;
@@ -179,6 +180,13 @@ export function validateBackendRouteInventory(inventory, routeManifest) {
       throw new Error(`duplicate normalized Cloudflare route shape: ${key}`);
     }
     owners.set(key, route);
+    if (route.path.endsWith("/*")) {
+      wildcardOwners.push({
+        method: route.method,
+        prefix: normalizeRoutePath(route.path.slice(0, -2)),
+        route,
+      });
+    }
   }
 
   const seen = new Set();
@@ -206,7 +214,15 @@ export function validateBackendRouteInventory(inventory, routeManifest) {
     const normalized = normalizeRoutePath(route.path);
     const owner =
       exactOwners.get(`${route.method} ${normalized}`) ||
-      anyOwners.get(`ANY ${normalized}`);
+      anyOwners.get(`ANY ${normalized}`) ||
+      wildcardOwners
+        .filter(
+          (candidate) =>
+            (candidate.method === "ANY" || candidate.method === route.method) &&
+            normalized.startsWith(`${candidate.prefix}/`),
+        )
+        .sort((left, right) => right.prefix.length - left.prefix.length)[0]
+        ?.route;
     if (route.migration_state === "staging-owned") {
       if (!owner || owner.target_runtime === "legacy") {
         throw new Error(
@@ -279,12 +295,7 @@ export function discoverRedisSourceSymbols(redisSource) {
 
 export function validateRedisPrimitiveManifest(
   manifest,
-  {
-    redisSource,
-    directCallerPaths = [],
-    workerSources = [],
-    routeManifest,
-  },
+  { redisSource, directCallerPaths = [], workerSources = [], routeManifest },
 ) {
   if (manifest?.policy?.workers_may_connect_to_redis !== false) {
     throw new Error(
