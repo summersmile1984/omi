@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { auth } from '@/lib/firebase';
+import { isBetterAuthEnabled } from '@/lib/better-auth';
 
 const inputs = [
   process.env.NEXT_PUBLIC_API_BASE_URL,
@@ -20,8 +21,9 @@ export function PublicBuildCanary() {
 
   useEffect(() => {
     setStatus(
-      inputs.every((value) => typeof value === 'string' && value.trim()) &&
-        auth.app.options.apiKey
+      (isBetterAuthEnabled && process.env.NEXT_PUBLIC_AUTH_SERVER_URL) ||
+        (inputs.every((value) => typeof value === 'string' && value.trim()) &&
+          auth.app.options.apiKey)
         ? 'ready'
         : 'missing',
     );

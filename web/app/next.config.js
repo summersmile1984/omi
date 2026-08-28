@@ -95,4 +95,24 @@ const nextConfig = {
   },
 };
 
-module.exports = nextConfig;
+// The Cloudflare/Vinext build must keep the real `cloudflare:workers` module
+// so service bindings are available at runtime. The alias is only for the
+// ordinary Node-based Next build, which has no platform module to resolve.
+if (process.env.VINEXT_BUILD !== '1') {
+  nextConfig.webpack = (config, { isServer }) => {
+    if (isServer) {
+      config.resolve.alias['cloudflare:workers'] = new URL(
+        './src/lib/cloudflare-workers-next-stub.ts',
+        import.meta.url,
+      ).pathname;
+    }
+    return config;
+  };
+  nextConfig.turbopack = {
+    resolveAlias: {
+      'cloudflare:workers': './src/lib/cloudflare-workers-next-stub.ts',
+    },
+  };
+}
+
+export default nextConfig;

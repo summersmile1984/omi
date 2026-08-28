@@ -9,7 +9,13 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dev:vinext": "vinext dev --port 3001",
+    "build:vinext": "VINEXT_BUILD=1 vinext build",
+    "build:vinext:staging": "node scripts/build-vinext-staging.mjs",
+    "start:vinext": "wrangler dev --config dist/server/wrangler.json",
+    "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json",
+    "deploy:vinext:staging": "npm run build:vinext:staging && vinext-cloudflare deploy --config dist/server/wrangler.json --skip-build"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.0",
@@ -23,6 +29,7 @@
     "@types/leaflet": "^1.9.21",
     "@types/lodash": "^4.17.13",
     "@types/three": "^0.182.0",
+    "@vinext/cloudflare": "^1.0.0-beta.6",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
@@ -40,19 +47,24 @@
     "react-force-graph-3d": "^1.29.0",
     "react-leaflet": "^5.0.0",
     "react-markdown": "^10.1.0",
+    "react-server-dom-webpack": "^19.2.8",
     "react-virtualized-auto-sizer": "^2.0.2",
     "react-window": "^2.2.3",
     "tailwind-merge": "^2.5.2",
     "three": "^0.182.0",
-    "three-spritetext": "^1.10.0"
+    "three-spritetext": "^1.10.0",
+    "vinext": "^1.0.0-beta.8"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.1",
     "@tailwindcss/typography": "^0.5.15",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/react-virtualized-auto-sizer": "^1.0.4",
     "@types/react-window": "^1.8.8",
+    "@vitejs/plugin-react": "^6.1.0",
+    "@vitejs/plugin-rsc": "^0.5.34",
     "autoprefixer": "^10.4.23",
     "eslint": "^9",
     "eslint-config-next": "^16.0.0",
@@ -60,7 +72,9 @@
     "tailwindcss": "^3.4.1",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.7",
-    "vitest": "^4.1.10"
+    "vite": "^8.2.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.127.0"
   },
   "overrides": {
     "postcss": "$postcss",
@@ -70,5 +84,6 @@
     "@babel/core": ">=7.26.0",
     "js-yaml": ">=4.1.1",
     "websocket-driver": ">=0.5.8"
-  }
+  },
+  "type": "module"
 }

@@ -54,6 +54,38 @@ npm run deploy:staging
 npm run smoke:staging
 ```
 
+### Web Worker staging
+
+The Next.js 16 app has a separate Cloudflare Worker build through vinext. It
+uses the Edge Worker for API/WebSocket traffic and the Auth Worker through a
+service binding (`AUTH`), so Better Auth requests do not make a public
+Worker-to-Worker `workers.dev` fetch. Staging is compiled in Better Auth email
+mode; the existing Firebase client path remains the default for non-staging
+builds.
+
+```bash
+cd web/app
+npm ci
+npx vinext check                 # 97% compatible; image optimization is the only partial feature
+npx tsc --noEmit
+npm test
+npm run build:vinext:staging
+npm run deploy:vinext:staging
+```
+
+The Vinext build sets `VINEXT_BUILD=1` so the Cloudflare bundle keeps the real
+`cloudflare:workers` module. The ordinary `npm run build` path aliases that
+module to a Node-only stub and remains available for the existing Next.js
+workflow.
+
+The staging deployment is `omi-web-app-staging` at
+`https://omi-web-app-staging.summersmile1984.workers.dev`. The staging build
+script pins `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_WS_BASE_URL`,
+`NEXT_PUBLIC_AUTH_MODE=better-auth`, and the Auth Worker URL; production DNS and
+production identity are not changed by this command. The `/login` page exposes
+email/password sign-up and sign-in, while OAuth remains on the Firebase path
+until its identity-linking contract is migrated and qualified.
+
 `deploy:staging` applies the isolated migrations, publishes Workers in dependency
 order, then checks Edge, Auth `/ready`, and every internal Worker `/health` before
 reporting success. A release is considered incomplete if any readiness check is

@@ -3,7 +3,7 @@
  * Connects to the Omi transcription API and streams audio data.
  */
 
-import { getIdToken, auth } from './firebase';
+import { getIdToken, getCompatCurrentUser } from './firebase';
 import { getWebDeviceIdHash } from './clientDevice';
 
 export interface TranscriptSegment {
@@ -135,7 +135,7 @@ export class TranscriptionSocket {
         throw new Error('Browser device identity is unavailable');
       }
 
-      const uid = auth.currentUser?.uid;
+      const uid = getCompatCurrentUser()?.uid;
       if (!uid) {
         throw new Error('User ID not available');
       }

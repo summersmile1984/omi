@@ -1,19 +1,33 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from 'react';
-import { User } from 'firebase/auth';
 import {
-  auth,
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  ReactNode,
+  useRef,
+  useCallback,
+} from 'react';
+import type { WebAuthUser } from '@/lib/auth-types';
+import {
   onAuthStateChange,
   signInWithGoogle,
   signInWithApple,
   signOutUser,
   getIdToken,
+  setCompatCurrentUser,
 } from '@/lib/firebase';
+import {
+  getBetterAuthToken,
+  isBetterAuthEnabled,
+  onBetterAuthStateChange,
+  signOutBetterAuth,
+} from '@/lib/better-auth';
 import { MixpanelManager } from '@/lib/analytics/mixpanel';
 
 interface AuthContextType {
-  user: User | null;
+  user: WebAuthUser | null;
   loading: boolean;
   signInWithGoogle: () => Promise<void>;
   signInWithApple: () => Promise<void>;
@@ -28,10 +42,10 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<WebAuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [isLoginPanelOpen, setIsLoginPanelOpen] = useState(false);
-  const previousUserRef = useRef<User | null>(null);
+  const previousUserRef = useRef<WebAuthUser | null>(null);
 
   const openLoginPanel = useCallback(() => setIsLoginPanelOpen(true), []);
   const closeLoginPanel = useCallback(() => setIsLoginPanelOpen(false), []);
@@ -41,26 +55,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     MixpanelManager.init();
 
     // Subscribe to auth state changes
-    const unsubscribe = onAuthStateChange((user) => {
-      setUser(user);
+    const onUser = (nextUser: WebAuthUser | null) => {
+      setCompatCurrentUser(nextUser);
+      setUser(nextUser);
       setLoading(false);
 
       // Identify user with Mixpanel when authenticated
-      if (user && !previousUserRef.current) {
-        MixpanelManager.identify(user.uid, {
-          name: user.displayName || undefined,
-          email: user.email || undefined,
+      if (nextUser && !previousUserRef.current) {
+        MixpanelManager.identify(nextUser.uid, {
+          name: nextUser.displayName || undefined,
+          email: nextUser.email || undefined,
         });
       }
 
-      previousUserRef.current = user;
-    });
+      previousUserRef.current = nextUser;
+    };
+    const unsubscribe = isBetterAuthEnabled
+      ? onBetterAuthStateChange(onUser)
+      : onAuthStateChange(onUser);
 
     return () => unsubscribe();
   }, []);
 
   const handleSignInWithGoogle = async () => {
     try {
+      if (isBetterAuthEnabled) throw new Error('Use email sign-in in Better Auth mode');
       await signInWithGoogle();
       MixpanelManager.track('Sign In Completed', { method: 'google' });
     } catch (error) {
@@ -71,6 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const handleSignInWithApple = async () => {
     try {
+      if (isBetterAuthEnabled) throw new Error('Use email sign-in in Better Auth mode');
       await signInWithApple();
       MixpanelManager.track('Sign In Completed', { method: 'apple' });
     } catch (error) {
@@ -83,7 +103,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       MixpanelManager.track('Sign Out');
       MixpanelManager.reset();
-      await signOutUser();
+      if (isBetterAuthEnabled) await signOutBetterAuth();
+      else await signOutUser();
     } catch (error) {
       console.error('Failed to sign out:', error);
       throw error;
@@ -91,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const handleGetToken = async () => {
-    return getIdToken();
+    return isBetterAuthEnabled ? getBetterAuthToken() : getIdToken();
   };
 
   const value: AuthContextType = {

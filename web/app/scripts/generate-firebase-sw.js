@@ -5,11 +5,14 @@
  * Run this before dev/build to inject Firebase config into the service worker
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 
 // Load .env.local if it exists (for local development)
-const envLocalPath = path.join(__dirname, '..', '.env.local');
+const envLocalPath = path.join(scriptDirectory, '..', '.env.local');
 if (fs.existsSync(envLocalPath)) {
   const envContent = fs.readFileSync(envLocalPath, 'utf8');
   envContent.split('\n').forEach((line) => {
@@ -22,8 +25,13 @@ if (fs.existsSync(envLocalPath)) {
   });
 }
 
-const templatePath = path.join(__dirname, '..', 'public', 'firebase-messaging-sw.js.template');
-const outputPath = path.join(__dirname, '..', 'public', 'firebase-messaging-sw.js');
+const templatePath = path.join(
+  scriptDirectory,
+  '..',
+  'public',
+  'firebase-messaging-sw.js.template',
+);
+const outputPath = path.join(scriptDirectory, '..', 'public', 'firebase-messaging-sw.js');
 
 // Read template
 let template;

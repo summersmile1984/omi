@@ -5,7 +5,9 @@
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
-  "vars": { "ALLOWED_ORIGINS": "" },
+  "vars": {
+    "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",
+  },
   "d1_databases": [
     {
       "binding": "AUTH_DB",

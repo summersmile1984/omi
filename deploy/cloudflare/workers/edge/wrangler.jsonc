@@ -13,6 +13,6 @@
     { "binding": "JOBS", "service": "omi-cf-jobs-staging" }
   ],
   "vars": {
-    "ALLOWED_ORIGINS": ""
+    "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev"
   }
 }

@@ -405,11 +405,11 @@ D1 只在领域通过以下资格检查后使用：
 
 `web/app` 当前是 Next.js 16 standalone 形态并仍使用 Firebase client/auth/messaging。处理顺序：
 
-1. 在无代码改动下运行 `npx vinext check`，记录 unsupported API、Node builtin 和 middleware/SSR 风险。
-2. 在单独 PR 执行非破坏性的 `vinext init`，保留 `next dev` 和现有测试。
-3. 先部署 Cloudflare preview/staging，不切换生产域名。
-4. Better Auth client 改造独立于 hosting 改造；不能把“Web 可部署”与“生产身份迁移”绑定成一个 PR。
-5. 保留 `NEXT_PUBLIC_API_BASE_URL` 和 `NEXT_PUBLIC_WS_BASE_URL` 的环境 profile，Cloudflare preview 使用独立 auth authority。
+1. 在无代码改动下运行 `npx vinext check`，记录 unsupported API、Node builtin 和 middleware/SSR 风险。当前报告为 97% compatible，只有图片优化是 partial，0 issues。
+2. 在独立分支执行非破坏性的 `vinext init`，保留 `next dev`、原有 Next build 和现有测试；当前 `npm run build` 与 `npm test` 均通过。
+3. 先部署 Cloudflare preview/staging，不切换生产域名。当前 Web Worker 为 `omi-web-app-staging`，部署命令为 `npm run build:vinext:staging && npm run deploy:vinext:staging`。
+4. Better Auth client 改造独立于 hosting 改造；当前 staging 使用 email/password Better Auth，通过网页 Worker 的 `AUTH` Service Binding 调 Auth Worker，不能把“Web 可部署”与“生产身份迁移”绑定成一个 PR。
+5. 保留 `NEXT_PUBLIC_API_BASE_URL` 和 `NEXT_PUBLIC_WS_BASE_URL` 的环境 profile，Cloudflare staging 使用独立 auth authority；Firebase OAuth 仍是非 staging 默认路径，待账户链接和身份连续性通过后再迁移。
 
 ### 6.12 安全与可观测性
 
@@ -834,6 +834,7 @@ calendar onboarding status/skip/reset # D1 flags only; OAuth tokens/events stay 
 calendar meeting metadata CRUD      # D1 natural-key upsert and bounded date reads; legacy conversation reader remains Firestore → staging candidate
 conversation D1 projection         # pre-transcribed uid/id upsert + bounded canonical list/count/detail/title/starred/folder/task reads with locked-row redaction; finalization/memory/search remain legacy → staging candidate
 conversation detail filters           # canonical source=omi and include_discarded query parity with uid-scoped D1 reads → unit + staging verified
+web Worker/vinext staging             # 97% vinext check, Next build, Better Auth email client, AUTH service binding, browser canary ready → HTTP/browser staging verified
 desktop realtime session/usage       # provider token mint via workers.fetch; hashed session + token-cost usage in D1 → staging candidate
 staging deploy health gate           # one command publishes six Workers, then checks Edge/Auth-ready/Core/AI/Realtime/Jobs → verified
 goal daily progress history         # D1 uid/goal/date upsert, bounded history read, uid isolation → unit verified

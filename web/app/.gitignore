@@ -1,2 +1,5 @@
 # Claude Code local files
 .claude/
+/dist/
+.vinext/
+.wrangler/

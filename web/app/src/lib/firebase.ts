@@ -1,12 +1,13 @@
 import { initializeApp, getApps } from 'firebase/app';
 import {
   getAuth,
+  type Auth,
   GoogleAuthProvider,
   OAuthProvider,
   signInWithPopup,
   signOut,
   onAuthStateChanged,
-  User,
+  type User,
 } from 'firebase/auth';
 import {
   getMessaging,
@@ -16,6 +17,8 @@ import {
   Messaging,
   MessagePayload,
 } from 'firebase/messaging';
+import type { WebAuthUser } from './auth-types';
+import { getBetterAuthToken, isBetterAuthEnabled } from './better-auth';
 
 // Firebase configuration from environment variables
 const firebaseConfig = {
@@ -28,27 +31,65 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
 };
 
-// Initialize Firebase (prevent multiple initializations)
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+const hasFirebaseConfig = [
+  firebaseConfig.apiKey,
+  firebaseConfig.authDomain,
+  firebaseConfig.projectId,
+  firebaseConfig.storageBucket,
+  firebaseConfig.messagingSenderId,
+  firebaseConfig.appId,
+].every((value) => typeof value === 'string' && value.trim().length > 0);
 
-// Initialize Firebase Auth
-export const auth = getAuth(app);
+// vinext evaluates client component dependency graphs in the Worker RSC
+// runtime. Firebase Auth is browser-only, so never call getAuth() while
+// rendering on the server. Keep the exported shape stable for client modules
+// that inspect auth.currentUser/app, while all real auth operations remain
+// browser-only.
+const isBrowser = typeof window !== 'undefined';
+const app =
+  isBrowser && hasFirebaseConfig && process.env.NEXT_PUBLIC_AUTH_MODE !== 'better-auth'
+    ? getApps().length === 0
+      ? initializeApp(firebaseConfig)
+      : getApps()[0]
+    : null;
 
-// Google Auth Provider
-const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({
+const serverSafeAuth = {
+  currentUser: null,
+  app: { options: firebaseConfig },
+} as unknown as Auth;
+
+// Initialize Firebase Auth only in the browser; the server-safe value is never
+// used for an auth operation because those operations are triggered by client
+// effects or user gestures.
+export const auth = app ? getAuth(app) : serverSafeAuth;
+
+let compatUser: WebAuthUser | null = null;
+
+export function setCompatCurrentUser(user: WebAuthUser | null): void {
+  compatUser = user;
+}
+
+export function getCompatCurrentUser(): WebAuthUser | null {
+  return compatUser || (auth.currentUser as WebAuthUser | null);
+}
+
+// Auth providers are browser-only too. Keeping them null in the Worker RSC
+// runtime avoids pulling Firebase's popup implementation into server render.
+const googleProvider = app ? new GoogleAuthProvider() : null;
+googleProvider?.setCustomParameters({
   prompt: 'select_account',
 });
 
-// Apple Auth Provider
-const appleProvider = new OAuthProvider('apple.com');
-appleProvider.addScope('email');
-appleProvider.addScope('name');
+const appleProvider = app ? new OAuthProvider('apple.com') : null;
+appleProvider?.addScope('email');
+appleProvider?.addScope('name');
 
 /**
  * Sign in with Google
  */
 export const signInWithGoogle = async (): Promise<User | null> => {
+  if (!app || !googleProvider)
+    throw new Error('Firebase authentication is not configured');
   try {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
@@ -62,6 +103,8 @@ export const signInWithGoogle = async (): Promise<User | null> => {
  * Sign in with Apple
  */
 export const signInWithApple = async (): Promise<User | null> => {
+  if (!app || !appleProvider)
+    throw new Error('Firebase authentication is not configured');
   try {
     const result = await signInWithPopup(auth, appleProvider);
     return result.user;
@@ -75,6 +118,10 @@ export const signInWithApple = async (): Promise<User | null> => {
  * Sign out the current user
  */
 export const signOutUser = async (): Promise<void> => {
+  if (!app) {
+    setCompatCurrentUser(null);
+    return;
+  }
   try {
     await signOut(auth);
   } catch (error) {
@@ -88,6 +135,7 @@ export const signOutUser = async (): Promise<void> => {
  * Always call this fresh before API requests (don't cache)
  */
 export const getIdToken = async (): Promise<string | null> => {
+  if (isBetterAuthEnabled) return getBetterAuthToken();
   const user = auth.currentUser;
   if (!user) return null;
 
@@ -104,8 +152,16 @@ export const getIdToken = async (): Promise<string | null> => {
 /**
  * Subscribe to auth state changes
  */
-export const onAuthStateChange = (callback: (user: User | null) => void) => {
-  return onAuthStateChanged(auth, callback);
+export const onAuthStateChange = (callback: (user: WebAuthUser | null) => void) => {
+  if (!app) {
+    callback(null);
+    return () => undefined;
+  }
+  return onAuthStateChanged(auth, (user) => {
+    const normalized = user as WebAuthUser | null;
+    setCompatCurrentUser(normalized);
+    callback(normalized);
+  });
 };
 
 // ============================================
@@ -136,7 +192,7 @@ export const isMessagingSupported = async (): Promise<boolean> => {
  * Returns null if messaging is not supported
  */
 export const getMessagingInstance = async (): Promise<Messaging | null> => {
-  if (typeof window === 'undefined') return null;
+  if (typeof window === 'undefined' || !app) return null;
 
   if (messagingInstance) return messagingInstance;
 
@@ -164,7 +220,9 @@ const registerServiceWorker = async (): Promise<ServiceWorkerRegistration | null
   }
 
   try {
-    const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+    const registration = await navigator.serviceWorker.register(
+      '/firebase-messaging-sw.js',
+    );
 
     // Wait for the service worker to be active
     const installingWorker = registration.installing;
@@ -298,7 +356,7 @@ export const getCurrentFCMToken = async (): Promise<string | null> => {
  * @returns Unsubscribe function
  */
 export const onForegroundMessage = async (
-  callback: (payload: MessagePayload) => void
+  callback: (payload: MessagePayload) => void,
 ): Promise<(() => void) | null> => {
   const messaging = await getMessagingInstance();
   if (!messaging) {
