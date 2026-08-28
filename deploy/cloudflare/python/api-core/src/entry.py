@@ -49,6 +49,8 @@ from app_projection_routes import router as app_projection_router
 from app_install_routes import router as app_install_router
 from app_catalog_v2_routes import router as app_catalog_v2_router
 from memory_routes import router as memory_router
+from daily_summary_routes import router as daily_summary_router
+from chat_routes import router as chat_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
@@ -65,6 +67,8 @@ app.include_router(app_install_router)
 app.include_router(app_projection_router)
 app.include_router(app_catalog_v2_router)
 app.include_router(memory_router)
+app.include_router(daily_summary_router)
+app.include_router(chat_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
 ASSET_CLEANUP_GRACE_SECONDS = 15 * 60
 ASSET_CLEANUP_BATCH_SIZE = 10

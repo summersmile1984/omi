@@ -375,6 +375,14 @@ GET  /v1/users/notification-settings
 PATCH /v1/users/notification-settings
 GET  /v1/users/daily-summary-settings
 PATCH /v1/users/daily-summary-settings
+GET  /v1/users/daily-summaries
+GET  /v1/users/daily-summaries/{summaryId}
+PATCH /v1/users/daily-summaries/{summaryId}/visibility
+DELETE /v1/users/daily-summaries/{summaryId}
+POST /v1/users/daily-summary-settings/test
+POST /v1/users/daily-summaries/{summaryId}/regenerate
+                              Edge → Python API Core → D1 daily-summary projection;
+                              generation is deterministic until the LLM/notification owner moves
 GET  /v1/users/mentor-notification-settings
 PATCH /v1/users/mentor-notification-settings
 GET  /v1/users/location-context-consent
@@ -386,6 +394,8 @@ GET  /v1/users/ai-profile
 PATCH /v1/users/ai-profile
                               Edge → Python API Core → D1
 GET  /v1/users/profile         Edge → Better Auth → D1
+GET/DELETE /v2/messages        Edge → Python API Core → D1 chat-history projection
+POST /v2/messages              Edge → Python API AI → provider-gated streaming seam (503 until migrated)
 GET/POST /v1/action-items      Edge → Python API Core → D1
 GET  /v1/action-items/ids      Edge → Python API Core → D1
 PATCH /v1/action-items/batch   Edge → Python API Core → D1
@@ -584,6 +594,18 @@ The bulk move route validates every uid-scoped conversation, rejects locked or
 missing rows, and updates all selected conversations plus folder counts in one
 D1 batch. Folder deletion side effects remain staging-only until the
 conversation authority moves in production.
+
+The chat history routes use an explicit uid/app-scoped D1 projection. Empty
+history returns a deterministic Worker-owned greeting, and DELETE clears only
+the selected app scope. Chat generation remains API-AI-owned and returns a
+typed provider-contract `503` until its streaming provider is migrated; this
+keeps the Edge route explicit instead of leaking a catch-all `404`.
+
+The daily-summary routes use an explicit D1 projection (indexed date/visibility
+plus bounded JSON fields). List/detail/delete/visibility now have a staging
+owner, while the test/regenerate route computes a deterministic summary from
+unlocked D1 conversations. Legacy LLM generation, push notification, and
+shared-summary Redis indexes remain outside this Worker boundary.
 
 The conversation routes use an explicit D1 projection (indexed metadata plus
 bounded JSON transcript/structured fields). The POST `/v1/cf/conversations`

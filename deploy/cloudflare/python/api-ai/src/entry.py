@@ -284,6 +284,28 @@ async def ai_proxy(request: Request, path: str):
     return Response(content=response_body, status_code=int(response.status), media_type=content_type)
 
 
+@app.post("/v2/messages")
+async def chat_messages(request: Request):
+    """Keep the web chat write seam explicit while its LLM owner is legacy.
+
+    History is owned by API Core/D1.  The AI Worker only claims this route when
+    a provider has been configured, and otherwise returns a typed 503 instead
+    of allowing the Edge catch-all to turn a user action into an opaque 404.
+    """
+    if not auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    if not getattr(env, "AI_API_BASE_URL", None) or not getattr(env, "AI_API_KEY", None):
+        return JSONResponse(
+            {"error": "chat provider is not configured", "reason": "provider_not_configured"},
+            status_code=503,
+        )
+    return JSONResponse(
+        {"error": "chat provider streaming contract is not migrated", "reason": "provider_contract_not_migrated"},
+        status_code=503,
+    )
+
+
 def _provider_url(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 

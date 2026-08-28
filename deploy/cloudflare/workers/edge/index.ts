@@ -404,6 +404,9 @@ const proxyAuthenticatedAI = async (
 };
 
 app.get("/v1/config/api-keys", proxyAuthenticatedCore);
+app.get("/v2/messages", proxyAuthenticatedCore);
+app.delete("/v2/messages", proxyAuthenticatedCore);
+app.post("/v2/messages", proxyAuthenticatedAI);
 app.get("/v1/apps/popular", proxyAuthenticatedCore);
 app.get("/v1/apps/:appId", proxyAuthenticatedCore);
 app.get("/v2/apps", proxyPublicCore);
@@ -580,6 +583,18 @@ app.get("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.get("/v1/users/daily-summary-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/daily-summary-settings", proxyAuthenticatedCore);
+app.get("/v1/users/daily-summaries", proxyAuthenticatedCore);
+app.get("/v1/users/daily-summaries/:summaryId", proxyAuthenticatedCore);
+app.patch(
+  "/v1/users/daily-summaries/:summaryId/visibility",
+  proxyAuthenticatedCore,
+);
+app.delete("/v1/users/daily-summaries/:summaryId", proxyAuthenticatedCore);
+app.post("/v1/users/daily-summary-settings/test", proxyAuthenticatedCore);
+app.post(
+  "/v1/users/daily-summaries/:summaryId/regenerate",
+  proxyAuthenticatedCore,
+);
 app.get("/v1/users/mentor-notification-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/mentor-notification-settings", proxyAuthenticatedCore);
 app.get("/v1/users/assistant-settings", proxyAuthenticatedCore);

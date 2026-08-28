@@ -20,6 +20,7 @@ from entry import (
     translate_workers_ai,
     tts_synthesize,
     tts_synthesize_workers_ai,
+    chat_messages,
 )  # noqa: E402
 
 
@@ -48,6 +49,25 @@ def signed_context(secret: str) -> tuple[str, str]:
 
 def test_provider_url_normalizes_slashes():
     assert _provider_url("https://asr.example.test/", "/v2/transcribe") == "https://asr.example.test/v2/transcribe"
+
+
+def test_chat_messages_fails_closed_with_typed_provider_status():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v2/messages",
+    )
+
+    response = asyncio.run(chat_messages(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "error": "chat provider is not configured",
+        "reason": "provider_not_configured",
+    }
 
 
 def test_transcribe_fails_closed_when_provider_is_missing():
