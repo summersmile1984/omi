@@ -111,7 +111,7 @@ describe("edge gateway", () => {
     ]);
   });
 
-  it("keeps approved app catalog public while guarding popular reads", async () => {
+  it("keeps approved app catalog public while guarding authenticated app reads", async () => {
     const corePaths: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
@@ -140,11 +140,27 @@ describe("edge gateway", () => {
       }),
       env as never,
     );
+    const detailUnauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/apps/summary-app"),
+      env as never,
+    );
+    const detail = await edge.fetch(
+      new Request("https://edge.test/v1/apps/summary-app", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
 
     expect(approved.status).toBe(200);
     expect(popularUnauthenticated.status).toBe(401);
     expect(popular.status).toBe(200);
-    expect(corePaths).toEqual(["/v1/approved-apps", "/v1/apps/popular"]);
+    expect(detailUnauthenticated.status).toBe(401);
+    expect(detail.status).toBe(200);
+    expect(corePaths).toEqual([
+      "/v1/approved-apps",
+      "/v1/apps/popular",
+      "/v1/apps/summary-app",
+    ]);
   });
 
   it("routes app installation state through the authenticated core worker", async () => {

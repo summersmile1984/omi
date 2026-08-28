@@ -8,12 +8,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from app_projection_routes import get_approved_apps, get_popular_apps  # noqa: E402
+from app_projection_routes import get_app, get_approved_apps, get_popular_apps  # noqa: E402
 
 
 class FakeStatement:
-    def __init__(self, rows):
+    def __init__(self, rows, first_row=None):
         self.rows = rows
+        self.first_row = first_row
 
     def bind(self, *_args):
         return self
@@ -21,13 +22,17 @@ class FakeStatement:
     async def all(self):
         return {"results": self.rows}
 
+    async def first(self):
+        return self.first_row
+
 
 class FakeDb:
-    def __init__(self, rows):
+    def __init__(self, rows, first_row=None):
         self.rows = rows
+        self.first_row = first_row
 
     def prepare(self, _sql):
-        return FakeStatement(self.rows)
+        return FakeStatement(self.rows, self.first_row)
 
 
 class FakeRequest:
@@ -38,9 +43,15 @@ class FakeRequest:
 
 
 def signed_headers(secret: str, uid: str = "catalog-user"):
-    encoded = base64.urlsafe_b64encode(
-        json.dumps({"uid": uid, "authority": "better-auth", "requestId": "catalog-test"}, separators=(",", ":")).encode()
-    ).decode().rstrip("=")
+    encoded = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {"uid": uid, "authority": "better-auth", "requestId": "catalog-test"}, separators=(",", ":")
+            ).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
     signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
     return {
         "x-omi-auth-context": encoded,
@@ -90,9 +101,7 @@ def test_popular_projection_requires_signed_auth_and_can_include_reviews():
     env = type("Env", (), {"APP_DB": FakeDb(rows), "INTERNAL_ASSERTION_SECRET": secret})()
 
     unauthorized = asyncio.run(get_popular_apps(FakeRequest(env)))
-    result = asyncio.run(
-        get_popular_apps(FakeRequest(env, signed_headers(secret), {"include_reviews": "true"}))
-    )
+    result = asyncio.run(get_popular_apps(FakeRequest(env, signed_headers(secret), {"include_reviews": "true"})))
 
     assert unauthorized.status_code == 401
     assert result[0]["reviews"] == [{"score": 5}]
@@ -113,4 +122,49 @@ def test_catalog_rejects_malformed_query_and_projection_rows():
     malformed = asyncio.run(get_approved_apps(FakeRequest(env)))
 
     assert bad_query.status_code == 400
+    assert malformed.status_code == 503
+
+
+def test_single_app_requires_auth_and_returns_user_install_state_without_private_fields():
+    secret = "catalog-secret"
+    row = {
+        **catalog_row("summary-app", installs=7),
+        "user_enabled": 1,
+    }
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=row), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+
+    unauthorized = asyncio.run(get_app(FakeRequest(env), "summary-app"))
+    result = asyncio.run(get_app(FakeRequest(env, signed_headers(secret)), "summary-app"))
+
+    assert unauthorized.status_code == 401
+    assert result["id"] == "summary-app"
+    assert result["enabled"] is True
+    assert result["installs"] == 7
+    assert "reviews" not in result
+
+
+def test_single_app_hides_unavailable_rows_and_fails_closed_for_malformed_projection():
+    secret = "catalog-secret"
+    headers = signed_headers(secret)
+    wrong_row = {**catalog_row("other-app"), "user_enabled": 0}
+    wrong_env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=wrong_row), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+    malformed_row = {**catalog_row("summary-app"), "data_json": "[]", "user_enabled": 0}
+    malformed_env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=malformed_row), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+
+    missing = asyncio.run(get_app(FakeRequest(wrong_env, headers), "summary-app"))
+    malformed = asyncio.run(get_app(FakeRequest(malformed_env, headers), "summary-app"))
+
+    assert missing.status_code == 404
     assert malformed.status_code == 503

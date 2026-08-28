@@ -405,6 +405,7 @@ const proxyAuthenticatedAI = async (
 
 app.get("/v1/config/api-keys", proxyAuthenticatedCore);
 app.get("/v1/apps/popular", proxyAuthenticatedCore);
+app.get("/v1/apps/:appId", proxyAuthenticatedCore);
 app.get("/v2/apps", proxyPublicCore);
 app.get("/v2/apps/capability/:capability_id/grouped", proxyPublicCore);
 app.get("/v2/apps/search", proxyAuthenticatedCore);

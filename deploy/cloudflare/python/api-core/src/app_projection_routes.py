@@ -20,6 +20,7 @@ router = APIRouter()
 
 MAX_APP_RESULTS = 500
 MAX_APP_PAYLOAD_BYTES = 500_000
+MAX_APP_ID_LENGTH = 256
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -84,11 +85,15 @@ async def _read_public_apps(request: Request, *, popular: bool, include_reviews:
     env = request.scope["env"]
     clause = "AND is_popular = 1" if popular else ""
     try:
-        result = await env.APP_DB.prepare(
-            "SELECT id, approved, disabled, is_popular, installs, rating_avg, rating_count, data_json "
-            f"FROM cf_app_catalog WHERE approved = 1 AND disabled = 0 {clause} "
-            "ORDER BY is_popular DESC, installs DESC, id ASC LIMIT ?"
-        ).bind(MAX_APP_RESULTS).all()
+        result = (
+            await env.APP_DB.prepare(
+                "SELECT id, approved, disabled, is_popular, installs, rating_avg, rating_count, data_json "
+                f"FROM cf_app_catalog WHERE approved = 1 AND disabled = 0 {clause} "
+                "ORDER BY is_popular DESC, installs DESC, id ASC LIMIT ?"
+            )
+            .bind(MAX_APP_RESULTS)
+            .all()
+        )
     except Exception:
         return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
 
@@ -127,3 +132,49 @@ async def get_popular_apps(request: Request):
     if isinstance(include_reviews, JSONResponse):
         return include_reviews
     return await _read_public_apps(request, popular=True, include_reviews=include_reviews)
+
+
+@router.get("/v1/apps/{app_id}")
+async def get_app(request: Request, app_id: str):
+    """Return one approved public app plus the current user's install state.
+
+    Private and unapproved apps remain on the legacy authority because the D1
+    projection intentionally contains public catalog data only.
+    """
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not app_id or len(app_id) > MAX_APP_ID_LENGTH:
+        return JSONResponse({"detail": "App not found"}, status_code=404)
+
+    env = request.scope["env"]
+    try:
+        result = (
+            await env.APP_DB.prepare(
+                "SELECT c.id, c.approved, c.disabled, c.is_popular, c.installs, "
+                "c.rating_avg, c.rating_count, c.data_json, "
+                "CASE WHEN u.app_id IS NULL THEN 0 ELSE 1 END AS user_enabled "
+                "FROM cf_app_catalog c "
+                "LEFT JOIN cf_user_enabled_apps u ON u.app_id = c.id AND u.uid = ? "
+                "WHERE c.id = ? AND c.approved = 1 AND c.disabled = 0 LIMIT 1"
+            )
+            .bind(str(context["uid"]), app_id)
+            .first()
+        )
+    except Exception:
+        return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
+
+    if not isinstance(result, dict):
+        return JSONResponse({"detail": "App not found"}, status_code=404)
+    # Retain application-level guards around the imported projection so a
+    # malformed test adapter or stale row cannot cross the visibility boundary.
+    if str(result.get("id") or "") != app_id or not _flag(result.get("approved")) or _flag(result.get("disabled")):
+        return JSONResponse({"detail": "App not found"}, status_code=404)
+    try:
+        app = _public_app(result, include_reviews=False)
+    except (TypeError, ValueError, OverflowError):
+        return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
+    if app is None or _flag(app.get("private")):
+        return JSONResponse({"detail": "App not found"}, status_code=404)
+    app["enabled"] = _flag(result.get("user_enabled"))
+    return app
