@@ -8,6 +8,7 @@ import {
   rollbackPlan,
   STAGING_WORKERS,
 } from "./deployment-state.mjs";
+import { assertAuthenticatedSmokeConfigured } from "./smoke-staging.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = resolve(root, "../../web/app");
@@ -242,6 +243,7 @@ function deployWeb() {
 console.log(
   "Cloudflare staging release: resources are isolated under omi-cf-*; no production config is loaded.",
 );
+assertAuthenticatedSmokeConfigured();
 qualifyRelease();
 const { snapshot, snapshotPath } = captureDeploymentSnapshot();
 let deploymentStarted = false;

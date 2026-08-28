@@ -34,6 +34,16 @@ export function parseTokenPayload(raw) {
   return payload.token.trim();
 }
 
+export function assertAuthenticatedSmokeConfigured(env = process.env) {
+  const direct = env.CLOUDFLARE_SMOKE_BEARER_TOKEN?.trim();
+  const tokenFile = env.CLOUDFLARE_SMOKE_TOKEN_FILE?.trim();
+  if (!direct && !tokenFile) {
+    throw new Error(
+      "staging release requires CLOUDFLARE_SMOKE_BEARER_TOKEN or CLOUDFLARE_SMOKE_TOKEN_FILE",
+    );
+  }
+}
+
 async function readOptionalBearerToken() {
   const direct = process.env.CLOUDFLARE_SMOKE_BEARER_TOKEN?.trim();
   if (direct) return direct;
@@ -191,6 +201,22 @@ export async function runSmoke({
     webProxyConversations,
     200,
   );
+  const webProxyEnabledApps = await request(
+    fetchImpl,
+    `${webBase}/api/proxy/v1/apps/enabled`,
+    { headers: authHeaders },
+  );
+  expectStatus(
+    "Web to Edge enabled apps service binding",
+    webProxyEnabledApps,
+    200,
+  );
+  const webProxyMemories = await request(
+    fetchImpl,
+    `${webBase}/api/proxy/v3/memories?limit=1&offset=0`,
+    { headers: authHeaders },
+  );
+  expectStatus("Web to Edge memories service binding", webProxyMemories, 200);
   const memories = await request(
     fetchImpl,
     `${base}/v3/memories?limit=25&offset=0`,
@@ -500,6 +526,8 @@ export async function runSmoke({
     conversations: conversations.status,
     conversationSearch: conversationSearch.status,
     webProxyConversations: webProxyConversations.status,
+    webProxyEnabledApps: webProxyEnabledApps.status,
+    webProxyMemories: webProxyMemories.status,
     memories: memories.status,
     folders: folders.status,
     conversationCount: conversationCount.status,

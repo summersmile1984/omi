@@ -152,9 +152,11 @@ smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
 `audio/mpeg` response and is opt-in.
 
 The authenticated smoke verifies unauthenticated rejection, the D1 probe, the
-conversation list/search, folder/memory shell dependencies, and the same
-conversation read through Web `/api/proxy` so a missing Web→Edge binding fails
-the release. It
+conversation list/search, folder/memory shell dependencies, and the
+conversation, enabled-app, and memory reads through Web `/api/proxy` so a
+missing Web→Edge binding fails the release. `deploy:staging` requires one of the
+two token inputs above and refuses to begin qualification when neither is
+configured; standalone `smoke:staging` may still run its public-only checks. It
 also verifies the Workers AI raw-audio input boundary with an empty body, so it
 does not invoke billable model inference; use a separate explicit audio request
 for model quality or latency qualification.

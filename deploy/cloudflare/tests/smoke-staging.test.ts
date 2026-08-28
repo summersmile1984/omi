@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertAuthenticatedSmokeConfigured,
   parseTokenPayload,
   resolveEdgeUrl,
   resolveWebUrl,
@@ -24,6 +25,22 @@ describe("staging smoke helpers", () => {
     expect(() => parseTokenPayload('{"token":""}')).toThrow("non-empty token");
   });
 
+  it("requires authenticated smoke credentials for a staging release", () => {
+    expect(() => assertAuthenticatedSmokeConfigured({})).toThrow(
+      "staging release requires",
+    );
+    expect(() =>
+      assertAuthenticatedSmokeConfigured({
+        CLOUDFLARE_SMOKE_BEARER_TOKEN: " token ",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAuthenticatedSmokeConfigured({
+        CLOUDFLARE_SMOKE_TOKEN_FILE: "/tmp/token.json",
+      }),
+    ).not.toThrow();
+  });
+
   it("checks public, auth, and billable-inference-free boundaries", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
@@ -36,6 +53,9 @@ describe("staging smoke helpers", () => {
         });
       }
       if (url.endsWith("/v1/conversations/search")) {
+        return new Response(null, { status: 200 });
+      }
+      if (url.includes("/v1/apps/enabled")) {
         return new Response(null, { status: 200 });
       }
       const status = url.endsWith("/health")
@@ -162,6 +182,8 @@ describe("staging smoke helpers", () => {
       conversations: 200,
       conversationSearch: 200,
       webProxyConversations: 200,
+      webProxyEnabledApps: 200,
+      webProxyMemories: 200,
       memories: 200,
       folders: 200,
       conversationCount: 200,
@@ -193,7 +215,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(42);
+    expect(calls).toHaveLength(44);
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
@@ -247,6 +269,45 @@ describe("staging smoke helpers", () => {
     ).rejects.toThrow("not bound to the Cloudflare data plane");
   });
 
+  it("fails when a user-facing Web API path cannot reach Edge", async () => {
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/cf/probe")) {
+        return new Response(null, { status: init?.headers ? 200 : 401 });
+      }
+      if (url.includes("/v1/announcements/pending")) {
+        return new Response(null, { status: 401 });
+      }
+      if (url.endsWith("/v1/announcements/all")) {
+        return new Response(null, { status: 403 });
+      }
+      if (url.endsWith("/v1/stt/transcribe-async")) {
+        return new Response(null, { status: 401 });
+      }
+      if (url.endsWith("/v1/account/cutover/control")) {
+        return Response.json({
+          state: "new",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        });
+      }
+      if (url.includes("/api/proxy/v1/apps/enabled")) {
+        return new Response("error code: 1042", { status: 404 });
+      }
+      return new Response(null, { status: 200 });
+    };
+
+    await expect(
+      runSmoke({
+        edgeUrl: "https://edge.example.test",
+        webUrl: "https://web.example.test",
+        token: "token",
+        fetchImpl,
+      }),
+    ).rejects.toThrow(
+      "Web to Edge enabled apps service binding expected HTTP 200, received HTTP 404",
+    );
+  });
+
   it("can opt into a real native TTS response check", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
       if (url.endsWith("/health")) return new Response(null, { status: 200 });
@@ -268,6 +329,8 @@ describe("staging smoke helpers", () => {
         });
       }
       if (url.includes("/v2/apps/search"))
+        return new Response(null, { status: 200 });
+      if (url.includes("/v1/apps/enabled"))
         return new Response(null, { status: 200 });
       if (url.includes("/v3/memories?"))
         return new Response(null, { status: 200 });
