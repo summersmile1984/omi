@@ -5,13 +5,14 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "validate:manifest": "node scripts/validate-manifests.mjs",
+    "validate:backend-routes": "cd ../../backend && scripts/openapi_runner.sh scripts/export_openapi.py --surface cloudflare-route-inventory --check ../deploy/cloudflare/manifests/backend-routes.json",
     "pretest": "npm run validate:manifest",
     "test": "vitest run",
     "test:watch": "vitest",
     "backfill:d1": "node scripts/backfill-d1.mjs",
     "benchmark:staging": "node scripts/benchmark-staging.mjs",
     "smoke:staging": "node scripts/smoke-staging.mjs",
-    "deploy:staging": "npm run validate:manifest && node scripts/deploy.mjs staging",
+    "deploy:staging": "npm run validate:backend-routes && npm run validate:manifest && node scripts/deploy.mjs staging",
     "rollback:staging": "node scripts/rollback-staging.mjs"
   },
   "dependencies": {

@@ -16,7 +16,7 @@
 
 | 项目 | 状态 | 已有证据 | 尚未闭合 |
 | --- | --- | --- | --- |
-| CF-00 清单/scaffold | 部分完成 | 188 条显式 staging 路由、13 个隔离资源、34 个 Redis family、7 个 vector namespace、9 个 R2 namespace 均有机械校验 | 与完整 backend 注册面逐条一致的最终 route-parity 门槛 |
+| CF-00 清单/scaffold | 已完成 | hermetic FastAPI 注册表确认 577 条唯一后端路由（573 HTTP、4 WebSocket，含显式 HEAD/OPTIONS）；197 条已匹配 Cloudflare staging owner，380 条显式保留 legacy owner；215 条 Cloudflare 路由、15 个隔离资源、34 个 Redis family、7 个 vector namespace、9 个 R2 namespace 均有机械校验 | 未迁路由的实现工作归入 CF-10，不再是清单未知项 |
 | CF-01 Edge | staging 已验证 | header 剥离、防重放、CORS、owner 标记、health/smoke | 生产回滚与非幂等超时的 live 证据 |
 | CF-02 Python Workers | staging 已验证 | api-core/api-ai、110+37 个 Python 测试、真实 Worker smoke；API AI 已验证跨 Worker DO binding | 生产规模 bundle/CPU/内存/cold-start/外连预算 |
 | CF-03 Better Auth | 部分完成 | 独立 D1、signup/login/session/JWT、staging 浏览器登录 | OAuth、link/delete、导入 checksum、JWKS rotation、abort/retry、生产身份连续性 |
@@ -36,7 +36,7 @@
 - Cloudflare TypeScript：15 个文件、117 个测试通过。
 - `api-core`：110 个测试通过；`api-ai`：37 个测试通过。
 - Web：7 个测试文件、25 个测试通过。
-- manifest：188 条路由、13 个 staging 资源通过校验。
+- manifest：215 条 Cloudflare 路由、577 条完整 backend 路由和 15 个 staging 资源通过校验；380 条 legacy-owned 路由成为可量化迁移队列。
 - `npm run deploy:staging`：健康检查、迁移和 smoke 全部通过；Edge health 为 200。
 - 浏览器 staging：`/recaps`、`/chat`、`/conversations`、`/memories`、`/my-apps`、`/tasks`、`/settings` 均无新的 API error/404。
 - 已验证的直接接口：daily summaries 200、messages GET/DELETE 200、未认证访问 401、未知 summary 404。

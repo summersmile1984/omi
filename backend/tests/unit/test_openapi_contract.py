@@ -66,6 +66,90 @@ def test_route_inventory_fails_when_public_route_missing_from_spec():
         export_openapi.assert_route_inventory(app, schema)
 
 
+def test_cloudflare_route_inventory_includes_http_and_websocket_routes():
+    app = _make_app()
+
+    @app.api_route('/v1/health', methods=['GET', 'HEAD'])
+    def health():
+        return {'ok': True}
+
+    @app.websocket('/v4/example')
+    async def example_socket(websocket):
+        await websocket.close()
+
+    inventory = export_openapi.build_cloudflare_route_inventory(app)
+
+    assert inventory['source'] == 'backend/main.py'
+    assert inventory['version'] == 1
+    assert {'method': 'GET', 'path': '/v1/dev/example', 'protocol': 'http'} in inventory['routes']
+    assert {'method': 'HEAD', 'path': '/v1/health', 'protocol': 'http'} in inventory['routes']
+    assert {'method': 'WEBSOCKET', 'path': '/v4/example', 'protocol': 'websocket'} in inventory['routes']
+
+
+def test_cloudflare_route_inventory_requires_explicit_new_route_classification(tmp_path):
+    inventory_path = tmp_path / 'backend-routes.json'
+    generated = {
+        'source': 'backend/main.py',
+        'version': 1,
+        'routes': [{'method': 'GET', 'path': '/v1/example', 'protocol': 'http'}],
+    }
+
+    export_openapi.write_cloudflare_route_inventory(inventory_path, generated)
+    with pytest.raises(export_openapi.OpenAPIContractError, match='unclassified Cloudflare backend routes'):
+        export_openapi.check_cloudflare_route_inventory(inventory_path, generated)
+
+    reviewed = json.loads(inventory_path.read_text())
+    reviewed['routes'][0].update({'migration_state': 'legacy-owned', 'owner': 'legacy', 'target_runtime': 'legacy'})
+    inventory_path.write_text(export_openapi.stable_cloudflare_route_inventory_json(reviewed))
+    export_openapi.check_cloudflare_route_inventory(inventory_path, generated)
+
+    changed = {
+        **generated,
+        'routes': [
+            *generated['routes'],
+            {'method': 'POST', 'path': '/v1/new', 'protocol': 'http'},
+        ],
+    }
+    with pytest.raises(export_openapi.OpenAPIContractError, match='unclassified Cloudflare backend routes'):
+        export_openapi.check_cloudflare_route_inventory(inventory_path, changed)
+
+
+def test_cloudflare_route_inventory_preserves_reviewed_ownership_on_regeneration(tmp_path):
+    inventory_path = tmp_path / 'backend-routes.json'
+    current = {
+        'source': 'backend/main.py',
+        'version': 1,
+        'routes': [
+            {
+                'method': 'GET',
+                'path': '/v1/example',
+                'protocol': 'http',
+                'migration_state': 'staging-owned',
+                'owner': 'api-core',
+                'target_runtime': 'python-worker',
+            }
+        ],
+    }
+    inventory_path.write_text(export_openapi.stable_cloudflare_route_inventory_json(current))
+
+    export_openapi.write_cloudflare_route_inventory(
+        inventory_path,
+        {
+            'source': 'backend/main.py',
+            'version': 1,
+            'routes': [
+                {'method': 'GET', 'path': '/v1/example', 'protocol': 'http'},
+                {'method': 'POST', 'path': '/v1/new', 'protocol': 'http'},
+            ],
+        },
+    )
+
+    regenerated = json.loads(inventory_path.read_text())
+    assert regenerated['routes'][0]['migration_state'] == 'staging-owned'
+    assert regenerated['routes'][0]['owner'] == 'api-core'
+    assert regenerated['routes'][1]['migration_state'] == 'unclassified'
+
+
 def test_public_like_route_must_be_documented_or_allowlisted():
     app = _make_app()
 

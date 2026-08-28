@@ -373,6 +373,11 @@ checks:
     triggers: ["backend/**/*.py", "backend/route_policy_manifest.yaml", "backend/route_policy_legacy_missing_routes.txt", "backend/scripts/check_route_policy_baseline.py"]
     lanes: ["local", "ci"]
     reason: "new backend routes must declare reviewed policy instead of growing the legacy baseline"
+  - id: cloudflare-backend-route-inventory
+    command: ["backend/scripts/openapi_runner.sh", "scripts/export_openapi.py", "--surface", "cloudflare-route-inventory", "--check", "../deploy/cloudflare/manifests/backend-routes.json"]
+    triggers: ["backend/**/*.py", "backend/openapi-requirements.txt", "backend/scripts/export_openapi.py", "backend/scripts/openapi_runner.sh", "deploy/cloudflare/manifests/backend-routes.json", "deploy/cloudflare/manifests/routes.yaml", ".github/checks-manifest.yaml"]
+    lanes: ["local", "ci"]
+    reason: "the 2026-08-29 staging conversation API 404 incident showed that migrated-only routing could not detect an unclassified backend route"
   - id: firestore-index-manifest
     command: ["python3", "backend/scripts/generate_firestore_indexes.py"]
     triggers: ["firestore.indexes.json", "backend/database/firestore_index_registry.py", "backend/scripts/generate_firestore_indexes.py"]

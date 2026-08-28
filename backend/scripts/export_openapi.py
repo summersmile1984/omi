@@ -30,7 +30,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.openapi.utils import get_openapi
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -39,6 +39,7 @@ E2E_DIR = BACKEND_DIR / 'testing' / 'e2e'
 DEFAULT_SPEC_PATH = ROOT_DIR / 'docs' / 'api-reference' / 'openapi.json'
 DEFAULT_APP_CLIENT_SPEC_PATH = ROOT_DIR / 'docs' / 'api-reference' / 'app-client-openapi.json'
 DEFAULT_INTEGRATION_PUBLIC_SPEC_PATH = ROOT_DIR / 'docs' / 'api-reference' / 'integration-public-openapi.json'
+DEFAULT_CLOUDFLARE_ROUTE_INVENTORY_PATH = ROOT_DIR / 'deploy' / 'cloudflare' / 'manifests' / 'backend-routes.json'
 
 DOCUMENTED_PUBLIC_PREFIXES = ('/v1/dev/',)
 INTEGRATION_PUBLIC_PATHS = (
@@ -274,6 +275,8 @@ APP_CLIENT_PUBLIC_PATHS = frozenset(
 )
 
 HTTP_METHODS = {'GET', 'POST', 'PUT', 'PATCH', 'DELETE'}
+ROUTE_INVENTORY_HTTP_METHODS = HTTP_METHODS | {'HEAD', 'OPTIONS'}
+ROUTE_INVENTORY_STATES = {'unclassified', 'legacy-owned', 'staging-owned', 'blocked'}
 
 OPENAPI_TITLE = 'Omi Developer API'
 APP_CLIENT_OPENAPI_TITLE = 'Omi App Client API'
@@ -645,7 +648,11 @@ def generate_openapi(surface: str) -> dict[str, Any]:
             import main as backend_main
 
             relink_imported_service_singletons(fake_firestore, fake_redis, get_mock_firestore, get_fake_redis)
-            schema = build_openapi(backend_main.app, surface)
+            schema = (
+                build_cloudflare_route_inventory(backend_main.app)
+                if surface == 'cloudflare-route-inventory'
+                else build_openapi(backend_main.app, surface)
+            )
 
             if network_attempts:
                 raise OpenAPIContractError(
@@ -674,6 +681,34 @@ def iter_route_keys(routes: Iterable[Any]) -> list[tuple[str, str]]:
         for method in sorted((route.methods or set()) & HTTP_METHODS):
             keys.append(route_key(method, route.path))
     return sorted(set(keys))
+
+
+def build_cloudflare_route_inventory(app) -> dict[str, Any]:
+    """Return the complete registered HTTP and WebSocket service surface.
+
+    Unlike the public/app-client OpenAPI documents, this inventory is not a
+    client contract.  It is the migration boundary used to prove that every
+    backend route is either owned by a Cloudflare staging worker, explicitly
+    retained by the legacy backend, or blocked with a reviewed reason.
+    """
+
+    routes: list[dict[str, str]] = []
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            for method in sorted((route.methods or set()) & ROUTE_INVENTORY_HTTP_METHODS):
+                routes.append({'method': method, 'path': route.path, 'protocol': 'http'})
+        elif isinstance(route, APIWebSocketRoute):
+            routes.append({'method': 'WEBSOCKET', 'path': route.path, 'protocol': 'websocket'})
+
+    routes = [
+        {'method': method, 'path': path, 'protocol': protocol}
+        for method, path, protocol in sorted({(item['method'], item['path'], item['protocol']) for item in routes})
+    ]
+    return {
+        'source': 'backend/main.py',
+        'version': 1,
+        'routes': routes,
+    }
 
 
 def is_public_contract_path(path: str) -> bool:
@@ -998,6 +1033,125 @@ def write_spec(path: Path, generated: str) -> None:
     path.write_text(generated)
 
 
+def route_inventory_key(route: dict[str, Any]) -> tuple[str, str, str]:
+    return str(route.get('method') or ''), str(route.get('path') or ''), str(route.get('protocol') or '')
+
+
+def normalize_cloudflare_route_inventory(
+    generated: dict[str, Any], current: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Merge reviewed ownership into a freshly generated backend route set.
+
+    New routes deliberately remain ``unclassified``.  Regenerating the file is
+    therefore not enough to make the gate pass: the author must choose an owner
+    and target runtime for every newly registered route.
+    """
+
+    reviewed = {}
+    if isinstance(current, dict):
+        for route in current.get('routes', []):
+            if isinstance(route, dict):
+                reviewed[route_inventory_key(route)] = route
+
+    routes = []
+    for route in generated.get('routes', []):
+        key = route_inventory_key(route)
+        existing = reviewed.get(key, {})
+        routes.append(
+            {
+                **route,
+                'migration_state': existing.get('migration_state', 'unclassified'),
+                'owner': existing.get('owner', 'unclassified'),
+                'target_runtime': existing.get('target_runtime', 'unclassified'),
+            }
+        )
+    return {
+        'source': generated.get('source'),
+        'version': generated.get('version'),
+        'routes': routes,
+    }
+
+
+def validate_cloudflare_route_inventory(inventory: dict[str, Any]) -> None:
+    if inventory.get('version') != 1 or inventory.get('source') != 'backend/main.py':
+        raise OpenAPIContractError('Cloudflare route inventory has an unsupported version or source')
+    routes = inventory.get('routes')
+    if not isinstance(routes, list) or not routes:
+        raise OpenAPIContractError('Cloudflare route inventory must contain routes')
+
+    seen: set[tuple[str, str, str]] = set()
+    unclassified = []
+    for route in routes:
+        if not isinstance(route, dict):
+            raise OpenAPIContractError('Cloudflare route inventory contains a non-object route')
+        key = route_inventory_key(route)
+        if not all(key):
+            raise OpenAPIContractError('Cloudflare route inventory route is missing method/path/protocol')
+        if key in seen:
+            raise OpenAPIContractError(f'duplicate Cloudflare route inventory entry: {key[0]} {key[1]}')
+        seen.add(key)
+        state = route.get('migration_state')
+        if state not in ROUTE_INVENTORY_STATES:
+            raise OpenAPIContractError(f'unsupported Cloudflare route migration state for {key[0]} {key[1]}: {state}')
+        owner = route.get('owner')
+        target_runtime = route.get('target_runtime')
+        if not isinstance(owner, str) or not owner or not isinstance(target_runtime, str) or not target_runtime:
+            raise OpenAPIContractError(f'Cloudflare route inventory route lacks owner/runtime: {key[0]} {key[1]}')
+        if state == 'unclassified':
+            unclassified.append(f'{key[0]} {key[1]}')
+        elif state == 'legacy-owned' and (owner != 'legacy' or target_runtime != 'legacy'):
+            raise OpenAPIContractError(f'legacy route must retain legacy owner/runtime: {key[0]} {key[1]}')
+        elif state == 'staging-owned' and (owner == 'legacy' or target_runtime in {'legacy', 'blocked'}):
+            raise OpenAPIContractError(f'staging route must name a Worker owner/runtime: {key[0]} {key[1]}')
+        elif state == 'blocked' and target_runtime != 'blocked':
+            raise OpenAPIContractError(f'blocked route must use blocked target_runtime: {key[0]} {key[1]}')
+    if unclassified:
+        raise OpenAPIContractError('unclassified Cloudflare backend routes: ' + ', '.join(unclassified))
+
+
+def stable_cloudflare_route_inventory_json(inventory: dict[str, Any]) -> str:
+    """Keep the large generated route list reviewable at one route per line."""
+
+    lines = ['{', '  "routes": [']
+    routes = inventory.get('routes', [])
+    for index, route in enumerate(routes):
+        suffix = ',' if index < len(routes) - 1 else ''
+        lines.append('    ' + json.dumps(route, sort_keys=True, ensure_ascii=False) + suffix)
+    lines.extend(
+        [
+            '  ],',
+            f'  "source": {json.dumps(inventory.get("source"), ensure_ascii=False)},',
+            f'  "version": {json.dumps(inventory.get("version"), ensure_ascii=False)}',
+            '}',
+        ]
+    )
+    return '\n'.join(lines) + '\n'
+
+
+def write_cloudflare_route_inventory(path: Path, generated: dict[str, Any]) -> None:
+    current = None
+    if path.exists():
+        try:
+            current = json.loads(path.read_text())
+        except (OSError, ValueError):
+            current = None
+    write_spec(path, stable_cloudflare_route_inventory_json(normalize_cloudflare_route_inventory(generated, current)))
+
+
+def check_cloudflare_route_inventory(path: Path, generated: dict[str, Any]) -> None:
+    hint = regenerate_hint(path, 'cloudflare-route-inventory')
+    if not path.exists():
+        raise OpenAPIContractError(f'{path} does not exist; run {hint}')
+    try:
+        current = json.loads(path.read_text())
+    except (OSError, ValueError) as error:
+        raise OpenAPIContractError(f'{path} is not valid JSON: {error}') from error
+    normalized = normalize_cloudflare_route_inventory(generated, current)
+    validate_cloudflare_route_inventory(normalized)
+    if path.read_text() != stable_cloudflare_route_inventory_json(normalized):
+        raise OpenAPIContractError(f'{path} is stale; run {hint}')
+
+
 def regenerate_hint(path: Path, surface: str) -> str:
     """The exact command that regenerates `path`.
 
@@ -1024,7 +1178,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Export or verify an Omi OpenAPI contract.')
     parser.add_argument(
         '--surface',
-        choices=('public', 'app-client', 'integration-public'),
+        choices=('public', 'app-client', 'integration-public', 'cloudflare-route-inventory'),
         default='public',
         help='contract surface to export; defaults to public Developer API',
     )
@@ -1049,6 +1203,8 @@ def default_spec_path(surface: str) -> Path:
         return DEFAULT_APP_CLIENT_SPEC_PATH
     if surface == 'integration-public':
         return DEFAULT_INTEGRATION_PUBLIC_SPEC_PATH
+    if surface == 'cloudflare-route-inventory':
+        return DEFAULT_CLOUDFLARE_ROUTE_INVENTORY_PATH
     raise OpenAPIContractError(f'unknown OpenAPI surface: {surface}')
 
 
@@ -1061,16 +1217,23 @@ def resolve_spec_path(surface: str, raw_path: str) -> Path:
 def main() -> int:
     args = parse_args()
     try:
-        generated = stable_json(generate_openapi(args.surface))
+        contract = generate_openapi(args.surface)
+        generated = stable_json(contract)
         if args.print:
             sys.stdout.write(generated)
         elif args.write is not None:
             path = resolve_spec_path(args.surface, args.write)
-            write_spec(path, generated)
+            if args.surface == 'cloudflare-route-inventory':
+                write_cloudflare_route_inventory(path, contract)
+            else:
+                write_spec(path, generated)
             print(f'wrote {path}')
         elif args.check is not None:
             path = resolve_spec_path(args.surface, args.check)
-            check_spec(path, generated, surface=args.surface)
+            if args.surface == 'cloudflare-route-inventory':
+                check_cloudflare_route_inventory(path, contract)
+            else:
+                check_spec(path, generated, surface=args.surface)
             print(f'{path} is up to date')
         return 0
     except OpenAPIContractError as e:

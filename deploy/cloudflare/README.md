@@ -54,7 +54,16 @@ resources and never mutates existing Omi Workers.
 
 ## Migration inventories
 
-Three reviewed manifests keep the remaining legacy infrastructure explicit:
+Four reviewed inventories keep the remaining legacy infrastructure explicit:
+
+- `manifests/backend-routes.json` is generated from the hermetically imported
+  FastAPI app and records every registered HTTP and WebSocket route. Each entry
+  must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
+  after a new backend route leaves it `unclassified` and fails the OpenAPI CI
+  gate. The current inventory contains 577 backend routes: 197 already match a
+  Cloudflare staging owner and 380 remain legacy-owned. This guard was added
+  after the 2026-08-29 staging conversation-page API 404 incident exposed that
+  the migrated-only route manifest could not prove complete backend coverage.
 
 - `manifests/redis-primitives.yaml` assigns every public helper in
   `backend/database/redis_db.py` and every direct production Redis client caller
@@ -69,9 +78,21 @@ Three reviewed manifests keep the remaining legacy infrastructure explicit:
   forbids dual-write cutovers and requires residual scans before deletion.
 
 `npm run validate:manifest` checks these inventories against current backend
-source. A new Redis helper/direct client, Pinecone namespace, storage bucket, or
-Worker-side Redis dependency fails before tests run. Inventory-only targets are
-not provisioned resources and do not imply a production cutover.
+source. The preflight/deploy route check separately imports `backend/main.py`
+with the pinned OpenAPI runner and checks that `backend-routes.json` is current.
+A new route, Redis helper/direct client, Pinecone namespace, storage bucket, or
+Worker-side Redis dependency therefore fails before release. Refresh a
+deliberately changed route surface with:
+
+```bash
+backend/scripts/openapi_runner.sh scripts/export_openapi.py \
+  --surface cloudflare-route-inventory \
+  --write ../deploy/cloudflare/manifests/backend-routes.json
+```
+
+Then assign the new entries an explicit owner/runtime; the generated
+`unclassified` state cannot pass the check. Inventory-only targets are not
+provisioned resources and do not imply a production cutover.
 
 ## Commands
 

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import YAML from "yaml";
 import {
   validateManifests,
+  validateBackendRouteInventory,
   validateR2NamespaceManifest,
   validateRedisPrimitiveManifest,
   validateRouteManifest,
@@ -34,14 +35,56 @@ describe("Cloudflare migration manifests", () => {
       loadYaml("vector-namespaces.yaml"),
       loadYaml("r2-namespaces.yaml"),
     ]);
+    const backendRoutes = JSON.parse(
+      await readFile(
+        resolve(cloudflareRoot, "manifests/backend-routes.json"),
+        "utf8",
+      ),
+    );
 
     await expect(validateManifests()).resolves.toEqual({
       routes: routes.routes.length,
+      backendRoutes: backendRoutes.routes.length,
+      legacyBackendRoutes: backendRoutes.routes.filter(
+        (route) => route.migration_state === "legacy-owned",
+      ).length,
       resources: resources.resources.length,
       redisFamilies: redis.families.length,
       vectorNamespaces: vector.namespaces.length,
       r2Namespaces: r2.namespaces.length,
     });
+  });
+
+  it("requires every registered backend route to retain an explicit migration owner", async () => {
+    const [routes, backendRoutes] = await Promise.all([
+      loadYaml("routes.yaml"),
+      readFile(
+        resolve(cloudflareRoot, "manifests/backend-routes.json"),
+        "utf8",
+      ).then(JSON.parse),
+    ]);
+
+    const counts = validateBackendRouteInventory(backendRoutes, routes);
+    expect(counts.total).toBe(backendRoutes.routes.length);
+    expect(counts.stagingOwned).toBeGreaterThan(0);
+    expect(counts.legacyOwned).toBeGreaterThan(0);
+
+    const unclassified = structuredClone(backendRoutes);
+    unclassified.routes[0].migration_state = "unclassified";
+    expect(() => validateBackendRouteInventory(unclassified, routes)).toThrow(
+      "unsupported migration_state",
+    );
+
+    const stale = structuredClone(backendRoutes);
+    const owned = stale.routes.find(
+      (route) => route.migration_state === "staging-owned",
+    );
+    owned.migration_state = "legacy-owned";
+    owned.owner = "legacy";
+    owned.target_runtime = "legacy";
+    expect(() => validateBackendRouteInventory(stale, routes)).toThrow(
+      "already owned in routes.yaml",
+    );
   });
 
   it("fails when a Redis source symbol or a direct Worker Redis dependency is introduced", async () => {

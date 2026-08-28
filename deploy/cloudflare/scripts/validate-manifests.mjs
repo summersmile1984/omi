@@ -53,9 +53,15 @@ const ALLOWED_R2_STATES = new Set([
   "production-owned",
   "blocked",
 ]);
+const ALLOWED_BACKEND_ROUTE_STATES = new Set([
+  "legacy-owned",
+  "staging-owned",
+  "blocked",
+]);
 const SKIPPED_SOURCE_DIRECTORIES = new Set([
   "node_modules",
   ".venv",
+  ".openapi-venv",
   ".venv-workers",
   "python_modules",
   "__pycache__",
@@ -144,6 +150,102 @@ export function validateRouteManifest(routeManifest, edgeSource) {
     }
   }
   return routes.length;
+}
+
+function normalizeRoutePath(path) {
+  return path.replace(/\{[^}]+\}/g, ":segment").replace(/:[^/]+/g, ":segment");
+}
+
+function routeShape(method, path) {
+  return `${method} ${normalizeRoutePath(path)}`;
+}
+
+export function validateBackendRouteInventory(inventory, routeManifest) {
+  if (inventory?.version !== 1 || inventory?.source !== "backend/main.py") {
+    throw new Error(
+      "backend-routes.json must declare version 1 and backend/main.py source",
+    );
+  }
+  if (!Array.isArray(inventory.routes) || inventory.routes.length === 0) {
+    throw new Error("backend-routes.json must contain routes");
+  }
+
+  const exactOwners = new Map();
+  const anyOwners = new Map();
+  for (const route of routeManifest.routes) {
+    const key = routeShape(route.method, route.path);
+    const owners = route.method === "ANY" ? anyOwners : exactOwners;
+    if (owners.has(key)) {
+      throw new Error(`duplicate normalized Cloudflare route shape: ${key}`);
+    }
+    owners.set(key, route);
+  }
+
+  const seen = new Set();
+  const counts = { total: 0, stagingOwned: 0, legacyOwned: 0, blocked: 0 };
+  for (const route of inventory.routes) {
+    requiredString(route.method, "backend route is missing method");
+    requiredString(route.path, "backend route is missing path");
+    requiredString(route.protocol, "backend route is missing protocol");
+    requiredString(route.owner, "backend route is missing owner");
+    requiredString(
+      route.target_runtime,
+      "backend route is missing target_runtime",
+    );
+    if (!ALLOWED_BACKEND_ROUTE_STATES.has(route.migration_state)) {
+      throw new Error(
+        `backend route has unsupported migration_state: ${route.method} ${route.path} ${route.migration_state}`,
+      );
+    }
+    const identity = `${route.method} ${route.path} ${route.protocol}`;
+    if (seen.has(identity)) {
+      throw new Error(`duplicate backend route inventory entry: ${identity}`);
+    }
+    seen.add(identity);
+
+    const normalized = normalizeRoutePath(route.path);
+    const owner =
+      exactOwners.get(`${route.method} ${normalized}`) ||
+      anyOwners.get(`ANY ${normalized}`);
+    if (route.migration_state === "staging-owned") {
+      if (!owner || owner.target_runtime === "legacy") {
+        throw new Error(
+          `staging-owned backend route is absent from routes.yaml: ${route.method} ${route.path}`,
+        );
+      }
+      if (
+        route.owner !== owner.owner ||
+        route.target_runtime !== owner.target_runtime ||
+        route.protocol !== owner.protocol
+      ) {
+        throw new Error(
+          `backend route ownership disagrees with routes.yaml: ${route.method} ${route.path}`,
+        );
+      }
+      counts.stagingOwned += 1;
+    } else if (route.migration_state === "legacy-owned") {
+      if (owner && owner.target_runtime !== "legacy") {
+        throw new Error(
+          `legacy backend route is already owned in routes.yaml: ${route.method} ${route.path}`,
+        );
+      }
+      if (route.owner !== "legacy" || route.target_runtime !== "legacy") {
+        throw new Error(
+          `legacy backend route must retain legacy owner/runtime: ${route.method} ${route.path}`,
+        );
+      }
+      counts.legacyOwned += 1;
+    } else {
+      if (route.target_runtime !== "blocked") {
+        throw new Error(
+          `blocked backend route must use blocked target_runtime: ${route.method} ${route.path}`,
+        );
+      }
+      counts.blocked += 1;
+    }
+    counts.total += 1;
+  }
+  return counts;
 }
 
 export function validateResourceManifest(resourceManifest) {
@@ -578,6 +680,10 @@ async function loadYaml(path) {
   return YAML.parse(await readFile(path, "utf8"));
 }
 
+async function loadJson(path) {
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
 async function discoverDirectRedisCallers() {
   const backendRoot = resolve(repoRoot, "backend");
   const files = (await walkFiles(backendRoot)).filter((path) => {
@@ -639,6 +745,7 @@ export async function validateManifests() {
     redisManifest,
     vectorManifest,
     r2Manifest,
+    backendRouteInventory,
     edgeSource,
     redisSource,
     storageSource,
@@ -648,6 +755,7 @@ export async function validateManifests() {
     loadYaml(resolve(root, "manifests/redis-primitives.yaml")),
     loadYaml(resolve(root, "manifests/vector-namespaces.yaml")),
     loadYaml(resolve(root, "manifests/r2-namespaces.yaml")),
+    loadJson(resolve(root, "manifests/backend-routes.json")),
     readFile(resolve(root, "workers/edge/index.ts"), "utf8"),
     readFile(resolve(repoRoot, "backend/database/redis_db.py"), "utf8"),
     readFile(resolve(repoRoot, "backend/utils/other/storage.py"), "utf8"),
@@ -662,8 +770,14 @@ export async function validateManifests() {
     loadWorkerSources(),
   ]);
 
+  const backendRoutes = validateBackendRouteInventory(
+    backendRouteInventory,
+    routeManifest,
+  );
   const counts = {
     routes: validateRouteManifest(routeManifest, edgeSource),
+    backendRoutes: backendRoutes.total,
+    legacyBackendRoutes: backendRoutes.legacyOwned,
     resources: validateResourceManifest(resourceManifest),
     redisFamilies: validateRedisPrimitiveManifest(redisManifest, {
       redisSource,
@@ -678,7 +792,8 @@ export async function validateManifests() {
     r2Namespaces: validateR2NamespaceManifest(r2Manifest, storageSource),
   };
   console.log(
-    `Manifest validation passed: ${counts.routes} routes, ${counts.resources} staging resources, ` +
+    `Manifest validation passed: ${counts.routes} Cloudflare routes, ${counts.backendRoutes} backend routes ` +
+      `(${counts.legacyBackendRoutes} legacy-owned), ${counts.resources} staging resources, ` +
       `${counts.redisFamilies} Redis families, ${counts.vectorNamespaces} vector namespaces, ` +
       `${counts.r2Namespaces} R2 namespaces.`,
   );
