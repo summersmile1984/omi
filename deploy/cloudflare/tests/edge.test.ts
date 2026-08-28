@@ -18,6 +18,34 @@ describe("edge gateway", () => {
     });
   });
 
+  it("routes static app catalog metadata through the public core worker", async () => {
+    const paths: string[] = [];
+    const env = {
+      API_CORE: service((request) => {
+        paths.push(new URL(request.url).pathname);
+        return Response.json([]);
+      }),
+    };
+    for (const path of [
+      "/v1/app-categories",
+      "/v1/app/proactive-notification-scopes",
+      "/v1/app-capabilities",
+      "/v1/app/payment-plans",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(paths).toEqual([
+      "/v1/app-categories",
+      "/v1/app/proactive-notification-scopes",
+      "/v1/app-capabilities",
+      "/v1/app/payment-plans",
+    ]);
+  });
+
   it("strips caller auth headers before forwarding verified context", async () => {
     let forwarded: Headers | undefined;
     const env = {

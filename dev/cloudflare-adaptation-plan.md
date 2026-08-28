@@ -808,6 +808,7 @@ native Workers AI TTS POST              # Aura-1 raw MP3 through Edge → HTTP 2
 native Workers AI embeddings POST      # BGE text batch, 768-dimension vectors → HTTP 200
 action-item CRUD                       # D1 uid-scoped create/list/update/complete/delete + batch/reconciliation + Reminders sync projections → verified
 announcements                           # D1 changelog/feature/general + pending targeting + per-user dismiss → unit verified
+static app catalog metadata             # categories/capabilities/notification scopes/payment-plan options; no state or provider dependency → unit + staging verified
 people metadata CRUD                   # D1 uid/name-scoped create/list/rename/delete; speech samples stay legacy → verified
 goal metadata CRUD                     # D1 uid-scoped current/all/create/read/update/progress/soft-delete → verified
 goal detail projection                 # bounded uid-scoped goal/workstream/task/progress-event composition → verified

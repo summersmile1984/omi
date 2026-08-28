@@ -259,6 +259,12 @@ GET  /v1/announcements/{announcementId}
 POST /v1/announcements
 PUT/DELETE /v1/announcements/{announcementId}
                               Edge → Python API Core → D1 (admin secret)
+GET  /v1/app-categories
+GET  /v1/app/proactive-notification-scopes
+GET  /v1/app-capabilities
+GET  /v1/app/payment-plans
+                              Edge → Python API Core → static catalog metadata;
+                              mutable app records, reviews, and subscriptions remain legacy
 GET  /v1/config/api-keys      Edge → Python API Core → Worker client-key vars
 GET  /v1/users/transcription-preferences
 PATCH /v1/users/transcription-preferences

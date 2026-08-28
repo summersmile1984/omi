@@ -47,6 +47,10 @@ app.get("/v1/announcements/:announcementId", proxyPublicCore);
 app.post("/v1/announcements", proxyPublicCore);
 app.put("/v1/announcements/:announcementId", proxyPublicCore);
 app.delete("/v1/announcements/:announcementId", proxyPublicCore);
+app.get("/v1/app-categories", proxyPublicCore);
+app.get("/v1/app/proactive-notification-scopes", proxyPublicCore);
+app.get("/v1/app-capabilities", proxyPublicCore);
+app.get("/v1/app/payment-plans", proxyPublicCore);
 
 app.all("/api/auth/*", async (c) => {
   const id = requestId(c.req.raw);
