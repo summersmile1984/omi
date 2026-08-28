@@ -1,68 +1,23 @@
 import type { WebAuthUser } from './auth-types';
 
-const TOKEN_STORAGE_KEY = 'omi.better-auth.bearer-token';
-const isBrowser = typeof window !== 'undefined';
-
-let currentToken: string | null = null;
 let currentUser: WebAuthUser | null = null;
+let restoreInFlight: Promise<WebAuthUser | null> | null = null;
 const listeners = new Set<(user: WebAuthUser | null) => void>();
 
 export const isBetterAuthEnabled = process.env.NEXT_PUBLIC_AUTH_MODE === 'better-auth';
-
-function storage(): Storage | null {
-  if (!isBrowser) return null;
-  try {
-    return window.sessionStorage;
-  } catch {
-    return null;
-  }
-}
-
-function readToken(): string | null {
-  if (currentToken) return currentToken;
-  const value = storage()?.getItem(TOKEN_STORAGE_KEY) || null;
-  currentToken = value;
-  return value;
-}
-
-function writeToken(token: string | null): void {
-  currentToken = token;
-  const target = storage();
-  if (!target) return;
-  if (token) target.setItem(TOKEN_STORAGE_KEY, token);
-  else target.removeItem(TOKEN_STORAGE_KEY);
-}
 
 function publish(user: WebAuthUser | null): void {
   currentUser = user;
   listeners.forEach((listener) => listener(user));
 }
 
-function decodePayload(token: string): Record<string, unknown> | null {
-  try {
-    const encoded = token.split('.')[1];
-    if (!encoded) return null;
-    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
-    const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='));
-    return JSON.parse(binary) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-function userFromResponse(value: unknown, token: string): WebAuthUser | null {
+function userFromResponse(value: unknown): WebAuthUser | null {
   const raw =
     value && typeof value === 'object'
       ? (value as { user?: Record<string, unknown> }).user
       : null;
-  const payload = decodePayload(token);
-  const uid =
-    typeof raw?.id === 'string'
-      ? raw.id
-      : typeof payload?.uid === 'string'
-        ? payload.uid
-        : payload?.sub;
-  if (typeof uid !== 'string' || !uid) return null;
+  const uid = typeof raw?.id === 'string' ? raw.id : null;
+  if (!uid) return null;
   const name = typeof raw?.name === 'string' ? raw.name : null;
   const email = typeof raw?.email === 'string' ? raw.email : null;
   const photoURL = typeof raw?.image === 'string' ? raw.image : null;
@@ -71,7 +26,10 @@ function userFromResponse(value: unknown, token: string): WebAuthUser | null {
     displayName: name,
     email,
     photoURL,
-    getIdToken: async () => readToken(),
+    // Better Auth browser sessions are intentionally cookie-only. API calls
+    // use the same-origin proxy and never expose the long-lived session token
+    // to JavaScript.
+    getIdToken: async () => null,
   };
 }
 
@@ -80,9 +38,7 @@ async function authRequest(
   init: RequestInit = {},
 ): Promise<{ response: Response; body: unknown }> {
   const headers = new Headers(init.headers);
-  headers.set('content-type', 'application/json');
-  const token = readToken();
-  if (token) headers.set('authorization', `Bearer ${token}`);
+  if (init.body !== undefined) headers.set('content-type', 'application/json');
   const response = await fetch(`/api/better-auth/${path}`, {
     ...init,
     headers,
@@ -109,16 +65,8 @@ function errorMessage(body: unknown, fallback: string): string {
   return fallback;
 }
 
-async function completeAuth(body: unknown): Promise<WebAuthUser> {
-  const token =
-    body &&
-    typeof body === 'object' &&
-    typeof (body as { token?: unknown }).token === 'string'
-      ? String((body as { token: string }).token)
-      : null;
-  if (!token) throw new Error('Better Auth did not return a bearer token');
-  writeToken(token);
-  const user = userFromResponse(body, token);
+function completeAuth(body: unknown): WebAuthUser {
+  const user = userFromResponse(body);
   if (!user) throw new Error('Better Auth returned an invalid user');
   publish(user);
   return user;
@@ -154,44 +102,37 @@ export async function signOutBetterAuth(): Promise<void> {
     method: 'POST',
     body: JSON.stringify({}),
   });
-  writeToken(null);
   publish(null);
   if (!response.ok && response.status !== 401) throw new Error('Unable to sign out');
 }
 
-async function restoreUser(token: string): Promise<WebAuthUser | null> {
-  const { response, body } = await authRequest('get-session', {
-    headers: { authorization: `Bearer ${token}` },
-  });
+async function restoreUser(): Promise<WebAuthUser | null> {
+  const { response, body } = await authRequest('get-session');
   if (!response.ok) return null;
-  return userFromResponse(body, token);
+  return userFromResponse(body);
+}
+
+function restoreCurrentUser(): Promise<WebAuthUser | null> {
+  if (!restoreInFlight) {
+    restoreInFlight = restoreUser().finally(() => {
+      restoreInFlight = null;
+    });
+  }
+  return restoreInFlight;
 }
 
 export function onBetterAuthStateChange(
   callback: (user: WebAuthUser | null) => void,
 ): () => void {
   listeners.add(callback);
-  const token = readToken();
-  if (!token) {
-    publish(null);
-  } else if (currentUser) {
+  if (currentUser) {
     callback(currentUser);
   } else {
-    void restoreUser(token)
-      .then((user) => {
-        if (!user) writeToken(null);
-        publish(user);
-      })
-      .catch(() => {
-        writeToken(null);
-        publish(null);
-      });
+    void restoreCurrentUser()
+      .then(publish)
+      .catch(() => publish(null));
   }
   return () => listeners.delete(callback);
-}
-
-export function getBetterAuthToken(): Promise<string | null> {
-  return Promise.resolve(readToken());
 }
 
 export function getBetterAuthUser(): WebAuthUser | null {

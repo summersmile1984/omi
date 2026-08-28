@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./firebase', () => ({
-  getIdToken: vi.fn(async () => 'session-token'),
-  getCompatCurrentUser: vi.fn(() => ({ uid: 'user-1' })),
+vi.mock('./realtimeTicket', () => ({
+  getRealtimeTicket: vi.fn(async () => 'short-lived-ticket'),
 }));
 
 vi.mock('./clientDevice', () => ({
@@ -71,7 +70,7 @@ describe('TranscriptionSocket first-message authentication', () => {
     transport.open();
     expect(JSON.parse(String(transport.sent[0]))).toEqual({
       type: 'auth',
-      token: 'session-token',
+      ticket: 'short-lived-ticket',
       device_id_hash: 'device-1',
     });
     expect(onConnected).not.toHaveBeenCalled();

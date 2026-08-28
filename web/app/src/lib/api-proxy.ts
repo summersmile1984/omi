@@ -39,11 +39,15 @@ const HOP_BY_HOP_RESPONSE_HEADERS = [
   'upgrade',
 ] as const;
 
-function forwardedRequestHeaders(request: Request): Headers {
+function forwardedRequestHeaders(request: Request, includeCookie: boolean): Headers {
   const headers = new Headers();
   for (const name of REQUEST_HEADERS) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
+  }
+  if (includeCookie) {
+    const cookie = request.headers.get('cookie');
+    if (cookie) headers.set('cookie', cookie);
   }
   return headers;
 }
@@ -67,8 +71,9 @@ export async function proxyApiRequest(
   options: ProxyOptions,
 ): Promise<Response> {
   const authorization = request.headers.get('authorization');
-  if (!authorization) {
-    return Response.json({ error: 'Authorization header required' }, { status: 401 });
+  const cookie = request.headers.get('cookie');
+  if (!authorization && (!options.service || !cookie)) {
+    return Response.json({ error: 'Authentication required' }, { status: 401 });
   }
 
   const path = params.path.join('/');
@@ -77,7 +82,9 @@ export async function proxyApiRequest(
   target.search = incomingUrl.search;
   const upstreamRequest = new Request(target, {
     method: request.method,
-    headers: forwardedRequestHeaders(request),
+    // Session cookies may cross only the in-account Service Binding. Never
+    // forward them to the configurable public fallback used by local dev.
+    headers: forwardedRequestHeaders(request, Boolean(options.service)),
     body:
       request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
     redirect: 'manual',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import edge from "../workers/edge/index";
+import { verifyRealtimeTicket } from "../workers/shared/realtime-ticket";
 
 const service = (handler: (request: Request) => Promise<Response> | Response) =>
   ({ fetch: handler }) as Fetcher;
@@ -161,6 +162,37 @@ describe("edge gateway", () => {
     expect(forwardedPath).toBe("/v2/apps/search");
   });
 
+  it("exchanges an httpOnly session cookie for a short-lived realtime ticket", async () => {
+    let verifyRequest: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        verifyRequest = request;
+        return Response.json({ uid: "cookie-user", authority: "better-auth" });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/realtime/web-ticket", {
+        method: "POST",
+        headers: {
+          cookie: "__Secure-better-auth.session_token=cookie-session",
+        },
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(verifyRequest?.headers.get("cookie")).toBe(
+      "__Secure-better-auth.session_token=cookie-session",
+    );
+    const body = (await response.json()) as { ticket: string };
+    expect(await verifyRealtimeTicket(body.ticket, "test-secret")).toMatchObject({
+      uid: "cookie-user",
+      authority: "better-auth",
+    });
+  });
+
   it("strips caller auth headers before forwarding verified context", async () => {
     let forwarded: Headers | undefined;
     const env = {
@@ -193,6 +225,8 @@ describe("edge gateway", () => {
     expect(forwarded?.get("x-omi-uid")).toBeNull();
     expect(forwarded?.get("x-omi-auth-context")).toBeTruthy();
     expect(forwarded?.get("x-omi-internal-signature")).toBeTruthy();
+    expect(forwarded?.get("authorization")).toBeNull();
+    expect(forwarded?.get("cookie")).toBeNull();
   });
 
   it("keeps the users profile read beside Better Auth", async () => {

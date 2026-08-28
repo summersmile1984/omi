@@ -1,4 +1,5 @@
 import { decodeAuthContext, type AuthContext } from "../shared/auth-context";
+import { verifyRealtimeTicket } from "../shared/realtime-ticket";
 import type { RealtimeEnv } from "./env";
 
 const AUTH_TIMEOUT_MS = 15_000;
@@ -9,7 +10,7 @@ type PendingMessage = string | ArrayBuffer;
 
 type FirstMessageAuth = {
   type: "auth";
-  token: string;
+  ticket: string;
   deviceIdHash?: string;
 };
 
@@ -24,14 +25,14 @@ function parseFirstMessageAuth(data: string): FirstMessageAuth | null {
   try {
     const value = JSON.parse(data) as {
       type?: unknown;
-      token?: unknown;
+      ticket?: unknown;
       device_id_hash?: unknown;
     };
     if (
       value.type !== "auth" ||
-      typeof value.token !== "string" ||
-      value.token.length < 1 ||
-      value.token.length > 16_384 ||
+      typeof value.ticket !== "string" ||
+      value.ticket.length < 1 ||
+      value.ticket.length > 32_768 ||
       (value.device_id_hash !== undefined &&
         (typeof value.device_id_hash !== "string" ||
           value.device_id_hash.length > 256))
@@ -40,7 +41,7 @@ function parseFirstMessageAuth(data: string): FirstMessageAuth | null {
     }
     return {
       type: "auth",
-      token: value.token,
+      ticket: value.ticket,
       deviceIdHash: value.device_id_hash,
     };
   } catch {
@@ -55,7 +56,6 @@ export class RealtimeSession {
   private upstream?: WebSocket;
   private authContext?: AuthContext;
   private requestUrl?: string;
-  private requestId = "realtime";
   private firstMessageAuth = false;
   private authInFlight = false;
   private authTimeout?: ReturnType<typeof setTimeout>;
@@ -91,7 +91,6 @@ export class RealtimeSession {
     server.accept();
     this.client = server;
     this.requestUrl = request.url;
-    this.requestId = request.headers.get("x-request-id") || "realtime";
     this.firstMessageAuth = firstMessageAuth;
     if (firstMessageAuth) this.webBootstrapClaimed = true;
     this.authContext = this.firstMessageAuth
@@ -147,7 +146,10 @@ export class RealtimeSession {
         return;
       }
       this.authInFlight = true;
-      const context = await this.verifyBearer(auth.token);
+      const context = await verifyRealtimeTicket(
+        auth.ticket,
+        this.env.INTERNAL_ASSERTION_SECRET,
+      );
       this.authInFlight = false;
       if (this.client !== socket) return;
       if (!context) {
@@ -205,41 +207,6 @@ export class RealtimeSession {
     }
     this.sendJson(socket, { type: "ready", provider: "external" });
     this.flushPending();
-  }
-
-  private async verifyBearer(token: string): Promise<AuthContext | null> {
-    if (!this.env.AUTH || !this.env.INTERNAL_ASSERTION_SECRET) return null;
-    try {
-      const response = await this.env.AUTH.fetch(
-        new Request("https://auth.internal/internal/verify", {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${token}`,
-            "x-internal-assertion-secret": this.env.INTERNAL_ASSERTION_SECRET,
-            "x-request-id": this.requestId,
-          },
-        }),
-      );
-      if (!response.ok) return null;
-      const value = (await response.json()) as Partial<AuthContext>;
-      if (
-        typeof value.uid !== "string" ||
-        !value.uid ||
-        (value.authority !== "firebase" &&
-          value.authority !== "better-auth" &&
-          value.authority !== "internal")
-      ) {
-        return null;
-      }
-      return {
-        uid: value.uid,
-        authority: value.authority,
-        sessionGeneration: value.sessionGeneration,
-        requestId: this.requestId,
-      };
-    } catch {
-      return null;
-    }
   }
 
   private async connectUpstream(deviceIdHash?: string): Promise<boolean> {

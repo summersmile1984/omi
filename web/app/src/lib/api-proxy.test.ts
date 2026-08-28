@@ -77,7 +77,44 @@ describe('proxyApiRequest', () => {
     expect(await response.json()).toEqual({ ok: true });
   });
 
-  it('fails closed before calling upstream without a bearer token', async () => {
+  it('forwards an httpOnly session cookie only through the Edge binding', async () => {
+    let captured: Request | undefined;
+    const service: WorkerService = {
+      fetch: vi.fn(async (request) => {
+        captured = request;
+        return Response.json({ ok: true });
+      }),
+    };
+    const response = await proxyApiRequest(
+      new Request(requestUrl, {
+        headers: { cookie: '__Secure-better-auth.session_token=cookie-session' },
+      }),
+      { path: ['v1', 'conversations'] },
+      { service, upstreamBaseUrl: 'https://edge.internal' },
+    );
+
+    expect(response.status).toBe(200);
+    expect(captured?.headers.get('cookie')).toBe(
+      '__Secure-better-auth.session_token=cookie-session',
+    );
+    expect(captured?.headers.has('authorization')).toBe(false);
+  });
+
+  it('never forwards a browser session cookie through the public fallback', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const response = await proxyApiRequest(
+      new Request(requestUrl, {
+        headers: { cookie: '__Secure-better-auth.session_token=cookie-session' },
+      }),
+      { path: ['v1', 'conversations'] },
+      { upstreamBaseUrl: 'https://api.example', fetchImpl },
+    );
+
+    expect(response.status).toBe(401);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before calling upstream without authentication', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const response = await proxyApiRequest(
       new Request(requestUrl),

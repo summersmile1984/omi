@@ -135,19 +135,23 @@ app.post("/auth-issue", async (c) => {
 
 app.post("/internal/verify", async (c) => {
   const expected = c.env.INTERNAL_ASSERTION_SECRET;
-  if (!expected || c.req.header("x-internal-assertion-secret") !== expected) {
+  const presentedSecret = c.req.header("x-internal-assertion-secret") || "";
+  if (!expected || !constantTimeEqual(presentedSecret, expected)) {
     return c.json({ error: "unauthorized" }, 401);
   }
   const authorization = c.req.header("authorization");
-  if (!authorization) return c.json({ error: "unauthorized" }, 401);
+  const cookie = c.req.header("cookie");
+  if (!authorization && !cookie) return c.json({ error: "unauthorized" }, 401);
 
   try {
     const auth = buildAuth(c.env, c.req.url);
     const token = bearerToken(c.req.raw);
-    if (!token) return c.json({ error: "unauthorized" }, 401);
     const baseURL = c.env.BETTER_AUTH_URL || new URL(c.req.url).origin;
+    const sessionHeaders = new Headers({ origin: baseURL });
+    if (authorization) sessionHeaders.set("authorization", authorization);
+    if (cookie) sessionHeaders.set("cookie", cookie);
     const sessionRequest = new Request(new URL("/api/auth/get-session", baseURL), {
-      headers: { authorization, origin: baseURL },
+      headers: sessionHeaders,
     });
     const response = await auth.handler(sessionRequest);
     if (response.ok) {
@@ -167,6 +171,7 @@ app.post("/internal/verify", async (c) => {
     // session, so `/get-session` correctly returns null for the dev bridge.
     // Verify its signature and issuer instead of treating that valid token as
     // anonymous traffic.
+    if (!token) return c.json({ error: "unauthorized" }, 401);
     const verified = await auth.api.verifyJWT({
       body: { token },
       headers: c.req.raw.headers,

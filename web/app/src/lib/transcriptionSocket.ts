@@ -3,8 +3,8 @@
  * Connects to the Omi transcription API and streams audio data.
  */
 
-import { getIdToken, getCompatCurrentUser } from './firebase';
 import { getWebDeviceIdHash } from './clientDevice';
+import { getRealtimeTicket } from './realtimeTicket';
 
 export interface TranscriptSegment {
   id: string;
@@ -43,7 +43,7 @@ export class TranscriptionSocket {
   private tokenRefreshInterval: ReturnType<typeof setInterval> | null = null;
   private isRefreshing = false; // Flag to indicate token refresh in progress
   private isAuthenticated = false; // Flag to indicate WebSocket auth completed
-  private pendingToken: string | null = null; // Token for first-message auth
+  private pendingTicket: string | null = null; // One-use ticket for first-message auth
   private static readonly CONNECTION_TIMEOUT_MS = 15000; // 15 seconds
   private static readonly TOKEN_REFRESH_INTERVAL_MS = 50 * 60 * 1000; // 50 minutes (tokens expire at 60 min)
 
@@ -126,18 +126,10 @@ export class TranscriptionSocket {
     this.state = 'connecting';
 
     try {
-      const token = await getIdToken();
-      if (!token) {
-        throw new Error('Not authenticated');
-      }
+      const ticket = await getRealtimeTicket();
       const deviceIdHash = await getWebDeviceIdHash();
       if (!deviceIdHash) {
         throw new Error('Browser device identity is unavailable');
-      }
-
-      const uid = getCompatCurrentUser()?.uid;
-      if (!uid) {
-        throw new Error('User ID not available');
       }
 
       // Build WebSocket URL with query parameters (auth via first message)
@@ -145,7 +137,6 @@ export class TranscriptionSocket {
         language: this.options.language || 'multi',
         sample_rate: String(this.options.sampleRate || 16000),
         codec: 'pcm16',
-        uid: uid,
         source: 'web',
         include_speech_profile: 'true',
       });
@@ -154,8 +145,8 @@ export class TranscriptionSocket {
         params.set('client_conversation_id', this.options.clientConversationId);
       }
 
-      // Store token for first-message auth
-      this.pendingToken = token;
+      // The ticket expires quickly and is claimed by this connection only.
+      this.pendingTicket = ticket;
 
       const wsUrl = `${WS_BASE_URL}/v4/web/listen?${params.toString()}`;
 
@@ -189,12 +180,12 @@ export class TranscriptionSocket {
         this.state = 'connected';
 
         // Send first-message authentication
-        if (this.pendingToken) {
+        if (this.pendingTicket) {
           try {
             socket.send(
               JSON.stringify({
                 type: 'auth',
-                token: this.pendingToken,
+                ticket: this.pendingTicket,
                 device_id_hash: deviceIdHash,
               }),
             );
@@ -310,7 +301,7 @@ export class TranscriptionSocket {
         else if (data.type === 'auth_response') {
           if (data.success) {
             this.isAuthenticated = true;
-            this.pendingToken = null;
+            this.pendingTicket = null;
             this.reconnectAttempts = 0;
             this.isRefreshing = false;
             this.options.onConnected();
@@ -391,7 +382,7 @@ export class TranscriptionSocket {
     this.stopTokenRefresh();
     this.isBuffering = false;
     this.isAuthenticated = false;
-    this.pendingToken = null;
+    this.pendingTicket = null;
     this.audioBuffer = [];
     this.reconnectAttempts = this.maxReconnectAttempts; // Prevent auto-reconnect
 

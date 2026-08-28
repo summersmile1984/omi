@@ -19,7 +19,6 @@ import {
   setCompatCurrentUser,
 } from '@/lib/firebase';
 import {
-  getBetterAuthToken,
   isBetterAuthEnabled,
   onBetterAuthStateChange,
   signOutBetterAuth,
@@ -112,7 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const handleGetToken = async () => {
-    return isBetterAuthEnabled ? getBetterAuthToken() : getIdToken();
+    return getIdToken();
   };
 
   const value: AuthContextType = {

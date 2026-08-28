@@ -382,6 +382,17 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v1/realtime/web-ticket
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-auth, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/stt/transcribe-async
     owner: jobs
     runtime: edge-worker

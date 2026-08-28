@@ -86,6 +86,16 @@ production identity are not changed by this command. The `/login` page exposes
 email/password sign-up and sign-in, while OAuth remains on the Firebase path
 until its identity-linking contract is migrated and qualified.
 
+Better Auth browser sessions are cookie-only: the same-origin auth proxy
+forwards `Set-Cookie` but removes the session token from successful sign-in and
+sign-up JSON. The API proxy forwards that httpOnly cookie only over the `EDGE`
+service binding; its public local-development fallback accepts bearer tokens
+and never receives browser cookies. Web recording exchanges the cookie at
+`POST /v1/realtime/web-ticket` for a signed 30-second ticket. The browser sends
+that ticket as its first WebSocket message, and the isolated Durable Object
+claims it once, so the Realtime Worker never receives a long-lived Better Auth
+session token or an Auth service binding.
+
 `deploy:staging` applies the isolated migrations, publishes Workers in dependency
 order, then checks Edge, Auth `/ready`, and every internal Worker `/health` before
 reporting success. A release is considered incomplete if any readiness check is
@@ -201,6 +211,7 @@ POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
 POST /v2/realtime/session     Edge → Python API AI → OpenAI/Gemini ephemeral token API
 POST /v2/realtime/usage       Edge → Python API AI → D1 usage projection
+POST /v1/realtime/web-ticket  Edge cookie session → 30-second signed WebSocket ticket
 POST /v1/stt/transcribe-async
                               Edge → Jobs → R2 → Queue → Workers AI Whisper
 GET  /v1/stt/transcribe-async/{jobId}
@@ -214,7 +225,7 @@ POST /v1/tts/synthesize-workers-ai
 GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
 GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible AI API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
-WS   /v4/web/listen           Edge bootstrap → first-message auth → isolated DO → ASR API seam
+WS   /v4/web/listen           Edge bootstrap → first-message ticket → isolated DO → ASR API seam
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata/checksum
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
 GET  /v1/cf/jobs/{jobId}      Edge → Jobs Worker → uid-scoped D1 job status

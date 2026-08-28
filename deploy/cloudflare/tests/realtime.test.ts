@@ -4,6 +4,7 @@ import {
   signAuthContext,
 } from "../workers/shared/auth-context";
 import { createRealtimeBootstrap } from "../workers/shared/realtime-bootstrap";
+import { createRealtimeTicket } from "../workers/shared/realtime-ticket";
 import realtime, { RealtimeSession } from "../workers/realtime/index";
 
 const context = encodeAuthContext({
@@ -211,7 +212,6 @@ describe("realtime gateway", () => {
   it("authenticates the browser first message before opening ASR", async () => {
     installFakeWebSockets();
     const upstream = new FakeSocket();
-    const authRequests: Request[] = [];
     const work: Promise<unknown>[] = [];
     let providerUrl = "";
     vi.stubGlobal(
@@ -233,18 +233,6 @@ describe("realtime gateway", () => {
         INTERNAL_ASSERTION_SECRET: "test-secret",
         ASR_WS_URL: "wss://asr.example/listen",
         ASR_API_KEY: "provider-key",
-        AUTH: {
-          fetch: async (request: Request) => {
-            authRequests.push(request);
-            return {
-              ok: true,
-              json: async () => ({
-                uid: "user-1",
-                authority: "better-auth",
-              }),
-            } as Response;
-          },
-        },
       } as never,
     );
     const response = await session.fetch(
@@ -263,19 +251,23 @@ describe("realtime gateway", () => {
     );
     expect(replay.status).toBe(409);
 
+    const ticket = await createRealtimeTicket(
+      {
+        uid: "user-1",
+        authority: "better-auth",
+        requestId: "req-1",
+      },
+      "test-secret",
+    );
     await pair?.server.dispatch("message", {
       data: JSON.stringify({
         type: "auth",
-        token: "session-token",
+        ticket,
         device_id_hash: "device-1",
       }),
     });
     await Promise.all(work);
 
-    expect(authRequests).toHaveLength(1);
-    expect(authRequests[0].headers.get("authorization")).toBe(
-      "Bearer session-token",
-    );
     expect(pair?.server.sent).toEqual([
       JSON.stringify({ type: "auth_response", success: true }),
       JSON.stringify({ type: "ready", provider: "external" }),

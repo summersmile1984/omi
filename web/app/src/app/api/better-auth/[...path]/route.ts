@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { env } from 'cloudflare:workers';
+import { sanitizeBetterAuthResponse } from '@/lib/auth-proxy';
 
 const AUTH_SERVER_URL = process.env.NEXT_PUBLIC_AUTH_SERVER_URL;
 
@@ -47,8 +48,9 @@ async function proxyAuthRequest(
     return NextResponse.json({ error: 'auth proxy is not configured' }, { status: 503 });
   }
 
+  const authPath = params.path.join('/');
   const target = new URL(
-    `/api/auth/${params.path.join('/')}`,
+    `/api/auth/${authPath}`,
     AUTH_SERVER_URL || 'https://auth.internal',
   );
   target.search = request.nextUrl.search;
@@ -78,7 +80,10 @@ async function proxyAuthRequest(
     const response = authService
       ? await authService.fetch(upstreamRequest)
       : await fetch(upstreamRequest);
-    const body = await response.text();
+    const body = sanitizeBetterAuthResponse(authPath, response, await response.text());
+    if (body === null) {
+      return NextResponse.json({ error: 'invalid auth response' }, { status: 502 });
+    }
     const responseHeaders = new Headers();
     for (const name of ['content-type', 'cache-control', 'pragma', 'vary']) {
       const value = response.headers.get(name);
@@ -86,6 +91,7 @@ async function proxyAuthRequest(
     }
     const setCookies = response.headers.getSetCookie?.() ?? [];
     for (const value of setCookies) responseHeaders.append('set-cookie', value);
+    responseHeaders.set('cache-control', 'no-store');
     return new NextResponse(body, {
       status: response.status,
       headers: responseHeaders,

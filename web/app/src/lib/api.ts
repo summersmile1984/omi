@@ -1,4 +1,5 @@
 import { getIdToken } from './firebase';
+import { isBetterAuthEnabled } from './better-auth';
 import { getWebDeviceIdHash } from './clientDevice';
 import {
   invalidateCache,
@@ -52,27 +53,29 @@ import type {
 // Always use proxy to avoid CORS (browser → proxy → api.omi.me)
 const API_BASE_URL = '/api/proxy';
 
-/**
- * Make an authenticated API request
- */
-async function fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  let token: string | null = null;
+async function createAuthenticatedHeaders(initial?: HeadersInit): Promise<Headers> {
+  const headers = new Headers(initial);
+  if (isBetterAuthEnabled) return headers;
 
+  let token: string | null = null;
   try {
     token = await getIdToken();
   } catch (tokenError) {
     console.error('Failed to get auth token:', tokenError);
     throw new Error('Failed to get authentication token');
   }
+  if (!token) throw new Error('Not authenticated');
+  headers.set('Authorization', `Bearer ${token}`);
+  return headers;
+}
 
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
+/**
+ * Make an authenticated API request
+ */
+async function fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
   const deviceIdHash = await getWebDeviceIdHash();
-  const headers = new Headers({
-    Authorization: `Bearer ${token}`,
+  const headers = await createAuthenticatedHeaders({
     'Content-Type': 'application/json',
   });
   new Headers(options.headers).forEach((value, name) => headers.set(name, value));
@@ -85,6 +88,7 @@ async function fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Pr
     const response = await fetch(url, {
       ...options,
       headers,
+      credentials: 'include',
     });
 
     if (!response.ok) {
@@ -633,19 +637,6 @@ export async function sendMessageStream(
     } | null;
   },
 ): Promise<void> {
-  let token: string | null = null;
-
-  try {
-    token = await getIdToken();
-  } catch (tokenError) {
-    console.error('Failed to get auth token:', tokenError);
-    throw new Error('Failed to get authentication token');
-  }
-
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
   const queryParams = new URLSearchParams();
   if (options?.appId) {
     queryParams.set('app_id', options.appId);
@@ -653,13 +644,14 @@ export async function sendMessageStream(
 
   const url = `${API_BASE_URL}/v2/messages${queryParams.toString() ? `?${queryParams}` : ''}`;
 
+  const headers = await createAuthenticatedHeaders({
+    'Content-Type': 'application/json',
+    'X-App-Platform': 'web',
+  });
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'X-App-Platform': 'web',
-    },
+    headers,
+    credentials: 'include',
     body: JSON.stringify({
       text,
       file_ids: options?.fileIds || [],
@@ -735,19 +727,6 @@ export async function uploadChatFiles(
   files: File[],
   appId?: string,
 ): Promise<MessageFile[]> {
-  let token: string | null = null;
-
-  try {
-    token = await getIdToken();
-  } catch (tokenError) {
-    console.error('Failed to get auth token:', tokenError);
-    throw new Error('Failed to get authentication token');
-  }
-
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
   const queryParams = new URLSearchParams();
   if (appId) {
     queryParams.set('app_id', appId);
@@ -761,11 +740,11 @@ export async function uploadChatFiles(
     formData.append('files', file, file.name);
   }
 
+  const headers = await createAuthenticatedHeaders();
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
+    credentials: 'include',
     body: formData,
   });
 
@@ -791,36 +770,23 @@ function getAudioFileExtension(mimeType: string): string {
 }
 
 export async function transcribeVoiceMessage(audioBlob: Blob): Promise<string> {
-  let token: string | null = null;
-
-  try {
-    token = await getIdToken();
-  } catch (tokenError) {
-    console.error('Failed to get auth token:', tokenError);
-    throw new Error('Failed to get authentication token');
-  }
-
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
   const url = `${API_BASE_URL}/v2/voice-message/transcribe`;
 
   const formData = new FormData();
   // The backend uses the filename extension when it uploads audio for STT.
   formData.append('files', audioBlob, `audio.${getAudioFileExtension(audioBlob.type)}`);
   const deviceIdHash = await getWebDeviceIdHash();
-  const headers: HeadersInit = {
-    Authorization: `Bearer ${token}`,
+  const headers = await createAuthenticatedHeaders({
     'X-App-Platform': 'web',
-  };
+  });
   if (deviceIdHash) {
-    headers['X-Device-Id-Hash'] = deviceIdHash;
+    headers.set('X-Device-Id-Hash', deviceIdHash);
   }
 
   const response = await fetch(url, {
     method: 'POST',
     headers,
+    credentials: 'include',
     body: formData,
   });
 
@@ -965,19 +931,6 @@ export async function createApp(
   },
   imageFile?: File,
 ): Promise<{ app_id: string }> {
-  let token: string | null = null;
-
-  try {
-    token = await getIdToken();
-  } catch (tokenError) {
-    console.error('Failed to get auth token:', tokenError);
-    throw new Error('Failed to get authentication token');
-  }
-
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
   const url = `${API_BASE_URL}/v1/apps`;
 
   const formData = new FormData();
@@ -986,11 +939,11 @@ export async function createApp(
     formData.append('file', imageFile, imageFile.name);
   }
 
+  const headers = await createAuthenticatedHeaders();
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
+    credentials: 'include',
     body: formData,
   });
 
@@ -1011,19 +964,6 @@ export async function updateApp(
   data: Partial<CreateAppRequest>,
   imageFile?: File,
 ): Promise<void> {
-  let token: string | null = null;
-
-  try {
-    token = await getIdToken();
-  } catch (tokenError) {
-    console.error('Failed to get auth token:', tokenError);
-    throw new Error('Failed to get authentication token');
-  }
-
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
   const url = `${API_BASE_URL}/v1/apps/${appId}`;
 
   // The API requires the id to be included in the app_data
@@ -1035,11 +975,11 @@ export async function updateApp(
     formData.append('file', imageFile, imageFile.name);
   }
 
+  const headers = await createAuthenticatedHeaders();
   const response = await fetch(url, {
     method: 'PATCH',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
+    credentials: 'include',
     body: formData,
   });
 
@@ -1063,29 +1003,16 @@ export async function deleteApp(appId: string): Promise<void> {
  * Upload app thumbnail
  */
 export async function uploadAppThumbnail(file: File): Promise<ThumbnailUploadResponse> {
-  let token: string | null = null;
-
-  try {
-    token = await getIdToken();
-  } catch (tokenError) {
-    console.error('Failed to get auth token:', tokenError);
-    throw new Error('Failed to get authentication token');
-  }
-
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
   const url = `${API_BASE_URL}/v1/app/thumbnails`;
 
   const formData = new FormData();
   formData.append('file', file, file.name);
 
+  const headers = await createAuthenticatedHeaders();
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
+    credentials: 'include',
     body: formData,
   });
 
@@ -1148,17 +1075,15 @@ export async function generateAppDescriptionAndEmoji(
  */
 export async function getNotificationScopes(): Promise<NotificationScope[]> {
   try {
-    const token = await getIdToken();
-    if (!token) return [];
-
+    const headers = await createAuthenticatedHeaders({
+      'Content-Type': 'application/json',
+      'X-App-Platform': 'web',
+    });
     const response = await fetch(
       `${API_BASE_URL}/v1/apps/proactive-notification-scopes`,
       {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'X-App-Platform': 'web',
-        },
+        headers,
+        credentials: 'include',
       },
     );
 
@@ -1175,15 +1100,13 @@ export async function getNotificationScopes(): Promise<NotificationScope[]> {
  */
 export async function getPaymentPlans(): Promise<PaymentPlan[]> {
   try {
-    const token = await getIdToken();
-    if (!token) return [];
-
+    const headers = await createAuthenticatedHeaders({
+      'Content-Type': 'application/json',
+      'X-App-Platform': 'web',
+    });
     const response = await fetch(`${API_BASE_URL}/v1/app/plans`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'X-App-Platform': 'web',
-      },
+      headers,
+      credentials: 'include',
     });
 
     if (!response.ok) return [];
@@ -1785,12 +1708,10 @@ export async function deleteMcpApiKey(keyId: string): Promise<void> {
  * Export all user data as a downloadable JSON blob (streamed from backend).
  */
 export async function exportAllData(): Promise<Blob> {
-  const token = await getIdToken();
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
+  const headers = await createAuthenticatedHeaders();
   const response = await fetch(`${API_BASE_URL}/v1/users/export`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers,
+    credentials: 'include',
   });
   if (!response.ok) {
     throw new Error(`Export failed: ${response.status} ${response.statusText}`);
@@ -2112,13 +2033,7 @@ export async function precacheConversationAudio(
  * Used when streaming audio directly from API (fallback when signed URLs unavailable)
  */
 export async function getAudioAuthHeaders(): Promise<Record<string, string>> {
-  const token = await getIdToken();
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-  return {
-    Authorization: `Bearer ${token}`,
-  };
+  return Object.fromEntries(await createAuthenticatedHeaders());
 }
 
 /**
@@ -2135,7 +2050,7 @@ export async function fetchAudioBlob(
   const headers = await getAudioAuthHeaders();
   const url = getAudioStreamUrl(conversationId, audioFileId);
 
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, { headers, credentials: 'include' });
   if (!response.ok) {
     throw new Error(`Failed to fetch audio: ${response.status} ${response.statusText}`);
   }

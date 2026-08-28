@@ -7,6 +7,7 @@ import {
   REALTIME_BOOTSTRAP_HEADER,
   REALTIME_BOOTSTRAP_SIGNATURE_HEADER,
 } from "../shared/realtime-bootstrap";
+import { createRealtimeTicket } from "../shared/realtime-ticket";
 import { attachAuthContext, stripUntrustedHeaders, verifyBearer } from "./auth";
 import type { EdgeEnv, EdgeVariables } from "./env";
 
@@ -61,7 +62,9 @@ app.get("/v1/approved-apps", proxyPublicCore);
 app.all("/api/auth/*", async (c) => {
   const id = requestId(c.req.raw);
   const response = await c.env.AUTH.fetch(
-    new Request(c.req.raw, { headers: stripUntrustedHeaders(c.req.raw) }),
+    new Request(c.req.raw, {
+      headers: stripUntrustedHeaders(c.req.raw, { preserveClientAuth: true }),
+    }),
   );
   return withRequestId(response, id);
 });
@@ -105,6 +108,19 @@ app.all("/v4/web/listen", async (c) => {
     new Request(c.req.raw, { headers }),
   );
   return withRequestId(response, id);
+});
+
+app.post("/v1/realtime/web-ticket", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const ticket = await createRealtimeTicket(
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!ticket) return c.json({ error: "realtime unavailable" }, 503);
+  c.header("cache-control", "no-store");
+  return c.json({ ticket, expires_in: 30 });
 });
 
 app.all("/v1/omni/relay", async (c) => {

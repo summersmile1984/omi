@@ -1,18 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getBetterAuthToken, signInWithEmail, signUpWithEmail } from './better-auth';
-
-const token = 'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJzdGFnaW5nLXVzZXIifQ.';
 
 describe('Better Auth web client', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.resetModules();
   });
 
-  it('signs up through the same-origin Worker proxy and exposes the bearer token', async () => {
+  it('signs up through the same-origin proxy without retaining the session token', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
-          token,
+          token: 'must-not-be-retained',
           user: {
             id: 'staging-user',
             name: 'Staging User',
@@ -22,6 +20,7 @@ describe('Better Auth web client', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       ),
     );
+    const { signUpWithEmail } = await import('./better-auth');
 
     const user = await signUpWithEmail(
       'Staging User',
@@ -34,13 +33,38 @@ describe('Better Auth web client', () => {
       displayName: 'Staging User',
       email: 'staging@example.invalid',
     });
-    expect(await getBetterAuthToken()).toBe(token);
+    expect(await user.getIdToken?.()).toBeNull();
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/better-auth/sign-up/email',
       expect.objectContaining({
         method: 'POST',
         credentials: 'include',
+        headers: expect.any(Headers),
       }),
+    );
+    const request = fetchMock.mock.calls[0][1];
+    expect(new Headers(request?.headers).has('authorization')).toBe(false);
+  });
+
+  it('restores identity from the httpOnly session cookie', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        session: { id: 'session-1' },
+        user: { id: 'cookie-user', email: 'cookie@example.invalid' },
+      }),
+    );
+    const { onBetterAuthStateChange } = await import('./better-auth');
+    const user = await new Promise<{ uid: string } | null>((resolve) => {
+      const unsubscribe = onBetterAuthStateChange((value) => {
+        unsubscribe();
+        resolve(value);
+      });
+    });
+
+    expect(user?.uid).toBe('cookie-user');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/better-auth/get-session',
+      expect.objectContaining({ credentials: 'include' }),
     );
   });
 
@@ -51,6 +75,7 @@ describe('Better Auth web client', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
+    const { signInWithEmail } = await import('./better-auth');
 
     await expect(
       signInWithEmail('staging@example.invalid', 'wrong-password'),

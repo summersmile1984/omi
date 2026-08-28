@@ -18,7 +18,7 @@ import {
   MessagePayload,
 } from 'firebase/messaging';
 import type { WebAuthUser } from './auth-types';
-import { getBetterAuthToken, isBetterAuthEnabled } from './better-auth';
+import { isBetterAuthEnabled } from './better-auth';
 
 // Firebase configuration from environment variables
 const firebaseConfig = {
@@ -135,7 +135,7 @@ export const signOutUser = async (): Promise<void> => {
  * Always call this fresh before API requests (don't cache)
  */
 export const getIdToken = async (): Promise<string | null> => {
-  if (isBetterAuthEnabled) return getBetterAuthToken();
+  if (isBetterAuthEnabled) return null;
   const user = auth.currentUser;
   if (!user) return null;
 

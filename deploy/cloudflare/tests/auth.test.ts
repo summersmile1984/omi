@@ -5,11 +5,12 @@ const signJWT = vi.fn(async () => ({ token: "jwt-from-workers" }));
 const verifyJWT = vi.fn(async ({ body }: { body: { token: string } }) =>
   body.token === "bridge-token" ? { payload: { uid: "jwt-user", sub: "jwt-user" } } : { payload: null },
 );
+const authHandler = vi.fn(async (_request: Request) => Response.json(null));
 
 vi.mock("better-auth", () => ({
   betterAuth: vi.fn(() => ({
     api: { signJWT, verifyJWT },
-    handler: vi.fn(async () => Response.json(null)),
+    handler: authHandler,
   })),
 }));
 
@@ -34,6 +35,8 @@ describe("auth worker Better Auth dev issuer", () => {
   beforeEach(() => {
     signJWT.mockClear();
     verifyJWT.mockClear();
+    authHandler.mockReset();
+    authHandler.mockResolvedValue(Response.json(null));
   });
 
   it("hides the bridge when no issuer secret is configured", async () => {
@@ -101,6 +104,34 @@ describe("auth worker Better Auth dev issuer", () => {
       body: { token: "bridge-token" },
       headers: expect.any(Headers),
     });
+  });
+
+  it("verifies an httpOnly Better Auth session cookie", async () => {
+    authHandler.mockResolvedValueOnce(
+      Response.json({ user: { id: "cookie-user" }, session: { id: "session-1" } }),
+    );
+    const response = await auth.fetch(
+      new Request("https://auth.test/internal/verify", {
+        method: "POST",
+        headers: {
+          "x-internal-assertion-secret": "internal-secret",
+          cookie: "__Secure-better-auth.session_token=cookie-session",
+          "x-request-id": "cookie-request",
+        },
+      }),
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      uid: "cookie-user",
+      authority: "better-auth",
+      requestId: "cookie-request",
+    });
+    const sessionRequest = authHandler.mock.calls[0][0] as Request;
+    expect(sessionRequest.headers.get("cookie")).toBe(
+      "__Secure-better-auth.session_token=cookie-session",
+    );
   });
 
   it("serves the Better Auth identity profile only for a signed edge context", async () => {
