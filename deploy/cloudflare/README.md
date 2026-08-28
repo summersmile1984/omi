@@ -787,6 +787,16 @@ the full staging smoke passed again after cleanup. No production Firebase
 credential was copied into staging; notification delivery with an actual
 registered device remains an explicit credentialed staging check.
 
+The staging follow-up configured a newly generated `FAIR_USE_ADMIN_KEY` only on
+API Core. The release smoke confirmed the dashboard route fails closed with
+`403` when no key is supplied. An isolated D1 state/event/usage fixture then
+exercised all six admin route shapes through Edge: flagged-user and user-detail
+reads, internal case lookup, event resolution, a manual restrict transition
+with its 30-day deadline, state reset, and reset of a legacy user with no prior
+state all returned `200`; resolving a missing event returned `404`. The two
+temporary states, event, notification, and usage rows were verified at zero
+after cleanup.
+
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging
 owner, while the test/regenerate route computes a deterministic summary from
