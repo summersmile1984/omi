@@ -56,6 +56,46 @@ function readyEnv(active = true) {
   };
 }
 
+function passwordUpgradeEnv(options: { failUpdate?: boolean } = {}) {
+  const state = {
+    password: "firebase-scrypt-v1$fingerprint$salt$hash$",
+  };
+  const statement = (query: string, values: unknown[] = []) => ({
+    bind: (...nextValues: unknown[]) => statement(query, nextValues),
+    all: vi.fn(async () => ({
+      success: true,
+      results: [
+        {
+          id: "credential-row",
+          password: state.password,
+        },
+      ],
+      meta: {},
+    })),
+    first: vi.fn(async () => ({
+      id: "credential-row",
+      password: state.password,
+    })),
+    run: vi.fn(async () => {
+      if (options.failUpdate) throw new Error("D1 unavailable");
+      const [replacement, , id, expected] = values;
+      const changes =
+        id === "credential-row" && expected === state.password ? 1 : 0;
+      if (changes) state.password = String(replacement);
+      return { success: true, meta: { changes } };
+    }),
+  });
+  const prepare = vi.fn((query: string) => statement(query));
+  return {
+    environment: {
+      ...env(),
+      AUTH_DB: { prepare } as unknown as D1Database,
+    },
+    state,
+    prepare,
+  };
+}
+
 type AuthLifecycleState = {
   user: {
     id: string;
@@ -354,6 +394,13 @@ describe("auth worker Better Auth dev issuer", () => {
     expect(options).toMatchObject({
       baseURL: "https://auth.test",
       basePath: "/api/better-auth",
+      emailAndPassword: {
+        enabled: true,
+        password: {
+          hash: expect.any(Function),
+          verify: expect.any(Function),
+        },
+      },
       rateLimit: {
         enabled: true,
         storage: "database",
@@ -408,6 +455,93 @@ describe("auth worker Better Auth dev issuer", () => {
         },
       },
     });
+  });
+
+  it("upgrades a migrated password only after a successful email sign-in", async () => {
+    const upgrade = passwordUpgradeEnv();
+    await auth.fetch(
+      new Request("https://auth.test/api/better-auth/get-session"),
+      upgrade.environment,
+    );
+    const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
+    const after = options?.hooks?.after as unknown as (
+      context: Record<string, unknown>,
+    ) => Promise<unknown>;
+    const nativeHash = vi.fn(async () => "native-better-auth-hash");
+
+    await after({
+      path: "/sign-in/email",
+      body: { password: "verified-password" },
+      headers: new Headers({ "x-request-id": "password-upgrade-request" }),
+      context: {
+        newSession: { user: { id: "firebase-user" } },
+        password: { hash: nativeHash },
+      },
+    });
+
+    expect(nativeHash).toHaveBeenCalledWith("verified-password");
+    expect(upgrade.state.password).toBe("native-better-auth-hash");
+  });
+
+  it("does not inspect a password when email sign-in did not create a session", async () => {
+    const upgrade = passwordUpgradeEnv();
+    await auth.fetch(
+      new Request("https://auth.test/api/better-auth/get-session"),
+      upgrade.environment,
+    );
+    const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
+    const after = options?.hooks?.after as unknown as (
+      context: Record<string, unknown>,
+    ) => Promise<unknown>;
+
+    await after({
+      path: "/sign-in/email",
+      body: { password: "wrong-password" },
+      context: {
+        newSession: null,
+        password: { hash: vi.fn() },
+      },
+    });
+
+    expect(upgrade.prepare).not.toHaveBeenCalled();
+  });
+
+  it("records a bounded fallback and retries later when password upgrade persistence fails", async () => {
+    const upgrade = passwordUpgradeEnv({ failUpdate: true });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await auth.fetch(
+      new Request("https://auth.test/api/better-auth/get-session"),
+      upgrade.environment,
+    );
+    const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
+    const after = options?.hooks?.after as unknown as (
+      context: Record<string, unknown>,
+    ) => Promise<unknown>;
+
+    await expect(
+      after({
+        path: "/sign-in/email",
+        body: { password: "verified-password" },
+        headers: new Headers({ "x-request-id": "password-upgrade-request" }),
+        context: {
+          newSession: { user: { id: "firebase-user" } },
+          password: { hash: async () => "native-better-auth-hash" },
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(upgrade.state.password).toMatch(/^firebase-scrypt-v1\$/);
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(warning.mock.calls[0][0]))).toEqual({
+      event: "fallback",
+      component: "other",
+      from: "d1",
+      to: "none",
+      reason: "dependency_unavailable",
+      outcome: "degraded",
+      request_id: "password-upgrade-request",
+    });
+    warning.mockRestore();
   });
 
   it("advertises and configures only providers with complete credentials", async () => {

@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { createAuthMiddleware } from "better-auth/api";
 import { bearer } from "better-auth/plugins/bearer";
 import { jwt } from "better-auth/plugins/jwt";
 import { Hono } from "hono";
@@ -7,7 +8,13 @@ import {
   verifyRequestAuthContext,
   type AuthContext,
 } from "../shared/auth-context";
+import { recordFallback } from "../shared/fallback";
 import type { AuthEnv } from "./env";
+import {
+  hashPassword,
+  upgradeMigratedFirebasePassword,
+  verifyPassword,
+} from "./firebase-migration-password";
 
 const app = new Hono<{ Bindings: AuthEnv }>();
 const AUTH_BASE_PATH = "/api/better-auth";
@@ -86,7 +93,41 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
     baseURL,
     basePath: AUTH_BASE_PATH,
     trustedOrigins: Array.from(new Set([baseURL, ...allowedOrigins])),
-    emailAndPassword: { enabled: true },
+    emailAndPassword: {
+      enabled: true,
+      password: {
+        hash: hashPassword,
+        verify: (credentials) => verifyPassword(credentials, env),
+      },
+    },
+    hooks: {
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== "/sign-in/email") return;
+        const userId = ctx.context.newSession?.user.id;
+        const password = ctx.body?.password;
+        if (!userId || typeof password !== "string") return;
+
+        try {
+          await upgradeMigratedFirebasePassword(
+            env.AUTH_DB,
+            userId,
+            password,
+            ctx.context.password.hash,
+          );
+        } catch {
+          // The password was already verified and the session already exists.
+          // Keep the migrated credential usable and retry on the next login.
+          recordFallback({
+            component: "other",
+            from: "d1",
+            to: "none",
+            reason: "dependency_unavailable",
+            outcome: "degraded",
+            requestId: ctx.headers?.get("x-request-id") || undefined,
+          });
+        }
+      }),
+    },
     socialProviders,
     user: {
       // Public self-service deletion stays closed until Jobs has removed and

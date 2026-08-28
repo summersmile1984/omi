@@ -22,18 +22,18 @@ Omi 可以由 Cloudflare Workers 承载稳定态服务，但不应把当前 `bac
 
 ### 1.1 可行性判断
 
-| 项目 | 判断 | 原因 |
-|---|---|---|
-| 当前 FastAPI 单体原样进入 Python Worker | 不可行 | 当前依赖包含 PyAV、ONNX Runtime、NumPy/SciPy、线程池、Redis 同步调用、Firebase/Google SDK 和本地文件语义；Python Workers 只支持 Pyodide/纯 Python 或可用轮子，线程和多进程不可执行 |
-| 改造后的 FastAPI 子应用进入 Python Worker | 可行 | Cloudflare 提供 FastAPI/ASGI 入口，但应使用独立 Python 3.13+ 依赖闭包、异步 I/O 和 Workers bindings |
-| 改造后以少量领域 Python Workers 承载业务 API | 可行且为主方案 | 需要独立 Python 3.13+ 依赖闭包、异步 Cloudflare bindings 和领域 composition root |
-| 现有 Python 后端进入 Cloudflare Container | 技术可行但不作为主方案 | 会减少代码迁移量，却增加一套镜像、容量、冷启动和运行时运维；仅作经过批准的临时例外 |
-| Better Auth 进入 Worker | 可行且推荐 | Better Auth 原生支持 Web Request/Response、Hono 和 D1；Cloudflare Worker 需启用 `nodejs_compat` |
-| ASR 不在本机运行 | 可行且推荐 | 当前代码已经有 Deepgram 云端 provider 和其他 provider 策略；Cloudflare Workers AI 也提供实时 Deepgram 模型 |
-| D1 作为新 Cloudflare profile 的领域数据库 | 可行 | Auth 与通过容量/并发资格检查的业务域使用 D1；不能用一个 D1 整体模拟 Firestore |
-| R2 替代 MinIO/GCS 对象存储 | 可行 | 原生 Worker 使用 R2 binding；离线迁移工具可使用 S3 API，需要处理预签名 URL 域名限制 |
-| Vectorize 直接替代全部 Pinecone/Qdrant | 部分可行 | Vectorize 最大 1536 维，而当前截图 embedding 路径存在 3072 维向量 |
-| Next.js 16 部署 Workers | 可评估 | Cloudflare 当前推荐对 Next.js 16 使用 vinext，但仍为 beta，必须先运行兼容性检查 |
+| 项目                                         | 判断                   | 原因                                                                                                                                                                               |
+| -------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 当前 FastAPI 单体原样进入 Python Worker      | 不可行                 | 当前依赖包含 PyAV、ONNX Runtime、NumPy/SciPy、线程池、Redis 同步调用、Firebase/Google SDK 和本地文件语义；Python Workers 只支持 Pyodide/纯 Python 或可用轮子，线程和多进程不可执行 |
+| 改造后的 FastAPI 子应用进入 Python Worker    | 可行                   | Cloudflare 提供 FastAPI/ASGI 入口，但应使用独立 Python 3.13+ 依赖闭包、异步 I/O 和 Workers bindings                                                                                |
+| 改造后以少量领域 Python Workers 承载业务 API | 可行且为主方案         | 需要独立 Python 3.13+ 依赖闭包、异步 Cloudflare bindings 和领域 composition root                                                                                                   |
+| 现有 Python 后端进入 Cloudflare Container    | 技术可行但不作为主方案 | 会减少代码迁移量，却增加一套镜像、容量、冷启动和运行时运维；仅作经过批准的临时例外                                                                                                 |
+| Better Auth 进入 Worker                      | 可行且推荐             | Better Auth 原生支持 Web Request/Response、Hono 和 D1；Cloudflare Worker 需启用 `nodejs_compat`                                                                                    |
+| ASR 不在本机运行                             | 可行且推荐             | 当前代码已经有 Deepgram 云端 provider 和其他 provider 策略；Cloudflare Workers AI 也提供实时 Deepgram 模型                                                                         |
+| D1 作为新 Cloudflare profile 的领域数据库    | 可行                   | Auth 与通过容量/并发资格检查的业务域使用 D1；不能用一个 D1 整体模拟 Firestore                                                                                                      |
+| R2 替代 MinIO/GCS 对象存储                   | 可行                   | 原生 Worker 使用 R2 binding；离线迁移工具可使用 S3 API，需要处理预签名 URL 域名限制                                                                                                |
+| Vectorize 直接替代全部 Pinecone/Qdrant       | 部分可行               | Vectorize 最大 1536 维，而当前截图 embedding 路径存在 3072 维向量                                                                                                                  |
+| Next.js 16 部署 Workers                      | 可评估                 | Cloudflare 当前推荐对 Next.js 16 使用 vinext，但仍为 beta，必须先运行兼容性检查                                                                                                    |
 
 ## 2. 当前代码基线与约束
 
@@ -76,20 +76,20 @@ Cloudflare 适配不应另写一套 STT 路由策略，而应把现有 provider 
 
 ## 3. Cloudflare 平台约束对架构的影响
 
-| 平台事实 | 设计后果 |
-|---|---|
-| Worker isolate 内存 128 MB | 不能加载当前单体、ONNX 模型或大型科学计算依赖；每个原生 Worker 必须有独立 bundle 和内存门槛 |
-| Paid Worker 压缩后 bundle 上限 10 MB，初始化前 64 MB | Python 子应用只允许最小依赖闭包；禁止导入 `backend/main.py` |
-| Paid Worker 单次 CPU 最多 5 分钟，默认 30 秒 | HTTP 编排可放 Worker；模型推理、重音频处理和大批量任务走 API、Queues/Workflows |
-| 单次请求最多 6 个同时外连 | 聚合 API 必须控制连接扇出、复用或分阶段执行 |
-| Python Workers 当前为 Beta | 固定 `workers-py`、`pywrangler`、Wrangler 和 compatibility date；本地 workerd 通过后还必须执行真实 staging deploy/smoke |
-| Python Workers 基于 Pyodide | 只使用官方可用包、纯 Python 包或 PyEmscripten wheel；出站 HTTP 使用 `workers.fetch`/JS FFI，避免标准 socket/DNS |
-| Worker 文件系统是临时内存文件系统 | 持久对象进入 R2；任务进度进入 D1/DO；不能依赖 `/app/syncing` |
-| D1 单库 10 GB、单线程执行 | 认证和合格业务域适合 D1；热点状态进 DO，大数据域需要拆分或显式 PostgreSQL 逃生口 |
-| KV 最终一致，其他 PoP 传播可能超过 60 秒 | KV 只放可过期缓存/配置；锁、唯一连接、配额和强一致会话进入 Durable Objects |
-| Queues 至少一次投递 | 每个任务必须有稳定幂等键、重试状态和 DLQ；消费者不能把“收到一次”当作“执行一次” |
-| Vectorize 最大 1536 维 | 3072 维截图 embedding 暂留原向量库，或使用新 projection version 全量重嵌入 |
-| R2 S3 预签名 URL 只能使用 S3 API 域名 | 品牌域名下载走 Edge Worker/R2 binding；私有直传可使用 S3 API 域名预签名 URL |
+| 平台事实                                             | 设计后果                                                                                                                |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Worker isolate 内存 128 MB                           | 不能加载当前单体、ONNX 模型或大型科学计算依赖；每个原生 Worker 必须有独立 bundle 和内存门槛                             |
+| Paid Worker 压缩后 bundle 上限 10 MB，初始化前 64 MB | Python 子应用只允许最小依赖闭包；禁止导入 `backend/main.py`                                                             |
+| Paid Worker 单次 CPU 最多 5 分钟，默认 30 秒         | HTTP 编排可放 Worker；模型推理、重音频处理和大批量任务走 API、Queues/Workflows                                          |
+| 单次请求最多 6 个同时外连                            | 聚合 API 必须控制连接扇出、复用或分阶段执行                                                                             |
+| Python Workers 当前为 Beta                           | 固定 `workers-py`、`pywrangler`、Wrangler 和 compatibility date；本地 workerd 通过后还必须执行真实 staging deploy/smoke |
+| Python Workers 基于 Pyodide                          | 只使用官方可用包、纯 Python 包或 PyEmscripten wheel；出站 HTTP 使用 `workers.fetch`/JS FFI，避免标准 socket/DNS         |
+| Worker 文件系统是临时内存文件系统                    | 持久对象进入 R2；任务进度进入 D1/DO；不能依赖 `/app/syncing`                                                            |
+| D1 单库 10 GB、单线程执行                            | 认证和合格业务域适合 D1；热点状态进 DO，大数据域需要拆分或显式 PostgreSQL 逃生口                                        |
+| KV 最终一致，其他 PoP 传播可能超过 60 秒             | KV 只放可过期缓存/配置；锁、唯一连接、配额和强一致会话进入 Durable Objects                                              |
+| Queues 至少一次投递                                  | 每个任务必须有稳定幂等键、重试状态和 DLQ；消费者不能把“收到一次”当作“执行一次”                                          |
+| Vectorize 最大 1536 维                               | 3072 维截图 embedding 暂留原向量库，或使用新 projection version 全量重嵌入                                              |
+| R2 S3 预签名 URL 只能使用 S3 API 域名                | 品牌域名下载走 Edge Worker/R2 binding；私有直传可使用 S3 API 域名预签名 URL                                             |
 
 ## 4. 目标架构
 
@@ -116,15 +116,15 @@ flowchart LR
 
 ### 4.1 运行时职责
 
-| 组件 | 首期职责 | 不应承担 |
-|---|---|---|
-| Edge Gateway Worker | 自定义域、WAF 后路由、JWT 校验、CORS、请求 ID、灰度、内部断言 | 业务数据写入、长耗时模型调用 |
-| Auth Worker | Better Auth API、D1 schema、JWKS、OAuth、内部用户生命周期 | 产品数据、Firebase 数据兼容层 |
-| Realtime Worker + DO | WebSocket 协议、每会话强一致状态、重连、流量控制、ASR API 转发 | PyAV/ONNX 模型装载 |
-| Native Python API Workers | 纯异步 HTTP 子域、Pydantic 校验、API 编排、R2/D1 binding | 导入单体、线程池、同步 SDK、长期任务 |
-| Job Worker | 入队、幂等、批处理触发、DLQ，可由 Python Queue consumer 执行业务逻辑 | 在请求生命周期内完成全部后台任务 |
-| Domain D1/DO | 领域权威数据、事务、强一致计数/会话 | 模拟全局 Firestore/Redis API |
-| External APIs | ASR/TTS/LLM/embedding/diarization/必要媒体转换 | 成为没有质量、隐私和删除契约的黑盒 |
+| 组件                      | 首期职责                                                             | 不应承担                             |
+| ------------------------- | -------------------------------------------------------------------- | ------------------------------------ |
+| Edge Gateway Worker       | 自定义域、WAF 后路由、JWT 校验、CORS、请求 ID、灰度、内部断言        | 业务数据写入、长耗时模型调用         |
+| Auth Worker               | Better Auth API、D1 schema、JWKS、OAuth、内部用户生命周期            | 产品数据、Firebase 数据兼容层        |
+| Realtime Worker + DO      | WebSocket 协议、每会话强一致状态、重连、流量控制、ASR API 转发       | PyAV/ONNX 模型装载                   |
+| Native Python API Workers | 纯异步 HTTP 子域、Pydantic 校验、API 编排、R2/D1 binding             | 导入单体、线程池、同步 SDK、长期任务 |
+| Job Worker                | 入队、幂等、批处理触发、DLQ，可由 Python Queue consumer 执行业务逻辑 | 在请求生命周期内完成全部后台任务     |
+| Domain D1/DO              | 领域权威数据、事务、强一致计数/会话                                  | 模拟全局 Firestore/Redis API         |
+| External APIs             | ASR/TTS/LLM/embedding/diarization/必要媒体转换                       | 成为没有质量、隐私和删除契约的黑盒   |
 
 ### 4.2 降低部署复杂度
 
@@ -156,15 +156,15 @@ Worker 数量多不等于需要手工逐个发布。Cloudflare 目录使用一�
 
 ### 5.2 Provider 决策矩阵
 
-| 能力 | Cloudflare 首选 | 备选 | Worker 内只保留 | 发布门槛 |
-|---|---|---|---|---|
-| Streaming ASR | Workers AI Deepgram realtime 或现有 Deepgram cloud | Modulate/现有云 provider | 协议归一、buffer、重连、fallback | 首字延迟、最终段延迟、WER、语言覆盖、断线恢复、成本/分钟 |
-| Prerecorded ASR | Workers AI Whisper/外部 batch ASR | 当前 Parakeet/Modulate/MOSS API 路径 | job 状态、callback、结果归一 | WER、说话人/时间戳、最长音频、回调重试、成本/分钟 |
-| PTT | 外部/Workers AI 低延迟模型 | 当前 provider policy 中已支持的云 provider | 取消、超时、短音频结果归一 | 端到端 p95、短音频空结果率、取消语义 |
-| TTS | Workers AI/外部 TTS API | 当前 TTS provider | streaming proxy、缓存键和授权 | 首包、自然度、语言/voice 覆盖、缓存和版权约束 |
-| LLM | AI Gateway 转发现有 OpenAI/Anthropic/Gemini，或 Workers AI | 现有 API 直连 | prompt/工具编排、结构化结果校验 | JSON/工具调用兼容、质量、token 成本、区域 |
-| Embedding | Workers AI 或现有 OpenAI/Gemini API | 现有 provider | 文本准备、version 和 outbox | 维度、距离分布、召回率和 projection version 必须固定 |
-| Diarization / speaker ID | 有质量等价物时使用 API | 当前远程任务/Modal 形态 | 输入/输出契约、删除和 fallback | 说话人一致性、隐私、模型版本和删除能力 |
+| 能力                     | Cloudflare 首选                                            | 备选                                       | Worker 内只保留                  | 发布门槛                                                 |
+| ------------------------ | ---------------------------------------------------------- | ------------------------------------------ | -------------------------------- | -------------------------------------------------------- |
+| Streaming ASR            | Workers AI Deepgram realtime 或现有 Deepgram cloud         | Modulate/现有云 provider                   | 协议归一、buffer、重连、fallback | 首字延迟、最终段延迟、WER、语言覆盖、断线恢复、成本/分钟 |
+| Prerecorded ASR          | Workers AI Whisper/外部 batch ASR                          | 当前 Parakeet/Modulate/MOSS API 路径       | job 状态、callback、结果归一     | WER、说话人/时间戳、最长音频、回调重试、成本/分钟        |
+| PTT                      | 外部/Workers AI 低延迟模型                                 | 当前 provider policy 中已支持的云 provider | 取消、超时、短音频结果归一       | 端到端 p95、短音频空结果率、取消语义                     |
+| TTS                      | Workers AI/外部 TTS API                                    | 当前 TTS provider                          | streaming proxy、缓存键和授权    | 首包、自然度、语言/voice 覆盖、缓存和版权约束            |
+| LLM                      | AI Gateway 转发现有 OpenAI/Anthropic/Gemini，或 Workers AI | 现有 API 直连                              | prompt/工具编排、结构化结果校验  | JSON/工具调用兼容、质量、token 成本、区域                |
+| Embedding                | Workers AI 或现有 OpenAI/Gemini API                        | 现有 provider                              | 文本准备、version 和 outbox      | 维度、距离分布、召回率和 projection version 必须固定     |
+| Diarization / speaker ID | 有质量等价物时使用 API                                     | 当前远程任务/Modal 形态                    | 输入/输出契约、删除和 fallback   | 说话人一致性、隐私、模型版本和删除能力                   |
 
 ### 5.3 STT 代码改造
 
@@ -241,14 +241,14 @@ Worker 数量多不等于需要手工逐个发布。Cloudflare 目录使用一�
 
 稳定态只维护少量部署单元，避免把每个 router 变成一个 Worker：
 
-| Worker | 建议语言 | 业务范围 |
-|---|---|---|
-| `edge` | TypeScript | 公网入口、鉴权、灰度、Service Bindings |
-| `auth` | TypeScript | Better Auth、OAuth、JWKS、auth D1 |
-| `api-core` | Python/FastAPI | 用户、配置、订阅读取、conversation/memory 等常规 HTTP 业务，按 bundle 结果再细分 |
-| `api-ai` | Python/FastAPI | LLM、embedding、预录音 ASR 等 API 编排，不执行本地模型 |
-| `realtime` | TypeScript + DO | listen/PTT/relay WebSocket 与实时 ASR API |
-| `jobs` | Python 或 TypeScript | Queue consumers、Workflows step、outbox/backfill |
+| Worker     | 建议语言             | 业务范围                                                                         |
+| ---------- | -------------------- | -------------------------------------------------------------------------------- |
+| `edge`     | TypeScript           | 公网入口、鉴权、灰度、Service Bindings                                           |
+| `auth`     | TypeScript           | Better Auth、OAuth、JWKS、auth D1                                                |
+| `api-core` | Python/FastAPI       | 用户、配置、订阅读取、conversation/memory 等常规 HTTP 业务，按 bundle 结果再细分 |
+| `api-ai`   | Python/FastAPI       | LLM、embedding、预录音 ASR 等 API 编排，不执行本地模型                           |
+| `realtime` | TypeScript + DO      | listen/PTT/relay WebSocket 与实时 ASR API                                        |
+| `jobs`     | Python 或 TypeScript | Queue consumers、Workflows step、outbox/backfill                                 |
 
 部署数量不是硬编码。CF-00 先计算 import graph、bundle、内存和共同变更频率；只有某个领域超过限制、扩缩容特征完全不同或需要独立权限时才继续拆分。所有 Worker 使用一个 workspace、统一命令和一份环境资源 manifest，日常部署由一个脚本按依赖顺序完成。
 
@@ -275,8 +275,8 @@ Worker 数量多不等于需要手工逐个发布。Cloudflare 目录使用一�
 
 保留与重写边界：
 
-| 可直接复用 | 需要 adapter | 必须重写/保留在其他运行时 |
-|---|---|---|
+| 可直接复用                                          | 需要 adapter                                                    | 必须重写/保留在其他运行时                                                               |
+| --------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Pydantic schema、纯函数、prompt、响应 DTO、授权规则 | 存储 repository、JWT/JWKS、API client、任务发布、日志/telemetry | 线程池、同步 Redis/Firebase/Google SDK、PyAV/ONNX/VAD、本地持久文件、单体 startup hooks |
 
 首个候选路由不能凭名称挑选。先生成 route manifest，并满足：无 WebSocket、无线程、无原生依赖、无同步数据库、无本地持久文件、p99 CPU 低、调用扇出不超过 6。健康检查、纯配置读取或单 provider API 编排通常是合适候选，但必须以 import probe 和依赖图为准。
@@ -291,18 +291,18 @@ Python 改造使用“复制 composition root、共享纯内核”的方式，�
 
 关键代码替换表：
 
-| 当前代码边界 | Worker-native 目标 | 完成判据 |
-|---|---|---|
-| `backend/main.py` | `api-core`/`api-ai` 各自 composition root | Worker import 不再触发单体 router、模型或远端 client 初始化 |
-| `backend/dependencies.py` 中 auth dependency | Edge 校验后的 typed auth context | route 测试覆盖 forged/missing/expired context，资源服务不重复同步拉 JWKS |
-| `backend/utils/auth_shim.py` | Edge/Auth Worker 的 JWKS 与内部断言契约 | Python Worker 路径无线程锁和同步 HTTP |
-| `backend/utils/executors.py` | 直接 async await、Queues 或 Workflows | Worker 路径没有 executor/thread；长工作离开 request lifecycle |
-| `backend/utils/other/storage*.py` | async R2 repository | 上传、range、checksum、删除和 residual 契约通过 |
-| `backend/utils/cloud_tasks_redis.py` | Queue producer + D1 idempotency ledger | 重复投递和 consumer crash 不产生重复副作用 |
-| `backend/firestore_pg/*` 与直接 Firestore 调用 | 按领域 D1 repository | route 不依赖通用 document shim；事务和账户 cutover 有行为测试 |
-| 直接 Redis/Lua/pipeline | KV、DO 或 Queues 的具体 primitive | 每个 key family 只有一个 owner，强一致语义有并发测试 |
-| `backend/database/vector_db.py` | Vectorize/保留 provider 的 versioned projection adapter | 维度与 model 固定，命中后 authoritative hydrate |
-| `backend/utils/stt/streaming.py` | Realtime Worker provider adapter + 共享事件契约 | 客户端协议 fixture、fallback、计费和断线行为一致 |
+| 当前代码边界                                   | Worker-native 目标                                      | 完成判据                                                                 |
+| ---------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `backend/main.py`                              | `api-core`/`api-ai` 各自 composition root               | Worker import 不再触发单体 router、模型或远端 client 初始化              |
+| `backend/dependencies.py` 中 auth dependency   | Edge 校验后的 typed auth context                        | route 测试覆盖 forged/missing/expired context，资源服务不重复同步拉 JWKS |
+| `backend/utils/auth_shim.py`                   | Edge/Auth Worker 的 JWKS 与内部断言契约                 | Python Worker 路径无线程锁和同步 HTTP                                    |
+| `backend/utils/executors.py`                   | 直接 async await、Queues 或 Workflows                   | Worker 路径没有 executor/thread；长工作离开 request lifecycle            |
+| `backend/utils/other/storage*.py`              | async R2 repository                                     | 上传、range、checksum、删除和 residual 契约通过                          |
+| `backend/utils/cloud_tasks_redis.py`           | Queue producer + D1 idempotency ledger                  | 重复投递和 consumer crash 不产生重复副作用                               |
+| `backend/firestore_pg/*` 与直接 Firestore 调用 | 按领域 D1 repository                                    | route 不依赖通用 document shim；事务和账户 cutover 有行为测试            |
+| 直接 Redis/Lua/pipeline                        | KV、DO 或 Queues 的具体 primitive                       | 每个 key family 只有一个 owner，强一致语义有并发测试                     |
+| `backend/database/vector_db.py`                | Vectorize/保留 provider 的 versioned projection adapter | 维度与 model 固定，命中后 authoritative hydrate                          |
+| `backend/utils/stt/streaming.py`               | Realtime Worker provider adapter + 共享事件契约         | 客户端协议 fixture、fallback、计费和断线行为一致                         |
 
 Realtime 是 TypeScript、现有 provider policy 是 Python，因此不能复制两份配置。迁移时把 provider/surface/language/model 能力移到版本化的 `stt-providers.yaml`，生成 Python 与 TypeScript typed artifact；生成器和两端 contract test 保证顺序、禁用 provider 和 fallback reason 一致。
 
@@ -337,15 +337,15 @@ D1 只在领域通过以下资格检查后使用：
 
 先生成 `redis-primitives.yaml`，逐个调用点记录 owner、key 形状、TTL、一致性、Lua/pipeline/lock/pubsub 和迁移目标。
 
-| 当前 Redis 语义 | Cloudflare 目标 | 说明 |
-|---|---|---|
-| 可容忍陈旧的缓存、feature/config snapshot | KV | 必须允许 60 秒以上跨 PoP 传播和 cache miss |
-| 限流、配额、原子计数 | Durable Object/DO SQLite | 按 uid、API key 或租户选择 stable object ID |
-| 唯一连接、分布式锁、会话状态 | Durable Object | 不能用 KV 实现 |
-| WebSocket presence、Pub/Sub | Durable Object WebSocket | 使用 hibernation API 降低空闲成本 |
-| 后台任务 | Queues | 至少一次投递，业务幂等 |
-| 多步骤长流程 | Workflows | 对需要等待、补偿和持久步骤的工作流使用 |
-| OAuth state/强一致短状态 | Better Auth D1 或 DO | 不能依赖 KV 的读后写一致性 |
+| 当前 Redis 语义                           | Cloudflare 目标          | 说明                                        |
+| ----------------------------------------- | ------------------------ | ------------------------------------------- |
+| 可容忍陈旧的缓存、feature/config snapshot | KV                       | 必须允许 60 秒以上跨 PoP 传播和 cache miss  |
+| 限流、配额、原子计数                      | Durable Object/DO SQLite | 按 uid、API key 或租户选择 stable object ID |
+| 唯一连接、分布式锁、会话状态              | Durable Object           | 不能用 KV 实现                              |
+| WebSocket presence、Pub/Sub               | Durable Object WebSocket | 使用 hibernation API 降低空闲成本           |
+| 后台任务                                  | Queues                   | 至少一次投递，业务幂等                      |
+| 多步骤长流程                              | Workflows                | 对需要等待、补偿和持久步骤的工作流使用      |
+| OAuth state/强一致短状态                  | Better Auth D1 或 DO     | 不能依赖 KV 的读后写一致性                  |
 
 迁移窗口内，旧后端仍可继续使用已有 Redis；新 Worker 不新增 Redis 依赖。每个 primitive 切到 KV/DO/Queues 后由 Edge 保证只有新的 route owner 写入，不能通过一个 Redis-compatible facade 假装迁移完成。
 
@@ -630,18 +630,18 @@ npx vinext check
 
 ### 10.2 发布硬门槛
 
-| Surface | 必须证据 |
-|---|---|
-| Edge | header spoof、防重放、JWT、CORS、route rollback、非幂等超时行为 |
-| Auth | 登录/刷新/OAuth/link/delete、导入 checksum、JWKS rotation、abort/retry、客户端 session generation |
-| Python Workers | route parity、bundle、内存、CPU、cold start、外连数、import side effect、错误映射 |
-| ASR | 按语言/设备/噪声的 WER、首字和 final p50/p95/p99、断线、成本/分钟、数据处理区域 |
-| Realtime | 协议 fixture、背压、重连、重复/乱序、close code、删除 fence |
-| Queue | 至少一次、幂等、DLQ、重放、部分失败、积压恢复时间 |
-| R2 | checksum、range、multipart、过期、删除 residual、迁移中断 |
-| D1 | 规模、并发、最坏 SQL、备份/恢复、账户级 cutover/rollback |
-| Vector | 召回、projection version、hydrate、stale fail closed、删除 |
-| Web | vinext compatibility、SSR、auth、API、WS、preview E2E |
+| Surface        | 必须证据                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| Edge           | header spoof、防重放、JWT、CORS、route rollback、非幂等超时行为                                   |
+| Auth           | 登录/刷新/OAuth/link/delete、导入 checksum、JWKS rotation、abort/retry、客户端 session generation |
+| Python Workers | route parity、bundle、内存、CPU、cold start、外连数、import side effect、错误映射                 |
+| ASR            | 按语言/设备/噪声的 WER、首字和 final p50/p95/p99、断线、成本/分钟、数据处理区域                   |
+| Realtime       | 协议 fixture、背压、重连、重复/乱序、close code、删除 fence                                       |
+| Queue          | 至少一次、幂等、DLQ、重放、部分失败、积压恢复时间                                                 |
+| R2             | checksum、range、multipart、过期、删除 residual、迁移中断                                         |
+| D1             | 规模、并发、最坏 SQL、备份/恢复、账户级 cutover/rollback                                          |
+| Vector         | 召回、projection version、hydrate、stale fail closed、删除                                        |
+| Web            | vinext compatibility、SSR、auth、API、WS、preview E2E                                             |
 
 ### 10.3 建议初始 SLO 门槛
 
@@ -897,6 +897,18 @@ Better Auth 行，删除后 residual 非零会 fail closed；重复调用返回 
 只接受绑定 Auth audience、uid、HTTP method 与精确 path 的 60 秒内部断言。公共 Better
 Auth `deleteUser` 仍显式禁用，必须等 Jobs 先删除并 residual-check 产品 D1/R2 数据后，
 才能把这个内部身份删除作为最终步骤接入公开删号流程。
+
+Firebase 身份导入也已选择性移植为 D1 tooling：导入保留 Firebase uid，只接受 password、
+Google 与 Apple authority，拒绝 disabled、phone、custom claims 和未知 provider；密码使用
+带 config fingerprint 的 Firebase scrypt envelope，Auth Worker 可验证旧 hash，并在首次
+成功 email 登录后以条件写升级为 Better Auth 原生 hash；错误密码不写入，并发首次登录
+幂等，D1 瞬时失败保留 envelope、记录 bounded fallback 并在下次登录重试。新密码仍使用
+Better Auth 原生算法。`0004_identity_import_ledger.sql` 在写入前声明唯一 source，
+参数化 D1 API batch 只接受与计划完全一致的 partial rows；请求中断后同 source 可重放，
+不同 source、已有 session、冲突行和最终 canonical checksum 不一致均 fail closed。当前只
+完成 Firebase 官方样例、内存 D1 契约与真实 workerd+D1 的错误密码/升级/移除迁移密钥后
+再次登录验证；真实 Firebase export 和隔离远端 D1 导入演练仍
+属于需要单独数据授权的生产迁移证据。
 
 随后以同一 staging JWT 实测 assistant-settings 的 section partial update（第二次
 更新保留第一次的 `analysis_prompt`）以及 ai-profile 的 partial metadata update；

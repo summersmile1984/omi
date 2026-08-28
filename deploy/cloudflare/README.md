@@ -249,6 +249,12 @@ printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler secret put GOOGLE_CLIENT_ID --nam
 printf '%s' "$GOOGLE_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CLIENT_SECRET --name omi-cf-auth-staging
 printf '%s' "$APPLE_CLIENT_ID" | npx wrangler secret put APPLE_CLIENT_ID --name omi-cf-auth-staging
 printf '%s' "$APPLE_CLIENT_SECRET" | npx wrangler secret put APPLE_CLIENT_SECRET --name omi-cf-auth-staging
+# Required only while imported Firebase password hashes still exist. These four
+# values must come from the matching Firebase Auth export configuration.
+printf '%s' "$AUTH_FIREBASE_SCRYPT_SIGNER_KEY" | npx wrangler secret put AUTH_FIREBASE_SCRYPT_SIGNER_KEY --name omi-cf-auth-staging
+printf '%s' "$AUTH_FIREBASE_SCRYPT_SALT_SEPARATOR" | npx wrangler secret put AUTH_FIREBASE_SCRYPT_SALT_SEPARATOR --name omi-cf-auth-staging
+printf '%s' "$AUTH_FIREBASE_SCRYPT_ROUNDS" | npx wrangler secret put AUTH_FIREBASE_SCRYPT_ROUNDS --name omi-cf-auth-staging
+printf '%s' "$AUTH_FIREBASE_SCRYPT_MEM_COST" | npx wrangler secret put AUTH_FIREBASE_SCRYPT_MEM_COST --name omi-cf-auth-staging
 # Optional, staging-only Flutter Better Auth bridge (never use in a release build).
 cf_dev_issuer_secret="$(openssl rand -base64 48)"
 printf '%s' "$cf_dev_issuer_secret" | npx wrangler secret put AUTH_DEV_ISSUER_SECRET --name omi-cf-auth-staging
@@ -267,6 +273,65 @@ development bridge. The Flutter client enables this path only when both
 non-release build; do not put the issuer secret in a release build or commit it.
 Point `OMI_AUTH_SERVER_URL` at the Auth Worker URL and `OMI_API_BASE_URL` at the
 Edge Worker URL when exercising the app against staging.
+
+### Firebase identity import
+
+`scripts/import-firebase-identities.mjs` is the fail-closed Firebase Auth export
+to Better Auth D1 migration tool. It preserves the Firebase uid, rejects
+disabled/phone/custom-claim/unsupported identities, maps only password,
+Google, and Apple sign-in authorities, and produces deterministic source,
+configuration, and canonical user/account checksums. Imported password hashes
+use a versioned envelope; the Auth Worker verifies the original Firebase
+scrypt hash, then conditionally replaces it with a Better Auth native hash
+after the first successful email sign-in. Wrong passwords and unsuccessful
+sign-ins cannot trigger the write. Concurrent first logins are idempotent; a
+transient D1 write failure preserves the verified envelope, emits bounded
+fallback telemetry without identity or password data, and retries at the next
+login. All new and reset passwords use Better Auth's native algorithm.
+
+Both input files must be regular, non-symlinked files with mode `0600` or
+stricter. Validate without network access first:
+
+```bash
+npm run identity:import -- validate \
+  --users /secure/firebase-users.json \
+  --hash-config /secure/firebase-hash-config.json
+```
+
+`apply` and `verify` use Cloudflare's parameterized
+[D1 query API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/),
+so user values and password envelopes are never placed in shell arguments or a
+temporary SQL file. Set `CLOUDFLARE_D1_DATABASE_ID` to the new empty Auth D1;
+`apply` additionally requires `CLOUDFLARE_IDENTITY_IMPORT_CONFIRM` to equal that
+exact ID. The token needs only D1 read/write on the isolated target account.
+Any Google/Apple identity in the export also requires the matching complete
+provider configuration in the environment before apply or verify.
+
+```bash
+export CLOUDFLARE_IDENTITY_IMPORT_CONFIRM="$CLOUDFLARE_D1_DATABASE_ID"
+npm run identity:import -- apply \
+  --users /secure/firebase-users.json \
+  --hash-config /secure/firebase-hash-config.json
+npm run identity:import -- verify \
+  --users /secure/firebase-users.json \
+  --hash-config /secure/firebase-hash-config.json
+```
+
+Run `verify` before routing sign-in traffic to the imported D1. It proves the
+exact pre-cutover source image; after a user signs in or changes a password,
+the intentional native hash and `updatedAt` changes mean that exact source
+checksum is no longer a post-cutover health check.
+
+Migration `0004_identity_import_ledger.sql` claims one immutable source before
+writing. Deterministic `INSERT OR IGNORE` batches accept only an exact planned
+subset, so an interrupted request can replay the same source; conflicting rows,
+nonzero sessions, a different source, or a final checksum mismatch fail closed.
+Keep all four Firebase scrypt secrets configured until
+`SELECT COUNT(*) FROM account WHERE password LIKE 'firebase-scrypt-v1$%'`
+returns zero; native hashes remain usable after those migration-only secrets
+are removed.
+The current non-empty shared staging Auth D1 is not an import target. A real
+Firebase export remains a separately approved production-data operation.
 
 For a local debug run against the deployed staging slice, keep the issuer
 secret in your shell only:
