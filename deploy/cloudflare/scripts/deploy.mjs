@@ -1,9 +1,16 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyStagingHealth } from "./deploy-health.mjs";
+import { stagingHealthTargets, verifyStagingHealth } from "./deploy-health.mjs";
+import {
+  createDeploymentSnapshot,
+  rollbackPlan,
+  STAGING_WORKERS,
+} from "./deployment-state.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const webRoot = resolve(root, "../../web/app");
 const envName = process.argv[2] || "staging";
 if (envName !== "staging") {
   throw new Error(
@@ -29,7 +36,103 @@ function runQuiet(command, args) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  return { ok: result.status === 0, stdout: result.stdout || "" };
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+  };
+}
+
+function qualifyRelease() {
+  run("npm", ["run", "typecheck"]);
+  run("npm", ["test"]);
+  for (const config of [
+    "workers/auth/wrangler.jsonc",
+    "workers/realtime/wrangler.jsonc",
+    "workers/jobs/wrangler.jsonc",
+    "workers/edge/wrangler.jsonc",
+  ]) {
+    run("npx", ["wrangler", "deploy", "--dry-run", "--config", config]);
+  }
+  for (const directory of ["python/api-core", "python/api-ai"]) {
+    run("uvx", ["uv==0.12.3", "run", "pytest", "-q"], {
+      cwd: resolve(root, directory),
+    });
+    run("uvx", ["uv==0.12.3", "run", "pywrangler", "deploy", "--dry-run"], {
+      cwd: resolve(root, directory),
+    });
+  }
+  run("npx", ["next", "typegen"], { cwd: webRoot });
+  run("npx", ["tsc", "--noEmit"], { cwd: webRoot });
+  run("npm", ["test"], { cwd: webRoot });
+  run("npm", ["run", "build:vinext:staging"], { cwd: webRoot });
+  run(
+    "npx",
+    [
+      "wrangler",
+      "deploy",
+      "--dry-run",
+      "--config",
+      "dist/server/wrangler.json",
+    ],
+    { cwd: webRoot },
+  );
+}
+
+function captureDeploymentSnapshot() {
+  const statuses = {};
+  for (const workerName of STAGING_WORKERS) {
+    const result = runQuiet("npx", [
+      "wrangler",
+      "deployments",
+      "status",
+      "--name",
+      workerName,
+      "--json",
+    ]);
+    if (!result.ok) {
+      throw new Error(
+        `unable to capture active version for ${workerName}: ${result.stderr.trim() || "wrangler failed"}`,
+      );
+    }
+    statuses[workerName] = result.stdout;
+  }
+  const snapshot = createDeploymentSnapshot(statuses);
+  const releaseDirectory = resolve(root, ".wrangler/releases");
+  mkdirSync(releaseDirectory, { recursive: true });
+  const stamp = snapshot.createdAt.replace(/[:.]/g, "-");
+  const snapshotPath = resolve(
+    releaseDirectory,
+    `staging-before-${stamp}.json`,
+  );
+  writeFileSync(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  return { snapshot, snapshotPath };
+}
+
+function rollbackDeployment(snapshot, snapshotPath) {
+  const failures = [];
+  for (const { workerName, versionId } of rollbackPlan(snapshot)) {
+    const result = spawnSync(
+      "npx",
+      [
+        "wrangler",
+        "rollback",
+        versionId,
+        "--name",
+        workerName,
+        "--message",
+        `automatic staging rollback from ${snapshotPath}`,
+        "--yes",
+      ],
+      { cwd: root, stdio: "inherit", env: process.env },
+    );
+    if (result.status !== 0) failures.push(workerName);
+  }
+  if (failures.length) {
+    throw new Error(`automatic rollback failed for: ${failures.join(", ")}`);
+  }
 }
 
 function d1Exists(name) {
@@ -122,21 +225,67 @@ function deployPython(directory) {
   });
 }
 
+function deployWeb() {
+  run(
+    "npx",
+    [
+      "vinext-cloudflare",
+      "deploy",
+      "--config",
+      "dist/server/wrangler.json",
+      "--skip-build",
+    ],
+    { cwd: webRoot },
+  );
+}
+
 console.log(
   "Cloudflare staging release: resources are isolated under omi-cf-*; no production config is loaded.",
 );
-ensureResources();
-applyMigrations();
-deployTypeScript("workers/auth/wrangler.jsonc");
-deployPython("python/api-core");
-deployPython("python/api-ai");
-deployTypeScript("workers/realtime/wrangler.jsonc");
-deployTypeScript("workers/jobs/wrangler.jsonc");
-deployTypeScript("workers/edge/wrangler.jsonc");
-const health = await verifyStagingHealth();
-console.log(
-  `Staging release complete. Health checks passed: ${JSON.stringify(health)}.`,
-);
-console.log(
-  "Configure INTERNAL_ASSERTION_SECRET on auth, edge, api-core, api-ai, realtime and jobs before exercising authenticated routes.",
-);
+qualifyRelease();
+const { snapshot, snapshotPath } = captureDeploymentSnapshot();
+let deploymentStarted = false;
+try {
+  ensureResources();
+  applyMigrations();
+  deploymentStarted = true;
+  deployTypeScript("workers/auth/wrangler.jsonc");
+  deployPython("python/api-core");
+  deployPython("python/api-ai");
+  deployTypeScript("workers/realtime/wrangler.jsonc");
+  deployTypeScript("workers/jobs/wrangler.jsonc");
+  deployTypeScript("workers/edge/wrangler.jsonc");
+  await verifyStagingHealth({
+    targets: stagingHealthTargets().filter((target) => target.name === "edge"),
+  });
+  deployWeb();
+  const health = await verifyStagingHealth();
+  run("npm", ["run", "smoke:staging"]);
+  console.log(
+    `Staging release complete. Health checks passed: ${JSON.stringify(health)}.`,
+  );
+  console.log(`Rollback snapshot: ${snapshotPath}`);
+} catch (error) {
+  if (deploymentStarted) {
+    console.error(
+      `Staging release failed; restoring the deployment snapshot at ${snapshotPath}.`,
+    );
+    rollbackDeployment(snapshot, snapshotPath);
+    const restoredHealth = await verifyStagingHealth({
+      targets: [
+        {
+          name: "edge",
+          url: "https://omi-cf-edge-staging.summersmile1984.workers.dev/health",
+        },
+        {
+          name: "web",
+          url: "https://omi-web-app-staging.summersmile1984.workers.dev/login",
+        },
+      ],
+    });
+    console.error(
+      `Staging rollback health passed: ${JSON.stringify(restoredHealth)}.`,
+    );
+  }
+  throw error;
+}

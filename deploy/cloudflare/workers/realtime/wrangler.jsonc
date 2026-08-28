@@ -4,7 +4,8 @@
   "main": "index.ts",
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
+  "workers_dev": false,
+  "preview_urls": false,
   "durable_objects": {
     "bindings": [
       { "name": "REALTIME_SESSIONS", "class_name": "RealtimeSession" },

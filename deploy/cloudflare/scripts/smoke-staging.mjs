@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 
 const DEFAULT_EDGE_URL =
   "https://omi-cf-edge-staging.summersmile1984.workers.dev";
+const DEFAULT_WEB_URL =
+  "https://omi-web-app-staging.summersmile1984.workers.dev";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export function resolveEdgeUrl(raw = process.env.CLOUDFLARE_EDGE_URL) {
@@ -10,6 +12,16 @@ export function resolveEdgeUrl(raw = process.env.CLOUDFLARE_EDGE_URL) {
   const url = new URL(value);
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new Error("CLOUDFLARE_EDGE_URL must use http or https");
+  }
+  return url.toString().replace(/\/$/, "");
+}
+
+export function resolveWebUrl(raw = process.env.CLOUDFLARE_WEB_URL) {
+  const value = (raw || DEFAULT_WEB_URL).trim();
+  if (!value) throw new Error("CLOUDFLARE_WEB_URL must not be empty");
+  const url = new URL(value);
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("CLOUDFLARE_WEB_URL must use http or https");
   }
   return url.toString().replace(/\/$/, "");
 }
@@ -64,11 +76,13 @@ function expectStatus(label, response, expected) {
 
 export async function runSmoke({
   edgeUrl = resolveEdgeUrl(),
+  webUrl = resolveWebUrl(),
   token = null,
   nativeTts = process.env.CLOUDFLARE_SMOKE_NATIVE_TTS === "1",
   fetchImpl = fetch,
 } = {}) {
   const base = resolveEdgeUrl(edgeUrl);
+  const webBase = resolveWebUrl(webUrl);
   const health = await request(fetchImpl, `${base}/health`);
   expectStatus("edge health", health, 200);
   const announcementsGeneral = await request(
@@ -153,6 +167,16 @@ export async function runSmoke({
     { headers: authHeaders },
   );
   expectStatus("canonical conversation list", conversations, 200);
+  const webProxyConversations = await request(
+    fetchImpl,
+    `${webBase}/api/proxy/v1/conversations?limit=1`,
+    { headers: authHeaders },
+  );
+  expectStatus(
+    "Web to Edge conversation service binding",
+    webProxyConversations,
+    200,
+  );
   const memories = await request(
     fetchImpl,
     `${base}/v3/memories?limit=25&offset=0`,
@@ -460,6 +484,7 @@ export async function runSmoke({
     accountCutover: accountCutover.status,
     appSearch: appSearch.status,
     conversations: conversations.status,
+    webProxyConversations: webProxyConversations.status,
     memories: memories.status,
     folders: folders.status,
     conversationCount: conversationCount.status,

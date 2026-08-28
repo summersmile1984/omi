@@ -9,6 +9,16 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /ready
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: [auth, api-core, api-ai, realtime, jobs]
+    protocol: http
+    rollout: staging-only
+    rollback: restore-worker-deployment-snapshot
   - method: ANY
     path: /api/auth/*
     owner: auth

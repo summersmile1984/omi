@@ -117,10 +117,27 @@ fenced. Missing rows outside the exact
 `ACCOUNT_CUTOVER_PROFILE=isolated-staging` configuration still project as
 `legacy`; no existing-account migration or production cutover is inferred.
 
-`deploy:staging` applies the isolated migrations, publishes Workers in dependency
-order, then checks Edge, Auth `/ready`, and every internal Worker `/health` before
-reporting success. A release is considered incomplete if any readiness check is
-not HTTP 200; no Dashboard-by-Dashboard confirmation is required.
+`deploy:staging` first runs the TypeScript/Python/Web tests and dry-run builds,
+then records the active version of all six backend Workers and the Web Worker.
+It applies the isolated migrations, publishes backend Workers in dependency
+order, verifies Edge `/ready`, deploys the already-qualified Web bundle, checks
+Web `/api/worker-ready`, and runs the staging smoke. Edge readiness calls Auth,
+Core, AI, Realtime, and Jobs only through Service Bindings. Core, AI, Realtime,
+and Jobs have no public `workers.dev` or preview URL; only Edge, Web, and the
+staging Auth compatibility surface remain public.
+
+If any post-deploy check fails, the command restores every Worker version from
+the pre-release snapshot and checks the restored Edge/Web entrypoints. Snapshots
+are owner-only files under `deploy/cloudflare/.wrangler/releases/`. A prior
+snapshot can also be restored explicitly:
+
+```bash
+npm run rollback:staging -- .wrangler/releases/staging-before-<timestamp>.json
+```
+
+D1 migrations and R2/Queue resources are not versioned by Workers rollback;
+staging migrations must therefore remain backward-compatible with the captured
+Worker versions. The current migrations are additive.
 
 `smoke:staging` checks Edge health by default. To enable the authenticated
 checks, provide a staging Better Auth token through an environment variable or
@@ -134,10 +151,12 @@ To deliberately exercise billable native TTS as part of that authenticated
 smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
 `audio/mpeg` response and is opt-in.
 
-The authenticated smoke verifies unauthenticated rejection, the D1 probe, and
-the Workers AI raw-audio input boundary. It deliberately sends an empty body,
-so it does not invoke billable model inference; use a separate explicit audio
-request for model quality or latency qualification.
+The authenticated smoke verifies unauthenticated rejection, the D1 probe, the
+conversation/folder/memory shell dependencies, and the same conversation read
+through Web `/api/proxy` so a missing Web→Edge binding fails the release. It
+also verifies the Workers AI raw-audio input boundary with an empty body, so it
+does not invoke billable model inference; use a separate explicit audio request
+for model quality or latency qualification.
 
 The deployment script requires an already authenticated Wrangler session or a
 scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; it never prints
@@ -223,8 +242,9 @@ Do not point these commands at production names from this worktree. The
 staging smoke surface is:
 
 ```text
-GET  /health                  all deployed Workers
-GET  /ready                   auth D1 readiness
+GET  /health                  public Edge liveness
+GET  /ready                   Edge → all internal dependency readiness
+GET  Web /api/worker-ready    Web → Edge service-binding readiness
 POST /api/auth/sign-up/email  Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API

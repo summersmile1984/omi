@@ -29,7 +29,57 @@ describe("edge gateway", () => {
     expect(await response.json()).toEqual({
       status: "ok",
       service: "edge",
-      version: "cf-00",
+      version: "cf-01",
+    });
+  });
+
+  it("reports dependency readiness only through service bindings", async () => {
+    const paths: Record<string, string> = {};
+    const dependency = (name: string, status = 200) =>
+      rawService((request) => {
+        paths[name] = new URL(request.url).pathname;
+        return new Response(null, { status });
+      });
+    const env = {
+      AUTH: dependency("auth"),
+      API_CORE: dependency("api-core"),
+      API_AI: dependency("api-ai"),
+      REALTIME: dependency("realtime"),
+      JOBS: dependency("jobs"),
+    };
+    const ready = await edge.fetch(
+      new Request("https://edge.test/ready"),
+      env as never,
+    );
+    expect(ready.status).toBe(200);
+    expect(await ready.json()).toEqual({
+      status: "ready",
+      service: "edge",
+      dependencies: {
+        auth: 200,
+        "api-core": 200,
+        "api-ai": 200,
+        realtime: 200,
+        jobs: 200,
+      },
+    });
+    expect(paths).toEqual({
+      auth: "/ready",
+      "api-core": "/health",
+      "api-ai": "/health",
+      realtime: "/health",
+      jobs: "/health",
+    });
+
+    env.API_AI = dependency("api-ai", 503);
+    const degraded = await edge.fetch(
+      new Request("https://edge.test/ready"),
+      env as never,
+    );
+    expect(degraded.status).toBe(503);
+    expect(await degraded.json()).toMatchObject({
+      status: "degraded",
+      dependencies: { "api-ai": 503 },
     });
   });
 

@@ -31,8 +31,42 @@ app.use("*", async (c, next) => {
 });
 
 app.get("/health", (c) =>
-  c.json({ status: "ok", service: "edge", version: "cf-00" }),
+  c.json({ status: "ok", service: "edge", version: "cf-01" }),
 );
+
+app.get("/ready", async (c) => {
+  const dependencies = [
+    ["auth", c.env.AUTH, "/ready"],
+    ["api-core", c.env.API_CORE, "/health"],
+    ["api-ai", c.env.API_AI, "/health"],
+    ["realtime", c.env.REALTIME, "/health"],
+    ["jobs", c.env.JOBS, "/health"],
+  ] as const;
+  const statuses = Object.fromEntries(
+    await Promise.all(
+      dependencies.map(async ([name, service, path]) => {
+        try {
+          const response = await service.fetch(
+            new Request(`https://${name}.internal${path}`),
+          );
+          await response.arrayBuffer();
+          return [name, response.status] as const;
+        } catch {
+          return [name, 503] as const;
+        }
+      }),
+    ),
+  );
+  const ready = Object.values(statuses).every((status) => status === 200);
+  return c.json(
+    {
+      status: ready ? "ready" : "degraded",
+      service: "edge",
+      dependencies: statuses,
+    },
+    ready ? 200 : 503,
+  );
+});
 
 const proxyPublicCore = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,

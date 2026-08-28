@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseTokenPayload,
   resolveEdgeUrl,
+  resolveWebUrl,
   runSmoke,
 } from "../scripts/smoke-staging.mjs";
 
@@ -12,6 +13,9 @@ describe("staging smoke helpers", () => {
     );
     expect(() => resolveEdgeUrl("ftp://edge.example.test")).toThrow(
       "http or https",
+    );
+    expect(resolveWebUrl("https://web.example.test/")).toBe(
+      "https://web.example.test",
     );
   });
 
@@ -153,6 +157,7 @@ describe("staging smoke helpers", () => {
       accountCutover: 200,
       appSearch: 200,
       conversations: 200,
+      webProxyConversations: 200,
       memories: 200,
       folders: 200,
       conversationCount: 200,
@@ -184,7 +189,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(40);
+    expect(calls).toHaveLength(41);
     expect(
       calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init
         ?.method,

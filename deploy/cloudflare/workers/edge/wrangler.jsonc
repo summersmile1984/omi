@@ -10,9 +10,9 @@
     { "binding": "API_CORE", "service": "omi-cf-api-core-staging" },
     { "binding": "API_AI", "service": "omi-cf-api-ai-staging" },
     { "binding": "REALTIME", "service": "omi-cf-realtime-staging" },
-    { "binding": "JOBS", "service": "omi-cf-jobs-staging" }
+    { "binding": "JOBS", "service": "omi-cf-jobs-staging" },
   ],
   "vars": {
-    "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev"
-  }
+    "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",
+  },
 }
