@@ -80,6 +80,17 @@ describe("Cloudflare migration manifests", () => {
         directCallerPaths,
       }),
     ).toThrow("only with stale-tolerant consistency");
+
+    const untrackedPartial = structuredClone(manifest);
+    delete untrackedPartial.families.find(
+      (family) => family.id === "request-rate-limits",
+    ).migrated_policies;
+    expect(() =>
+      validateRedisPrimitiveManifest(untrackedPartial, {
+        redisSource,
+        directCallerPaths,
+      }),
+    ).toThrow("must list migrated_policies while staging-partial");
   });
 
   it("requires re-embedding when a vector projection changes dimensions", async () => {

@@ -332,7 +332,7 @@ routes:
     runtime: python-worker
     target_runtime: external-api
     auth_authority: better-auth
-    dependencies: [external-tts-api]
+    dependencies: [external-tts-api, rate-limit-do]
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -343,7 +343,7 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [workers-ai-binding]
+    dependencies: [workers-ai-binding, rate-limit-do]
     protocol: http
     idempotency: optional
     rollout: staging-only

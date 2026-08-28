@@ -12,6 +12,14 @@
     { "binding": "REALTIME", "service": "omi-cf-realtime-staging" },
     { "binding": "JOBS", "service": "omi-cf-jobs-staging" },
   ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "RATE_LIMITS", "class_name": "RateLimitDurableObject" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RateLimitDurableObject"] },
+  ],
   "vars": {
     "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",
   },

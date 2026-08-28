@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import edge from "../workers/edge/index";
 import { verifyRealtimeTicket } from "../workers/shared/realtime-ticket";
 
@@ -18,6 +18,20 @@ const service = (handler: (request: Request) => Promise<Response> | Response) =>
     }
     return handler(request);
   });
+
+const rateLimits = (
+  handler: (request: Request) => Promise<Response> | Response,
+  names?: string[],
+) =>
+  ({
+    idFromName(name: string) {
+      names?.push(name);
+      return name;
+    },
+    get() {
+      return { fetch: handler };
+    },
+  }) as unknown as DurableObjectNamespace;
 
 describe("edge gateway", () => {
   it("serves a versioned health response", async () => {
@@ -46,6 +60,10 @@ describe("edge gateway", () => {
       API_AI: dependency("api-ai"),
       REALTIME: dependency("realtime"),
       JOBS: dependency("jobs"),
+      RATE_LIMITS: rateLimits((request) => {
+        paths["rate-limit"] = new URL(request.url).pathname;
+        return Response.json({ status: "ok" });
+      }),
     };
     const ready = await edge.fetch(
       new Request("https://edge.test/ready"),
@@ -61,6 +79,7 @@ describe("edge gateway", () => {
         "api-ai": 200,
         realtime: 200,
         jobs: 200,
+        "rate-limit": 200,
       },
     });
     expect(paths).toEqual({
@@ -69,6 +88,7 @@ describe("edge gateway", () => {
       "api-ai": "/health",
       realtime: "/health",
       jobs: "/health",
+      "rate-limit": "/health",
     });
 
     env.API_AI = dependency("api-ai", 503);
@@ -1282,6 +1302,7 @@ describe("edge gateway", () => {
 
   it("routes the native Workers AI TTS contract to the API AI worker", async () => {
     let aiPath = "";
+    const rateLimitNames: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       AUTH: service((request) => {
@@ -1301,6 +1322,17 @@ describe("edge gateway", () => {
         });
       }),
       REALTIME: service(() => Response.json({ status: "ok" })),
+      RATE_LIMITS: rateLimits(
+        () =>
+          Response.json({
+            allowed: true,
+            limit: 300,
+            remaining: 299,
+            retryAfter: 0,
+            resetAt: Date.now() + 3_600_000,
+          }),
+        rateLimitNames,
+      ),
     };
     const response = await edge.fetch(
       new Request("https://edge.test/v1/tts/synthesize-workers-ai", {
@@ -1315,6 +1347,83 @@ describe("edge gateway", () => {
     );
     expect(response.status).toBe(200);
     expect(aiPath).toBe("/v1/tts/synthesize-workers-ai");
+    expect(rateLimitNames).toEqual(["tts:synthesize:user-1"]);
+  });
+
+  it("returns 429 before invoking TTS when the Durable Object limit is exhausted", async () => {
+    let aiCalls = 0;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      API_AI: service(() => {
+        aiCalls += 1;
+        return Response.json({ status: "wrong" });
+      }),
+      RATE_LIMITS: rateLimits(() =>
+        Response.json({
+          allowed: false,
+          limit: 300,
+          remaining: 0,
+          retryAfter: 42,
+          resetAt: Date.now() + 42_000,
+        }),
+      ),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/tts/synthesize", {
+        method: "POST",
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("42");
+    expect(response.headers.get("x-ratelimit-limit")).toBe("300");
+    expect(aiCalls).toBe(0);
+  });
+
+  it("records a bounded fallback and preserves legacy fail-open behavior when the limiter is unavailable", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      RATE_LIMITS: rateLimits(() => {
+        throw new Error("simulated Durable Object outage");
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/tts/synthesize-workers-ai", {
+        method: "POST",
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
+      event: "fallback",
+      component: "rate_limit",
+      from: "durable_object",
+      to: "unlimited",
+      reason: "dependency_unavailable",
+      outcome: "degraded",
+    });
+    expect(String(warning.mock.calls[0]?.[0])).not.toContain("user-1");
+    warning.mockRestore();
   });
 
   it("keeps every realtime contract on the realtime binding", async () => {

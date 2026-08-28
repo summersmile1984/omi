@@ -44,6 +44,7 @@ Resource names are deliberately isolated from existing account resources:
 - Jobs Worker: `omi-cf-jobs-staging`
 - Queues: `omi-cf-jobs-staging`, `omi-cf-jobs-dlq-staging`
 - R2: `omi-cf-staging`
+- Durable Objects: Realtime sessions and Edge rate-limit windows
 
 The deploy script only deploys the named staging environment. It applies D1
 migrations before Workers and deploys Edge last. It never creates production
@@ -746,6 +747,11 @@ MCP state, and app-owner writes remain legacy-owned.
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
 until its rate-limit and provider-shape migration is verified separately.
+Both Cloudflare-owned `/v1/tts/synthesize` routes now consume the shared
+`tts:synthesize` 300-request/hour/UID outer limit in the Edge rate-limit Durable
+Object. The object serializes concurrent increments and persists the fixed
+window; a limiter dependency failure preserves the legacy first-party
+fail-open behavior and emits bounded `recordFallback` telemetry.
 
 `/v1/tts/synthesize-workers-ai` is an additive raw-MP3 route backed by the
 native `@cf/deepgram/aura-1` binding. It accepts bounded `{text, speaker}` JSON

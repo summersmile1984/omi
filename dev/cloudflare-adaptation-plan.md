@@ -758,19 +758,19 @@ Worker-first 稳定态没有常驻 Container 固定成本。最终预算使用�
 `deploy/cloudflare/`，资源名全部带 `omi-cf-` 前缀，未修改已有 Worker、生产
 DNS 或生产数据库。当前 staging 已部署：
 
-- `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由。
+- `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由；Edge 自有 RateLimit Durable Object 已接管两条 `/v1/tts/synthesize*` 路由共用的 `tts:synthesize` 300 次/小时/UID 外层窗口，事务串行化并发计数、alarm 清理过期窗口，DO 故障时保留旧 first-party fail-open 行为并记录结构化 fallback。
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
 - `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意、短时 geolocation TTL row、daily-summary/mentor notification 偏好、training-data opt-in 状态与 private-sync 联动、FCM token 注册、开发者 webhook 配置/开关状态、assistant-settings 深合并和低风险 ai-profile 投影、客户端 API key 配置读取、公开 firmware stable/latest/version APIs、公告/版本更新公开读取与用户 dismiss，以及 staging-only 的 D1-backed action-item CRUD/reconciliation（含 Apple Reminders pending/sync-batch projection）、daily/weekly/overall score projection、focus-session CRUD/stats、text-only screen-activity sync/list/summary、calendar onboarding flags、People 元数据 CRUD、goal 元数据/metric/daily-history/progress-events/canonical-list/canonical-create/focus/lifecycle CRUD、work-intent/workstream journal/artifact/checkpoint CRUD、folder 元数据/排序/bulk move/delete CRUD、daily-summary 列表/详情/删除/visibility/test/regenerate 投影和 app-scoped chat history 读/删投影，未导入 `backend/main.py`。
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，支持稳定 `jobId` 的 `probe` 与 raw-audio `transcribe` kind；后者用临时 R2 对象、幂等键和最多三次 Workers AI 重试完成异步 Whisper 投影，并提供 uid-scoped job status/result read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：188 条首期路由和 11 个 staging 资源；`redis-primitives.yaml` 将 `backend/database/redis_db.py` 的 118 个公开 helper（另显式豁免装饰器）归入 34 个 key family，并覆盖 20 个绕过 helper 或直接依赖 Redis package 的生产/工具调用点；`vector-namespaces.yaml` 覆盖 7 个现有 Pinecone namespace；`r2-namespaces.yaml` 覆盖 9 个 `BUCKET_*` 对象 namespace。`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership、Edge 路由表示、源码清单完整性、Vectorize 维度/re-embedding 契约、R2 环境隔离，以及 Cloudflare Worker 禁止连接 Redis。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：188 条首期路由和 12 个 staging 资源；`redis-primitives.yaml` 将 `backend/database/redis_db.py` 的 118 个公开 helper（另显式豁免装饰器）归入 34 个 key family，并覆盖 20 个绕过 helper 或直接依赖 Redis package 的生产/工具调用点；`vector-namespaces.yaml` 覆盖 7 个现有 Pinecone namespace；`r2-namespaces.yaml` 覆盖 9 个 `BUCKET_*` 对象 namespace。`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership、Edge 路由表示、源码清单完整性、Vectorize 维度/re-embedding 契约、R2 环境隔离，以及 Cloudflare Worker 禁止连接 Redis。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 14 files / 101 tests pass
+npm test                                  # 15 files / 106 tests pass
 uvx uv==0.12.3 run pytest -q              # api-core: 110 tests pass
 uvx uv==0.12.3 run pytest -q              # api-ai: 32 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai

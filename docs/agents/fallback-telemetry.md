@@ -1,6 +1,6 @@
 # Fallback / Resilience Telemetry
 
-Cross-component contract for instrumenting fallback and fail-open branches (Python, Swift, Rust). The one-line rule lives in the root `AGENTS.md`; this file is the full prescription.
+Cross-component contract for instrumenting fallback and fail-open branches (Python, TypeScript Workers, Swift, Rust). The one-line rule lives in the root `AGENTS.md`; this file is the full prescription.
 
 Silent UX healing is allowed; **silent ops is not**. When a branch changes provider, mode, correctness, or takes a fail-open path, call the shared helper — do **not** invent a new `*_fallback_total` counter or one-off PostHog event.
 
@@ -23,6 +23,7 @@ ELSE (pure cache miss, expected soft path with no mode change):
 Emitters:
 
 - Python: `utils.observability.fallback.record_fallback` → `omi_fallback_total`
+- TypeScript Workers: `deploy/cloudflare/workers/shared/fallback.recordFallback` → bounded structured Worker log (`event=fallback`)
 - Swift: `DesktopDiagnosticsManager.recordFallback` → `desktop_health_event`/`fallback_triggered`
 - Rust: `fallback::record_fallback` → fixed-field `tracing` (`event=fallback`)
 

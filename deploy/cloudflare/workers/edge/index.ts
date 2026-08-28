@@ -14,6 +14,11 @@ import {
   cloudflareProductTrafficDenial,
 } from "./cutover";
 import type { EdgeEnv, EdgeVariables } from "./env";
+import {
+  enforceEdgeRateLimit,
+  RateLimitDurableObject,
+  TTS_SYNTHESIZE_RATE_LIMIT,
+} from "./rate-limit";
 
 const app = new Hono<{ Bindings: EdgeEnv; Variables: EdgeVariables }>();
 const MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES = 5_000_000;
@@ -57,6 +62,16 @@ app.get("/ready", async (c) => {
       }),
     ),
   );
+  try {
+    const rateLimitId = c.env.RATE_LIMITS.idFromName("health");
+    const response = await c.env.RATE_LIMITS.get(rateLimitId).fetch(
+      new Request("https://rate-limit.internal/health"),
+    );
+    await response.arrayBuffer();
+    statuses["rate-limit"] = response.status;
+  } catch {
+    statuses["rate-limit"] = 503;
+  }
   const ready = Object.values(statuses).every((status) => status === 200);
   return c.json(
     {
@@ -389,6 +404,18 @@ const proxyAuthenticatedAI = async (
     id,
   );
   if (denial) return withRequestId(denial, id);
+  if (
+    c.req.path === "/v1/tts/synthesize" ||
+    c.req.path === "/v1/tts/synthesize-workers-ai"
+  ) {
+    const rateLimitDenial = await enforceEdgeRateLimit(
+      c.env,
+      auth,
+      TTS_SYNTHESIZE_RATE_LIMIT,
+      id,
+    );
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -670,4 +697,5 @@ function envLegacy(
   );
 }
 
+export { RateLimitDurableObject };
 export default app;

@@ -341,7 +341,10 @@ families:
     consistency: strongly-consistent
     target: durable-object
     target_owner: edge
-    migration_state: planned
+    migration_state: staging-partial
+    migrated_policies: ["tts:synthesize"]
+    migrated_routes:
+      ["POST /v1/tts/synthesize", "POST /v1/tts/synthesize-workers-ai"]
   - id: tts-rate-limits
     source_symbols: [check_tts_rate_limit]
     key_patterns: ["tts:burst:{uid}", "tts:chars:{uid}:{date}"]

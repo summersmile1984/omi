@@ -33,6 +33,7 @@ const ALLOWED_PRIMITIVE_TARGETS = new Set([
 ]);
 const ALLOWED_PRIMITIVE_STATES = new Set([
   "planned",
+  "staging-partial",
   "staging-owned",
   "blocked",
   "retired",
@@ -217,6 +218,12 @@ export function validateRedisPrimitiveManifest(
     ) {
       throw new Error(
         `Redis family ${family.id} may target none only as exempt tooling`,
+      );
+    }
+    if (family.migration_state === "staging-partial") {
+      requiredStringArray(
+        family.migrated_policies,
+        `Redis family ${family.id} must list migrated_policies while staging-partial`,
       );
     }
     classifiedSymbols.push(...family.source_symbols);
