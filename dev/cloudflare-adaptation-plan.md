@@ -764,14 +764,14 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，支持稳定 `jobId` 的 `probe` 与 raw-audio `transcribe` kind；后者用临时 R2 对象、幂等键和最多三次 Workers AI 重试完成异步 Whisper 投影，并提供 uid-scoped job status/result read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：167 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：168 条首期路由和 10 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 10 files / 65 tests pass
-api-core/.venv/bin/pytest -q              # api-core: 88 tests pass
+npm test                                  # 10 files / 67 tests pass
+api-core/.venv/bin/pytest -q              # api-core: 89 tests pass
 api-ai/.venv/bin/pytest -q                # api-ai: 30 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
@@ -929,11 +929,12 @@ D1 中维护幂等 install counter。付费、private/persona、外部 setup cal
 `enable 200 → 重复 enable 200 → list 200 → disable 200 → 重复 disable 404`，并
 验证 counter 回到 0，临时 fixture 已清理。
 
-随后将 `/v2/apps` 的公开 capability/category/grouped marketplace read 接到同一
-份 D1 catalog projection，保留分页和 score ordering；公开 route 不伪造用户
-`enabled` 状态，capability grouped-category 也已接入，search 仍留在 legacy。
-staging 已验证 grouped、capability、category 以及 capability-grouped 四种响应均
-为 HTTP 200，临时 catalog rows 已清理。
+随后将 `/v2/apps` 的公开 capability/category/grouped marketplace read 和鉴权的
+`/v2/apps/search` 接到同一份 D1 catalog projection，保留分页和 score ordering；
+公开 route 不伪造用户 `enabled` 状态，search 支持 q/category/capability/rating/
+sort 以及 uid-scoped `installed_apps` 过滤。staging 已验证 grouped、capability、
+category、capability-grouped、search 以及 enable → installed search → disable
+链路均为 HTTP 200，搜索结果正确标记 `enabled: true`，临时 catalog rows 已清理。
 
 `deploy/cloudflare` now includes `npm run smoke:staging`, a reproducible
 post-deploy check that defaults to non-billable health validation and can opt

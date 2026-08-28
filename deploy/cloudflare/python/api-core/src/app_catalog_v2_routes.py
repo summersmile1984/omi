@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from app_catalog_routes import _APP_CATEGORIES
 from app_projection_routes import _flag, _public_app
+from internal_auth import decode_context
 
 router = APIRouter()
 
@@ -134,7 +135,7 @@ def _safe_external_integration(value: object) -> dict[str, object] | None:
     return {key: nested for key, nested in value.items() if key in allowed}
 
 
-def _item(app: dict[str, object]) -> dict[str, object]:
+def _item(app: dict[str, object], *, enabled: bool = False) -> dict[str, object]:
     result = {
         key: app.get(key)
         for key in (
@@ -155,7 +156,7 @@ def _item(app: dict[str, object]) -> dict[str, object]:
             "price",
         )
     }
-    result["enabled"] = False
+    result["enabled"] = enabled
     result["external_integration"] = _safe_external_integration(app.get("external_integration"))
     return result
 
@@ -363,4 +364,125 @@ async def get_capability_apps_grouped(request: Request, capability_id: str):
         "groups": groups,
         "capability": {"id": capability_id, "title": capability_title},
         "meta": {"totalApps": len(filtered), "groupCount": len(groups)},
+    }
+
+
+def _search_bool(request: Request, name: str) -> bool | None | JSONResponse:
+    raw = _query(request, name)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"true", "1"}:
+        return True
+    if normalized in {"false", "0"}:
+        return False
+    return JSONResponse({"error": f"invalid {name}"}, status_code=400)
+
+
+def _name_match_tier(app: dict[str, object], query: str) -> int:
+    name = str(app.get("name") or "").lower()
+    if name == query:
+        return 0
+    if name.startswith(query):
+        return 1
+    return 2
+
+
+@router.get("/v2/apps/search")
+async def search_apps(request: Request):
+    context = decode_context(
+        request.headers.get("x-omi-auth-context"),
+        request.headers.get("x-omi-internal-signature"),
+        getattr(request.scope["env"], "INTERNAL_ASSERTION_SECRET", None),
+    )
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        offset = int(_query(request, "offset") or 0)
+        limit = int(_query(request, "limit") or 20)
+        rating = float(_query(request, "rating")) if _query(request, "rating") is not None else None
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid search filters"}, status_code=400)
+    if offset < 0 or offset > MAX_OFFSET or limit < 1 or limit > MAX_LIMIT:
+        return JSONResponse({"error": "invalid pagination"}, status_code=400)
+    if rating is not None and (not math.isfinite(rating) or rating < 0 or rating > 5):
+        return JSONResponse({"error": "invalid rating"}, status_code=400)
+    my_apps = _search_bool(request, "my_apps")
+    installed_apps = _search_bool(request, "installed_apps")
+    if isinstance(my_apps, JSONResponse) or isinstance(installed_apps, JSONResponse):
+        return my_apps if isinstance(my_apps, JSONResponse) else installed_apps
+    query = _query(request, "q")
+    if query is not None and len(query) > 512:
+        return JSONResponse({"error": "query too long"}, status_code=400)
+    category = _query(request, "category")
+    capability = _query(request, "capability")
+    sort = _query(request, "sort")
+    if sort is not None and len(sort) > 32:
+        return JSONResponse({"error": "invalid sort"}, status_code=400)
+
+    apps = await _read_apps(request, include_reviews=False)
+    if isinstance(apps, JSONResponse):
+        return apps
+    uid = str(context["uid"])
+    try:
+        enabled_result = await request.scope["env"].APP_DB.prepare(
+            "SELECT app_id FROM cf_user_enabled_apps WHERE uid = ?"
+        ).bind(uid).all()
+    except Exception:
+        return JSONResponse({"error": "enabled apps unavailable"}, status_code=503)
+    enabled_rows = enabled_result.get("results", []) if isinstance(enabled_result, dict) else []
+    enabled_ids = {
+        str(row["app_id"])
+        for row in enabled_rows
+        if isinstance(row, dict) and isinstance(row.get("app_id"), str)
+    }
+    if my_apps:
+        apps = [app for app in apps if str(app.get("uid") or "") == uid]
+    if installed_apps:
+        apps = [app for app in apps if str(app.get("id") or "") in enabled_ids]
+    if category:
+        apps = [app for app in apps if str(app.get("category") or "") == category]
+    if capability:
+        apps = [
+            app
+            for app in apps
+            if (_flag(app.get("is_popular")) if capability == "popular" else _capability(app) == capability)
+        ]
+    if query and query.strip():
+        normalized_query = query.strip().lower()
+        apps = [
+            app
+            for app in apps
+            if normalized_query in str(app.get("name") or "").lower()
+            or normalized_query in str(app.get("description") or "").lower()
+        ]
+    if rating is not None:
+        apps = [app for app in apps if float(app.get("rating_avg") or 0) >= rating]
+    if sort == "rating_desc":
+        apps = sorted(apps, key=lambda app: (-float(app.get("rating_avg") or 0), str(app.get("id") or "")))
+    elif sort == "rating_asc":
+        apps = sorted(apps, key=lambda app: (float(app.get("rating_avg") or 0), str(app.get("id") or "")))
+    elif sort == "name_desc":
+        apps = sorted(apps, key=lambda app: str(app.get("name") or "").lower(), reverse=True)
+    elif sort == "name_asc":
+        apps = sorted(apps, key=lambda app: (str(app.get("name") or "").lower(), str(app.get("id") or "")))
+    elif sort in {"installs", "installs_desc"}:
+        apps = sorted(apps, key=lambda app: (-int(app.get("installs") or 0), str(app.get("id") or "")))
+    elif query and query.strip():
+        normalized_query = query.strip().lower()
+        apps = sorted(apps, key=lambda app: (_name_match_tier(app, normalized_query), -int(app.get("installs") or 0), str(app.get("id") or "")))
+    else:
+        apps = sorted(apps, key=lambda app: (str(app.get("name") or "").lower(), str(app.get("id") or "")))
+    return {
+        "data": [_item(app, enabled=str(app.get("id") or "") in enabled_ids) for app in apps[offset : offset + limit]],
+        "pagination": _pagination(len(apps), offset, limit),
+        "filters": {
+            "query": query,
+            "category": category,
+            "rating": rating,
+            "capability": capability,
+            "sort": sort or "name",
+            "my_apps": my_apps,
+            "installed_apps": installed_apps,
+        },
     }

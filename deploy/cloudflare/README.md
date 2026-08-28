@@ -270,6 +270,8 @@ GET  /v1/apps/popular          Edge → Python API Core → popular public app D
 GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
 GET  /v2/apps/capability/{capability_id}/grouped
                               Edge → Python API Core → capability/category D1 projection
+GET  /v2/apps/search
+                              Edge → Python API Core → authenticated D1 search/filter projection
 GET  /v1/apps/enabled          Edge → Python API Core → uid-scoped D1 install projection
 POST /v1/apps/enable           Edge → Python API Core → idempotent free-app D1 install
 POST /v1/apps/disable          Edge → Python API Core → uid-scoped D1 uninstall
@@ -603,8 +605,11 @@ legacy-owned; no production cutover is implied.
 responses from the same public D1 rows. It preserves the legacy pagination
 shape and score ordering, but intentionally returns `enabled: false` because
 the public route has no user context; clients should combine it with
-`/v1/apps/enabled`. Capability-specific grouped-category routes and search
-are now also read from the same projection; search remains legacy-owned.
+`/v1/apps/enabled`. Capability-specific grouped-category routes and the
+authenticated `/v2/apps/search` filters are also read from the same projection.
+Search only exposes approved public catalog fields and uid-scoped installed-app
+state; private apps, paid entitlements, setup callbacks, reviews, subscriptions,
+MCP state, and app-owner writes remain legacy-owned.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

@@ -137,6 +137,30 @@ describe("edge gateway", () => {
     expect(forwardedPath).toBe("/v2/apps/capability/chat/grouped");
   });
 
+  it("guards and routes authenticated app catalog search", async () => {
+    let forwardedPath = "";
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        forwardedPath = new URL(request.url).pathname;
+        return Response.json({ data: [], pagination: {}, filters: {} });
+      }),
+    };
+    expect((await edge.fetch(new Request("https://edge.test/v2/apps/search"), env as never)).status).toBe(401);
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/apps/search?q=chat", { headers: { authorization: "Bearer opaque-session" } }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(forwardedPath).toBe("/v2/apps/search");
+  });
+
   it("strips caller auth headers before forwarding verified context", async () => {
     let forwarded: Headers | undefined;
     const env = {
