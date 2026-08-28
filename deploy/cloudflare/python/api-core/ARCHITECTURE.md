@@ -13,3 +13,10 @@ D1 batch; Edge authentication supplies the signed uid context before the
 request reaches this Worker. Legacy workstream search/index refresh and
 candidate automation remain outside this package until their own authority and
 backfill contracts are migrated.
+
+`memory_routes.py` is the canonical memory authority only for Better Auth
+accounts created inside the isolated Cloudflare staging profile. It provides
+uid-scoped list/create/edit/review/delete behavior in D1 and retains deletions
+as tombstones. It has no Firestore fallback or dual write. Production account
+promotion remains forbidden until the account-cutover importer, manifest
+verification, and destination binding described by `INV-CUTOVER-1` exist.

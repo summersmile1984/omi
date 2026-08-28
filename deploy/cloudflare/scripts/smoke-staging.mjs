@@ -116,11 +116,9 @@ export async function runSmoke({
   );
   expectStatus("account cutover control", accountCutover, 200);
 
-  const appSearch = await request(
-    fetchImpl,
-    `${base}/v2/apps/search?limit=1`,
-    { headers: authHeaders },
-  );
+  const appSearch = await request(fetchImpl, `${base}/v2/apps/search?limit=1`, {
+    headers: authHeaders,
+  });
   expectStatus("authenticated app catalog search", appSearch, 200);
 
   const conversations = await request(
@@ -129,6 +127,12 @@ export async function runSmoke({
     { headers: authHeaders },
   );
   expectStatus("canonical conversation list", conversations, 200);
+  const memories = await request(
+    fetchImpl,
+    `${base}/v3/memories?limit=25&offset=0`,
+    { headers: authHeaders },
+  );
+  expectStatus("canonical memory list", memories, 200);
   const conversationCount = await request(
     fetchImpl,
     `${base}/v1/conversations/count`,
@@ -140,19 +144,31 @@ export async function runSmoke({
     `${base}/v1/conversations/cf-smoke-photo-probe-${Date.now()}/photos`,
     { headers: authHeaders },
   );
-  expectStatus("canonical conversation photos missing-row", conversationPhotos, 404);
+  expectStatus(
+    "canonical conversation photos missing-row",
+    conversationPhotos,
+    404,
+  );
   const conversationTranscripts = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-transcripts-probe-${Date.now()}/transcripts`,
     { headers: authHeaders },
   );
-  expectStatus("canonical conversation transcripts missing-row", conversationTranscripts, 404);
+  expectStatus(
+    "canonical conversation transcripts missing-row",
+    conversationTranscripts,
+    404,
+  );
   const conversationAnalytics = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-analytics-probe-${Date.now()}/analytics`,
     { headers: authHeaders },
   );
-  expectStatus("canonical conversation analytics missing-row", conversationAnalytics, 404);
+  expectStatus(
+    "canonical conversation analytics missing-row",
+    conversationAnalytics,
+    404,
+  );
   const conversationEvents = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-events-probe-${Date.now()}/events`,
@@ -162,7 +178,11 @@ export async function runSmoke({
       body: JSON.stringify({ events_idx: [0], values: [true] }),
     },
   );
-  expectStatus("canonical conversation events missing-row", conversationEvents, 404);
+  expectStatus(
+    "canonical conversation events missing-row",
+    conversationEvents,
+    404,
+  );
   const conversationSummary = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-summary-probe-${Date.now()}/summary`,
@@ -172,13 +192,21 @@ export async function runSmoke({
       body: JSON.stringify({ content: "probe" }),
     },
   );
-  expectStatus("canonical conversation summary missing-row", conversationSummary, 404);
+  expectStatus(
+    "canonical conversation summary missing-row",
+    conversationSummary,
+    404,
+  );
   const conversationCalendarUnlink = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-calendar-link-probe-${Date.now()}/calendar-event`,
     { method: "DELETE", headers: authHeaders },
   );
-  expectStatus("canonical conversation calendar unlink missing-row", conversationCalendarUnlink, 404);
+  expectStatus(
+    "canonical conversation calendar unlink missing-row",
+    conversationCalendarUnlink,
+    404,
+  );
   const conversationActionItems = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-action-items-probe-${Date.now()}/action-items`,
@@ -188,14 +216,21 @@ export async function runSmoke({
       body: JSON.stringify({ items_idx: [0], values: [true] }),
     },
   );
-  expectStatus("canonical conversation action items missing-row", conversationActionItems, 404);
+  expectStatus(
+    "canonical conversation action items missing-row",
+    conversationActionItems,
+    404,
+  );
   const conversationActionItemDescription = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-action-item-description-probe-${Date.now()}/action-items/0`,
     {
       method: "PATCH",
       headers: { ...authHeaders, "content-type": "application/json" },
-      body: JSON.stringify({ old_description: "missing", description: "probe" }),
+      body: JSON.stringify({
+        old_description: "missing",
+        description: "probe",
+      }),
     },
   );
   expectStatus(
@@ -212,13 +247,21 @@ export async function runSmoke({
       body: JSON.stringify({ description: "missing", completed: false }),
     },
   );
-  expectStatus("canonical conversation action-item delete missing-row", conversationActionItemDelete, 404);
+  expectStatus(
+    "canonical conversation action-item delete missing-row",
+    conversationActionItemDelete,
+    404,
+  );
   const conversationRecording = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-recording-probe-${Date.now()}/recording`,
     { headers: authHeaders },
   );
-  expectStatus("canonical conversation recording missing-row", conversationRecording, 404);
+  expectStatus(
+    "canonical conversation recording missing-row",
+    conversationRecording,
+    404,
+  );
   const segmentText = await request(
     fetchImpl,
     `${base}/v1/conversations/cf-smoke-segment-probe-${Date.now()}/segments/text`,
@@ -228,7 +271,11 @@ export async function runSmoke({
       body: JSON.stringify({ segment_id: "missing", text: "probe" }),
     },
   );
-  expectStatus("canonical conversation segment text missing-row", segmentText, 404);
+  expectStatus(
+    "canonical conversation segment text missing-row",
+    segmentText,
+    404,
+  );
 
   const assistantSettings = await request(
     fetchImpl,
@@ -383,6 +430,7 @@ export async function runSmoke({
     accountCutover: accountCutover.status,
     appSearch: appSearch.status,
     conversations: conversations.status,
+    memories: memories.status,
     conversationCount: conversationCount.status,
     conversationPhotos: conversationPhotos.status,
     conversationTranscripts: conversationTranscripts.status,

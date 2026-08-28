@@ -365,7 +365,8 @@ routes:
     runtime: python-worker
     target_runtime: external-api
     auth_authority: better-auth
-    dependencies: [d1-app, external-openai-realtime-api, external-gemini-live-api]
+    dependencies:
+      [d1-app, external-openai-realtime-api, external-gemini-live-api]
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -1499,6 +1500,87 @@ routes:
     rollback: edge-route-to-legacy
   - method: GET
     path: /v1/conversations
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v3/memories
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v3/memories
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v3/memories
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v3/memories/batch
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v3/memories/:memoryId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v3/memories/:memoryId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v3/memories/:memoryId/visibility
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v3/memories/:memoryId/review
     owner: api-core
     runtime: python-worker
     target_runtime: python-worker

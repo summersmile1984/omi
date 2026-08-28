@@ -99,9 +99,36 @@ describe("edge gateway", () => {
       }),
     };
     const auth = { authorization: "Bearer opaque-session" };
-    expect((await edge.fetch(new Request("https://edge.test/v1/apps/enabled", { headers: auth }), env as never)).status).toBe(200);
-    expect((await edge.fetch(new Request("https://edge.test/v1/apps/enable?app_id=free-app", { method: "POST", headers: auth }), env as never)).status).toBe(200);
-    expect((await edge.fetch(new Request("https://edge.test/v1/apps/disable?app_id=free-app", { method: "POST", headers: auth }), env as never)).status).toBe(200);
+    expect(
+      (
+        await edge.fetch(
+          new Request("https://edge.test/v1/apps/enabled", { headers: auth }),
+          env as never,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await edge.fetch(
+          new Request("https://edge.test/v1/apps/enable?app_id=free-app", {
+            method: "POST",
+            headers: auth,
+          }),
+          env as never,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await edge.fetch(
+          new Request("https://edge.test/v1/apps/disable?app_id=free-app", {
+            method: "POST",
+            headers: auth,
+          }),
+          env as never,
+        )
+      ).status,
+    ).toBe(200);
     expect(corePaths).toEqual([
       "GET /v1/apps/enabled",
       "POST /v1/apps/enable",
@@ -117,7 +144,10 @@ describe("edge gateway", () => {
         return Response.json({ groups: [] });
       }),
     };
-    const response = await edge.fetch(new Request("https://edge.test/v2/apps?limit=20"), env as never);
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/apps?limit=20"),
+      env as never,
+    );
     expect(response.status).toBe(200);
     expect(forwardedPath).toBe("/v2/apps");
   });
@@ -153,9 +183,18 @@ describe("edge gateway", () => {
         return Response.json({ data: [], pagination: {}, filters: {} });
       }),
     };
-    expect((await edge.fetch(new Request("https://edge.test/v2/apps/search"), env as never)).status).toBe(401);
+    expect(
+      (
+        await edge.fetch(
+          new Request("https://edge.test/v2/apps/search"),
+          env as never,
+        )
+      ).status,
+    ).toBe(401);
     const response = await edge.fetch(
-      new Request("https://edge.test/v2/apps/search?q=chat", { headers: { authorization: "Bearer opaque-session" } }),
+      new Request("https://edge.test/v2/apps/search?q=chat", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
       env as never,
     );
     expect(response.status).toBe(200);
@@ -187,7 +226,9 @@ describe("edge gateway", () => {
       "__Secure-better-auth.session_token=cookie-session",
     );
     const body = (await response.json()) as { ticket: string };
-    expect(await verifyRealtimeTicket(body.ticket, "test-secret")).toMatchObject({
+    expect(
+      await verifyRealtimeTicket(body.ticket, "test-secret"),
+    ).toMatchObject({
       uid: "cookie-user",
       authority: "better-auth",
     });
@@ -326,9 +367,7 @@ describe("edge gateway", () => {
     );
     expect(response.status).toBe(200);
     expect(coreRequests).toHaveLength(1);
-    expect(new URL(coreRequests[0].url).pathname).toBe(
-      "/v1/cf/conversations",
-    );
+    expect(new URL(coreRequests[0].url).pathname).toBe("/v1/cf/conversations");
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
@@ -363,6 +402,67 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes the canonical memory CRUD surface to the authenticated core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const authorization = { authorization: "Bearer opaque-session" };
+    const cases = [
+      ["GET", "/v3/memories?limit=25&offset=0"],
+      ["POST", "/v3/memories"],
+      ["PATCH", "/v3/memories/memory-1?value=edited"],
+      ["PATCH", "/v3/memories/memory-1/visibility?value=public"],
+      ["POST", "/v3/memories/memory-1/review?value=true"],
+      ["DELETE", "/v3/memories/batch"],
+      ["DELETE", "/v3/memories/memory-1"],
+      ["DELETE", "/v3/memories"],
+    ] as const;
+
+    for (const [method, path] of cases) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: authorization,
+        }),
+        env,
+      );
+      expect(response.status, `${method} ${path}`).toBe(200);
+    }
+
+    expect(
+      coreRequests.map(
+        (request) => `${request.method} ${new URL(request.url).pathname}`,
+      ),
+    ).toEqual([
+      "GET /v3/memories",
+      "POST /v3/memories",
+      "PATCH /v3/memories/memory-1",
+      "PATCH /v3/memories/memory-1/visibility",
+      "POST /v3/memories/memory-1/review",
+      "DELETE /v3/memories/batch",
+      "DELETE /v3/memories/memory-1",
+      "DELETE /v3/memories",
+    ]);
+    expect(
+      coreRequests.every((request) =>
+        request.headers.has("x-omi-auth-context"),
+      ),
+    ).toBe(true);
+  });
+
   it("routes canonical conversation segment text edits to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {
@@ -381,14 +481,17 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/conversations/conversation-1/segments/text", {
-        method: "PATCH",
-        headers: {
-          authorization: "Bearer opaque-session",
-          "content-type": "application/json",
+      new Request(
+        "https://edge.test/v1/conversations/conversation-1/segments/text",
+        {
+          method: "PATCH",
+          headers: {
+            authorization: "Bearer opaque-session",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ segment_id: "segment-1", text: "edited" }),
         },
-        body: JSON.stringify({ segment_id: "segment-1", text: "edited" }),
-      }),
+      ),
       env,
     );
     expect(response.status).toBe(200);
@@ -455,7 +558,10 @@ describe("edge gateway", () => {
     const response = await edge.fetch(
       new Request(
         "https://edge.test/v1/conversations/conversation-1/calendar-event",
-        { method: "DELETE", headers: { authorization: "Bearer opaque-session" } },
+        {
+          method: "DELETE",
+          headers: { authorization: "Bearer opaque-session" },
+        },
       ),
       env,
     );
@@ -485,9 +591,12 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/conversations/conversation-1/recording", {
-        headers: { authorization: "Bearer opaque-session" },
-      }),
+      new Request(
+        "https://edge.test/v1/conversations/conversation-1/recording",
+        {
+          headers: { authorization: "Bearer opaque-session" },
+        },
+      ),
       env,
     );
     expect(response.status).toBe(200);
@@ -510,15 +619,23 @@ describe("edge gateway", () => {
       }),
       API_CORE: service((request) => {
         coreRequests.push(request);
-        return Response.json({ deepgram: [], soniox: [], speechmatics: [], whisperx: [] });
+        return Response.json({
+          deepgram: [],
+          soniox: [],
+          speechmatics: [],
+          whisperx: [],
+        });
       }),
       API_AI: service(() => Response.json({ status: "ok" })),
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/conversations/conversation-1/transcripts", {
-        headers: { authorization: "Bearer opaque-session" },
-      }),
+      new Request(
+        "https://edge.test/v1/conversations/conversation-1/transcripts",
+        {
+          headers: { authorization: "Bearer opaque-session" },
+        },
+      ),
       env,
     );
     expect(response.status).toBe(200);
@@ -541,15 +658,21 @@ describe("edge gateway", () => {
       }),
       API_CORE: service((request) => {
         coreRequests.push(request);
-        return Response.json({ conversation_id: "conversation-1", speakers: [] });
+        return Response.json({
+          conversation_id: "conversation-1",
+          speakers: [],
+        });
       }),
       API_AI: service(() => Response.json({ status: "ok" })),
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/conversations/conversation-1/analytics", {
-        headers: { authorization: "Bearer opaque-session" },
-      }),
+      new Request(
+        "https://edge.test/v1/conversations/conversation-1/analytics",
+        {
+          headers: { authorization: "Bearer opaque-session" },
+        },
+      ),
       env,
     );
     expect(response.status).toBe(200);
@@ -614,14 +737,17 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/conversations/conversation-1/action-items", {
-        method: "PATCH",
-        headers: {
-          authorization: "Bearer opaque-session",
-          "content-type": "application/json",
+      new Request(
+        "https://edge.test/v1/conversations/conversation-1/action-items",
+        {
+          method: "PATCH",
+          headers: {
+            authorization: "Bearer opaque-session",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ items_idx: [0], values: [true] }),
         },
-        body: JSON.stringify({ items_idx: [0], values: [true] }),
-      }),
+      ),
       env,
     );
     expect(response.status).toBe(200);
@@ -650,14 +776,20 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/conversations/conversation-1/action-items/0", {
-        method: "PATCH",
-        headers: {
-          authorization: "Bearer opaque-session",
-          "content-type": "application/json",
+      new Request(
+        "https://edge.test/v1/conversations/conversation-1/action-items/0",
+        {
+          method: "PATCH",
+          headers: {
+            authorization: "Bearer opaque-session",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            old_description: "task",
+            description: "renamed",
+          }),
         },
-        body: JSON.stringify({ old_description: "task", description: "renamed" }),
-      }),
+      ),
       env,
     );
     expect(response.status).toBe(200);
@@ -686,14 +818,17 @@ describe("edge gateway", () => {
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
     const response = await edge.fetch(
-      new Request("https://edge.test/v1/conversations/conversation-1/action-items", {
-        method: "DELETE",
-        headers: {
-          authorization: "Bearer opaque-session",
-          "content-type": "application/json",
+      new Request(
+        "https://edge.test/v1/conversations/conversation-1/action-items",
+        {
+          method: "DELETE",
+          headers: {
+            authorization: "Bearer opaque-session",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ description: "task", completed: false }),
         },
-        body: JSON.stringify({ description: "task", completed: false }),
-      }),
+      ),
       env,
     );
     expect(response.status).toBe(200);
@@ -879,7 +1014,9 @@ describe("edge gateway", () => {
         }
         return Response.json({ status: "ok" });
       }),
-      API_CORE: service(() => Response.json({ error: "wrong owner" }, { status: 500 })),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
       API_AI: service(async (request) => {
         aiPaths.push(new URL(request.url).pathname);
         return Response.json({ provider: "openai", token: "ephemeral" });
@@ -995,7 +1132,9 @@ describe("edge gateway", () => {
     const webRequest = realtimeRequests.at(-1);
     expect(webRequest?.headers.get("authorization")).toBeNull();
     expect(webRequest?.headers.get("x-omi-realtime-bootstrap")).toBeTruthy();
-    expect(webRequest?.headers.get("x-omi-realtime-bootstrap-signature")).toBeTruthy();
+    expect(
+      webRequest?.headers.get("x-omi-realtime-bootstrap-signature"),
+    ).toBeTruthy();
   });
 
   it("requires a websocket upgrade before issuing a web realtime bootstrap", async () => {

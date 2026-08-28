@@ -12,8 +12,8 @@ The first staging slice contains:
   uid-scoped R2 asset API (`/v1/cf/assets/{key}`) with checksum and range
   semantics, uid-scoped transcription
   preferences, onboarding/privacy/notification/location-consent settings, and
-  the public firmware stable/latest/version APIs. It also exposes a staging-only
-  D1-backed action-item CRUD/reconciliation surface.
+  the public firmware stable/latest/version APIs. It also exposes staging-only
+  D1-backed action-item and canonical memory CRUD surfaces.
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
@@ -245,6 +245,14 @@ GET  /v1/cf/conversations/count
 GET  /v1/cf/conversations/{conversationId}
                               bounded list/count/detail reads with uid isolation
 GET  /v1/conversations       Edge → Python API Core → D1 canonical conversation list
+GET/POST/DELETE /v3/memories
+PATCH/DELETE /v3/memories/{memoryId}
+PATCH /v3/memories/{memoryId}/visibility
+POST  /v3/memories/{memoryId}/review
+DELETE /v3/memories/batch
+                              uid-scoped canonical D1 memory CRUD for isolated
+                              Better Auth staging accounts; deletes tombstone
+                              and there is no Firestore fallback or dual write
 GET  /v1/account/cutover/control
                               Edge → Python API Core → D1 account migration control projection
 GET  /v1/conversations/count

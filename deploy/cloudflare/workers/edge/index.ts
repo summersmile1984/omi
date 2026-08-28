@@ -110,7 +110,10 @@ app.all("/v4/web/listen", async (c) => {
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
     return c.json({ error: "websocket upgrade required" }, 426);
   }
-  const bootstrap = await createRealtimeBootstrap(id, c.env.INTERNAL_ASSERTION_SECRET);
+  const bootstrap = await createRealtimeBootstrap(
+    id,
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
   if (!bootstrap) return c.json({ error: "realtime unavailable" }, 503);
   const headers = stripUntrustedHeaders(c.req.raw);
   headers.delete("authorization");
@@ -315,11 +318,22 @@ app.post("/v1/embeddings-workers-ai", proxyAuthenticatedAI);
 app.get("/v1/account/cutover/control", proxyAuthenticatedCore);
 app.all("/v1/cf/probe", proxyAuthenticatedCore);
 app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
+app.get("/v3/memories", proxyAuthenticatedCore);
+app.post("/v3/memories", proxyAuthenticatedCore);
+app.delete("/v3/memories", proxyAuthenticatedCore);
+app.delete("/v3/memories/batch", proxyAuthenticatedCore);
+app.delete("/v3/memories/:memoryId", proxyAuthenticatedCore);
+app.patch("/v3/memories/:memoryId", proxyAuthenticatedCore);
+app.patch("/v3/memories/:memoryId/visibility", proxyAuthenticatedCore);
+app.post("/v3/memories/:memoryId/review", proxyAuthenticatedCore);
 app.get("/v1/conversations", proxyAuthenticatedCore);
 app.get("/v1/conversations/count", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/photos", proxyAuthenticatedCore);
-app.get("/v1/conversations/:conversationId/transcripts", proxyAuthenticatedCore);
+app.get(
+  "/v1/conversations/:conversationId/transcripts",
+  proxyAuthenticatedCore,
+);
 app.get("/v1/conversations/:conversationId/analytics", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/recording", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/events", proxyAuthenticatedCore);
@@ -328,13 +342,28 @@ app.delete(
   "/v1/conversations/:conversationId/calendar-event",
   proxyAuthenticatedCore,
 );
-app.patch("/v1/conversations/:conversationId/segments/text", proxyAuthenticatedCore);
+app.patch(
+  "/v1/conversations/:conversationId/segments/text",
+  proxyAuthenticatedCore,
+);
 app.patch("/v1/conversations/:conversationId/title", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/starred", proxyAuthenticatedCore);
-app.get("/v1/conversations/:conversationId/action-items", proxyAuthenticatedCore);
-app.get("/v1/conversations/:conversationId/action-items/count", proxyAuthenticatedCore);
-app.patch("/v1/conversations/:conversationId/action-items", proxyAuthenticatedCore);
-app.delete("/v1/conversations/:conversationId/action-items", proxyAuthenticatedCore);
+app.get(
+  "/v1/conversations/:conversationId/action-items",
+  proxyAuthenticatedCore,
+);
+app.get(
+  "/v1/conversations/:conversationId/action-items/count",
+  proxyAuthenticatedCore,
+);
+app.patch(
+  "/v1/conversations/:conversationId/action-items",
+  proxyAuthenticatedCore,
+);
+app.delete(
+  "/v1/conversations/:conversationId/action-items",
+  proxyAuthenticatedCore,
+);
 app.patch(
   "/v1/conversations/:conversationId/action-items/:actionItemIdx",
   proxyAuthenticatedCore,
@@ -344,7 +373,10 @@ app.get("/v1/cf/conversations", proxyAuthenticatedCore);
 app.get("/v1/cf/conversations/count", proxyAuthenticatedCore);
 app.get("/v1/cf/conversations/:conversationId", proxyAuthenticatedCore);
 app.patch("/v1/cf/conversations/:conversationId/title", proxyAuthenticatedCore);
-app.patch("/v1/cf/conversations/:conversationId/starred", proxyAuthenticatedCore);
+app.patch(
+  "/v1/cf/conversations/:conversationId/starred",
+  proxyAuthenticatedCore,
+);
 app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);
 app.all("/v1/users/available-languages", proxyAuthenticatedCore);
 app.all("/v1/users/language", proxyAuthenticatedCore);
@@ -426,7 +458,10 @@ app.delete("/v1/goals/:goalId", proxyAuthenticatedCore);
 app.get("/v1/folders", proxyAuthenticatedCore);
 app.post("/v1/folders", proxyAuthenticatedCore);
 app.get("/v1/folders/:folderId/conversations", proxyAuthenticatedCore);
-app.post("/v1/folders/:folderId/conversations/bulk-move", proxyAuthenticatedCore);
+app.post(
+  "/v1/folders/:folderId/conversations/bulk-move",
+  proxyAuthenticatedCore,
+);
 app.get("/v1/folders/:folderId", proxyAuthenticatedCore);
 app.patch("/v1/folders/:folderId", proxyAuthenticatedCore);
 app.delete("/v1/folders/:folderId", proxyAuthenticatedCore);
