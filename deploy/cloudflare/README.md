@@ -889,7 +889,9 @@ the legacy segment response. The Python boundary converts the bounded request
 body to the base64 form expected by the Workers AI Whisper model, so clients do
 not need to know the binding's FFI representation. Successful timed results
 fail closed unless their exact segment/word interval union is committed to one
-idempotent `sync_fresh` D1 source; silence produces no usage row.
+idempotent `sync_fresh` D1 source; an explicit `Idempotency-Key` is the stable
+operation identity even when multipart boundaries change, while requests
+without one use Edge's request identity. Silence produces no usage row.
 
 `/v2/voice-message/transcribe` is the staging Worker owner for the existing
 Web/Flutter voice-input contract. It accepts bounded multipart `files` using

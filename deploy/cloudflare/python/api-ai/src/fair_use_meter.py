@@ -64,9 +64,7 @@ def speech_ms_from_transcription(value: object) -> int:
 
 def content_source_id(namespace: str, content: bytes, idempotency_key: str | None = None) -> str:
     identity = idempotency_key.strip() if isinstance(idempotency_key, str) else ""
-    content_digest = hashlib.sha256(content).digest()
-    digest_input = identity.encode("utf-8") + b"\0" + content_digest if identity else content_digest
-    digest = hashlib.sha256(digest_input).hexdigest()
+    digest = hashlib.sha256(identity.encode("utf-8") if identity else content).hexdigest()
     source_id = f"{namespace}:{digest}"
     if len(source_id) > MAX_SOURCE_ID_CHARS:
         raise ValueError("fair-use source id is too long")

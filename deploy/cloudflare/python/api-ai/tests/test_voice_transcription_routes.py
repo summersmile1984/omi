@@ -199,6 +199,32 @@ def test_expected_silence_and_multiple_detected_languages_are_normalized():
     assert response["language"] == "multi"
 
 
+def test_voice_message_idempotency_key_survives_multipart_boundary_changes():
+    secret = "voice-secret"
+    ai = FakeAi(
+        [
+            {"text": "same", "segments": [{"start": 0, "end": 1, "text": "same"}]},
+            {"text": "same", "segments": [{"start": 0, "end": 1, "text": "same"}]},
+        ]
+    )
+    database = FakeD1()
+    worker_env = env(secret, ai)
+    worker_env.APP_DB = database
+    first_body, first_type = multipart([("files", wav(), "audio.wav", "audio/wav")], boundary="first")
+    second_body, second_type = multipart([("files", wav(), "audio.wav", "audio/wav")], boundary="second")
+    first_headers = signed_headers(secret, content_type=first_type)
+    second_headers = signed_headers(secret, content_type=second_type)
+    first_headers["idempotency-key"] = "voice-operation-1"
+    second_headers["idempotency-key"] = "voice-operation-1"
+
+    first = asyncio.run(transcribe_voice_message(FakeRequest(worker_env, first_headers, first_body)))
+    second = asyncio.run(transcribe_voice_message(FakeRequest(worker_env, second_headers, second_body)))
+
+    assert first["transcript"] == "same"
+    assert second["transcript"] == "same"
+    assert database.values[0][2] == database.values[1][2]
+
+
 def test_voice_message_rejects_unauthenticated_malformed_and_oversized_input_before_inference():
     secret = "voice-secret"
     ai = FakeAi()

@@ -31,11 +31,12 @@ def test_speech_ms_uses_words_when_segments_are_empty():
     assert speech_ms_from_transcription({"segments": [], "words": [{"start": 0.1, "end": 0.6, "word": "hi"}]}) == 500
 
 
-def test_content_source_id_is_stable_and_binds_key_to_content():
+def test_content_source_id_uses_explicit_operation_identity_or_content_fallback():
     first = content_source_id("workers-ai", b"audio", "retry-1")
     assert first == content_source_id("workers-ai", b"audio", "retry-1")
-    assert first != content_source_id("workers-ai", b"different", "retry-1")
+    assert first == content_source_id("workers-ai", b"different", "retry-1")
     assert first != content_source_id("workers-ai", b"audio", "retry-2")
+    assert content_source_id("workers-ai", b"audio") != content_source_id("workers-ai", b"different")
 
 
 @dataclass
