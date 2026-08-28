@@ -25,6 +25,11 @@ const R2_DELETE_BATCH_SIZE = 1_000;
 const D1_DELETE_BATCH_SIZE = 250;
 const RECONCILE_BATCH_SIZE = 50;
 const ISOLATED_STAGING_MANIFEST = "isolated-staging-v1";
+const STRIPE_API_ORIGIN = "https://api.stripe.com";
+const STRIPE_RESPONSE_MAX_BYTES = 64 * 1_024;
+const STRIPE_TIMEOUT_MS = 15_000;
+const STRIPE_SUBSCRIPTION_ID = /^sub_[A-Za-z0-9]{8,128}$/;
+const STRIPE_TERMINAL_STATUSES = new Set(["canceled", "incomplete_expired"]);
 
 type AccountDeletionIntent = {
   uid: unknown;
@@ -234,19 +239,158 @@ async function assertCloudflareOwnedAccount(env: JobsEnv, uid: string) {
   }
 }
 
-async function assertNoExternalProviderResidual(env: JobsEnv, uid: string) {
+async function stripeSubscriptionId(
+  env: JobsEnv,
+  uid: string,
+): Promise<string | null> {
   const row = await env.APP_DB.prepare(
     "SELECT stripe_subscription_id FROM cf_user_subscriptions WHERE uid = ?",
   )
     .bind(uid)
     .first<{ stripe_subscription_id?: unknown }>();
-  const subscriptionId = row?.stripe_subscription_id;
+  const raw = row?.stripe_subscription_id;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return null;
+  }
+  const subscriptionId = String(raw).trim();
+  if (!STRIPE_SUBSCRIPTION_ID.test(subscriptionId)) {
+    throw new Error("invalid Stripe subscription id");
+  }
+  return subscriptionId;
+}
+
+function stripeSecretKey(env: JobsEnv): string {
+  const key = env.STRIPE_SECRET_KEY?.trim();
   if (
-    subscriptionId !== undefined &&
-    subscriptionId !== null &&
-    String(subscriptionId).trim()
+    !key ||
+    key.length > 512 ||
+    key.includes(":") ||
+    /[^\x21-\x7e]/.test(key)
   ) {
-    throw new Error("external billing cleanup is required");
+    throw new Error("Stripe cleanup credential unavailable");
+  }
+  return key;
+}
+
+async function assertExternalProviderCleanupConfigured(
+  env: JobsEnv,
+  uid: string,
+) {
+  if (await stripeSubscriptionId(env, uid)) stripeSecretKey(env);
+}
+
+async function boundedStripeJson(response: Response): Promise<unknown> {
+  const declared = Number(response.headers.get("content-length"));
+  if (
+    Number.isFinite(declared) &&
+    (declared < 0 || declared > STRIPE_RESPONSE_MAX_BYTES)
+  ) {
+    response.body?.cancel();
+    throw new Error("Stripe response is too large");
+  }
+  if (!response.body) throw new Error("Stripe response body is missing");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > STRIPE_RESPONSE_MAX_BYTES) {
+        throw new Error("Stripe response is too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch {
+    throw new Error("Stripe response is invalid");
+  }
+}
+
+type StripeSubscription = {
+  status: string;
+  cancelAtPeriodEnd: boolean;
+};
+
+async function parseStripeSubscription(
+  response: Response,
+  expectedId: string,
+): Promise<StripeSubscription> {
+  if (!response.ok) {
+    response.body?.cancel();
+    throw new Error("Stripe subscription request failed");
+  }
+  const body = await boundedStripeJson(response);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Stripe subscription response is invalid");
+  }
+  const subscription = body as Record<string, unknown>;
+  if (
+    subscription.id !== expectedId ||
+    typeof subscription.status !== "string" ||
+    (subscription.cancel_at_period_end !== undefined &&
+      typeof subscription.cancel_at_period_end !== "boolean")
+  ) {
+    throw new Error("Stripe subscription response is invalid");
+  }
+  return {
+    status: subscription.status,
+    cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+  };
+}
+
+async function cleanupExternalProviders(
+  env: JobsEnv,
+  intent: ParsedAccountDeletionIntent,
+) {
+  const subscriptionId = await stripeSubscriptionId(env, intent.uid);
+  if (!subscriptionId) return;
+  const secret = stripeSecretKey(env);
+  const url = `${STRIPE_API_ORIGIN}/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
+  const authorization = `Basic ${btoa(`${secret}:`)}`;
+  const current = await parseStripeSubscription(
+    await fetch(url, {
+      headers: { authorization, accept: "application/json" },
+      signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
+    }),
+    subscriptionId,
+  );
+  if (
+    current.cancelAtPeriodEnd ||
+    STRIPE_TERMINAL_STATUSES.has(current.status)
+  ) {
+    return;
+  }
+  const canceled = await parseStripeSubscription(
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization,
+        accept: "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+        "idempotency-key": `account-delete-${intent.jobId}`,
+      },
+      body: "cancel_at_period_end=true",
+      signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
+    }),
+    subscriptionId,
+  );
+  if (
+    !canceled.cancelAtPeriodEnd &&
+    !STRIPE_TERMINAL_STATUSES.has(canceled.status)
+  ) {
+    throw new Error("Stripe subscription remains billable");
   }
 }
 
@@ -306,7 +450,7 @@ async function admitAccountDeletion(
       return c.json({ status: "ok", message: "Account deletion started" });
     }
     await assertCloudflareOwnedAccount(c.env, context.uid);
-    await assertNoExternalProviderResidual(c.env, context.uid);
+    await assertExternalProviderCleanupConfigured(c.env, context.uid);
     const jobId = crypto.randomUUID();
     const inserted = await c.env.APP_DB.prepare(
       `INSERT OR IGNORE INTO cf_account_deletion_intents
@@ -338,7 +482,8 @@ async function admitAccountDeletion(
   } catch (error) {
     const providerCleanup =
       error instanceof Error &&
-      error.message === "external billing cleanup is required";
+      (error.message === "Stripe cleanup credential unavailable" ||
+        error.message === "invalid Stripe subscription id");
     return c.json(
       {
         error: providerCleanup
@@ -624,7 +769,7 @@ export async function processAccountDeletionMessage(
   try {
     if (intent.phase === "quiescing") {
       await assertCloudflareOwnedAccount(env, intent.uid);
-      await assertNoExternalProviderResidual(env, intent.uid);
+      await assertExternalProviderCleanupConfigured(env, intent.uid);
     }
     if (intent.phase !== "identity") {
       await assertStorageKeysBoundToAccount(env, intent.uid);
@@ -639,6 +784,7 @@ export async function processAccountDeletionMessage(
         message.ack();
         return;
       }
+      await cleanupExternalProviders(env, intent);
       intent.phase = "purging";
     }
     if (intent.phase === "purging") {

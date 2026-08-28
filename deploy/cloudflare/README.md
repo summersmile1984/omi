@@ -270,6 +270,9 @@ printf '%s' "$FAIR_USE_ADMIN_KEY" | npx wrangler secret put FAIR_USE_ADMIN_KEY -
 # Required only when an isolated staging account has a registered FCM device.
 # Use a staging Firebase service account; never copy production credentials.
 printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | npx wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON --name omi-cf-jobs-staging
+# Required before deleting an account whose D1 subscription row contains a
+# Stripe subscription id. Use the environment-matched restricted/secret key.
+printf '%s' "$STRIPE_SECRET_KEY" | npx wrangler secret put STRIPE_SECRET_KEY --name omi-cf-jobs-staging
 ```
 
 The `/auth-issue` bridge is hidden (`404`) unless `AUTH_DEV_ISSUER_SECRET` is
@@ -1314,17 +1317,23 @@ sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,
 R2 checks expose presence only, and partial batches, storage errors, or
-non-zero residuals fail closed. Accounts with a Stripe subscription id also
-fail closed before the mutation fence because provider cancellation has not
-yet been implemented; production account deletion remains blocked on that
-provider cleanup and production identity/cutover evidence.
+non-zero residuals fail closed. For accounts with a Stripe subscription id,
+admission requires the Jobs-only `STRIPE_SECRET_KEY`; after the durable fence
+settles, Jobs reads the subscription and idempotently sets
+`cancel_at_period_end=true` before any product purge. An already scheduled or
+terminal subscription satisfies the goal without another mutation. Transport,
+credential, malformed-response, and non-terminal-result failures retain the
+intent and all product data for reconciliation. Production account deletion
+remains blocked on production secret provisioning and identity/cutover
+evidence.
 
 Local validation applied all 52 App-D1 migrations with Wrangler (123 SQL
 commands), exercised the real SQLite trigger boundary, and proved that both an
 active intent and the tombstone block late writes while expired tombstone
 cleanup restores writes. The TypeScript suite additionally covers the full
 D1/R2 purge, two residual scans, Auth finalization, Queue-send recovery,
-Auth-retry recovery, and idempotent repeated deletion.
+Auth-retry recovery, idempotent repeated deletion, Stripe cancellation,
+already-terminal subscriptions, and fail-closed provider retry behavior.
 
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains

@@ -237,6 +237,7 @@ function environment(
     queueFail?: boolean;
     authFailDelete?: boolean;
     r2?: Record<string, Uint8Array>;
+    stripeSecretKey?: string;
   } = {},
 ) {
   const database = new SqliteD1();
@@ -249,6 +250,7 @@ function environment(
     JOBS: queue.binding,
     AUTH: auth.binding,
     INTERNAL_ASSERTION_SECRET: "account-deletion-test-secret",
+    STRIPE_SECRET_KEY: options.stripeSecretKey,
   } as JobsEnv;
   return { database, bucket, queue, auth, env };
 }
@@ -286,6 +288,7 @@ describe("Cloudflare account deletion workflow", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -563,7 +566,7 @@ describe("Cloudflare account deletion workflow", () => {
     }
   });
 
-  it("fails closed before fencing an account with live external billing", async () => {
+  it("fails closed before fencing external billing without its credential", async () => {
     const state = environment();
     try {
       seedCloudflareAccount(state.database);
@@ -573,7 +576,7 @@ describe("Cloudflare account deletion workflow", () => {
              (uid, plan, status, stripe_subscription_id, updated_at)
            VALUES (?, 'plus', 'active', ?, ?)`,
         )
-        .run("deletion-user", "stripe-live-subscription", 1);
+        .run("deletion-user", "sub_liveSubscription123", 1);
       const path = "/v1/users/delete-account";
       const response = await jobs.fetch(
         new Request(`https://jobs.test${path}`, {
@@ -591,6 +594,186 @@ describe("Cloudflare account deletion workflow", () => {
           "SELECT COUNT(*) AS count FROM cf_account_deletion_intents",
         )?.count,
       ).toBe(0);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("cancels Stripe at period end after the durable fence and before product purge", async () => {
+    const stripeRequests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        stripeRequests.push(request);
+        if (request.method === "GET") {
+          return Response.json({
+            id: "sub_liveSubscription123",
+            status: "active",
+            cancel_at_period_end: false,
+          });
+        }
+        return Response.json({
+          id: "sub_liveSubscription123",
+          status: "active",
+          cancel_at_period_end: true,
+        });
+      }),
+    );
+    const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
+    try {
+      seedCloudflareAccount(state.database);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_user_subscriptions
+             (uid, plan, status, stripe_subscription_id, updated_at)
+           VALUES (?, 'plus', 'active', ?, ?)`,
+        )
+        .run("deletion-user", "sub_liveSubscription123", 1);
+      const path = "/v1/users/delete-account";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      expect(stripeRequests).toHaveLength(0);
+
+      const dispatch = state.queue.sent.shift();
+      if (!dispatch) throw new Error("missing account deletion dispatch");
+      vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
+      await processAccountDeletionMessage(
+        queueMessage(dispatch.body).message,
+        state.env,
+      );
+
+      expect(stripeRequests.map(({ method }) => method)).toEqual([
+        "GET",
+        "POST",
+      ]);
+      expect(stripeRequests[0]?.url).toBe(
+        "https://api.stripe.com/v1/subscriptions/sub_liveSubscription123",
+      );
+      expect(stripeRequests[1]?.headers.get("authorization")).toBe(
+        `Basic ${btoa("sk_test_account_deletion:")}`,
+      );
+      expect(stripeRequests[1]?.headers.get("idempotency-key")).toMatch(
+        /^account-delete-[0-9a-f-]{36}$/,
+      );
+      await expect(stripeRequests[1]?.text()).resolves.toBe(
+        "cancel_at_period_end=true",
+      );
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_user_subscriptions WHERE uid = ?",
+          "deletion-user",
+        )?.count,
+      ).toBe(0);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("retries provider cleanup without purging product data when Stripe fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: {} }, { status: 503 })),
+    );
+    const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
+    try {
+      seedCloudflareAccount(state.database);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_user_subscriptions
+             (uid, plan, status, stripe_subscription_id, updated_at)
+           VALUES (?, 'plus', 'active', ?, ?)`,
+        )
+        .run("deletion-user", "sub_liveSubscription123", 1);
+      const path = "/v1/users/delete-account";
+      await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env,
+      );
+      const dispatch = state.queue.sent.shift();
+      if (!dispatch) throw new Error("missing account deletion dispatch");
+      vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
+      await processAccountDeletionMessage(
+        queueMessage(dispatch.body).message,
+        state.env,
+      );
+
+      expect(
+        state.database.row<{
+          status: string;
+          phase: string;
+          last_error: string;
+        }>(
+          `SELECT status, phase, last_error
+           FROM cf_account_deletion_intents WHERE uid = ?`,
+          "deletion-user",
+        ),
+      ).toEqual({
+        status: "failed",
+        phase: "quiescing",
+        last_error: "account deletion dependency unavailable",
+      });
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_worker_probe WHERE uid = ?",
+          "deletion-user",
+        )?.count,
+      ).toBe(1);
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_user_subscriptions WHERE uid = ?",
+          "deletion-user",
+        )?.count,
+      ).toBe(1);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("accepts an already terminal Stripe subscription without mutating it", async () => {
+    const stripeFetch = vi.fn(async () =>
+      Response.json({
+        id: "sub_liveSubscription123",
+        status: "canceled",
+        cancel_at_period_end: false,
+      }),
+    );
+    vi.stubGlobal("fetch", stripeFetch);
+    const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
+    try {
+      seedCloudflareAccount(state.database);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_user_subscriptions
+             (uid, plan, status, stripe_subscription_id, updated_at)
+           VALUES (?, 'plus', 'active', ?, ?)`,
+        )
+        .run("deletion-user", "sub_liveSubscription123", 1);
+      const path = "/v1/users/delete-account";
+      await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env,
+      );
+      const dispatch = state.queue.sent.shift();
+      if (!dispatch) throw new Error("missing account deletion dispatch");
+      vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
+      await processAccountDeletionMessage(
+        queueMessage(dispatch.body).message,
+        state.env,
+      );
+      expect(stripeFetch).toHaveBeenCalledOnce();
     } finally {
       state.database.close();
     }
