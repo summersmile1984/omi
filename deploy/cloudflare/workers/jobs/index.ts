@@ -10,10 +10,11 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 const JOB_LEASE_SECONDS = 15 * 60;
 const QUEUE_RETRY_DELAY_SECONDS = 10;
 const MAX_TRANSCRIPTION_PROVIDER_ATTEMPTS = 3;
+const ASSET_CLEANUP_BATCH_SIZE = 50;
 const DEFAULT_WORKERS_AI_ASR_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
 app.get("/health", (c) =>
-  c.json({ status: "ok", service: "jobs", version: "cf-07" }),
+  c.json({ status: "ok", service: "jobs", version: "cf-08" }),
 );
 
 type ExistingJob = {
@@ -607,6 +608,58 @@ async function processJobMessage(
   message.ack();
 }
 
+async function recordAssetCleanupFailure(
+  env: JobsEnv,
+  storageKey: string,
+  uid: string,
+  now: number,
+): Promise<void> {
+  try {
+    await env.APP_DB.prepare(
+      "UPDATE cf_asset_cleanup_tasks SET attempts = attempts + 1, last_error = ?, updated_at = ? " +
+        "WHERE storage_key = ? AND uid = ?",
+    )
+      .bind("r2 delete unavailable", now, storageKey, uid)
+      .run();
+  } catch {
+    // The durable task remains eligible for the next scheduled sweep.
+  }
+}
+
+async function drainAssetCleanup(env: JobsEnv): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const result = await env.APP_DB.prepare(
+    "SELECT storage_key, uid FROM cf_asset_cleanup_tasks " +
+      "WHERE not_before <= ? ORDER BY created_at LIMIT ?",
+  )
+    .bind(now, ASSET_CLEANUP_BATCH_SIZE)
+    .all<{ storage_key: string; uid: string }>();
+  for (const row of result.results || []) {
+    if (
+      typeof row.storage_key !== "string" ||
+      typeof row.uid !== "string" ||
+      !row.storage_key
+    ) {
+      continue;
+    }
+    try {
+      const active = await env.APP_DB.prepare(
+        "SELECT 1 AS active FROM cf_asset_objects WHERE uid = ? AND storage_key = ? LIMIT 1",
+      )
+        .bind(row.uid, row.storage_key)
+        .first<{ active: number }>();
+      if (!active) await env.ASSETS.delete(row.storage_key);
+      await env.APP_DB.prepare(
+        "DELETE FROM cf_asset_cleanup_tasks WHERE storage_key = ? AND uid = ?",
+      )
+        .bind(row.storage_key, row.uid)
+        .run();
+    } catch {
+      await recordAssetCleanupFailure(env, row.storage_key, row.uid, now);
+    }
+  }
+}
+
 export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch<JobMessage>, env: JobsEnv): Promise<void> {
@@ -617,5 +670,11 @@ export default {
         message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
       }
     }
+  },
+  async scheduled(
+    _controller: ScheduledController,
+    env: JobsEnv,
+  ): Promise<void> {
+    await drainAssetCleanup(env);
   },
 };

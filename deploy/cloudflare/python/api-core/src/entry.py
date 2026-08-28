@@ -3,9 +3,10 @@ import json
 import math
 import re
 import time
+import uuid
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
 try:
@@ -65,6 +66,8 @@ app.include_router(app_install_router)
 app.include_router(app_catalog_v2_router)
 app.include_router(memory_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
+ASSET_CLEANUP_GRACE_SECONDS = 15 * 60
+ASSET_CLEANUP_BATCH_SIZE = 10
 MAX_VOCABULARY_ITEMS = 100
 MAX_ASSISTANT_SETTINGS_BYTES = 64_000
 MAX_AI_PROFILE_TEXT_LENGTH = 50_000
@@ -1419,6 +1422,79 @@ def _etag_matches(raw: str | None, etag: str) -> bool:
     return False
 
 
+def _asset_storage_key(uid: str, checksum: str) -> str:
+    return f"cf-assets/{uid}/{checksum}/{uuid.uuid4().hex}"
+
+
+async def _read_bounded_asset_body(request: Request) -> tuple[bytes, str] | None:
+    body = bytearray()
+    digest = hashlib.sha256()
+    async for chunk in request.stream():
+        data = bytes(chunk)
+        if len(body) + len(data) > MAX_ASSET_BODY_BYTES:
+            return None
+        body.extend(data)
+        digest.update(data)
+    return bytes(body), digest.hexdigest()
+
+
+async def _r2_body_chunks(stored: object):
+    stream = getattr(stored, "body", None)
+    get_reader = getattr(stream, "getReader", None)
+    if callable(get_reader):
+        reader = get_reader()
+        try:
+            while True:
+                result = await reader.read()
+                if bool(getattr(result, "done", False)):
+                    break
+                value = getattr(result, "value", b"")
+                to_py = getattr(value, "to_py", None)
+                yield bytes(to_py() if callable(to_py) else value)
+        finally:
+            release_lock = getattr(reader, "releaseLock", None)
+            if callable(release_lock):
+                release_lock()
+        return
+    yield bytes(await stored.arrayBuffer())
+
+
+async def _drain_asset_cleanup(env: object, uid: str, logical_key: str) -> None:
+    now = int(time.time())
+    result = (
+        await env.APP_DB.prepare(
+            "SELECT storage_key FROM cf_asset_cleanup_tasks "
+            "WHERE uid = ? AND logical_key = ? AND not_before <= ? ORDER BY created_at LIMIT ?"
+        )
+        .bind(uid, logical_key, now, ASSET_CLEANUP_BATCH_SIZE)
+        .all()
+    )
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("storage_key"), str):
+            continue
+        storage_key = str(row["storage_key"])
+        active = (
+            await env.APP_DB.prepare(
+                "SELECT 1 AS active FROM cf_asset_objects WHERE uid = ? AND storage_key = ? LIMIT 1"
+            )
+            .bind(uid, storage_key)
+            .first()
+        )
+        if not active:
+            try:
+                await env.ASSETS.delete(storage_key)
+            except Exception:
+                await env.APP_DB.prepare(
+                    "UPDATE cf_asset_cleanup_tasks SET attempts = attempts + 1, last_error = ?, updated_at = ? "
+                    "WHERE storage_key = ? AND uid = ?"
+                ).bind("r2 delete unavailable", now, storage_key, uid).run()
+                continue
+        await env.APP_DB.prepare("DELETE FROM cf_asset_cleanup_tasks WHERE storage_key = ? AND uid = ?").bind(
+            storage_key, uid
+        ).run()
+
+
 @app.put("/v1/cf/assets/{requested_key:path}")
 async def put_asset(requested_key: str, request: Request):
     context, env = _asset_context(request)
@@ -1432,24 +1508,77 @@ async def put_asset(requested_key: str, request: Request):
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > MAX_ASSET_BODY_BYTES:
         return JSONResponse({"error": "asset body too large"}, status_code=413)
-    body = await request.body()
-    if len(body) > MAX_ASSET_BODY_BYTES:
+    bounded_body = await _read_bounded_asset_body(request)
+    if bounded_body is None:
         return JSONResponse({"error": "asset body too large"}, status_code=413)
-    checksum = hashlib.sha256(body).hexdigest()
+    body, checksum = bounded_body
     expected_checksum = request.headers.get("x-content-sha256")
     if expected_checksum and expected_checksum.strip().lower() != checksum:
         return JSONResponse({"error": "asset checksum mismatch"}, status_code=422)
     content_type = request.headers.get("content-type", "application/octet-stream")[:200]
-    stored = await env.ASSETS.put(key, body, httpMetadata={"contentType": content_type})
-    etag = str(getattr(stored, "httpEtag", getattr(stored, "etag", "")))
+    uid = str(context["uid"])
+    storage_key = _asset_storage_key(uid, checksum)
     now = int(time.time())
-    await env.APP_DB.prepare(
-        "INSERT INTO cf_asset_objects (uid, object_key, content_type, size, etag, checksum_sha256, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(uid, object_key) DO UPDATE SET content_type = excluded.content_type, "
-        "size = excluded.size, etag = excluded.etag, checksum_sha256 = excluded.checksum_sha256, "
-        "updated_at = excluded.updated_at"
-    ).bind(str(context["uid"]), key, content_type, len(body), etag, checksum, now, now).run()
+    try:
+        await env.APP_DB.prepare(
+            "INSERT INTO cf_asset_cleanup_tasks "
+            "(storage_key, uid, logical_key, reason, not_before, attempts, last_error, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'uncommitted-upload', ?, 0, NULL, ?, ?)"
+        ).bind(storage_key, uid, key, now + ASSET_CLEANUP_GRACE_SECONDS, now, now).run()
+    except Exception:
+        return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+    try:
+        stored = await env.ASSETS.put(storage_key, body, httpMetadata={"contentType": content_type})
+    except Exception:
+        try:
+            await env.APP_DB.prepare("DELETE FROM cf_asset_cleanup_tasks WHERE storage_key = ? AND uid = ?").bind(
+                storage_key, uid
+            ).run()
+        except Exception:
+            pass
+        return JSONResponse({"error": "asset storage is unavailable"}, status_code=503)
+    etag = str(getattr(stored, "httpEtag", getattr(stored, "etag", "")))
+    cleanup_previous = env.APP_DB.prepare(
+        "INSERT OR IGNORE INTO cf_asset_cleanup_tasks "
+        "(storage_key, uid, logical_key, reason, not_before, attempts, last_error, created_at, updated_at) "
+        "SELECT storage_key, uid, object_key, 'superseded', ?, 0, NULL, ?, ? FROM cf_asset_objects "
+        "WHERE uid = ? AND object_key = ? AND storage_key IS NOT NULL AND storage_key <> ?"
+    ).bind(now, now, now, uid, key, storage_key)
+    upsert_metadata = env.APP_DB.prepare(
+        "INSERT INTO cf_asset_objects "
+        "(uid, object_key, storage_key, content_type, size, etag, checksum_sha256, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid, object_key) DO UPDATE SET storage_key = excluded.storage_key, "
+        "content_type = excluded.content_type, size = excluded.size, etag = excluded.etag, "
+        "checksum_sha256 = excluded.checksum_sha256, updated_at = excluded.updated_at"
+    ).bind(uid, key, storage_key, content_type, len(body), etag, checksum, now, now)
+    commit_intent = env.APP_DB.prepare("DELETE FROM cf_asset_cleanup_tasks WHERE storage_key = ? AND uid = ?").bind(
+        storage_key, uid
+    )
+    try:
+        await env.APP_DB.batch([cleanup_previous, upsert_metadata, commit_intent])
+    except Exception:
+        try:
+            active = (
+                await env.APP_DB.prepare("SELECT storage_key FROM cf_asset_objects WHERE uid = ? AND object_key = ?")
+                .bind(uid, key)
+                .first()
+            )
+        except Exception:
+            active = None
+        if not isinstance(active, dict) or active.get("storage_key") != storage_key:
+            try:
+                await env.ASSETS.delete(storage_key)
+                await env.APP_DB.prepare("DELETE FROM cf_asset_cleanup_tasks WHERE storage_key = ? AND uid = ?").bind(
+                    storage_key, uid
+                ).run()
+            except Exception:
+                pass
+            return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+    try:
+        await _drain_asset_cleanup(env, uid, key)
+    except Exception:
+        pass
     return {
         "status": "ok",
         "key": requested_key.strip("/"),
@@ -1471,7 +1600,8 @@ async def get_asset(requested_key: str, request: Request):
         return JSONResponse({"error": "invalid asset key"}, status_code=400)
     row = (
         await env.APP_DB.prepare(
-            "SELECT content_type, etag, size, checksum_sha256 FROM cf_asset_objects WHERE uid = ? AND object_key = ?"
+            "SELECT storage_key, content_type, etag, size, checksum_sha256 "
+            "FROM cf_asset_objects WHERE uid = ? AND object_key = ?"
         )
         .bind(str(context["uid"]), key)
         .first()
@@ -1494,16 +1624,16 @@ async def get_asset(requested_key: str, request: Request):
         options = {"range": {"offset": start, "length": end - start + 1}}
         response_headers["content-range"] = f"bytes {start}-{end}/{size}"
         status_code = 206
-    stored = await env.ASSETS.get(key, options) if options else await env.ASSETS.get(key)
+    storage_key = str(row.get("storage_key") or key)
+    stored = await env.ASSETS.get(storage_key, options) if options else await env.ASSETS.get(storage_key)
     if not stored:
         return JSONResponse({"error": "asset not found"}, status_code=404)
-    content = bytes(await stored.arrayBuffer())
     checksum = str(row.get("checksum_sha256") or "")
     if checksum:
         response_headers["x-content-sha256"] = checksum
-    response_headers["content-length"] = str(len(content))
-    return Response(
-        content=content,
+    response_headers["content-length"] = str(byte_range[1] - byte_range[0] + 1 if byte_range else size)
+    return StreamingResponse(
+        content=_r2_body_chunks(stored),
         media_type=str(row["content_type"]),
         headers=response_headers,
         status_code=status_code,
@@ -1520,10 +1650,23 @@ async def delete_asset(requested_key: str, request: Request):
     key = _asset_key(str(context["uid"]), requested_key)
     if not key:
         return JSONResponse({"error": "invalid asset key"}, status_code=400)
-    await env.ASSETS.delete(key)
-    await env.APP_DB.prepare("DELETE FROM cf_asset_objects WHERE uid = ? AND object_key = ?").bind(
-        str(context["uid"]), key
-    ).run()
+    uid = str(context["uid"])
+    now = int(time.time())
+    schedule_cleanup = env.APP_DB.prepare(
+        "INSERT OR IGNORE INTO cf_asset_cleanup_tasks "
+        "(storage_key, uid, logical_key, reason, not_before, attempts, last_error, created_at, updated_at) "
+        "SELECT storage_key, uid, object_key, 'deleted', ?, 0, NULL, ?, ? FROM cf_asset_objects "
+        "WHERE uid = ? AND object_key = ? AND storage_key IS NOT NULL"
+    ).bind(now, now, now, uid, key)
+    delete_metadata = env.APP_DB.prepare("DELETE FROM cf_asset_objects WHERE uid = ? AND object_key = ?").bind(uid, key)
+    try:
+        await env.APP_DB.batch([schedule_cleanup, delete_metadata])
+    except Exception:
+        return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+    try:
+        await _drain_asset_cleanup(env, uid, key)
+    except Exception:
+        pass
     return {"status": "deleted", "key": requested_key.strip("/")}
 
 

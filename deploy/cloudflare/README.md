@@ -540,8 +540,12 @@ workstream backfill and downstream reader cutover.
 The R2 asset route stores a SHA-256 integrity projection in D1 alongside the
 uid-scoped object metadata. Uploads can supply `X-Content-SHA256` for fail-closed
 verification; downloads support one `bytes` range and `If-None-Match`, while
-multi-range and unsatisfiable requests return `416`. The Worker still buffers
-the bounded 25 MB compatibility surface; large-object multipart migration and
+multi-range and unsatisfiable requests return `416`. Logical asset keys point
+to immutable R2 storage keys, so an overwrite cannot destroy the previous
+object before its D1 pointer commits. Superseded, deleted, or uncommitted
+objects are tracked in D1 and retried by the Jobs Worker's 15-minute cleanup
+sweep. R2 reads stream through the Python ASGI response; uploads retain the
+bounded 25 MB compatibility surface. Large-object multipart migration and
 signed URL issuance remain separate R2 cutover work.
 
 The folder routes migrate system/custom folder metadata and ordering to D1.

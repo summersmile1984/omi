@@ -1,5 +1,6 @@
 import base64
 import asyncio
+import copy
 import hashlib
 import hmac
 import json
@@ -36,9 +37,25 @@ class FakeDb:
         self.assistant_settings_row = None
         self.ai_profile_row = None
         self.asset_row = None
+        self.asset_cleanup_tasks = {}
+        self.fail_next_asset_batch = False
 
     def prepare(self, sql):
         return FakeStatement(self, sql)
+
+    async def batch(self, statements):
+        asset_row = copy.deepcopy(self.asset_row)
+        cleanup_tasks = copy.deepcopy(self.asset_cleanup_tasks)
+        if self.fail_next_asset_batch:
+            self.fail_next_asset_batch = False
+            raise RuntimeError("simulated D1 batch failure")
+        try:
+            for statement in statements:
+                await statement.run()
+        except Exception:
+            self.asset_row = asset_row
+            self.asset_cleanup_tasks = cleanup_tasks
+            raise
 
 
 class FakeStatement:
@@ -75,16 +92,72 @@ class FakeStatement:
             return self.db.assistant_settings_row
         if self.sql.startswith("SELECT profile_text, generated_at, data_sources_used"):
             return self.db.ai_profile_row
-        if self.sql.startswith("SELECT content_type, etag, size, checksum_sha256"):
+        if self.sql.startswith("SELECT storage_key, content_type, etag, size, checksum_sha256"):
             return self.db.asset_row
+        if self.sql.startswith("SELECT storage_key FROM cf_asset_objects"):
+            uid, object_key = self.args
+            row = self.db.asset_row
+            return row if row and row["uid"] == uid and row["object_key"] == object_key else None
+        if self.sql.startswith("SELECT 1 AS active FROM cf_asset_objects"):
+            uid, storage_key = self.args
+            row = self.db.asset_row
+            return {"active": 1} if row and row["uid"] == uid and row["storage_key"] == storage_key else None
+        raise AssertionError(f"unexpected query: {self.sql}")
+
+    async def all(self):
+        if self.sql.startswith("SELECT storage_key FROM cf_asset_cleanup_tasks"):
+            uid, logical_key, not_before, limit = self.args
+            rows = [
+                {"storage_key": storage_key}
+                for storage_key, task in self.db.asset_cleanup_tasks.items()
+                if task["uid"] == uid and task["logical_key"] == logical_key and task["not_before"] <= not_before
+            ]
+            rows.sort(key=lambda row: self.db.asset_cleanup_tasks[row["storage_key"]]["created_at"])
+            return {"results": rows[:limit]}
         raise AssertionError(f"unexpected query: {self.sql}")
 
     async def run(self):
+        if self.sql.startswith("INSERT INTO cf_asset_cleanup_tasks"):
+            storage_key, uid, logical_key, not_before, created_at, updated_at = self.args
+            self.db.asset_cleanup_tasks[storage_key] = {
+                "storage_key": storage_key,
+                "uid": uid,
+                "logical_key": logical_key,
+                "reason": "uncommitted-upload",
+                "not_before": not_before,
+                "attempts": 0,
+                "last_error": None,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            return
+        if self.sql.startswith("INSERT OR IGNORE INTO cf_asset_cleanup_tasks"):
+            not_before, created_at, updated_at, uid, object_key, *excluded = self.args
+            row = self.db.asset_row
+            if row and row["uid"] == uid and row["object_key"] == object_key:
+                storage_key = row["storage_key"]
+                if not excluded or storage_key != excluded[0]:
+                    self.db.asset_cleanup_tasks.setdefault(
+                        storage_key,
+                        {
+                            "storage_key": storage_key,
+                            "uid": uid,
+                            "logical_key": object_key,
+                            "reason": "superseded" if "superseded" in self.sql else "deleted",
+                            "not_before": not_before,
+                            "attempts": 0,
+                            "last_error": None,
+                            "created_at": created_at,
+                            "updated_at": updated_at,
+                        },
+                    )
+            return
         if self.sql.startswith("INSERT INTO cf_asset_objects"):
-            uid, object_key, content_type, size, etag, checksum_sha256, created_at, updated_at = self.args
+            uid, object_key, storage_key, content_type, size, etag, checksum_sha256, created_at, updated_at = self.args
             self.db.asset_row = {
                 "uid": uid,
                 "object_key": object_key,
+                "storage_key": storage_key,
                 "content_type": content_type,
                 "size": size,
                 "etag": etag,
@@ -95,6 +168,18 @@ class FakeStatement:
             return
         if self.sql.startswith("DELETE FROM cf_asset_objects"):
             self.db.asset_row = None
+            return
+        if self.sql.startswith("DELETE FROM cf_asset_cleanup_tasks"):
+            storage_key, _uid = self.args
+            self.db.asset_cleanup_tasks.pop(storage_key, None)
+            return
+        if self.sql.startswith("UPDATE cf_asset_cleanup_tasks"):
+            error, updated_at, storage_key, _uid = self.args
+            task = self.db.asset_cleanup_tasks.get(storage_key)
+            if task:
+                task["attempts"] += 1
+                task["last_error"] = error
+                task["updated_at"] = updated_at
             return
         if self.sql.startswith("INSERT INTO cf_user_transcription_preferences"):
             (
@@ -282,6 +367,9 @@ class AssetRequest:
     async def body(self):
         return self._body
 
+    async def stream(self):
+        yield self._body
+
 
 class FakeObject:
     def __init__(self, content: bytes):
@@ -295,8 +383,13 @@ class FakeBucket:
     def __init__(self):
         self.objects = {}
         self.get_calls = []
+        self.fail_next_put = False
+        self.fail_next_delete = False
 
     async def put(self, key, body, **_kwargs):
+        if self.fail_next_put:
+            self.fail_next_put = False
+            raise RuntimeError("simulated R2 put failure")
         self.objects[key] = bytes(body)
         return type("Stored", (), {"httpEtag": '"asset-etag"'})()
 
@@ -313,7 +406,14 @@ class FakeBucket:
         return FakeObject(content)
 
     async def delete(self, key):
+        if self.fail_next_delete:
+            self.fail_next_delete = False
+            raise RuntimeError("simulated R2 delete failure")
         self.objects.pop(key, None)
+
+
+async def response_body(response):
+    return b"".join([bytes(chunk) async for chunk in response.body_iterator])
 
 
 def signed_context(secret: str, uid: str = "user-1") -> tuple[str, str]:
@@ -375,7 +475,7 @@ def test_asset_put_get_range_conditional_and_checksum_contract():
         )
     )
     assert ranged.status_code == 206
-    assert ranged.body == b"bcd"
+    assert asyncio.run(response_body(ranged)) == b"bcd"
     assert ranged.headers["content-range"] == "bytes 1-3/6"
     assert ranged.headers["x-content-sha256"] == checksum
     not_modified = asyncio.run(
@@ -392,6 +492,87 @@ def test_asset_put_get_range_conditional_and_checksum_contract():
         )
     )
     assert rejected.status_code == 422
+
+
+def test_asset_metadata_failure_preserves_the_previous_object_and_pointer():
+    secret = "asset-secret"
+    encoded, signature = signed_context(secret)
+    db = FakeDb()
+    bucket = FakeBucket()
+    env = SimpleNamespace(APP_DB=db, ASSETS=bucket, INTERNAL_ASSERTION_SECRET=secret)
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+        "content-type": "audio/wav",
+    }
+    first = asyncio.run(entry.put_asset("audio/clip.wav", AssetRequest(env, headers, b"first")))
+    old_storage_key = db.asset_row["storage_key"]
+    db.fail_next_asset_batch = True
+
+    failed = asyncio.run(entry.put_asset("audio/clip.wav", AssetRequest(env, headers, b"second")))
+
+    assert first["status"] == "ok"
+    assert failed.status_code == 503
+    assert db.asset_row["storage_key"] == old_storage_key
+    assert bucket.objects == {old_storage_key: b"first"}
+    assert db.asset_cleanup_tasks == {}
+
+
+def test_asset_replacement_keeps_durable_cleanup_work_when_r2_delete_fails():
+    secret = "asset-secret"
+    encoded, signature = signed_context(secret)
+    db = FakeDb()
+    bucket = FakeBucket()
+    env = SimpleNamespace(APP_DB=db, ASSETS=bucket, INTERNAL_ASSERTION_SECRET=secret)
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+        "content-type": "audio/wav",
+    }
+    asyncio.run(entry.put_asset("audio/clip.wav", AssetRequest(env, headers, b"first")))
+    old_storage_key = db.asset_row["storage_key"]
+    bucket.fail_next_delete = True
+
+    replaced = asyncio.run(entry.put_asset("audio/clip.wav", AssetRequest(env, headers, b"second")))
+
+    new_storage_key = db.asset_row["storage_key"]
+    assert replaced["status"] == "ok"
+    assert new_storage_key != old_storage_key
+    assert bucket.objects[old_storage_key] == b"first"
+    assert bucket.objects[new_storage_key] == b"second"
+    assert db.asset_cleanup_tasks[old_storage_key]["attempts"] == 1
+
+    asyncio.run(entry._drain_asset_cleanup(env, "user-1", "user-1/audio/clip.wav"))
+    assert old_storage_key not in bucket.objects
+    assert db.asset_cleanup_tasks == {}
+
+
+def test_asset_delete_commits_metadata_before_best_effort_r2_cleanup():
+    secret = "asset-secret"
+    encoded, signature = signed_context(secret)
+    db = FakeDb()
+    bucket = FakeBucket()
+    env = SimpleNamespace(APP_DB=db, ASSETS=bucket, INTERNAL_ASSERTION_SECRET=secret)
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+        "content-type": "audio/wav",
+    }
+    asyncio.run(entry.put_asset("audio/clip.wav", AssetRequest(env, headers, b"first")))
+    storage_key = db.asset_row["storage_key"]
+    db.fail_next_asset_batch = True
+
+    failed = asyncio.run(entry.delete_asset("audio/clip.wav", AssetRequest(env, headers)))
+    assert failed.status_code == 503
+    assert db.asset_row is not None
+    assert storage_key in bucket.objects
+
+    bucket.fail_next_delete = True
+    deleted = asyncio.run(entry.delete_asset("audio/clip.wav", AssetRequest(env, headers)))
+    assert deleted == {"status": "deleted", "key": "audio/clip.wav"}
+    assert db.asset_row is None
+    assert storage_key in bucket.objects
+    assert db.asset_cleanup_tasks[storage_key]["reason"] == "deleted"
 
 
 def test_firmware_metadata_preserves_release_contract():

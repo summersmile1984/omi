@@ -535,3 +535,66 @@ describe("jobs consumer", () => {
     expect(delivery.retries).toEqual([{ delaySeconds: 10 }]);
   });
 });
+
+describe("jobs scheduled cleanup", () => {
+  it("preserves active assets and isolates a failed orphan deletion", async () => {
+    const tasks = new Map([
+      ["cf-assets/user-1/active", { uid: "user-1", attempts: 0 }],
+      ["cf-assets/user-1/orphan-ok", { uid: "user-1", attempts: 0 }],
+      ["cf-assets/user-1/orphan-retry", { uid: "user-1", attempts: 0 }],
+    ]);
+    const active = new Set(["cf-assets/user-1/active"]);
+    const deleted: string[] = [];
+    let failOrphanOnce = true;
+    const env = {
+      APP_DB: {
+        prepare: (sql: string) => ({
+          bind: (...args: unknown[]) => ({
+            all: async () => ({
+              results: [...tasks].map(([storage_key, task]) => ({
+                storage_key,
+                uid: task.uid,
+              })),
+            }),
+            first: async () =>
+              active.has(String(args[1])) ? { active: 1 } : null,
+            run: async () => {
+              const storageKey = String(args[sql.startsWith("DELETE") ? 0 : 2]);
+              if (sql.startsWith("DELETE")) tasks.delete(storageKey);
+              else {
+                const task = tasks.get(storageKey);
+                if (task) task.attempts += 1;
+              }
+              return { success: true, meta: { changes: 1 } };
+            },
+          }),
+        }),
+      },
+      ASSETS: {
+        delete: async (storageKey: string) => {
+          if (
+            storageKey === "cf-assets/user-1/orphan-retry" &&
+            failOrphanOnce
+          ) {
+            failOrphanOnce = false;
+            throw new Error("simulated R2 delete failure");
+          }
+          deleted.push(storageKey);
+        },
+      },
+    };
+
+    await jobs.scheduled({} as never, env as never);
+    expect(deleted).toEqual(["cf-assets/user-1/orphan-ok"]);
+    expect(tasks.has("cf-assets/user-1/active")).toBe(false);
+    expect(tasks.has("cf-assets/user-1/orphan-ok")).toBe(false);
+    expect(tasks.get("cf-assets/user-1/orphan-retry")?.attempts).toBe(1);
+
+    await jobs.scheduled({} as never, env as never);
+    expect(deleted).toEqual([
+      "cf-assets/user-1/orphan-ok",
+      "cf-assets/user-1/orphan-retry",
+    ]);
+    expect(tasks.size).toBe(0);
+  });
+});

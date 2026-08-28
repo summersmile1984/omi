@@ -26,3 +26,11 @@ verification, and destination binding described by `INV-CUTOVER-1` exist.
 principal directly as `new`; the initializer writes a completed,
 destination-bound row before returning. Every other missing principal stays
 `legacy`, and malformed or incomplete `new` rows fail closed.
+
+The asset API owns logical metadata in D1 and immutable object versions in R2.
+Every upload creates a durable cleanup task before its R2 write; one D1 batch
+then switches the logical pointer, schedules the superseded version, and clears
+the new-object intent. Deletes commit the metadata removal and cleanup task in
+the same batch. Request-time cleanup is best-effort, while the Jobs Worker
+reconciles due tasks every 15 minutes and never deletes an object still named by
+an active pointer.
