@@ -230,6 +230,9 @@ printf '%s' "$APPLE_CLIENT_SECRET" | npx wrangler secret put APPLE_CLIENT_SECRET
 # Optional, staging-only Flutter Better Auth bridge (never use in a release build).
 cf_dev_issuer_secret="$(openssl rand -base64 48)"
 printf '%s' "$cf_dev_issuer_secret" | npx wrangler secret put AUTH_DEV_ISSUER_SECRET --name omi-cf-auth-staging
+# Required only when an isolated staging account has a registered FCM device.
+# Use a staging Firebase service account; never copy production credentials.
+printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | npx wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON --name omi-cf-jobs-staging
 ```
 
 The `/auth-issue` bridge is hidden (`404`) unless `AUTH_DEV_ISSUER_SECRET` is
@@ -356,6 +359,8 @@ GET  /v1/users/me/subscription
 GET  /v1/payments/available-plans
                               Edge → Python API Core → configured D1 price catalog
 GET  /v1/fair-use/status      Edge → Python API Core → D1 fair-use read projection
+GET  /v1/fair-use/case/:ref/status
+                              Edge → Python API Core → public D1 case projection
 GET  /v1/conversations/count
 POST /v1/conversations/search
 GET  /v1/conversations/{conversationId}
@@ -713,11 +718,39 @@ legacy `stage=none`, zero-usage response instead of a route 404. Migration
 Workers now ingest exact interval-union speech for Workers AI raw/voice-message
 requests, hosted-ASR requests that return timed segments or words, Queue jobs,
 and Realtime provider connections. Generic Workers AI and unknown hosted ASR
-sources deliberately record `dg_ms=0`; provider classification, sync-local
-conversation finalization/backfill, classifier/escalation, notification,
-restriction enforcement, admin actions, public case lookup, and production
-state import remain legacy-owned. A successful staging read is not evidence
-that those enforcement authorities have moved.
+sources deliberately record `dg_ms=0`; provider classification and sync-local
+conversation finalization/backfill remain separate migration boundaries.
+
+Migration `0049_fair_use_enforcement.sql` adds the D1 state machine, immutable
+case events, and a leased notification outbox. The Jobs Worker scans a bounded
+batch every five minutes, applies the legacy strict soft-cap and raised
+unlimited-plan thresholds, uses the 72,000-second basic monthly usage projection
+for the `free_exhausted` synthetic classifier, and otherwise classifies at most
+30 metadata-only conversation summaries with Workers AI. A per-user D1 lease
+and 12-hour cooldown make repeated cron delivery idempotent. Stage progression
+remains classifier-gated (`none → warning`, then prior 7-day event counts gate
+`warning → throttle → restrict`), and every completed evaluation records an
+event even when no action is taken. Paid upgrades clear only enforcement whose
+last classifier type is `free_exhausted`.
+
+API AI, Queue consumption, and Realtime check the same D1 live-usage boundary
+before invoking ASR. Restrict-stage accounts are blocked only while the default
+live soft caps remain exceeded, and the all-plan 30-hour daily ceiling is also
+enforced. Responses preserve the legacy `429`, `Retry-After`, and
+`X-Omi-Rate-Limit-Reason: fair_use` contract. Realtime rechecks every five
+minutes so a long-lived connection cannot bypass a later escalation. Expired or
+malformed restrict deadlines persistently downgrade to throttle. The public
+case route exposes only case reference, effective stage, timestamps, support
+copy, and support email; it never returns UID, usage, or classifier evidence.
+
+Fair-use actions atomically create an FCM outbox row. The Jobs Worker claims
+rows with a recoverable lease, uses the FCM HTTP v1 API when the optional
+staging service-account secret is configured, deletes only
+provider-confirmed unregistered tokens, and retries transient failures with
+bounded backoff. An account with no registered device completes the outbox row
+without requiring Firebase credentials. Admin actions and production state
+import remain legacy-owned until their separate authorization and backfill
+boundaries move.
 
 The 2026-08-28 staging release exercised a generated spoken WAV through the
 raw Workers AI route, the Web/Flutter multipart route, and the Queue route.
@@ -988,15 +1021,16 @@ the Flutter client already treats those fields as optional/defaulted.
 
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains
-the legacy success/message shape. The notification side effect is intentionally
-not claimed yet: FCM token storage and delivery still belong to the legacy
-notifier until that provider boundary is migrated.
+the legacy success/message shape. Its training-data notification side effect is
+not yet migrated; the new Jobs FCM sender is currently scoped to the fair-use
+outbox contract.
 
 `POST /v1/users/fcm-token` stores one token per sanitized
 `platform + device-id-hash` key in staging D1 and keeps the legacy `{"status":"Ok"}`
 response. Tokens are not returned by any public route. The legacy FCM sender
-still owns delivery until it can read the D1 token authority with an explicit
-provider and deletion contract.
+still owns non-fair-use notifications. Fair-use delivery now reads this D1
+token authority through the leased Jobs outbox and FCM HTTP v1 adapter
+described above.
 
 Developer webhook configuration routes now use the staging D1 table
 `cf_user_developer_webhooks`; supported types are `audio_bytes`,

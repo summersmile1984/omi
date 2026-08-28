@@ -19,6 +19,7 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
 
 from internal_auth import decode_context, verify_request_context
 from fair_use_meter import content_source_id, record_fair_use_usage, speech_ms_from_transcription
+from fair_use_enforcement import fair_use_restriction, fair_use_restriction_response
 from auto_model_routes import router as auto_model_router
 from chat_generation_routes import chat_messages, router as chat_generation_router
 from realtime_routes import router as realtime_router
@@ -529,6 +530,9 @@ async def transcribe_workers_ai(request: Request):
     context = auth_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    restriction = await fair_use_restriction(request.scope["env"], str(context["uid"]))
+    if restriction:
+        return fair_use_restriction_response(restriction)
     content_type = request.headers.get("content-type", "application/octet-stream").lower()
     if not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
         return JSONResponse({"error": "workers ai transcription expects a raw audio body"}, status_code=415)
@@ -601,6 +605,9 @@ async def transcribe(request: Request):
     context = auth_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    restriction = await fair_use_restriction(request.scope["env"], str(context["uid"]))
+    if restriction:
+        return fair_use_restriction_response(restriction)
     env = request.scope["env"]
     base_url = getattr(env, "ASR_API_BASE_URL", None)
     api_key = getattr(env, "ASR_API_KEY", None)

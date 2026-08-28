@@ -1293,6 +1293,28 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes the public high-entropy fair-use case lookup without authentication context", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ case_ref: "FU-A1B2C3D4E5F6", stage: "warning" });
+      }),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/fair-use/case/FU-A1B2C3D4E5F6/status"),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://invalid").pathname).toBe(
+      "/v1/fair-use/case/FU-A1B2C3D4E5F6/status",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
+  });
+
   it("routes the app voice-message upload to the API AI worker", async () => {
     let forwarded: Request | undefined;
     const rateLimitNames: string[] = [];

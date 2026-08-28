@@ -114,6 +114,7 @@ app.get("/v1/approved-apps", proxyPublicCore);
 app.get("/v1/apps/:appId/reviews", proxyPublicCore);
 app.get("/v1/action-items/shared/:token", proxyPublicCore);
 app.get("/v2/messages/shared/:token", proxyPublicCore);
+app.get("/v1/fair-use/case/:case_ref/status", proxyPublicCore);
 
 app.all("/api/better-auth/*", async (c) => {
   const id = requestId(c.req.raw);

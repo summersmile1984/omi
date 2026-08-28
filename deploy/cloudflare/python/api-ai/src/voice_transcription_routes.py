@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from fair_use_meter import content_source_id, record_fair_use_usage, speech_ms_from_transcription
+from fair_use_enforcement import fair_use_restriction, fair_use_restriction_response
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -275,6 +276,9 @@ async def transcribe_voice_message(request: Request):
     context = _auth_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    restriction = await fair_use_restriction(request.scope["env"], str(context["uid"]))
+    if restriction:
+        return fair_use_restriction_response(restriction)
 
     content_type = request.headers.get("content-type", "").strip()
     normalized_content_type = content_type.split(";", 1)[0].strip().lower()

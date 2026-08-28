@@ -10,7 +10,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from fair_use_routes import get_fair_use_status  # noqa: E402
+from fair_use_routes import get_fair_use_status, get_public_case_status  # noqa: E402
 
 
 class FakeDb:
@@ -23,6 +23,8 @@ class FakeDb:
             "0037_memories.sql",
             "0046_account_usage.sql",
             "0047_fair_use_projection.sql",
+            "0048_fair_use_usage_revision.sql",
+            "0049_fair_use_enforcement.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
 
@@ -150,3 +152,40 @@ def test_status_fails_closed_when_d1_is_unavailable():
     response = asyncio.run(get_fair_use_status(FakeRequest(env, signed_headers(secret))))
 
     assert response.status_code == 503
+
+
+def test_public_case_lookup_exposes_only_case_status_and_support_fields():
+    secret = "fair-use-secret"
+    env = make_env(secret)
+    now = int(time.time())
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_fair_use_states (uid, stage, last_case_ref, restrict_until, updated_at) "
+        "VALUES ('fair-use-user', 'restrict', 'FU-A1B2C3D4E5F6', ?, ?)",
+        (now + 3_600, now),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_fair_use_events "
+        "(event_id, uid, case_ref, created_at, trigger, daily_speech_ms, three_day_speech_ms, "
+        "weekly_speech_ms, daily_threshold_ms, three_day_threshold_ms, weekly_threshold_ms, "
+        "enforcement_action, previous_stage, new_stage) "
+        "VALUES ('event-1', 'fair-use-user', 'FU-A1B2C3D4E5F6', ?, 'daily', 7200001, 7200001, "
+        "7200001, 7200000, 28800000, 36000000, 'restrict', 'throttle', 'restrict')",
+        (now,),
+    )
+    env.APP_DB.connection.commit()
+
+    response = asyncio.run(get_public_case_status("fu-a1b2c3d4e5f6", FakeRequest(env)))
+
+    assert response == {
+        "case_ref": "FU-A1B2C3D4E5F6",
+        "stage": "restrict",
+        "message": response["message"],
+        "created_at": response["created_at"],
+        "updated_at": response["created_at"],
+        "support_email": "team@basedhardware.com",
+    }
+    assert "case reference" in response["message"]
+    assert "uid" not in response
+    assert "classifier" not in response
+    assert asyncio.run(get_public_case_status("invalid", FakeRequest(env))).status_code == 404
+    assert asyncio.run(get_public_case_status("FU-000000000000", FakeRequest(env))).status_code == 404

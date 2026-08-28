@@ -2,9 +2,26 @@ export type FallbackOutcome = "recovered" | "degraded" | "exhausted";
 
 export type WorkerFallbackEvent = {
   component: "rate_limit" | "other";
-  from: "durable_object" | "d1" | "none";
-  to: "durable_object_retry" | "unlimited" | "none";
-  reason: "dependency_unavailable" | "invalid_response" | "other";
+  from:
+    | "durable_object"
+    | "d1"
+    | "fcm"
+    | "workers_ai_classifier"
+    | "restrict"
+    | "none";
+  to:
+    | "durable_object_retry"
+    | "conservative_no_action"
+    | "notification_outbox"
+    | "throttle"
+    | "unlimited"
+    | "none";
+  reason:
+    | "dependency_unavailable"
+    | "invalid_response"
+    | "malformed_doc"
+    | "malformed_response"
+    | "other";
   outcome: FallbackOutcome;
   requestId?: string;
 };

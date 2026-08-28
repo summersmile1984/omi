@@ -14,7 +14,7 @@
   ],
   "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "omi-cf-staging" }],
   "ai": { "binding": "AI" },
-  "triggers": { "crons": ["*/15 * * * *"] },
+  "triggers": { "crons": ["*/5 * * * *"] },
   "queues": {
     "producers": [{ "binding": "JOBS", "queue": "omi-cf-jobs-staging" }],
     "consumers": [

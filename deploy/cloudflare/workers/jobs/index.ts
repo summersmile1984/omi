@@ -4,7 +4,13 @@ import {
   recordFairUseUsage,
   speechMsFromTranscription,
 } from "../shared/fair-use-meter";
+import {
+  fairUseRestrictionResponse,
+  readFairUseRestriction,
+} from "../shared/fair-use-enforcement";
 import type { JobMessage, JobsEnv } from "./env";
+import { evaluateFairUseBatch } from "./fair-use-evaluator";
+import { drainFairUseNotifications } from "./firebase-messaging";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -261,6 +267,9 @@ app.post("/v1/cf/transcription-jobs", async (c) => {
   const context = await requestContext(c);
   if (!context) return c.json({ error: "unauthorized" }, 401);
 
+  const restriction = await readFairUseRestriction(c.env.APP_DB, context.uid);
+  if (restriction) return fairUseRestrictionResponse(restriction);
+
   const idempotencyKey = c.req.header("idempotency-key")?.trim() || null;
   if (idempotencyKey && idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
     return c.json({ error: "idempotency key too long" }, 400);
@@ -483,6 +492,21 @@ async function processTranscription(
   env: JobsEnv,
   now: number,
 ): Promise<void> {
+  const restriction = await readFairUseRestriction(
+    env.APP_DB,
+    message.body.uid,
+    now,
+  );
+  if (restriction) {
+    await markJobFailed(
+      env,
+      message.body.jobId,
+      message.body.uid,
+      "fair use restricted",
+    );
+    await acknowledgeAfterCleanup(message, env);
+    return;
+  }
   const payload = parseTranscriptionPayload(message.body.payload);
   if (
     !payload ||
@@ -705,6 +729,14 @@ export default {
     _controller: ScheduledController,
     env: JobsEnv,
   ): Promise<void> {
-    await drainAssetCleanup(env);
+    const results = await Promise.allSettled([
+      drainAssetCleanup(env),
+      evaluateFairUseBatch(env),
+      drainFairUseNotifications(env),
+    ]);
+    const failure = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure) throw failure.reason;
   },
 };

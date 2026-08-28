@@ -4,6 +4,7 @@ import {
   speechMsFromTranscription,
   type FairUseUsage,
 } from "../shared/fair-use-meter";
+import { readFairUseRestriction } from "../shared/fair-use-enforcement";
 import { recordFallback } from "../shared/fallback";
 import { verifyRealtimeTicket } from "../shared/realtime-ticket";
 import type { RealtimeEnv } from "./env";
@@ -13,6 +14,7 @@ const MAX_AUTH_MESSAGE_BYTES = 16_384;
 const MAX_PENDING_AUDIO_BYTES = 1_000_000;
 const MAX_METERED_SEGMENTS = 20_000;
 const METER_RETRY_MS = 10_000;
+const POLICY_CHECK_INTERVAL_MS = 5 * 60 * 1_000;
 const PENDING_METER_PREFIX = "fair-use-pending:";
 
 type PendingMessage = string | ArrayBuffer;
@@ -133,6 +135,7 @@ export class RealtimeSession {
   private meterOccurredAt = 0;
   private meterRevision = 0;
   private meterWriteChain: Promise<void> = Promise.resolve();
+  private nextPolicyCheckAt = 0;
 
   constructor(state: DurableObjectState, env: RealtimeEnv) {
     this.state = state;
@@ -230,6 +233,7 @@ export class RealtimeSession {
       this.authContext = context;
       if (this.authTimeout) clearTimeout(this.authTimeout);
       this.authTimeout = undefined;
+      if (!(await this.enforceFairUse(socket, true))) return;
       const providerReady = await this.connectUpstream(auth.deviceIdHash);
       if (this.client !== socket) return;
       if (!providerReady) {
@@ -247,6 +251,7 @@ export class RealtimeSession {
       return;
     }
 
+    if (!(await this.enforceFairUse(socket, false))) return;
     if (!this.upstream || this.upstream.readyState !== WebSocket.OPEN) {
       this.bufferMessage(socket, data);
       return;
@@ -258,6 +263,7 @@ export class RealtimeSession {
     socket: WebSocket,
     sendAuthResponse: boolean,
   ): Promise<void> {
+    if (!(await this.enforceFairUse(socket, sendAuthResponse))) return;
     const ready = await this.connectUpstream();
     if (this.client !== socket) return;
     if (!ready) {
@@ -278,6 +284,34 @@ export class RealtimeSession {
     }
     this.sendJson(socket, { type: "ready", provider: "external" });
     this.flushPending();
+  }
+
+  private async enforceFairUse(
+    socket: WebSocket,
+    sendAuthResponse: boolean,
+  ): Promise<boolean> {
+    if (!this.authContext || Date.now() < this.nextPolicyCheckAt) return true;
+    this.nextPolicyCheckAt = Date.now() + POLICY_CHECK_INTERVAL_MS;
+    const restriction = await readFairUseRestriction(
+      this.env.APP_DB,
+      this.authContext.uid,
+    );
+    if (!restriction || this.client !== socket) return true;
+    if (sendAuthResponse) {
+      this.sendJson(socket, {
+        type: "auth_response",
+        success: false,
+        error: "fair_use_restricted",
+        retry_after: restriction.retryAfter,
+      });
+    } else {
+      this.sendJson(socket, {
+        type: "fair_use_restricted",
+        retry_after: restriction.retryAfter,
+      });
+    }
+    socket.close(4008, "fair use restricted");
+    return false;
   }
 
   private async connectUpstream(deviceIdHash?: string): Promise<boolean> {
@@ -470,5 +504,6 @@ export class RealtimeSession {
     this.client = undefined;
     this.pending = [];
     this.pendingBytes = 0;
+    this.nextPolicyCheckAt = 0;
   }
 }

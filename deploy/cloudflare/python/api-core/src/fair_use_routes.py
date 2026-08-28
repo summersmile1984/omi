@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import re
 import time
 
 from fastapi import APIRouter, Request
@@ -17,6 +18,7 @@ UNLIMITED_LIMITS_MS = (14_400_000, 57_600_000, 72_000_000)
 UNLIMITED_PLANS = frozenset({"unlimited", "unlimited_v2", "operator", "architect"})
 RESTRICT_DAILY_DG_MS = 1_800_000
 LIVE_SOURCE_KINDS = ("realtime", "sync_fresh")
+CASE_REFERENCE_PATTERN = re.compile(r"^FU-[A-F0-9]{12}$")
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -145,3 +147,54 @@ async def get_fair_use_status(request: Request):
         return await _projection(request.scope["env"], str(context["uid"]), int(time.time()))
     except Exception:
         return JSONResponse({"error": "fair use status unavailable"}, status_code=503)
+
+
+def _timestamp(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(int(value), timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+@router.get("/v1/fair-use/case/{case_ref}/status")
+async def get_public_case_status(case_ref: str, request: Request):
+    normalized = case_ref.strip().upper()
+    if not CASE_REFERENCE_PATTERN.fullmatch(normalized):
+        return JSONResponse({"detail": "Case not found"}, status_code=404)
+    env = request.scope["env"]
+    now = int(time.time())
+    try:
+        row = (
+            await env.APP_DB.prepare(
+                "SELECT event.case_ref, event.created_at, event.resolved_at, "
+                "COALESCE(state.stage, 'none') AS stage, state.restrict_until "
+                "FROM cf_fair_use_events AS event "
+                "LEFT JOIN cf_fair_use_states AS state ON state.uid = event.uid "
+                "WHERE event.case_ref = ? LIMIT 1"
+            )
+            .bind(normalized)
+            .first()
+        )
+    except Exception:
+        return JSONResponse({"error": "fair use case lookup unavailable"}, status_code=503)
+    if not isinstance(row, dict):
+        return JSONResponse({"detail": "Case not found"}, status_code=404)
+    stage = str(row.get("stage") or "none")
+    restrict_until = row.get("restrict_until")
+    if stage == "restrict" and (
+        isinstance(restrict_until, bool) or not isinstance(restrict_until, (int, float)) or int(restrict_until) < now
+    ):
+        stage = "throttle"
+    if stage not in {"none", "warning", "throttle", "restrict"}:
+        stage = "none"
+    created_at = _timestamp(row.get("created_at"))
+    return {
+        "case_ref": normalized,
+        "stage": stage,
+        "message": _message(stage, normalized),
+        "created_at": created_at,
+        "updated_at": _timestamp(row.get("resolved_at")) or created_at,
+        "support_email": "team@basedhardware.com",
+    }

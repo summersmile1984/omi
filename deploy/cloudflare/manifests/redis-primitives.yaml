@@ -564,9 +564,9 @@ direct_legacy_callers:
     }
   - {
       path: backend/utils/fair_use.py,
-      target: durable-object,
-      target_owner: realtime,
-      migration_state: planned,
+      target: d1,
+      target_owner: jobs,
+      migration_state: staging-owned,
     }
   - {
       path: backend/utils/other/endpoints.py,

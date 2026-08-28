@@ -16,4 +16,6 @@ export type JobsEnv = {
   JOBS: Queue<JobMessage>;
   INTERNAL_ASSERTION_SECRET?: string;
   WORKERS_AI_ASR_MODEL?: string;
+  WORKERS_AI_FAIR_USE_MODEL?: string;
+  FIREBASE_SERVICE_ACCOUNT_JSON?: string;
 };

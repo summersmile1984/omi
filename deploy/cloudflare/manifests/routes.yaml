@@ -1,6 +1,16 @@
 version: 1
 routes:
   - method: GET
+    path: /v1/fair-use/case/{case_ref}/status
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /v1/fair-use/status
     owner: api-core
     runtime: python-worker
