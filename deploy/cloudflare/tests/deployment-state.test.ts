@@ -3,8 +3,10 @@ import {
   activeVersionFromStatus,
   assertValidDeploymentOrder,
   createDeploymentSnapshot,
+  rollbackCommandArgs,
   rollbackMessage,
   rollbackPlan,
+  ROLLBACK_STDIO,
   STAGING_DEPLOYMENTS,
   STAGING_WORKERS,
 } from "../scripts/deployment-state.mjs";
@@ -82,5 +84,27 @@ describe("Cloudflare deployment snapshots", () => {
     );
     expect(message.length).toBeLessThanOrEqual(120);
     expect(message).not.toContain("/Users/operator");
+  });
+
+  it("builds a confirmed rollback command with no interactive stdin", () => {
+    expect(
+      rollbackCommandArgs(
+        {
+          workerName: "omi-cf-edge-staging",
+          versionId: "version-6",
+        },
+        "/Users/operator/worktree/.wrangler/releases/staging-before.json",
+      ),
+    ).toEqual([
+      "wrangler",
+      "rollback",
+      "version-6",
+      "--name",
+      "omi-cf-edge-staging",
+      "--message",
+      "automatic staging rollback: staging-before.json",
+      "--yes",
+    ]);
+    expect(ROLLBACK_STDIO).toEqual(["ignore", "inherit", "inherit"]);
   });
 });

@@ -6,8 +6,9 @@ import { stagingHealthTargets, verifyStagingHealth } from "./deploy-health.mjs";
 import {
   assertValidDeploymentOrder,
   createDeploymentSnapshot,
-  rollbackMessage,
+  rollbackCommandArgs,
   rollbackPlan,
+  ROLLBACK_STDIO,
   STAGING_DEPLOYMENTS,
   STAGING_WORKERS,
 } from "./deployment-state.mjs";
@@ -121,17 +122,12 @@ function rollbackDeployment(snapshot, snapshotPath) {
   for (const { workerName, versionId } of rollbackPlan(snapshot)) {
     const result = spawnSync(
       "npx",
-      [
-        "wrangler",
-        "rollback",
-        versionId,
-        "--name",
-        workerName,
-        "--message",
-        rollbackMessage(snapshotPath),
-        "--yes",
-      ],
-      { cwd: root, stdio: "inherit", env: process.env },
+      rollbackCommandArgs({ workerName, versionId }, snapshotPath),
+      {
+        cwd: root,
+        stdio: ROLLBACK_STDIO,
+        env: process.env,
+      },
     );
     if (result.status !== 0) failures.push(workerName);
   }

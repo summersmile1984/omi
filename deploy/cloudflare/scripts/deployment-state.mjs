@@ -140,3 +140,18 @@ export function rollbackMessage(snapshotPath) {
   // interactive prompt, which can strand the automatic recovery process.
   return message.slice(0, 120);
 }
+
+export const ROLLBACK_STDIO = Object.freeze(["ignore", "inherit", "inherit"]);
+
+export function rollbackCommandArgs({ workerName, versionId }, snapshotPath) {
+  return [
+    "wrangler",
+    "rollback",
+    versionId,
+    "--name",
+    workerName,
+    "--message",
+    rollbackMessage(snapshotPath),
+    "--yes",
+  ];
+}

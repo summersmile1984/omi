@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { rollbackPlan } from "./deployment-state.mjs";
+import {
+  rollbackCommandArgs,
+  rollbackPlan,
+  ROLLBACK_STDIO,
+} from "./deployment-state.mjs";
 import { verifyStagingHealth } from "./deploy-health.mjs";
 
 const snapshotPath = process.argv[2];
@@ -14,17 +18,8 @@ const failures = [];
 for (const { workerName, versionId } of rollbackPlan(snapshot)) {
   const result = spawnSync(
     "npx",
-    [
-      "wrangler",
-      "rollback",
-      versionId,
-      "--name",
-      workerName,
-      "--message",
-      `staging rollback from ${snapshotPath}`,
-      "--yes",
-    ],
-    { stdio: "inherit" },
+    rollbackCommandArgs({ workerName, versionId }, snapshotPath),
+    { stdio: ROLLBACK_STDIO },
   );
   if (result.status !== 0) failures.push(workerName);
 }

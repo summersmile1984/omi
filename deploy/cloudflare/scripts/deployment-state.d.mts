@@ -33,3 +33,10 @@ export function rollbackPlan(
 ): Array<{ workerName: string; versionId: string }>;
 
 export function rollbackMessage(snapshotPath: string): string;
+
+export const ROLLBACK_STDIO: readonly ["ignore", "inherit", "inherit"];
+
+export function rollbackCommandArgs(
+  step: { workerName: string; versionId: string },
+  snapshotPath: string,
+): string[];
