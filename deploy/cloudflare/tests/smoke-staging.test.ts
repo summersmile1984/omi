@@ -196,6 +196,9 @@ describe("staging smoke helpers", () => {
                                                     ) ||
                                                     url.endsWith(
                                                       "/v1/payments/available-plans",
+                                                    ) ||
+                                                    url.endsWith(
+                                                      "/v1/fair-use/status",
                                                     )
                                                   ? 200
                                                   : 400;
@@ -258,11 +261,12 @@ describe("staging smoke helpers", () => {
       accountUsage: 200,
       accountSubscription: 200,
       availablePlans: 200,
+      fairUseStatus: 200,
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(52);
+    expect(calls).toHaveLength(53);
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
@@ -453,7 +457,8 @@ describe("staging smoke helpers", () => {
         url.endsWith("/v1/users/geolocation") ||
         url.includes("/v1/users/me/usage?") ||
         url.endsWith("/v1/users/me/subscription") ||
-        url.endsWith("/v1/payments/available-plans")
+        url.endsWith("/v1/payments/available-plans") ||
+        url.endsWith("/v1/fair-use/status")
       ) {
         return new Response(null, { status: 200 });
       }

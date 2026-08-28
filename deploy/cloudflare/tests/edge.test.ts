@@ -1258,6 +1258,41 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("routes the authenticated fair-use status read to API Core", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ stage: "none" });
+      }),
+      API_AI: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/fair-use/status", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://invalid").pathname).toBe(
+      "/v1/fair-use/status",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes the app voice-message upload to the API AI worker", async () => {
     let forwarded: Request | undefined;
     const rateLimitNames: string[] = [];

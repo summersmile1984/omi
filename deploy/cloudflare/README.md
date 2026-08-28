@@ -125,7 +125,10 @@ and never receives browser cookies. Web recording exchanges the cookie at
 `POST /v1/realtime/web-ticket` for a signed 30-second ticket. The browser sends
 that ticket as its first WebSocket message, and the isolated Durable Object
 claims it once, so the Realtime Worker never receives a long-lived Better Auth
-session token or an Auth service binding.
+session token or an Auth service binding. Public Better Auth routes retain the
+D1-backed per-IP limiter. The secret-guarded Edge session-verification request
+bypasses that public limiter so service-binding calls without a client IP cannot
+collapse every staging user into one shared rate-limit bucket.
 
 After Edge verifies a client session, it removes the client cookie/bearer and
 mints a fresh HMAC assertion for the exact downstream request. Assertions last
@@ -187,7 +190,7 @@ smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
 
 The authenticated smoke verifies unauthenticated rejection, the D1 probe, the
 account usage/subscription/price-catalog reads, conversation list/search,
-folder/memory shell dependencies, and the
+fair-use status, folder/memory shell dependencies, and the
 conversation, enabled-app, and memory reads through Web `/api/proxy` so a
 missing Web→Edge binding fails the release. It also sends one real default-text
 chat through Web → Edge → Workers AI, validates the legacy SSE completion, and
@@ -344,6 +347,7 @@ GET  /v1/users/me/subscription
                               Edge → Python API Core → D1 subscription/usage projection
 GET  /v1/payments/available-plans
                               Edge → Python API Core → configured D1 price catalog
+GET  /v1/fair-use/status      Edge → Python API Core → D1 fair-use read projection
 GET  /v1/conversations/count
 POST /v1/conversations/search
 GET  /v1/conversations/{conversationId}
@@ -689,6 +693,18 @@ offer a checkout that cannot succeed. Checkout, upgrade, cancel, customer
 portal, Stripe webhook reconciliation, BYOK/reviewer overrides, chat/phone
 quota projections, and production subscription import remain legacy-owned.
 No staging price IDs are synthesized or copied from production.
+
+`GET /v1/fair-use/status` reads `cf_fair_use_states` plus idempotent
+`cf_fair_use_usage_sources`. Rolling totals include only `realtime` and
+`sync_fresh`; `sync_backfill` and `custom_stt` remain separate cost lanes and
+cannot change live status. Limits use the D1 subscription snapshot so
+unlimited-transcription plans receive their raised thresholds. New isolated
+accounts have no imported state or speech sources and therefore receive the
+legacy `stage=none`, zero-usage response instead of a route 404. Exact speech
+meter ingestion, classifier/escalation, notification, restriction enforcement,
+admin actions, public case lookup, and production state import remain
+legacy-owned. A successful staging read is not evidence that those enforcement
+authorities have moved.
 
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging

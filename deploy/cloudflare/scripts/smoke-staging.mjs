@@ -580,6 +580,11 @@ export async function runSmoke({
   );
   expectStatus("available plans", availablePlans, 200);
 
+  const fairUseStatus = await request(fetchImpl, `${base}/v1/fair-use/status`, {
+    headers: authHeaders,
+  });
+  expectStatus("fair use status", fairUseStatus, 200);
+
   // Exercise geolocation route ownership without persisting location data.
   // The legacy contract intentionally returns 200 for invalid coordinates.
   const invalidGeolocation = await request(
@@ -691,6 +696,7 @@ export async function runSmoke({
     accountUsage: accountUsage.status,
     accountSubscription: accountSubscription.status,
     availablePlans: availablePlans.status,
+    fairUseStatus: fairUseStatus.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     voiceMessageEmptyAudio: voiceMessageEmpty.status,

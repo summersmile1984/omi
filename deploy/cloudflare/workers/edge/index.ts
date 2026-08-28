@@ -442,6 +442,7 @@ app.get("/v1/config/api-keys", proxyAuthenticatedCore);
 app.get("/v1/users/me/usage", proxyAuthenticatedCore);
 app.get("/v1/users/me/subscription", proxyAuthenticatedCore);
 app.get("/v1/payments/available-plans", proxyAuthenticatedCore);
+app.get("/v1/fair-use/status", proxyAuthenticatedCore);
 app.get("/v2/messages", proxyAuthenticatedCore);
 app.delete("/v2/messages", proxyAuthenticatedCore);
 app.post("/v2/messages/share", proxyAuthenticatedCore);
