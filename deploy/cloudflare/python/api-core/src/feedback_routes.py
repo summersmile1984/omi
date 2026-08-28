@@ -59,6 +59,23 @@ def _feedback_upsert(env: object, uid: str, feedback_type: str, subject_id: str,
     ).bind(uid, feedback_type, subject_id, value, reason, now, now)
 
 
+def chat_feedback_statements(
+    env: object,
+    uid: str,
+    message_id: str,
+    value: int,
+    reason: str | None = None,
+) -> list[object]:
+    """Return one atomic feedback write and its client-visible message projection."""
+    return [
+        _feedback_upsert(env, uid, "chat_message", message_id, value, reason),
+        env.APP_DB.prepare(
+            "UPDATE cf_chat_messages SET message_json = json_set(message_json, '$.rating', ?) "
+            "WHERE uid = ? AND id = ?"
+        ).bind(None if value == 0 else value, uid, message_id),
+    ]
+
+
 @router.post("/v1/users/analytics/memory_summary")
 async def set_memory_summary_rating(request: Request):
     context = _auth_context(request)
@@ -116,12 +133,8 @@ async def set_chat_message_rating(request: Request):
         return JSONResponse({"error": "invalid feedback"}, status_code=400)
     uid = str(context["uid"])
     env = request.scope["env"]
-    feedback = _feedback_upsert(env, uid, "chat_message", message_id, value, reason)
-    message_rating = env.APP_DB.prepare(
-        "UPDATE cf_chat_messages SET message_json = json_set(message_json, '$.rating', ?) " "WHERE uid = ? AND id = ?"
-    ).bind(None if value == 0 else value, uid, message_id)
     try:
-        await env.APP_DB.batch([feedback, message_rating])
+        await env.APP_DB.batch(chat_feedback_statements(env, uid, message_id, value, reason))
     except Exception:
         return JSONResponse({"error": "feedback unavailable"}, status_code=503)
     return {"status": "ok"}

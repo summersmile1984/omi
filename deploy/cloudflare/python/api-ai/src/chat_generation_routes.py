@@ -111,13 +111,16 @@ def _prompt_message(row: dict[str, object]) -> dict[str, str] | None:
     return {"role": "user" if sender == "human" else "assistant", "content": text}
 
 
-async def _history(env: object, uid: str) -> list[dict[str, str]]:
+async def _history(env: object, uid: str, session_id: str) -> list[dict[str, str]]:
     result = (
         await env.APP_DB.prepare(
-            "SELECT message_json FROM cf_chat_messages WHERE uid = ? AND app_id IS NULL "
+            "SELECT message_json FROM cf_chat_messages WHERE uid = ? AND app_id IS NULL AND "
+            "COALESCE(NULLIF(json_extract(message_json, '$.chat_session_id'), ''), "
+            "NULLIF(json_extract(message_json, '$.session_id'), '')) = ? "
+            "AND COALESCE(json_extract(message_json, '$.reported'), 0) != 1 "
             "ORDER BY created_at DESC, id DESC LIMIT ?"
         )
-        .bind(uid, MAX_CHAT_HISTORY_ROWS)
+        .bind(uid, session_id, MAX_CHAT_HISTORY_ROWS)
         .all()
     )
     rows = result.get("results", []) if isinstance(result, dict) else []
@@ -144,6 +147,7 @@ def _message(
     text: str,
     sender: str,
     created_at: datetime,
+    session_id: str,
 ) -> dict[str, object]:
     return {
         "id": message_id,
@@ -160,8 +164,8 @@ def _message(
         "report_reason": None,
         "files_id": [],
         "files": [],
-        "chat_session_id": None,
-        "session_id": None,
+        "chat_session_id": session_id,
+        "session_id": session_id,
         "data_protection_level": None,
         "langsmith_run_id": None,
         "prompt_name": None,
@@ -182,6 +186,7 @@ async def _persist_exchange(
     human_message: dict[str, object],
     ai_message: dict[str, object],
     created_at: int,
+    session_id: str,
 ) -> None:
     statements = []
     for ordinal, message in enumerate((human_message, ai_message)):
@@ -195,7 +200,34 @@ async def _persist_exchange(
                 json.dumps(message, separators=(",", ":"), ensure_ascii=False),
             )
         )
+    statements.append(
+        env.APP_DB.prepare(
+            "UPDATE cf_chat_sessions SET updated_at = ?, message_count = message_count + 2, preview = ? "
+            "WHERE uid = ? AND id = ?"
+        ).bind(int(time.time()), str(ai_message["text"])[:100], uid, session_id)
+    )
     await env.APP_DB.batch(statements)
+
+
+async def _acquire_default_session(env: object, uid: str) -> str:
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT id FROM cf_chat_sessions WHERE uid = ? AND app_id IS NULL "
+            "ORDER BY updated_at DESC, id DESC LIMIT 1"
+        )
+        .bind(uid)
+        .first()
+    )
+    if isinstance(row, dict) and isinstance(row.get("id"), str):
+        return str(row["id"])
+    session_id = str(uuid.uuid4())
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_chat_sessions "
+        "(uid, id, title, preview, created_at, updated_at, app_id, message_count, starred) "
+        "VALUES (?, ?, 'New Chat', NULL, ?, ?, NULL, 0, 0)"
+    ).bind(uid, session_id, now, now).run()
+    return session_id
 
 
 def _exchange_order_key() -> int:
@@ -256,7 +288,8 @@ async def chat_messages(request: Request):
 
     uid = str(context["uid"])
     try:
-        history = await _history(env, uid)
+        session_id = await _acquire_default_session(env, uid)
+        history = await _history(env, uid, session_id)
     except Exception:
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
     prompt = [
@@ -287,15 +320,17 @@ async def chat_messages(request: Request):
         text=payload.text.strip(),
         sender="human",
         created_at=now,
+        session_id=session_id,
     )
     ai_message = _message(
         message_id=str(uuid.uuid4()),
         text=answer,
         sender="ai",
         created_at=now + timedelta(microseconds=1),
+        session_id=session_id,
     )
     try:
-        await _persist_exchange(env, uid, human_message, ai_message, _exchange_order_key())
+        await _persist_exchange(env, uid, human_message, ai_message, _exchange_order_key(), session_id)
     except Exception:
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
 

@@ -219,7 +219,8 @@ smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
 
 The authenticated smoke verifies unauthenticated rejection, the D1 probe, the
 account usage/subscription/price-catalog reads, conversation list/search,
-fair-use status, folder/memory shell dependencies, and the
+chat-session/message management reads and missing-row mutations, fair-use
+status, folder/memory shell dependencies, and the
 conversation, enabled-app, and memory reads through Web `/api/proxy` so a
 missing Web→Edge binding fails the release. It also sends one real default-text
 chat through Web → Edge → Workers AI, validates the legacy SSE completion, and
@@ -834,16 +835,24 @@ missing rows, and updates all selected conversations plus folder counts in one
 D1 batch. Folder deletion side effects remain staging-only until the
 conversation authority moves in production.
 
-The chat history routes use an explicit uid/app-scoped D1 projection. Empty
-history returns a deterministic Worker-owned greeting, and DELETE clears only
-the selected app scope. Chat sharing stores 30-day D1 tokens and ordered message
-references beside that projection; its public route exposes only message id,
-text, sender, timestamp, and the explicit sender display name. Creating a new
-share also removes indexed expired shares so D1 preserves the legacy Redis TTL
-lifecycle. Chat generation remains API-AI-owned and returns a typed
-lifecycle. Default text chat now reads a bounded D1 history, calls the configured
-Workers AI chat model, commits the human/AI exchange in one D1 batch, and emits
-the legacy `data:` plus base64 `done:` SSE contract used by Web/mobile clients.
+The chat history and desktop persistence routes use explicit uid/app/session-
+scoped D1 projections. Empty history returns a deterministic Worker-owned
+greeting. Main chat clear removes only the current session and its messages;
+desktop scoped deletes update retained session counts in the same D1 batch.
+Session create/list/read/update/delete, starred filtering,
+reported-message hiding, idempotent `client_message_id` retries, and monotonic
+desktop journal revisions are Worker-owned in staging. Accepted human
+`desktop_chat` writes also create one idempotent `cf_chat_quota_events` row in
+the message batch; quota reads and enforcement remain a separate cutover
+boundary. Chat sharing stores 30-day D1 tokens and ordered message references
+beside that projection; its public route exposes only message id, text, sender,
+timestamp, and the explicit sender display name. Creating a new share also
+removes indexed expired shares so D1 preserves the legacy Redis TTL lifecycle.
+Chat generation remains API-AI-owned. Default text chat now acquires a D1 chat
+session, reads its bounded unreported history, calls the configured Workers AI
+chat model, commits the human/AI exchange plus session count/preview in one D1
+batch, and emits the legacy `data:` plus base64 `done:` SSE contract used by
+Web/mobile clients.
 The first staging slice intentionally rejects app/persona chat, attachments,
 and page context with typed `409` responses; RAG/tools, plan entitlements,
 usage accounting, and provider-streamed token delivery remain separate
@@ -1312,7 +1321,7 @@ intent-to-tombstone transition is atomic, duplicate public requests are
 idempotent, and the scheduled reconciler republishes durable intents whose
 initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 59 product identity-bearing column
+The explicit residual inventory covers 61 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,

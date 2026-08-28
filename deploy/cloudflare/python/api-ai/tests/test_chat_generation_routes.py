@@ -22,9 +22,18 @@ class FakeStatement:
         self.args = args
         return self
 
+    async def first(self):
+        row = self.connection.execute(self.sql, self.args).fetchone()
+        return dict(row) if row is not None else None
+
     async def all(self):
         rows = self.connection.execute(self.sql, self.args).fetchall()
         return {"results": [dict(row) for row in rows]}
+
+    async def run(self):
+        cursor = self.connection.execute(self.sql, self.args)
+        self.connection.commit()
+        return {"meta": {"changes": cursor.rowcount}}
 
 
 class FakeDb:
@@ -32,7 +41,12 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
+        self.connection.executescript(
+            "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
+            "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);"
+        )
         self.connection.executescript((migration_dir / "0042_chat_messages.sql").read_text())
+        self.connection.executescript((migration_dir / "0054_chat_sessions.sql").read_text())
         self.fail_batch = fail_batch
 
     def prepare(self, sql):
@@ -98,7 +112,16 @@ def stored(uid: str, message_id: str, created_at: int, sender: str, text: str):
         uid,
         message_id,
         created_at,
-        json.dumps({"id": message_id, "sender": sender, "text": text}),
+        json.dumps(
+            {
+                "id": message_id,
+                "sender": sender,
+                "text": text,
+                "chat_session_id": "session-1",
+                "session_id": "session-1",
+                "reported": False,
+            }
+        ),
     )
 
 
@@ -112,6 +135,11 @@ def test_default_text_chat_uses_workers_ai_persists_one_exchange_and_emits_legac
             stored("chat-user", "m2", 2, "ai", "Earlier answer"),
             stored("other-user", "m3", 3, "human", "Private other-user text"),
         ],
+    )
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions "
+        "(uid, id, title, preview, created_at, updated_at, app_id, message_count, starred) "
+        "VALUES ('chat-user', 'session-1', 'New Chat', NULL, 1, 2, NULL, 2, 0)"
     )
     db.connection.commit()
     ai = FakeAi()
@@ -161,6 +189,10 @@ def test_default_text_chat_uses_workers_ai_persists_one_exchange_and_emits_legac
     assert [message["sender"] for message in persisted[-2:]] == ["human", "ai"]
     assert [message["text"] for message in persisted[-2:]] == ["Current question", "Hello\nthere"]
     assert len(rows) == 4
+    session = db.connection.execute(
+        "SELECT message_count, preview FROM cf_chat_sessions WHERE uid = 'chat-user' AND id = 'session-1'"
+    ).fetchone()
+    assert dict(session) == {"message_count": 4, "preview": "Hello\nthere"}
 
 
 def test_chat_rejects_unsupported_modes_before_model_or_history_mutation():
@@ -192,7 +224,7 @@ def test_rapid_sequential_exchanges_keep_strict_history_order(monkeypatch):
     ai = FakeAi(result={"response": "Acknowledged"})
     env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
     headers = signed_headers(secret)
-    times = iter((1_000.000001, 1_000.000002))
+    times = iter((1_000.0, 1_000.000001, 1_000.0, 1_000.000002, 1_000.0))
     monkeypatch.setattr("chat_generation_routes.time.time", lambda: next(times))
 
     first = asyncio.run(chat_messages(FakeRequest(env, headers, body={"text": "First"})))

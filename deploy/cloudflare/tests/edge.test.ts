@@ -711,6 +711,65 @@ describe("edge gateway", () => {
     ).toBe(true);
   });
 
+  it("routes chat sessions and message-management APIs to the core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const routes = [
+      ["GET", "/v2/messages"],
+      ["DELETE", "/v2/messages"],
+      ["DELETE", "/v1/messages"],
+      ["POST", "/v1/messages/message-1/report"],
+      ["POST", "/v2/messages/message-1/report"],
+      ["PATCH", "/v2/messages/message-1/rating"],
+      ["GET", "/v1/users/stats/chat-messages"],
+      ["POST", "/v2/chat-sessions"],
+      ["GET", "/v2/chat-sessions"],
+      ["GET", "/v2/chat-sessions/session-1"],
+      ["PATCH", "/v2/chat-sessions/session-1"],
+      ["DELETE", "/v2/chat-sessions/session-1"],
+      ["POST", "/v2/desktop/messages"],
+      ["GET", "/v2/desktop/messages"],
+      ["GET", "/v2/desktop/messages/reconcile"],
+      ["DELETE", "/v2/desktop/messages"],
+      ["PATCH", "/v2/desktop/messages/message-1/rating"],
+    ] as const;
+    for (const [method, path] of routes) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(coreRequests.map((request) => request.method)).toEqual(
+      routes.map(([method]) => method),
+    );
+    expect(
+      coreRequests.map((request) => new URL(request.url).pathname),
+    ).toEqual(routes.map(([, path]) => path));
+    expect(
+      coreRequests.every((request) =>
+        Boolean(request.headers.get("x-omi-auth-context")),
+      ),
+    ).toBe(true);
+  });
+
   it("routes conversation projection reads to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

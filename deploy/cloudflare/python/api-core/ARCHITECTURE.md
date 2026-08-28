@@ -54,3 +54,12 @@ index. The SQL uid predicate remains authoritative after FTS candidate lookup.
 Default deletion matches the legacy `cascade=false` boundary and updates folder
 counts in the same D1 batch; the Worker rejects cascade deletion until memory
 retraction and audio cleanup have moved to the same authority.
+
+`chat_routes.py` and `chat_session_routes.py` share the uid-scoped
+`cf_chat_messages`, `cf_chat_sessions`, and `cf_chat_quota_events` authority.
+Main-chat clear removes the current session atomically, while desktop scoped
+deletes retain the session and decrement its message count. Client message IDs
+are idempotency keys, desktop journal revisions advance monotonically, and an
+accepted human desktop-chat write records its quota event in the message batch.
+App/persona generation, attachments, quota enforcement, and provider telemetry
+remain explicit downstream cutover boundaries.

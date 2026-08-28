@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from feedback_routes import chat_feedback_statements
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -28,6 +29,13 @@ class ShareChatMessagesRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
     message_ids: list[str] = Field(min_length=1, max_length=MAX_SHARE_MESSAGES)
+
+
+class RateMessageRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    rating: int | None = Field(None, ge=-1, le=1)
+    app_version: str | None = None
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -104,8 +112,9 @@ async def get_messages(request: Request):
     context = _auth_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    raw_app_id = request.query_params.get("app_id") or request.query_params.get("plugin_id")
     app_id = _app_id(request)
-    if (request.query_params.get("app_id") or request.query_params.get("plugin_id")) and app_id is None:
+    if raw_app_id not in {None, "", "null"} and app_id is None:
         return JSONResponse({"error": "invalid app id"}, status_code=400)
     pagination = _pagination(request)
     if isinstance(pagination, JSONResponse):
@@ -120,6 +129,7 @@ async def get_messages(request: Request):
             .APP_DB.prepare(
                 "SELECT message_json FROM cf_chat_messages WHERE uid = ? AND "
                 + app_clause
+                + " AND COALESCE(json_extract(message_json, '$.reported'), 0) != 1"
                 + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
             )
             .bind(*args, limit, offset)
@@ -133,32 +143,128 @@ async def get_messages(request: Request):
     return messages or [_initial_message(app_id)]
 
 
+@router.delete("/v1/messages")
 @router.delete("/v2/messages")
 async def clear_messages(request: Request):
     context = _auth_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    raw_app_id = request.query_params.get("app_id") or request.query_params.get("plugin_id")
     app_id = _app_id(request)
-    if (request.query_params.get("app_id") or request.query_params.get("plugin_id")) and app_id is None:
+    if raw_app_id not in {None, "", "null"} and app_id is None:
         return JSONResponse({"error": "invalid app id"}, status_code=400)
     uid = str(context["uid"])
-    if app_id is None:
-        statement = (
-            request.scope["env"]
-            .APP_DB.prepare("DELETE FROM cf_chat_messages WHERE uid = ? AND app_id IS NULL")
-            .bind(uid)
-        )
-    else:
-        statement = (
-            request.scope["env"]
-            .APP_DB.prepare("DELETE FROM cf_chat_messages WHERE uid = ? AND app_id = ?")
-            .bind(uid, app_id)
-        )
+    env = request.scope["env"]
+    app_clause = "app_id IS NULL" if app_id is None else "app_id = ?"
+    app_args: tuple[object, ...] = () if app_id is None else (app_id,)
     try:
-        await statement.run()
+        session = (
+            await env.APP_DB.prepare(
+                "SELECT id FROM cf_chat_sessions WHERE uid = ? AND "
+                + app_clause
+                + " ORDER BY updated_at DESC, id DESC LIMIT 1"
+            )
+            .bind(uid, *app_args)
+            .first()
+        )
+        if isinstance(session, dict) and isinstance(session.get("id"), str):
+            session_id = str(session["id"])
+            statements = [
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_chat_messages WHERE uid = ? AND "
+                    "COALESCE(NULLIF(json_extract(message_json, '$.chat_session_id'), ''), "
+                    "NULLIF(json_extract(message_json, '$.session_id'), '')) = ?"
+                ).bind(uid, session_id),
+                env.APP_DB.prepare("DELETE FROM cf_chat_sessions WHERE uid = ? AND id = ?").bind(uid, session_id),
+            ]
+        else:
+            statements = [
+                env.APP_DB.prepare("DELETE FROM cf_chat_messages WHERE uid = ? AND " + app_clause).bind(uid, *app_args)
+            ]
+        await env.APP_DB.batch(statements)
     except Exception:
         return JSONResponse({"error": "messages unavailable"}, status_code=503)
     return _initial_message(app_id)
+
+
+async def _message_row(env: object, uid: str, message_id: str) -> dict[str, object] | None:
+    row = (
+        await env.APP_DB.prepare("SELECT message_json FROM cf_chat_messages WHERE uid = ? AND id = ?")
+        .bind(uid, message_id)
+        .first()
+    )
+    return row if isinstance(row, dict) else None
+
+
+@router.post("/v1/messages/{message_id}/report")
+@router.post("/v2/messages/{message_id}/report")
+async def report_message(request: Request, message_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not message_id or len(message_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "message not found"}, status_code=404)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        row = await _message_row(env, uid, message_id)
+        if row is None:
+            return JSONResponse({"error": "message not found"}, status_code=404)
+        message = _stored_message(row)
+        if message is None:
+            return JSONResponse({"error": "messages unavailable"}, status_code=503)
+        if message.get("sender") != "ai":
+            return JSONResponse({"error": "only AI messages can be reported"}, status_code=400)
+        if message.get("reported") is True:
+            return JSONResponse({"error": "message already reported"}, status_code=400)
+        await env.APP_DB.prepare(
+            "UPDATE cf_chat_messages SET message_json = json_set(message_json, '$.reported', json('true')) "
+            "WHERE uid = ? AND id = ?"
+        ).bind(uid, message_id).run()
+    except Exception:
+        return JSONResponse({"error": "messages unavailable"}, status_code=503)
+    return {"message": "Message reported"}
+
+
+@router.patch("/v2/messages/{message_id}/rating")
+async def rate_message(request: Request, message_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not message_id or len(message_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid rating"}, status_code=400)
+    try:
+        payload = RateMessageRequest.model_validate(await _bounded_json(request))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid rating"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    value = payload.rating if payload.rating is not None else 0
+    try:
+        await env.APP_DB.batch(chat_feedback_statements(env, uid, message_id, value))
+    except Exception:
+        return JSONResponse({"error": "messages unavailable"}, status_code=503)
+    return {"status": "ok"}
+
+
+@router.get("/v1/users/stats/chat-messages")
+async def get_chat_message_count(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        row = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                "SELECT COUNT(*) AS count FROM cf_chat_messages WHERE uid = ? "
+                "AND COALESCE(json_extract(message_json, '$.reported'), 0) != 1"
+            )
+            .bind(str(context["uid"]))
+            .first()
+        )
+    except Exception:
+        return JSONResponse({"error": "messages unavailable"}, status_code=503)
+    return {"count": max(0, int((row or {}).get("count") or 0)) if isinstance(row, dict) else 0}
 
 
 async def _chat_share(env: object, token: str, now: int) -> dict[str, object] | None:

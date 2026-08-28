@@ -346,6 +346,52 @@ export async function runSmoke({
     webBase,
     authHeaders,
   );
+  const chatMessageCountResult = await requestJson(
+    fetchImpl,
+    `${base}/v1/users/stats/chat-messages`,
+    { headers: authHeaders },
+  );
+  expectStatus("chat message count", chatMessageCountResult.response, 200);
+  if (
+    typeof chatMessageCountResult.body?.count !== "number" ||
+    chatMessageCountResult.body.count < 0
+  ) {
+    throw new Error("chat message count returned an invalid count");
+  }
+  const chatSessionsResult = await requestJson(
+    fetchImpl,
+    `${base}/v2/chat-sessions?limit=1&offset=0`,
+    { headers: authHeaders },
+  );
+  expectStatus("chat session list", chatSessionsResult.response, 200);
+  if (!Array.isArray(chatSessionsResult.body)) {
+    throw new Error("chat session list returned an invalid payload");
+  }
+  const desktopMessagesResult = await requestJson(
+    fetchImpl,
+    `${base}/v2/desktop/messages?limit=1&offset=0`,
+    { headers: authHeaders },
+  );
+  expectStatus("desktop message list", desktopMessagesResult.response, 200);
+  if (!Array.isArray(desktopMessagesResult.body)) {
+    throw new Error("desktop message list returned an invalid payload");
+  }
+  const missingChatReport = await request(
+    fetchImpl,
+    `${base}/v2/messages/cf-smoke-missing/report`,
+    { method: "POST", headers: authHeaders },
+  );
+  expectStatus("chat report missing-row", missingChatReport, 404);
+  const missingDesktopRating = await request(
+    fetchImpl,
+    `${base}/v2/desktop/messages/cf-smoke-missing/rating`,
+    {
+      method: "PATCH",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ rating: 1 }),
+    },
+  );
+  expectStatus("desktop rating missing-row", missingDesktopRating, 404);
   const memories = await request(
     fetchImpl,
     `${base}/v3/memories?limit=25&offset=0`,
@@ -704,6 +750,11 @@ export async function runSmoke({
     workersAiChatHistoryPreflight: workersAiChat.chatHistoryPreflightStatus,
     webProxyWorkersAiChat: workersAiChat.chatStatus,
     workersAiChatCleanup: workersAiChat.chatCleanupStatus,
+    chatMessageCount: chatMessageCountResult.response.status,
+    chatSessions: chatSessionsResult.response.status,
+    desktopMessages: desktopMessagesResult.response.status,
+    missingChatReport: missingChatReport.status,
+    missingDesktopRating: missingDesktopRating.status,
     memories: memories.status,
     folders: folders.status,
     conversationCount: conversationCount.status,

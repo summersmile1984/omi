@@ -82,6 +82,21 @@ describe("staging smoke helpers", () => {
       if (url.includes("/api/proxy/v2/messages?limit=1")) {
         return Response.json([{ id: "cf-initial-chat" }]);
       }
+      if (url.endsWith("/v1/users/stats/chat-messages")) {
+        return Response.json({ count: 0 });
+      }
+      if (url.includes("/v2/chat-sessions?")) {
+        return Response.json([]);
+      }
+      if (url.includes("/v2/desktop/messages?")) {
+        return Response.json([]);
+      }
+      if (
+        url.endsWith("/v2/messages/cf-smoke-missing/report") ||
+        url.endsWith("/v2/desktop/messages/cf-smoke-missing/rating")
+      ) {
+        return new Response(null, { status: 404 });
+      }
       if (url.includes("/v1/apps/enabled")) {
         return new Response(null, { status: 200 });
       }
@@ -244,6 +259,11 @@ describe("staging smoke helpers", () => {
       workersAiChatHistoryPreflight: 200,
       webProxyWorkersAiChat: 200,
       workersAiChatCleanup: 200,
+      chatMessageCount: 200,
+      chatSessions: 200,
+      desktopMessages: 200,
+      missingChatReport: 404,
+      missingDesktopRating: 404,
       memories: 200,
       folders: 200,
       conversationCount: 200,
@@ -280,7 +300,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(57);
+    expect(calls).toHaveLength(62);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -445,6 +465,21 @@ describe("staging smoke helpers", () => {
       }
       if (url.includes("/api/proxy/v2/messages?limit=1")) {
         return Response.json([{ id: "cf-initial-chat" }]);
+      }
+      if (url.endsWith("/v1/users/stats/chat-messages")) {
+        return Response.json({ count: 0 });
+      }
+      if (url.includes("/v2/chat-sessions?")) {
+        return Response.json([]);
+      }
+      if (url.includes("/v2/desktop/messages?")) {
+        return Response.json([]);
+      }
+      if (
+        url.endsWith("/v2/messages/cf-smoke-missing/report") ||
+        url.endsWith("/v2/desktop/messages/cf-smoke-missing/rating")
+      ) {
+        return new Response(null, { status: 404 });
       }
       if (url.includes("/v2/apps/search"))
         return new Response(null, { status: 200 });
