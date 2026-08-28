@@ -352,6 +352,10 @@ GET /v1/folders/{folderId}/conversations
                               Edge → Python API Core → D1 conversation projection
 PATCH /v1/conversations/{conversationId}/folder
                               Edge → Python API Core → D1 folder move + count refresh
+POST /v1/folders/{folderId}/conversations/bulk-move
+                              Edge → Python API Core → D1 atomic bulk move + count refresh
+DELETE /v1/folders/{folderId}?move_to_folder_id=...
+                              Edge → Python API Core → D1 rehome + folder delete
 GET  /v1/calendar/onboarding/status
                               Edge → Python API Core → D1 flags
 POST /v1/calendar/onboarding/skip
