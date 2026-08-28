@@ -965,6 +965,23 @@ non-empty body.
 不代表 `/v2/sync-local-files` 的 conversation finalization、memory extraction
 或 diarization 已迁移。
 
+同日补齐账户 usage/subscription/price-catalog 与 fair-use 状态读取后，完整 staging
+发布通过 131 个 Cloudflare、127 个 API Core、47 个 API AI、33 个 Web 测试和
+Web vinext build；发布后 53 个 authenticated smoke 全部通过。Fair-use 的真实 D1
+样本返回 daily/3-day/weekly `1h/3h/4h`、`50%/37.5%/40%`、restrict case ref 与
+`600000/1800000ms` DG 用量，样本随后删除。右侧已登录浏览器验证了 fair-use、
+主导航七页及 Profile/Integrations/Developer/Account 四个设置分区，新增 console
+error 为 0。临时 Better Auth 用户、session/account、51 个 App D1 用户投影与本地
+凭据均已清理并复核为 0。当前 staging 版本为 Auth
+`4ad5b682-f0eb-454e-b93a-7b2447544aeb`、Rate Limit
+`bdb8cbc1-e3e9-47b2-98e4-68564032661f`、API Core
+`f5ab0d46-d20a-4044-a1cd-24f04c1f8985`、API AI
+`3d3675c9-825b-4255-82d3-5277d9a2d40e`、Realtime
+`bdfc77a6-3f61-48d7-8684-2b2ae05a02da`、Jobs
+`c8c6633b-327a-479b-89d1-a704fab3f6ed`、Edge
+`b3c63017-cb46-4fce-a833-037fd7f7388e`、Web
+`c3329326-6261-4728-b46b-0332520121cc`。
+
 Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules
 均约 8.0 MiB，实际 gzip 上传约 2.0 MiB，应继续作为依赖预算的硬闸门。
 Embedding/ASR 的真实 provider、音频质量基线以及更多产品 route group 仍按
