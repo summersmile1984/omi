@@ -1,6 +1,13 @@
 import type { EdgeEnv } from "./env";
-import { AUTH_CONTEXT_HEADER, AUTH_SIGNATURE_HEADER, encodeAuthContext, signAuthContext } from "../shared/auth-context";
-import type { AuthContext } from "../shared/auth-context";
+import {
+  AUTH_CONTEXT_HEADER,
+  AUTH_SIGNATURE_HEADER,
+  createSignedAuthContext,
+} from "../shared/auth-context";
+import type {
+  AuthAudience,
+  AuthContext,
+} from "../shared/auth-context";
 
 export async function verifyBearer(request: Request, env: EdgeEnv, requestId: string): Promise<AuthContext | null> {
   const authorization = request.headers.get("authorization") || "";
@@ -53,9 +60,21 @@ export function stripUntrustedHeaders(
   return headers;
 }
 
-export async function attachAuthContext(headers: Headers, context: AuthContext, secret?: string): Promise<void> {
-  const encoded = encodeAuthContext(context);
-  headers.set(AUTH_CONTEXT_HEADER, encoded);
-  const signature = await signAuthContext(encoded, secret);
-  if (signature) headers.set(AUTH_SIGNATURE_HEADER, signature);
+export async function attachAuthContext(
+  headers: Headers,
+  context: AuthContext,
+  secret: string | undefined,
+  audience: AuthAudience,
+  target: { method: string; url: string | URL },
+): Promise<void> {
+  const signed = await createSignedAuthContext(
+    context,
+    audience,
+    target.method,
+    new URL(target.url).pathname,
+    secret,
+  );
+  if (!signed) return;
+  headers.set(AUTH_CONTEXT_HEADER, signed.encoded);
+  headers.set(AUTH_SIGNATURE_HEADER, signed.signature);
 }

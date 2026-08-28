@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { encodeAuthContext, signAuthContext } from "../workers/shared/auth-context";
+import { createSignedAuthContext } from "../workers/shared/auth-context";
 
 const signJWT = vi.fn(async () => ({ token: "jwt-from-workers" }));
 const verifyJWT = vi.fn(async ({ body }: { body: { token: string } }) =>
@@ -135,13 +135,18 @@ describe("auth worker Better Auth dev issuer", () => {
   });
 
   it("serves the Better Auth identity profile only for a signed edge context", async () => {
-    const context = encodeAuthContext({ uid: "profile-user", authority: "better-auth", requestId: "req-1" });
-    const signature = await signAuthContext(context, "internal-secret");
+    const signed = await createSignedAuthContext(
+      { uid: "profile-user", authority: "better-auth", requestId: "req-1" },
+      "auth",
+      "GET",
+      "/internal/profile",
+      "internal-secret",
+    );
     const response = await auth.fetch(
       new Request("https://auth.test/internal/profile", {
         headers: {
-          "x-omi-auth-context": context,
-          "x-omi-internal-signature": signature || "",
+          "x-omi-auth-context": signed?.encoded || "",
+          "x-omi-internal-signature": signed?.signature || "",
         },
       }),
       profileEnv({
@@ -161,11 +166,19 @@ describe("auth worker Better Auth dev issuer", () => {
   });
 
   it("does not expose a profile for an unknown Better Auth user", async () => {
-    const context = encodeAuthContext({ uid: "missing-user", authority: "better-auth", requestId: "req-2" });
-    const signature = await signAuthContext(context, "internal-secret");
+    const signed = await createSignedAuthContext(
+      { uid: "missing-user", authority: "better-auth", requestId: "req-2" },
+      "auth",
+      "GET",
+      "/internal/profile",
+      "internal-secret",
+    );
     const response = await auth.fetch(
       new Request("https://auth.test/internal/profile", {
-        headers: { "x-omi-auth-context": context, "x-omi-internal-signature": signature || "" },
+        headers: {
+          "x-omi-auth-context": signed?.encoded || "",
+          "x-omi-internal-signature": signed?.signature || "",
+        },
       }),
       profileEnv(null),
     );

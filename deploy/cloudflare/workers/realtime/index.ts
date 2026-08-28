@@ -1,8 +1,5 @@
 import { Hono } from "hono";
-import {
-  decodeAuthContext,
-  verifyAuthContextSignature,
-} from "../shared/auth-context";
+import { verifyRequestAuthContext } from "../shared/auth-context";
 import {
   REALTIME_BOOTSTRAP_HEADER,
   REALTIME_BOOTSTRAP_SIGNATURE_HEADER,
@@ -46,14 +43,12 @@ async function routeSession(
     const id = env.REALTIME_SESSIONS.idFromName(`web:${bootstrap.sessionId}`);
     return env.REALTIME_SESSIONS.get(id).fetch(request);
   }
-  const encodedContext = request.headers.get("x-omi-auth-context");
-  const context = decodeAuthContext(encodedContext);
-  const signatureValid = await verifyAuthContextSignature(
-    encodedContext || "",
-    request.headers.get("x-omi-internal-signature"),
+  const context = await verifyRequestAuthContext(
+    request,
+    "realtime",
     env.INTERNAL_ASSERTION_SECRET,
   );
-  if (!context || !signatureValid) {
+  if (!context) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
   const requestedSession = request.headers.get("x-omi-session-id") || "default";

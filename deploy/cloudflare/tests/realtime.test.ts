@@ -1,17 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  encodeAuthContext,
-  signAuthContext,
-} from "../workers/shared/auth-context";
+import { createSignedAuthContext } from "../workers/shared/auth-context";
 import { createRealtimeBootstrap } from "../workers/shared/realtime-bootstrap";
 import { createRealtimeTicket } from "../workers/shared/realtime-ticket";
 import realtime, { RealtimeSession } from "../workers/realtime/index";
 
-const context = encodeAuthContext({
-  uid: "user-1",
-  authority: "better-auth",
-  requestId: "req-1",
-});
+async function realtimeContext(path = "/v4/listen") {
+  return createSignedAuthContext(
+    { uid: "user-1", authority: "better-auth", requestId: "req-1" },
+    "realtime",
+    "GET",
+    path,
+    "test-secret",
+  );
+}
 
 class FakeSocket {
   static readonly CONNECTING = 0;
@@ -110,11 +111,12 @@ describe("realtime gateway", () => {
   });
 
   it("rejects a forged internal context before the websocket upgrade", async () => {
+    const signed = await realtimeContext();
     const response = await realtime.fetch(
       new Request("https://realtime.test/v4/listen", {
         headers: {
           upgrade: "websocket",
-          "x-omi-auth-context": context,
+          "x-omi-auth-context": signed?.encoded || "",
           "x-omi-internal-signature": "forged",
         },
       }),
@@ -178,6 +180,7 @@ describe("realtime gateway", () => {
 
   it("uses the accepted server socket and waits for provider readiness", async () => {
     installFakeWebSockets();
+    const signed = await realtimeContext();
     const work: Promise<unknown>[] = [];
     const session = new RealtimeSession(
       {
@@ -191,9 +194,8 @@ describe("realtime gateway", () => {
       new Request("https://realtime.test/v4/listen", {
         headers: {
           upgrade: "websocket",
-          "x-omi-auth-context": context,
-          "x-omi-internal-signature":
-            (await signAuthContext(context, "test-secret")) || "",
+          "x-omi-auth-context": signed?.encoded || "",
+          "x-omi-internal-signature": signed?.signature || "",
         },
       }),
     );

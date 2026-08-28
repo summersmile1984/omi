@@ -74,7 +74,13 @@ app.all("/v2/voice-message/transcribe-stream", async (c) => {
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
   const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "realtime",
+    c.req.raw,
+  );
   const response = await c.env.REALTIME.fetch(
     new Request(c.req.raw, { headers }),
   );
@@ -86,7 +92,13 @@ app.all("/v4/listen", async (c) => {
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
   const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "realtime",
+    c.req.raw,
+  );
   const response = await c.env.REALTIME.fetch(
     new Request(c.req.raw, { headers }),
   );
@@ -128,7 +140,13 @@ app.all("/v1/omni/relay", async (c) => {
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
   const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "realtime",
+    c.req.raw,
+  );
   const response = await c.env.REALTIME.fetch(
     new Request(c.req.raw, { headers }),
   );
@@ -142,7 +160,13 @@ const proxyAuthenticatedJobs = async (
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
   const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "jobs",
+    c.req.raw,
+  );
   const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
   return withRequestId(response, id);
 };
@@ -158,7 +182,14 @@ const proxyAuthenticatedAsyncTranscription = async (
     const value = c.req.header(name);
     if (value) headers.set(name, value);
   }
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  const target = new URL("/v1/cf/transcription-jobs", c.req.url);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "jobs",
+    { method: "POST", url: target },
+  );
   const declaredLength = Number(c.req.header("content-length"));
   if (
     Number.isFinite(declaredLength) &&
@@ -170,7 +201,6 @@ const proxyAuthenticatedAsyncTranscription = async (
   if (body.byteLength > MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES) {
     return c.json({ error: "audio body too large" }, 413);
   }
-  const target = new URL("/v1/cf/transcription-jobs", c.req.url);
   const response = await c.env.JOBS.fetch(
     new Request(target, { method: "POST", headers, body }),
   );
@@ -184,9 +214,15 @@ const proxyAuthenticatedAsyncTranscriptionStatus = async (
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
   const headers = new Headers();
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
   const jobId = encodeURIComponent(c.req.param("jobId") || "");
   const target = new URL(`/v1/cf/transcription-jobs/${jobId}`, c.req.url);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "jobs",
+    { method: "GET", url: target },
+  );
   const response = await c.env.JOBS.fetch(
     new Request(target, { method: "GET", headers }),
   );
@@ -203,7 +239,13 @@ const proxyAuthenticatedCore = async (
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
   const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "api-core",
+    c.req.raw,
+  );
   const response = await c.env.API_CORE.fetch(
     new Request(c.req.raw, { headers }),
   );
@@ -217,11 +259,17 @@ const proxyAuthenticatedAuthProfile = async (
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
   const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
   const target = new URL(c.req.url);
   target.protocol = "https:";
   target.host = "auth.internal";
   target.pathname = "/internal/profile";
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "auth",
+    { method: "GET", url: target },
+  );
   const response = await c.env.AUTH.fetch(
     new Request(target, { method: "GET", headers }),
   );
@@ -235,7 +283,13 @@ const proxyAuthenticatedAI = async (
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
   const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "api-ai",
+    c.req.raw,
+  );
   const response = await c.env.API_AI.fetch(
     new Request(c.req.raw, { headers }),
   );
@@ -402,21 +456,31 @@ app.post("/v1/translate", proxyAuthenticatedAI);
 app.all("/*", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
-  const headers = stripUntrustedHeaders(c.req.raw);
-  if (auth)
-    await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
 
   if (
     c.req.path.startsWith("/v1/ai/") ||
     c.req.path.startsWith("/v1/embeddings") ||
     c.req.path.startsWith("/v1/stt/")
   ) {
+    const headers = stripUntrustedHeaders(c.req.raw);
+    if (auth) {
+      await attachAuthContext(
+        headers,
+        auth,
+        c.env.INTERNAL_ASSERTION_SECRET,
+        "api-ai",
+        c.req.raw,
+      );
+    }
     const response = await c.env.API_AI.fetch(
       new Request(c.req.raw, { headers }),
     );
     return withRequestId(response, id);
   }
   if (envLegacy(c.env)) {
+    const headers = stripUntrustedHeaders(c.req.raw, {
+      preserveClientAuth: true,
+    });
     const legacy = new URL(c.req.url);
     legacy.protocol = new URL(c.env.LEGACY_BACKEND_URL!).protocol;
     legacy.host = new URL(c.env.LEGACY_BACKEND_URL!).host;

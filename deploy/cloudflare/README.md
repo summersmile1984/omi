@@ -96,6 +96,16 @@ that ticket as its first WebSocket message, and the isolated Durable Object
 claims it once, so the Realtime Worker never receives a long-lived Better Auth
 session token or an Auth service binding.
 
+After Edge verifies a client session, it removes the client cookie/bearer and
+mints a fresh HMAC assertion for the exact downstream request. Assertions last
+at most 60 seconds and bind the uid to one audience (`api-core`, `api-ai`,
+`auth`, `jobs`, or `realtime`), HTTP method, and path. Every TypeScript
+downstream verifies those claims directly; both Python Workers enforce the same
+contract in ASGI middleware whenever internal assertion headers are present.
+This prevents a captured assertion for one service or route from being replayed
+against another. The explicit legacy fallback is the only path that preserves a
+client bearer, because the legacy backend remains its verifier during cutover.
+
 `deploy:staging` applies the isolated migrations, publishes Workers in dependency
 order, then checks Edge, Auth `/ready`, and every internal Worker `/health` before
 reporting success. A release is considered incomplete if any readiness check is

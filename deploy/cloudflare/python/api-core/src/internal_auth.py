@@ -2,7 +2,11 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 from typing import Any
+
+MAX_ASSERTION_LIFETIME_SECONDS = 60
+CLOCK_SKEW_SECONDS = 5
 
 
 def decode_context(encoded: str | None, signature: str | None, secret: str | None) -> dict[str, Any] | None:
@@ -18,5 +22,40 @@ def decode_context(encoded: str | None, signature: str | None, secret: str | Non
     except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(context, dict) or not isinstance(context.get("uid"), str) or not context["uid"]:
+        return None
+    return context
+
+
+def verify_request_context(
+    encoded: str | None,
+    signature: str | None,
+    secret: str | None,
+    *,
+    audience: str,
+    method: str,
+    path: str,
+    now: int | None = None,
+) -> dict[str, Any] | None:
+    context = decode_context(encoded, signature, secret)
+    if context is None:
+        return None
+    issued_at = context.get("issuedAt")
+    expires_at = context.get("expiresAt")
+    current = int(time.time()) if now is None else now
+    if (
+        context.get("version") != 1
+        or context.get("audience") != audience
+        or not isinstance(context.get("assertionId"), str)
+        or not context["assertionId"]
+        or not isinstance(issued_at, int)
+        or isinstance(issued_at, bool)
+        or not isinstance(expires_at, int)
+        or isinstance(expires_at, bool)
+        or issued_at > current + CLOCK_SKEW_SECONDS
+        or expires_at < current
+        or expires_at - issued_at > MAX_ASSERTION_LIFETIME_SECONDS
+        or context.get("method") != method.upper()
+        or context.get("path") != path
+    ):
         return None
     return context

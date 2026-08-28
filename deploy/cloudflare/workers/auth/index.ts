@@ -4,10 +4,7 @@ import { jwt } from "better-auth/plugins/jwt";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import {
-  AUTH_CONTEXT_HEADER,
-  AUTH_SIGNATURE_HEADER,
-  decodeAuthContext,
-  verifyAuthContextSignature,
+  verifyRequestAuthContext,
   type AuthContext,
 } from "../shared/auth-context";
 import type { AuthEnv } from "./env";
@@ -189,15 +186,11 @@ app.post("/internal/verify", async (c) => {
 // Keep the identity read beside Better Auth's D1 tables instead of giving the
 // Python API worker a write-capable binding to the auth database.
 app.get("/internal/profile", async (c) => {
-  const encodedContext = c.req.header(AUTH_CONTEXT_HEADER);
-  const signature = c.req.header(AUTH_SIGNATURE_HEADER) || null;
-  if (
-    !encodedContext ||
-    !(await verifyAuthContextSignature(encodedContext, signature, c.env.INTERNAL_ASSERTION_SECRET))
-  ) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
-  const context = decodeAuthContext(encodedContext);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
   if (!context) return c.json({ error: "unauthorized" }, 401);
 
   try {

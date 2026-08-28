@@ -17,7 +17,7 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
     asgi = None  # type: ignore[assignment]
     worker_fetch = None  # type: ignore[assignment]
 
-from internal_auth import decode_context
+from internal_auth import decode_context, verify_request_context
 from auto_model_routes import router as auto_model_router
 from realtime_routes import router as realtime_router
 
@@ -96,6 +96,26 @@ def auth_context(request: Request) -> dict[str, object] | None:
         request.headers.get("x-omi-internal-signature"),
         getattr(env, "INTERNAL_ASSERTION_SECRET", None),
     )
+
+
+@app.middleware("http")
+async def enforce_request_bound_auth_context(request: Request, call_next):
+    encoded = request.headers.get("x-omi-auth-context")
+    signature = request.headers.get("x-omi-internal-signature")
+    if encoded or signature:
+        env = request.scope.get("env")
+        context = verify_request_context(
+            encoded,
+            signature,
+            getattr(env, "INTERNAL_ASSERTION_SECRET", None),
+            audience="api-ai",
+            method=request.method,
+            path=request.url.path,
+        )
+        if context is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        request.state.auth_context = context
+    return await call_next(request)
 
 
 @app.get("/health")

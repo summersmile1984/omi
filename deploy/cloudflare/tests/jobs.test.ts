@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  encodeAuthContext,
-  signAuthContext,
-} from "../workers/shared/auth-context";
+import { createSignedAuthContext } from "../workers/shared/auth-context";
 import jobs from "../workers/jobs/index";
 import type { JobMessage } from "../workers/jobs/env";
 
@@ -148,16 +145,22 @@ function fakeAssets() {
   };
 }
 
-async function signedHeaders(secret: string, uid = "user-1"): Promise<Headers> {
-  const encoded = encodeAuthContext({
-    uid,
-    authority: "better-auth",
-    requestId: "req-1",
-  });
-  const signature = await signAuthContext(encoded, secret);
+async function signedHeaders(
+  secret: string,
+  uid = "user-1",
+  method = "POST",
+  path = "/v1/cf/jobs",
+): Promise<Headers> {
+  const signed = await createSignedAuthContext(
+    { uid, authority: "better-auth", requestId: "req-1" },
+    "jobs",
+    method,
+    path,
+    secret,
+  );
   return new Headers({
-    "x-omi-auth-context": encoded,
-    "x-omi-internal-signature": signature || "",
+    "x-omi-auth-context": signed?.encoded || "",
+    "x-omi-internal-signature": signed?.signature || "",
   });
 }
 
@@ -217,7 +220,12 @@ describe("jobs ingress", () => {
     const statusResponse = await jobs.fetch(
       new Request("https://jobs.test/v1/cf/jobs/job-1", {
         method: "GET",
-        headers: await signedHeaders(env.INTERNAL_ASSERTION_SECRET),
+        headers: await signedHeaders(
+          env.INTERNAL_ASSERTION_SECRET,
+          "user-1",
+          "GET",
+          "/v1/cf/jobs/job-1",
+        ),
       }),
       env as never,
     );
@@ -233,7 +241,12 @@ describe("jobs ingress", () => {
     const otherUserResponse = await jobs.fetch(
       new Request("https://jobs.test/v1/cf/jobs/job-1", {
         method: "GET",
-        headers: await signedHeaders(env.INTERNAL_ASSERTION_SECRET, "user-2"),
+        headers: await signedHeaders(
+          env.INTERNAL_ASSERTION_SECRET,
+          "user-2",
+          "GET",
+          "/v1/cf/jobs/job-1",
+        ),
       }),
       env as never,
     );
@@ -260,7 +273,12 @@ describe("jobs ingress", () => {
       JOBS: { send: async (message: JobMessage) => void sent.push(message) },
       INTERNAL_ASSERTION_SECRET: "test-secret",
     };
-    const headers = await signedHeaders(env.INTERNAL_ASSERTION_SECRET);
+    const headers = await signedHeaders(
+      env.INTERNAL_ASSERTION_SECRET,
+      "user-1",
+      "POST",
+      "/v1/cf/transcription-jobs",
+    );
     headers.set("content-type", "audio/wav");
     headers.set("idempotency-key", "capture-1");
     const first = await jobs.fetch(
@@ -277,7 +295,12 @@ describe("jobs ingress", () => {
     expect(sent).toHaveLength(1);
     expect(assets.blobs.size).toBe(1);
 
-    const secondHeaders = await signedHeaders(env.INTERNAL_ASSERTION_SECRET);
+    const secondHeaders = await signedHeaders(
+      env.INTERNAL_ASSERTION_SECRET,
+      "user-1",
+      "POST",
+      "/v1/cf/transcription-jobs",
+    );
     secondHeaders.set("content-type", "audio/wav");
     secondHeaders.set("idempotency-key", "capture-1");
     const second = await jobs.fetch(
@@ -311,7 +334,12 @@ describe("jobs ingress", () => {
         `https://jobs.test/v1/cf/transcription-jobs/${firstBody.jobId}`,
         {
           method: "GET",
-          headers: await signedHeaders(env.INTERNAL_ASSERTION_SECRET),
+          headers: await signedHeaders(
+            env.INTERNAL_ASSERTION_SECRET,
+            "user-1",
+            "GET",
+            `/v1/cf/transcription-jobs/${firstBody.jobId}`,
+          ),
         },
       ),
       env as never,

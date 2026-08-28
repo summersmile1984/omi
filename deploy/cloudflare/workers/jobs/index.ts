@@ -1,8 +1,5 @@
 import { Hono, type Context } from "hono";
-import {
-  decodeAuthContext,
-  verifyAuthContextSignature,
-} from "../shared/auth-context";
+import { verifyRequestAuthContext } from "../shared/auth-context";
 import type { JobMessage, JobsEnv } from "./env";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
@@ -16,23 +13,13 @@ app.get("/health", (c) =>
   c.json({ status: "ok", service: "jobs", version: "cf-06" }),
 );
 
-function requestContext(c: Context<{ Bindings: JobsEnv }>) {
-  const encodedContext = c.req.header("x-omi-auth-context") ?? null;
-  const context = decodeAuthContext(encodedContext);
-  return { encodedContext, context };
-}
-
-async function hasValidContext(
+async function requestContext(
   c: Context<{ Bindings: JobsEnv }>,
-): Promise<boolean> {
-  const { encodedContext, context } = requestContext(c);
-  return Boolean(
-    context &&
-    (await verifyAuthContextSignature(
-      encodedContext || "",
-      c.req.header("x-omi-internal-signature") ?? null,
-      c.env.INTERNAL_ASSERTION_SECRET,
-    )),
+){
+  return verifyRequestAuthContext(
+    c.req.raw,
+    "jobs",
+    c.env.INTERNAL_ASSERTION_SECRET,
   );
 }
 
@@ -119,9 +106,7 @@ async function enqueueJob(
 }
 
 app.post("/v1/cf/jobs", async (c) => {
-  if (!(await hasValidContext(c)))
-    return c.json({ error: "unauthorized" }, 401);
-  const { context } = requestContext(c);
+  const context = await requestContext(c);
   if (!context) return c.json({ error: "unauthorized" }, 401);
 
   let body: { jobId?: unknown; kind?: unknown; payload?: unknown };
@@ -142,9 +127,7 @@ app.post("/v1/cf/jobs", async (c) => {
 });
 
 app.post("/v1/cf/transcription-jobs", async (c) => {
-  if (!(await hasValidContext(c)))
-    return c.json({ error: "unauthorized" }, 401);
-  const { context } = requestContext(c);
+  const context = await requestContext(c);
   if (!context) return c.json({ error: "unauthorized" }, 401);
 
   const idempotencyKey = c.req.header("idempotency-key")?.trim() || null;
@@ -216,9 +199,7 @@ app.post("/v1/cf/transcription-jobs", async (c) => {
 });
 
 async function getJobStatus(c: Context<{ Bindings: JobsEnv }>) {
-  if (!(await hasValidContext(c)))
-    return c.json({ error: "unauthorized" }, 401);
-  const { context } = requestContext(c);
+  const context = await requestContext(c);
   if (!context) return c.json({ error: "unauthorized" }, 401);
   const jobId = (c.req.param("jobId") || "").trim();
   if (!jobId || jobId.length > 128)
