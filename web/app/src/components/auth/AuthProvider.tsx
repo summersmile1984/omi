@@ -19,15 +19,19 @@ import {
   setCompatCurrentUser,
 } from '@/lib/firebase';
 import {
+  getBetterAuthSocialProviders,
+  getBetterAuthSocialSignInUrl,
   isBetterAuthEnabled,
   onBetterAuthStateChange,
   signOutBetterAuth,
+  type BetterAuthSocialProvider,
 } from '@/lib/better-auth';
 import { MixpanelManager } from '@/lib/analytics/mixpanel';
 
 interface AuthContextType {
   user: WebAuthUser | null;
   loading: boolean;
+  socialProviders: BetterAuthSocialProvider[];
   signInWithGoogle: () => Promise<void>;
   signInWithApple: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -43,6 +47,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<WebAuthUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [socialProviders, setSocialProviders] = useState<BetterAuthSocialProvider[]>([]);
   const [isLoginPanelOpen, setIsLoginPanelOpen] = useState(false);
   const previousUserRef = useRef<WebAuthUser | null>(null);
 
@@ -76,10 +81,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!isBetterAuthEnabled) return;
+    void getBetterAuthSocialProviders()
+      .then(setSocialProviders)
+      .catch(() => setSocialProviders([]));
+  }, []);
+
   const handleSignInWithGoogle = async () => {
     try {
-      if (isBetterAuthEnabled) throw new Error('Use email sign-in in Better Auth mode');
-      await signInWithGoogle();
+      if (isBetterAuthEnabled) {
+        if (!socialProviders.includes('google')) {
+          throw new Error('Google sign-in is not configured');
+        }
+        window.location.assign(await getBetterAuthSocialSignInUrl('google'));
+      } else {
+        await signInWithGoogle();
+      }
       MixpanelManager.track('Sign In Completed', { method: 'google' });
     } catch (error) {
       console.error('Failed to sign in with Google:', error);
@@ -89,8 +107,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const handleSignInWithApple = async () => {
     try {
-      if (isBetterAuthEnabled) throw new Error('Use email sign-in in Better Auth mode');
-      await signInWithApple();
+      if (isBetterAuthEnabled) {
+        if (!socialProviders.includes('apple')) {
+          throw new Error('Apple sign-in is not configured');
+        }
+        window.location.assign(await getBetterAuthSocialSignInUrl('apple'));
+      } else {
+        await signInWithApple();
+      }
       MixpanelManager.track('Sign In Completed', { method: 'apple' });
     } catch (error) {
       console.error('Failed to sign in with Apple:', error);
@@ -117,6 +141,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value: AuthContextType = {
     user,
     loading,
+    socialProviders,
     signInWithGoogle: handleSignInWithGoogle,
     signInWithApple: handleSignInWithApple,
     signOut: handleSignOut,

@@ -86,8 +86,8 @@ The Next.js 16 app has a separate Cloudflare Worker build through vinext. It
 uses service bindings for both authenticated API traffic (`EDGE`) and Better
 Auth (`AUTH`), so server-side routes never make public Worker-to-Worker
 `workers.dev` fetches. Browser WebSockets connect to the public Edge Worker
-directly. Staging is compiled in Better Auth email mode; the existing Firebase
-client path remains the default for non-staging builds.
+directly. Staging is compiled in Better Auth mode; the existing Firebase client
+path remains the default for non-staging builds.
 
 ```bash
 cd web/app
@@ -108,13 +108,17 @@ The staging deployment is `omi-web-app-staging` at
 `https://omi-web-app-staging.summersmile1984.workers.dev`. The staging build
 script pins `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_WS_BASE_URL`,
 `NEXT_PUBLIC_AUTH_MODE=better-auth`, and the Auth Worker URL; production DNS and
-production identity are not changed by this command. The `/login` page exposes
-email/password sign-up and sign-in, while OAuth remains on the Firebase path
-until its identity-linking contract is migrated and qualified.
+production identity are not changed by this command. The `/login` page always
+exposes email/password sign-up and sign-in. Google/Apple buttons are driven by
+the Auth Worker's capability response and remain hidden unless the matching
+staging OAuth client ID and secret are both configured.
 
 Better Auth browser sessions are cookie-only: the same-origin auth proxy
 forwards `Set-Cookie` but removes the session token from successful sign-in and
-sign-up JSON. The API proxy forwards that httpOnly cookie only over the `EDGE`
+sign-up JSON. The public Better Auth base path is `/api/better-auth`; keeping
+that path and the Web Worker origin through provider callbacks lets the
+encrypted OAuth state and session cookies remain same-origin. The API proxy
+forwards the httpOnly session cookie only over the `EDGE`
 service binding; its public local-development fallback accepts bearer tokens
 and never receives browser cookies. Web recording exchanges the cookie at
 `POST /v1/realtime/web-ticket` for a signed 30-second ticket. The browser sends
@@ -198,11 +202,18 @@ values are read from stdin by Wrangler and are never committed:
 ```bash
 cf_auth_secret="$(openssl rand -base64 48)"
 printf '%s' "$cf_auth_secret" | npx wrangler secret put BETTER_AUTH_SECRET --name omi-cf-auth-staging
+# This must be the public Web origin, not the Auth Worker's workers.dev origin.
 printf '%s' "$BETTER_AUTH_URL" | npx wrangler secret put BETTER_AUTH_URL --name omi-cf-auth-staging
 cf_internal_secret="$(openssl rand -base64 48)"
 for worker_name in omi-cf-auth-staging omi-cf-edge-staging omi-cf-api-core-staging omi-cf-api-ai-staging omi-cf-realtime-staging omi-cf-jobs-staging; do
 printf '%s' "$cf_internal_secret" | npx wrangler secret put INTERNAL_ASSERTION_SECRET --name "$worker_name"
 done
+# Optional isolated staging OAuth clients. A provider is not advertised until
+# both values exist; never reuse production OAuth credentials here.
+printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler secret put GOOGLE_CLIENT_ID --name omi-cf-auth-staging
+printf '%s' "$GOOGLE_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CLIENT_SECRET --name omi-cf-auth-staging
+printf '%s' "$APPLE_CLIENT_ID" | npx wrangler secret put APPLE_CLIENT_ID --name omi-cf-auth-staging
+printf '%s' "$APPLE_CLIENT_SECRET" | npx wrangler secret put APPLE_CLIENT_SECRET --name omi-cf-auth-staging
 # Optional, staging-only Flutter Better Auth bridge (never use in a release build).
 cf_dev_issuer_secret="$(openssl rand -base64 48)"
 printf '%s' "$cf_dev_issuer_secret" | npx wrangler secret put AUTH_DEV_ISSUER_SECRET --name omi-cf-auth-staging
@@ -274,7 +285,8 @@ staging smoke surface is:
 GET  /health                  public Edge liveness
 GET  /ready                   Edge → all internal dependency readiness
 GET  Web /api/worker-ready    Web → Edge service-binding readiness
-POST /api/auth/sign-up/email  Better Auth + D1
+POST /api/better-auth/sign-up/email
+                              Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API
 POST /v1/stt/transcribe-workers-ai

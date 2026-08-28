@@ -112,7 +112,7 @@ app.get("/v1/app-capabilities", proxyPublicCore);
 app.get("/v1/app/payment-plans", proxyPublicCore);
 app.get("/v1/approved-apps", proxyPublicCore);
 
-app.all("/api/auth/*", async (c) => {
+app.all("/api/better-auth/*", async (c) => {
   const id = requestId(c.req.raw);
   const response = await c.env.AUTH.fetch(
     new Request(c.req.raw, {

@@ -112,6 +112,39 @@ describe("edge gateway", () => {
     });
   });
 
+  it("forwards the canonical Better Auth path and browser credentials", async () => {
+    let forwarded: Request | undefined;
+    const response = await edge.fetch(
+      new Request(
+        "https://edge.test/api/better-auth/callback/google?code=opaque",
+        {
+          headers: {
+            authorization: "Bearer session",
+            cookie: "__Secure-better-auth.state=opaque",
+          },
+        },
+      ),
+      {
+        AUTH: rawService((request) => {
+          forwarded = request;
+          return new Response(null, {
+            status: 302,
+            headers: { location: "https://edge.test/conversations" },
+          });
+        }),
+      } as never,
+    );
+
+    expect(response.status).toBe(302);
+    expect(new URL(forwarded?.url || "https://invalid.test").pathname).toBe(
+      "/api/better-auth/callback/google",
+    );
+    expect(forwarded?.headers.get("authorization")).toBe("Bearer session");
+    expect(forwarded?.headers.get("cookie")).toBe(
+      "__Secure-better-auth.state=opaque",
+    );
+  });
+
   it("routes static app catalog metadata through the public core worker", async () => {
     const paths: string[] = [];
     const env = {

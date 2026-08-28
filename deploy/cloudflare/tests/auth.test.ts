@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createSignedAuthContext } from "../workers/shared/auth-context";
+import { betterAuth } from "better-auth";
 
 const signJWT = vi.fn(async () => ({ token: "jwt-from-workers" }));
 const verifyJWT = vi.fn(async ({ body }: { body: { token: string } }) =>
@@ -31,8 +32,28 @@ function profileEnv(row: Record<string, unknown> | null) {
   return { ...env("issuer-secret"), AUTH_DB: { prepare } as unknown as D1Database };
 }
 
+function readyEnv(active = true) {
+  let activeKey = active;
+  const run = vi.fn(async () => ({ success: true }));
+  const first = vi.fn(async () => (activeKey ? { id: "active-key" } : null));
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn((query: string) =>
+    query === "SELECT 1" ? { run } : { bind },
+  );
+  return {
+    environment: {
+      ...env(),
+      AUTH_DB: { prepare } as unknown as D1Database,
+    },
+    activate: () => {
+      activeKey = true;
+    },
+  };
+}
+
 describe("auth worker Better Auth dev issuer", () => {
   beforeEach(() => {
+    vi.mocked(betterAuth).mockClear();
     signJWT.mockClear();
     verifyJWT.mockClear();
     authHandler.mockReset();
@@ -42,6 +63,40 @@ describe("auth worker Better Auth dev issuer", () => {
   it("hides the bridge when no issuer secret is configured", async () => {
     const response = await auth.fetch(new Request("https://auth.test/auth-issue", { method: "POST" }), env());
     expect(response.status).toBe(404);
+  });
+
+  it("reports readiness only when D1 has an active signing key", async () => {
+    const ready = readyEnv();
+    const response = await auth.fetch(
+      new Request("https://auth.test/ready"),
+      ready.environment,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      status: "ready",
+      database: "ok",
+      signing_key: "ok",
+    });
+    expect(signJWT).not.toHaveBeenCalled();
+  });
+
+  it("bootstraps a missing signing key before reporting readiness", async () => {
+    const ready = readyEnv(false);
+    signJWT.mockImplementationOnce(async () => {
+      ready.activate();
+      return { token: "bootstrap-token" };
+    });
+    const response = await auth.fetch(
+      new Request("https://auth.test/ready"),
+      ready.environment,
+    );
+
+    expect(response.status).toBe(200);
+    expect(signJWT).toHaveBeenCalledWith({
+      body: { payload: { sub: "jwks-readiness-bootstrap" } },
+      headers: expect.any(Headers),
+    });
   });
 
   it("rejects a missing or incorrect bearer secret", async () => {
@@ -129,9 +184,85 @@ describe("auth worker Better Auth dev issuer", () => {
       requestId: "cookie-request",
     });
     const sessionRequest = authHandler.mock.calls[0][0] as Request;
+    expect(new URL(sessionRequest.url).pathname).toBe(
+      "/api/better-auth/get-session",
+    );
     expect(sessionRequest.headers.get("cookie")).toBe(
       "__Secure-better-auth.session_token=cookie-session",
     );
+  });
+
+  it("uses the same-origin public path, D1 rate limits, and rotating ES256 keys", async () => {
+    const response = await auth.fetch(
+      new Request("https://auth.test/api/better-auth/get-session"),
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
+    expect(options).toMatchObject({
+      baseURL: "https://auth.test",
+      basePath: "/api/better-auth",
+      rateLimit: {
+        enabled: true,
+        storage: "database",
+        window: 60,
+        max: 100,
+      },
+      account: {
+        encryptOAuthTokens: true,
+        storeStateStrategy: "database",
+        accountLinking: {
+          enabled: true,
+          disableImplicitLinking: true,
+          trustedProviders: [],
+          allowDifferentEmails: false,
+        },
+      },
+    });
+    const jwtPlugin = options?.plugins?.find((plugin) => plugin.id === "jwt");
+    expect(jwtPlugin).toMatchObject({
+      options: {
+        jwt: {
+          jwks: {
+            keyPairConfig: { alg: "ES256" },
+            rotationInterval: 2_592_000,
+            gracePeriod: 172_800,
+          },
+          expirationTime: "24h",
+        },
+      },
+    });
+  });
+
+  it("advertises and configures only providers with complete credentials", async () => {
+    const providerEnv = {
+      ...env(),
+      GOOGLE_CLIENT_ID: "google-id",
+      GOOGLE_CLIENT_SECRET: "google-secret",
+      APPLE_CLIENT_ID: "incomplete-apple-id",
+    };
+    const capabilities = await auth.fetch(
+      new Request("https://auth.test/api/better-auth/omi-capabilities"),
+      providerEnv,
+    );
+    expect(await capabilities.json()).toEqual({
+      social_providers: ["google"],
+      explicit_account_linking: true,
+      implicit_account_linking: false,
+    });
+
+    await auth.fetch(
+      new Request("https://auth.test/api/better-auth/get-session"),
+      providerEnv,
+    );
+    const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
+    expect(options?.socialProviders).toEqual({
+      google: { clientId: "google-id", clientSecret: "google-secret" },
+    });
+    expect(options?.account?.accountLinking?.trustedProviders).toEqual([
+      "google",
+    ]);
   });
 
   it("serves the Better Auth identity profile only for a signed edge context", async () => {

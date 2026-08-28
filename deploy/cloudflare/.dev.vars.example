@@ -1,8 +1,15 @@
 # Copy to .dev.vars locally. Never commit real values.
 BETTER_AUTH_SECRET=replace-with-at-least-32-random-bytes
-BETTER_AUTH_URL=http://localhost:8788
+BETTER_AUTH_URL=http://localhost:3000
 ALLOWED_ORIGINS=http://localhost:3000
 INTERNAL_ASSERTION_SECRET=replace-with-a-different-random-secret
+# Optional Better Auth social providers. A provider is hidden unless both
+# client ID and secret are configured.
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+APPLE_CLIENT_ID=
+APPLE_CLIENT_SECRET=
+APPLE_APP_BUNDLE_IDENTIFIER=
 # Debug-only Flutter bridge; leave empty for normal local auth.
 AUTH_DEV_ISSUER_SECRET=
 ASR_WS_URL=

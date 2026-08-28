@@ -5,6 +5,7 @@ let restoreInFlight: Promise<WebAuthUser | null> | null = null;
 const listeners = new Set<(user: WebAuthUser | null) => void>();
 
 export const isBetterAuthEnabled = process.env.NEXT_PUBLIC_AUTH_MODE === 'better-auth';
+export type BetterAuthSocialProvider = 'google' | 'apple';
 
 function publish(user: WebAuthUser | null): void {
   currentUser = user;
@@ -95,6 +96,49 @@ export async function signUpWithEmail(
   });
   if (!response.ok) throw new Error(errorMessage(body, 'Unable to create account'));
   return completeAuth(body);
+}
+
+export async function getBetterAuthSocialProviders(): Promise<
+  BetterAuthSocialProvider[]
+> {
+  const { response, body } = await authRequest('omi-capabilities');
+  if (!response.ok || !body || typeof body !== 'object') return [];
+  const providers = (body as { social_providers?: unknown }).social_providers;
+  if (!Array.isArray(providers)) return [];
+  return providers.filter(
+    (provider): provider is BetterAuthSocialProvider =>
+      provider === 'google' || provider === 'apple',
+  );
+}
+
+export async function getBetterAuthSocialSignInUrl(
+  provider: BetterAuthSocialProvider,
+): Promise<string> {
+  const { response, body } = await authRequest('sign-in/social', {
+    method: 'POST',
+    body: JSON.stringify({
+      provider,
+      callbackURL: '/conversations',
+      errorCallbackURL: '/login',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(errorMessage(body, `Unable to sign in with ${provider}`));
+  }
+  const url =
+    body &&
+    typeof body === 'object' &&
+    typeof (body as { url?: unknown }).url === 'string'
+      ? (body as { url: string }).url
+      : null;
+  if (!url) throw new Error('Better Auth returned an invalid OAuth redirect');
+  const target = new URL(url);
+  const expectedHost =
+    provider === 'google' ? 'accounts.google.com' : 'appleid.apple.com';
+  if (target.protocol !== 'https:' || target.hostname !== expectedHost) {
+    throw new Error('Better Auth returned an untrusted OAuth redirect');
+  }
+  return url;
 }
 
 export async function signOutBetterAuth(): Promise<void> {

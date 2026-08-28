@@ -207,7 +207,7 @@ Worker 数量多不等于需要手工逐个发布。Cloudflare 目录使用一�
 
 实现要求：
 
-1. 使用 Hono 暴露 `/api/auth/*`，把 Hono `Request` 直接交给 Better Auth handler。
+1. 使用 Hono 暴露 `/api/better-auth/*`，把 Hono `Request` 直接交给 Better Auth handler；Web 同源代理保持同一路径，确保 OAuth state/session cookie 在 provider callback 时仍属于 Web origin。
 2. Wrangler 启用 `nodejs_compat`，Better Auth 使用 D1 binding：`database: env.AUTH_DB`。
 3. auth 实例从当前请求的 env 构造，不在模块级缓存一个永久 promise。Better Auth 上游仍有 Workers isolate 首次请求中止后缓存初始化可能被污染的开放问题，必须通过真实 Worker abort/retry 压测验证后才能考虑缓存。
 4. 从 `feature/cloud-neutral-shim` 选择性移植并写契约测试：
@@ -759,7 +759,7 @@ Worker-first 稳定态没有常驻 Container 固定成本。最终预算使用�
 DNS 或生产数据库。当前 staging 已部署：
 
 - `omi-cf-edge-staging`：公开入口、请求 ID、CORS、Bearer → Auth service binding、内部 auth context 签名、Realtime/API 路由；独立内部 `omi-cf-rate-limit-staging` Worker 的 RateLimit Durable Object 已接管当前 Cloudflare-owned 路由中原后端具有 UID 限流的 chat send、STT、conversation search、memory mutation、TTS 共 14 条路由/9 个 policy，保留 `RATE_LIMIT_BOOST`/shadow-mode 开关，事务串行化并发计数、alarm 清理过期窗口，DO 故障时保留旧 first-party fail-open 行为并记录结构化 fallback；同一 DO 还承载桌面 TTS 共用的 20 次/滚动分钟与 50,000 字符/UTC 日细粒度额度。独立 owner 保证部署依赖为 `rate-limit → api-ai → edge`，不形成循环。
-- `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。
+- `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表、数据库限流表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。公开路径与 Web 同源代理统一为 `/api/better-auth/*`；Google/Apple provider 仅在完整 staging 凭据存在时暴露，OAuth token 加密存储、隐式同邮箱 linking 禁用，ES256 key 以 30 天周期轮换并保留 2 天验证 grace。
 - `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意、短时 geolocation TTL row、daily-summary/mentor notification 偏好、training-data opt-in 状态与 private-sync 联动、FCM token 注册、开发者 webhook 配置/开关状态、assistant-settings 深合并和低风险 ai-profile 投影、客户端 API key 配置读取、公开 firmware stable/latest/version APIs、公告/版本更新公开读取与用户 dismiss，以及 staging-only 的 D1-backed action-item CRUD/reconciliation（含 Apple Reminders pending/sync-batch projection）、daily/weekly/overall score projection、focus-session CRUD/stats、text-only screen-activity sync/list/summary、calendar onboarding flags、People 元数据 CRUD、goal 元数据/metric/daily-history/progress-events/canonical-list/canonical-create/focus/lifecycle CRUD、work-intent/workstream journal/artifact/checkpoint CRUD、folder 元数据/排序/bulk move/delete CRUD、daily-summary 列表/详情/删除/visibility/test/regenerate 投影和 app-scoped chat history 读/删投影，未导入 `backend/main.py`。
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；Python Worker 在完成 TTS/provider 校验后通过跨 Worker Durable Object binding 原子消费细粒度额度，`/health` 用非变更 RPC 验证 binding；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
@@ -871,10 +871,22 @@ staging-only additive seam；现有 voice ID 合约仍未切换。
 标记并在 Firebase 初始 `null` 事件中保留有效缓存。该桥接不改变 release Firebase
 身份路径，也不把 issuer secret 写入仓库。
 
-真实 staging 串联随后以 `/api/auth/sign-up/email` 创建隔离测试用户、调用
+真实 staging 串联随后以 `/api/better-auth/sign-up/email` 创建隔离测试用户、调用
 `/auth-issue`、再以返回 JWT 请求 Edge `/v1/cf/probe`，最终为 HTTP 200；Auth
 Worker 的内部验证同时兼容数据库 session bearer 与 JWT plugin 的
 `verifyJWT`（JWT bridge 不创建 Better Auth session 行）。
+
+2026-08-28 的 Auth 生命周期增量已部署到 staging：`0003_rate_limit_and_jwks_rotation.sql`
+创建 Better Auth D1 限流表，并同时兼容现有 ISO 字符串和整数 Date 存储，为旧 ES256
+key 补上 30 天过期时间。Auth、Edge、Web readiness 均为 HTTP 200，Auth readiness
+同时确认 active signing key；Web/Edge 的 `/api/better-auth/omi-capabilities` 为 200，旧
+`/api/auth/*` 为 404。无 OAuth staging 凭据时 capability 返回空 provider 列表，页面
+不暴露 Google/Apple 按钮；真实错误密码请求连续返回 `401/401/401/429`，证明
+`cf-connecting-ip` 经 Web service binding 进入 D1 原子限流。完整 authenticated smoke
+和独立 native TTS smoke 通过（TTS HTTP 200，5,015 bytes）；右侧浏览器刷新并遍历
+conversations、memories、tasks、my-apps、chat，新增 console warn/error 为 0。真实
+Google/Apple callback/link 仍需独立 staging OAuth client 凭据后资格检查，账户删除仍因
+产品数据 residual workflow 未迁移而保持禁用，不能据此宣称 CF-03 全部完成。
 
 随后以同一 staging JWT 实测 assistant-settings 的 section partial update（第二次
 更新保留第一次的 `analysis_prompt`）以及 ai-profile 的 partial metadata update；

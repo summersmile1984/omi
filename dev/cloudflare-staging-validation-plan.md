@@ -281,7 +281,9 @@ Cloudflare `1042`、连续两次 readiness degraded、5 分钟窗口 5xx 超过 
 - transcript speaker bulk assignment 及 speech sample 副作用；
 - `/v1/sync/audio/*` URL、precache、audio merge/playback；
 - cascade conversation deletion、memory extraction、downstream integration fanout；
-- private app 管理、账户删除、Calendar OAuth、speaker sample、完整 vector lifecycle。
+- private app 管理、账户删除、Calendar OAuth、speaker sample、完整 vector lifecycle；
+- Better Auth Google/Apple 真实 callback/link 资格检查；服务端契约已部署，但 staging
+  OAuth client 凭据未配置前 capability 必须返回空 provider 列表并隐藏对应入口。
 
 验证时必须确认这些路径不会返回假成功或完成一半。若 UI 向测试 cohort 暴露对应按钮，
 则 **Product Cohort Ready 失败**；处理方式只能是迁移完整 authoritative workflow，或由

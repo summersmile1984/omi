@@ -81,4 +81,47 @@ describe('Better Auth web client', () => {
       signInWithEmail('staging@example.invalid', 'wrong-password'),
     ).rejects.toThrow('Invalid email or password');
   });
+
+  it('exposes only configured supported social providers', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({ social_providers: ['google', 'unknown', 'apple'] }),
+    );
+    const { getBetterAuthSocialProviders } = await import('./better-auth');
+
+    await expect(getBetterAuthSocialProviders()).resolves.toEqual(['google', 'apple']);
+  });
+
+  it('starts social sign-in through the same-origin callback path', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        Response.json({ url: 'https://accounts.google.com/o/oauth2/v2/auth' }),
+      );
+    const { getBetterAuthSocialSignInUrl } = await import('./better-auth');
+
+    await expect(getBetterAuthSocialSignInUrl('google')).resolves.toBe(
+      'https://accounts.google.com/o/oauth2/v2/auth',
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/better-auth/sign-in/social',
+      expect.objectContaining({ method: 'POST', credentials: 'include' }),
+    );
+    const request = fetchMock.mock.calls[0][1];
+    expect(JSON.parse(String(request?.body))).toEqual({
+      provider: 'google',
+      callbackURL: '/conversations',
+      errorCallbackURL: '/login',
+    });
+  });
+
+  it('rejects an OAuth redirect outside the configured provider', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({ url: 'https://attacker.example.test/authorize' }),
+    );
+    const { getBetterAuthSocialSignInUrl } = await import('./better-auth');
+
+    await expect(getBetterAuthSocialSignInUrl('google')).rejects.toThrow(
+      'untrusted OAuth redirect',
+    );
+  });
 });

@@ -10,9 +10,41 @@ import {
 import type { AuthEnv } from "./env";
 
 const app = new Hono<{ Bindings: AuthEnv }>();
+const AUTH_BASE_PATH = "/api/better-auth";
+const JWT_ROTATION_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
+const JWT_GRACE_PERIOD_SECONDS = 2 * 24 * 60 * 60;
+
+type SocialProviderId = "google" | "apple";
 
 function origins(env: AuthEnv): string[] {
   return (env.ALLOWED_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
+}
+
+function configuredSocialProviders(env: AuthEnv) {
+  const providers: {
+    google?: { clientId: string; clientSecret: string };
+    apple?: { clientId: string; clientSecret: string; appBundleIdentifier?: string };
+  } = {};
+  if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
+    providers.google = {
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+    };
+  }
+  if (env.APPLE_CLIENT_ID && env.APPLE_CLIENT_SECRET) {
+    providers.apple = {
+      clientId: env.APPLE_CLIENT_ID,
+      clientSecret: env.APPLE_CLIENT_SECRET,
+      ...(env.APPLE_APP_BUNDLE_IDENTIFIER
+        ? { appBundleIdentifier: env.APPLE_APP_BUNDLE_IDENTIFIER }
+        : {}),
+    };
+  }
+  return providers;
+}
+
+function configuredSocialProviderIds(env: AuthEnv): SocialProviderId[] {
+  return Object.keys(configuredSocialProviders(env)) as SocialProviderId[];
 }
 
 function buildAuth(env: AuthEnv, requestUrl: string) {
@@ -24,17 +56,45 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
     : null;
   const baseURL = configuredBaseURL || localFallback;
   if (!baseURL) throw new Error("BETTER_AUTH_URL must be configured outside local development");
+  const socialProviders = configuredSocialProviders(env);
+  const trustedProviders = Object.keys(socialProviders) as SocialProviderId[];
   return betterAuth({
     database: env.AUTH_DB,
     secret: env.BETTER_AUTH_SECRET,
     baseURL,
+    basePath: AUTH_BASE_PATH,
     trustedOrigins: Array.from(new Set([baseURL, ...allowedOrigins])),
     emailAndPassword: { enabled: true },
+    socialProviders,
+    account: {
+      encryptOAuthTokens: true,
+      storeStateStrategy: "database",
+      accountLinking: {
+        enabled: true,
+        disableImplicitLinking: true,
+        trustedProviders,
+        allowDifferentEmails: false,
+      },
+    },
+    rateLimit: {
+      enabled: true,
+      storage: "database",
+      window: 60,
+      max: 100,
+    },
+    advanced: {
+      ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
+      useSecureCookies: baseURL.startsWith("https://"),
+    },
     plugins: [
       bearer(),
       jwt({
         jwt: {
-          jwks: { keyPairConfig: { alg: "ES256" } },
+          jwks: {
+            keyPairConfig: { alg: "ES256" },
+            rotationInterval: JWT_ROTATION_INTERVAL_SECONDS,
+            gracePeriod: JWT_GRACE_PERIOD_SECONDS,
+          },
           expirationTime: "24h",
         },
       }),
@@ -77,7 +137,7 @@ function profileCreatedAt(value: unknown): string | null {
   return null;
 }
 
-app.use("/api/auth/*", async (c, next) => {
+app.use(`${AUTH_BASE_PATH}/*`, async (c, next) => {
   const allowed = origins(c.env);
   return cors({
     origin: (origin) => (allowed.includes(origin) ? origin : allowed[0] || ""),
@@ -90,11 +150,37 @@ app.get("/health", (c) => c.json({ status: "ok", service: "auth", version: "cf-0
 app.get("/ready", async (c) => {
   try {
     await c.env.AUTH_DB.prepare("SELECT 1").run();
-    return c.json({ status: "ready", database: "ok" });
+    const findActiveKey = () =>
+      c.env.AUTH_DB.prepare(
+        `SELECT id FROM jwks
+         WHERE expiresAt IS NULL
+            OR (typeof(expiresAt) IN ('integer', 'real') AND expiresAt > ?)
+            OR (typeof(expiresAt) = 'text' AND datetime(expiresAt) > datetime('now'))
+         LIMIT 1`,
+      ).bind(Date.now()).first<{ id: string }>();
+    let activeKey = await findActiveKey();
+    if (!activeKey) {
+      const auth = buildAuth(c.env, c.req.url);
+      await auth.api.signJWT({
+        body: { payload: { sub: "jwks-readiness-bootstrap" } },
+        headers: c.req.raw.headers,
+      });
+      activeKey = await findActiveKey();
+    }
+    if (!activeKey) return c.json({ status: "not_ready", database: "ok", signing_key: "missing" }, 503);
+    return c.json({ status: "ready", database: "ok", signing_key: "ok" });
   } catch {
-    return c.json({ status: "not_ready", database: "error" }, 503);
+    return c.json({ status: "not_ready", database: "error", signing_key: "error" }, 503);
   }
 });
+
+app.get(`${AUTH_BASE_PATH}/omi-capabilities`, (c) =>
+  c.json({
+    social_providers: configuredSocialProviderIds(c.env),
+    explicit_account_linking: true,
+    implicit_account_linking: false,
+  }),
+);
 
 // This endpoint exists only for the non-release Flutter staging bridge. It
 // mints a normal Better Auth JWT after proving possession of a secret that is
@@ -147,7 +233,7 @@ app.post("/internal/verify", async (c) => {
     const sessionHeaders = new Headers({ origin: baseURL });
     if (authorization) sessionHeaders.set("authorization", authorization);
     if (cookie) sessionHeaders.set("cookie", cookie);
-    const sessionRequest = new Request(new URL("/api/auth/get-session", baseURL), {
+    const sessionRequest = new Request(new URL(`${AUTH_BASE_PATH}/get-session`, baseURL), {
       headers: sessionHeaders,
     });
     const response = await auth.handler(sessionRequest);
@@ -211,7 +297,7 @@ app.get("/internal/profile", async (c) => {
   }
 });
 
-app.on(["GET", "POST", "PUT", "PATCH", "DELETE"], "/api/auth/*", (c) => {
+app.on(["GET", "POST", "PUT", "PATCH", "DELETE"], `${AUTH_BASE_PATH}/*`, (c) => {
   const auth = buildAuth(c.env, c.req.url);
   return auth.handler(c.req.raw);
 });
