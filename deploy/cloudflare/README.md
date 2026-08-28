@@ -570,6 +570,13 @@ in the Worker. Admin routes require the `ANNOUNCEMENTS_ADMIN_KEY` Worker secret
 and remain staging-only until content backfill, key rotation, and rollback
 evidence are approved; records can be loaded with the whitelisted backfill tool.
 
+The app catalog metadata routes (`/v1/app-categories`,
+`/v1/app/proactive-notification-scopes`, `/v1/app-capabilities`, and
+`/v1/app/payment-plans`) are static, public responses and now run in API Core
+without D1 or external providers. Mutable app records, reviews, subscriptions,
+MCP credentials, and enable/disable side effects remain legacy-owned until
+their catalog authority and user-installation state are migrated together.
+
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
 until its rate-limit and provider-shape migration is verified separately.
