@@ -135,7 +135,7 @@ function processingHarness(
       }
       if (
         sql.startsWith(
-          "SELECT created_at, updated_at, audio_files_json FROM cf_conversations",
+          "SELECT created_at, updated_at, started_at, audio_files_json FROM cf_conversations",
         )
       ) {
         const row = conversations.get(String(args[1]));
@@ -222,11 +222,11 @@ function processingHarness(
           "UPDATE cf_conversations SET updated_at = ?, private_cloud_sync_enabled = 1",
         )
       ) {
-        const id = String(args[3]);
+        const id = String(args[4]);
         const conversation = conversations.get(id);
         if (
           !conversation ||
-          Number(conversation.updated_at) !== Number(args[4])
+          Number(conversation.updated_at) !== Number(args[5])
         )
           return { meta: { changes: 0 }, results: [] };
         conversations.set(id, {
@@ -234,7 +234,7 @@ function processingHarness(
           updated_at: args[0],
           private_cloud_sync_enabled: 1,
           audio_files_json: args[1],
-          conversation_audio_json: null,
+          conversation_audio_json: args[2],
         });
         return { meta: { changes: 1 }, results: [{ id }] };
       }
@@ -293,15 +293,31 @@ function processingHarness(
   const env = {
     APP_DB: database,
     ASSETS: {
-      get: async (key: string) => {
-        const value = blobs.get(key);
+      get: async (
+        key: string,
+        options?: { range?: { offset: number; length: number } },
+      ) => {
+        let value = blobs.get(key);
+        if (value && options?.range) {
+          value = value.slice(
+            options.range.offset,
+            options.range.offset + options.range.length,
+          );
+        }
         return value ? { arrayBuffer: async () => value.slice(0) } : null;
       },
       delete: async (key: string) => {
         blobs.delete(key);
       },
-      put: async (key: string, value: ArrayBuffer) => {
-        blobs.set(key, value.slice(0));
+      put: async (
+        key: string,
+        value: ArrayBuffer | ReadableStream<Uint8Array>,
+      ) => {
+        const bytes =
+          value instanceof ReadableStream
+            ? await new Response(value).arrayBuffer()
+            : value.slice(0);
+        blobs.set(key, bytes);
         return { key };
       },
     },
@@ -383,17 +399,45 @@ describe("sync-local-files queue processing", () => {
       provider: "cloudflare-r2",
       content_type: "audio/wav",
       conversation_id: conversation.id,
+      sample_rate: 16_000,
+      channels: 1,
+      pcm_bytes: 320,
+    });
+    expect(
+      JSON.parse(String(conversation.conversation_audio_json)),
+    ).toMatchObject({
+      content_type: "audio/wav",
+      captured_duration: 0.01,
+      duration: 0.01,
+      spans: [
+        {
+          file_id: audioFiles[0].id,
+          wall_offset: 0,
+          artifact_offset: 0,
+          len: 0.01,
+        },
+      ],
     });
     expect(harness.usage.get(`fair-use:${"a".repeat(64)}`)).toEqual({
       speech_ms: 10,
     });
-    expect([...harness.blobs.keys()]).toEqual([
+    expect([...harness.blobs.keys()].sort()).toEqual([
       expect.stringMatching(
-        new RegExp(`^sync-playback/${harness.job.uid}/${conversation.id}/`),
+        new RegExp(`^sync-playback/${harness.job.uid}/${conversation.id}/cf-`),
       ),
+      `sync-playback/${harness.job.uid}/${conversation.id}/conversation.wav`,
     ]);
+    const dense = harness.blobs.get(
+      `sync-playback/${harness.job.uid}/${conversation.id}/conversation.wav`,
+    );
+    expect(new TextDecoder().decode(dense?.slice(0, 4))).toBe("RIFF");
+    expect(dense?.byteLength).toBe(364);
     expect([...harness.playbackLedger.values()]).toEqual([
       expect.objectContaining({ state: "committed" }),
+      expect.objectContaining({
+        audio_file_id: "conversation",
+        state: "committed",
+      }),
     ]);
     expect(JSON.parse(harness.job.result_json || "{}")).toMatchObject({
       outcome: "completed",
@@ -462,6 +506,7 @@ describe("sync playback reconciliation", () => {
   it("commits referenced intents and deletes only stale unreferenced objects", async () => {
     const states = new Map([
       ["sync-playback/user-1/referenced/audio-1.wav", "stored"],
+      ["sync-playback/user-1/referenced/conversation.wav", "stored"],
       ["sync-playback/user-1/orphan/audio-2.wav", "stored"],
     ]);
     const deleted: string[] = [];
@@ -487,8 +532,15 @@ describe("sync playback reconciliation", () => {
                         "sync-playback/user-1/referenced/audio-1.wav",
                     },
                   ]),
+                  conversation_audio_json: JSON.stringify({
+                    storage_key:
+                      "sync-playback/user-1/referenced/conversation.wav",
+                  }),
                 }
-              : { audio_files_json: "[]" },
+              : {
+                  audio_files_json: "[]",
+                  conversation_audio_json: null,
+                },
           run: async () => {
             if (sql.startsWith("UPDATE cf_sync_playback_objects")) {
               states.set(String(args[2]), "committed");
@@ -513,7 +565,10 @@ describe("sync playback reconciliation", () => {
     await cleanupOrphanPlaybackObjects(env as never, 10_000);
 
     expect(states).toEqual(
-      new Map([["sync-playback/user-1/referenced/audio-1.wav", "committed"]]),
+      new Map([
+        ["sync-playback/user-1/referenced/audio-1.wav", "committed"],
+        ["sync-playback/user-1/referenced/conversation.wav", "committed"],
+      ]),
     );
     expect(deleted).toEqual(["sync-playback/user-1/orphan/audio-2.wav"]);
   });

@@ -518,6 +518,11 @@ def _audio_file(row: dict[str, object], audio_file_id: str) -> dict[str, object]
     return next((item for item in _audio_files(row) if item.get("id") == audio_file_id), None)
 
 
+def _conversation_audio(row: dict[str, object]) -> dict[str, object] | None:
+    value = _json_value(row.get("conversation_audio_json"), None)
+    return value if isinstance(value, dict) else None
+
+
 def _audio_storage_candidates(
     uid: str,
     conversation_id: str,
@@ -1234,9 +1239,30 @@ async def get_conversation_audio_urls(request: Request, conversation_id: str):
                     "duration": float(audio_file.get("duration") or 0),
                 }
             )
+        conversation_result = None
+        conversation_audio = _conversation_audio(row)
+        if conversation_audio is not None:
+            stored = await _stored_audio(
+                bucket,
+                uid,
+                conversation_id,
+                {**conversation_audio, "id": "conversation"},
+            )
+            if stored is not None:
+                signed_url = _signed_audio_url(request, env, uid, conversation_id, "conversation")
+                if signed_url is None:
+                    return JSONResponse({"error": "audio URL signing is not configured"}, status_code=503)
+                conversation_result = {
+                    "status": "cached",
+                    "signed_url": signed_url,
+                    "content_type": stored[1],
+                    "duration": conversation_audio.get("duration"),
+                    "captured_duration": conversation_audio.get("captured_duration"),
+                    "spans": conversation_audio.get("spans", []),
+                }
     except Exception:
         return JSONResponse({"error": "recordings unavailable"}, status_code=503)
-    return {"audio_files": results, "conversation_audio": None, "poll_after_ms": None}
+    return {"audio_files": results, "conversation_audio": conversation_result, "poll_after_ms": None}
 
 
 @router.get("/v1/sync/audio/{conversation_id}/{audio_file_id}")
@@ -1281,7 +1307,12 @@ async def download_conversation_audio(
                 {"error": "A paid plan is required to access this conversation."},
                 status_code=402,
             )
-        audio_file = _audio_file(row, audio_file_id)
+        conversation_audio = _conversation_audio(row)
+        audio_file = (
+            ({**conversation_audio, "id": "conversation"} if conversation_audio else None)
+            if audio_file_id == "conversation"
+            else _audio_file(row, audio_file_id)
+        )
         if audio_file is None:
             return JSONResponse({"error": "audio file not found"}, status_code=404)
         bucket = getattr(env, "ASSETS", None)

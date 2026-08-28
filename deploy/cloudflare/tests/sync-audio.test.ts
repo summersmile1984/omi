@@ -75,4 +75,31 @@ describe("sync WAL audio", () => {
     expect(new TextDecoder().decode(chunks[0].wav.slice(0, 4))).toBe("RIFF");
     expect(new DataView(chunks[0].wav).getUint32(40, true)).toBe(320);
   });
+
+  it("normalizes high-rate stereo PCM to the Worker playback format", async () => {
+    const identity = parseSyncFilename(
+      "audio_omibatch_pcm16_48000_2_fs480_1787932800.bin",
+    );
+    expect(identity).not.toBeNull();
+    const stereo = new Int16Array(960);
+    for (let frame = 0; frame < 480; frame += 1) {
+      stereo[frame * 2] = 2_000;
+      stereo[frame * 2 + 1] = -1_000;
+    }
+    const chunks = [];
+    for await (const chunk of decodeWalToWavChunks(
+      wal([new Uint8Array(stereo.buffer)]),
+      identity!,
+    )) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toHaveLength(1);
+    const view = new DataView(chunks[0].wav);
+    expect(view.getUint16(22, true)).toBe(1);
+    expect(view.getUint32(24, true)).toBe(16_000);
+    expect(view.getUint32(40, true)).toBe(320);
+    expect(view.getInt16(44, true)).toBe(500);
+    expect(chunks[0].durationSeconds).toBe(0.01);
+  });
 });

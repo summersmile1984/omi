@@ -878,9 +878,11 @@ audio deletion, and downstream integration fanout remain legacy-owned;
 production reader cutover still requires those write authorities and readers to
 move together. The isolated `/v2/sync-local-files` finalizer is the exception:
 when private cloud sync is enabled, Jobs decodes each accepted WAL into bounded
-WAV windows, stores deterministic `sync-playback/` objects in R2, and commits
-their metadata to the conversation projection before deleting the staging WAL.
-Disabled private cloud sync retains no playback object.
+16 kHz mono WAV windows, stores deterministic `sync-playback/` objects in R2,
+and streams their PCM payloads into one dense `conversation.wav` with an exact
+wall-clock/captured-audio spans manifest. The file list, dense artifact stamp,
+and R2 intent ledger are committed before the staging WAL is deleted. Disabled
+private cloud sync retains no playback object.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC
@@ -888,24 +890,35 @@ URLs; the download route rechecks the signed uid/conversation/audio identity,
 locked state, D1 ownership, and R2 key prefix, then streams full or single-range
 responses. Tokenless downloads still require Better Auth. Existing imported
 `playback/*.mp3` and `merged/*.wav` objects are readable after the reviewed R2
-copy, but building missing artifacts from legacy chunk inventories and creating
-the dense per-conversation MP3 remain a production-data migration gap. Each R2
-put is fenced by `cf_sync_playback_objects`; the metadata commit promotes the
-intent, while the five-minute Jobs maintenance pass promotes referenced crash
-survivors or deletes stale unreferenced objects after one hour.
+copy. Worker-native conversations also return the dense WAV through
+`conversation_audio`, so Flutter can use its spans-aware single-artifact path
+without ffmpeg or MP3 encoding. Building missing artifacts from legacy chunk
+inventories remains a production-data migration gap. Each R2 put is fenced by
+`cf_sync_playback_objects`; the metadata commit promotes the intent, while the
+five-minute Jobs maintenance pass promotes referenced crash survivors or
+deletes stale unreferenced objects after one hour.
 
 Live staging playback evidence on 2026-08-29 used Core version
-`09c48cd8-e595-498e-9269-231c58b1c955`, Jobs version
-`1d2089f5-511a-4aa1-9a24-10acc94cc072`, and Edge version
-`1f0d99d7-83ea-4dbe-b4a5-bbe753430ee1`. A manifest-bound spoken 16 kHz PCM WAL
-completed on `sync_fresh`, persisted one committed `cloudflare-r2` WAV, streamed
-251,130 bytes with a `RIFF` header, and returned exact `206 bytes 0-15/251130`
-for a range request. A tampered token, substituted audio ID, and unsigned
-tokenless request each returned `401`. Repeating the same path after explicitly
-disabling private cloud sync still completed transcription but produced zero
-audio files and no recording object. Both staging WALs were absent after their
-terminal jobs; the exact playback object, D1 fixtures, usage rows, control rows,
-and Better Auth account were deleted and read back at zero after verification.
+`2fb48e7d-8ac2-4def-a841-64df4b696284`, Jobs version
+`e5862eb9-8ed9-4d5f-89df-15b0b56699cf`, and Edge version
+`ed6b119b-8368-44ff-90cf-ebede7a74c84`. A manifest-bound spoken 16 kHz PCM WAL
+completed on `sync_fresh`, persisted one committed `cloudflare-r2` window and
+one committed dense artifact, and returned `conversation_audio.status=cached`.
+The dense response was a 149,926-byte `audio/wav` with a 44-byte RIFF header,
+149,882 PCM data bytes, 16 kHz mono format, 4.684 seconds of captured and wall
+duration, and one span mapping artifact offset zero to wall offset zero. A
+header range returned exact `206 bytes 0-43/149926`. The first live attempt also
+proved that R2 rejects an arbitrary readable stream without a known length; the
+Jobs upload now wraps the exact header-plus-PCM byte count in
+`FixedLengthStream`, and the redeployed path completed.
+
+The successful D1 readback showed both playback intents promoted to
+`committed`; the failed-attempt fixture remained recoverable as `stored` plus
+`staging`, rather than being reported as completed. Both input WAL keys, both
+per-window keys, and both dense keys were deleted after verification. The
+conversation/FTS, sync job/file/content/capture/playback, Fair Use, control,
+probe, and Better Auth user/session/account/verification counts all read back at
+zero for the isolated test UID.
 
 `GET /v1/conversations/{conversation_id}/transcripts` reads the bounded
 `transcript_segments_json` projection and returns the same four provider buckets

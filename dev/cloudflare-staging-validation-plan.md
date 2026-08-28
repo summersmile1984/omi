@@ -230,14 +230,18 @@ CLOUDFLARE_SMOKE_TOKEN_FILE=/path/to/staging-token.json npm run smoke:staging
   原 staging WAL 已删除；
 - `/v1/sync/audio/{id}/urls` 返回 `cached`、`audio/wav` 和短期 HMAC URL；无 Bearer
   直接 GET 该 URL 返回音频，单 range 返回 `206` 与精确 `Content-Range`；
+- `conversation_audio` 返回 `cached` 的单一 dense WAV、captured/wall duration 与 spans；
+  对应 R2 对象只含标准 WAV header 加按 artifact offset 排列的 PCM，不把整段音频加载
+  到 Worker 内存；
 - 篡改 token、替换 conversation/audio id、过期 token、跨 uid、locked conversation
   全部 fail closed；未签名的 fallback 下载仍要求 Better Auth；
 - 显式关闭 private cloud sync 后重复同步：转写仍完成，但 D1 不出现 audio file，R2
   不留下 playback 或 staging object；
 - 删除 live fixture 后回读 D1、R2、Queue，确认只删除精确测试对象。
 
-通过标准：录音可由现有 Web/Flutter 多段播放路径消费，签名与 Range 契约正确，不依赖
-本机 ffmpeg。旧 GCS chunk 的 R2 导入与 dense MP3 构建仍按第 8 节处理。
+通过标准：录音可由现有 Web/Flutter 多段回退和 Flutter spans-aware 单制品路径消费，签名
+与 Range 契约正确，不依赖本机 ffmpeg。旧 GCS chunk 的 R2 导入与缺失历史 artifact 重建
+仍按第 8 节处理。
 
 ## 6. P3：安全与故障恢复
 
@@ -295,8 +299,8 @@ Cloudflare `1042`、连续两次 readiness degraded、5 分钟窗口 5xx 超过 
 
 - conversation create/finalize、merge、reprocess、custom prompt；
 - transcript speaker bulk assignment 及 speech sample 副作用；
-- 旧 GCS chunk 的 R2 导入、缺失 artifact 构建和 dense conversation MP3 合并；Worker
-  原生 WAL 的 `/v1/sync/audio/*` 多段 WAV 回放已经迁移；
+- 旧 GCS chunk 的 R2 导入与缺失历史 artifact 重建；Worker 原生 WAL 的
+  `/v1/sync/audio/*` 多段 WAV 与 dense conversation WAV 已经迁移；
 - cascade conversation deletion、memory extraction、downstream integration fanout；
 - private app 管理、账户删除、Calendar OAuth、speaker sample、完整 vector lifecycle；
 - Better Auth Google/Apple 真实 callback/link 资格检查；服务端契约已部署，但 staging

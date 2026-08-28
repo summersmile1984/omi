@@ -2,6 +2,8 @@ import { OpusDecoder, type OpusDecoderSampleRate } from "opus-decoder";
 
 const MAX_WAL_FRAME_BYTES = 65_536;
 const MIN_CAPTURE_AT_SECONDS = Date.UTC(2024, 0, 1) / 1000;
+export const PLAYBACK_SAMPLE_RATE = 16_000;
+export const PLAYBACK_CHANNELS = 1;
 
 export type SyncAudioCodec = "opus" | "pcm16" | "pcm8";
 
@@ -129,8 +131,27 @@ export function pcm16ToWav(
   sampleRate: number,
   channels: number,
 ): ArrayBuffer {
-  const dataBytes = samples.byteLength;
-  const buffer = new ArrayBuffer(44 + dataBytes);
+  const header = pcm16WavHeader(samples.byteLength, sampleRate, channels);
+  const buffer = new ArrayBuffer(header.byteLength + samples.byteLength);
+  new Uint8Array(buffer).set(new Uint8Array(header));
+  new Int16Array(buffer, header.byteLength).set(samples);
+  return buffer;
+}
+
+export function pcm16WavHeader(
+  dataBytes: number,
+  sampleRate = PLAYBACK_SAMPLE_RATE,
+  channels = PLAYBACK_CHANNELS,
+): ArrayBuffer {
+  if (
+    !Number.isInteger(dataBytes) ||
+    dataBytes < 0 ||
+    dataBytes > 0xffff_ffff - 36 ||
+    dataBytes % (channels * 2) !== 0
+  ) {
+    throw new Error("PCM16 WAV data length is invalid");
+  }
+  const buffer = new ArrayBuffer(44);
   const view = new DataView(buffer);
   const ascii = (offset: number, value: string) => {
     for (let index = 0; index < value.length; index += 1)
@@ -149,8 +170,41 @@ export function pcm16ToWav(
   view.setUint16(34, 16, true);
   ascii(36, "data");
   view.setUint32(40, dataBytes, true);
-  new Int16Array(buffer, 44).set(samples);
   return buffer;
+}
+
+function normalizedMono16k(
+  samples: Int16Array,
+  sampleRate: number,
+  channels: number,
+): Int16Array {
+  const sourceFrames = Math.floor(samples.length / channels);
+  if (!sourceFrames) return new Int16Array();
+  if (sampleRate === PLAYBACK_SAMPLE_RATE && channels === PLAYBACK_CHANNELS)
+    return samples;
+
+  const targetFrames = Math.max(
+    1,
+    Math.round((sourceFrames * PLAYBACK_SAMPLE_RATE) / sampleRate),
+  );
+  const output = new Int16Array(targetFrames);
+  const monoAt = (frame: number): number => {
+    let total = 0;
+    const offset = Math.min(sourceFrames - 1, frame) * channels;
+    for (let channel = 0; channel < channels; channel += 1)
+      total += samples[offset + channel];
+    return total / channels;
+  };
+  for (let frame = 0; frame < targetFrames; frame += 1) {
+    const sourcePosition = (frame * sampleRate) / PLAYBACK_SAMPLE_RATE;
+    const before = Math.min(sourceFrames - 1, Math.floor(sourcePosition));
+    const after = Math.min(sourceFrames - 1, before + 1);
+    const fraction = sourcePosition - before;
+    output[frame] = Math.round(
+      monoAt(before) * (1 - fraction) + monoAt(after) * fraction,
+    );
+  }
+  return output;
 }
 
 /**
@@ -166,26 +220,30 @@ export async function* decodeWalToWavChunks(
   if (!frames.length) throw new Error("sync audio has no readable frames");
 
   const maxSamples = Math.max(
-    identity.frameSize,
+    identity.frameSize * identity.channels,
     Math.floor(identity.sampleRate * identity.channels * maxChunkSeconds),
   );
   let chunk = new Int16Array(maxSamples);
   let chunkSamples = 0;
-  let totalSamples = 0;
+  let totalFrames = 0;
   let decoder: OpusDecoder<OpusDecoderSampleRate> | null = null;
 
   const flush = (): DecodedWavChunk | null => {
     if (!chunkSamples) return null;
     const complete = chunk.slice(0, chunkSamples);
-    const startSeconds =
-      totalSamples / (identity.sampleRate * identity.channels);
-    totalSamples += chunkSamples;
-    const durationSeconds =
-      chunkSamples / (identity.sampleRate * identity.channels);
+    const sourceFrames = Math.floor(chunkSamples / identity.channels);
+    const startSeconds = totalFrames / identity.sampleRate;
+    totalFrames += sourceFrames;
+    const durationSeconds = sourceFrames / identity.sampleRate;
+    const normalized = normalizedMono16k(
+      complete,
+      identity.sampleRate,
+      identity.channels,
+    );
     chunk = new Int16Array(maxSamples);
     chunkSamples = 0;
     return {
-      wav: pcm16ToWav(complete, identity.sampleRate, identity.channels),
+      wav: pcm16ToWav(normalized, PLAYBACK_SAMPLE_RATE, PLAYBACK_CHANNELS),
       startSeconds,
       durationSeconds,
     };
@@ -254,7 +312,7 @@ export async function* decodeWalToWavChunks(
     }
     const ready = flush();
     if (ready) yield ready;
-    if (!totalSamples) throw new Error("sync audio could not be decoded");
+    if (!totalFrames) throw new Error("sync audio could not be decoded");
   } finally {
     decoder?.free();
   }

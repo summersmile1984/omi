@@ -22,6 +22,9 @@ import type { JobMessage, JobsEnv } from "./env";
 import {
   decodeWalToWavChunks,
   parseSyncFilename,
+  pcm16WavHeader,
+  PLAYBACK_CHANNELS,
+  PLAYBACK_SAMPLE_RATE,
   type SyncFileIdentity,
 } from "./sync-audio";
 
@@ -180,6 +183,24 @@ type PlaybackAudioFile = {
   duration: number;
   storage_key: string;
   content_type: "audio/wav";
+  sample_rate: typeof PLAYBACK_SAMPLE_RATE;
+  channels: typeof PLAYBACK_CHANNELS;
+  pcm_bytes: number;
+};
+
+type ConversationPlayback = {
+  audio_files_fingerprint: string;
+  duration: number;
+  captured_duration: number;
+  spans: Array<{
+    file_id: string;
+    wall_offset: number;
+    artifact_offset: number;
+    len: number;
+  }>;
+  content_type: "audio/wav";
+  storage_key: string;
+  built_at: number;
 };
 
 type StructuredConversation = {
@@ -1155,6 +1176,252 @@ async function privateCloudSyncEnabled(
   return row?.private_cloud_sync_enabled !== 0;
 }
 
+async function recordPlaybackIntent(
+  env: JobsEnv,
+  job: SyncJobRow,
+  conversationId: string,
+  audioFileId: string,
+  storageKey: string,
+  now: number,
+): Promise<void> {
+  await env.APP_DB.prepare(
+    "INSERT INTO cf_sync_playback_objects " +
+      "(uid, storage_key, conversation_id, audio_file_id, job_id, state, created_at, updated_at) " +
+      "VALUES (?, ?, ?, ?, ?, 'staging', ?, ?) ON CONFLICT(uid, storage_key) DO UPDATE SET " +
+      "conversation_id = excluded.conversation_id, audio_file_id = excluded.audio_file_id, " +
+      "job_id = excluded.job_id, state = CASE WHEN state = 'committed' THEN state ELSE 'staging' END, " +
+      "updated_at = excluded.updated_at",
+  )
+    .bind(
+      job.uid,
+      storageKey,
+      conversationId,
+      audioFileId,
+      job.job_id,
+      now,
+      now,
+    )
+    .run();
+}
+
+async function markPlaybackStored(
+  env: JobsEnv,
+  uid: string,
+  storageKey: string,
+  now: number,
+): Promise<void> {
+  await env.APP_DB.prepare(
+    "UPDATE cf_sync_playback_objects SET state = 'stored', updated_at = ? " +
+      "WHERE uid = ? AND storage_key = ? AND state <> 'committed'",
+  )
+    .bind(now, uid, storageKey)
+    .run();
+}
+
+function playbackFile(value: unknown): PlaybackAudioFile | null {
+  const file = objectValue(value);
+  if (
+    !file ||
+    typeof file.id !== "string" ||
+    typeof file.storage_key !== "string" ||
+    !file.storage_key.startsWith("sync-playback/") ||
+    file.content_type !== "audio/wav" ||
+    file.sample_rate !== PLAYBACK_SAMPLE_RATE ||
+    file.channels !== PLAYBACK_CHANNELS ||
+    typeof file.pcm_bytes !== "number" ||
+    !Number.isInteger(file.pcm_bytes) ||
+    file.pcm_bytes <= 0 ||
+    file.pcm_bytes % 2 !== 0
+  ) {
+    return null;
+  }
+  return file as PlaybackAudioFile;
+}
+
+function playbackStartedAt(file: PlaybackAudioFile): number | null {
+  const raw = file.started_at;
+  const value =
+    typeof raw === "number" ? raw : Date.parse(String(raw || "")) / 1_000;
+  return Number.isFinite(value) ? value : null;
+}
+
+function audioFilesFingerprint(audioFiles: PlaybackAudioFile[]): string {
+  const parts = audioFiles
+    .map((file) => {
+      const timestamps = file.chunk_timestamps
+        .map(Number)
+        .filter(Number.isFinite)
+        .sort((left, right) => left - right);
+      return [
+        file.id,
+        timestamps.length,
+        timestamps.length ? Math.round(timestamps.at(-1)! * 1_000) / 1_000 : 0,
+        file.pcm_bytes,
+      ];
+    })
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  return bytesToHex(
+    sha256(new TextEncoder().encode(JSON.stringify(parts))),
+  ).slice(0, 12);
+}
+
+function densePlaybackStream(
+  env: JobsEnv,
+  audioFiles: PlaybackAudioFile[],
+  totalPcmBytes: number,
+): ReadableStream<Uint8Array> {
+  const header = new Uint8Array(
+    pcm16WavHeader(totalPcmBytes, PLAYBACK_SAMPLE_RATE, PLAYBACK_CHANNELS),
+  );
+  let index = -1;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        if (index < 0) {
+          index = 0;
+          controller.enqueue(header);
+          return;
+        }
+        const file = audioFiles[index];
+        if (!file) {
+          controller.close();
+          return;
+        }
+        index += 1;
+        const object = await env.ASSETS.get(file.storage_key, {
+          range: { offset: 44, length: file.pcm_bytes },
+        });
+        if (!object)
+          throw new Error("playback window disappeared during dense build");
+        const pcm = new Uint8Array(await object.arrayBuffer());
+        if (pcm.byteLength !== file.pcm_bytes)
+          throw new Error("playback window size changed during dense build");
+        controller.enqueue(pcm);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+}
+
+function fixedLengthPlaybackStream(
+  source: ReadableStream<Uint8Array>,
+  expectedLength: number,
+): {
+  readable: ReadableStream<Uint8Array>;
+  completed: Promise<void>;
+} {
+  let stream: TransformStream<Uint8Array, Uint8Array>;
+  const fixedLength = (
+    globalThis as unknown as {
+      FixedLengthStream?: typeof FixedLengthStream;
+    }
+  ).FixedLengthStream;
+  if (typeof fixedLength === "function") {
+    stream = new fixedLength(expectedLength) as TransformStream<
+      Uint8Array,
+      Uint8Array
+    >;
+  } else {
+    let observed = 0;
+    stream = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        observed += chunk.byteLength;
+        if (observed > expectedLength)
+          throw new Error("dense playback exceeded its declared length");
+        controller.enqueue(chunk);
+      },
+      flush() {
+        if (observed !== expectedLength)
+          throw new Error("dense playback did not reach its declared length");
+      },
+    });
+  }
+  return {
+    readable: stream.readable,
+    completed: source.pipeTo(stream.writable),
+  };
+}
+
+async function buildConversationPlayback(
+  env: JobsEnv,
+  job: SyncJobRow,
+  conversationId: string,
+  conversationStartedAt: number,
+  values: unknown[],
+  now: number,
+): Promise<ConversationPlayback | null> {
+  const parsed = values.map(playbackFile);
+  if (!parsed.length || parsed.some((file) => file === null)) return null;
+  const audioFiles = (parsed as PlaybackAudioFile[]).sort((left, right) => {
+    return (
+      (playbackStartedAt(left) || 0) - (playbackStartedAt(right) || 0) ||
+      left.id.localeCompare(right.id)
+    );
+  });
+  if (audioFiles.some((file) => playbackStartedAt(file) === null)) return null;
+  const totalPcmBytes = audioFiles.reduce(
+    (total, file) => total + file.pcm_bytes,
+    0,
+  );
+  if (totalPcmBytes <= 0 || totalPcmBytes > 0xffff_ffff - 36) return null;
+
+  const storageKey = `sync-playback/${job.uid}/${conversationId}/conversation.wav`;
+  await recordPlaybackIntent(
+    env,
+    job,
+    conversationId,
+    "conversation",
+    storageKey,
+    now,
+  );
+  const body = fixedLengthPlaybackStream(
+    densePlaybackStream(env, audioFiles, totalPcmBytes),
+    totalPcmBytes + 44,
+  );
+  await Promise.all([
+    env.ASSETS.put(storageKey, body.readable, {
+      httpMetadata: { contentType: "audio/wav" },
+      customMetadata: {
+        uid: job.uid,
+        conversationId,
+        audioFileId: "conversation",
+        sampleRate: String(PLAYBACK_SAMPLE_RATE),
+        channels: String(PLAYBACK_CHANNELS),
+      },
+    }),
+    body.completed,
+  ]);
+  await markPlaybackStored(env, job.uid, storageKey, now);
+
+  let artifactOffset = 0;
+  const spans = audioFiles.map((file) => {
+    const length = file.pcm_bytes / (PLAYBACK_SAMPLE_RATE * 2);
+    const span = {
+      file_id: file.id,
+      wall_offset:
+        Math.round(
+          Math.max(0, playbackStartedAt(file)! - conversationStartedAt) * 1_000,
+        ) / 1_000,
+      artifact_offset: Math.round(artifactOffset * 1_000) / 1_000,
+      len: Math.round(length * 1_000) / 1_000,
+    };
+    artifactOffset += length;
+    return span;
+  });
+  return {
+    audio_files_fingerprint: audioFilesFingerprint(audioFiles),
+    duration:
+      Math.round((spans.at(-1)!.wall_offset + spans.at(-1)!.len) * 1_000) /
+      1_000,
+    captured_duration: Math.round(artifactOffset * 1_000) / 1_000,
+    spans,
+    content_type: "audio/wav",
+    storage_key: storageKey,
+    built_at: now,
+  };
+}
+
 async function persistConversationPlayback(
   env: JobsEnv,
   job: SyncJobRow,
@@ -1193,30 +1460,18 @@ async function persistConversationPlayback(
     })) {
       const id = playbackAudioId(job, file, chunkIndex);
       const storageKey = `sync-playback/${job.uid}/${conversationId}/${id}.wav`;
-      await env.APP_DB.prepare(
-        "INSERT INTO cf_sync_playback_objects " +
-          "(uid, storage_key, conversation_id, audio_file_id, job_id, state, created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, 'staging', ?, ?) ON CONFLICT(uid, storage_key) DO UPDATE SET " +
-          "conversation_id = excluded.conversation_id, audio_file_id = excluded.audio_file_id, " +
-          "job_id = excluded.job_id, state = CASE WHEN state = 'committed' THEN state ELSE 'staging' END, " +
-          "updated_at = excluded.updated_at",
-      )
-        .bind(job.uid, storageKey, conversationId, id, job.job_id, now, now)
-        .run();
+      await recordPlaybackIntent(env, job, conversationId, id, storageKey, now);
       await env.ASSETS.put(storageKey, chunk.wav, {
         httpMetadata: { contentType: "audio/wav" },
         customMetadata: {
           uid: job.uid,
           conversationId,
           audioFileId: id,
+          sampleRate: String(PLAYBACK_SAMPLE_RATE),
+          channels: String(PLAYBACK_CHANNELS),
         },
       });
-      await env.APP_DB.prepare(
-        "UPDATE cf_sync_playback_objects SET state = 'stored', updated_at = ? " +
-          "WHERE uid = ? AND storage_key = ? AND state <> 'committed'",
-      )
-        .bind(now, job.uid, storageKey)
-        .run();
+      await markPlaybackStored(env, job.uid, storageKey, now);
       const startedAt = file.capture_at + chunk.startSeconds;
       playback.push({
         id,
@@ -1228,6 +1483,9 @@ async function persistConversationPlayback(
         duration: chunk.durationSeconds,
         storage_key: storageKey,
         content_type: "audio/wav",
+        sample_rate: PLAYBACK_SAMPLE_RATE,
+        channels: PLAYBACK_CHANNELS,
+        pcm_bytes: chunk.wav.byteLength - 44,
       });
       chunkIndex += 1;
     }
@@ -1236,12 +1494,13 @@ async function persistConversationPlayback(
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const row = await env.APP_DB.prepare(
-      "SELECT created_at, updated_at, audio_files_json FROM cf_conversations WHERE uid = ? AND id = ?",
+      "SELECT created_at, updated_at, started_at, audio_files_json FROM cf_conversations WHERE uid = ? AND id = ?",
     )
       .bind(job.uid, conversationId)
       .first<{
         created_at: number;
         updated_at: number | null;
+        started_at: number | null;
         audio_files_json: string;
       }>();
     if (!row)
@@ -1262,23 +1521,51 @@ async function persistConversationPlayback(
       MAX_CONVERSATION_AUDIO_JSON_BYTES
     )
       throw new Error("conversation playback metadata is too large");
+    const conversationAudio = await buildConversationPlayback(
+      env,
+      job,
+      conversationId,
+      row.started_at ?? row.created_at,
+      merged,
+      now,
+    );
+    const encodedConversationAudio = conversationAudio
+      ? JSON.stringify(conversationAudio)
+      : null;
+    if (
+      encodedConversationAudio &&
+      new TextEncoder().encode(encodedConversationAudio).byteLength >
+        MAX_CONVERSATION_AUDIO_JSON_BYTES
+    )
+      throw new Error("conversation playback artifact metadata is too large");
     const revision = row.updated_at ?? row.created_at;
     const nextRevision = Math.max(now, revision + 1);
     const updated = await env.APP_DB.prepare(
       "UPDATE cf_conversations SET updated_at = ?, private_cloud_sync_enabled = 1, audio_files_json = ?, " +
-        "conversation_audio_json = NULL WHERE uid = ? AND id = ? AND COALESCE(updated_at, created_at) = ? " +
+        "conversation_audio_json = ? WHERE uid = ? AND id = ? AND COALESCE(updated_at, created_at) = ? " +
         "RETURNING id",
     )
-      .bind(nextRevision, encoded, job.uid, conversationId, revision)
+      .bind(
+        nextRevision,
+        encoded,
+        encodedConversationAudio,
+        job.uid,
+        conversationId,
+        revision,
+      )
       .run<{ id: string }>();
     if (updated.results?.[0]?.id === conversationId) {
+      const committedKeys = [
+        ...playback.map((file) => file.storage_key),
+        ...(conversationAudio ? [conversationAudio.storage_key] : []),
+      ];
       await Promise.all(
-        playback.map((file) =>
+        committedKeys.map((storageKey) =>
           env.APP_DB.prepare(
             "UPDATE cf_sync_playback_objects SET state = 'committed', updated_at = ? " +
               "WHERE uid = ? AND storage_key = ?",
           )
-            .bind(nextRevision, job.uid, file.storage_key)
+            .bind(nextRevision, job.uid, storageKey)
             .run(),
         ),
       );
@@ -1959,13 +2246,19 @@ export async function cleanupOrphanPlaybackObjects(
     .all<{ uid: string; storage_key: string; conversation_id: string }>();
   for (const candidate of result.results || []) {
     const conversation = await env.APP_DB.prepare(
-      "SELECT audio_files_json FROM cf_conversations WHERE uid = ? AND id = ?",
+      "SELECT audio_files_json, conversation_audio_json FROM cf_conversations WHERE uid = ? AND id = ?",
     )
       .bind(candidate.uid, candidate.conversation_id)
-      .first<{ audio_files_json: string }>();
-    const referenced = jsonArray(conversation?.audio_files_json).some(
-      (value) => objectValue(value)?.storage_key === candidate.storage_key,
-    );
+      .first<{
+        audio_files_json: string;
+        conversation_audio_json: string | null;
+      }>();
+    const referenced =
+      jsonArray(conversation?.audio_files_json).some(
+        (value) => objectValue(value)?.storage_key === candidate.storage_key,
+      ) ||
+      jsonObject(conversation?.conversation_audio_json).storage_key ===
+        candidate.storage_key;
     if (referenced) {
       await env.APP_DB.prepare(
         "UPDATE cf_sync_playback_objects SET state = 'committed', updated_at = ? " +

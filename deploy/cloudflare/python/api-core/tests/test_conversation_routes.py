@@ -148,6 +148,7 @@ def insert_conversation(
     transcript_segments: list[dict[str, object]] | None = None,
     apps_results: list[dict[str, object]] | None = None,
     audio_files: list[dict[str, object]] | None = None,
+    conversation_audio: dict[str, object] | None = None,
 ):
     db.connection.execute(
         "INSERT INTO cf_conversations "
@@ -191,6 +192,11 @@ def insert_conversation(
         db.connection.execute(
             "UPDATE cf_conversations SET audio_files_json = ? WHERE uid = ? AND id = ?",
             (json.dumps(audio_files), uid, conversation_id),
+        )
+    if conversation_audio is not None:
+        db.connection.execute(
+            "UPDATE cf_conversations SET conversation_audio_json = ? WHERE uid = ? AND id = ?",
+            (json.dumps(conversation_audio), uid, conversation_id),
         )
     if apps_results is not None:
         db.connection.execute(
@@ -578,6 +584,7 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
     secret = "conversation-secret"
     db = FakeDb()
     storage_key = "sync-playback/conversation-user/audio-conversation/audio-1.wav"
+    dense_key = "sync-playback/conversation-user/audio-conversation/conversation.wav"
     insert_conversation(
         db,
         uid="conversation-user",
@@ -596,9 +603,19 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
                 "content_type": "audio/wav",
             }
         ],
+        conversation_audio={
+            "audio_files_fingerprint": "fingerprint",
+            "duration": 1.25,
+            "captured_duration": 1.25,
+            "spans": [{"file_id": "audio-1", "wall_offset": 0, "artifact_offset": 0, "len": 1.25}],
+            "content_type": "audio/wav",
+            "storage_key": dense_key,
+            "built_at": 200,
+        },
     )
     bucket = FakeBucket()
     bucket.objects[storage_key] = b"RIFFworker-audio"
+    bucket.objects[dense_key] = b"RIFFdense-worker-audio"
     env = type("Env", (), {"APP_DB": db, "ASSETS": bucket, "INTERNAL_ASSERTION_SECRET": secret})()
 
     urls = asyncio.run(
@@ -613,6 +630,12 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
     )
     assert urls["poll_after_ms"] is None
     assert urls["audio_files"][0]["status"] == "cached"
+    assert urls["conversation_audio"]["status"] == "cached"
+    assert urls["conversation_audio"]["content_type"] == "audio/wav"
+    assert urls["conversation_audio"]["spans"][0]["file_id"] == "audio-1"
+    dense_url = urlsplit(urls["conversation_audio"]["signed_url"])
+    assert dense_url.path == "/v1/sync/audio/audio-conversation/conversation"
+    dense_token = parse_qs(dense_url.query)["token"][0]
     signed_url = urls["audio_files"][0]["signed_url"]
     parsed = urlsplit(signed_url)
     assert parsed.path == "/v1/sync/audio/audio-conversation/audio-1"
@@ -633,10 +656,25 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
     assert response.status_code == 206
     assert response.headers["content-range"] == "bytes 4-9/16"
 
-    async def response_body():
-        return b"".join([chunk async for chunk in response.body_iterator])
+    async def response_body(streaming_response):
+        return b"".join([chunk async for chunk in streaming_response.body_iterator])
 
-    assert asyncio.run(response_body()) == b"worker"
+    assert asyncio.run(response_body(response)) == b"worker"
+
+    dense_response = asyncio.run(
+        download_conversation_audio(
+            FakeRequest(
+                env,
+                {},
+                {"token": dense_token},
+                url=urls["conversation_audio"]["signed_url"],
+            ),
+            "audio-conversation",
+            "conversation",
+        )
+    )
+    assert dense_response.status_code == 200
+    assert asyncio.run(response_body(dense_response)) == b"RIFFdense-worker-audio"
 
     tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
     denied = asyncio.run(
