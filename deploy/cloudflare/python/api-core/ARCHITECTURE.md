@@ -20,3 +20,9 @@ uid-scoped list/create/edit/review/delete behavior in D1 and retains deletions
 as tombstones. It has no Firestore fallback or dual write. Production account
 promotion remains forbidden until the account-cutover importer, manifest
 verification, and destination binding described by `INV-CUTOVER-1` exist.
+
+`account_cutover_routes.py` is the routing authority consumed by Edge. Only
+`ACCOUNT_CUTOVER_PROFILE=isolated-staging` may initialize a missing Better Auth
+principal directly as `new`; the initializer writes a completed,
+destination-bound row before returning. Every other missing principal stays
+`legacy`, and malformed or incomplete `new` rows fail closed.

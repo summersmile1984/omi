@@ -40,6 +40,20 @@ async function request(fetchImpl, url, init = {}) {
   return response;
 }
 
+async function requestJson(fetchImpl, url, init = {}) {
+  const response = await fetchImpl(url, {
+    ...init,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  let body = null;
+  try {
+    body = await response.json();
+  } catch {
+    // Status validation owns the useful error for a non-JSON failure.
+  }
+  return { response, body };
+}
+
 function expectStatus(label, response, expected) {
   if (response.status !== expected) {
     throw new Error(
@@ -109,12 +123,24 @@ export async function runSmoke({
     headers: authHeaders,
   });
   expectStatus("authenticated probe", probe, 200);
-  const accountCutover = await request(
+  const accountCutoverResult = await requestJson(
     fetchImpl,
     `${base}/v1/account/cutover/control`,
     { headers: authHeaders },
   );
+  const accountCutover = accountCutoverResult.response;
   expectStatus("account cutover control", accountCutover, 200);
+  const accountControl = accountCutoverResult.body;
+  if (
+    !accountControl ||
+    accountControl.state !== "new" ||
+    accountControl.product_traffic_allowed !== true ||
+    accountControl.migration?.destination_backend_bound !== true
+  ) {
+    throw new Error(
+      "account cutover control is not bound to the Cloudflare data plane",
+    );
+  }
 
   const appSearch = await request(fetchImpl, `${base}/v2/apps/search?limit=1`, {
     headers: authHeaders,

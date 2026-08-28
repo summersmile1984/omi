@@ -9,6 +9,10 @@ import {
 } from "../shared/realtime-bootstrap";
 import { createRealtimeTicket } from "../shared/realtime-ticket";
 import { attachAuthContext, stripUntrustedHeaders, verifyBearer } from "./auth";
+import {
+  ACCOUNT_CUTOVER_CONTROL_PATH,
+  cloudflareProductTrafficDenial,
+} from "./cutover";
 import type { EdgeEnv, EdgeVariables } from "./env";
 
 const app = new Hono<{ Bindings: EdgeEnv; Variables: EdgeVariables }>();
@@ -73,6 +77,13 @@ app.all("/v2/voice-message/transcribe-stream", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -91,6 +102,13 @@ app.all("/v4/listen", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -129,6 +147,13 @@ app.post("/v1/realtime/web-ticket", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
   const ticket = await createRealtimeTicket(
     auth,
     c.env.INTERNAL_ASSERTION_SECRET,
@@ -142,6 +167,13 @@ app.all("/v1/omni/relay", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -162,6 +194,13 @@ const proxyAuthenticatedJobs = async (
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -180,6 +219,13 @@ const proxyAuthenticatedAsyncTranscription = async (
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
   const headers = new Headers();
   for (const name of ["content-type", "content-length", "idempotency-key"]) {
     const value = c.req.header(name);
@@ -216,6 +262,13 @@ const proxyAuthenticatedAsyncTranscriptionStatus = async (
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
   const headers = new Headers();
   const jobId = encodeURIComponent(c.req.param("jobId") || "");
   const target = new URL(`/v1/cf/transcription-jobs/${jobId}`, c.req.url);
@@ -241,6 +294,15 @@ const proxyAuthenticatedCore = async (
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  if (c.req.path !== ACCOUNT_CUTOVER_CONTROL_PATH) {
+    const denial = await cloudflareProductTrafficDenial(
+      c.req.raw,
+      c.env,
+      auth,
+      id,
+    );
+    if (denial) return withRequestId(denial, id);
+  }
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -285,6 +347,13 @@ const proxyAuthenticatedAI = async (
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -499,6 +568,13 @@ app.all("/*", async (c) => {
   ) {
     const headers = stripUntrustedHeaders(c.req.raw);
     if (auth) {
+      const denial = await cloudflareProductTrafficDenial(
+        c.req.raw,
+        c.env,
+        auth,
+        id,
+      );
+      if (denial) return withRequestId(denial, id);
       await attachAuthContext(
         headers,
         auth,

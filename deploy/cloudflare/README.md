@@ -106,6 +106,17 @@ This prevents a captured assertion for one service or route from being replayed
 against another. The explicit legacy fallback is the only path that preserves a
 client bearer, because the legacy backend remains its verifier during cutover.
 
+The isolated staging profile has one server-authoritative account/data-plane
+binding. On its first authenticated control read, a Better Auth principal is
+atomically registered in D1 as a bound `new` account; this is safe only because
+the profile cannot contain a historical Firebase account. Edge checks that
+control row before Core, AI, Jobs, or Realtime product traffic and fails closed
+unless `state=new`, product traffic is allowed, and the destination is bound.
+Auth/profile and the control endpoint remain reachable while product traffic is
+fenced. Missing rows outside the exact
+`ACCOUNT_CUTOVER_PROFILE=isolated-staging` configuration still project as
+`legacy`; no existing-account migration or production cutover is inferred.
+
 `deploy:staging` applies the isolated migrations, publishes Workers in dependency
 order, then checks Edge, Auth `/ready`, and every internal Worker `/health` before
 reporting success. A release is considered incomplete if any readiness check is

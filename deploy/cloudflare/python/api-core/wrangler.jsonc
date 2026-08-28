@@ -9,14 +9,16 @@
     {
       "binding": "APP_DB",
       "database_name": "omi-cf-app-staging",
-      "migrations_dir": "../../migrations/app"
-    }
+      "migrations_dir": "../../migrations/app",
+    },
   ],
   "r2_buckets": [
     {
       "binding": "ASSETS",
-      "bucket_name": "omi-cf-staging"
-    }
+      "bucket_name": "omi-cf-staging",
+    },
   ],
-  "vars": {}
+  "vars": {
+    "ACCOUNT_CUTOVER_PROFILE": "isolated-staging",
+  },
 }

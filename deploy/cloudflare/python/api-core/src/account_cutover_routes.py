@@ -1,14 +1,16 @@
-"""D1-backed account cutover control projection for the Cloudflare profile.
+"""D1-backed account cutover control authority for the Cloudflare profile.
 
-The route is deliberately read-only. Missing rows remain legacy-compatible;
-malformed authoritative rows fail closed instead of reopening product traffic.
-Operator transitions and data import remain separate, explicitly controlled
-workflows and are not triggered by a client read.
+Missing rows remain legacy-compatible everywhere except the explicitly named
+isolated staging profile. A Better Auth principal in that profile cannot own
+historical Omi data, so its first control read atomically establishes a bound
+``new`` account before product traffic is admitted. Existing-account operator
+transitions and data imports remain separate controlled workflows.
 """
 
 from __future__ import annotations
 
 import re
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -36,6 +38,8 @@ CHECKPOINT_PHASES = frozenset(
 PLATFORMS = ("android", "ios", "linux", "macos", "web", "windows")
 MAX_TOKEN_LENGTH = 128
 STABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+ISOLATED_STAGING_PROFILE = "isolated-staging"
+ISOLATED_STAGING_MANIFEST = "isolated-staging-v1"
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -133,15 +137,19 @@ def _control(
         }
 
     state = str(record["state"])
+    destination_bound = bool(record["destination_backend_bound"])
+    checkpoint_phase = str(record["checkpoint_phase"])
+    if state == "new" and (not destination_bound or checkpoint_phase != "completed"):
+        raise ValueError("new account is not bound to a completed destination")
     normalized_offline = str(record["offline_queue_instruction"])
-    if state in {"migrating", "new", "rolled_back_stranded"}:
+    if state in {"migrating", "rolled_back_stranded"}:
         normalized_offline = "quarantine"
     # Build floors remain zero until an operator-approved bridge release. Parse
     # the headers now so versioned client formats are accepted from day one.
     _parse_client_build(build if build is not None else version)
     del platform
-    action = "migration_maintenance" if state in {"migrating", "new"} else "none"
-    traffic_allowed = action == "none" and state not in {"migrating", "new"}
+    action = "migration_maintenance" if state == "migrating" else "none"
+    traffic_allowed = state in {"legacy", "rolled_back_stranded"} or (state == "new" and destination_bound)
     ui_generation = 0 if state == "legacy" else int(record["ui_generation"])
     api_generation = 0 if state == "legacy" else int(record["api_generation"])
     return {
@@ -156,18 +164,47 @@ def _control(
         "legacy_writes_allowed": state in {"legacy", "rolled_back_stranded"},
         "product_traffic_allowed": traffic_allowed,
         "auth_bootstrap_reachable": True,
-        "minimum_supported_builds": [
-            {"platform": item, "minimum_supported_build": 0} for item in PLATFORMS
-        ],
+        "minimum_supported_builds": [{"platform": item, "minimum_supported_build": 0} for item in PLATFORMS],
         "migration": {
             "manifest_id": record["manifest_id"],
             "schema_version": 1,
             "checkpoint_phase": record["checkpoint_phase"],
             "checkpoint_token": record["checkpoint_token"],
-            "destination_backend_bound": bool(record["destination_backend_bound"]),
+            "destination_backend_bound": destination_bound,
             "stranded_new_data": bool(record["stranded_new_data"]),
         },
     }
+
+
+async def _initialize_isolated_staging_account(env: object, context: dict[str, object], uid: str) -> bool:
+    if getattr(env, "ACCOUNT_CUTOVER_PROFILE", None) != ISOLATED_STAGING_PROFILE:
+        return False
+    if context.get("authority") != "better-auth":
+        return False
+    now = int(time.time())
+    await env.APP_DB.prepare(
+        "INSERT INTO cf_account_cutover "
+        "(uid, schema_version, state, account_generation, ui_generation, api_generation, stranded_new_data, "
+        "offline_queue_instruction, checkpoint_phase, checkpoint_token, manifest_id, destination_backend_bound, "
+        "updated_at) VALUES (?, 1, 'new', 1, 1, 1, 0, 'none', 'completed', NULL, ?, 1, ?) "
+        "ON CONFLICT(uid) DO NOTHING"
+    ).bind(uid, ISOLATED_STAGING_MANIFEST, now).run()
+    return True
+
+
+async def _read_cutover_row(env: object, uid: str) -> dict[str, object] | None:
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT uid, schema_version, state, account_generation, ui_generation, api_generation, "
+            "stranded_new_data, offline_queue_instruction, checkpoint_phase, checkpoint_token, manifest_id, "
+            "destination_backend_bound FROM cf_account_cutover WHERE uid = ?"
+        )
+        .bind(uid)
+        .first()
+    )
+    if row is not None and not isinstance(row, dict):
+        raise ValueError("invalid account cutover row")
+    return row
 
 
 @router.get("/v1/account/cutover/control")
@@ -177,13 +214,10 @@ async def get_account_cutover_control(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     uid = str(context["uid"])
     try:
-        row = await request.scope["env"].APP_DB.prepare(
-            "SELECT uid, schema_version, state, account_generation, ui_generation, api_generation, "
-            "stranded_new_data, offline_queue_instruction, checkpoint_phase, checkpoint_token, manifest_id, "
-            "destination_backend_bound FROM cf_account_cutover WHERE uid = ?"
-        ).bind(uid).first()
-        if row is not None and not isinstance(row, dict):
-            raise ValueError("invalid account cutover row")
+        env = request.scope["env"]
+        row = await _read_cutover_row(env, uid)
+        if row is None and await _initialize_isolated_staging_account(env, context, uid):
+            row = await _read_cutover_row(env, uid)
         return _control(
             row,
             uid,

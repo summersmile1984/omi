@@ -2,8 +2,22 @@ import { describe, expect, it } from "vitest";
 import edge from "../workers/edge/index";
 import { verifyRealtimeTicket } from "../workers/shared/realtime-ticket";
 
+const rawService = (
+  handler: (request: Request) => Promise<Response> | Response,
+) => ({ fetch: handler }) as Fetcher;
+
 const service = (handler: (request: Request) => Promise<Response> | Response) =>
-  ({ fetch: handler }) as Fetcher;
+  rawService((request) => {
+    if (new URL(request.url).pathname === "/v1/account/cutover/control") {
+      return Response.json({
+        state: "new",
+        client_action: "none",
+        product_traffic_allowed: true,
+        migration: { destination_backend_bound: true },
+      });
+    }
+    return handler(request);
+  });
 
 describe("edge gateway", () => {
   it("serves a versioned health response", async () => {
@@ -209,6 +223,9 @@ describe("edge gateway", () => {
         verifyRequest = request;
         return Response.json({ uid: "cookie-user", authority: "better-auth" });
       }),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
     };
     const response = await edge.fetch(
       new Request("https://edge.test/v1/realtime/web-ticket", {
@@ -886,7 +903,7 @@ describe("edge gateway", () => {
         }
         return Response.json({ status: "ok" });
       }),
-      API_CORE: service((request) => {
+      API_CORE: rawService((request) => {
         coreRequests.push(request);
         return Response.json({ state: "legacy" });
       }),
@@ -905,6 +922,107 @@ describe("edge gateway", () => {
       "/v1/account/cutover/control",
     );
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
+  it("admits Cloudflare product traffic only for a bound new account", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: rawService((request) => {
+        coreRequests.push(request);
+        if (new URL(request.url).pathname === "/v1/account/cutover/control") {
+          return Response.json({
+            state: "legacy",
+            client_action: "none",
+            product_traffic_allowed: true,
+            migration: { destination_backend_bound: false },
+          });
+        }
+        return Response.json({ status: "unexpected" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v3/memories", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: "account data plane not active",
+      state: "legacy",
+    });
+    expect(coreRequests).toHaveLength(1);
+    expect(new URL(coreRequests[0].url).pathname).toBe(
+      "/v1/account/cutover/control",
+    );
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
+  it("fails product traffic closed when account control is unavailable", async () => {
+    let memoryCalls = 0;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: rawService((request) => {
+        if (new URL(request.url).pathname === "/v1/account/cutover/control") {
+          return Response.json({ error: "unavailable" }, { status: 503 });
+        }
+        memoryCalls += 1;
+        return Response.json([]);
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v3/memories", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(503);
+    expect(memoryCalls).toBe(0);
+  });
+
+  it("keeps authenticated profile bootstrap reachable outside the product data plane", async () => {
+    const authPaths: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        authPaths.push(new URL(request.url).pathname);
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ uid: "user-1", email: "user@example.test" });
+      }),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/users/profile", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(authPaths).toEqual(["/internal/verify", "/internal/profile"]);
   });
 
   it("routes async native transcription bodies to the jobs worker and rewrites status reads", async () => {
