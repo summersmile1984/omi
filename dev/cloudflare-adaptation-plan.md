@@ -806,6 +806,7 @@ auto model pick GET                     # D1 24h cache + provider/default proven
 native Workers AI translation POST      # m2m100 en→zh through Edge → HTTP 200; unsupported language → 400
 native Workers AI TTS POST              # Aura-1 raw MP3 through Edge → HTTP 200/audio-mpeg
 native Workers AI embeddings POST      # BGE text batch, 768-dimension vectors → HTTP 200
+default text chat POST                  # Workers AI Llama + bounded D1 history + atomic exchange + legacy SSE frames → unit verified
 action-item CRUD                       # D1 uid-scoped create/list/update/complete/delete + batch/reconciliation + Reminders sync projections → verified
 announcements                           # D1 changelog/feature/general + pending targeting + per-user dismiss → unit verified
 static app catalog metadata             # categories/capabilities/notification scopes/payment-plan options; no state or provider dependency → unit + staging verified

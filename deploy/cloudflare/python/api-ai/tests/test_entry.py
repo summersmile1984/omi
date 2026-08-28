@@ -32,6 +32,7 @@ class FakeRequest:
         self.method = method
         parsed_url = urlsplit(url)
         self.url = type("Url", (), {"path": parsed_url.path, "query": parsed_url.query})()
+        self.query_params = {}
 
     async def body(self):
         return b"audio"
@@ -93,7 +94,7 @@ def test_health_fails_closed_without_the_rate_limit_binding():
     assert json.loads(response.body) == {"status": "degraded", "dependency": "rate-limit"}
 
 
-def test_chat_messages_fails_closed_with_typed_provider_status():
+def test_chat_messages_fails_closed_without_workers_ai_binding():
     secret = "test-secret"
     encoded, signature = signed_context(secret)
     request = FakeRequest(
@@ -107,7 +108,7 @@ def test_chat_messages_fails_closed_with_typed_provider_status():
 
     assert response.status_code == 503
     assert json.loads(response.body) == {
-        "error": "chat provider is not configured",
+        "error": "workers ai is not configured",
         "reason": "provider_not_configured",
     }
 

@@ -184,12 +184,17 @@ smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
 The authenticated smoke verifies unauthenticated rejection, the D1 probe, the
 conversation list/search, folder/memory shell dependencies, and the
 conversation, enabled-app, and memory reads through Web `/api/proxy` so a
-missing Web→Edge binding fails the release. `deploy:staging` requires one of the
-two token inputs above and refuses to begin qualification when neither is
-configured; standalone `smoke:staging` may still run its public-only checks. It
-also verifies the Workers AI raw-audio input boundary with an empty body, so it
-does not invoke billable model inference; use a separate explicit audio request
-for model quality or latency qualification.
+missing Web→Edge binding fails the release. It also sends one real default-text
+chat through Web → Edge → Workers AI, validates the legacy SSE completion, and
+deletes the smoke account's chat rows even when response validation fails. It
+fails before writing unless the credential belongs to a dedicated account with
+empty chat history, so cleanup cannot erase an operator's existing chat. This
+chat check invokes one billable model inference per authenticated smoke. The
+raw-audio Workers AI boundary still uses an empty body and does not invoke ASR
+inference; use a separate explicit audio request for ASR quality or latency
+qualification. `deploy:staging` requires one of the two token inputs above and
+refuses to begin qualification when neither is configured; standalone
+`smoke:staging` may still run its public-only checks.
 
 The deployment script requires an already authenticated Wrangler session or a
 scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; it never prints
@@ -437,7 +442,7 @@ GET/DELETE /v2/messages        Edge → Python API Core → D1 chat-history proj
 POST /v2/messages/share
 GET  /v2/messages/shared/{token}
                               Edge → Python API Core → D1 30-day chat share
-POST /v2/messages              Edge → Python API AI → provider-gated streaming seam (503 until migrated)
+POST /v2/messages              Edge → Python API AI → Workers AI + D1 text-chat exchange
 GET/POST /v1/action-items      Edge → Python API Core → D1
 GET  /v1/action-items/ids      Edge → Python API Core → D1
 PATCH /v1/action-items/batch   Edge → Python API Core → D1
@@ -652,8 +657,13 @@ references beside that projection; its public route exposes only message id,
 text, sender, timestamp, and the explicit sender display name. Creating a new
 share also removes indexed expired shares so D1 preserves the legacy Redis TTL
 lifecycle. Chat generation remains API-AI-owned and returns a typed
-provider-contract `503` until its streaming provider is migrated; this keeps
-the Edge route explicit instead of leaking a catch-all `404`.
+lifecycle. Default text chat now reads a bounded D1 history, calls the configured
+Workers AI chat model, commits the human/AI exchange in one D1 batch, and emits
+the legacy `data:` plus base64 `done:` SSE contract used by Web/mobile clients.
+The first staging slice intentionally rejects app/persona chat, attachments,
+and page context with typed `409` responses; RAG/tools, plan entitlements,
+usage accounting, and provider-streamed token delivery remain separate
+qualification boundaries rather than silently degrading to generic chat.
 
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging
@@ -848,6 +858,13 @@ The client cannot choose the destination: `AI_API_BASE_URL` and `AI_API_KEY` are
 Worker secrets, and the proxy only forwards `content-type`/`accept` plus the
 request path after `/v1/ai`. Requests and responses are bounded to keep model
 payloads from turning the Python Worker into an unbounded buffer.
+
+Default `POST /v2/messages` text chat uses the native
+`@cf/meta/llama-3.2-3b-instruct` binding with a bounded 24-message/32,000-character
+D1 history. Model output is validated before both exchange rows are committed;
+a provider or D1 failure emits no partial persisted exchange. The Worker emits
+one compatibility `data:` frame followed by the legacy base64 `done:` message;
+native provider-token streaming remains a later latency qualification.
 
 `/v1/embeddings-workers-ai` is an additive text-embedding seam backed by the
 native `@cf/baai/bge-base-en-v1.5` binding. It accepts a bounded string or batch

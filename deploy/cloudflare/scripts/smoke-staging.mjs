@@ -84,6 +84,85 @@ function expectStatus(label, response, expected) {
   }
 }
 
+async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
+  const preflight = await requestJson(
+    fetchImpl,
+    `${webBase}/api/proxy/v2/messages?limit=1`,
+    { headers: authHeaders },
+  );
+  expectStatus("Workers AI chat history preflight", preflight.response, 200);
+  if (
+    !Array.isArray(preflight.body) ||
+    preflight.body.length !== 1 ||
+    preflight.body[0]?.id !== "cf-initial-chat"
+  ) {
+    throw new Error(
+      "Workers AI chat smoke requires a dedicated account with empty chat history",
+    );
+  }
+  let chatStatus;
+  let chatCleanup;
+  try {
+    const response = await fetchImpl(`${webBase}/api/proxy/v2/messages`, {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "Reply with a short Cloudflare staging acknowledgement.",
+        file_ids: [],
+        context: null,
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    chatStatus = response.status;
+    const contentType = response.headers.get("content-type") || "";
+    const body = await response.text();
+    expectStatus("Web to Workers AI chat", response, 200);
+    if (!contentType.includes("text/event-stream")) {
+      throw new Error(
+        `Web to Workers AI chat expected text/event-stream, received ${contentType || "missing content type"}`,
+      );
+    }
+    const lines = body.split(/\r?\n/);
+    const dataLines = lines.filter((line) => line.startsWith("data: "));
+    const doneLines = lines.filter((line) => line.startsWith("done: "));
+    if (dataLines.length === 0 || !dataLines.some((line) => line.slice(6).trim())) {
+      throw new Error("Web to Workers AI chat returned no response data");
+    }
+    if (doneLines.length !== 1) {
+      throw new Error(
+        `Web to Workers AI chat expected one completion frame, received ${doneLines.length}`,
+      );
+    }
+    let completedMessage;
+    try {
+      completedMessage = JSON.parse(
+        Buffer.from(doneLines[0].slice(6).trim(), "base64").toString("utf8"),
+      );
+    } catch {
+      throw new Error("Web to Workers AI chat returned an invalid completion frame");
+    }
+    if (
+      completedMessage?.sender !== "ai" ||
+      typeof completedMessage.text !== "string" ||
+      !completedMessage.text.trim()
+    ) {
+      throw new Error("Web to Workers AI chat returned an invalid AI message");
+    }
+  } finally {
+    chatCleanup = await request(
+      fetchImpl,
+      `${webBase}/api/proxy/v2/messages`,
+      { method: "DELETE", headers: authHeaders },
+    );
+    expectStatus("Workers AI chat smoke cleanup", chatCleanup, 200);
+  }
+  return {
+    chatHistoryPreflightStatus: preflight.response.status,
+    chatStatus,
+    chatCleanupStatus: chatCleanup.status,
+  };
+}
+
 export async function runSmoke({
   edgeUrl = resolveEdgeUrl(),
   webUrl = resolveWebUrl(),
@@ -223,6 +302,11 @@ export async function runSmoke({
     { headers: authHeaders },
   );
   expectStatus("Web to Edge memories service binding", webProxyMemories, 200);
+  const workersAiChat = await exerciseWorkersAiChat(
+    fetchImpl,
+    webBase,
+    authHeaders,
+  );
   const memories = await request(
     fetchImpl,
     `${base}/v3/memories?limit=25&offset=0`,
@@ -534,6 +618,9 @@ export async function runSmoke({
     webProxyConversations: webProxyConversations.status,
     webProxyEnabledApps: webProxyEnabledApps.status,
     webProxyMemories: webProxyMemories.status,
+    workersAiChatHistoryPreflight: workersAiChat.chatHistoryPreflightStatus,
+    webProxyWorkersAiChat: workersAiChat.chatStatus,
+    workersAiChatCleanup: workersAiChat.chatCleanupStatus,
     memories: memories.status,
     folders: folders.status,
     conversationCount: conversationCount.status,

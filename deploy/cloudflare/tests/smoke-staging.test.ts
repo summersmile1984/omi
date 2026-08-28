@@ -7,6 +7,21 @@ import {
   runSmoke,
 } from "../scripts/smoke-staging.mjs";
 
+function workersAiChatResponse(text = "Cloudflare staging is ready") {
+  const message = {
+    id: "cf-smoke-ai-message",
+    text,
+    sender: "ai",
+    created_at: "2026-08-28T00:00:00+00:00",
+    type: "text",
+  };
+  const done = Buffer.from(JSON.stringify(message), "utf8").toString("base64");
+  return new Response(`data: ${text}\n\ndone: ${done}\n\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream; charset=utf-8" },
+  });
+}
+
 describe("staging smoke helpers", () => {
   it("normalizes a valid edge URL and rejects unsupported protocols", () => {
     expect(resolveEdgeUrl("https://edge.example.test/")).toBe(
@@ -41,7 +56,7 @@ describe("staging smoke helpers", () => {
     ).not.toThrow();
   });
 
-  it("checks public, auth, and billable-inference-free boundaries", async () => {
+  it("checks public, auth, Web proxy, and Workers AI boundaries", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
@@ -54,6 +69,21 @@ describe("staging smoke helpers", () => {
       }
       if (url.endsWith("/v1/conversations/search")) {
         return new Response(null, { status: 200 });
+      }
+      if (
+        url.endsWith("/api/proxy/v2/messages") &&
+        init?.method === "POST"
+      ) {
+        return workersAiChatResponse();
+      }
+      if (
+        url.endsWith("/api/proxy/v2/messages") &&
+        init?.method === "DELETE"
+      ) {
+        return Response.json({ status: "ok" });
+      }
+      if (url.includes("/api/proxy/v2/messages?limit=1")) {
+        return Response.json([{ id: "cf-initial-chat" }]);
       }
       if (url.includes("/v1/apps/enabled")) {
         return new Response(null, { status: 200 });
@@ -187,6 +217,9 @@ describe("staging smoke helpers", () => {
       webProxyConversations: 200,
       webProxyEnabledApps: 200,
       webProxyMemories: 200,
+      workersAiChatHistoryPreflight: 200,
+      webProxyWorkersAiChat: 200,
+      workersAiChatCleanup: 200,
       memories: 200,
       folders: 200,
       conversationCount: 200,
@@ -218,7 +251,7 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(45);
+    expect(calls).toHaveLength(48);
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
@@ -231,6 +264,17 @@ describe("staging smoke helpers", () => {
       calls.find((call) => call.url.endsWith("/v1/stt/transcribe-workers-ai"))
         ?.init?.method,
     ).toBe("POST");
+    expect(
+      calls.find((call) => call.url.endsWith("/api/proxy/v2/messages"))?.init
+        ?.method,
+    ).toBe("POST");
+    expect(
+      calls
+        .slice()
+        .reverse()
+        .find((call) => call.url.endsWith("/api/proxy/v2/messages"))
+        ?.init?.method,
+    ).toBe("DELETE");
   });
 
   it("fails when staging authentication is not bound to the Cloudflare data plane", async () => {
@@ -332,6 +376,21 @@ describe("staging smoke helpers", () => {
           migration: { destination_backend_bound: true },
         });
       }
+      if (
+        url.endsWith("/api/proxy/v2/messages") &&
+        init?.method === "POST"
+      ) {
+        return workersAiChatResponse();
+      }
+      if (
+        url.endsWith("/api/proxy/v2/messages") &&
+        init?.method === "DELETE"
+      ) {
+        return Response.json({ status: "ok" });
+      }
+      if (url.includes("/api/proxy/v2/messages?limit=1")) {
+        return Response.json([{ id: "cf-initial-chat" }]);
+      }
       if (url.includes("/v2/apps/search"))
         return new Response(null, { status: 200 });
       if (url.includes("/v1/apps/enabled"))
@@ -402,5 +461,112 @@ describe("staging smoke helpers", () => {
         fetchImpl,
       }),
     ).resolves.toMatchObject({ nativeTts: 200, nativeTtsBytes: 2 });
+  });
+
+  it("cleans up chat state when the completion frame is invalid", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url.endsWith("/v1/cf/probe")) {
+        return new Response(null, { status: init?.headers ? 200 : 401 });
+      }
+      if (url.includes("/v1/announcements/pending")) {
+        return new Response(null, { status: 401 });
+      }
+      if (url.endsWith("/v1/announcements/all")) {
+        return new Response(null, { status: 403 });
+      }
+      if (url.endsWith("/v1/stt/transcribe-async")) {
+        return new Response(null, { status: 401 });
+      }
+      if (url.endsWith("/v1/account/cutover/control")) {
+        return Response.json({
+          state: "new",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        });
+      }
+      if (
+        url.endsWith("/api/proxy/v2/messages") &&
+        init?.method === "POST"
+      ) {
+        return new Response("data: partial\n\ndone: invalid\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      if (
+        url.endsWith("/api/proxy/v2/messages") &&
+        init?.method === "DELETE"
+      ) {
+        return Response.json({ status: "ok" });
+      }
+      if (url.includes("/api/proxy/v2/messages?limit=1")) {
+        return Response.json([{ id: "cf-initial-chat" }]);
+      }
+      return new Response(null, { status: 200 });
+    };
+
+    await expect(
+      runSmoke({
+        edgeUrl: "https://edge.example.test",
+        webUrl: "https://web.example.test",
+        token: "token",
+        fetchImpl,
+      }),
+    ).rejects.toThrow("invalid completion frame");
+    expect(
+      calls
+        .slice()
+        .reverse()
+        .find((call) => call.url.endsWith("/api/proxy/v2/messages"))
+        ?.init?.method,
+    ).toBe("DELETE");
+  });
+
+  it("refuses to overwrite an account with existing chat history", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url.endsWith("/v1/cf/probe")) {
+        return new Response(null, { status: init?.headers ? 200 : 401 });
+      }
+      if (url.includes("/v1/announcements/pending")) {
+        return new Response(null, { status: 401 });
+      }
+      if (url.endsWith("/v1/announcements/all")) {
+        return new Response(null, { status: 403 });
+      }
+      if (url.endsWith("/v1/stt/transcribe-async")) {
+        return new Response(null, { status: 401 });
+      }
+      if (url.endsWith("/v1/account/cutover/control")) {
+        return Response.json({
+          state: "new",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        });
+      }
+      if (url.includes("/api/proxy/v2/messages?limit=1")) {
+        return Response.json([{ id: "existing-message", sender: "human" }]);
+      }
+      return new Response(null, { status: 200 });
+    };
+
+    await expect(
+      runSmoke({
+        edgeUrl: "https://edge.example.test",
+        webUrl: "https://web.example.test",
+        token: "token",
+        fetchImpl,
+      }),
+    ).rejects.toThrow("dedicated account with empty chat history");
+    expect(
+      calls.some(
+        (call) =>
+          call.url.endsWith("/api/proxy/v2/messages") &&
+          ["POST", "DELETE"].includes(call.init?.method || ""),
+      ),
+    ).toBe(false);
   });
 });

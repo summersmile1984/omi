@@ -419,7 +419,7 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-ai-api, rate-limit-do]
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
     rate_limit_policy: chat:send_message
     protocol: http
     idempotency: optional

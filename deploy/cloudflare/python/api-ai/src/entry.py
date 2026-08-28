@@ -19,10 +19,12 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
 
 from internal_auth import decode_context, verify_request_context
 from auto_model_routes import router as auto_model_router
+from chat_generation_routes import chat_messages, router as chat_generation_router
 from realtime_routes import router as realtime_router
 
 app = FastAPI(title="Omi Cloudflare AI API", version="0.1.0")
 app.include_router(auto_model_router)
+app.include_router(chat_generation_router)
 app.include_router(realtime_router)
 
 MAX_TRANSCRIPTION_BODY_BYTES = 25_000_000
@@ -367,28 +369,6 @@ async def ai_proxy(request: Request, path: str):
 
     content_type = response.headers.get("content-type", "application/json")
     return Response(content=response_body, status_code=int(response.status), media_type=content_type)
-
-
-@app.post("/v2/messages")
-async def chat_messages(request: Request):
-    """Keep the web chat write seam explicit while its LLM owner is legacy.
-
-    History is owned by API Core/D1.  The AI Worker only claims this route when
-    a provider has been configured, and otherwise returns a typed 503 instead
-    of allowing the Edge catch-all to turn a user action into an opaque 404.
-    """
-    if not auth_context(request):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    env = request.scope["env"]
-    if not getattr(env, "AI_API_BASE_URL", None) or not getattr(env, "AI_API_KEY", None):
-        return JSONResponse(
-            {"error": "chat provider is not configured", "reason": "provider_not_configured"},
-            status_code=503,
-        )
-    return JSONResponse(
-        {"error": "chat provider streaming contract is not migrated", "reason": "provider_contract_not_migrated"},
-        status_code=503,
-    )
 
 
 def _provider_url(base_url: str, path: str) -> str:
