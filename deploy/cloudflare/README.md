@@ -4,6 +4,10 @@ This directory is the Worker-first deployment surface described in
 [`dev/cloudflare-adaptation-plan.md`](../../dev/cloudflare-adaptation-plan.md).
 It intentionally does not import the monolithic `backend/main.py`.
 
+Post-deploy acceptance, test identities, evidence capture, observation windows,
+known product gaps, and rollback criteria are defined in
+[`dev/cloudflare-staging-validation-plan.md`](../../dev/cloudflare-staging-validation-plan.md).
+
 The first staging slice contains:
 
 - `edge`: public routing, request IDs, trusted auth context and legacy fallback.
