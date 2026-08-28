@@ -276,3 +276,36 @@ def test_bulk_folder_move_is_uid_scoped_atomic_and_rejects_locked_or_missing_row
         )
     )
     assert locked.status_code == 402
+
+
+def test_folder_delete_rehomes_projected_conversations_in_one_batch():
+    secret = "folder-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+    source = asyncio.run(create_folder(FakeRequest(env, headers, {"name": "Delete source"})))
+    target = asyncio.run(create_folder(FakeRequest(env, headers, {"name": "Delete target"})))
+    env.APP_DB.connection.executemany(
+        "INSERT INTO cf_conversations (uid, id, created_at, source, status, visibility, folder_id) "
+        "VALUES (?, ?, ?, 'omi', 'completed', 'private', ?)",
+        [("folder-user", "delete-1", 20, source["id"]), ("folder-user", "delete-2", 10, source["id"])],
+    )
+    env.APP_DB.connection.commit()
+
+    deleted = asyncio.run(
+        delete_folder(
+            FakeRequest(env, headers, query={"move_to_folder_id": target["id"]}),
+            source["id"],
+        )
+    )
+    assert deleted.status_code == 204
+    assert asyncio.run(get_folder(FakeRequest(env, headers), source["id"])).status_code == 404
+    target_conversations = asyncio.run(list_folder_conversations(FakeRequest(env, headers), target["id"]))
+    assert [conversation["id"] for conversation in target_conversations] == ["delete-1", "delete-2"]
+
+    same_target = asyncio.run(
+        delete_folder(
+            FakeRequest(env, headers, query={"move_to_folder_id": target["id"]}),
+            target["id"],
+        )
+    )
+    assert same_target.status_code == 400

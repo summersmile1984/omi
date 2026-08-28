@@ -459,15 +459,43 @@ async def delete_folder(request: Request, folder_id: str):
     context = _auth_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not folder_id or len(folder_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid folder id"}, status_code=400)
     env = request.scope["env"]
     uid = str(context["uid"])
+    move_to_folder_id = request.query_params.get("move_to_folder_id")
+    if move_to_folder_id == "":
+        move_to_folder_id = None
+    if move_to_folder_id is not None and len(move_to_folder_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid target folder id"}, status_code=400)
     try:
         existing = await _first_folder(env, uid, folder_id)
         if existing is None:
             return JSONResponse({"error": "folder not found"}, status_code=404)
         if _bool(existing.get("is_system")):
             return JSONResponse({"error": "cannot delete system folder"}, status_code=400)
-        await env.APP_DB.prepare("DELETE FROM cf_folders WHERE uid = ? AND id = ?").bind(uid, folder_id).run()
+        if move_to_folder_id == folder_id:
+            return JSONResponse(
+                {"error": "cannot move conversations to the folder being deleted"},
+                status_code=400,
+            )
+        if move_to_folder_id is not None and await _first_folder(env, uid, move_to_folder_id) is None:
+            return JSONResponse({"error": "target folder not found"}, status_code=404)
+        now = int(time.time())
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare(
+                    "UPDATE cf_conversations SET folder_id = ?, updated_at = ? " "WHERE uid = ? AND folder_id = ?"
+                ).bind(move_to_folder_id, now, uid, folder_id),
+                env.APP_DB.prepare("DELETE FROM cf_folders WHERE uid = ? AND id = ?").bind(uid, folder_id),
+                env.APP_DB.prepare(
+                    "UPDATE cf_folders SET conversation_count = ("
+                    "SELECT COUNT(*) FROM cf_conversations c "
+                    "WHERE c.uid = cf_folders.uid AND c.folder_id = cf_folders.id AND c.discarded = 0"
+                    ") WHERE uid = ?"
+                ).bind(uid),
+            ]
+        )
     except Exception:
         return JSONResponse({"error": "folders unavailable"}, status_code=503)
     return Response(status_code=204)
