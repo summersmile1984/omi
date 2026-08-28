@@ -179,6 +179,15 @@ This route does not claim the legacy `/v2/sync-local-files` conversation,
 memory, or diarization pipeline, so it must not be used as a production
 replacement until those authorities have their own migration contract.
 
+Browser WebSockets cannot attach an `Authorization` header during the HTTP
+upgrade. Edge therefore signs a random, 30-second, one-use bootstrap for
+`/v4/web/listen`; the isolated Durable Object accepts only that bootstrap and
+verifies the first `{type: "auth", token: ...}` message through the Auth service
+binding before opening the ASR provider socket. Binary audio before successful
+authentication is rejected, and no two browser connections share a default DO
+session. Header-authenticated native realtime routes retain their existing
+upgrade contract.
+
 Do not point these commands at production names from this worktree. The
 staging smoke surface is:
 
@@ -205,6 +214,7 @@ POST /v1/tts/synthesize-workers-ai
 GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
 GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible AI API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
+WS   /v4/web/listen           Edge bootstrap → first-message auth → isolated DO → ASR API seam
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata/checksum
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
 GET  /v1/cf/jobs/{jobId}      Edge → Jobs Worker → uid-scoped D1 job status

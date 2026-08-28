@@ -2,6 +2,11 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { requestId, withRequestId } from "../shared/request-id";
+import {
+  createRealtimeBootstrap,
+  REALTIME_BOOTSTRAP_HEADER,
+  REALTIME_BOOTSTRAP_SIGNATURE_HEADER,
+} from "../shared/realtime-bootstrap";
 import { attachAuthContext, stripUntrustedHeaders, verifyBearer } from "./auth";
 import type { EdgeEnv, EdgeVariables } from "./env";
 
@@ -87,10 +92,15 @@ app.all("/v4/listen", async (c) => {
 
 app.all("/v4/web/listen", async (c) => {
   const id = requestId(c.req.raw);
-  const auth = await verifyBearer(c.req.raw, c.env, id);
-  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
+    return c.json({ error: "websocket upgrade required" }, 426);
+  }
+  const bootstrap = await createRealtimeBootstrap(id, c.env.INTERNAL_ASSERTION_SECRET);
+  if (!bootstrap) return c.json({ error: "realtime unavailable" }, 503);
   const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(headers, auth, c.env.INTERNAL_ASSERTION_SECRET);
+  headers.delete("authorization");
+  headers.set(REALTIME_BOOTSTRAP_HEADER, bootstrap.encoded);
+  headers.set(REALTIME_BOOTSTRAP_SIGNATURE_HEADER, bootstrap.signature);
   const response = await c.env.REALTIME.fetch(
     new Request(c.req.raw, { headers }),
   );

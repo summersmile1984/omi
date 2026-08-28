@@ -325,10 +325,29 @@ export class TranscriptionSocket {
               this.audioBuffer = [];
             }
           } else {
-            console.error('TranscriptionSocket: Auth failed');
-            this.options.onError('Authentication failed');
-            this.ws?.close(1000, 'Auth failed');
+            const providerUnavailable = data.error === 'provider_unavailable';
+            console.error(
+              providerUnavailable
+                ? 'TranscriptionSocket: Provider unavailable'
+                : 'TranscriptionSocket: Auth failed',
+            );
+            this.options.onError(
+              providerUnavailable
+                ? 'Transcription provider unavailable'
+                : 'Authentication failed',
+            );
+            if (providerUnavailable) {
+              this.reconnectAttempts = this.maxReconnectAttempts;
+            }
+            this.ws?.close(
+              providerUnavailable ? 1013 : 1000,
+              providerUnavailable ? 'Provider unavailable' : 'Auth failed',
+            );
           }
+        } else if (data.type === 'provider_unavailable') {
+          this.options.onError('Transcription provider unavailable');
+          this.reconnectAttempts = this.maxReconnectAttempts;
+          this.ws?.close(1013, 'Provider unavailable');
         } else if (
           data.type === 'conversation_session' &&
           typeof data.conversation_id === 'string' &&

@@ -908,9 +908,12 @@ describe("edge gateway", () => {
 
   it("keeps every realtime contract on the realtime binding", async () => {
     const realtimePaths: string[] = [];
+    const realtimeRequests: Request[] = [];
+    let authCalls = 0;
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       AUTH: service((request) => {
+        authCalls += 1;
         if (request.url.endsWith("/internal/verify")) {
           return Response.json({ uid: "user-1", authority: "better-auth" });
         }
@@ -923,6 +926,7 @@ describe("edge gateway", () => {
         Response.json({ error: "wrong owner" }, { status: 500 }),
       ),
       REALTIME: service((request) => {
+        realtimeRequests.push(request);
         realtimePaths.push(new URL(request.url).pathname);
         return Response.json({ status: "ok" });
       }),
@@ -930,7 +934,6 @@ describe("edge gateway", () => {
     for (const path of [
       "/v2/voice-message/transcribe-stream",
       "/v4/listen",
-      "/v4/web/listen",
       "/v1/omni/relay",
     ]) {
       const response = await edge.fetch(
@@ -941,12 +944,40 @@ describe("edge gateway", () => {
       );
       expect(response.status).toBe(200);
     }
+    const webResponse = await edge.fetch(
+      new Request("https://edge.test/v4/web/listen", {
+        headers: { upgrade: "websocket" },
+      }),
+      env,
+    );
+    expect(webResponse.status).toBe(200);
     expect(realtimePaths).toEqual([
       "/v2/voice-message/transcribe-stream",
       "/v4/listen",
-      "/v4/web/listen",
       "/v1/omni/relay",
+      "/v4/web/listen",
     ]);
+    expect(authCalls).toBe(3);
+    const webRequest = realtimeRequests.at(-1);
+    expect(webRequest?.headers.get("authorization")).toBeNull();
+    expect(webRequest?.headers.get("x-omi-realtime-bootstrap")).toBeTruthy();
+    expect(webRequest?.headers.get("x-omi-realtime-bootstrap-signature")).toBeTruthy();
+  });
+
+  it("requires a websocket upgrade before issuing a web realtime bootstrap", async () => {
+    let realtimeCalls = 0;
+    const response = await edge.fetch(
+      new Request("https://edge.test/v4/web/listen"),
+      {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        REALTIME: service(() => {
+          realtimeCalls += 1;
+          return Response.json({ status: "unexpected" });
+        }),
+      } as never,
+    );
+    expect(response.status).toBe(426);
+    expect(realtimeCalls).toBe(0);
   });
 
   it("does not send an unmigrated authenticated route to the partial API worker", async () => {

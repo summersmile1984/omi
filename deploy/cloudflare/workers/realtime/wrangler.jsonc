@@ -5,12 +5,11 @@
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "services": [{ "binding": "AUTH", "service": "omi-cf-auth-staging" }],
   "durable_objects": {
     "bindings": [
-      { "name": "REALTIME_SESSIONS", "class_name": "RealtimeSession" }
-    ]
+      { "name": "REALTIME_SESSIONS", "class_name": "RealtimeSession" },
+    ],
   },
-  "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["RealtimeSession"] }
-  ]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RealtimeSession"] }],
 }
