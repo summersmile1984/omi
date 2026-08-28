@@ -39,6 +39,21 @@ class FakeRequest:
         return self._body
 
 
+class FakeD1:
+    def __init__(self):
+        self.values = []
+
+    def prepare(self, _sql):
+        return self
+
+    def bind(self, *values):
+        self.values.append(values)
+        return self
+
+    async def run(self):
+        return None
+
+
 def signed_headers(secret: str, *, content_type: str) -> dict[str, str]:
     raw = json.dumps({"uid": "voice-user"}, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -92,8 +107,16 @@ def test_multipart_voice_message_uses_workers_ai_and_preserves_response_contract
     secret = "voice-secret"
     ai = FakeAi(
         [
-            {"text": "first", "transcription_info": {"language": "en"}},
-            {"text": "second", "transcription_info": {"language": "en"}},
+            {
+                "text": "first",
+                "segments": [{"start": 0, "end": 0.75, "text": "first"}],
+                "transcription_info": {"language": "en"},
+            },
+            {
+                "text": "second",
+                "segments": [{"start": 0.25, "end": 1, "text": "second"}],
+                "transcription_info": {"language": "en"},
+            },
         ]
     )
     body, content_type = multipart(
@@ -103,8 +126,11 @@ def test_multipart_voice_message_uses_workers_ai_and_preserves_response_contract
             ("files", b"\x1a\x45\xdf\xa3webm", "second.webm", "audio/webm"),
         ]
     )
+    database = FakeD1()
+    worker_env = env(secret, ai)
+    worker_env.APP_DB = database
     response = asyncio.run(
-        transcribe_voice_message(FakeRequest(env(secret, ai), signed_headers(secret, content_type=content_type), body))
+        transcribe_voice_message(FakeRequest(worker_env, signed_headers(secret, content_type=content_type), body))
     )
 
     assert response == {
@@ -122,6 +148,8 @@ def test_multipart_voice_message_uses_workers_ai_and_preserves_response_contract
         "language": "en",
     }
     assert base64.b64decode(ai.calls[1][1]["audio"]) == b"\x1a\x45\xdf\xa3webm"
+    assert database.values[0][0:2] == ("voice-user", "sync_fresh")
+    assert database.values[0][4] == 1_500
 
 
 def test_octet_stream_wraps_linear16_pcm_in_wav_and_omits_auto_language():

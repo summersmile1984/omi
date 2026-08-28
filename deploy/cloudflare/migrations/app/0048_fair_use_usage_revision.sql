@@ -1,0 +1,2 @@
+ALTER TABLE cf_fair_use_usage_sources
+  ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK (revision BETWEEN 1 AND 2147483647);

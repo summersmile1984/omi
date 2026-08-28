@@ -41,6 +41,23 @@ class FakeRequest:
         return self.json_body
 
 
+class FakeD1:
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.values = []
+
+    def prepare(self, _sql):
+        return self
+
+    def bind(self, *values):
+        self.values.append(values)
+        return self
+
+    async def run(self):
+        if self.fail:
+            raise RuntimeError("simulated D1 failure")
+
+
 class FakeRateLimitStub:
     def __init__(self, owner):
         self.owner = owner
@@ -83,7 +100,7 @@ def test_health_checks_the_cross_worker_durable_object_binding():
     limiter = FakeRateLimits()
     response = asyncio.run(entry.health(FakeRequest(SimpleNamespace(RATE_LIMITS=limiter), {})))
 
-    assert response == {"status": "ok", "service": "api-ai", "version": "cf-03"}
+    assert response == {"status": "ok", "service": "api-ai", "version": "cf-04"}
     assert limiter.health_calls == ["health:api-ai"]
 
 
@@ -130,11 +147,13 @@ def test_transcribe_fails_closed_when_provider_is_missing():
 def test_transcribe_uses_worker_fetch_for_provider(monkeypatch):
     secret = "test-secret"
     encoded, signature = signed_context(secret)
+    database = FakeD1()
     request = FakeRequest(
         SimpleNamespace(
             INTERNAL_ASSERTION_SECRET=secret,
             ASR_API_BASE_URL="https://asr.example.test",
             ASR_API_KEY="key",
+            APP_DB=database,
         ),
         {
             "x-omi-auth-context": encoded,
@@ -149,7 +168,7 @@ def test_transcribe_uses_worker_fetch_for_provider(monkeypatch):
         headers = {"content-type": "application/json"}
 
         async def json(self):
-            return {"text": "hello"}
+            return {"text": "hello", "segments": [{"start": 0.25, "end": 1.5, "text": "hello"}]}
 
     calls = {}
 
@@ -162,9 +181,14 @@ def test_transcribe_uses_worker_fetch_for_provider(monkeypatch):
     response = asyncio.run(transcribe(request))
 
     assert response.status_code == 200
-    assert json.loads(response.body) == {"text": "hello"}
+    assert json.loads(response.body) == {
+        "text": "hello",
+        "segments": [{"start": 0.25, "end": 1.5, "text": "hello"}],
+    }
     assert calls["url"] == "https://asr.example.test/v2/transcribe"
     assert calls["options"]["body"] == b"audio"
+    assert database.values[0][0:2] == ("user-1", "sync_fresh")
+    assert database.values[0][4] == 1_250
 
 
 def test_workers_ai_transcribe_uses_native_binding_and_normalizes_result():
@@ -176,10 +200,21 @@ def test_workers_ai_transcribe_uses_native_binding_and_normalizes_result():
         async def run(self, model, payload):
             calls["model"] = model
             calls["payload"] = payload
-            return {"text": "hello", "word_count": 1, "vtt": "WEBVTT"}
+            return {
+                "text": "hello",
+                "segments": [{"start": 0, "end": 1, "text": "hello"}],
+                "word_count": 1,
+                "vtt": "WEBVTT",
+            }
 
+    database = FakeD1()
     request = FakeRequest(
-        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), WORKERS_AI_ASR_MODEL="@cf/openai/whisper"),
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            APP_DB=database,
+            WORKERS_AI_ASR_MODEL="@cf/openai/whisper",
+        ),
         {
             "x-omi-auth-context": encoded,
             "x-omi-internal-signature": signature,
@@ -192,7 +227,7 @@ def test_workers_ai_transcribe_uses_native_binding_and_normalizes_result():
 
     assert response == {
         "text": "hello",
-        "segments": [],
+        "segments": [{"start": 0, "end": 1, "text": "hello"}],
         "detected_language": None,
         "provider": "workers-ai",
         "model": "@cf/openai/whisper",
@@ -203,6 +238,35 @@ def test_workers_ai_transcribe_uses_native_binding_and_normalizes_result():
         "model": "@cf/openai/whisper",
         "payload": {"audio": base64.b64encode(b"audio").decode("ascii")},
     }
+    assert database.values[0][0:2] == ("user-1", "sync_fresh")
+    assert database.values[0][4] == 1_000
+
+
+def test_workers_ai_transcribe_fails_closed_when_usage_meter_is_unavailable():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class FakeAI:
+        async def run(self, _model, _payload):
+            return {"text": "hello", "segments": [{"start": 0, "end": 1, "text": "hello"}]}
+
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            APP_DB=FakeD1(fail=True),
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "audio/wav",
+        },
+    )
+
+    response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "transcription usage meter unavailable"}
 
 
 def test_workers_ai_transcribe_rejects_multipart_contract():

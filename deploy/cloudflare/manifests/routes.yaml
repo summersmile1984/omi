@@ -492,7 +492,7 @@ routes:
     runtime: python-worker
     target_runtime: external-api
     auth_authority: better-auth
-    dependencies: [external-asr-api, rate-limit-do]
+    dependencies: [d1-app, external-asr-api, rate-limit-do]
     rate_limit_policy: stt:transcribe
     protocol: http
     idempotency: optional
@@ -504,7 +504,7 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [workers-ai-binding, rate-limit-do]
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
     rate_limit_policy: stt:transcribe
     protocol: http
     idempotency: optional
@@ -572,7 +572,7 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [workers-ai-binding, rate-limit-do]
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
     rate_limit_policy: stt:transcribe
     protocol: http
     idempotency: optional
@@ -1702,7 +1702,7 @@ routes:
     runtime: realtime-do
     target_runtime: realtime-do
     auth_authority: better-auth
-    dependencies: [durable-object, external-asr-api]
+    dependencies: [durable-object, d1-app, external-asr-api]
     protocol: websocket
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1712,7 +1712,7 @@ routes:
     runtime: realtime-do
     target_runtime: realtime-do
     auth_authority: better-auth
-    dependencies: [durable-object, external-asr-api]
+    dependencies: [durable-object, d1-app, external-asr-api]
     protocol: websocket
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1722,7 +1722,7 @@ routes:
     runtime: realtime-do
     target_runtime: realtime-do
     auth_authority: better-auth
-    dependencies: [durable-object, external-asr-api]
+    dependencies: [durable-object, d1-app, external-asr-api]
     protocol: websocket
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -1732,7 +1732,7 @@ routes:
     runtime: realtime-do
     target_runtime: realtime-do
     auth_authority: better-auth
-    dependencies: [durable-object, external-asr-api]
+    dependencies: [durable-object, d1-app, external-asr-api]
     protocol: websocket
     rollout: staging-only
     rollback: edge-route-to-legacy

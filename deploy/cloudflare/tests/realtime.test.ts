@@ -94,6 +94,51 @@ function installFakeWebSockets() {
   globalThis.Response = TestResponse as unknown as typeof Response;
 }
 
+function meterDatabase(failures = 0) {
+  const writes: unknown[][] = [];
+  return {
+    writes,
+    prepare: (_sql: string) => ({
+      bind: (...values: unknown[]) => ({
+        run: async () => {
+          if (failures > 0) {
+            failures -= 1;
+            throw new Error("simulated D1 meter failure");
+          }
+          writes.push(values);
+          return { success: true };
+        },
+      }),
+    }),
+  };
+}
+
+function durableState(work: Promise<unknown>[]) {
+  const values = new Map<string, unknown>();
+  const alarms: number[] = [];
+  return {
+    values,
+    alarms,
+    state: {
+      waitUntil: (promise: Promise<unknown>) => {
+        work.push(promise);
+      },
+      storage: {
+        get: async (key: string) => values.get(key),
+        list: async ({ prefix }: { prefix: string }) =>
+          new Map([...values].filter(([key]) => key.startsWith(prefix))),
+        put: async (key: string, value: unknown) => {
+          values.set(key, value);
+        },
+        delete: async (key: string) => values.delete(key),
+        setAlarm: async (timestamp: number) => {
+          alarms.push(timestamp);
+        },
+      },
+    },
+  };
+}
+
 describe("realtime gateway", () => {
   const originalResponse = globalThis.Response;
   const runtime = globalThis as unknown as {
@@ -312,5 +357,106 @@ describe("realtime gateway", () => {
         error: "invalid_auth_message",
       }),
     ]);
+  });
+
+  it("forwards provider segments and writes their exact interval union", async () => {
+    installFakeWebSockets();
+    const upstream = new FakeSocket();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ webSocket: upstream }) as unknown as Response),
+    );
+    const work: Promise<unknown>[] = [];
+    const database = meterDatabase();
+    const { state } = durableState(work);
+    const signed = await realtimeContext();
+    const session = new RealtimeSession(
+      state as unknown as DurableObjectState,
+      {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        ASR_WS_URL: "wss://asr.example/listen",
+        APP_DB: database,
+      } as never,
+    );
+    await session.fetch(
+      new Request("https://realtime.test/v4/listen", {
+        headers: {
+          upgrade: "websocket",
+          "x-omi-auth-context": signed?.encoded || "",
+          "x-omi-internal-signature": signed?.signature || "",
+        },
+      }),
+    );
+    await Promise.all(work);
+    const pair = FakeWebSocketPair.last;
+    const providerMessage = JSON.stringify({
+      segments: [
+        { start: 0, end: 1, text: "hello" },
+        { start: 0.5, end: 1.5, text: "world" },
+      ],
+    });
+
+    await upstream.dispatch("message", { data: providerMessage });
+    await Promise.all(work);
+
+    expect(pair?.server.sent).toContain(providerMessage);
+    expect(database.writes).toHaveLength(1);
+    expect(database.writes[0]).toMatchObject({
+      0: "user-1",
+      1: "realtime",
+      4: 1_500,
+      7: 1,
+    });
+    expect(String(database.writes[0][2])).toMatch(/^realtime:/);
+  });
+
+  it("retries the latest realtime meter snapshot from durable storage", async () => {
+    installFakeWebSockets();
+    const upstream = new FakeSocket();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ webSocket: upstream }) as unknown as Response),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const work: Promise<unknown>[] = [];
+    const database = meterDatabase(1);
+    const { state, values, alarms } = durableState(work);
+    const signed = await realtimeContext();
+    const session = new RealtimeSession(
+      state as unknown as DurableObjectState,
+      {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        ASR_WS_URL: "wss://asr.example/listen",
+        APP_DB: database,
+      } as never,
+    );
+    await session.fetch(
+      new Request("https://realtime.test/v4/listen", {
+        headers: {
+          upgrade: "websocket",
+          "x-omi-auth-context": signed?.encoded || "",
+          "x-omi-internal-signature": signed?.signature || "",
+        },
+      }),
+    );
+    await Promise.all(work);
+
+    await upstream.dispatch("message", {
+      data: JSON.stringify({
+        segments: [{ start: 1, end: 2.25, text: "retry me" }],
+      }),
+    });
+    await Promise.all(work);
+    expect([...values.values()][0]).toMatchObject({ speechMs: 1_250 });
+    expect(alarms).toHaveLength(1);
+
+    await session.alarm();
+
+    expect(database.writes).toHaveLength(1);
+    expect(database.writes[0][4]).toBe(1_250);
+    expect(values.size).toBe(0);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('"outcome":"recovered"'),
+    );
   });
 });

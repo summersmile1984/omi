@@ -2,8 +2,8 @@ export type FallbackOutcome = "recovered" | "degraded" | "exhausted";
 
 export type WorkerFallbackEvent = {
   component: "rate_limit" | "other";
-  from: "durable_object" | "none";
-  to: "unlimited" | "none";
+  from: "durable_object" | "d1" | "none";
+  to: "durable_object_retry" | "unlimited" | "none";
   reason: "dependency_unavailable" | "invalid_response" | "other";
   outcome: FallbackOutcome;
   requestId?: string;

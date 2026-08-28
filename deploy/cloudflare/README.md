@@ -278,6 +278,10 @@ send a raw audio body. It accepts at most 5 MB, stages the bytes under an
 uid-scoped temporary R2 key, records an idempotent D1 job, and lets the Queue
 consumer run native Workers AI Whisper. The object is deleted after a terminal
 result; the poll response contains only the bounded normalized transcription.
+Before completion, the consumer unions the result segment/word intervals and
+upserts one `sync_fresh` Fair Use source keyed by job ID, so Queue redelivery
+cannot double-count speech. A D1 meter failure keeps the job retryable and does
+not publish an unmetered completed result.
 This route does not claim the legacy `/v2/sync-local-files` conversation,
 memory, or diarization pipeline, so it must not be used as a production
 replacement until those authorities have their own migration contract.
@@ -289,7 +293,11 @@ verifies the first `{type: "auth", token: ...}` message through the Auth service
 binding before opening the ASR provider socket. Binary audio before successful
 authentication is rejected, and no two browser connections share a default DO
 session. Header-authenticated native realtime routes retain their existing
-upgrade contract.
+upgrade contract. Realtime provider messages are forwarded unchanged, while
+final segment/word intervals are also unioned into one revisioned D1 `realtime`
+source per provider connection. D1 failures store the latest snapshot in
+Durable Object storage and retry it from an alarm; connection or audio duration
+is never substituted for detected speech.
 
 Do not point these commands at production names from this worktree. The
 staging smoke surface is:
@@ -700,11 +708,16 @@ No staging price IDs are synthesized or copied from production.
 cannot change live status. Limits use the D1 subscription snapshot so
 unlimited-transcription plans receive their raised thresholds. New isolated
 accounts have no imported state or speech sources and therefore receive the
-legacy `stage=none`, zero-usage response instead of a route 404. Exact speech
-meter ingestion, classifier/escalation, notification, restriction enforcement,
-admin actions, public case lookup, and production state import remain
-legacy-owned. A successful staging read is not evidence that those enforcement
-authorities have moved.
+legacy `stage=none`, zero-usage response instead of a route 404. Migration
+`0048_fair_use_usage_revision.sql` makes source snapshots monotonic. Staging
+Workers now ingest exact interval-union speech for Workers AI raw/voice-message
+requests, hosted-ASR requests that return timed segments or words, Queue jobs,
+and Realtime provider connections. Generic Workers AI and unknown hosted ASR
+sources deliberately record `dg_ms=0`; provider classification, sync-local
+conversation finalization/backfill, classifier/escalation, notification,
+restriction enforcement, admin actions, public case lookup, and production
+state import remain legacy-owned. A successful staging read is not evidence
+that those enforcement authorities have moved.
 
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging
@@ -874,7 +887,9 @@ It does not claim the legacy multipart/diarization contract; clients must send
 `/v1/stt/transcribe` route remains the hosted provider seam for diarization and
 the legacy segment response. The Python boundary converts the bounded request
 body to the base64 form expected by the Workers AI Whisper model, so clients do
-not need to know the binding's FFI representation.
+not need to know the binding's FFI representation. Successful timed results
+fail closed unless their exact segment/word interval union is committed to one
+idempotent `sync_fresh` D1 source; silence produces no usage row.
 
 `/v2/voice-message/transcribe` is the staging Worker owner for the existing
 Web/Flutter voice-input contract. It accepts bounded multipart `files` using
@@ -886,7 +901,9 @@ combined in request order, and the response preserves `transcript`,
 `stt_provider`, `stt_model`, `outcome`, and optional detected `language`. Empty
 model text is a successful `expected_silence` result. Invalid containers fail
 before inference, and provider/configuration failures use the existing bounded
-transcription error shape without exposing upstream text.
+transcription error shape without exposing upstream text. Timed results use the
+same exact D1 speech meter; multipart parts are summed after interval unioning
+within each provider result.
 
 This route intentionally has no local codec/model process or ffmpeg dependency.
 It is not yet production-parity for user-saved language resolution, context

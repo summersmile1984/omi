@@ -18,6 +18,7 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
     worker_fetch = None  # type: ignore[assignment]
 
 from internal_auth import decode_context, verify_request_context
+from fair_use_meter import content_source_id, record_fair_use_usage, speech_ms_from_transcription
 from auto_model_routes import router as auto_model_router
 from chat_generation_routes import chat_messages, router as chat_generation_router
 from realtime_routes import router as realtime_router
@@ -212,7 +213,7 @@ async def health(request: Request) -> Any:
         result = None
     if result is None or result.get("status") != "ok":
         return JSONResponse({"status": "degraded", "dependency": "rate-limit"}, status_code=503)
-    return {"status": "ok", "service": "api-ai", "version": "cf-03"}
+    return {"status": "ok", "service": "api-ai", "version": "cf-04"}
 
 
 @app.post("/v1/embeddings")
@@ -525,7 +526,8 @@ async def transcribe_workers_ai(request: Request):
     diarization and the legacy segment shape. This route is a small, bounded
     Workers AI seam for clients that can send the provider's binary input.
     """
-    if not auth_context(request):
+    context = auth_context(request)
+    if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     content_type = request.headers.get("content-type", "application/octet-stream").lower()
     if not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
@@ -570,6 +572,21 @@ async def transcribe_workers_ai(request: Request):
     for field in ("word_count", "words", "vtt"):
         if field in payload:
             response[field] = payload[field]
+    try:
+        await record_fair_use_usage(
+            env,
+            uid=str(context["uid"]),
+            source_kind="sync_fresh",
+            source_id=content_source_id(
+                "workers-ai",
+                body,
+                request.headers.get("idempotency-key")
+                or (str(context["requestId"]) if isinstance(context.get("requestId"), str) else None),
+            ),
+            speech_ms=speech_ms_from_transcription(payload),
+        )
+    except Exception:
+        return JSONResponse({"error": "transcription usage meter unavailable"}, status_code=503)
     return response
 
 
@@ -581,7 +598,8 @@ async def transcribe(request: Request):
     endpoint receives the original multipart body, so clients keep the existing
     `file`/`diarize` contract while the execution moves out of the Worker.
     """
-    if not auth_context(request):
+    context = auth_context(request)
+    if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     env = request.scope["env"]
     base_url = getattr(env, "ASR_API_BASE_URL", None)
@@ -613,9 +631,27 @@ async def transcribe(request: Request):
     content_type = response.headers.get("content-type", "application/json")
     if content_type.startswith("application/json"):
         try:
-            return JSONResponse(await response.json(), status_code=int(response.status))
+            response_status = int(response.status)
+            payload = await response.json()
         except ValueError:
             return JSONResponse({"error": "transcription upstream returned invalid JSON"}, status_code=502)
+        if response_status < 400:
+            try:
+                await record_fair_use_usage(
+                    env,
+                    uid=str(context["uid"]),
+                    source_kind="sync_fresh",
+                    source_id=content_source_id(
+                        "hosted-asr",
+                        body,
+                        request.headers.get("idempotency-key")
+                        or (str(context["requestId"]) if isinstance(context.get("requestId"), str) else None),
+                    ),
+                    speech_ms=speech_ms_from_transcription(payload),
+                )
+            except Exception:
+                return JSONResponse({"error": "transcription usage meter unavailable"}, status_code=503)
+        return JSONResponse(payload, status_code=response_status)
     return JSONResponse({"error": "transcription upstream returned unsupported content"}, status_code=502)
 
 

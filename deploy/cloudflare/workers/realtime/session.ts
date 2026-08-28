@@ -1,12 +1,26 @@
 import { decodeAuthContext, type AuthContext } from "../shared/auth-context";
+import {
+  recordFairUseUsage,
+  speechMsFromTranscription,
+  type FairUseUsage,
+} from "../shared/fair-use-meter";
+import { recordFallback } from "../shared/fallback";
 import { verifyRealtimeTicket } from "../shared/realtime-ticket";
 import type { RealtimeEnv } from "./env";
 
 const AUTH_TIMEOUT_MS = 15_000;
 const MAX_AUTH_MESSAGE_BYTES = 16_384;
 const MAX_PENDING_AUDIO_BYTES = 1_000_000;
+const MAX_METERED_SEGMENTS = 20_000;
+const METER_RETRY_MS = 10_000;
+const PENDING_METER_PREFIX = "fair-use-pending:";
 
 type PendingMessage = string | ArrayBuffer;
+type MeterSegment = { start: number; end: number; text: string };
+
+function pendingMeterKey(sourceId: string): string {
+  return `${PENDING_METER_PREFIX}${sourceId}`;
+}
 
 type FirstMessageAuth = {
   type: "auth";
@@ -49,6 +63,58 @@ function parseFirstMessageAuth(data: string): FirstMessageAuth | null {
   }
 }
 
+function providerSegments(data: unknown): MeterSegment[] {
+  if (typeof data !== "string") return [];
+  let payload: unknown;
+  try {
+    payload = JSON.parse(data);
+  } catch {
+    return [];
+  }
+  if (!payload || typeof payload !== "object") return [];
+  const object = payload as Record<string, unknown>;
+  if (object.is_final === false || object.isFinal === false) return [];
+  let candidates: unknown[] = [];
+  if (Array.isArray(payload)) candidates = payload;
+  else if (Array.isArray(object.segments)) candidates = object.segments;
+  else if (Array.isArray(object.words)) candidates = object.words;
+  else if (object.segment && typeof object.segment === "object") {
+    candidates = [object.segment];
+  } else if (
+    object.channel &&
+    typeof object.channel === "object" &&
+    Array.isArray((object.channel as Record<string, unknown>).alternatives)
+  ) {
+    const alternative = (
+      (object.channel as Record<string, unknown>).alternatives as unknown[]
+    )[0];
+    if (alternative && typeof alternative === "object") {
+      const words = (alternative as Record<string, unknown>).words;
+      if (Array.isArray(words)) candidates = words;
+    }
+  } else if ("start" in object && "end" in object) candidates = [object];
+
+  return candidates.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const segment = candidate as Record<string, unknown>;
+    const text =
+      typeof segment.text === "string"
+        ? segment.text
+        : typeof segment.word === "string"
+          ? segment.word
+          : "";
+    return typeof segment.start === "number" &&
+      typeof segment.end === "number" &&
+      Number.isFinite(segment.start) &&
+      Number.isFinite(segment.end) &&
+      segment.start >= 0 &&
+      segment.end > segment.start &&
+      text.trim()
+      ? [{ start: segment.start, end: segment.end, text }]
+      : [];
+  });
+}
+
 export class RealtimeSession {
   private state: DurableObjectState;
   private env: RealtimeEnv;
@@ -62,6 +128,11 @@ export class RealtimeSession {
   private pending: PendingMessage[] = [];
   private pendingBytes = 0;
   private webBootstrapClaimed = false;
+  private meterSegments = new Map<string, MeterSegment>();
+  private meterSourceId?: string;
+  private meterOccurredAt = 0;
+  private meterRevision = 0;
+  private meterWriteChain: Promise<void> = Promise.resolve();
 
   constructor(state: DurableObjectState, env: RealtimeEnv) {
     this.state = state;
@@ -252,6 +323,7 @@ export class RealtimeSession {
       upstream.addEventListener("message", (event) => {
         if (this.upstream === upstream && this.client) {
           this.client.send(event.data);
+          this.captureProviderSpeech(event.data);
         }
       });
       upstream.addEventListener("close", () => {
@@ -264,9 +336,91 @@ export class RealtimeSession {
           this.client.close(1011, "provider error");
         }
       });
+      this.meterSegments.clear();
+      this.meterSourceId = `realtime:${crypto.randomUUID()}`;
+      this.meterOccurredAt = Math.floor(Date.now() / 1000);
+      this.meterRevision = 0;
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private captureProviderSpeech(data: unknown): void {
+    if (!this.authContext || !this.meterSourceId) return;
+    const segments = providerSegments(data);
+    if (!segments.length) return;
+    for (const segment of segments) {
+      const key = `${segment.start}:${segment.end}`;
+      this.meterSegments.set(key, segment);
+      if (this.meterSegments.size > MAX_METERED_SEGMENTS) {
+        this.client?.close(1013, "realtime speech meter full");
+        this.upstream?.close(1013, "realtime speech meter full");
+        return;
+      }
+    }
+    const speechMs = speechMsFromTranscription({
+      segments: [...this.meterSegments.values()],
+    });
+    if (speechMs <= 0) return;
+    const snapshot: FairUseUsage = {
+      uid: this.authContext.uid,
+      sourceKind: "realtime",
+      sourceId: this.meterSourceId,
+      occurredAt: this.meterOccurredAt,
+      speechMs,
+      revision: ++this.meterRevision,
+    };
+    this.meterWriteChain = this.meterWriteChain
+      .catch(() => undefined)
+      .then(() => this.persistRealtimeUsage(snapshot));
+    this.state.waitUntil(this.meterWriteChain);
+  }
+
+  private async persistRealtimeUsage(snapshot: FairUseUsage): Promise<void> {
+    const pendingKey = pendingMeterKey(snapshot.sourceId);
+    try {
+      await recordFairUseUsage(this.env.APP_DB, snapshot);
+      const pending = await this.state.storage.get<FairUseUsage>(pendingKey);
+      if (
+        pending?.sourceId === snapshot.sourceId &&
+        (pending.revision || 1) <= (snapshot.revision || 1)
+      ) {
+        await this.state.storage.delete(pendingKey);
+        recordFallback({
+          component: "other",
+          from: "d1",
+          to: "durable_object_retry",
+          reason: "dependency_unavailable",
+          outcome: "recovered",
+        });
+      }
+    } catch {
+      const pending = await this.state.storage.get<FairUseUsage>(pendingKey);
+      if (
+        !pending ||
+        pending.sourceId !== snapshot.sourceId ||
+        (pending.revision || 1) <= (snapshot.revision || 1)
+      ) {
+        await this.state.storage.put(pendingKey, snapshot);
+      }
+      await this.state.storage.setAlarm(Date.now() + METER_RETRY_MS);
+      recordFallback({
+        component: "other",
+        from: "d1",
+        to: "durable_object_retry",
+        reason: "dependency_unavailable",
+        outcome: "degraded",
+      });
+    }
+  }
+
+  async alarm(): Promise<void> {
+    const pending = await this.state.storage.list<FairUseUsage>({
+      prefix: PENDING_METER_PREFIX,
+    });
+    for (const snapshot of pending.values()) {
+      await this.persistRealtimeUsage(snapshot);
     }
   }
 

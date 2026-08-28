@@ -1,5 +1,9 @@
 import { Hono, type Context } from "hono";
 import { verifyRequestAuthContext } from "../shared/auth-context";
+import {
+  recordFairUseUsage,
+  speechMsFromTranscription,
+} from "../shared/fair-use-meter";
 import type { JobMessage, JobsEnv } from "./env";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
@@ -14,7 +18,7 @@ const ASSET_CLEANUP_BATCH_SIZE = 50;
 const DEFAULT_WORKERS_AI_ASR_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
 app.get("/health", (c) =>
-  c.json({ status: "ok", service: "jobs", version: "cf-08" }),
+  c.json({ status: "ok", service: "jobs", version: "cf-09" }),
 );
 
 type ExistingJob = {
@@ -455,6 +459,25 @@ async function retryTerminalFailure(
   message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
 }
 
+async function retryTranscriptionFailure(
+  message: Message<JobMessage>,
+  env: JobsEnv,
+  now: number,
+  error: string,
+): Promise<void> {
+  if (message.attempts >= MAX_TRANSCRIPTION_PROVIDER_ATTEMPTS) {
+    await markJobFailed(env, message.body.jobId, message.body.uid, error);
+    await retryTerminalFailure(message, env);
+    return;
+  }
+  await env.APP_DB.prepare(
+    "UPDATE cf_jobs SET status = 'queued', last_error = ?, updated_at = ? WHERE job_id = ? AND uid = ?",
+  )
+    .bind(error, now, message.body.jobId, message.body.uid)
+    .run();
+  message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
+}
+
 async function processTranscription(
   message: Message<JobMessage>,
   env: JobsEnv,
@@ -498,49 +521,56 @@ async function processTranscription(
   }
   const model =
     payload.model || env.WORKERS_AI_ASR_MODEL || DEFAULT_WORKERS_AI_ASR_MODEL;
+  let result: unknown;
   try {
-    const result = await env.AI.run(model, { audio: base64Encode(body) });
-    const normalized = normalizedTranscription(result, model);
-    const resultJson = normalized ? JSON.stringify(normalized) : "";
-    if (!normalized || resultJson.length > MAX_TRANSCRIPTION_RESULT_BYTES) {
-      await markJobFailed(
-        env,
-        message.body.jobId,
-        message.body.uid,
-        "workers ai returned invalid transcription",
-      );
-      await retryTerminalFailure(message, env);
-      return;
-    }
-    await env.APP_DB.prepare(
-      "UPDATE cf_jobs SET status = 'completed', result_json = ?, last_error = NULL, updated_at = ? WHERE job_id = ? AND uid = ?",
-    )
-      .bind(resultJson, now, message.body.jobId, message.body.uid)
-      .run();
-    await acknowledgeAfterCleanup(message, env);
+    result = await env.AI.run(model, { audio: base64Encode(body) });
   } catch {
-    if (message.attempts >= MAX_TRANSCRIPTION_PROVIDER_ATTEMPTS) {
-      await markJobFailed(
-        env,
-        message.body.jobId,
-        message.body.uid,
-        "workers ai transcription unavailable",
-      );
-      await retryTerminalFailure(message, env);
-      return;
-    }
-    await env.APP_DB.prepare(
-      "UPDATE cf_jobs SET status = 'queued', last_error = ?, updated_at = ? WHERE job_id = ? AND uid = ?",
-    )
-      .bind(
-        "workers ai transcription unavailable",
-        now,
-        message.body.jobId,
-        message.body.uid,
-      )
-      .run();
-    message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
+    await retryTranscriptionFailure(
+      message,
+      env,
+      now,
+      "workers ai transcription unavailable",
+    );
+    return;
   }
+  const normalized = normalizedTranscription(result, model);
+  const resultJson = normalized ? JSON.stringify(normalized) : "";
+  if (!normalized || resultJson.length > MAX_TRANSCRIPTION_RESULT_BYTES) {
+    await markJobFailed(
+      env,
+      message.body.jobId,
+      message.body.uid,
+      "workers ai returned invalid transcription",
+    );
+    await retryTerminalFailure(message, env);
+    return;
+  }
+  const speechMs = speechMsFromTranscription(normalized);
+  try {
+    if (speechMs > 0) {
+      await recordFairUseUsage(env.APP_DB, {
+        uid: message.body.uid,
+        sourceKind: "sync_fresh",
+        sourceId: `async:${message.body.jobId}`,
+        occurredAt: now,
+        speechMs,
+      });
+    }
+  } catch {
+    await retryTranscriptionFailure(
+      message,
+      env,
+      now,
+      "fair use meter unavailable",
+    );
+    return;
+  }
+  await env.APP_DB.prepare(
+    "UPDATE cf_jobs SET status = 'completed', result_json = ?, last_error = NULL, updated_at = ? WHERE job_id = ? AND uid = ?",
+  )
+    .bind(resultJson, now, message.body.jobId, message.body.uid)
+    .run();
+  await acknowledgeAfterCleanup(message, env);
 }
 
 async function processJobMessage(

@@ -18,9 +18,19 @@ type StoredJob = {
   result_json: string | null;
 };
 
+type StoredUsage = {
+  uid: string;
+  source_kind: string;
+  source_id: string;
+  speech_ms: number;
+  revision: number;
+};
+
 function fakeDatabase() {
   const stored = new Map<string, StoredJob>();
+  const usage = new Map<string, StoredUsage>();
   let hideNextIdempotencyLookup = false;
+  let usageWriteFailures = 0;
   const throwNextSelectForJob = new Set<string>();
 
   const byIdempotency = (uid: string, kind: string, key: string) =>
@@ -31,6 +41,10 @@ function fakeDatabase() {
 
   return {
     get: (jobId: string) => stored.get(jobId) || null,
+    usage: (sourceId: string) => usage.get(sourceId) || null,
+    failNextUsageWrite: () => {
+      usageWriteFailures += 1;
+    },
     hideNextIdempotencyLookup: () => {
       hideNextIdempotencyLookup = true;
     },
@@ -59,6 +73,21 @@ function fakeDatabase() {
           return row && row.uid === args[1] ? row : null;
         },
         run: async () => {
+          if (sql.includes("INSERT INTO cf_fair_use_usage_sources")) {
+            if (usageWriteFailures > 0) {
+              usageWriteFailures -= 1;
+              throw new Error("simulated fair use meter failure");
+            }
+            const sourceId = String(args[2]);
+            usage.set(sourceId, {
+              uid: String(args[0]),
+              source_kind: String(args[1]),
+              source_id: sourceId,
+              speech_ms: Number(args[4]),
+              revision: Number(args[7]),
+            });
+            return { success: true, meta: { changes: 1 } };
+          }
           if (sql.includes("INSERT INTO cf_jobs")) {
             const jobId = String(args[0]);
             const uid = String(args[1]);
@@ -438,6 +467,12 @@ describe("jobs ingress", () => {
     await jobs.queue({ messages: [delivery.message] } as never, env as never);
 
     expect(database.get(body.jobId)?.status).toBe("completed");
+    expect(database.usage(`async:${body.jobId}`)).toMatchObject({
+      uid: "user-1",
+      source_kind: "sync_fresh",
+      speech_ms: 1_000,
+      revision: 1,
+    });
     expect(delivery.acknowledged()).toBe(true);
     expect(delivery.retries).toHaveLength(0);
     expect(assets.blobs.size).toBe(0);
@@ -459,6 +494,36 @@ describe("jobs ingress", () => {
       status: "completed",
       result: { text: "hello from workers", provider: "workers-ai" },
     });
+  });
+
+  it("retries without completing when the exact speech meter is unavailable", async () => {
+    const database = fakeDatabase();
+    const { env, sent, assets } = jobsEnvironment(
+      database,
+      fakeAssets(),
+      async () => ({
+        text: "hello from workers",
+        segments: [{ start: 0, end: 1, text: "hello" }],
+      }),
+    );
+    const response = await enqueueTranscription(
+      env,
+      new Uint8Array([1, 2, 3, 4]),
+      "capture-1",
+    );
+    const body = (await response.json()) as { jobId: string };
+    database.failNextUsageWrite();
+    const delivery = queueMessage(sent[0]);
+
+    await jobs.queue({ messages: [delivery.message] } as never, env as never);
+
+    expect(database.get(body.jobId)?.status).toBe("queued");
+    expect(database.get(body.jobId)?.last_error).toBe(
+      "fair use meter unavailable",
+    );
+    expect(delivery.acknowledged()).toBe(false);
+    expect(delivery.retries).toEqual([{ delaySeconds: 10 }]);
+    expect(assets.blobs.size).toBe(1);
   });
 });
 

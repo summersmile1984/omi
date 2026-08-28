@@ -13,6 +13,7 @@ import struct
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from fair_use_meter import content_source_id, record_fair_use_usage, speech_ms_from_transcription
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -241,6 +242,7 @@ def _detected_language(payload: dict[str, object]) -> str | None:
 async def _transcribe_parts(ai: object, model: str, parts: list[AudioPart], language: str | None):
     transcripts: list[str] = []
     detected_languages: set[str] = set()
+    speech_ms = 0
     for part in parts:
         request_payload: dict[str, object] = {
             "audio": base64.b64encode(part.data).decode("ascii"),
@@ -258,18 +260,20 @@ async def _transcribe_parts(ai: object, model: str, parts: list[AudioPart], lang
         detected = _detected_language(result)
         if detected:
             detected_languages.add(detected)
+        speech_ms += speech_ms_from_transcription(result)
     detected_language = None
     if len(detected_languages) == 1:
         detected_language = next(iter(detected_languages))
     elif len(detected_languages) > 1:
         detected_language = "multi"
-    return " ".join(transcripts), detected_language
+    return " ".join(transcripts), detected_language, speech_ms
 
 
 @router.post("/v2/voice-message/transcribe")
 async def transcribe_voice_message(request: Request):
     """Transcribe the Web/Flutter upload contract with native Workers AI."""
-    if not _auth_context(request):
+    context = _auth_context(request)
+    if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     content_type = request.headers.get("content-type", "").strip()
@@ -324,7 +328,7 @@ async def transcribe_voice_message(request: Request):
         )
     model = getattr(env, "WORKERS_AI_ASR_MODEL", DEFAULT_WORKERS_AI_ASR_MODEL)
     try:
-        transcript, detected_language = await _transcribe_parts(ai, model, parts, language)
+        transcript, detected_language, speech_ms = await _transcribe_parts(ai, model, parts, language)
     except Exception:
         return _failure(
             502,
@@ -332,6 +336,28 @@ async def transcribe_voice_message(request: Request):
             outcome="upstream_error",
             retryable=True,
             message="The transcription provider could not complete the request.",
+        )
+
+    try:
+        await record_fair_use_usage(
+            env,
+            uid=str(context["uid"]),
+            source_kind="sync_fresh",
+            source_id=content_source_id(
+                "voice-message",
+                body,
+                request.headers.get("idempotency-key")
+                or (str(context["requestId"]) if isinstance(context.get("requestId"), str) else None),
+            ),
+            speech_ms=speech_ms,
+        )
+    except Exception:
+        return _failure(
+            503,
+            error="stt_meter_unavailable",
+            outcome="dependency_error",
+            retryable=True,
+            message="The transcription usage meter is temporarily unavailable.",
         )
 
     response: dict[str, object] = {
