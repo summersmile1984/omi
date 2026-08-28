@@ -15,6 +15,7 @@ from folder_routes import (  # noqa: E402
     get_folder,
     list_folder_conversations,
     list_folders,
+    bulk_move_conversations,
     move_conversation_to_folder,
     reorder_folders,
     update_folder,
@@ -66,6 +67,8 @@ class FakeStatement:
         cursor = self.connection.execute(self.sql, self.args)
         self.connection.commit()
         return {"meta": {"changes": cursor.rowcount}}
+
+
 class FakeRequest:
     def __init__(self, env, headers, body=None, query=None):
         self.scope = {"env": env}
@@ -215,3 +218,61 @@ def test_folder_conversation_projection_lists_and_moves_with_count_refresh():
         move_conversation_to_folder(FakeRequest(env, headers, body={"folder_id": "missing"}), "conv-1")
     )
     assert missing_folder.status_code == 404
+
+
+def test_bulk_folder_move_is_uid_scoped_atomic_and_rejects_locked_or_missing_rows():
+    secret = "folder-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+    folders = asyncio.run(list_folders(FakeRequest(env, headers)))
+    target = asyncio.run(create_folder(FakeRequest(env, headers, {"name": "Batch target"})))
+    source_id = folders[0]["id"]
+    env.APP_DB.connection.executemany(
+        "INSERT INTO cf_conversations (uid, id, created_at, source, status, visibility, folder_id) "
+        "VALUES (?, ?, ?, 'omi', 'completed', 'private', ?)",
+        [("folder-user", "batch-1", 20, source_id), ("folder-user", "batch-2", 10, source_id)],
+    )
+    env.APP_DB.connection.commit()
+
+    moved = asyncio.run(
+        bulk_move_conversations(
+            FakeRequest(env, headers, {"conversation_ids": ["batch-1", "batch-2"]}),
+            target["id"],
+        )
+    )
+    assert moved == {"status": "ok", "moved_count": 2}
+    assert [
+        conversation["id"]
+        for conversation in asyncio.run(list_folder_conversations(FakeRequest(env, headers), target["id"]))
+    ] == [
+        "batch-1",
+        "batch-2",
+    ]
+
+    missing = asyncio.run(
+        bulk_move_conversations(
+            FakeRequest(env, headers, {"conversation_ids": ["batch-1", "missing"]}),
+            target["id"],
+        )
+    )
+    assert missing.status_code == 404
+    duplicate = asyncio.run(
+        bulk_move_conversations(
+            FakeRequest(env, headers, {"conversation_ids": ["batch-1", "batch-1"]}),
+            target["id"],
+        )
+    )
+    assert duplicate.status_code == 400
+
+    env.APP_DB.connection.execute(
+        "UPDATE cf_conversations SET is_locked = 1 WHERE uid = ? AND id = ?",
+        ("folder-user", "batch-2"),
+    )
+    env.APP_DB.connection.commit()
+    locked = asyncio.run(
+        bulk_move_conversations(
+            FakeRequest(env, headers, {"conversation_ids": ["batch-1", "batch-2"]}),
+            source_id,
+        )
+    )
+    assert locked.status_code == 402

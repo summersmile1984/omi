@@ -94,6 +94,20 @@ class ConversationFolderMove(BaseModel):
     folder_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
 
 
+class BulkConversationFolderMove(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    conversation_ids: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_ids(self) -> "BulkConversationFolderMove":
+        if len(self.conversation_ids) != len(set(self.conversation_ids)):
+            raise ValueError("conversation_ids must not contain duplicates")
+        if any(not item or len(item) > MAX_ID_LENGTH for item in self.conversation_ids):
+            raise ValueError("invalid conversation id")
+        return self
+
+
 def _auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
@@ -290,9 +304,13 @@ async def list_folder_conversations(request: Request, folder_id: str):
         where = "WHERE uid = ? AND folder_id = ?"
         if not include_discarded:
             where += " AND discarded = 0"
-        rows = await env.APP_DB.prepare(
-            _CONVERSATION_SELECT + where + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
-        ).bind(uid, folder_id, limit, offset).all()
+        rows = (
+            await env.APP_DB.prepare(
+                _CONVERSATION_SELECT + where + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+            )
+            .bind(uid, folder_id, limit, offset)
+            .all()
+        )
     except Exception:
         return JSONResponse({"error": "folder conversations unavailable"}, status_code=503)
     results = rows.get("results", []) if isinstance(rows, dict) else []
@@ -342,6 +360,68 @@ async def move_conversation_to_folder(request: Request, conversation_id: str):
     if updated is None:
         return JSONResponse({"error": "conversation not found"}, status_code=404)
     return {"status": "ok", "conversation": _conversation_response(updated, detail=True)}
+
+
+@router.post("/v1/folders/{folder_id}/conversations/bulk-move")
+async def bulk_move_conversations(request: Request, folder_id: str):
+    """Move a bounded set of projected conversations in one D1 batch."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not folder_id or len(folder_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid folder id"}, status_code=400)
+    try:
+        move = BulkConversationFolderMove.model_validate(await _bounded_json(request))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid bulk folder move"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        if await _first_folder(env, uid, folder_id) is None:
+            return JSONResponse({"error": "folder not found"}, status_code=404)
+        if not move.conversation_ids:
+            return {"status": "ok", "moved_count": 0}
+
+        placeholders = ", ".join("?" for _ in move.conversation_ids)
+        rows = (
+            await env.APP_DB.prepare(
+                f"SELECT id, is_locked FROM cf_conversations WHERE uid = ? AND id IN ({placeholders})"
+            )
+            .bind(uid, *move.conversation_ids)
+            .all()
+        )
+        found = {
+            str(row["id"]): row
+            for row in (rows.get("results", []) if isinstance(rows, dict) else [])
+            if isinstance(row, dict)
+        }
+        missing = [conversation_id for conversation_id in move.conversation_ids if conversation_id not in found]
+        if missing:
+            return JSONResponse({"error": f"conversation {missing[0]} not found"}, status_code=404)
+        if any(_bool(found[conversation_id].get("is_locked")) for conversation_id in move.conversation_ids):
+            return JSONResponse({"error": "paid plan required"}, status_code=402)
+
+        now = int(time.time())
+        statements = [
+            env.APP_DB.prepare(
+                "UPDATE cf_conversations SET folder_id = ?, updated_at = ? WHERE uid = ? AND id = ?"
+            ).bind(folder_id, now, uid, conversation_id)
+            for conversation_id in move.conversation_ids
+        ]
+        statements.append(
+            env.APP_DB.prepare(
+                "UPDATE cf_folders SET conversation_count = ("
+                "SELECT COUNT(*) FROM cf_conversations c "
+                "WHERE c.uid = cf_folders.uid AND c.folder_id = cf_folders.id AND c.discarded = 0"
+                ") WHERE uid = ?"
+            ).bind(uid)
+        )
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "folder conversations unavailable"}, status_code=503)
+    return {"status": "ok", "moved_count": len(move.conversation_ids)}
 
 
 @router.patch("/v1/folders/{folder_id}")

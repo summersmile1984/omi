@@ -476,8 +476,10 @@ signed URL issuance remain separate R2 cutover work.
 
 The folder routes migrate system/custom folder metadata and ordering to D1.
 Folder conversation listing and single-conversation moves now use the D1
-conversation projection and refresh non-discarded folder counts transactionally;
-bulk move and folder deletion side effects remain staging-only until the
+conversation projection and refresh non-discarded folder counts transactionally.
+The bulk move route validates every uid-scoped conversation, rejects locked or
+missing rows, and updates all selected conversations plus folder counts in one
+D1 batch. Folder deletion side effects remain staging-only until the
 conversation authority moves in production.
 
 The conversation routes use an explicit D1 projection (indexed metadata plus

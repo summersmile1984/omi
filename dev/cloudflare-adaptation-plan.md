@@ -813,7 +813,7 @@ goal metadata CRUD                     # D1 uid-scoped current/all/create/read/u
 goal detail projection                 # bounded uid-scoped goal/workstream/task/progress-event composition → verified
 conversation metadata mutations        # canonical title/starred updates through D1; visibility/share index stays legacy → unit + staging verified
 goal staging smoke                     # Edge → API Core → D1 goal create/list/update/progress/soft-delete; marker cleaned → verified
-folder metadata CRUD                   # D1 system/custom folder create/list/update/delete/reorder; conversation list/single move use D1 projection → verified
+folder metadata CRUD                   # D1 system/custom folder create/list/update/delete/reorder; conversation list/single/bulk move use D1 projection → unit verified
 conversation action-item reads         # canonical list/count from uid-scoped standalone task projection; locked rows fail closed → unit + staging verified
 - conversation photo reads             # canonical uid-scoped D1 photo projection; locked rows fail closed; legacy photo writes/subcollections remain → unit + staging candidate
 - conversation segment text edit       # canonical bounded D1 transcript edit with updated-at CAS; locked rows fail closed; legacy encryption/provider mirrors remain → unit + edge verified

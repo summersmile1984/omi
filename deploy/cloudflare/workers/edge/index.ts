@@ -334,6 +334,7 @@ app.delete("/v1/goals/:goalId", proxyAuthenticatedCore);
 app.get("/v1/folders", proxyAuthenticatedCore);
 app.post("/v1/folders", proxyAuthenticatedCore);
 app.get("/v1/folders/:folderId/conversations", proxyAuthenticatedCore);
+app.post("/v1/folders/:folderId/conversations/bulk-move", proxyAuthenticatedCore);
 app.get("/v1/folders/:folderId", proxyAuthenticatedCore);
 app.patch("/v1/folders/:folderId", proxyAuthenticatedCore);
 app.delete("/v1/folders/:folderId", proxyAuthenticatedCore);
