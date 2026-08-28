@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from conversation_routes import (  # noqa: E402
     count_conversations,
+    delete_conversation,
     delete_conversation_action_item,
     get_conversation,
     get_conversation_analytics,
@@ -25,6 +26,7 @@ from conversation_routes import (  # noqa: E402
     patch_conversation_summary,
     unlink_conversation_calendar_event,
     patch_conversation_title,
+    search_conversations,
     set_conversation_starred,
     store_conversation_projection,
 )
@@ -37,8 +39,10 @@ class FakeDb:
         migration_dir = Path(__file__).parents[3] / "migrations/app"
         self.connection.executescript((migration_dir / "0017_people.sql").read_text())
         self.connection.executescript((migration_dir / "0016_action_items.sql").read_text())
+        self.connection.executescript((migration_dir / "0019_folders.sql").read_text())
         self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
         self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
+        self.connection.executescript((migration_dir / "0040_conversation_search.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -137,7 +141,15 @@ def insert_conversation(
             locked,
             0,
             "folder-1",
-            json.dumps({"title": conversation_id, "overview": "overview", "category": "work", "action_items": [{"description": "task"}], "events": [{"title": "event"}]}),
+            json.dumps(
+                {
+                    "title": conversation_id,
+                    "overview": "overview",
+                    "category": "work",
+                    "action_items": [{"description": "task"}],
+                    "events": [{"title": "event"}],
+                }
+            ),
             json.dumps(
                 transcript_segments
                 if transcript_segments is not None
@@ -177,7 +189,9 @@ def test_conversation_projection_lists_filters_and_redacts_list_details():
     assert listed[1]["structured"]["action_items"] == []
 
     filtered = asyncio.run(
-        list_conversations(FakeRequest(env, signed_headers(secret), {"include_discarded": "false", "sources": "friend"}))
+        list_conversations(
+            FakeRequest(env, signed_headers(secret), {"include_discarded": "false", "sources": "friend"})
+        )
     )
     assert filtered == []
 
@@ -204,6 +218,150 @@ def test_conversation_projection_detail_count_uid_isolation_and_validation():
     assert unauthorized.status_code == 401
 
 
+def test_conversation_search_uses_fts_projection_filters_and_pagination():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="roadmap-title",
+        created_at=300,
+        transcript_segments=[{"id": "segment-1", "text": "ordinary transcript"}],
+    )
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="transcript-hit",
+        created_at=200,
+        transcript_segments=[{"id": "segment-1", "text": "roadmap planning details", "person_id": "person-1"}],
+    )
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="locked-hit",
+        created_at=100,
+        locked=1,
+        transcript_segments=[{"id": "segment-1", "text": "roadmap secret"}],
+    )
+    insert_conversation(
+        db,
+        uid="other-user",
+        conversation_id="other-hit",
+        created_at=400,
+        transcript_segments=[{"id": "segment-1", "text": "roadmap other"}],
+    )
+    db.connection.execute(
+        "INSERT INTO cf_people (uid, id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ("conversation-user", "person-1", "Alice", 100, 100),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    first_page = asyncio.run(
+        search_conversations(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"query": "roadmap", "page": 1, "per_page": 1},
+            )
+        )
+    )
+    assert first_page["current_page"] == 1
+    assert first_page["per_page"] == 1
+    assert first_page["total_pages"] == 2
+    assert [item["id"] for item in first_page["items"]] == ["roadmap-title"]
+    assert first_page["items"][0]["transcript_segments"] == []
+
+    by_speaker = asyncio.run(
+        search_conversations(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"query": "roadmap", "speaker_id": "person-1"},
+            )
+        )
+    )
+    assert [item["id"] for item in by_speaker["items"]] == ["transcript-hit"]
+    missing_speaker = asyncio.run(
+        search_conversations(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"query": "roadmap", "speaker_id": "missing"},
+            )
+        )
+    )
+    assert missing_speaker.status_code == 404
+
+    empty_query = asyncio.run(
+        search_conversations(FakeRequest(env, signed_headers(secret), body={"query": "", "per_page": 10}))
+    )
+    assert [item["id"] for item in empty_query["items"]] == ["roadmap-title", "transcript-hit"]
+    punctuation_query = asyncio.run(
+        search_conversations(FakeRequest(env, signed_headers(secret), body={"query": "---"}))
+    )
+    assert punctuation_query["items"] == []
+    invalid = asyncio.run(
+        search_conversations(FakeRequest(env, signed_headers(secret), body={"query": "roadmap", "per_page": 0}))
+    )
+    assert invalid.status_code == 400
+    assert asyncio.run(search_conversations(FakeRequest(env, {}, body={"query": "roadmap"}))).status_code == 401
+
+
+def test_conversation_delete_is_uid_scoped_updates_folder_counts_and_fts():
+    secret = "conversation-secret"
+    db = FakeDb()
+    db.connection.execute(
+        "INSERT INTO cf_folders "
+        "(uid, id, name, created_at, updated_at, conversation_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("conversation-user", "folder-1", "Folder", 100, 100, 1),
+    )
+    insert_conversation(db, uid="conversation-user", conversation_id="delete-me", created_at=200)
+    insert_conversation(db, uid="other-user", conversation_id="delete-me", created_at=300)
+    db.connection.execute(
+        "INSERT INTO cf_action_items (uid, id, description, status, completed, conversation_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("conversation-user", "item-1", "keep by default", "active", 0, "delete-me", 200, 200),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    deleted = asyncio.run(delete_conversation(FakeRequest(env, signed_headers(secret)), "delete-me"))
+    assert deleted == {"status": "Ok"}
+    assert asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "delete-me")).status_code == 404
+    assert (
+        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret, "other-user")), "delete-me"))["id"]
+        == "delete-me"
+    )
+    assert (
+        db.connection.execute(
+            "SELECT conversation_count FROM cf_folders WHERE uid = ? AND id = ?",
+            ("conversation-user", "folder-1"),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        db.connection.execute(
+            "SELECT COUNT(*) FROM cf_action_items WHERE uid = ? AND conversation_id = ?",
+            ("conversation-user", "delete-me"),
+        ).fetchone()[0]
+        == 1
+    )
+    search = asyncio.run(search_conversations(FakeRequest(env, signed_headers(secret), body={"query": "delete-me"})))
+    assert search["items"] == []
+    assert asyncio.run(delete_conversation(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
+    assert (
+        asyncio.run(
+            delete_conversation(
+                FakeRequest(env, signed_headers(secret), query={"cascade": "true"}),
+                "missing",
+            )
+        ).status_code
+        == 409
+    )
+    assert asyncio.run(delete_conversation(FakeRequest(env, {}), "delete-me")).status_code == 401
+
+
 def test_conversation_detail_honors_source_and_discarded_filters():
     secret = "conversation-secret"
     db = FakeDb()
@@ -217,8 +375,7 @@ def test_conversation_detail_honors_source_and_discarded_filters():
     env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
 
     assert (
-        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "source-omi")).get("id")
-        == "source-omi"
+        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "source-omi")).get("id") == "source-omi"
     )
     assert (
         asyncio.run(
@@ -240,9 +397,14 @@ def test_conversation_detail_honors_source_and_discarded_filters():
         ).status_code
         == 404
     )
-    assert asyncio.run(
-        get_conversation(FakeRequest(env, signed_headers(secret), query={"include_discarded": "true"}), "source-other")
-    )["discarded"] is True
+    assert (
+        asyncio.run(
+            get_conversation(
+                FakeRequest(env, signed_headers(secret), query={"include_discarded": "true"}), "source-other"
+            )
+        )["discarded"]
+        is True
+    )
     assert (
         asyncio.run(
             get_conversation(
@@ -328,11 +490,15 @@ def test_canonical_segment_text_update_is_uid_scoped_locked_and_compare_and_set(
     )
     assert other_user_update == {"status": "Ok"}
     assert (
-        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret, "other-user")), "editable"))["transcript_segments"][0]["text"]
+        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret, "other-user")), "editable"))[
+            "transcript_segments"
+        ][0]["text"]
         == "nope"
     )
     assert (
-        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "editable"))["transcript_segments"][0]["text"]
+        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "editable"))["transcript_segments"][0][
+            "text"
+        ]
         == "edited"
     )
     invalid = asyncio.run(
@@ -401,10 +567,21 @@ def test_canonical_transcripts_group_imported_providers_and_fail_closed_for_lock
     assert [item["id"] for item in result["speechmatics"]] == ["sm"]
     assert [item["id"] for item in result["whisperx"]] == ["wx"]
     assert "unknown" not in {item["id"] for items in result.values() for item in items}
-    assert asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "locked-transcripts")).status_code == 402
-    assert asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
+    assert (
+        asyncio.run(
+            get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "locked-transcripts")
+        ).status_code
+        == 402
+    )
+    assert (
+        asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "missing")).status_code
+        == 404
+    )
     assert asyncio.run(get_conversation_transcripts(FakeRequest(env, {}), "with-transcripts")).status_code == 401
-    assert asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "x" * 257)).status_code == 400
+    assert (
+        asyncio.run(get_conversation_transcripts(FakeRequest(env, signed_headers(secret)), "x" * 257)).status_code
+        == 400
+    )
 
 
 def test_canonical_conversation_analytics_uses_d1_transcripts_and_people_names():
@@ -444,8 +621,15 @@ def test_canonical_conversation_analytics_uses_d1_transcripts_and_people_names()
     assert result["speakers"][0]["talk_seconds"] == 10.0
     assert result["speakers"][1]["speaker"] == "You"
     assert result["speakers"][2]["speaker"] == "Speaker 2"
-    assert asyncio.run(get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "locked-analytics")).status_code == 402
-    assert asyncio.run(get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
+    assert (
+        asyncio.run(
+            get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "locked-analytics")
+        ).status_code
+        == 402
+    )
+    assert (
+        asyncio.run(get_conversation_analytics(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
+    )
     assert asyncio.run(get_conversation_analytics(FakeRequest(env, {}), "analytics")).status_code == 401
 
 
@@ -568,9 +752,7 @@ def test_canonical_conversation_summary_updates_default_and_app_projections():
         == 402
     )
     assert (
-        asyncio.run(
-            patch_conversation_summary(FakeRequest(env, {}, body={"content": "nope"}), "summaries")
-        ).status_code
+        asyncio.run(patch_conversation_summary(FakeRequest(env, {}, body={"content": "nope"}), "summaries")).status_code
         == 401
     )
 
@@ -586,9 +768,7 @@ def test_canonical_conversation_calendar_unlink_clears_d1_projection():
     db.connection.commit()
     env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
 
-    result = asyncio.run(
-        unlink_conversation_calendar_event(FakeRequest(env, signed_headers(secret)), "calendar-link")
-    )
+    result = asyncio.run(unlink_conversation_calendar_event(FakeRequest(env, signed_headers(secret)), "calendar-link"))
     assert result == {"status": "Ok"}
     row = db.connection.execute(
         "SELECT calendar_event_json FROM cf_conversations WHERE uid = ? AND id = ?",
@@ -600,7 +780,15 @@ def test_canonical_conversation_calendar_unlink_clears_d1_projection():
         == 404
     )
     assert (
-        asyncio.run(unlink_conversation_calendar_event(FakeRequest(env, {},), "calendar-link")).status_code
+        asyncio.run(
+            unlink_conversation_calendar_event(
+                FakeRequest(
+                    env,
+                    {},
+                ),
+                "calendar-link",
+            )
+        ).status_code
         == 401
     )
 
@@ -683,7 +871,9 @@ def test_canonical_conversation_action_item_description_updates_both_projections
     secret = "conversation-secret"
     db = FakeDb()
     insert_conversation(db, uid="conversation-user", conversation_id="action-description", created_at=200)
-    insert_conversation(db, uid="conversation-user", conversation_id="locked-action-description", created_at=100, locked=1)
+    insert_conversation(
+        db, uid="conversation-user", conversation_id="locked-action-description", created_at=100, locked=1
+    )
     db.connection.execute(
         "INSERT INTO cf_action_items (uid, id, description, status, completed, conversation_id, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -784,15 +974,12 @@ def test_canonical_conversation_action_item_delete_removes_both_projections():
         ("conversation-user", "item-delete"),
     ).fetchone()
     assert standalone[0] == 0
-    assert (
-        asyncio.run(
-            delete_conversation_action_item(
-                FakeRequest(env, signed_headers(secret), body={"description": "missing", "completed": False}),
-                "action-delete",
-            )
+    assert asyncio.run(
+        delete_conversation_action_item(
+            FakeRequest(env, signed_headers(secret), body={"description": "missing", "completed": False}),
+            "action-delete",
         )
-        == {"status": "Ok"}
-    )
+    ) == {"status": "Ok"}
     assert (
         asyncio.run(
             delete_conversation_action_item(
@@ -859,9 +1046,7 @@ def test_conversation_projection_write_is_idempotent_and_bounded():
     assert detail["private_cloud_sync_enabled"] is True
 
     invalid = asyncio.run(
-        store_conversation_projection(
-            FakeRequest(env, signed_headers(secret), body={**body, "status": "unknown"})
-        )
+        store_conversation_projection(FakeRequest(env, signed_headers(secret), body={**body, "status": "unknown"}))
     )
     assert invalid.status_code == 400
 
@@ -906,4 +1091,7 @@ def test_canonical_conversation_metadata_mutations_are_uid_scoped():
         )
     )
     assert missing["conversation"]["structured"]["title"] == "no leak"
-    assert asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "conv-1"))["structured"]["title"] == "Updated title"
+    assert (
+        asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "conv-1"))["structured"]["title"]
+        == "Updated title"
+    )

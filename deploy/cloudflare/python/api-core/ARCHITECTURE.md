@@ -34,3 +34,11 @@ the new-object intent. Deletes commit the metadata removal and cleanup task in
 the same batch. Request-time cleanup is best-effort, while the Jobs Worker
 reconciles due tasks every 15 minutes and never deletes an object still named by
 an active pointer.
+
+Conversation list/detail/search and default deletion share the
+`cf_conversations` authority. D1 FTS5 triggers project only bounded IDs,
+structured metadata, and transcript text into a uid-token-partitioned search
+index. The SQL uid predicate remains authoritative after FTS candidate lookup.
+Default deletion matches the legacy `cascade=false` boundary and updates folder
+counts in the same D1 batch; the Worker rejects cascade deletion until memory
+retraction and audio cleanup have moved to the same authority.

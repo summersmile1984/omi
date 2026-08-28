@@ -438,6 +438,62 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes conversation search and deletion to the authenticated core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "Ok" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const auth = { authorization: "Bearer opaque-session" };
+    expect(
+      (
+        await edge.fetch(
+          new Request("https://edge.test/v1/conversations/search", {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ query: "roadmap" }),
+          }),
+          env,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await edge.fetch(
+          new Request("https://edge.test/v1/conversations/conversation-1", {
+            method: "DELETE",
+            headers: auth,
+          }),
+          env,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      coreRequests.map(
+        (request) => `${request.method} ${new URL(request.url).pathname}`,
+      ),
+    ).toEqual([
+      "POST /v1/conversations/search",
+      "DELETE /v1/conversations/conversation-1",
+    ]);
+    expect(
+      coreRequests.every((request) =>
+        Boolean(request.headers.get("x-omi-auth-context")),
+      ),
+    ).toBe(true);
+  });
+
   it("routes canonical conversation photos to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

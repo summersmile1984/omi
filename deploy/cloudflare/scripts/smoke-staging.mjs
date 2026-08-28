@@ -167,6 +167,20 @@ export async function runSmoke({
     { headers: authHeaders },
   );
   expectStatus("canonical conversation list", conversations, 200);
+  const conversationSearch = await request(
+    fetchImpl,
+    `${base}/v1/conversations/search`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        query: `cf-smoke-search-${Date.now()}`,
+        page: 1,
+        per_page: 1,
+      }),
+    },
+  );
+  expectStatus("canonical conversation search", conversationSearch, 200);
   const webProxyConversations = await request(
     fetchImpl,
     `${webBase}/api/proxy/v1/conversations?limit=1`,
@@ -484,6 +498,7 @@ export async function runSmoke({
     accountCutover: accountCutover.status,
     appSearch: appSearch.status,
     conversations: conversations.status,
+    conversationSearch: conversationSearch.status,
     webProxyConversations: webProxyConversations.status,
     memories: memories.status,
     folders: folders.status,

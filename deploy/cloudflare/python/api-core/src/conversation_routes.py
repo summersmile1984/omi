@@ -1,15 +1,17 @@
 """D1-backed conversation read projection for the isolated Cloudflare profile.
 
-This module owns bounded list/count/detail reads over an explicit conversation
-projection. It deliberately does not claim conversation finalization, memory
-extraction, merge, search indexes, audio deletion, or downstream integrations;
-those authorities remain legacy until their write and reader contracts move
-together. Projection rows can be loaded by the reviewed D1 backfill workflow.
+This module owns bounded list/count/detail/search reads and projection deletion
+over an explicit conversation projection. It deliberately does not claim
+conversation finalization, memory extraction, merge, audio deletion, or
+downstream integrations; those authorities remain legacy until their write and
+reader contracts move together. Projection rows can be loaded by the reviewed
+D1 backfill workflow.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 import time
 
@@ -30,6 +32,8 @@ MAX_WRITE_BYTES = 4_000_000
 MAX_SEGMENT_TEXT_LENGTH = 10_000
 MAX_ACTION_ITEM_DESCRIPTION_LENGTH = 4_096
 MAX_SEGMENTS = 2_000
+MAX_SEARCH_QUERY_LENGTH = 500
+MAX_SEARCH_TERMS = 20
 CONVERSATION_STATUSES = frozenset({"in_progress", "processing", "merging", "completed", "failed"})
 CONVERSATION_SOURCES = frozenset(
     {
@@ -173,6 +177,28 @@ class ConversationSummaryUpdate(BaseModel):
 
     app_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
     content: str = Field(min_length=1, max_length=10_000)
+
+
+class ConversationSearchRequest(BaseModel):
+    """Bounded full-text search over the uid-scoped D1 projection."""
+
+    model_config = {"extra": "ignore"}
+
+    query: str = Field(default="", max_length=MAX_SEARCH_QUERY_LENGTH)
+    page: int = Field(default=1, ge=1, le=10_000)
+    per_page: int = Field(default=10, ge=1, le=MAX_LIST_LIMIT)
+    include_discarded: bool = False
+    start_date: datetime | None = None
+    end_date: datetime | None = None
+    speaker_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "ConversationSearchRequest":
+        if self.start_date and self.end_date and _epoch(self.end_date) < _epoch(self.start_date):
+            raise ValueError("end_date must not precede start_date")
+        if len(self.query.split()) > MAX_SEARCH_TERMS:
+            raise ValueError("search query has too many terms")
+        return self
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -351,11 +377,15 @@ def _base_query(request: Request, *, count: bool = False) -> tuple[str, list[obj
         timestamp = _epoch(value)
         clauses.append(f"created_at {operator} ?")
         args.append(timestamp)
-    select = "COUNT(*) AS count" if count else (
-        "uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
-        "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
-        "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
-        "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json"
+    select = (
+        "COUNT(*) AS count"
+        if count
+        else (
+            "uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
+            "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
+            "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
+            "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json"
+        )
     )
     query = f"SELECT {select} FROM cf_conversations WHERE " + " AND ".join(clauses)
     if not count:
@@ -370,6 +400,26 @@ _CONVERSATION_SELECT = (
     "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json "
     "FROM cf_conversations "
 )
+
+_CONVERSATION_SEARCH_SELECT = (
+    "SELECT c.uid, c.id, c.created_at, c.updated_at, c.started_at, c.finished_at, c.source, c.language, "
+    "c.status, c.visibility, c.starred, c.discarded, c.is_locked, c.deferred, "
+    "c.private_cloud_sync_enabled, c.folder_id, c.client_device_id, c.client_platform, "
+    "c.structured_json, c.transcript_segments_json, c.photos_json, c.audio_files_json, "
+    "c.conversation_audio_json, c.apps_results_json, c.suggested_apps_json, c.geolocation_json, "
+    "c.external_data_json, c.calendar_event_json "
+)
+
+
+def _fts_query(uid: str, value: str) -> str | None:
+    tokens = re.findall(r"[^\W_]+", value, flags=re.UNICODE)
+    if not tokens:
+        return None
+    quoted = [f'uid_token:"{uid.encode().hex()}"']
+    for token in tokens:
+        escaped = token.replace('"', '""')
+        quoted.append(f'searchable_text:"{escaped}"*')
+    return " AND ".join(quoted)
 
 
 async def _first_conversation(env: object, uid: str, conversation_id: str) -> dict[str, object] | None:
@@ -418,9 +468,11 @@ async def _person_names(env: object, uid: str, person_ids: set[str]) -> dict[str
     for start in range(0, len(ids), 100):
         chunk = ids[start : start + 100]
         placeholders = ", ".join("?" for _ in chunk)
-        result = await env.APP_DB.prepare(
-            f"SELECT id, name FROM cf_people WHERE uid = ? AND id IN ({placeholders})"
-        ).bind(uid, *chunk).all()
+        result = (
+            await env.APP_DB.prepare(f"SELECT id, name FROM cf_people WHERE uid = ? AND id IN ({placeholders})")
+            .bind(uid, *chunk)
+            .all()
+        )
         rows = result.get("results", []) if isinstance(result, dict) else []
         for row in rows:
             if isinstance(row, dict) and isinstance(row.get("id"), str):
@@ -428,7 +480,9 @@ async def _person_names(env: object, uid: str, person_ids: set[str]) -> dict[str
     return names
 
 
-def _conversation_analytics(conversation_id: str, segments: list[dict[str, object]], names: dict[str, str]) -> dict[str, object]:
+def _conversation_analytics(
+    conversation_id: str, segments: list[dict[str, object]], names: dict[str, str]
+) -> dict[str, object]:
     seconds: dict[str, float] = {}
     words: dict[str, int] = {}
     labels: dict[str, str] = {}
@@ -476,7 +530,9 @@ def _conversation_analytics(conversation_id: str, segments: list[dict[str, objec
                 "_sort_talk_seconds": talk_seconds,
             }
         )
-    speakers.sort(key=lambda item: (-float(item.pop("_sort_talk_seconds", 0)), -int(item["word_count"]), str(item["speaker"])))
+    speakers.sort(
+        key=lambda item: (-float(item.pop("_sort_talk_seconds", 0)), -int(item["word_count"]), str(item["speaker"]))
+    )
     return {
         "conversation_id": conversation_id,
         "total_seconds": round(total_seconds, 1),
@@ -504,9 +560,7 @@ async def store_conversation_projection(request: Request):
             "audio_files_json": _dump_json(projection.audio_files, "audio_files"),
             "conversation_audio_json": _dump_json(projection.conversation_audio, "conversation_audio", nullable=True),
             "apps_results_json": _dump_json(projection.apps_results, "apps_results"),
-            "suggested_apps_json": _dump_json(
-                projection.suggested_summarization_apps, "suggested_summarization_apps"
-            ),
+            "suggested_apps_json": _dump_json(projection.suggested_summarization_apps, "suggested_summarization_apps"),
             "geolocation_json": _dump_json(projection.geolocation, "geolocation", nullable=True),
             "external_data_json": _dump_json(projection.external_data, "external_data", nullable=True),
             "calendar_event_json": _dump_json(projection.calendar_event, "calendar_event", nullable=True),
@@ -618,6 +672,133 @@ async def count_conversations(request: Request):
     return {"count": int(row.get("count") or 0) if isinstance(row, dict) else 0}
 
 
+@router.post("/v1/conversations/search")
+async def search_conversations(request: Request):
+    """Search indexed titles, summaries, transcript text, and exact IDs."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        raw = await request.body()
+        if len(raw) > 32_000:
+            return JSONResponse({"error": "search body too large"}, status_code=413)
+        search = ConversationSearchRequest.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError, TypeError):
+        return JSONResponse({"error": "invalid conversation search"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    if search.speaker_id and search.speaker_id != "user":
+        try:
+            person = (
+                await env.APP_DB.prepare("SELECT id FROM cf_people WHERE uid = ? AND id = ?")
+                .bind(uid, search.speaker_id)
+                .first()
+            )
+        except Exception:
+            return JSONResponse({"error": "conversation search unavailable"}, status_code=503)
+        if not isinstance(person, dict):
+            return JSONResponse({"error": "speaker not found"}, status_code=404)
+    fts_query = _fts_query(uid, search.query)
+    if search.query.strip() and fts_query is None:
+        return {
+            "items": [],
+            "total_pages": 1,
+            "current_page": search.page,
+            "per_page": search.per_page,
+        }
+    clauses = ["c.uid = ?", "c.is_locked = 0"]
+    args: list[object] = [uid]
+    table = "FROM cf_conversations c "
+    order = "ORDER BY c.created_at DESC, c.id DESC "
+    if fts_query:
+        table += "JOIN cf_conversations_fts ON cf_conversations_fts.rowid = c.rowid "
+        clauses.append("cf_conversations_fts MATCH ?")
+        args.append(fts_query)
+        order = "ORDER BY rank, c.created_at DESC, c.id DESC "
+    if not search.include_discarded:
+        clauses.append("c.discarded = 0")
+    if search.start_date:
+        clauses.append("c.created_at >= ?")
+        args.append(_epoch(search.start_date))
+    if search.end_date:
+        clauses.append("c.created_at <= ?")
+        args.append(_epoch(search.end_date))
+    if search.speaker_id == "user":
+        clauses.append(
+            "EXISTS (SELECT 1 FROM json_each(c.transcript_segments_json) segment "
+            "WHERE json_extract(segment.value, '$.is_user') IN (1, 'true'))"
+        )
+    elif search.speaker_id:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM json_each(c.transcript_segments_json) segment "
+            "WHERE json_extract(segment.value, '$.person_id') = ?)"
+        )
+        args.append(search.speaker_id)
+
+    where = "WHERE " + " AND ".join(clauses) + " "
+    offset = (search.page - 1) * search.per_page
+    try:
+        count_row = await env.APP_DB.prepare("SELECT COUNT(*) AS count " + table + where).bind(*args).first()
+        rows = (
+            await env.APP_DB.prepare(_CONVERSATION_SEARCH_SELECT + table + where + order + "LIMIT ? OFFSET ?")
+            .bind(*args, search.per_page, offset)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "conversation search unavailable"}, status_code=503)
+
+    total = int(count_row.get("count") or 0) if isinstance(count_row, dict) else 0
+    total_pages = max(1, (total + search.per_page - 1) // search.per_page)
+    results = rows.get("results", []) if isinstance(rows, dict) else []
+    return {
+        "items": [_response(row, detail=False) for row in results if isinstance(row, dict)],
+        "total_pages": total_pages,
+        "current_page": search.page,
+        "per_page": search.per_page,
+    }
+
+
+@router.delete("/v1/conversations/{conversation_id}")
+async def delete_conversation(request: Request, conversation_id: str):
+    """Delete only the uid-owned D1 projection, matching legacy cascade=false."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    raw_cascade = request.query_params.get("cascade", "false").lower()
+    if raw_cascade not in {"true", "false"}:
+        return JSONResponse({"error": "invalid cascade flag"}, status_code=400)
+    if raw_cascade == "true":
+        return JSONResponse(
+            {"error": "cascade conversation deletion is not migrated"},
+            status_code=409,
+        )
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        if await _first_conversation(env, uid, conversation_id) is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare("DELETE FROM cf_conversations WHERE uid = ? AND id = ?").bind(uid, conversation_id),
+                env.APP_DB.prepare(
+                    "UPDATE cf_folders SET conversation_count = ("
+                    "SELECT COUNT(*) FROM cf_conversations c "
+                    "WHERE c.uid = cf_folders.uid AND c.folder_id = cf_folders.id AND c.discarded = 0"
+                    ") WHERE uid = ?"
+                ).bind(uid),
+            ]
+        )
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    return {"status": "Ok"}
+
+
 @router.get("/v1/conversations/{conversation_id}")
 @router.get("/v1/cf/conversations/{conversation_id}")
 async def get_conversation(request: Request, conversation_id: str):
@@ -627,13 +808,18 @@ async def get_conversation(request: Request, conversation_id: str):
     if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
         return JSONResponse({"error": "invalid conversation id"}, status_code=400)
     try:
-        row = await request.scope["env"].APP_DB.prepare(
-            "SELECT uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
-            "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
-            "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
-            "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json "
-            "FROM cf_conversations WHERE uid = ? AND id = ?"
-        ).bind(str(context["uid"]), conversation_id).first()
+        row = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                "SELECT uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
+                "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
+                "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
+                "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json "
+                "FROM cf_conversations WHERE uid = ? AND id = ?"
+            )
+            .bind(str(context["uid"]), conversation_id)
+            .first()
+        )
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
     if not isinstance(row, dict):
@@ -673,9 +859,7 @@ async def get_conversation_photos(request: Request, conversation_id: str):
     # the canonical List[ConversationPhoto] contract remains stable.
     if _bool(row.get("is_locked")):
         return []
-    return [
-        photo for photo in _json_list(row.get("photos_json")) if isinstance(photo, dict)
-    ][:MAX_SEGMENTS]
+    return [photo for photo in _json_list(row.get("photos_json")) if isinstance(photo, dict)][:MAX_SEGMENTS]
 
 
 @router.get("/v1/conversations/{conversation_id}/transcripts")
@@ -736,11 +920,7 @@ async def get_conversation_analytics(request: Request, conversation_id: str):
             for segment in _json_list(row.get("transcript_segments_json"))[:MAX_SEGMENTS]
             if isinstance(segment, dict)
         ]
-        person_ids = {
-            str(segment["person_id"])
-            for segment in segments
-            if segment.get("person_id")
-        }
+        person_ids = {str(segment["person_id"]) for segment in segments if segment.get("person_id")}
         names = await _person_names(env, uid, person_ids)
         return _conversation_analytics(conversation_id, segments, names)
     except Exception:
@@ -819,10 +999,14 @@ async def patch_conversation_segment_text(request: Request, conversation_id: str
         current_updated_at = int(existing.get("updated_at") or 0)
         next_updated_at = max(int(time.time()), current_updated_at + 1)
         encoded_segments = _dump_json(segments, "transcript_segments")
-        result = await env.APP_DB.prepare(
-            "UPDATE cf_conversations SET transcript_segments_json = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND updated_at = ?"
-        ).bind(encoded_segments, next_updated_at, uid, conversation_id, current_updated_at).run()
+        result = (
+            await env.APP_DB.prepare(
+                "UPDATE cf_conversations SET transcript_segments_json = ?, updated_at = ? "
+                "WHERE uid = ? AND id = ? AND updated_at = ?"
+            )
+            .bind(encoded_segments, next_updated_at, uid, conversation_id, current_updated_at)
+            .run()
+        )
         changes = result.get("meta", {}).get("changes", 0) if isinstance(result, dict) else 0
         if int(changes or 0) != 1:
             return JSONResponse({"error": "conversation changed, retry"}, status_code=409)
@@ -1039,9 +1223,7 @@ async def delete_conversation_action_item(request: Request, conversation_id: str
         raw_items = structured.get("action_items")
         items = raw_items if isinstance(raw_items, list) else []
         structured["action_items"] = [
-            item
-            for item in items
-            if not (isinstance(item, dict) and item.get("description") == delete.description)
+            item for item in items if not (isinstance(item, dict) and item.get("description") == delete.description)
         ]
         now = int(time.time())
         await env.APP_DB.batch(

@@ -152,8 +152,9 @@ smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
 `audio/mpeg` response and is opt-in.
 
 The authenticated smoke verifies unauthenticated rejection, the D1 probe, the
-conversation/folder/memory shell dependencies, and the same conversation read
-through Web `/api/proxy` so a missing Web→Edge binding fails the release. It
+conversation list/search, folder/memory shell dependencies, and the same
+conversation read through Web `/api/proxy` so a missing Web→Edge binding fails
+the release. It
 also verifies the Workers AI raw-audio input boundary with an empty body, so it
 does not invoke billable model inference; use a separate explicit audio request
 for model quality or latency qualification.
@@ -287,9 +288,11 @@ DELETE /v3/memories/batch
 GET  /v1/account/cutover/control
                               Edge → Python API Core → D1 account migration control projection
 GET  /v1/conversations/count
+POST /v1/conversations/search
 GET  /v1/conversations/{conversationId}
-                              canonical read projection with source/include_discarded filters;
-                              writes/finalization remain legacy
+DELETE /v1/conversations/{conversationId}
+                              canonical read/search projection and non-cascade delete;
+                              finalization/merge remain legacy
 GET  /v1/conversations/{conversationId}/photos
                               bounded photo projection; locked rows fail closed
 GET  /v1/conversations/{conversationId}/transcripts
@@ -585,10 +588,16 @@ transcript segments, and locked rows redact derived content. Rows can also be
 loaded by the reviewed backfill/import workflow. Title and starred metadata
 mutations update the canonical D1 projection in staging. Visibility remains
 legacy-owned because it also maintains public-share and Redis indexes.
-Conversation creation/finalization, memory extraction, merge, semantic search,
-audio deletion, and downstream integration fanout remain legacy-owned;
-production reader cutover still requires those write authorities and readers to
-move together.
+Conversation search uses a D1 FTS5 index maintained by insert/update/delete
+triggers over IDs, titles, summaries, categories, and transcript text. Search
+remains uid-scoped, excludes locked rows, and supports the Web pagination,
+discarded, date, and speaker filters. Default conversation deletion removes the
+D1 projection and refreshes folder counts; `cascade=true` fails closed because
+memory retraction and audio cleanup are not yet Worker-owned. Conversation
+creation/finalization, memory extraction, merge, cascade deletion, audio
+deletion, and downstream integration fanout remain legacy-owned; production
+reader cutover still requires those write authorities and readers to move
+together.
 
 `GET /v1/conversations/{conversation_id}/transcripts` reads the bounded
 `transcript_segments_json` projection and returns the same four provider buckets

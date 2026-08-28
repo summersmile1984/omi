@@ -35,6 +35,9 @@ describe("staging smoke helpers", () => {
           migration: { destination_backend_bound: true },
         });
       }
+      if (url.endsWith("/v1/conversations/search")) {
+        return new Response(null, { status: 200 });
+      }
       const status = url.endsWith("/health")
         ? 200
         : url.endsWith("/v1/announcements/general")
@@ -157,6 +160,7 @@ describe("staging smoke helpers", () => {
       accountCutover: 200,
       appSearch: 200,
       conversations: 200,
+      conversationSearch: 200,
       webProxyConversations: 200,
       memories: 200,
       folders: 200,
@@ -189,7 +193,11 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(41);
+    expect(calls).toHaveLength(42);
+    expect(
+      calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
+        ?.method,
+    ).toBe("POST");
     expect(
       calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init
         ?.method,
