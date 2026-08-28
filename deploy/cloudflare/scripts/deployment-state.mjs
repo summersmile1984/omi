@@ -132,3 +132,11 @@ export function rollbackPlan(snapshot) {
     return { workerName, versionId };
   });
 }
+
+export function rollbackMessage(snapshotPath) {
+  const filename = String(snapshotPath).replaceAll("\\", "/").split("/").pop();
+  const message = `automatic staging rollback: ${filename || "deployment snapshot"}`;
+  // Wrangler rejects rollback messages over 120 characters by reopening its
+  // interactive prompt, which can strand the automatic recovery process.
+  return message.slice(0, 120);
+}

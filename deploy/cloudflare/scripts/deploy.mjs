@@ -6,6 +6,7 @@ import { stagingHealthTargets, verifyStagingHealth } from "./deploy-health.mjs";
 import {
   assertValidDeploymentOrder,
   createDeploymentSnapshot,
+  rollbackMessage,
   rollbackPlan,
   STAGING_DEPLOYMENTS,
   STAGING_WORKERS,
@@ -127,7 +128,7 @@ function rollbackDeployment(snapshot, snapshotPath) {
         "--name",
         workerName,
         "--message",
-        `automatic staging rollback from ${snapshotPath}`,
+        rollbackMessage(snapshotPath),
         "--yes",
       ],
       { cwd: root, stdio: "inherit", env: process.env },

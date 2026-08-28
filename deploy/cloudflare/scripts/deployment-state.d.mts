@@ -31,3 +31,5 @@ export function createDeploymentSnapshot(
 export function rollbackPlan(
   snapshot: DeploymentSnapshot | unknown,
 ): Array<{ workerName: string; versionId: string }>;
+
+export function rollbackMessage(snapshotPath: string): string;

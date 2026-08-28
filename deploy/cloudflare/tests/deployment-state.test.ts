@@ -3,6 +3,7 @@ import {
   activeVersionFromStatus,
   assertValidDeploymentOrder,
   createDeploymentSnapshot,
+  rollbackMessage,
   rollbackPlan,
   STAGING_DEPLOYMENTS,
   STAGING_WORKERS,
@@ -69,5 +70,17 @@ describe("Cloudflare deployment snapshots", () => {
         ),
       }),
     ).toThrow("invalid rollback version");
+  });
+
+  it("keeps automatic rollback messages inside Wrangler's noninteractive limit", () => {
+    const message = rollbackMessage(
+      "/Users/operator/a-very-long-worktree-name/deploy/cloudflare/.wrangler/releases/staging-before-2026-08-28T12-32-57-799Z.json",
+    );
+
+    expect(message).toBe(
+      "automatic staging rollback: staging-before-2026-08-28T12-32-57-799Z.json",
+    );
+    expect(message.length).toBeLessThanOrEqual(120);
+    expect(message).not.toContain("/Users/operator");
   });
 });
