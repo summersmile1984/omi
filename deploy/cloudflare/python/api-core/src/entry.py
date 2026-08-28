@@ -57,6 +57,7 @@ from chat_session_routes import router as chat_session_router
 from app_review_routes import router as app_review_router
 from feedback_routes import router as feedback_router
 from llm_usage_routes import router as llm_usage_router
+from overage_routes import router as overage_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
@@ -79,6 +80,7 @@ app.include_router(chat_session_router)
 app.include_router(app_review_router)
 app.include_router(feedback_router)
 app.include_router(llm_usage_router)
+app.include_router(overage_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
 ASSET_CLEANUP_GRACE_SECONDS = 15 * 60
 ASSET_CLEANUP_BATCH_SIZE = 10

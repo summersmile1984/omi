@@ -184,7 +184,7 @@
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/payment-methods/status", "protocol": "http", "target_runtime": "legacy"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/payments/available-plans", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/payments/cancel", "protocol": "http", "target_runtime": "legacy"},
-    {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/payments/overage-info", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/payments/overage-info", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/payments/portal-return", "protocol": "http", "target_runtime": "legacy"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/payments/success", "protocol": "http", "target_runtime": "legacy"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/paypal/payment-details", "protocol": "http", "target_runtime": "legacy"},

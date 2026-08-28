@@ -898,6 +898,13 @@ backfill for already-settled staging events; retrying settlement cannot add the
 same provider usage twice. This is an isolated-staging authority until
 production subscription and legacy Firestore usage documents are imported.
 
+`GET /v1/payments/overage-info` reuses the same UTC-month question and cost
+authority. Neo and Operator attribute provider cost to excess questions using
+the legacy proportional formula; Architect applies the configured markup only
+to cost above its allowance. `OVERAGE_MARKUP_MULTIPLIER` defaults to `1.15`.
+The projection returns `503` while a Workers AI chat event has not settled, so
+the billing explainer cannot present an understated accrued charge.
+
 The Auth Worker includes the Better Auth account creation timestamp in the
 request-bound, audience-bound internal identity assertion. API Core uses that
 signed value for `GET /v1/users/me/paywall`, `GET /v1/users/me/trial`, and the

@@ -241,6 +241,9 @@ describe("staging smoke helpers", () => {
                                                         "/v1/payments/available-plans",
                                                       ) ||
                                                       url.endsWith(
+                                                        "/v1/payments/overage-info",
+                                                      ) ||
+                                                      url.endsWith(
                                                         "/v1/fair-use/status",
                                                       )
                                                     ? 200
@@ -316,12 +319,13 @@ describe("staging smoke helpers", () => {
       llmTopFeatures: 200,
       llmTotalCost: 200,
       availablePlans: 200,
+      overageInfo: 200,
       fairUseStatus: 200,
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(68);
+    expect(calls).toHaveLength(69);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

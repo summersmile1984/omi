@@ -1514,6 +1514,7 @@ describe("edge gateway", () => {
       "/v1/users/me/llm-usage/top-features?days=30&limit=3",
       "/v1/users/me/llm-usage/total",
       "/v1/payments/available-plans",
+      "/v1/payments/overage-info",
     ]) {
       const response = await edge.fetch(
         new Request(`https://edge.test${path}`, {
@@ -1534,6 +1535,7 @@ describe("edge gateway", () => {
       "/v1/users/me/llm-usage/top-features",
       "/v1/users/me/llm-usage/total",
       "/v1/payments/available-plans",
+      "/v1/payments/overage-info",
     ]);
 
     const write = await edge.fetch(

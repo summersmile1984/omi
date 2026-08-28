@@ -138,17 +138,9 @@ def month_bounds(now: datetime | None = None) -> tuple[int, int]:
     return int(start.timestamp()), int(end.timestamp())
 
 
-async def chat_quota_snapshot(
-    env: object,
-    uid: str,
-    *,
-    now: datetime | None = None,
-    platform: str | None = None,
-    account_created_at: int | None = None,
-    has_byok_keys: bool = False,
-) -> dict[str, object]:
+async def monthly_chat_usage(env: object, uid: str, *, now: datetime | None = None) -> dict[str, object]:
+    """Return the UTC-month question and settled provider-cost authority."""
     start, end = month_bounds(now)
-    plan = await subscription_plan(env, uid)
     start_day = datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%d")
     end_day = datetime.fromtimestamp(end, timezone.utc).strftime("%Y-%m-%d")
     usage = (
@@ -165,7 +157,26 @@ async def chat_quota_snapshot(
         .first()
     )
     if not isinstance(usage, dict):
-        raise RuntimeError("chat quota projection unavailable")
+        raise RuntimeError("chat usage projection unavailable")
+    return {
+        "questions": int(usage.get("questions") or 0),
+        "unsettled": int(usage.get("unsettled") or 0),
+        "cost_usd": float(usage.get("cost_usd") or 0),
+        "reset_at": end,
+    }
+
+
+async def chat_quota_snapshot(
+    env: object,
+    uid: str,
+    *,
+    now: datetime | None = None,
+    platform: str | None = None,
+    account_created_at: int | None = None,
+    has_byok_keys: bool = False,
+) -> dict[str, object]:
+    plan = await subscription_plan(env, uid)
+    usage = await monthly_chat_usage(env, uid, now=now)
     policy = plan_policy(env, plan)
     unit = str(policy["unit"])
     if unit == "cost_usd" and int(usage.get("unsettled") or 0) > 0:
@@ -195,7 +206,7 @@ async def chat_quota_snapshot(
         "limit": limit,
         "percent": percent,
         "allowed": used < limit,
-        "reset_at": end,
+        "reset_at": usage["reset_at"],
     }
 
 
@@ -213,6 +224,7 @@ __all__ = [
     "chat_quota_snapshot",
     "is_trial_paywalled",
     "month_bounds",
+    "monthly_chat_usage",
     "plan_policy",
     "request_has_all_byok_keys",
     "subscription_plan",

@@ -699,6 +699,13 @@ export async function runSmoke({
   );
   expectStatus("available plans", availablePlans, 200);
 
+  const overageInfo = await request(
+    fetchImpl,
+    `${base}/v1/payments/overage-info`,
+    { headers: authHeaders },
+  );
+  expectStatus("overage info", overageInfo, 200);
+
   const fairUseStatus = await request(fetchImpl, `${base}/v1/fair-use/status`, {
     headers: authHeaders,
   });
@@ -827,6 +834,7 @@ export async function runSmoke({
     llmTopFeatures: llmTopFeatures.status,
     llmTotalCost: llmTotalCost.status,
     availablePlans: availablePlans.status,
+    overageInfo: overageInfo.status,
     fairUseStatus: fairUseStatus.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,

@@ -75,6 +75,11 @@ unavailable instead of silently undercounting; desktop persistence rows do not
 invent an event-local cost. App/persona generation and attachments remain
 explicit downstream cutover boundaries.
 
+`overage_routes.py` uses that same monthly authority for the legacy billing
+explainer. Neo and Operator use proportional excess-question attribution;
+Architect uses exact cost above the configured allowance. Any unsettled API-AI
+provider event fails the billing projection closed until settlement completes.
+
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional
 three-day desktop trial in quota, paywall, and trial reads; it never receives
