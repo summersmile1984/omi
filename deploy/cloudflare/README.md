@@ -764,6 +764,23 @@ Object alarm recovery are covered by the Worker integration suite; the release
 did not claim a live external-ASR fault injection. The isolated account, jobs,
 usage rows, and generated audio were deleted after verification.
 
+The same staging release also exercised the deployed five-minute Fair Use cron
+with an isolated basic account. A `sync_fresh` source at 7,200,001 ms (one
+millisecond above the default daily soft cap) plus exactly 72,000 projected
+monthly transcription seconds produced one `free_exhausted` evaluation, one
+`none → warning` event, and one public case reference; a later cron left the
+event count at one during the 12-hour cooldown and delivered the no-device
+notification outbox row in one attempt. The unauthenticated public case read
+returned only the documented privacy-safe fields. A temporary restrict state
+made the raw Workers AI, voice-message, and async transcription entries all
+return `429` with `Retry-After` and `X-Omi-Rate-Limit-Reason: fair_use` before
+body validation. Expiring that deadline changed the same empty-audio probe back
+to its normal `400` validation result and persisted `throttle`. All injected
+state, event, outbox, and usage rows were deleted, the case returned `404`, and
+the full staging smoke passed again after cleanup. No production Firebase
+credential was copied into staging; notification delivery with an actual
+registered device remains an explicit credentialed staging check.
+
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging
 owner, while the test/regenerate route computes a deterministic summary from
