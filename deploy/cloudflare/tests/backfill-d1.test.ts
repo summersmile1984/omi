@@ -260,4 +260,18 @@ describe("D1 backfill SQL generator", () => {
       },
     ])).toThrow("private fields");
   });
+
+  it("renders uid-scoped enabled-app projections with an idempotent composite key", () => {
+    const sql = renderBackfillSql([
+      {
+        table: "cf_user_enabled_apps",
+        row: { uid: "u", app_id: "app-1", created_at: "2026-08-28T10:00:00Z" },
+      },
+    ]);
+    expect(sql).toContain("cf_user_enabled_apps");
+    expect(sql).toContain("ON CONFLICT(uid, app_id) DO UPDATE SET created_at = excluded.created_at");
+    expect(() => renderBackfillSql([
+      { table: "cf_user_enabled_apps", row: { uid: "u", app_id: "app-1" } },
+    ])).toThrow("missing created_at");
+  });
 });

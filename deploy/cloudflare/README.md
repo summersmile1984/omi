@@ -267,6 +267,12 @@ GET  /v1/app/payment-plans
                               mutable app records, reviews, and subscriptions remain legacy
 GET  /v1/approved-apps         Edge → Python API Core → approved public app D1 projection
 GET  /v1/apps/popular          Edge → Python API Core → popular public app D1 projection
+GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
+GET  /v2/apps/capability/{capability_id}/grouped
+                              Edge → Python API Core → capability/category D1 projection
+GET  /v1/apps/enabled          Edge → Python API Core → uid-scoped D1 install projection
+POST /v1/apps/enable           Edge → Python API Core → idempotent free-app D1 install
+POST /v1/apps/disable          Edge → Python API Core → uid-scoped D1 uninstall
 GET  /v1/config/api-keys      Edge → Python API Core → Worker client-key vars
 GET  /v1/users/transcription-preferences
 PATCH /v1/users/transcription-preferences
@@ -577,14 +583,28 @@ The app catalog metadata routes (`/v1/app-categories`,
 `/v1/app/payment-plans`) are static, public responses and now run in API Core
 without D1 or external providers. Mutable app records, reviews, subscriptions,
 MCP credentials, and enable/disable side effects remain legacy-owned until
-their catalog authority and user-installation state are migrated together.
+their catalog authority and user-installation state are migrated together. The
+three installation routes below are a deliberately smaller projection: they
+only accept approved public catalog rows that are free and have no external
+setup callback.
 
 `/v1/approved-apps` and the authenticated `/v1/apps/popular` route read only the
 approved, non-disabled, non-persona records in `cf_app_catalog`. Records enter
 that table through the whitelisted D1 backfill generator, which rejects private
 fields such as reviews, payment identifiers, credentials, and prompts. This
-projection is the first dynamic catalog slice; it does not yet own app creation,
-reviews, install counts, subscriptions, or MCP state.
+projection is the first dynamic catalog slice. `GET /v1/apps/enabled`,
+`POST /v1/apps/enable`, and `POST /v1/apps/disable` project only the
+uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
+install counter for idempotent retries. Paid apps, private/persona apps, setup
+callbacks, app creation, reviews, subscriptions, and MCP state remain
+legacy-owned; no production cutover is implied.
+
+`GET /v2/apps` now builds the marketplace's capability, category, and grouped
+responses from the same public D1 rows. It preserves the legacy pagination
+shape and score ordering, but intentionally returns `enabled: false` because
+the public route has no user context; clients should combine it with
+`/v1/apps/enabled`. Capability-specific grouped-category routes and search
+are now also read from the same projection; search remains legacy-owned.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

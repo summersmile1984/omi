@@ -30,8 +30,9 @@ for (const route of routes) {
     throw new Error(`unsupported target_runtime for ${key}: ${route.target_runtime}`);
   }
   const routeHint = route.path === "/*" ? "/" : route.path.replace(/\*$/, "");
+  const edgeRouteHint = routeHint.replace(/\{([^}]+)\}/g, ":$1");
   const pathSegments = route.path.split("/").filter(Boolean);
-  const edgeHints = [routeHint];
+  const edgeHints = [edgeRouteHint];
   if (!route.path.endsWith("*") && pathSegments.length > 1) {
     edgeHints.push(`/${pathSegments.slice(0, -1).join("/")}/`);
   }

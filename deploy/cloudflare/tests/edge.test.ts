@@ -82,6 +82,61 @@ describe("edge gateway", () => {
     expect(corePaths).toEqual(["/v1/approved-apps", "/v1/apps/popular"]);
   });
 
+  it("routes app installation state through the authenticated core worker", async () => {
+    const corePaths: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        corePaths.push(`${request.method} ${new URL(request.url).pathname}`);
+        return Response.json({ status: "ok" });
+      }),
+    };
+    const auth = { authorization: "Bearer opaque-session" };
+    expect((await edge.fetch(new Request("https://edge.test/v1/apps/enabled", { headers: auth }), env as never)).status).toBe(200);
+    expect((await edge.fetch(new Request("https://edge.test/v1/apps/enable?app_id=free-app", { method: "POST", headers: auth }), env as never)).status).toBe(200);
+    expect((await edge.fetch(new Request("https://edge.test/v1/apps/disable?app_id=free-app", { method: "POST", headers: auth }), env as never)).status).toBe(200);
+    expect(corePaths).toEqual([
+      "GET /v1/apps/enabled",
+      "POST /v1/apps/enable",
+      "POST /v1/apps/disable",
+    ]);
+  });
+
+  it("routes the v2 public app catalog through the core worker", async () => {
+    let forwardedPath = "";
+    const env = {
+      API_CORE: service((request) => {
+        forwardedPath = new URL(request.url).pathname;
+        return Response.json({ groups: [] });
+      }),
+    };
+    const response = await edge.fetch(new Request("https://edge.test/v2/apps?limit=20"), env as never);
+    expect(response.status).toBe(200);
+    expect(forwardedPath).toBe("/v2/apps");
+  });
+
+  it("routes grouped capability app catalog reads through the core worker", async () => {
+    let forwardedPath = "";
+    const env = {
+      API_CORE: service((request) => {
+        forwardedPath = new URL(request.url).pathname;
+        return Response.json({ groups: [] });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/apps/capability/chat/grouped"),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(forwardedPath).toBe("/v2/apps/capability/chat/grouped");
+  });
+
   it("strips caller auth headers before forwarding verified context", async () => {
     let forwarded: Headers | undefined;
     const env = {

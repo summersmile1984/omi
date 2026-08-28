@@ -45,6 +45,8 @@ from conversation_routes import router as conversation_router
 from account_cutover_routes import router as account_cutover_router
 from app_catalog_routes import router as app_catalog_router
 from app_projection_routes import router as app_projection_router
+from app_install_routes import router as app_install_router
+from app_catalog_v2_routes import router as app_catalog_v2_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
@@ -58,6 +60,8 @@ app.include_router(conversation_router)
 app.include_router(account_cutover_router)
 app.include_router(app_catalog_router)
 app.include_router(app_projection_router)
+app.include_router(app_install_router)
+app.include_router(app_catalog_v2_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
 MAX_VOCABULARY_ITEMS = 100
 MAX_ASSISTANT_SETTINGS_BYTES = 64_000

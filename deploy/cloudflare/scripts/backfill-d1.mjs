@@ -47,6 +47,14 @@ const TABLES = {
     integers: ["installs", "rating_count", "updated_at"],
     json: ["data_json"],
   },
+  cf_user_enabled_apps: {
+    key_columns: ["uid", "app_id"],
+    required: ["uid", "app_id", "created_at"],
+    columns: ["uid", "app_id", "created_at"],
+    defaults: {},
+    integers: ["created_at"],
+    json: [],
+  },
   cf_announcement_dismissals: {
     key_columns: ["uid", "announcement_id"],
     required: ["uid", "announcement_id", "dismissed_at"],
