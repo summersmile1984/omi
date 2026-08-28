@@ -1,7 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createD1MigrationConfig,
+  resolveD1DatabaseId,
+} from "./d1-migrations.mjs";
 import { stagingHealthTargets, verifyStagingHealth } from "./deploy-health.mjs";
 import {
   assertValidDeploymentOrder,
@@ -215,26 +220,53 @@ function ensureResources() {
 }
 
 function applyMigrations() {
-  run("npx", [
-    "wrangler",
-    "d1",
-    "migrations",
-    "apply",
-    "omi-cf-auth-staging",
-    "--remote",
-    "--config",
-    "workers/auth/wrangler.jsonc",
-  ]);
-  run("npx", [
-    "wrangler",
-    "d1",
-    "migrations",
-    "apply",
-    "omi-cf-app-staging",
-    "--remote",
-    "--config",
-    "python/api-core/wrangler.jsonc",
-  ]);
+  const listed = runQuiet("npx", ["wrangler", "d1", "list", "--json"]);
+  if (!listed.ok) {
+    throw new Error(
+      `unable to resolve staging D1 UUIDs: ${listed.stderr.trim() || "wrangler failed"}`,
+    );
+  }
+  const migrations = [
+    {
+      databaseName: "omi-cf-auth-staging",
+      binding: "AUTH_DB",
+      migrationsDir: resolve(root, "migrations/auth"),
+    },
+    {
+      databaseName: "omi-cf-app-staging",
+      binding: "APP_DB",
+      migrationsDir: resolve(root, "migrations/app"),
+    },
+  ];
+  for (const migration of migrations) {
+    const databaseId = resolveD1DatabaseId(
+      listed.stdout,
+      migration.databaseName,
+    );
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "omi-cf-d1-migrations-"),
+    );
+    const configPath = resolve(temporaryDirectory, "wrangler.jsonc");
+    const config = createD1MigrationConfig({ ...migration, databaseId });
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, {
+      mode: 0o600,
+      flag: "wx",
+    });
+    try {
+      run("npx", [
+        "wrangler",
+        "d1",
+        "migrations",
+        "apply",
+        migration.binding,
+        "--remote",
+        "--config",
+        configPath,
+      ]);
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  }
 }
 
 function deployTypeScript(config) {

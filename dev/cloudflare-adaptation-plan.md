@@ -913,9 +913,12 @@ job id。`0052_account_deletion.sql` 在 intent 或 25 小时 tombstone 存续�
 intent 删除在一个 D1 batch 内完成；首次 Queue 发送失败可由定时 reconciler 重新投递，Auth
 失败保留可恢复 intent，重复公开请求不会重复排队。真实本地 Wrangler 已执行全部 52 个
 App migration（123 条 SQL 命令）并验证 intent/tombstone mutation fence；TypeScript 全套
-28 文件 207 测试、API Core 133 测试、API AI 57 测试和 Web 8 文件 33 测试通过，所有 Worker
-dry-run 成功。该批次尚未部署到 live staging；Cloudflare OAuth 需重新授权。存在 Stripe
-subscription id 的账号会在建立 fence 前 fail closed，外部 provider cleanup 与生产身份/
+29 文件 210 测试、API Core 133 测试、API AI 57 测试和 Web 8 文件 33 测试通过，所有 Worker
+dry-run 成功。随后本批次已部署到 live staging：`0052` 远端执行 123 条 SQL 命令，所有
+Worker 与 Web 新版本、全量 authenticated smoke 均通过。以专用隔离账号调用公开删除返回
+200，live Queue 完成两次零 residual scan 后，App D1 intent/cutover/conversation/chat/memory
+与 Auth user/session/account 均验证为 0，25 小时 tombstone 已落库。存在 Stripe
+subscription id 的账号仍会在建立 fence 前 fail closed，外部 provider cleanup 与生产身份/
 cutover 证据仍是生产删号的阻塞项。
 
 Firebase 身份导入也已选择性移植为 D1 tooling：导入保留 Firebase uid，只接受 password、

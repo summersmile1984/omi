@@ -198,6 +198,13 @@ D1 migrations and R2/Queue resources are not versioned by Workers rollback;
 staging migrations must therefore remain backward-compatible with the captured
 Worker versions. The current migrations are additive.
 
+Before applying D1 migrations, the release resolves each exact staging
+database name through `wrangler d1 list --json` and writes a mode-`0600`
+temporary config containing its UUID. This avoids Wrangler 4.127 treating a
+`database_name` as the remote API identifier when a migration is actually
+pending, while keeping account-specific UUIDs out of the repository. The
+temporary config is removed after each migration command.
+
 `smoke:staging` checks Edge health by default. To enable the authenticated
 checks, provide a staging Better Auth token through an environment variable or
 an explicit JSON token file:
