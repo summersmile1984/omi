@@ -16,6 +16,13 @@ const JWT_GRACE_PERIOD_SECONDS = 2 * 24 * 60 * 60;
 
 type SocialProviderId = "google" | "apple";
 
+type AuthIdentityResidual = {
+  users: number;
+  sessions: number;
+  accounts: number;
+  deletionVerifications: number;
+};
+
 function origins(env: AuthEnv): string[] {
   return (env.ALLOWED_ORIGINS || "")
     .split(",")
@@ -81,6 +88,11 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
     trustedOrigins: Array.from(new Set([baseURL, ...allowedOrigins])),
     emailAndPassword: { enabled: true },
     socialProviders,
+    user: {
+      // Public self-service deletion stays closed until Jobs has removed and
+      // residual-checked every product-data namespace for the uid.
+      deleteUser: { enabled: false },
+    },
     account: {
       encryptOAuthTokens: true,
       storeStateStrategy: "database",
@@ -160,6 +172,47 @@ function profileCreatedAt(value: unknown): string | null {
     return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
   return null;
+}
+
+function lifecycleUid(value: string): string | null {
+  return value.length > 0 && value.length <= 256 && !value.includes("/")
+    ? value
+    : null;
+}
+
+function databaseCount(value: unknown): number {
+  const count = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error("invalid identity residual count");
+  }
+  return count;
+}
+
+async function authIdentityResidual(
+  database: D1Database,
+  uid: string,
+): Promise<AuthIdentityResidual> {
+  const row = await database
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM user WHERE id = ?) AS users,
+         (SELECT COUNT(*) FROM session WHERE userId = ?) AS sessions,
+         (SELECT COUNT(*) FROM account WHERE userId = ?) AS accounts,
+         (SELECT COUNT(*) FROM verification WHERE value = ?) AS deletionVerifications`,
+    )
+    .bind(uid, uid, uid, uid)
+    .first<Record<string, unknown>>();
+  if (!row) throw new Error("identity residual query returned no row");
+  return {
+    users: databaseCount(row.users),
+    sessions: databaseCount(row.sessions),
+    accounts: databaseCount(row.accounts),
+    deletionVerifications: databaseCount(row.deletionVerifications),
+  };
+}
+
+function identityResidualEmpty(residual: AuthIdentityResidual): boolean {
+  return Object.values(residual).every((count) => count === 0);
 }
 
 app.use(`${AUTH_BASE_PATH}/*`, async (c, next) => {
@@ -355,6 +408,104 @@ app.get("/internal/profile", async (c) => {
     });
   } catch {
     return c.json({ error: "profile_unavailable" }, 503);
+  }
+});
+
+// Product-data deletion is orchestrated by the Jobs Worker. These private
+// endpoints give that workflow an idempotent Auth-D1 boundary without enabling
+// Better Auth's public /delete-user route before the wider residual workflow is
+// ready. Every request is bound to the caller's uid, method, path, and the Auth
+// service audience by the signed internal context.
+app.get("/internal/users/:uid/residual", async (c) => {
+  const uid = lifecycleUid(c.req.param("uid"));
+  if (!uid) return c.json({ error: "invalid_request" }, 400);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  if (context.uid !== uid) return c.json({ error: "forbidden" }, 403);
+
+  try {
+    const residual = await authIdentityResidual(c.env.AUTH_DB, uid);
+    return c.json({ uid, empty: identityResidualEmpty(residual), residual });
+  } catch {
+    return c.json({ error: "identity_lifecycle_unavailable" }, 503);
+  }
+});
+
+app.get("/internal/users/:uid", async (c) => {
+  const uid = lifecycleUid(c.req.param("uid"));
+  if (!uid) return c.json({ error: "invalid_request" }, 400);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  if (context.uid !== uid) return c.json({ error: "forbidden" }, 403);
+
+  try {
+    const row = await c.env.AUTH_DB.prepare(
+      "SELECT id, name, email, createdAt FROM user WHERE id = ?",
+    )
+      .bind(uid)
+      .first<{
+        id?: unknown;
+        name?: unknown;
+        email?: unknown;
+        createdAt?: unknown;
+      }>();
+    const residual = await authIdentityResidual(c.env.AUTH_DB, uid);
+    if (!row) {
+      return c.json({ detail: "User not found", uid, residual }, 404);
+    }
+    return c.json({
+      uid,
+      email: typeof row.email === "string" ? row.email : null,
+      name: typeof row.name === "string" ? row.name : null,
+      created_at: profileCreatedAt(row.createdAt),
+      residual,
+    });
+  } catch {
+    return c.json({ error: "identity_lifecycle_unavailable" }, 503);
+  }
+});
+
+app.delete("/internal/users/:uid", async (c) => {
+  const uid = lifecycleUid(c.req.param("uid"));
+  if (!uid) return c.json({ error: "invalid_request" }, 400);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  if (context.uid !== uid) return c.json({ error: "forbidden" }, 403);
+
+  try {
+    const before = await authIdentityResidual(c.env.AUTH_DB, uid);
+    await c.env.AUTH_DB.batch([
+      c.env.AUTH_DB.prepare("DELETE FROM verification WHERE value = ?").bind(
+        uid,
+      ),
+      c.env.AUTH_DB.prepare("DELETE FROM session WHERE userId = ?").bind(uid),
+      c.env.AUTH_DB.prepare("DELETE FROM account WHERE userId = ?").bind(uid),
+      c.env.AUTH_DB.prepare("DELETE FROM user WHERE id = ?").bind(uid),
+    ]);
+    const residual = await authIdentityResidual(c.env.AUTH_DB, uid);
+    if (!identityResidualEmpty(residual)) {
+      return c.json({ error: "identity_residual", uid, residual }, 503);
+    }
+    return c.json({
+      uid,
+      status: identityResidualEmpty(before) ? "already_absent" : "deleted",
+      before,
+      residual,
+    });
+  } catch {
+    return c.json({ error: "identity_lifecycle_unavailable" }, 503);
   }
 });
 

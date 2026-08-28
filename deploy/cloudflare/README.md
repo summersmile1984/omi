@@ -1213,6 +1213,18 @@ fields such as data-protection level, onboarding answers, and migration status
 are intentionally omitted until their D1 authority and backfill are approved;
 the Flutter client already treats those fields as optional/defaulted.
 
+The Auth Worker also owns signed internal `GET /internal/users/:uid`,
+`GET /internal/users/:uid/residual`, and `DELETE /internal/users/:uid`
+contracts for the future account-deletion workflow. The delete is idempotent
+and removes the uid's Better Auth session, account, user, and outstanding
+delete-verification rows in one D1 batch, then fails closed unless a residual
+query returns zero for every identity table. These endpoints require a
+60-second assertion bound to the Auth audience, uid, method, and exact path;
+they are not public account-management APIs. Better Auth's public
+`/delete-user` remains explicitly disabled until the Jobs Worker has deleted
+and residual-checked all product D1/R2 namespaces before calling this final
+identity boundary.
+
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains
 the legacy success/message shape. Its training-data notification side effect is

@@ -19,7 +19,7 @@
 | CF-00 清单/scaffold | 已完成 | hermetic FastAPI 注册表确认 577 条唯一后端路由（573 HTTP、4 WebSocket，含显式 HEAD/OPTIONS）；197 条已匹配 Cloudflare staging owner，380 条显式保留 legacy owner；215 条 Cloudflare 路由、15 个隔离资源、34 个 Redis family、7 个 vector namespace、9 个 R2 namespace 均有机械校验 | 未迁路由的实现工作归入 CF-10，不再是清单未知项 |
 | CF-01 Edge | staging 已验证 | header 剥离、防重放、CORS、owner 标记、health/smoke | 生产回滚与非幂等超时的 live 证据 |
 | CF-02 Python Workers | staging 已验证 | api-core/api-ai、110+37 个 Python 测试、真实 Worker smoke；API AI 已验证跨 Worker DO binding | 生产规模 bundle/CPU/内存/cold-start/外连预算 |
-| CF-03 Better Auth | 部分完成 | 独立 D1、signup/login/session/JWT、staging 浏览器登录 | OAuth、link/delete、导入 checksum、JWKS rotation、abort/retry、生产身份连续性 |
+| CF-03 Better Auth | 部分完成 | 独立 D1、signup/login/session/JWT、staging 浏览器登录；内部用户查询、原子删除与 residual 契约 | 真实 OAuth/link、产品数据删除编排、导入 checksum、JWKS retired/grace live 证据、abort/retry、生产身份连续性 |
 | CF-04 R2 | 部分完成 | PUT/GET/range/conditional/checksum/delete smoke | multipart、presigned expiry、迁移中断重放、全量 residual/cutover |
 | CF-05 App D1 | 选定 route group 已验证 | 用户设置、conversation、memory、recap/chat 等投影路由 | 生产规模回放、账户级 authority cutover、全量领域迁移 |
 | CF-06 Queues/Workflows | 部分完成 | transcription Queue、幂等/重复/冲突/终态、DLQ 相关验证 | Workflows、高风险删除/finalization contracts、积压恢复与 replay 证据 |

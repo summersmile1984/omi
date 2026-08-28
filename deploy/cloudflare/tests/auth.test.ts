@@ -56,6 +56,122 @@ function readyEnv(active = true) {
   };
 }
 
+type AuthLifecycleState = {
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    createdAt: string;
+  } | null;
+  sessions: string[];
+  accounts: string[];
+  deletionVerifications: string[];
+};
+
+function lifecycleEnv(options: { failBatch?: boolean } = {}) {
+  const state: AuthLifecycleState = {
+    user: {
+      id: "lifecycle-user",
+      name: "Lifecycle User",
+      email: "lifecycle@example.test",
+      createdAt: "2026-08-29T00:00:00.000Z",
+    },
+    sessions: ["lifecycle-user", "lifecycle-user", "other-user"],
+    accounts: ["lifecycle-user", "other-user"],
+    deletionVerifications: ["lifecycle-user", "other-user"],
+  };
+
+  const statement = (query: string, values: unknown[] = []) => {
+    const normalized = query.replace(/\s+/g, " ").trim();
+    const prepared = {
+      bind: (...nextValues: unknown[]) => statement(query, nextValues),
+      first: vi.fn(async () => {
+        const uid = String(values[0] || "");
+        if (
+          normalized.startsWith("SELECT id, name, email, createdAt FROM user")
+        ) {
+          return state.user?.id === uid ? { ...state.user } : null;
+        }
+        if (normalized.includes("AS deletionVerifications")) {
+          return {
+            users: state.user?.id === uid ? 1 : 0,
+            sessions: state.sessions.filter((value) => value === uid).length,
+            accounts: state.accounts.filter((value) => value === uid).length,
+            deletionVerifications: state.deletionVerifications.filter(
+              (value) => value === uid,
+            ).length,
+          };
+        }
+        throw new Error(`unexpected first query: ${normalized}`);
+      }),
+      run: vi.fn(async () => {
+        const uid = String(values[0] || "");
+        if (normalized === "DELETE FROM verification WHERE value = ?") {
+          state.deletionVerifications = state.deletionVerifications.filter(
+            (value) => value !== uid,
+          );
+        } else if (normalized === "DELETE FROM session WHERE userId = ?") {
+          state.sessions = state.sessions.filter((value) => value !== uid);
+        } else if (normalized === "DELETE FROM account WHERE userId = ?") {
+          state.accounts = state.accounts.filter((value) => value !== uid);
+        } else if (normalized === "DELETE FROM user WHERE id = ?") {
+          if (state.user?.id === uid) state.user = null;
+        } else {
+          throw new Error(`unexpected run query: ${normalized}`);
+        }
+        return { success: true, meta: { changes: 1 } };
+      }),
+    };
+    return prepared;
+  };
+
+  const prepare = vi.fn((query: string) => statement(query));
+  const batch = vi.fn(
+    async (statements: Array<{ run(): Promise<unknown> }>) => {
+      if (options.failBatch) throw new Error("batch unavailable");
+      const snapshot = structuredClone(state);
+      try {
+        const results = [];
+        for (const prepared of statements) results.push(await prepared.run());
+        return results;
+      } catch (error) {
+        state.user = snapshot.user;
+        state.sessions = snapshot.sessions;
+        state.accounts = snapshot.accounts;
+        state.deletionVerifications = snapshot.deletionVerifications;
+        throw error;
+      }
+    },
+  );
+
+  return {
+    environment: {
+      ...env(),
+      AUTH_DB: { prepare, batch } as unknown as D1Database,
+    },
+    state,
+    batch,
+  };
+}
+
+async function lifecycleHeaders(
+  method: "GET" | "DELETE",
+  path: string,
+  uid = "lifecycle-user",
+) {
+  const signed = await createSignedAuthContext(
+    { uid, authority: "better-auth", requestId: "lifecycle-request" },
+    "auth",
+    method,
+    path,
+    "internal-secret",
+  );
+  return {
+    "x-omi-auth-context": signed?.encoded || "",
+    "x-omi-internal-signature": signed?.signature || "",
+  };
+}
+
 describe("auth worker Better Auth dev issuer", () => {
   beforeEach(() => {
     vi.mocked(betterAuth).mockClear();
@@ -255,6 +371,7 @@ describe("auth worker Better Auth dev issuer", () => {
           allowDifferentEmails: false,
         },
       },
+      user: { deleteUser: { enabled: false } },
     });
     const getSessionRateLimit = options?.rateLimit?.customRules?.[
       "/get-session"
@@ -372,5 +489,140 @@ describe("auth worker Better Auth dev issuer", () => {
       profileEnv(null),
     );
     expect(response.status).toBe(410);
+  });
+
+  it("rejects unsigned and cross-user lifecycle requests", async () => {
+    const lifecycle = lifecycleEnv();
+    const unsigned = await auth.fetch(
+      new Request("https://auth.test/internal/users/lifecycle-user/residual"),
+      lifecycle.environment,
+    );
+    expect(unsigned.status).toBe(401);
+
+    const path = "/internal/users/lifecycle-user";
+    const crossUser = await auth.fetch(
+      new Request(`https://auth.test${path}`, {
+        headers: await lifecycleHeaders("DELETE", path, "other-user"),
+        method: "DELETE",
+      }),
+      lifecycle.environment,
+    );
+    expect(crossUser.status).toBe(403);
+    expect(lifecycle.batch).not.toHaveBeenCalled();
+    expect(lifecycle.state.user?.id).toBe("lifecycle-user");
+  });
+
+  it("returns the signed user's identity and residual counts", async () => {
+    const lifecycle = lifecycleEnv();
+    const path = "/internal/users/lifecycle-user";
+    const response = await auth.fetch(
+      new Request(`https://auth.test${path}`, {
+        headers: await lifecycleHeaders("GET", path),
+      }),
+      lifecycle.environment,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      uid: "lifecycle-user",
+      name: "Lifecycle User",
+      email: "lifecycle@example.test",
+      created_at: "2026-08-29T00:00:00.000Z",
+      residual: {
+        users: 1,
+        sessions: 2,
+        accounts: 1,
+        deletionVerifications: 1,
+      },
+    });
+  });
+
+  it("deletes Better Auth identity rows atomically and is replay-safe", async () => {
+    const lifecycle = lifecycleEnv();
+    const path = "/internal/users/lifecycle-user";
+    const firstHeaders = await lifecycleHeaders("DELETE", path);
+    const first = await auth.fetch(
+      new Request(`https://auth.test${path}`, {
+        headers: firstHeaders,
+        method: "DELETE",
+      }),
+      lifecycle.environment,
+    );
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({
+      uid: "lifecycle-user",
+      status: "deleted",
+      before: {
+        users: 1,
+        sessions: 2,
+        accounts: 1,
+        deletionVerifications: 1,
+      },
+      residual: {
+        users: 0,
+        sessions: 0,
+        accounts: 0,
+        deletionVerifications: 0,
+      },
+    });
+    expect(lifecycle.state).toEqual({
+      user: null,
+      sessions: ["other-user"],
+      accounts: ["other-user"],
+      deletionVerifications: ["other-user"],
+    });
+
+    const residualPath = `${path}/residual`;
+    const residual = await auth.fetch(
+      new Request(`https://auth.test${residualPath}`, {
+        headers: await lifecycleHeaders("GET", residualPath),
+      }),
+      lifecycle.environment,
+    );
+    expect(residual.status).toBe(200);
+    expect(await residual.json()).toEqual({
+      uid: "lifecycle-user",
+      empty: true,
+      residual: {
+        users: 0,
+        sessions: 0,
+        accounts: 0,
+        deletionVerifications: 0,
+      },
+    });
+
+    const secondHeaders = await lifecycleHeaders("DELETE", path);
+    const second = await auth.fetch(
+      new Request(`https://auth.test${path}`, {
+        headers: secondHeaders,
+        method: "DELETE",
+      }),
+      lifecycle.environment,
+    );
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({
+      uid: "lifecycle-user",
+      status: "already_absent",
+    });
+    expect(lifecycle.batch).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when the Auth D1 deletion batch cannot commit", async () => {
+    const lifecycle = lifecycleEnv({ failBatch: true });
+    const path = "/internal/users/lifecycle-user";
+    const response = await auth.fetch(
+      new Request(`https://auth.test${path}`, {
+        headers: await lifecycleHeaders("DELETE", path),
+        method: "DELETE",
+      }),
+      lifecycle.environment,
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "identity_lifecycle_unavailable",
+    });
+    expect(lifecycle.state.user?.id).toBe("lifecycle-user");
+    expect(lifecycle.state.sessions).toHaveLength(3);
   });
 });

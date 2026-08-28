@@ -891,6 +891,13 @@ conversations、memories、tasks、my-apps、chat，新增 console warn/error �
 Google/Apple callback/link 仍需独立 staging OAuth client 凭据后资格检查，账户删除仍因
 产品数据 residual workflow 未迁移而保持禁用，不能据此宣称 CF-03 全部完成。
 
+随后补齐 Auth Worker 的内部用户生命周期边界：签名请求可按 uid 查询身份及
+user/session/account/delete-verification residual，内部删除使用一个 D1 batch 清除这些
+Better Auth 行，删除后 residual 非零会 fail closed；重复调用返回 `already_absent`。该边界
+只接受绑定 Auth audience、uid、HTTP method 与精确 path 的 60 秒内部断言。公共 Better
+Auth `deleteUser` 仍显式禁用，必须等 Jobs 先删除并 residual-check 产品 D1/R2 数据后，
+才能把这个内部身份删除作为最终步骤接入公开删号流程。
+
 随后以同一 staging JWT 实测 assistant-settings 的 section partial update（第二次
 更新保留第一次的 `analysis_prompt`）以及 ai-profile 的 partial metadata update；
 两组 GET/PATCH 均经 Edge → API Core → D1 返回 HTTP 200，未授权请求仍由 Edge
