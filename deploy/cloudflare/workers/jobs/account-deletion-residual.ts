@@ -43,6 +43,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_goal_progress_history", column: "uid" },
   { table: "cf_goals", column: "uid" },
   { table: "cf_jobs", column: "uid" },
+  { table: "cf_llm_usage_daily", column: "uid" },
   { table: "cf_memories", column: "uid" },
   { table: "cf_people", column: "uid" },
   { table: "cf_realtime_sessions", column: "uid" },

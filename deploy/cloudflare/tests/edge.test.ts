@@ -1473,7 +1473,7 @@ describe("edge gateway", () => {
     expect(rateLimitNames).toEqual(["stt:transcribe:user-1"]);
   });
 
-  it("routes account usage, chat quota, subscription, and price catalog reads to API Core", async () => {
+  it("routes account, quota, and LLM usage reads and writes to API Core", async () => {
     const corePaths: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
@@ -1510,6 +1510,9 @@ describe("edge gateway", () => {
       "/v1/users/me/usage-quota",
       "/v1/users/me/paywall?platform=desktop",
       "/v1/users/me/trial",
+      "/v1/users/me/llm-usage?days=30",
+      "/v1/users/me/llm-usage/top-features?days=30&limit=3",
+      "/v1/users/me/llm-usage/total",
       "/v1/payments/available-plans",
     ]) {
       const response = await edge.fetch(
@@ -1527,8 +1530,25 @@ describe("edge gateway", () => {
       "/v1/users/me/usage-quota",
       "/v1/users/me/paywall",
       "/v1/users/me/trial",
+      "/v1/users/me/llm-usage",
+      "/v1/users/me/llm-usage/top-features",
+      "/v1/users/me/llm-usage/total",
       "/v1/payments/available-plans",
     ]);
+
+    const write = await edge.fetch(
+      new Request("https://edge.test/v1/users/me/llm-usage", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ input_tokens: 1, output_tokens: 2 }),
+      }),
+      env as never,
+    );
+    expect(write.status).toBe(200);
+    expect(corePaths.at(-1)).toBe("/v1/users/me/llm-usage");
   });
 
   it("routes the authenticated fair-use status read to API Core", async () => {

@@ -61,13 +61,19 @@ Main-chat clear removes the current session atomically, while desktop scoped
 deletes retain the session and decrement its message count. Client message IDs
 are idempotency keys, desktop journal revisions advance monotonically, and an
 accepted human desktop-chat write records its quota event in the message batch.
-`chat_quota.py` projects UTC-month question and provider-cost usage from those
-events and powers both the desktop quota read and mobile subscription fields.
+`chat_quota.py` projects UTC-month questions from those events and provider
+cost from `cf_llm_usage_daily`, powering both the desktop quota read and mobile
+subscription fields.
 Free-plan reservation is enforced atomically by API AI before provider work;
-Workers AI token usage settles the event cost with the persisted exchange.
-Unsettled provider costs make Architect projections unavailable instead of
-silently undercounting. App/persona generation and attachments remain explicit
-downstream cutover boundaries.
+Workers AI token usage settles the event cost with the persisted exchange. The
+NULL-to-settled D1 trigger increments `llm_usage_routes.py`'s feature/model
+ledger exactly once, while desktop reports increment a separate account-aware
+`desktop_chat` bucket. Summary reads exclude bucket rows, total-cost reads use
+only the primary bucket dimension, and Architect combines managed chat plus
+desktop bucket cost. Unsettled API-AI provider costs make Architect projections
+unavailable instead of silently undercounting; desktop persistence rows do not
+invent an event-local cost. App/persona generation and attachments remain
+explicit downstream cutover boundaries.
 
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional

@@ -149,13 +149,19 @@ async def chat_quota_snapshot(
 ) -> dict[str, object]:
     start, end = month_bounds(now)
     plan = await subscription_plan(env, uid)
+    start_day = datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%d")
+    end_day = datetime.fromtimestamp(end, timezone.utc).strftime("%Y-%m-%d")
     usage = (
         await env.APP_DB.prepare(
-            "SELECT COUNT(*) AS questions, COALESCE(SUM(cost_usd), 0) AS cost_usd, "
-            "COALESCE(SUM(CASE WHEN settled_at IS NULL THEN 1 ELSE 0 END), 0) AS unsettled "
+            "SELECT COUNT(*) AS questions, "
+            "COALESCE(SUM(CASE WHEN source = 'v2_messages' AND settled_at IS NULL THEN 1 ELSE 0 END), 0) "
+            "AS unsettled, COALESCE((SELECT SUM(cost_usd) FROM cf_llm_usage_daily "
+            "WHERE uid = ? AND usage_day >= ? AND usage_day < ? AND "
+            "((usage_kind = 'feature' AND feature = 'chat') OR "
+            "(usage_kind = 'bucket' AND feature = 'desktop_chat'))), 0) AS cost_usd "
             "FROM cf_chat_quota_events WHERE uid = ? AND occurred_at >= ? AND occurred_at < ?"
         )
-        .bind(uid, start, end)
+        .bind(uid, start_day, end_day, uid, start, end)
         .first()
     )
     if not isinstance(usage, dict):
@@ -163,9 +169,10 @@ async def chat_quota_snapshot(
     policy = plan_policy(env, plan)
     unit = str(policy["unit"])
     if unit == "cost_usd" and int(usage.get("unsettled") or 0) > 0:
-        # Never tell an Architect user they have spent $0 while a provider cost
-        # is still unaccounted for. Question-based plans can count reservations
-        # immediately, matching the legacy pre-provider quota event boundary.
+        # Never tell an Architect user they have spent $0 while an in-Worker
+        # provider call is still unaccounted for. Desktop persistence events use
+        # the separate daily bucket report and therefore have no per-event cost
+        # settlement to wait for.
         raise RuntimeError("chat cost projection has unsettled events")
     used = float(usage.get("cost_usd") or 0) if unit == "cost_usd" else float(usage.get("questions") or 0)
     limit = float(policy["limit"])

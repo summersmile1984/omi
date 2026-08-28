@@ -883,10 +883,20 @@ No staging price IDs are synthesized or copied from production.
 `GET /v1/users/me/usage-quota` and the mobile subscription projection now read
 the UTC-month `cf_chat_quota_events` authority. Free, Neo, Plus, Unlimited, and
 Operator use the same question limits as the backend contract. Architect uses
-settled provider USD cost; any event whose provider cost is still unknown makes
-that projection return `503` rather than displaying a false zero. This is an
-isolated-staging authority until production subscription and legacy usage
-events are imported.
+the UTC-month `cf_llm_usage_daily` cost ledger. A still-running API-AI provider
+event makes that projection return `503` rather than displaying a false zero;
+desktop persistence events are priced by their separate client/server bucket
+report and do not pretend to have an event-local settlement.
+
+Migration `0056_llm_usage_daily.sql` moves the four
+`/v1/users/me/llm-usage` read/write contracts to a D1 daily aggregate. Rows keep
+legacy feature/model telemetry separate from the flat `desktop_chat` cost
+bucket, so bucket reports do not appear in feature summaries and the total-cost
+read never double-counts the per-account breakdown. A D1 trigger projects the
+one NULL-to-settled chat quota transition into the feature ledger, including a
+backfill for already-settled staging events; retrying settlement cannot add the
+same provider usage twice. This is an isolated-staging authority until
+production subscription and legacy Firestore usage documents are imported.
 
 The Auth Worker includes the Better Auth account creation timestamp in the
 request-bound, audience-bound internal identity assertion. API Core uses that
@@ -1348,7 +1358,7 @@ intent-to-tombstone transition is atomic, duplicate public requests are
 idempotent, and the scheduled reconciler republishes durable intents whose
 initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 61 product identity-bearing column
+The explicit residual inventory covers 62 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,

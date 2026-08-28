@@ -671,6 +671,27 @@ export async function runSmoke({
   });
   expectStatus("trial", trial, 200);
 
+  const llmUsage = await request(
+    fetchImpl,
+    `${base}/v1/users/me/llm-usage?days=30`,
+    { headers: authHeaders },
+  );
+  expectStatus("LLM usage summary", llmUsage, 200);
+
+  const llmTopFeatures = await request(
+    fetchImpl,
+    `${base}/v1/users/me/llm-usage/top-features?days=30&limit=3`,
+    { headers: authHeaders },
+  );
+  expectStatus("LLM usage top features", llmTopFeatures, 200);
+
+  const llmTotalCost = await request(
+    fetchImpl,
+    `${base}/v1/users/me/llm-usage/total`,
+    { headers: authHeaders },
+  );
+  expectStatus("LLM usage total cost", llmTotalCost, 200);
+
   const availablePlans = await request(
     fetchImpl,
     `${base}/v1/payments/available-plans`,
@@ -802,6 +823,9 @@ export async function runSmoke({
     calendarOnboardingStatus: calendarOnboardingStatus.status,
     accountUsage: accountUsage.status,
     accountSubscription: accountSubscription.status,
+    llmUsage: llmUsage.status,
+    llmTopFeatures: llmTopFeatures.status,
+    llmTotalCost: llmTotalCost.status,
     availablePlans: availablePlans.status,
     fairUseStatus: fairUseStatus.status,
     invalidGeolocation: invalidGeolocation.status,

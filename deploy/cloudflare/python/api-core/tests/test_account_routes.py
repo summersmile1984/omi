@@ -36,6 +36,7 @@ class FakeDb:
             "0046_account_usage.sql",
             "0054_chat_sessions.sql",
             "0055_chat_quota_accounting.sql",
+            "0056_llm_usage_daily.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
 
@@ -131,9 +132,14 @@ def insert_chat_event(
     env.APP_DB.connection.execute(
         "INSERT INTO cf_chat_quota_events "
         "(uid, idempotency_key, source, occurred_at, cost_usd, prompt_tokens, completion_tokens, model, settled_at) "
-        "VALUES (?, ?, 'test', ?, ?, 1, 1, '@cf/test', ?)",
-        (uid, event_id, now, cost_usd, now if settled else None),
+        "VALUES (?, ?, 'v2_messages', ?, ?, 1, 1, '@cf/test', NULL)",
+        (uid, event_id, now, cost_usd),
     )
+    if settled:
+        env.APP_DB.connection.execute(
+            "UPDATE cf_chat_quota_events SET settled_at = ? WHERE uid = ? AND idempotency_key = ?",
+            (now, uid, event_id),
+        )
     env.APP_DB.connection.commit()
 
 
@@ -257,6 +263,37 @@ def test_architect_quota_uses_settled_provider_cost_and_rejects_unknown_cost():
     unavailable = asyncio.run(get_user_chat_usage_quota(FakeRequest(env, signed_headers(secret))))
     assert unavailable.status_code == 503
     assert json.loads(unavailable.body) == {"error": "chat quota unavailable"}
+
+
+def test_architect_quota_uses_desktop_bucket_cost_without_requiring_desktop_event_settlement():
+    secret = "account-secret"
+    env = make_env(secret)
+    now = int(datetime.now(timezone.utc).timestamp())
+    day = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_user_subscriptions (uid, plan, status, updated_at) "
+        "VALUES ('account-user', 'architect', 'active', ?)",
+        (now,),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_chat_quota_events "
+        "(uid, idempotency_key, source, occurred_at) "
+        "VALUES ('account-user', 'desktop-message', 'desktop_messages', ?)",
+        (now,),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_llm_usage_daily "
+        "(uid, usage_day, usage_kind, feature, model, account, cost_usd, call_count, updated_at) "
+        "VALUES ('account-user', ?, 'bucket', 'desktop_chat', '', 'omi', 2.5, 1, ?)",
+        (day, now),
+    )
+    env.APP_DB.connection.commit()
+
+    response = asyncio.run(get_user_chat_usage_quota(FakeRequest(env, signed_headers(secret))))
+
+    assert response["unit"] == "cost_usd"
+    assert response["used"] == 2.5
+    assert response["allowed"] is True
 
 
 def test_trial_paywall_uses_signed_account_age_desktop_platform_and_byok_escape():

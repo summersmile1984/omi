@@ -228,6 +228,15 @@ describe("staging smoke helpers", () => {
                                                       url.endsWith(
                                                         "/v1/users/me/trial",
                                                       ) ||
+                                                      url.includes(
+                                                        "/v1/users/me/llm-usage?",
+                                                      ) ||
+                                                      url.includes(
+                                                        "/v1/users/me/llm-usage/top-features?",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/me/llm-usage/total",
+                                                      ) ||
                                                       url.endsWith(
                                                         "/v1/payments/available-plans",
                                                       ) ||
@@ -303,13 +312,16 @@ describe("staging smoke helpers", () => {
       calendarOnboardingStatus: 200,
       accountUsage: 200,
       accountSubscription: 200,
+      llmUsage: 200,
+      llmTopFeatures: 200,
+      llmTotalCost: 200,
       availablePlans: 200,
       fairUseStatus: 200,
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(65);
+    expect(calls).toHaveLength(68);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

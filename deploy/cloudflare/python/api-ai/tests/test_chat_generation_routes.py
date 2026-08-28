@@ -56,6 +56,7 @@ class FakeDb:
             "0046_account_usage.sql",
             "0054_chat_sessions.sql",
             "0055_chat_quota_accounting.sql",
+            "0056_llm_usage_daily.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
         self.fail_batch = fail_batch
