@@ -1,0 +1,93 @@
+version: 1
+sources:
+  - backend/database/vector_db.py
+  - backend/database/memory_vector_repair_pinecone_adapter.py
+policy:
+  vectorize_is_authoritative: false
+  candidate_ids_must_be_hydrated: true
+  max_vectorize_dimensions: 1536
+namespaces:
+  - id: conversations
+    legacy_namespace: ns1
+    authoritative_source: conversation-repository
+    source_model: openai/text-embedding-3-large
+    source_dimensions: 3072
+    target: vectorize
+    target_index: omi-cf-conversations-v1
+    target_model: "@cf/baai/bge-base-en-v1.5"
+    target_dimensions: 768
+    migration_mode: reembed
+    migration_state: qualification-required
+    candidate_only: true
+  - id: memories
+    legacy_namespace: ns2
+    authoritative_source: memory-repository
+    source_model: openai/text-embedding-3-large
+    source_dimensions: 3072
+    target: vectorize
+    target_index: omi-cf-memories-v1
+    target_model: "@cf/baai/bge-base-en-v1.5"
+    target_dimensions: 768
+    migration_mode: reembed
+    migration_state: qualification-required
+    candidate_only: true
+  - id: workstream-associations
+    legacy_namespace: workstream-association-v1
+    authoritative_source: workstream-repository
+    source_model: openai/text-embedding-3-large
+    source_dimensions: 3072
+    target: vectorize
+    target_index: omi-cf-workstreams-v1
+    target_model: "@cf/baai/bge-base-en-v1.5"
+    target_dimensions: 768
+    migration_mode: reembed
+    migration_state: qualification-required
+    candidate_only: true
+  - id: x-posts
+    legacy_namespace: ns_x
+    authoritative_source: x-post-repository
+    source_model: openai/text-embedding-3-large
+    source_dimensions: 3072
+    target: vectorize
+    target_index: omi-cf-x-posts-v1
+    target_model: "@cf/baai/bge-base-en-v1.5"
+    target_dimensions: 768
+    migration_mode: reembed
+    migration_state: qualification-required
+    candidate_only: true
+  - id: screen-activity
+    legacy_namespace: ns3
+    authoritative_source: screen-activity-repository
+    source_model: google/gemini-embedding-001
+    source_dimensions: 3072
+    target: vectorize
+    target_index: omi-cf-screen-activity-v1
+    target_model: "@cf/baai/bge-base-en-v1.5"
+    target_dimensions: 768
+    migration_mode: reembed
+    migration_state: qualification-required
+    candidate_only: true
+  - id: action-items
+    legacy_namespace: ns4
+    authoritative_source: action-item-repository
+    source_model: openai/text-embedding-3-large
+    source_dimensions: 3072
+    target: vectorize
+    target_index: omi-cf-action-items-v1
+    target_model: "@cf/baai/bge-base-en-v1.5"
+    target_dimensions: 768
+    migration_mode: reembed
+    migration_state: qualification-required
+    candidate_only: true
+  - id: transcript-chunks
+    legacy_namespace: ns_tchunks
+    authoritative_source: conversation-repository
+    source_model: openai/text-embedding-3-large
+    source_dimensions: 3072
+    target: vectorize
+    target_index: omi-cf-transcript-chunks-v1
+    target_model: "@cf/baai/bge-base-en-v1.5"
+    target_dimensions: 768
+    migration_mode: reembed
+    migration_state: qualification-required
+    candidate_only: true

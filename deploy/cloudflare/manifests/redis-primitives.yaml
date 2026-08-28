@@ -1,0 +1,559 @@
+version: 1
+source: backend/database/redis_db.py
+policy:
+  workers_may_connect_to_redis: false
+  one_target_owner_per_key_family: true
+ignored_source_symbols:
+  - try_catch_decorator
+families:
+  - id: generic-cache
+    source_symbols: [get_generic_cache, set_generic_cache, delete_generic_cache]
+    key_patterns: ["cache:{base64(path)}"]
+    legacy_features: [get, set, delete, ttl, fail-open]
+    consistency: stale-ok
+    target: kv
+    target_owner: api-core
+    migration_state: planned
+  - id: app-object-cache
+    source_symbols:
+      [
+        set_app_cache_by_id,
+        get_app_cache_by_id,
+        delete_app_cache_by_id,
+        set_app_usage_count_cache,
+        get_app_usage_count_cache,
+        set_app_money_made_amount_cache,
+        get_app_money_made_amount_cache,
+        set_app_usage_history_cache,
+        get_app_usage_history_cache,
+        get_app_money_made_cache,
+        set_app_money_made_cache,
+      ]
+    key_patterns:
+      [
+        "apps:{app_id}",
+        "apps:{app_id}:usage_count",
+        "apps:{app_id}:money_made",
+        "apps:{app_id}:usage",
+        "apps:{app_id}:money",
+      ]
+    legacy_features: [get, set, delete, ttl, mget]
+    consistency: stale-ok
+    target: kv
+    target_owner: api-core
+    migration_state: planned
+  - id: username-identity
+    source_symbols: [is_username_taken, get_uid_by_username, save_username]
+    key_patterns: ["username:{username}:uid", "uid:{uid}:usernames"]
+    legacy_features: [exists, get, set, set-membership]
+    consistency: strongly-consistent-unique
+    target: d1
+    target_owner: auth
+    migration_state: planned
+  - id: app-reviews
+    source_symbols:
+      [
+        set_app_review_cache,
+        get_specific_user_review,
+        get_app_reviews,
+        get_apps_reviews,
+      ]
+    key_patterns: ["plugins:{app_id}:reviews"]
+    legacy_features: [get, set, mget]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: planned
+  - id: app-billing-entitlements
+    source_symbols:
+      [
+        set_user_paid_app,
+        get_user_paid_app,
+        set_user_app_subscription_customer_id,
+        get_user_app_subscription_customer_id,
+      ]
+    key_patterns:
+      [
+        "users:{uid}:paid_apps:{app_id}",
+        "users:{uid}:app_subs:{app_id}:customer_id",
+      ]
+    legacy_features: [get, set, ttl]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: planned
+  - id: enabled-apps-and-installs
+    source_symbols:
+      [
+        enable_app,
+        disable_app,
+        is_app_enabled,
+        get_enabled_apps,
+        set_app_installs_count,
+        increase_app_installs_count,
+        decrease_app_installs_count,
+        get_apps_installs_count,
+      ]
+    key_patterns: ["plugins:{app_id}:installs", "users:{uid}:enabled_plugins"]
+    legacy_features: [get, set, mget, counter, set-membership]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: staging-owned
+  - id: user-name-cache
+    source_symbols: [cache_user_name]
+    key_patterns: ["users:{uid}:name"]
+    legacy_features: [set, ttl]
+    consistency: stale-ok
+    target: kv
+    target_owner: api-core
+    migration_state: planned
+  - id: signed-url-cache
+    source_symbols: [cache_signed_url, get_cached_signed_url]
+    key_patterns: ["urls:{blob_path}"]
+    legacy_features: [get, set, ttl]
+    consistency: stale-ok
+    target: kv
+    target_owner: api-core
+    migration_state: planned
+  - id: user-geolocation-cache
+    source_symbols:
+      [
+        cache_user_geolocation,
+        get_cached_user_geolocation,
+        delete_cached_user_geolocation,
+      ]
+    key_patterns: ["users:{uid}:geolocation"]
+    legacy_features: [get, set, delete, ttl, fail-open]
+    consistency: bounded-stale
+    target: kv
+    target_owner: api-core
+    migration_state: planned
+  - id: daily-summary-owner
+    source_symbols:
+      [
+        store_daily_summary_to_uid,
+        get_daily_summary_uid,
+        remove_daily_summary_to_uid,
+      ]
+    key_patterns: ["daily-summary:{summary_id}"]
+    legacy_features: [get, set, delete]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: staging-owned
+  - id: conversation-access
+    source_symbols:
+      [
+        store_conversation_to_uid,
+        remove_conversation_to_uid,
+        get_conversation_uid,
+        add_public_conversation,
+        remove_public_conversation,
+      ]
+    key_patterns: ["memories-visibility:{conversation_id}", public-memories]
+    legacy_features: [get, set, delete, set-membership]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: staging-owned
+  - id: conversation-ephemeral-state
+    source_symbols:
+      [
+        set_in_progress_conversation_id,
+        remove_in_progress_conversation_id,
+        get_in_progress_conversation_id,
+        set_conversation_meeting_id,
+        get_conversation_meeting_id,
+      ]
+    key_patterns:
+      [
+        "users:{uid}:in_progress_memory_id",
+        "conversation:{conversation_id}:meeting_id",
+      ]
+    legacy_features: [get, set, delete, ttl]
+    consistency: per-user-strong
+    target: durable-object
+    target_owner: realtime
+    migration_state: planned
+  - id: developer-webhooks
+    source_symbols:
+      [
+        set_user_webhook_db,
+        disable_user_webhook_db,
+        enable_user_webhook_db,
+        user_webhook_status_db,
+        get_user_webhook_db,
+      ]
+    key_patterns:
+      [
+        "users:{uid}:developer:webhook:{type}",
+        "users:{uid}:developer:webhook_status:{type}",
+      ]
+    legacy_features: [get, set]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: staging-owned
+  - id: retrieval-filter-history
+    source_symbols: [get_filter_category_items, add_filter_category_item]
+    key_patterns: ["users:{uid}:filters:{category}"]
+    legacy_features: [set-membership, random-member]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: planned
+  - id: retrieval-migration-checkpoint
+    source_symbols: [save_migrated_retrieval_conversation_id]
+    key_patterns: [migrated_retrieval_memory_ids]
+    legacy_features: [set-membership, ttl]
+    consistency: job-checkpoint
+    target: d1
+    target_owner: jobs
+    migration_state: planned
+  - id: proactive-notification-rate-state
+    source_symbols:
+      [
+        set_proactive_noti_sent_at,
+        get_proactive_noti_sent_at,
+        get_proactive_noti_sent_at_ttl,
+        incr_daily_notification_count,
+        get_daily_notification_count,
+      ]
+    key_patterns:
+      ["{uid}:{app_id}:proactive_noti_sent_at", "{uid}:daily_noti_count:{date}"]
+    legacy_features: [get, set, counter, ttl]
+    consistency: per-user-strong
+    target: durable-object
+    target_owner: jobs
+    migration_state: planned
+  - id: user-preferred-app
+    source_symbols: [set_user_preferred_app, get_user_preferred_app]
+    key_patterns: ["user:{uid}:preferred_app"]
+    legacy_features: [get, set]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: planned
+  - id: user-data-protection-level
+    source_symbols:
+      [set_user_data_protection_level, get_user_data_protection_level]
+    key_patterns: ["user:{uid}:data_protection_level"]
+    legacy_features: [get, set, fail-open]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: staging-owned
+  - id: mcp-api-key-cache
+    source_symbols:
+      [
+        cache_mcp_api_key,
+        cache_mcp_api_key_auth_context,
+        get_cached_mcp_api_key_user_id,
+        read_cached_mcp_api_key_auth_context,
+        get_cached_mcp_api_key_auth_context,
+        delete_cached_mcp_api_key_strict,
+      ]
+    key_patterns: ["mcp_api_key:{hash}", "mcp_api_key_auth:{hash}"]
+    legacy_features: [get, set, delete, ttl, fail-open]
+    consistency: revocation-aware
+    target: d1
+    target_owner: auth
+    migration_state: planned
+  - id: developer-api-key-cache
+    source_symbols:
+      [
+        cache_dev_api_key,
+        read_cached_dev_api_key_data,
+        get_cached_dev_api_key_data,
+        delete_cached_dev_api_key_strict,
+      ]
+    key_patterns: ["dev_api_key:{hash}"]
+    legacy_features: [get, set, delete, ttl, fail-open]
+    consistency: revocation-aware
+    target: d1
+    target_owner: auth
+    migration_state: planned
+  - id: migration-status
+    source_symbols: [set_migration_status]
+    key_patterns: ["migration_status:{uid}"]
+    legacy_features: [set, ttl]
+    consistency: job-checkpoint
+    target: d1
+    target_owner: jobs
+    migration_state: planned
+  - id: auth-exchange-state
+    source_symbols:
+      [
+        set_auth_session,
+        get_auth_session,
+        set_auth_code,
+        get_auth_code,
+        delete_auth_code,
+      ]
+    key_patterns: ["auth_session:{session_id}", "auth_code:{code}"]
+    legacy_features: [get, set, delete, ttl, single-use]
+    consistency: strongly-consistent
+    target: d1
+    target_owner: auth
+    migration_state: planned
+  - id: notification-deduplication
+    source_symbols:
+      [
+        set_credit_limit_notification_sent,
+        has_credit_limit_notification_been_sent,
+        set_silent_user_notification_sent,
+        has_silent_user_notification_been_sent,
+        try_acquire_byok_llm_error_notification_lock,
+        release_byok_llm_error_notification_lock,
+        set_important_conversation_notification_sent,
+        has_important_conversation_notification_been_sent,
+      ]
+    key_patterns:
+      [
+        "users:{uid}:credit_limit_notification_sent",
+        "users:{uid}:silent_notification_sent",
+        "users:{uid}:byok_llm_error:{provider}:{reason}",
+        "users:{uid}:important_conv_notif:{conversation_id}",
+      ]
+    legacy_features: [exists, set, delete, ttl, set-if-absent]
+    consistency: per-user-strong
+    target: durable-object
+    target_owner: jobs
+    migration_state: planned
+  - id: conversation-summary-app-set
+    source_symbols:
+      [
+        get_conversation_summary_app_ids,
+        add_conversation_summary_app_id,
+        remove_conversation_summary_app_id,
+      ]
+    key_patterns: [conversation_summary_app_ids]
+    legacy_features: [set-membership]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: planned
+  - id: request-rate-limits
+    source_symbols: [check_rate_limit, reserve_rate_limit, release_rate_limit]
+    key_patterns: ["rl:{policy}:{subject}"]
+    legacy_features: [lua, counter, ttl, reversible-reservation]
+    consistency: strongly-consistent
+    target: durable-object
+    target_owner: edge
+    migration_state: planned
+  - id: tts-rate-limits
+    source_symbols: [check_tts_rate_limit]
+    key_patterns: ["tts:burst:{uid}", "tts:chars:{uid}:{date}"]
+    legacy_features: [lua, sorted-set, counter, ttl]
+    consistency: strongly-consistent
+    target: durable-object
+    target_owner: api-ai
+    migration_state: planned
+  - id: write-and-listen-throttles
+    source_symbols:
+      [
+        try_acquire_listen_lock,
+        try_acquire_client_device_write_lock,
+        try_acquire_user_platform_write_lock,
+      ]
+    key_patterns:
+      [
+        "users:{uid}:listen_rate_limit",
+        "users:{uid}:client_device_write:{device_id}",
+        "users:{uid}:platform_write:{platform}",
+      ]
+    legacy_features: [set-if-absent, ttl, fail-open]
+    consistency: per-user-strong
+    target: durable-object
+    target_owner: realtime
+    migration_state: planned
+  - id: persona-update-window
+    source_symbols: [set_persona_update_timestamp, can_update_persona]
+    key_patterns: ["users:{uid}:persona_updated"]
+    legacy_features: [exists, set, ttl]
+    consistency: per-user-strong
+    target: durable-object
+    target_owner: api-ai
+    migration_state: planned
+  - id: speech-profile-duration
+    source_symbols: [set_speech_profile_duration, get_speech_profile_duration]
+    key_patterns: ["users:{uid}:speech_profile_duration"]
+    legacy_features: [get, set, fail-open]
+    consistency: durable-authoritative
+    target: d1
+    target_owner: api-core
+    migration_state: planned
+  - id: task-share
+    source_symbols:
+      [
+        store_task_share,
+        get_task_share,
+        try_accept_task_share,
+        undo_accept_task_share,
+      ]
+    key_patterns: ["task_share:{token}", "task_share:{token}:accepted"]
+    legacy_features: [get, set, ttl, set-membership, claim-rollback]
+    consistency: strongly-consistent
+    target: durable-object
+    target_owner: api-core
+    migration_state: planned
+  - id: chat-share
+    source_symbols: [store_chat_share, get_chat_share]
+    key_patterns: ["chat_share:{token}"]
+    legacy_features: [get, set, ttl]
+    consistency: strongly-consistent
+    target: durable-object
+    target_owner: api-core
+    migration_state: planned
+  - id: daily-summary-lock
+    source_symbols: [try_acquire_daily_summary_lock]
+    key_patterns: ["users:{uid}:daily_summary_lock:{date}"]
+    legacy_features: [set-if-absent, ttl]
+    consistency: strongly-consistent
+    target: durable-object
+    target_owner: jobs
+    migration_state: planned
+  - id: credit-invalidation-signal
+    source_symbols:
+      [set_credits_invalidation_signal, check_credits_invalidation]
+    key_patterns: ["credits_invalidated:{uid}"]
+    legacy_features: [get, set, ttl, multi-reader]
+    consistency: per-user-strong
+    target: durable-object
+    target_owner: realtime
+    migration_state: planned
+  - id: goal-extraction-locks
+    source_symbols:
+      [try_acquire_goal_extraction_lock, try_acquire_conversation_goal_lock]
+    key_patterns:
+      [
+        "users:{uid}:goal_extraction_lock",
+        "users:{uid}:conv_goal_lock:{conversation_id}",
+      ]
+    legacy_features: [set-if-absent, ttl]
+    consistency: strongly-consistent
+    target: durable-object
+    target_owner: jobs
+    migration_state: planned
+direct_legacy_callers:
+  - {
+      path: backend/database/cache.py,
+      target: kv,
+      target_owner: api-core,
+      migration_state: planned,
+    }
+  - {
+      path: backend/database/firestore_cache.py,
+      target: kv,
+      target_owner: api-core,
+      migration_state: planned,
+    }
+  - {
+      path: backend/database/phone_call_usage.py,
+      target: durable-object,
+      target_owner: api-core,
+      migration_state: planned,
+    }
+  - {
+      path: backend/database/redis_pubsub.py,
+      target: durable-object,
+      target_owner: realtime,
+      migration_state: planned,
+    }
+  - {
+      path: backend/database/sync_jobs.py,
+      target: queue,
+      target_owner: jobs,
+      migration_state: planned,
+    }
+  - {
+      path: backend/database/webhook_health.py,
+      target: d1,
+      target_owner: jobs,
+      migration_state: planned,
+    }
+  - {
+      path: backend/routers/desktop_core.py,
+      target: durable-object,
+      target_owner: edge,
+      migration_state: planned,
+    }
+  - {
+      path: backend/routers/integrations.py,
+      target: durable-object,
+      target_owner: api-core,
+      migration_state: planned,
+    }
+  - {
+      path: backend/routers/task_integrations.py,
+      target: durable-object,
+      target_owner: api-core,
+      migration_state: planned,
+    }
+  - {
+      path: backend/scripts/export_openapi.py,
+      target: none,
+      target_owner: tooling,
+      migration_state: exempt-tooling,
+    }
+  - {
+      path: backend/scripts/users/retrieval.py,
+      target: d1,
+      target_owner: jobs,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/conversations/location.py,
+      target: kv,
+      target_owner: api-core,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/cloud_tasks_redis.py,
+      target: queue,
+      target_owner: jobs,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/fair_use.py,
+      target: durable-object,
+      target_owner: realtime,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/other/endpoints.py,
+      target: durable-object,
+      target_owner: edge,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/sync/backfill.py,
+      target: durable-object,
+      target_owner: jobs,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/sync/capture_manifest.py,
+      target: d1,
+      target_owner: jobs,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/translation_core/cache.py,
+      target: kv,
+      target_owner: api-ai,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/voice_duration_limiter.py,
+      target: durable-object,
+      target_owner: realtime,
+      migration_state: planned,
+    }
+  - {
+      path: backend/utils/x_connector.py,
+      target: durable-object,
+      target_owner: auth,
+      migration_state: planned,
+    }

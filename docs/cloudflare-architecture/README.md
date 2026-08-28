@@ -16,7 +16,7 @@
 
 | 项目 | 状态 | 已有证据 | 尚未闭合 |
 | --- | --- | --- | --- |
-| CF-00 清单/scaffold | 部分完成 | 188 条显式 staging 路由、11 个隔离资源、manifest 校验 | 与完整 backend 注册面逐条一致的最终门槛、Redis/Vectorize namespace 清单 |
+| CF-00 清单/scaffold | 部分完成 | 188 条显式 staging 路由、11 个隔离资源、34 个 Redis family、7 个 vector namespace、9 个 R2 namespace 均有机械校验 | 与完整 backend 注册面逐条一致的最终 route-parity 门槛 |
 | CF-01 Edge | staging 已验证 | header 剥离、防重放、CORS、owner 标记、health/smoke | 生产回滚与非幂等超时的 live 证据 |
 | CF-02 Python Workers | staging 已验证 | api-core/api-ai、110+32 个 Python 测试、真实 Worker smoke | 生产规模 bundle/CPU/内存/cold-start/外连预算 |
 | CF-03 Better Auth | 部分完成 | 独立 D1、signup/login/session/JWT、staging 浏览器登录 | OAuth、link/delete、导入 checksum、JWKS rotation、abort/retry、生产身份连续性 |

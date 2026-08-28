@@ -764,15 +764,15 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；provider 未配置时按原契约安全回退或返回 `503`。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，支持稳定 `jobId` 的 `probe` 与 raw-audio `transcribe` kind；后者用临时 R2 对象、幂等键和最多三次 Workers AI 重试完成异步 Whisper 投影，并提供 uid-scoped job status/result read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：188 条首期路由和 11 个 staging 资源；`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership 及 Edge 路由表示。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：188 条首期路由和 11 个 staging 资源；`redis-primitives.yaml` 将 `backend/database/redis_db.py` 的 118 个公开 helper（另显式豁免装饰器）归入 34 个 key family，并覆盖 20 个绕过 helper 或直接依赖 Redis package 的生产/工具调用点；`vector-namespaces.yaml` 覆盖 7 个现有 Pinecone namespace；`r2-namespaces.yaml` 覆盖 9 个 `BUCKET_*` 对象 namespace。`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership、Edge 路由表示、源码清单完整性、Vectorize 维度/re-embedding 契约、R2 环境隔离，以及 Cloudflare Worker 禁止连接 Redis。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
 ```text
 npm run typecheck                         # pass
-npm test                                  # 10 files / 67 tests pass
-api-core/.venv/bin/pytest -q              # api-core: 89 tests pass
-api-ai/.venv/bin/pytest -q                # api-ai: 30 tests pass
+npm test                                  # 14 files / 101 tests pass
+uvx uv==0.12.3 run pytest -q              # api-core: 110 tests pass
+uvx uv==0.12.3 run pytest -q              # api-ai: 32 tests pass
 uvx uv==0.12.3 run pywrangler dev --help  # pass for api-core/api-ai
 wrangler deploy (staging)                 # six Workers uploaded
 curl /health                              # auth/core/ai/realtime/edge → HTTP 200

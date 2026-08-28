@@ -49,6 +49,27 @@ The deploy script only deploys the named staging environment. It applies D1
 migrations before Workers and deploys Edge last. It never creates production
 resources and never mutates existing Omi Workers.
 
+## Migration inventories
+
+Three reviewed manifests keep the remaining legacy infrastructure explicit:
+
+- `manifests/redis-primitives.yaml` assigns every public helper in
+  `backend/database/redis_db.py` and every direct production Redis client caller
+  to one final KV, Durable Object, D1, Queue, or Workflow owner. Cloudflare
+  Worker source is forbidden from importing or connecting to Redis.
+- `manifests/vector-namespaces.yaml` records every Pinecone namespace, current
+  model/dimensions, authoritative hydration source, and the versioned Vectorize
+  re-embedding target. Existing 3072-dimensional projections cannot be copied
+  into Vectorize unchanged.
+- `manifests/r2-namespaces.yaml` records every legacy `BUCKET_*` binding, object
+  prefix, lifecycle, data classification, and isolated R2 bucket target. It
+  forbids dual-write cutovers and requires residual scans before deletion.
+
+`npm run validate:manifest` checks these inventories against current backend
+source. A new Redis helper/direct client, Pinecone namespace, storage bucket, or
+Worker-side Redis dependency fails before tests run. Inventory-only targets are
+not provisioned resources and do not imply a production cutover.
+
 ## Commands
 
 ```bash

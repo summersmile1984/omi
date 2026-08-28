@@ -1,0 +1,90 @@
+version: 1
+source: backend/utils/other/storage.py
+policy:
+  dual_write_allowed: false
+  cutover_sequence: copy-checksum-freeze-delta-switch-verify
+  deletion_requires_residual_scan: true
+namespaces:
+  - id: speech-profiles
+    legacy_env: BUCKET_SPEECH_PROFILES
+    target_binding: SPEECH_PROFILES
+    target_bucket_pattern: omi-cf-speech-profiles-{environment}
+    object_patterns:
+      [
+        "{uid}/speech_profile.wav",
+        "{uid}/additional_profile_recordings/{file}",
+        "{uid}/people_profiles/{person_id}/{file}",
+      ]
+    data_classification: biometric-sensitive
+    lifecycle: account-lifetime
+    migration_state: inventory-only
+  - id: postprocessing-audio
+    legacy_env: BUCKET_POSTPROCESSING
+    target_binding: POSTPROCESSING_AUDIO
+    target_bucket_pattern: omi-cf-postprocessing-audio-{environment}
+    object_patterns: ["{path}", "sdcard/{path}"]
+    data_classification: customer-audio
+    lifecycle: short-lived
+    migration_state: inventory-only
+  - id: conversation-recordings
+    legacy_env: BUCKET_MEMORIES_RECORDINGS
+    target_binding: CONVERSATION_RECORDINGS
+    target_bucket_pattern: omi-cf-conversation-recordings-{environment}
+    object_patterns: ["{uid}/{conversation_id}.wav"]
+    data_classification: customer-audio
+    lifecycle: account-lifetime
+    migration_state: inventory-only
+  - id: private-cloud-sync
+    legacy_env: BUCKET_PRIVATE_CLOUD_SYNC
+    target_binding: PRIVATE_CLOUD_SYNC
+    target_bucket_pattern: omi-cf-private-cloud-sync-{environment}
+    object_patterns:
+      [
+        "chunks/{uid}/{conversation_id}/{timestamp}.{extension}",
+        "merged/{uid}/{conversation_id}/{audio_file_id}.wav",
+        "playback/{uid}/{conversation_id}/{audio_file_id}.mp3",
+        "playback/{uid}/{conversation_id}/{audio_file_id}.unavailable",
+      ]
+    data_classification: encrypted-or-customer-audio
+    lifecycle: prefix-specific
+    migration_state: inventory-only
+  - id: temporal-sync
+    legacy_env: BUCKET_TEMPORAL_SYNC_LOCAL
+    target_binding: TEMPORAL_SYNC
+    target_bucket_pattern: omi-cf-temporal-sync-{environment}
+    object_patterns: ["{staged_path}"]
+    data_classification: customer-audio
+    lifecycle: one-day
+    migration_state: inventory-only
+  - id: app-logos
+    legacy_env: BUCKET_PLUGINS_LOGOS
+    target_binding: APP_LOGOS
+    target_bucket_pattern: omi-cf-app-logos-{environment}
+    object_patterns: ["{app_id}.png"]
+    data_classification: public-product-asset
+    lifecycle: permanent
+    migration_state: inventory-only
+  - id: app-thumbnails
+    legacy_env: BUCKET_APP_THUMBNAILS
+    target_binding: APP_THUMBNAILS
+    target_bucket_pattern: omi-cf-app-thumbnails-{environment}
+    object_patterns: ["{thumbnail_id}.jpg"]
+    data_classification: public-product-asset
+    lifecycle: permanent
+    migration_state: inventory-only
+  - id: chat-files
+    legacy_env: BUCKET_CHAT_FILES
+    target_binding: CHAT_FILES
+    target_bucket_pattern: omi-cf-chat-files-{environment}
+    object_patterns: ["{uid}/{file_name}"]
+    data_classification: customer-content
+    lifecycle: account-lifetime
+    migration_state: inventory-only
+  - id: desktop-updates
+    legacy_env: BUCKET_DESKTOP_UPDATES
+    target_binding: DESKTOP_UPDATES
+    target_bucket_pattern: omi-cf-desktop-updates-{environment}
+    object_patterns: ["{release_path}"]
+    data_classification: public-release-artifact
+    lifecycle: permanent
+    migration_state: inventory-only
