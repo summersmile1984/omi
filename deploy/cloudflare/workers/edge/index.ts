@@ -476,6 +476,9 @@ app.get(
   "/v1/stt/transcribe-async/:jobId",
   proxyAuthenticatedAsyncTranscriptionStatus,
 );
+app.post("/v2/sync-capture-manifest", proxyAuthenticatedJobs);
+app.post("/v2/sync-local-files", proxyAuthenticatedJobs);
+app.get("/v2/sync-local-files/:jobId", proxyAuthenticatedJobs);
 app.post("/v1/embeddings-workers-ai", proxyAuthenticatedAI);
 app.post("/v1/stt/transcribe", proxyAuthenticatedAI);
 app.get("/v1/account/cutover/control", proxyAuthenticatedCore);

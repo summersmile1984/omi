@@ -26,9 +26,9 @@ import 'package:omi/utils/wal_file_manager.dart';
 const _kBackendBusyErrorHint = 'background worker likely died';
 const _liveCaptureMaxAgeSeconds = 6 * 60 * 60;
 
-/// One batch is one server-side sync job, and a job must finish inside the
-/// backend's 600s stale guard (backend/database/sync_jobs.py).
-const _syncUploadBatchLimit = 5;
+/// A WAL can reach 32 MiB. Two files keep the multipart body below
+/// Cloudflare's 100 MB Free/Pro request limit while still amortizing a job.
+const _syncUploadBatchLimit = 2;
 
 enum SyncJobTerminalPolicy { wait, acknowledge, retry }
 

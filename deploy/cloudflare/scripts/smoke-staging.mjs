@@ -239,6 +239,17 @@ export async function runSmoke({
     unauthenticatedAsyncTranscription,
     401,
   );
+  const unauthenticatedSyncUpload = await request(
+    fetchImpl,
+    `${base}/v2/sync-local-files`,
+    { method: "POST", body: "" },
+  );
+  expectStatus("unauthenticated sync upload", unauthenticatedSyncUpload, 401);
+  const unauthenticatedSyncStatus = await request(
+    fetchImpl,
+    `${base}/v2/sync-local-files/missing`,
+  );
+  expectStatus("unauthenticated sync status", unauthenticatedSyncStatus, 401);
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, {
@@ -664,6 +675,8 @@ export async function runSmoke({
     unauthenticatedAnnouncementsAdmin: unauthenticatedAnnouncementsAdmin.status,
     unauthenticatedFairUseAdmin: unauthenticatedFairUseAdmin.status,
     unauthenticatedAsyncTranscription: unauthenticatedAsyncTranscription.status,
+    unauthenticatedSyncUpload: unauthenticatedSyncUpload.status,
+    unauthenticatedSyncStatus: unauthenticatedSyncStatus.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
     appSearch: appSearch.status,

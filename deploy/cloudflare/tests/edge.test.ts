@@ -1554,6 +1554,92 @@ describe("edge gateway", () => {
     expect(rateLimitNames).toEqual(["stt:transcribe:user-1"]);
   });
 
+  it("streams sync manifests, multipart WAL uploads, and status reads to jobs", async () => {
+    const jobRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+      JOBS: service(async (request) => {
+        jobRequests.push(request);
+        return Response.json({ status: "queued" }, { status: 202 });
+      }),
+    };
+    const manifest = await edge.fetch(
+      new Request("https://edge.test/v2/sync-capture-manifest", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+          "x-app-platform": "ios",
+          "x-device-id-hash": "1234abcd",
+        },
+        body: JSON.stringify({ conversation_id: "capture-1", files: [] }),
+      }),
+      env as never,
+    );
+    expect(manifest.status).toBe(202);
+
+    const form = new FormData();
+    form.append(
+      "files",
+      new File(
+        [new Uint8Array([1, 2, 3])],
+        "audio_pcm16_16000_1_fs160_1787932800.bin",
+      ),
+    );
+    const upload = await edge.fetch(
+      new Request(
+        "https://edge.test/v2/sync-local-files?conversation_id=capture-1",
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer opaque-session",
+            "x-app-platform": "ios",
+            "x-device-id-hash": "1234abcd",
+            "x-omi-sync-capture-manifest": "signed.manifest",
+          },
+          body: form,
+        },
+      ),
+      env as never,
+    );
+    expect(upload.status).toBe(202);
+
+    const status = await edge.fetch(
+      new Request("https://edge.test/v2/sync-local-files/job-1", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+    expect(status.status).toBe(202);
+    expect(jobRequests.map((request) => new URL(request.url).pathname)).toEqual(
+      [
+        "/v2/sync-capture-manifest",
+        "/v2/sync-local-files",
+        "/v2/sync-local-files/job-1",
+      ],
+    );
+    expect(
+      new URL(jobRequests[1].url).searchParams.get("conversation_id"),
+    ).toBe("capture-1");
+    expect(jobRequests[1].headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(jobRequests[1].headers.get("x-app-platform")).toBe("ios");
+    expect(jobRequests[1].headers.get("x-device-id-hash")).toBe("1234abcd");
+    expect(jobRequests[1].headers.get("x-omi-sync-capture-manifest")).toBe(
+      "signed.manifest",
+    );
+    const forwarded = await jobRequests[1].formData();
+    expect((forwarded.get("files") as File).size).toBe(3);
+  });
+
   it("routes the translation contract to the API AI worker", async () => {
     let aiPath = "";
     const env = {

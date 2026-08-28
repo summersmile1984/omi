@@ -43,7 +43,8 @@ Resource names are deliberately isolated from existing account resources:
 - D1: `omi-cf-auth-staging`, `omi-cf-app-staging`
 - Workers: `omi-cf-edge-staging`, `omi-cf-auth-staging`, `omi-cf-api-core-staging`, `omi-cf-api-ai-staging`, `omi-cf-realtime-staging`, `omi-cf-rate-limit-staging`
 - Jobs Worker: `omi-cf-jobs-staging`
-- Queues: `omi-cf-jobs-staging`, `omi-cf-jobs-dlq-staging`
+- Queues: `omi-cf-jobs-staging`, `omi-cf-sync-fresh-staging`,
+  `omi-cf-sync-backfill-staging`, and `omi-cf-jobs-dlq-staging`
 - R2: `omi-cf-staging`
 - Durable Objects: Realtime sessions and standalone rate-limit windows
 
@@ -287,9 +288,53 @@ Before completion, the consumer unions the result segment/word intervals and
 upserts one `sync_fresh` Fair Use source keyed by job ID, so Queue redelivery
 cannot double-count speech. A D1 meter failure keeps the job retryable and does
 not publish an unmetered completed result.
-This route does not claim the legacy `/v2/sync-local-files` conversation,
-memory, or diarization pipeline, so it must not be used as a production
-replacement until those authorities have their own migration contract.
+`/v2/sync-local-files` is separately owned by the Jobs Worker in isolated
+staging. Multipart uploads are parsed one file at a time, hashed into a
+45-day content ledger, and staged under `cf-sync/` in R2. The consumer decodes
+the native length-prefixed Opus/PCM WAL format in Worker-compatible WASM,
+emits bounded two-minute WAV windows, and sends those windows to Workers AI
+Whisper with VAD. Successful timed segments are merged into the uid-scoped D1
+conversation projection with an updated-at compare-and-swap, then summarized
+through Workers AI and recorded in both account-usage and exact Fair Use
+sources. Silence is a successful terminal outcome. Missing timestamps,
+provider errors, summary errors, or D1 meter errors remain retryable and never
+publish a false `completed` response.
+
+Recent capture is accepted into the independent `sync_fresh` queue only when a
+short-lived server-signed manifest binds uid, device, conversation, filenames,
+and digests. Everything else enters `sync_backfill`, which allows one in-flight
+job per uid, four concurrent consumers, a 30-day lookback, and daily user/global
+processed-speech caps. Queue acknowledgement ambiguity leaves the pollable D1
+job and R2 bytes intact for the five-minute reconciler. Completed content
+replays return the ledger result without re-running AI or double-counting
+speech; partial/failed work keeps the ledger retryable so the client retains
+its WAL. The mobile uploader sends no more than two WALs per request because a
+single WAL can reach 32 MiB and Cloudflare Free/Pro request bodies are capped at
+100 MB.
+
+Wrangler aliases `opus-decoder` to its pinned non-Web-Worker core entrypoint.
+The package's public entrypoint eagerly loads an optional browser Worker class,
+which Cloudflare isolates do not provide; the alias keeps the same libopus WASM
+decoder without introducing a Node process or a browser Worker dependency.
+Workers AI JSON Mode returns the schema payload under a `response` object, while
+older text-generation responses can contain a JSON string there; the Jobs
+parser accepts both shapes. Conversation compare-and-swap writes use SQL
+`RETURNING id` instead of `D1Result.meta.changes`, because the conversation FTS5
+triggers legitimately inflate the latter above one for a single matched row.
+
+Live staging evidence on 2026-08-29 used a generated 16 kHz mono PCM WAL against
+Jobs version `55c1aba5-2eec-41dc-bb8f-1fabd308f9ce`. A manifest-bound recent
+upload completed on `sync_fresh`; an exact replay completed immediately with
+zero Queue attempts and no second Fair Use source; a seven-hour upload completed
+on `sync_backfill`; and a 31-day upload returned
+`backfill_lookback_exceeded` without creating a job. Both successful paths
+produced two timed transcript segments, a structured title, one 6740 ms exact
+speech source, and no remaining R2 staging object. The temporary D1 rows and
+Better Auth accounts used by this verification were deleted after the checks.
+
+This staging path intentionally normalizes Whisper output to a single speaker;
+speaker diarization and legacy downstream integrations remain explicit parity
+gaps. It does not call the monolithic Python backend or run a local ASR process.
 
 Browser WebSockets cannot attach an `Authorization` header during the HTTP
 upgrade. Edge therefore signs a random, 30-second, one-use bootstrap for
@@ -326,6 +371,11 @@ POST /v1/stt/transcribe-async
                               Edge → Jobs → R2 → Queue → Workers AI Whisper
 GET  /v1/stt/transcribe-async/{jobId}
                               Edge → Jobs → uid-scoped D1 result
+POST /v2/sync-capture-manifest
+                              Edge → Jobs → device/conversation-bound signed proof
+POST /v2/sync-local-files     Edge → Jobs → R2 → fresh/backfill Queue → Workers AI
+GET  /v2/sync-local-files/{jobId}
+                              Edge → Jobs → uid-scoped D1 sync result
 POST /v1/embeddings-workers-ai
                               Edge → Python API AI → Workers AI BGE binding
 POST /v1/translate           Edge → Python API AI → Workers AI m2m100 translation
@@ -1081,12 +1131,13 @@ still read Firestore, so these routes remain staging-only until those consumers
 move to the D1 authority; the Edge fallback can be restored without a client
 change.
 
-The queue accepts infrastructure `probe` jobs and native Workers AI
-`transcribe` jobs. Producers must use a stable `jobId` or idempotency key;
+The queues accept infrastructure `probe` jobs, native Workers AI `transcribe`
+jobs, and content-idempotent `sync_local_files` jobs. Generic producers must use
+a stable `jobId` or idempotency key;
 reusing either identity with a different request fingerprint is rejected.
 Messages are claimed in D1 per uid, retried independently, and moved to
 `omi-cf-jobs-dlq-staging` after the configured retry limit instead of being
 discarded. Transcription audio is removed after completion or terminal failure;
-an R2 lifecycle rule expires any `cf-transcriptions/` cleanup orphan after one
-day. `GET /v1/cf/jobs/{jobId}` exposes the state machine without returning
+R2 lifecycle rules expire any `cf-transcriptions/` or `cf-sync/` cleanup orphan
+after one day. `GET /v1/cf/jobs/{jobId}` exposes the state machine without returning
 payload data, and requires the same authenticated uid that created the job.

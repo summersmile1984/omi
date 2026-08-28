@@ -281,7 +281,7 @@ void main() {
       expect(isLiveCaptureWal(at(7 * 60 * 60, conversationId: 'c'), now), isFalse);
     });
 
-    test('a backlog smaller than the limit drains in one batch', () {
+    test('a backlog is bounded by the Cloudflare request-size batch limit', () {
       const now = 2000000000;
       final historical = List.generate(
         3,
@@ -290,10 +290,10 @@ void main() {
 
       final batch = nextSyncUploadBatch(historical.reversed.toList(), now);
 
-      expect(batch.length, 3);
+      expect(batch.length, 2);
     });
 
-    test('a batch never exceeds the limit that keeps a job inside the backend stale guard', () {
+    test('a batch never exceeds the Cloudflare request-size limit', () {
       const now = 2000000000;
       final historical = List.generate(
         25,
@@ -302,8 +302,8 @@ void main() {
 
       final batch = nextSyncUploadBatch(historical.reversed.toList(), now);
 
-      expect(batch.length, 5);
-      expect(batch.map((wal) => wal.timerStart), historical.take(5).map((wal) => wal.timerStart));
+      expect(batch.length, 2);
+      expect(batch.map((wal) => wal.timerStart), historical.take(2).map((wal) => wal.timerStart));
     });
 
     test('a conversation too large for one batch does not claim a manifest', () {
@@ -320,9 +320,9 @@ void main() {
 
       final batch = nextSyncUploadBatch(oversized, now);
 
-      expect(batch.length, 5);
+      expect(batch.length, 2);
       expect(canClaimLiveCapture(batch, oversized, now), isFalse);
-      expect(canClaimLiveCapture(batch, oversized.take(5).toList(), now), isTrue);
+      expect(canClaimLiveCapture(batch, oversized.take(2).toList(), now), isTrue);
     });
   });
 

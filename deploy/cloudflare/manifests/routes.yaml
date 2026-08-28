@@ -637,6 +637,45 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v2/sync-capture-manifest
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    idempotency: required
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/sync-local-files
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies:
+      [
+        d1-app,
+        r2-assets,
+        queue-sync-fresh,
+        queue-sync-backfill,
+        workers-ai-binding,
+      ]
+    protocol: http
+    idempotency: content-digest
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v2/sync-local-files/:jobId
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/stt/transcribe-workers-ai
     owner: api-ai
     runtime: python-worker

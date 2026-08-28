@@ -175,6 +175,15 @@ function ensureResources() {
     run("npx", ["wrangler", "queues", "create", "omi-cf-jobs-staging"]);
   if (!queueExists("omi-cf-jobs-dlq-staging"))
     run("npx", ["wrangler", "queues", "create", "omi-cf-jobs-dlq-staging"]);
+  if (!queueExists("omi-cf-sync-fresh-staging"))
+    run("npx", ["wrangler", "queues", "create", "omi-cf-sync-fresh-staging"]);
+  if (!queueExists("omi-cf-sync-backfill-staging"))
+    run("npx", [
+      "wrangler",
+      "queues",
+      "create",
+      "omi-cf-sync-backfill-staging",
+    ]);
   if (!lifecycleExists("omi-cf-staging", "expire-staged-transcriptions")) {
     run("npx", [
       "wrangler",
@@ -185,6 +194,20 @@ function ensureResources() {
       "omi-cf-staging",
       "expire-staged-transcriptions",
       "cf-transcriptions/",
+      "--expire-days",
+      "1",
+    ]);
+  }
+  if (!lifecycleExists("omi-cf-staging", "expire-staged-sync")) {
+    run("npx", [
+      "wrangler",
+      "r2",
+      "bucket",
+      "lifecycle",
+      "add",
+      "omi-cf-staging",
+      "expire-staged-sync",
+      "cf-sync/",
       "--expire-days",
       "1",
     ]);

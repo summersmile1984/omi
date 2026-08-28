@@ -98,112 +98,117 @@ describe("staging smoke helpers", () => {
                   ? 403
                   : url.endsWith("/v1/admin/fair-use/flagged")
                     ? 403
-                    : url.endsWith("/v1/stt/transcribe-async")
+                    : url.endsWith("/v1/stt/transcribe-async") ||
+                        url.includes("/v2/sync-local-files")
                       ? 401
                       : url.includes("/v2/apps/search")
-                      ? 200
-                      : url.includes("/v3/memories?")
                         ? 200
-                        : url.endsWith("/v1/folders")
+                        : url.includes("/v3/memories?")
                           ? 200
-                          : url.includes("/v1/conversations?") ||
-                              url.endsWith("/v1/conversations") ||
-                              url.endsWith("/v1/conversations/count")
+                          : url.endsWith("/v1/folders")
                             ? 200
-                            : url.includes("/v1/conversations/") &&
-                                url.endsWith("/photos")
-                              ? 404
+                            : url.includes("/v1/conversations?") ||
+                                url.endsWith("/v1/conversations") ||
+                                url.endsWith("/v1/conversations/count")
+                              ? 200
                               : url.includes("/v1/conversations/") &&
-                                  url.endsWith("/transcripts")
+                                  url.endsWith("/photos")
                                 ? 404
                                 : url.includes("/v1/conversations/") &&
-                                    url.endsWith("/analytics")
+                                    url.endsWith("/transcripts")
                                   ? 404
                                   : url.includes("/v1/conversations/") &&
-                                      url.endsWith("/events")
+                                      url.endsWith("/analytics")
                                     ? 404
                                     : url.includes("/v1/conversations/") &&
-                                        url.endsWith("/summary")
+                                        url.endsWith("/events")
                                       ? 404
                                       : url.includes("/v1/conversations/") &&
-                                          url.endsWith("/calendar-event")
+                                          url.endsWith("/summary")
                                         ? 404
                                         : url.includes("/v1/conversations/") &&
-                                            url.endsWith("/action-items")
+                                            url.endsWith("/calendar-event")
                                           ? 404
                                           : url.includes(
                                                 "/v1/conversations/",
-                                              ) &&
-                                              url.endsWith("/action-items/0")
+                                              ) && url.endsWith("/action-items")
                                             ? 404
                                             : url.includes(
                                                   "/v1/conversations/",
-                                                ) && url.endsWith("/recording")
+                                                ) &&
+                                                url.endsWith("/action-items/0")
                                               ? 404
                                               : url.includes(
                                                     "/v1/conversations/",
                                                   ) &&
-                                                  url.endsWith("/segments/text")
+                                                  url.endsWith("/recording")
                                                 ? 404
-                                                : url.endsWith(
-                                                      "/v1/users/assistant-settings",
-                                                    ) ||
+                                                : url.includes(
+                                                      "/v1/conversations/",
+                                                    ) &&
                                                     url.endsWith(
-                                                      "/v1/users/ai-profile",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/users/training-data-opt-in",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/users/developer/webhooks/status",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/users/profile",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/users/daily-summary-settings",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/users/mentor-notification-settings",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/daily-score",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/scores",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/focus-sessions",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/focus-stats",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/screen-activity",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/screen-activity/summary",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/calendar/onboarding/status",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/users/geolocation",
-                                                    ) ||
-                                                    url.includes(
-                                                      "/v1/users/me/usage?",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/users/me/subscription",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/payments/available-plans",
-                                                    ) ||
-                                                    url.endsWith(
-                                                      "/v1/fair-use/status",
+                                                      "/segments/text",
                                                     )
-                                                  ? 200
-                                                  : 400;
+                                                  ? 404
+                                                  : url.endsWith(
+                                                        "/v1/users/assistant-settings",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/ai-profile",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/training-data-opt-in",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/developer/webhooks/status",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/profile",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/daily-summary-settings",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/mentor-notification-settings",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/daily-score",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/scores",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/focus-sessions",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/focus-stats",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/screen-activity",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/screen-activity/summary",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/calendar/onboarding/status",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/geolocation",
+                                                      ) ||
+                                                      url.includes(
+                                                        "/v1/users/me/usage?",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/users/me/subscription",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/payments/available-plans",
+                                                      ) ||
+                                                      url.endsWith(
+                                                        "/v1/fair-use/status",
+                                                      )
+                                                    ? 200
+                                                    : 400;
       return new Response(null, { status });
     };
 
@@ -222,6 +227,8 @@ describe("staging smoke helpers", () => {
       unauthenticatedAnnouncementsAdmin: 403,
       unauthenticatedFairUseAdmin: 403,
       unauthenticatedAsyncTranscription: 401,
+      unauthenticatedSyncUpload: 401,
+      unauthenticatedSyncStatus: 401,
       authenticatedProbe: 200,
       accountCutover: 200,
       appSearch: 200,
@@ -269,7 +276,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(54);
+    expect(calls).toHaveLength(56);
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
@@ -320,7 +327,10 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/admin/fair-use/flagged")) {
         return new Response(null, { status: 403 });
       }
-      if (url.endsWith("/v1/stt/transcribe-async")) {
+      if (
+        url.endsWith("/v1/stt/transcribe-async") ||
+        url.includes("/v2/sync-local-files")
+      ) {
         return new Response(null, { status: 401 });
       }
       if (url.endsWith("/v1/account/cutover/control")) {
@@ -356,7 +366,10 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/admin/fair-use/flagged")) {
         return new Response(null, { status: 403 });
       }
-      if (url.endsWith("/v1/stt/transcribe-async")) {
+      if (
+        url.endsWith("/v1/stt/transcribe-async") ||
+        url.includes("/v2/sync-local-files")
+      ) {
         return new Response(null, { status: 401 });
       }
       if (url.endsWith("/v1/account/cutover/control")) {
@@ -397,7 +410,10 @@ describe("staging smoke helpers", () => {
         return new Response(null, { status: 403 });
       if (url.endsWith("/v1/admin/fair-use/flagged"))
         return new Response(null, { status: 403 });
-      if (url.endsWith("/v1/stt/transcribe-async"))
+      if (
+        url.endsWith("/v1/stt/transcribe-async") ||
+        url.includes("/v2/sync-local-files")
+      )
         return new Response(null, { status: 401 });
       if (url.endsWith("/v1/account/cutover/control")) {
         return Response.json({
@@ -510,7 +526,10 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/admin/fair-use/flagged")) {
         return new Response(null, { status: 403 });
       }
-      if (url.endsWith("/v1/stt/transcribe-async")) {
+      if (
+        url.endsWith("/v1/stt/transcribe-async") ||
+        url.includes("/v2/sync-local-files")
+      ) {
         return new Response(null, { status: 401 });
       }
       if (url.endsWith("/v1/account/cutover/control")) {
@@ -568,7 +587,10 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/admin/fair-use/flagged")) {
         return new Response(null, { status: 403 });
       }
-      if (url.endsWith("/v1/stt/transcribe-async")) {
+      if (
+        url.endsWith("/v1/stt/transcribe-async") ||
+        url.includes("/v2/sync-local-files")
+      ) {
         return new Response(null, { status: 401 });
       }
       if (url.endsWith("/v1/account/cutover/control")) {

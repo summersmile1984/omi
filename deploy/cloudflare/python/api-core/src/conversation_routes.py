@@ -1,11 +1,11 @@
 """D1-backed conversation read projection for the isolated Cloudflare profile.
 
 This module owns bounded list/count/detail/search reads and projection deletion
-over an explicit conversation projection. It deliberately does not claim
-conversation finalization, memory extraction, merge, audio deletion, or
-downstream integrations; those authorities remain legacy until their write and
-reader contracts move together. Projection rows can be loaded by the reviewed
-D1 backfill workflow.
+over an explicit conversation projection. Jobs owns only the isolated-staging
+sync-local-files finalization and merge boundary. Generic conversation
+finalization, memory extraction, audio deletion, and downstream integrations
+remain legacy until their write and reader contracts move together. Projection
+rows can also be loaded by the reviewed D1 backfill workflow.
 """
 
 from __future__ import annotations

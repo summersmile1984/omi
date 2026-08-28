@@ -3,8 +3,14 @@
   "name": "omi-cf-jobs-staging",
   "main": "index.ts",
   "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": {
+    "opus-decoder": "./opus-decoder-core.ts",
+    "@wasm-audio-decoders/common": "./wasm-audio-common.ts",
+  },
   "workers_dev": false,
   "preview_urls": false,
+  "limits": { "cpu_ms": 300000 },
   "d1_databases": [
     {
       "binding": "APP_DB",
@@ -16,7 +22,11 @@
   "ai": { "binding": "AI" },
   "triggers": { "crons": ["*/5 * * * *"] },
   "queues": {
-    "producers": [{ "binding": "JOBS", "queue": "omi-cf-jobs-staging" }],
+    "producers": [
+      { "binding": "JOBS", "queue": "omi-cf-jobs-staging" },
+      { "binding": "SYNC_FRESH", "queue": "omi-cf-sync-fresh-staging" },
+      { "binding": "SYNC_BACKFILL", "queue": "omi-cf-sync-backfill-staging" },
+    ],
     "consumers": [
       {
         "queue": "omi-cf-jobs-staging",
@@ -24,6 +34,23 @@
         "max_batch_timeout": 5,
         "max_retries": 3,
         "retry_delay": 10,
+        "dead_letter_queue": "omi-cf-jobs-dlq-staging",
+      },
+      {
+        "queue": "omi-cf-sync-fresh-staging",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "retry_delay": 10,
+        "dead_letter_queue": "omi-cf-jobs-dlq-staging",
+      },
+      {
+        "queue": "omi-cf-sync-backfill-staging",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "retry_delay": 30,
+        "max_concurrency": 4,
         "dead_letter_queue": "omi-cf-jobs-dlq-staging",
       },
     ],

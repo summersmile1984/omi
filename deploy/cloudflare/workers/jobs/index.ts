@@ -11,6 +11,12 @@ import {
 import type { JobMessage, JobsEnv } from "./env";
 import { evaluateFairUseBatch } from "./fair-use-evaluator";
 import { drainFairUseNotifications } from "./firebase-messaging";
+import {
+  cleanupExpiredSyncState,
+  processSyncJobMessage,
+  reconcileSyncJobs,
+  registerSyncRoutes,
+} from "./sync-local-files";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -41,6 +47,8 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
     c.env.INTERNAL_ASSERTION_SECRET,
   );
 }
+
+registerSyncRoutes(app, requestContext);
 
 function objectPayload(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -601,6 +609,10 @@ async function processJobMessage(
   message: Message<JobMessage>,
   env: JobsEnv,
 ): Promise<void> {
+  if (message.body.kind === "sync_local_files") {
+    await processSyncJobMessage(message, env);
+    return;
+  }
   const row = await env.APP_DB.prepare(
     "SELECT status, kind, updated_at FROM cf_jobs WHERE job_id = ? AND uid = ?",
   )
@@ -729,10 +741,16 @@ export default {
     _controller: ScheduledController,
     env: JobsEnv,
   ): Promise<void> {
+    const now = Math.floor(Date.now() / 1_000);
+    const syncMaintenance =
+      env.SYNC_FRESH && env.SYNC_BACKFILL
+        ? [reconcileSyncJobs(env, now), cleanupExpiredSyncState(env, now)]
+        : [];
     const results = await Promise.allSettled([
       drainAssetCleanup(env),
       evaluateFairUseBatch(env),
       drainFairUseNotifications(env),
+      ...syncMaintenance,
     ]);
     const failure = results.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",
