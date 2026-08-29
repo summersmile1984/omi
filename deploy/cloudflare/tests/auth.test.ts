@@ -23,6 +23,7 @@ const env = (issuerSecret?: string) => ({
   AUTH_DB: {} as D1Database,
   BETTER_AUTH_SECRET: "test-auth-secret",
   BETTER_AUTH_URL: "https://auth.test",
+  MCP_RESOURCE_URL: "https://edge.test/v1/mcp/sse",
   INTERNAL_ASSERTION_SECRET: "internal-secret",
   AUTH_DEV_ISSUER_SECRET: issuerSecret,
 });
@@ -43,7 +44,9 @@ function readyEnv(active = true) {
   const first = vi.fn(async () => (activeKey ? { id: "active-key" } : null));
   const bind = vi.fn(() => ({ first }));
   const prepare = vi.fn((query: string) =>
-    query === "SELECT 1" ? { run } : { bind },
+    query === "SELECT 1" || query === "SELECT id FROM oauthResource LIMIT 1"
+      ? { run }
+      : { bind },
   );
   return {
     environment: {
@@ -106,6 +109,10 @@ type AuthLifecycleState = {
   sessions: string[];
   accounts: string[];
   deletionVerifications: string[];
+  oauthClients: string[];
+  oauthAccessTokens: string[];
+  oauthRefreshTokens: string[];
+  oauthConsents: string[];
 };
 
 function lifecycleEnv(options: { failBatch?: boolean } = {}) {
@@ -119,6 +126,10 @@ function lifecycleEnv(options: { failBatch?: boolean } = {}) {
     sessions: ["lifecycle-user", "lifecycle-user", "other-user"],
     accounts: ["lifecycle-user", "other-user"],
     deletionVerifications: ["lifecycle-user", "other-user"],
+    oauthClients: ["lifecycle-user", "other-user"],
+    oauthAccessTokens: ["lifecycle-user", "lifecycle-user", "other-user"],
+    oauthRefreshTokens: ["lifecycle-user", "other-user"],
+    oauthConsents: ["lifecycle-user", "other-user"],
   };
 
   const statement = (query: string, values: unknown[] = []) => {
@@ -140,6 +151,16 @@ function lifecycleEnv(options: { failBatch?: boolean } = {}) {
             deletionVerifications: state.deletionVerifications.filter(
               (value) => value === uid,
             ).length,
+            oauthClients: state.oauthClients.filter((value) => value === uid)
+              .length,
+            oauthAccessTokens: state.oauthAccessTokens.filter(
+              (value) => value === uid,
+            ).length,
+            oauthRefreshTokens: state.oauthRefreshTokens.filter(
+              (value) => value === uid,
+            ).length,
+            oauthConsents: state.oauthConsents.filter((value) => value === uid)
+              .length,
           };
         }
         throw new Error(`unexpected first query: ${normalized}`);
@@ -148,6 +169,26 @@ function lifecycleEnv(options: { failBatch?: boolean } = {}) {
         const uid = String(values[0] || "");
         if (normalized === "DELETE FROM verification WHERE value = ?") {
           state.deletionVerifications = state.deletionVerifications.filter(
+            (value) => value !== uid,
+          );
+        } else if (
+          normalized === "DELETE FROM oauthAccessToken WHERE userId = ?"
+        ) {
+          state.oauthAccessTokens = state.oauthAccessTokens.filter(
+            (value) => value !== uid,
+          );
+        } else if (
+          normalized === "DELETE FROM oauthRefreshToken WHERE userId = ?"
+        ) {
+          state.oauthRefreshTokens = state.oauthRefreshTokens.filter(
+            (value) => value !== uid,
+          );
+        } else if (normalized === "DELETE FROM oauthConsent WHERE userId = ?") {
+          state.oauthConsents = state.oauthConsents.filter(
+            (value) => value !== uid,
+          );
+        } else if (normalized === "DELETE FROM oauthClient WHERE userId = ?") {
+          state.oauthClients = state.oauthClients.filter(
             (value) => value !== uid,
           );
         } else if (normalized === "DELETE FROM session WHERE userId = ?") {
@@ -179,6 +220,10 @@ function lifecycleEnv(options: { failBatch?: boolean } = {}) {
         state.sessions = snapshot.sessions;
         state.accounts = snapshot.accounts;
         state.deletionVerifications = snapshot.deletionVerifications;
+        state.oauthClients = snapshot.oauthClients;
+        state.oauthAccessTokens = snapshot.oauthAccessTokens;
+        state.oauthRefreshTokens = snapshot.oauthRefreshTokens;
+        state.oauthConsents = snapshot.oauthConsents;
         throw error;
       }
     },
@@ -674,6 +719,10 @@ describe("auth worker Better Auth dev issuer", () => {
         sessions: 2,
         accounts: 1,
         deletionVerifications: 1,
+        oauthClients: 1,
+        oauthAccessTokens: 2,
+        oauthRefreshTokens: 1,
+        oauthConsents: 1,
       },
     });
   });
@@ -698,12 +747,20 @@ describe("auth worker Better Auth dev issuer", () => {
         sessions: 2,
         accounts: 1,
         deletionVerifications: 1,
+        oauthClients: 1,
+        oauthAccessTokens: 2,
+        oauthRefreshTokens: 1,
+        oauthConsents: 1,
       },
       residual: {
         users: 0,
         sessions: 0,
         accounts: 0,
         deletionVerifications: 0,
+        oauthClients: 0,
+        oauthAccessTokens: 0,
+        oauthRefreshTokens: 0,
+        oauthConsents: 0,
       },
     });
     expect(lifecycle.state).toEqual({
@@ -711,6 +768,10 @@ describe("auth worker Better Auth dev issuer", () => {
       sessions: ["other-user"],
       accounts: ["other-user"],
       deletionVerifications: ["other-user"],
+      oauthClients: ["other-user"],
+      oauthAccessTokens: ["other-user"],
+      oauthRefreshTokens: ["other-user"],
+      oauthConsents: ["other-user"],
     });
 
     const residualPath = `${path}/residual`;
@@ -729,6 +790,10 @@ describe("auth worker Better Auth dev issuer", () => {
         sessions: 0,
         accounts: 0,
         deletionVerifications: 0,
+        oauthClients: 0,
+        oauthAccessTokens: 0,
+        oauthRefreshTokens: 0,
+        oauthConsents: 0,
       },
     });
 

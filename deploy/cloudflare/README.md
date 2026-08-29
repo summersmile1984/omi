@@ -1413,8 +1413,15 @@ Chinese semantic recall, transcript-first conversation merge, UTC date metadata
 filters after Vectorize metadata-index convergence, and post-test source/key
 deletion. A conversation created through the public staging Edge became
 searchable in 19.9 seconds through the Queue path rather than waiting for the
-five-minute repair cron. MCP OAuth and hosted transports remain legacy-owned
-pending their token lifecycle migration.
+five-minute repair cron. The Auth Worker now installs Better Auth's MCP OAuth
+Provider on the existing D1/session/JWKS authority. Migration `auth/0005`
+creates the provider's client, protected-resource, token, consent, and client
+assertion tables; the existing verification table supplies database-backed
+DPoP replay reservations. Dynamic public-client registration is the temporary
+MCP compatibility profile, requires PKCE, and links every registered client to
+the single `MCP_RESOURCE_URL`. The hosted transport remains legacy-owned until
+the Edge token-verification and Streamable HTTP slices are cut over; verified
+Client ID Metadata Documents remain the final replacement for open DCR.
 
 App integration credentials now use `cf_app_api_keys`. `POST` returns the
 `sk_` secret once, while D1 stores only the SHA-256 digest of its 32-hex-byte
@@ -1573,9 +1580,10 @@ the Flutter client already treats those fields as optional/defaulted.
 The Auth Worker also owns signed internal `GET /internal/users/:uid`,
 `GET /internal/users/:uid/residual`, and `DELETE /internal/users/:uid`
 contracts used by the staging account-deletion workflow. The delete is idempotent
-and removes the uid's Better Auth session, account, user, and outstanding
-delete-verification rows in one D1 batch, then fails closed unless a residual
-query returns zero for every identity table. These endpoints require a
+and removes the uid's Better Auth session, account, user, outstanding
+delete-verification rows, owned OAuth clients, access/refresh tokens, and
+consents in one D1 batch, then fails closed unless a residual query returns
+zero for every identity table. These endpoints require a
 60-second assertion bound to the Auth audience, uid, method, and exact path;
 they are not public account-management APIs. Better Auth's public
 `/delete-user` remains explicitly disabled; only the Jobs Worker may call this

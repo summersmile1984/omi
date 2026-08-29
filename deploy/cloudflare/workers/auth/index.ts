@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { mcp } from "@better-auth/mcp";
 import { createAuthMiddleware } from "better-auth/api";
 import { bearer } from "better-auth/plugins/bearer";
 import { jwt } from "better-auth/plugins/jwt";
@@ -20,6 +21,18 @@ const app = new Hono<{ Bindings: AuthEnv }>();
 const AUTH_BASE_PATH = "/api/better-auth";
 const JWT_ROTATION_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
 const JWT_GRACE_PERIOD_SECONDS = 2 * 24 * 60 * 60;
+export const MCP_SCOPES = [
+  "action_items.read",
+  "action_items.write",
+  "chat.read",
+  "conversations.read",
+  "goals.read",
+  "memories.read",
+  "memories.write",
+  "people.read",
+  "screen_activity.read",
+] as const;
+const MCP_OAUTH_SCOPES = [...MCP_SCOPES, "offline_access"];
 
 type SocialProviderId = "google" | "apple";
 
@@ -28,6 +41,10 @@ type AuthIdentityResidual = {
   sessions: number;
   accounts: number;
   deletionVerifications: number;
+  oauthClients: number;
+  oauthAccessTokens: number;
+  oauthRefreshTokens: number;
+  oauthConsents: number;
 };
 
 function origins(env: AuthEnv): string[] {
@@ -87,6 +104,7 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
     );
   const socialProviders = configuredSocialProviders(env);
   const trustedProviders = Object.keys(socialProviders) as SocialProviderId[];
+  const resource = env.MCP_RESOURCE_URL || new URL("/v1/mcp/sse", baseURL).href;
   return betterAuth({
     database: env.AUTH_DB,
     secret: env.BETTER_AUTH_SECRET,
@@ -176,6 +194,19 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
           expirationTime: "24h",
         },
       }),
+      mcp({
+        loginPage: "/login",
+        consentPage: "/mcp/consent",
+        resource,
+        scopes: MCP_OAUTH_SCOPES,
+        grantTypes: ["authorization_code", "refresh_token"],
+        accessTokenExpiresIn: 60 * 60,
+        refreshTokenExpiresIn: 30 * 24 * 60 * 60,
+        allowPublicClientPrelogin: true,
+        allowDynamicClientRegistration: true,
+        allowUnauthenticatedClientRegistration: true,
+        clientRegistrationRequirePKCE: true,
+      }),
     ],
   });
 }
@@ -248,9 +279,13 @@ async function authIdentityResidual(
          (SELECT COUNT(*) FROM user WHERE id = ?) AS users,
          (SELECT COUNT(*) FROM session WHERE userId = ?) AS sessions,
          (SELECT COUNT(*) FROM account WHERE userId = ?) AS accounts,
-         (SELECT COUNT(*) FROM verification WHERE value = ?) AS deletionVerifications`,
+         (SELECT COUNT(*) FROM verification WHERE value = ?) AS deletionVerifications,
+         (SELECT COUNT(*) FROM oauthClient WHERE userId = ?) AS oauthClients,
+         (SELECT COUNT(*) FROM oauthAccessToken WHERE userId = ?) AS oauthAccessTokens,
+         (SELECT COUNT(*) FROM oauthRefreshToken WHERE userId = ?) AS oauthRefreshTokens,
+         (SELECT COUNT(*) FROM oauthConsent WHERE userId = ?) AS oauthConsents`,
     )
-    .bind(uid, uid, uid, uid)
+    .bind(uid, uid, uid, uid, uid, uid, uid, uid)
     .first<Record<string, unknown>>();
   if (!row) throw new Error("identity residual query returned no row");
   return {
@@ -258,6 +293,10 @@ async function authIdentityResidual(
     sessions: databaseCount(row.sessions),
     accounts: databaseCount(row.accounts),
     deletionVerifications: databaseCount(row.deletionVerifications),
+    oauthClients: databaseCount(row.oauthClients),
+    oauthAccessTokens: databaseCount(row.oauthAccessTokens),
+    oauthRefreshTokens: databaseCount(row.oauthRefreshTokens),
+    oauthConsents: databaseCount(row.oauthConsents),
   };
 }
 
@@ -274,12 +313,13 @@ app.use(`${AUTH_BASE_PATH}/*`, async (c, next) => {
 });
 
 app.get("/health", (c) =>
-  c.json({ status: "ok", service: "auth", version: "cf-03" }),
+  c.json({ status: "ok", service: "auth", version: "cf-04" }),
 );
 
 app.get("/ready", async (c) => {
   try {
     await c.env.AUTH_DB.prepare("SELECT 1").run();
+    await c.env.AUTH_DB.prepare("SELECT id FROM oauthResource LIMIT 1").run();
     const findActiveKey = () =>
       c.env.AUTH_DB.prepare(
         `SELECT id FROM jwks
@@ -551,6 +591,18 @@ app.delete("/internal/users/:uid", async (c) => {
     const before = await authIdentityResidual(c.env.AUTH_DB, uid);
     await c.env.AUTH_DB.batch([
       c.env.AUTH_DB.prepare("DELETE FROM verification WHERE value = ?").bind(
+        uid,
+      ),
+      c.env.AUTH_DB.prepare(
+        "DELETE FROM oauthAccessToken WHERE userId = ?",
+      ).bind(uid),
+      c.env.AUTH_DB.prepare(
+        "DELETE FROM oauthRefreshToken WHERE userId = ?",
+      ).bind(uid),
+      c.env.AUTH_DB.prepare("DELETE FROM oauthConsent WHERE userId = ?").bind(
+        uid,
+      ),
+      c.env.AUTH_DB.prepare("DELETE FROM oauthClient WHERE userId = ?").bind(
         uid,
       ),
       c.env.AUTH_DB.prepare("DELETE FROM session WHERE userId = ?").bind(uid),

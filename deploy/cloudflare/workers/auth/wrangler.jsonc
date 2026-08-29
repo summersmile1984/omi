@@ -7,12 +7,13 @@
   "workers_dev": true,
   "vars": {
     "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",
+    "MCP_RESOURCE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev/v1/mcp/sse",
   },
   "d1_databases": [
     {
       "binding": "AUTH_DB",
       "database_name": "omi-cf-auth-staging",
-      "migrations_dir": "../../migrations/auth"
-    }
-  ]
+      "migrations_dir": "../../migrations/auth",
+    },
+  ],
 }
