@@ -546,6 +546,8 @@ app.get("/v1/apps/popular", proxyAuthenticatedCore);
 app.get("/v1/apps/:appId", proxyAuthenticatedCore);
 app.post("/v1/apps", proxyAuthenticatedJobs);
 app.patch("/v1/apps/:appId", proxyAuthenticatedJobs);
+app.patch("/v1/apps/:app_id/change-visibility", proxyAuthenticatedJobs);
+app.post("/v1/apps/:app_id/refresh-manifest", proxyAuthenticatedJobs);
 app.delete("/v1/apps/:appId", proxyAuthenticatedJobs);
 app.get("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
 app.delete("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);

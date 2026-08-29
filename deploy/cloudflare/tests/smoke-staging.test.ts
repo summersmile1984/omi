@@ -52,6 +52,12 @@ function creatorPaymentBoundary(
   ) {
     return new Response(null, { status: 404 });
   }
+  if (
+    url.includes("/v1/apps/cf-smoke-missing/change-visibility?") ||
+    url.endsWith("/v1/apps/cf-smoke-missing/refresh-manifest")
+  ) {
+    return new Response(null, { status: 404 });
+  }
   if (url.endsWith("/v1/apps") && init?.method === "POST") {
     return new Response(null, { status: 400 });
   }
@@ -146,6 +152,12 @@ describe("staging smoke helpers", () => {
       }
       if (url.includes("/v1/apps/enabled")) {
         return new Response(null, { status: 200 });
+      }
+      if (
+        url.includes("/v1/apps/cf-smoke-missing/change-visibility?") ||
+        url.endsWith("/v1/apps/cf-smoke-missing/refresh-manifest")
+      ) {
+        return new Response(null, { status: 404 });
       }
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
@@ -406,6 +418,8 @@ describe("staging smoke helpers", () => {
       appDeleteBoundary: 404,
       appCreateBoundary: 400,
       appUpdateBoundary: 404,
+      appVisibilityBoundary: 404,
+      appManifestRefreshBoundary: 404,
       appLogoBoundary: 404,
       connectAccountBoundary: 400,
       stripeOnboardingStatus: 200,
@@ -419,7 +433,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(94);
+    expect(calls).toHaveLength(96);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

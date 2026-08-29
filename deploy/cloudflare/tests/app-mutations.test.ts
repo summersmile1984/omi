@@ -360,6 +360,191 @@ describe("Cloudflare app mutations", () => {
     }
   });
 
+  it("changes visibility only for the catalog owner", async () => {
+    const state = environment();
+    try {
+      const created = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps", {
+          method: "POST",
+          headers: await authHeaders("POST", "/v1/apps"),
+          body: multipart(freeApp()),
+        }),
+        state.env,
+      );
+      const appId = ((await created.json()) as { app_id: string }).app_id;
+      const path = `/v1/apps/${appId}/change-visibility`;
+      const forbidden = await jobs.fetch(
+        new Request(`https://jobs.test${path}?private=false`, {
+          method: "PATCH",
+          headers: await authHeaders("PATCH", path, "other-user"),
+        }),
+        state.env,
+      );
+      expect(forbidden.status).toBe(403);
+      const invalid = await jobs.fetch(
+        new Request(`https://jobs.test${path}?private=maybe`, {
+          method: "PATCH",
+          headers: await authHeaders("PATCH", path),
+        }),
+        state.env,
+      );
+      expect(invalid.status).toBe(422);
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}?private=false`, {
+          method: "PATCH",
+          headers: await authHeaders("PATCH", path),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "ok" });
+      const payload = JSON.parse(
+        state.database.row<{ data_json: string }>(
+          "SELECT data_json FROM cf_app_catalog WHERE id = ?",
+          appId,
+        )!.data_json,
+      ) as Record<string, unknown>;
+      expect(payload.private).toBe(false);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("refreshes the owner manifest through the bounded external fetch", async () => {
+    const state = environment();
+    let revision = 1;
+    const fetchManifest = vi.fn(async () =>
+      Response.json({
+        tools: [
+          {
+            name: `Tool ${revision}`,
+            description: `Manifest revision ${revision}`,
+            endpoint: `/tools/${revision}`,
+          },
+        ],
+        chat_messages: {
+          enabled: revision === 2,
+          target: "main",
+          notify: true,
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchManifest);
+    try {
+      const created = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps", {
+          method: "POST",
+          headers: await authHeaders("POST", "/v1/apps"),
+          body: multipart(
+            freeApp({
+              capabilities: ["external_integration"],
+              external_integration: {
+                actions: [{ action: "create_conversation" }],
+                app_home_url: "https://tools.example.test",
+                chat_tools_manifest_url: "https://tools.example.test/omi.json",
+              },
+            }),
+          ),
+        }),
+        state.env,
+      );
+      const appId = ((await created.json()) as { app_id: string }).app_id;
+      const path = `/v1/apps/${appId}/refresh-manifest`;
+      const forbidden = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: await authHeaders("POST", path, "other-user"),
+        }),
+        state.env,
+      );
+      expect(forbidden.status).toBe(403);
+      revision = 2;
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: await authHeaders("POST", path),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "ok", tools_count: 1 });
+      expect(fetchManifest).toHaveBeenCalledTimes(2);
+      const payload = JSON.parse(
+        state.database.row<{ data_json: string }>(
+          "SELECT data_json FROM cf_app_catalog WHERE id = ?",
+          appId,
+        )!.data_json,
+      ) as Record<string, unknown>;
+      expect(payload.chat_tools).toEqual([
+        {
+          name: "Tool 2",
+          description: "Manifest revision 2",
+          endpoint: "https://tools.example.test/tools/2",
+          method: "POST",
+          auth_required: true,
+        },
+      ]);
+      expect(payload.external_integration).toMatchObject({
+        chat_messages_enabled: true,
+        chat_messages_target: "main",
+        chat_messages_notify: true,
+      });
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("fails an explicit manifest refresh closed without changing the catalog", async () => {
+    const state = environment();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("unavailable", { status: 503 })),
+    );
+    try {
+      const created = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps", {
+          method: "POST",
+          headers: await authHeaders("POST", "/v1/apps"),
+          body: multipart(freeApp()),
+        }),
+        state.env,
+      );
+      const appId = ((await created.json()) as { app_id: string }).app_id;
+      const row = state.database.row<{ data_json: string }>(
+        "SELECT data_json FROM cf_app_catalog WHERE id = ?",
+        appId,
+      )!;
+      const payload = JSON.parse(row.data_json) as Record<string, unknown>;
+      payload.external_integration = {
+        chat_tools_manifest_url: "https://tools.example.test/omi.json",
+      };
+      const before = JSON.stringify(payload);
+      state.database.database
+        .prepare("UPDATE cf_app_catalog SET data_json = ? WHERE id = ?")
+        .run(before, appId);
+      const path = `/v1/apps/${appId}/refresh-manifest`;
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: await authHeaders("POST", path),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({
+        detail: "Failed to fetch manifest from external URL",
+      });
+      expect(
+        state.database.row<{ data_json: string }>(
+          "SELECT data_json FROM cf_app_catalog WHERE id = ?",
+          appId,
+        )!.data_json,
+      ).toBe(before);
+    } finally {
+      state.database.close();
+    }
+  });
+
   it("cleans a replacement logo when the catalog authority disappears before the update batch", async () => {
     const state = environment();
     try {

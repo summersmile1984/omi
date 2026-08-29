@@ -60,8 +60,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 251 already match a
-  Cloudflare staging owner and 327 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 255 already match a
+  Cloudflare staging owner and 322 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -587,6 +587,10 @@ GET  /v1/approved-apps         Edge → Python API Core → approved public app 
 GET  /v1/apps/popular          Edge → Python API Core → popular public app D1 projection
 POST /v1/apps                  Edge → Jobs → multipart + R2 logo + D1/Stripe mapping
 PATCH /v1/apps/{appId}         Edge → Jobs → owner-only D1/R2/Stripe update
+PATCH /v1/apps/{appId}/change-visibility
+                              Edge → Jobs → owner-only D1 visibility update
+POST /v1/apps/{appId}/refresh-manifest
+                              Edge → Jobs → bounded HTTPS manifest refresh → D1
 DELETE /v1/apps/{appId}        Edge → Jobs Queue → provider-safe app deletion
 GET  /v1/apps/{appId}/logo/{version}
                               Edge → Jobs → immutable current-logo R2 object
@@ -961,8 +965,12 @@ catalog in one D1 batch. If that batch fails, the unpublished hosted link is
 deactivated before the staged logo is removed. When an external integration
 declares a chat-tools manifest, create/update performs one bounded HTTPS fetch,
 validates and normalizes the initial tools into the catalog, and fails open with
-shared fallback telemetry if the dependency is unavailable; the later explicit
-manifest-refresh route remains a separate migration surface.
+shared fallback telemetry if the dependency is unavailable. The explicit
+owner-only refresh route reuses the same SSRF, redirect, timeout, size, and
+tool-count limits, but preserves its interactive contract by returning `502`
+without changing D1 when the manifest cannot be fetched. Visibility changes
+are also owner-only and use an optimistic catalog update so they cannot
+overwrite a concurrent app mutation.
 
 Migration `0062_app_deletion_fences.sql` moves owner-authorized
 `DELETE /v1/apps/{app_id}` to Jobs without making provider cleanup synchronous
@@ -1308,8 +1316,8 @@ uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
 install counter for idempotent retries. Paid installs fail closed unless
 `cf_app_subscriptions` is active/trialing and its current period has not ended;
 the enabled-app read applies the same check. Persona mutation, external setup
-callbacks, manifest refresh, and MCP state remain separate migration surfaces;
-no production cutover is implied.
+callbacks and MCP state remain separate migration surfaces; no production
+cutover is implied.
 
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
 responses from the same public D1 rows. It preserves the legacy pagination
@@ -1327,8 +1335,8 @@ rating average/count in the same D1 transaction, and catalog reads hydrate
 bounded review lists plus the signed user's own review. `owner_uid` is an
 explicit non-public catalog column, so review writes fail closed until older
 rows are backfilled. Review/reply push notifications remain an external API
-boundary. Persona mutation, setup callbacks, manifest refresh, MCP state, and
-the remaining app administration routes are still separate migration work.
+boundary. Persona mutation, setup callbacks, MCP state, and the remaining app
+administration routes are still separate migration work.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

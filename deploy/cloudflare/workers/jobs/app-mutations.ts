@@ -79,7 +79,7 @@ type LogoCleanupReason = "uncommitted-upload" | "superseded" | "deleted";
 
 class AppMutationError extends Error {
   constructor(
-    readonly status: 400 | 403 | 404 | 409 | 413 | 422 | 503,
+    readonly status: 400 | 403 | 404 | 409 | 413 | 422 | 502 | 503,
     readonly detail: string,
   ) {
     super(detail);
@@ -303,14 +303,18 @@ function normalizedManifestTool(value: unknown, appHomeUrl: string | null) {
   return result;
 }
 
-async function applyChatToolsManifest(payload: JsonObject, requestId: string) {
+async function applyChatToolsManifest(
+  payload: JsonObject,
+  requestId: string,
+  options: { strict?: boolean } = {},
+) {
   const external = objectValue(payload.external_integration);
   if (!external) return;
   const manifestUrl =
     typeof external?.chat_tools_manifest_url === "string"
       ? external.chat_tools_manifest_url
       : null;
-  if (!manifestUrl) return;
+  if (!manifestUrl) return 0;
   try {
     if (!publicHttpsUrl(manifestUrl))
       throw new Error("manifest URL is private");
@@ -359,6 +363,7 @@ async function applyChatToolsManifest(payload: JsonObject, requestId: string) {
       external.chat_messages_target = "app";
       external.chat_messages_notify = false;
     }
+    return tools.length;
   } catch {
     recordFallback({
       component: "other",
@@ -368,6 +373,13 @@ async function applyChatToolsManifest(payload: JsonObject, requestId: string) {
       outcome: "degraded",
       requestId,
     });
+    if (options.strict) {
+      throw new AppMutationError(
+        502,
+        "Failed to fetch manifest from external URL",
+      );
+    }
+    return 0;
   }
 }
 
@@ -1160,6 +1172,114 @@ async function updateApp(
   }
 }
 
+function privateQuery(c: JobsContext) {
+  const raw = c.req.query("private")?.trim().toLowerCase();
+  if (["true", "1", "on", "yes"].includes(raw || "")) return true;
+  if (["false", "0", "off", "no"].includes(raw || "")) return false;
+  throw new AppMutationError(422, "private is invalid");
+}
+
+async function changeAppVisibility(
+  c: JobsContext,
+  context: SignedAuthContext,
+  appId: string,
+) {
+  if (!validAppId(appId) || !validAccountDeletionUid(context.uid)) {
+    throw new AppMutationError(404, "App not found");
+  }
+  const row = await c.env.APP_DB.prepare(
+    "SELECT owner_uid, data_json FROM cf_app_catalog WHERE id = ? LIMIT 1",
+  )
+    .bind(appId)
+    .first<{ owner_uid: string | null; data_json: string }>();
+  if (!row) throw new AppMutationError(404, "App not found");
+  if (row.owner_uid !== context.uid) {
+    throw new AppMutationError(
+      403,
+      "You are not authorized to perform this action",
+    );
+  }
+  const payload = catalogPayload(row.data_json, appId);
+  payload.private = privateQuery(c);
+  payload.updated_at = new Date().toISOString();
+  const now = Math.floor(Date.now() / 1_000);
+  const result = await c.env.APP_DB.prepare(
+    `UPDATE cf_app_catalog
+     SET data_json = ?, updated_at = ?
+     WHERE id = ? AND owner_uid = ? AND data_json = ?`,
+  )
+    .bind(
+      serializeCatalogPayload(payload),
+      now,
+      appId,
+      context.uid,
+      row.data_json,
+    )
+    .run();
+  if (Number(result.meta?.changes) !== 1) {
+    throw new AppMutationError(409, "App changed during visibility update");
+  }
+  return c.json({ status: "ok" });
+}
+
+async function refreshAppManifest(
+  c: JobsContext,
+  context: SignedAuthContext,
+  appId: string,
+) {
+  if (!validAppId(appId) || !validAccountDeletionUid(context.uid)) {
+    throw new AppMutationError(404, "App not found");
+  }
+  const row = await c.env.APP_DB.prepare(
+    "SELECT owner_uid, data_json FROM cf_app_catalog WHERE id = ? LIMIT 1",
+  )
+    .bind(appId)
+    .first<{ owner_uid: string | null; data_json: string }>();
+  if (!row) throw new AppMutationError(404, "App not found");
+  if (row.owner_uid !== context.uid) {
+    throw new AppMutationError(
+      403,
+      "You are not authorized to perform this action",
+    );
+  }
+  const payload = catalogPayload(row.data_json, appId);
+  const external = objectValue(payload.external_integration);
+  if (!external) {
+    throw new AppMutationError(400, "App does not have external integration");
+  }
+  if (
+    typeof external.chat_tools_manifest_url !== "string" ||
+    !external.chat_tools_manifest_url
+  ) {
+    throw new AppMutationError(
+      400,
+      "App does not have a chat tools manifest URL",
+    );
+  }
+  const toolsCount = await applyChatToolsManifest(payload, context.requestId, {
+    strict: true,
+  });
+  payload.updated_at = new Date().toISOString();
+  const now = Math.floor(Date.now() / 1_000);
+  const result = await c.env.APP_DB.prepare(
+    `UPDATE cf_app_catalog
+     SET data_json = ?, updated_at = ?
+     WHERE id = ? AND owner_uid = ? AND data_json = ?`,
+  )
+    .bind(
+      serializeCatalogPayload(payload),
+      now,
+      appId,
+      context.uid,
+      row.data_json,
+    )
+    .run();
+  if (Number(result.meta?.changes) !== 1) {
+    throw new AppMutationError(409, "App changed during manifest refresh");
+  }
+  return c.json({ status: "ok", tools_count: toolsCount });
+}
+
 async function publicLogo(c: JobsContext, appId: string, version: string) {
   if (!validAppId(appId)) return c.json({ detail: "App not found" }, 404);
   let expectedKey: string;
@@ -1238,6 +1358,24 @@ export function registerAppMutationRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return await updateApp(c, context, c.req.param("appId"));
+    } catch (error) {
+      return mutationResponse(c, error);
+    }
+  });
+  app.patch("/v1/apps/:appId/change-visibility", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      return await changeAppVisibility(c, context, c.req.param("appId"));
+    } catch (error) {
+      return mutationResponse(c, error);
+    }
+  });
+  app.post("/v1/apps/:appId/refresh-manifest", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      return await refreshAppManifest(c, context, c.req.param("appId"));
     } catch (error) {
       return mutationResponse(c, error);
     }

@@ -865,6 +865,24 @@ export async function runSmoke({
   );
   expectStatus("app update ownership boundary", appUpdateBoundary, 404);
 
+  const appVisibilityBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing/change-visibility?private=false`,
+    { method: "PATCH", headers: authHeaders },
+  );
+  expectStatus("app visibility ownership boundary", appVisibilityBoundary, 404);
+
+  const appManifestRefreshBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing/refresh-manifest`,
+    { method: "POST", headers: authHeaders },
+  );
+  expectStatus(
+    "app manifest refresh ownership boundary",
+    appManifestRefreshBoundary,
+    404,
+  );
+
   const appLogoBoundary = await request(
     fetchImpl,
     `${base}/v1/apps/cf-smoke-missing/logo/00000000-0000-4000-8000-000000000000`,
@@ -1073,6 +1091,8 @@ export async function runSmoke({
     appDeleteBoundary: appDeleteBoundary.status,
     appCreateBoundary: appCreateBoundary.status,
     appUpdateBoundary: appUpdateBoundary.status,
+    appVisibilityBoundary: appVisibilityBoundary.status,
+    appManifestRefreshBoundary: appManifestRefreshBoundary.status,
     appLogoBoundary: appLogoBoundary.status,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
