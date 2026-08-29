@@ -395,6 +395,8 @@ app.all("/v1/cf/jobs", proxyAuthenticatedJobs);
 app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
 app.post("/v1/payments/checkout-session", proxyAuthenticatedJobs);
 app.post("/v1/payments/customer-portal", proxyAuthenticatedJobs);
+app.post("/v1/payments/upgrade-subscription", proxyAuthenticatedJobs);
+app.delete("/v1/payments/subscription", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 
 const proxyAuthenticatedCore = async (

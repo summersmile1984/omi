@@ -27,6 +27,8 @@ const D1_DELETE_BATCH_SIZE = 250;
 const RECONCILE_BATCH_SIZE = 50;
 const ISOLATED_STAGING_MANIFEST = "isolated-staging-v1";
 const STRIPE_SUBSCRIPTION_ID = /^sub_[A-Za-z0-9]{8,128}$/;
+const STRIPE_SCHEDULE_ID = /^sub_sched_[A-Za-z0-9]{8,128}$/;
+const STRIPE_CUSTOMER_ID = /^cus_[A-Za-z0-9]{8,128}$/;
 const STRIPE_TERMINAL_STATUSES = new Set(["canceled", "incomplete_expired"]);
 
 type AccountDeletionIntent = {
@@ -267,6 +269,7 @@ async function assertExternalProviderCleanupConfigured(
 type StripeSubscription = {
   status: string;
   cancelAtPeriodEnd: boolean;
+  customerId: string | null;
 };
 
 async function parseStripeSubscription(
@@ -281,14 +284,84 @@ async function parseStripeSubscription(
     subscription.id !== expectedId ||
     typeof subscription.status !== "string" ||
     (subscription.cancel_at_period_end !== undefined &&
-      typeof subscription.cancel_at_period_end !== "boolean")
+      typeof subscription.cancel_at_period_end !== "boolean") ||
+    (subscription.customer !== undefined &&
+      subscription.customer !== null &&
+      (typeof subscription.customer !== "string" ||
+        !STRIPE_CUSTOMER_ID.test(subscription.customer)))
   ) {
     throw new Error("Stripe subscription response is invalid");
   }
   return {
     status: subscription.status,
     cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+    customerId:
+      typeof subscription.customer === "string" ? subscription.customer : null,
   };
+}
+
+function parseStripeSchedule(body: unknown, expectedId: string) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Stripe subscription schedule response is invalid");
+  }
+  const schedule = body as Record<string, unknown>;
+  if (
+    schedule.id !== expectedId ||
+    typeof schedule.status !== "string" ||
+    !["active", "not_started", "completed", "canceled", "released"].includes(
+      schedule.status,
+    )
+  ) {
+    throw new Error("Stripe subscription schedule response is invalid");
+  }
+  return schedule.status;
+}
+
+async function releaseActiveStripeSchedules(
+  env: JobsEnv,
+  intent: ParsedAccountDeletionIntent,
+  subscriptionId: string,
+  customerId: string,
+) {
+  const query = new URLSearchParams({ customer: customerId, limit: "10" });
+  const body = await stripeRequest(
+    env,
+    `/v1/subscription_schedules?${query.toString()}`,
+  );
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Stripe subscription schedule list is invalid");
+  }
+  const data = (body as Record<string, unknown>).data;
+  if (!Array.isArray(data)) {
+    throw new Error("Stripe subscription schedule list is invalid");
+  }
+  for (const raw of data) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const schedule = raw as Record<string, unknown>;
+    if (
+      (schedule.status !== "active" && schedule.status !== "not_started") ||
+      schedule.subscription !== subscriptionId
+    ) {
+      continue;
+    }
+    if (
+      typeof schedule.id !== "string" ||
+      !STRIPE_SCHEDULE_ID.test(schedule.id)
+    ) {
+      throw new Error("Stripe subscription schedule list is invalid");
+    }
+    parseStripeSchedule(
+      await stripeRequest(
+        env,
+        `/v1/subscription_schedules/${encodeURIComponent(schedule.id)}/release`,
+        {
+          method: "POST",
+          idempotencyKey: `account-delete-${intent.jobId}-release-${schedule.id.slice(-48)}`,
+        },
+      ),
+      schedule.id,
+    );
+  }
 }
 
 async function cleanupExternalProviders(
@@ -302,12 +375,19 @@ async function cleanupExternalProviders(
     await stripeRequest(env, path),
     subscriptionId,
   );
-  if (
-    current.cancelAtPeriodEnd ||
-    STRIPE_TERMINAL_STATUSES.has(current.status)
-  ) {
+  if (STRIPE_TERMINAL_STATUSES.has(current.status)) {
     return;
   }
+  if (!current.customerId) {
+    throw new Error("Stripe subscription customer is unavailable");
+  }
+  await releaseActiveStripeSchedules(
+    env,
+    intent,
+    subscriptionId,
+    current.customerId,
+  );
+  if (current.cancelAtPeriodEnd) return;
   const form = new URLSearchParams({ cancel_at_period_end: "true" });
   const canceled = await parseStripeSubscription(
     await stripeRequest(env, path, {

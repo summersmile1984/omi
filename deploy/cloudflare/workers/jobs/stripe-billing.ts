@@ -20,6 +20,11 @@ const SUPPORTED_WEBHOOK_TYPES = new Set([
   "customer.subscription.created",
   "customer.subscription.updated",
   "customer.subscription.deleted",
+  "subscription_schedule.created",
+  "subscription_schedule.completed",
+  "subscription_schedule.updated",
+  "subscription_schedule.canceled",
+  "subscription_schedule.released",
 ]);
 const PAID_PLANS = new Set([
   "unlimited",
@@ -32,6 +37,8 @@ const ACTIVE_STRIPE_STATUSES = new Set(["active", "trialing"]);
 const STRIPE_EVENT_ID = /^evt_[A-Za-z0-9]{8,156}$/;
 const STRIPE_SESSION_ID = /^cs_[A-Za-z0-9_]{8,156}$/;
 const STRIPE_SUBSCRIPTION_ID = /^sub_[A-Za-z0-9]{8,156}$/;
+const STRIPE_SUBSCRIPTION_ITEM_ID = /^si_[A-Za-z0-9]{8,156}$/;
+const STRIPE_SCHEDULE_ID = /^sub_sched_[A-Za-z0-9]{8,151}$/;
 const STRIPE_CUSTOMER_ID = /^cus_[A-Za-z0-9]{8,156}$/;
 const STRIPE_PRICE_ID = /^price_[A-Za-z0-9]{8,156}$/;
 
@@ -54,10 +61,29 @@ type StripeWebhookRow = {
 type SubscriptionRow = {
   plan: string;
   status: string;
+  current_period_start: number | null;
   current_period_end: number | null;
   stripe_subscription_id: string | null;
   current_price_id: string | null;
+  features_json: string;
   cancel_at_period_end: number;
+  stripe_schedule_id: string | null;
+  scheduled_price_id: string | null;
+  stripe_schedule_status: string | null;
+  schedule_effective_at: number | null;
+};
+
+type ProjectedSubscription = {
+  uid: string;
+  plan: string;
+  status: "active";
+  stripeStatus: string;
+  subscriptionId: string;
+  customerId: string | null;
+  currentPriceId: string | null;
+  currentPeriodStart: number | null;
+  currentPeriodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
 };
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -77,6 +103,51 @@ function optionalInteger(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 0
     ? Number(value)
     : null;
+}
+
+function requiredInteger(value: unknown, label: string): number {
+  const parsed = optionalInteger(value);
+  if (parsed === null) throw new Error(`invalid Stripe ${label}`);
+  return parsed;
+}
+
+function subscriptionLimits(plan: string) {
+  return {
+    transcription_seconds: plan === "plus" ? 90_000 : null,
+    words_transcribed: null,
+    insights_gained: null,
+    chat_questions_per_month:
+      plan === "unlimited" || plan === "plus"
+        ? 200
+        : plan === "unlimited_v2"
+          ? 1_000
+          : plan === "operator"
+            ? 500
+            : null,
+    chat_cost_usd_per_month: plan === "architect" ? 400 : null,
+  };
+}
+
+function paymentSubscriptionResponse(subscription: ProjectedSubscription) {
+  return {
+    plan: subscription.plan,
+    status: subscription.status,
+    stripe_subscription_id: subscription.subscriptionId,
+    current_period_start: subscription.currentPeriodStart,
+    current_period_end: subscription.currentPeriodEnd,
+    cancel_at_period_end: subscription.cancelAtPeriodEnd,
+    current_price_id: subscription.currentPriceId,
+    features: [],
+    limits: subscriptionLimits(subscription.plan),
+    deprecated: false,
+    deprecation_message: null,
+  };
+}
+
+function derivedIdempotencyKey(base: string, operation: string) {
+  const derived = `${base}-${operation}`;
+  if (derived.length > 255) throw new Error("invalid idempotency key");
+  return derived;
 }
 
 function publicApiBaseUrl(env: JobsEnv): string {
@@ -230,6 +301,12 @@ async function boundedJsonBody(request: Request) {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
 }
 
+async function optionalBoundedJsonBody(request: Request) {
+  const raw = await boundedRequestBody(request, MAX_PAYMENT_REQUEST_BYTES);
+  if (raw.byteLength === 0) return {};
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
+}
+
 function paymentError(c: Context, error: unknown): Response {
   if (
     error instanceof StripeResponseError &&
@@ -257,7 +334,9 @@ async function priceRow(env: JobsEnv, priceId: string) {
 
 async function subscriptionRow(env: JobsEnv, uid: string) {
   return env.APP_DB.prepare(
-    "SELECT plan, status, current_period_end, stripe_subscription_id, current_price_id, cancel_at_period_end " +
+    "SELECT plan, status, current_period_start, current_period_end, stripe_subscription_id, current_price_id, " +
+      "features_json, cancel_at_period_end, stripe_schedule_id, scheduled_price_id, stripe_schedule_status, " +
+      "schedule_effective_at " +
       "FROM cf_user_subscriptions WHERE uid = ?",
   )
     .bind(uid)
@@ -585,6 +664,471 @@ async function createCustomerPortal(
   }
 }
 
+function subscriptionItem(subscription: Record<string, unknown>) {
+  const items = objectValue(subscription.items)?.data;
+  const first = Array.isArray(items) ? objectValue(items[0]) : null;
+  return {
+    itemId: stringValue(
+      first?.id,
+      STRIPE_SUBSCRIPTION_ITEM_ID,
+      "subscription item id",
+    ),
+    priceId: stringValue(
+      objectValue(first?.price)?.id,
+      STRIPE_PRICE_ID,
+      "subscription price id",
+    ),
+  };
+}
+
+function planChangeError(currentPlan: string, targetPlan: string) {
+  return (currentPlan === "operator" || currentPlan === "architect") &&
+    (targetPlan === "unlimited" ||
+      targetPlan === "plus" ||
+      targetPlan === "unlimited_v2")
+    ? "This plan is managed from desktop. Switching to a mobile plan is not available here. Cancel at period end or contact support."
+    : null;
+}
+
+function titleCasePlan(plan: string) {
+  return plan.replace(
+    /(^|_)([a-z])/g,
+    (_match, prefix, letter: string) => `${prefix}${letter.toUpperCase()}`,
+  );
+}
+
+async function releaseAttachedSchedules(
+  env: JobsEnv,
+  subscriptionId: string,
+  customer: string,
+  baseIdempotencyKey: string,
+) {
+  const query = new URLSearchParams({ customer, limit: "10" });
+  const response = stripeObject(
+    await stripeRequest(env, `/v1/subscription_schedules?${query}`),
+  );
+  if (!Array.isArray(response.data)) {
+    throw new Error("invalid Stripe subscription schedule list");
+  }
+  const released: string[] = [];
+  for (const rawSchedule of response.data) {
+    const schedule = objectValue(rawSchedule);
+    if (
+      !schedule ||
+      (schedule.status !== "active" && schedule.status !== "not_started") ||
+      schedule.subscription !== subscriptionId
+    ) {
+      continue;
+    }
+    const scheduleId = stringValue(
+      schedule.id,
+      STRIPE_SCHEDULE_ID,
+      "subscription schedule id",
+    );
+    stripeObject(
+      await stripeRequest(
+        env,
+        `/v1/subscription_schedules/${encodeURIComponent(scheduleId)}/release`,
+        {
+          method: "POST",
+          idempotencyKey: derivedIdempotencyKey(
+            baseIdempotencyKey,
+            `release-${scheduleId.slice(-64)}`,
+          ),
+        },
+      ),
+      scheduleId,
+    );
+    released.push(scheduleId);
+  }
+  return released;
+}
+
+async function upgradeSubscription(
+  c: Context<{ Bindings: JobsEnv }>,
+  requestContext: RequestContext,
+) {
+  const context = await requestContext(c);
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  let body: Record<string, unknown>;
+  let requestIdempotencyKey: string;
+  try {
+    body = objectValue(await boundedJsonBody(c.req.raw)) || {};
+    requestIdempotencyKey = idempotencyKey(c.req.raw, "subscription-change");
+  } catch (error) {
+    return c.json(
+      {
+        detail:
+          error instanceof Error && error.message === "request body too large"
+            ? "Request body too large"
+            : "Invalid payment request",
+      },
+      error instanceof Error && error.message === "request body too large"
+        ? 413
+        : 400,
+    );
+  }
+  const priceId = typeof body.price_id === "string" ? body.price_id.trim() : "";
+  if (!STRIPE_PRICE_ID.test(priceId)) {
+    return c.json(
+      { detail: priceId ? "Unknown price_id" : "price_id is required" },
+      400,
+    );
+  }
+  const target = await priceRow(c.env, priceId);
+  if (!target) return c.json({ detail: "Unknown price_id" }, 400);
+  const promotionCode =
+    typeof body.promotion_code === "string" ? body.promotion_code.trim() : "";
+  if (promotionCode.length > 100) {
+    return c.json({ detail: "Invalid or expired promotion code." }, 400);
+  }
+  const current = await subscriptionRow(c.env, context.uid);
+  if (!current?.stripe_subscription_id) {
+    return c.json(
+      { detail: "No active Stripe subscription found to upgrade." },
+      400,
+    );
+  }
+  if (!PAID_PLANS.has(current.plan) || current.status !== "active") {
+    return c.json({ detail: "Can only upgrade paid plan subscriptions." }, 400);
+  }
+  const blockedChange = planChangeError(current.plan, target.plan_id);
+  if (blockedChange) return c.json({ detail: blockedChange }, 400);
+  if (!(await liveCloudflareAccount(c.env, context.uid))) {
+    return c.json(
+      { detail: "Account is not ready for subscription changes." },
+      409,
+    );
+  }
+  try {
+    const subscriptionId = stringValue(
+      current.stripe_subscription_id,
+      STRIPE_SUBSCRIPTION_ID,
+      "subscription id",
+    );
+    const stripeSubscription = stripeObject(
+      await stripeRequest(
+        c.env,
+        `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      ),
+      subscriptionId,
+    );
+    await uidForStripeObject(c.env, stripeSubscription, context.uid);
+    const stripeStatus =
+      typeof stripeSubscription.status === "string"
+        ? stripeSubscription.status
+        : "";
+    if (!ACTIVE_STRIPE_STATUSES.has(stripeStatus)) {
+      return c.json(
+        { detail: "No active Stripe subscription found to upgrade." },
+        400,
+      );
+    }
+    const periodEnd = optionalInteger(stripeSubscription.current_period_end);
+    if (
+      stripeSubscription.cancel_at_period_end === true &&
+      (!periodEnd || periodEnd > Math.floor(Date.now() / 1_000))
+    ) {
+      return c.json(
+        {
+          detail:
+            "Plan changes are available after the current subscription ends. Reactivate your current plan to keep it.",
+        },
+        409,
+      );
+    }
+    const item = subscriptionItem(stripeSubscription);
+    if (item.priceId === priceId) {
+      return c.json(
+        {
+          detail:
+            "You are already subscribed to this plan. Please select a different plan to upgrade or downgrade.",
+        },
+        400,
+      );
+    }
+    const customer = stringValue(
+      stripeSubscription.customer,
+      STRIPE_CUSTOMER_ID,
+      "customer id",
+    );
+    if (
+      current.stripe_schedule_id &&
+      current.scheduled_price_id === priceId &&
+      (current.stripe_schedule_status === "active" ||
+        current.stripe_schedule_status === "not_started")
+    ) {
+      const projected = await projectSubscription(c.env, stripeSubscription, {
+        expectedSubscriptionId: subscriptionId,
+        uidOverride: context.uid,
+      });
+      if (!projected) throw new Error("subscription projection unavailable");
+      const remainingDays = Math.max(
+        0,
+        Math.floor(
+          ((periodEnd || Math.floor(Date.now() / 1_000)) -
+            Math.floor(Date.now() / 1_000)) /
+            86_400,
+        ),
+      );
+      return c.json({
+        status: "success",
+        message: `Upgrade scheduled! Your monthly plan continues for ${remainingDays} more days, then automatically switches to annual.`,
+        subscription: paymentSubscriptionResponse(projected),
+        days_remaining: remainingDays,
+        schedule_id: current.stripe_schedule_id,
+      });
+    }
+    const resolvedPromotionCode = promotionCode
+      ? await promotionCodeId(c.env, promotionCode)
+      : null;
+    await releaseAttachedSchedules(
+      c.env,
+      subscriptionId,
+      customer,
+      requestIdempotencyKey,
+    );
+
+    if (current.plan !== target.plan_id) {
+      const form = new URLSearchParams({
+        "items[0][id]": item.itemId,
+        "items[0][price]": priceId,
+        "items[0][quantity]": "1",
+        proration_behavior: "always_invoice",
+        "metadata[uid]": context.uid,
+        "metadata[sub_type]": target.plan_id,
+      });
+      if (resolvedPromotionCode) {
+        form.set("discounts[0][promotion_code]", resolvedPromotionCode);
+      }
+      const updated = await stripeRequest(
+        c.env,
+        `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`,
+        {
+          method: "POST",
+          form,
+          idempotencyKey: derivedIdempotencyKey(
+            requestIdempotencyKey,
+            "modify",
+          ),
+        },
+      );
+      const projected = await projectSubscription(c.env, updated, {
+        expectedSubscriptionId: subscriptionId,
+        uidOverride: context.uid,
+      });
+      if (!projected) throw new Error("subscription projection unavailable");
+      await c.env.APP_DB.prepare(
+        "UPDATE cf_user_subscriptions SET stripe_schedule_id = NULL, scheduled_price_id = NULL, " +
+          "stripe_schedule_status = NULL, schedule_effective_at = NULL, updated_at = ? WHERE uid = ?",
+      )
+        .bind(Math.floor(Date.now() / 1_000), context.uid)
+        .run();
+      return c.json({
+        status: "success",
+        message: `You've been upgraded to ${titleCasePlan(target.plan_id)}! Your new plan is active now.`,
+        subscription: paymentSubscriptionResponse(projected),
+        days_remaining: 0,
+        schedule_id: null,
+      });
+    }
+
+    const periodStart = requiredInteger(
+      stripeSubscription.current_period_start,
+      "subscription period start",
+    );
+    const currentPeriodEnd = requiredInteger(
+      stripeSubscription.current_period_end,
+      "subscription period end",
+    );
+    const createdSchedule = stripeObject(
+      await stripeRequest(c.env, "/v1/subscription_schedules", {
+        method: "POST",
+        form: new URLSearchParams({ from_subscription: subscriptionId }),
+        idempotencyKey: derivedIdempotencyKey(
+          requestIdempotencyKey,
+          "schedule-create",
+        ),
+      }),
+    );
+    const scheduleId = stringValue(
+      createdSchedule.id,
+      STRIPE_SCHEDULE_ID,
+      "subscription schedule id",
+    );
+    const scheduleForm = new URLSearchParams({
+      "phases[0][items][0][price]": item.priceId,
+      "phases[0][items][0][quantity]": "1",
+      "phases[0][start_date]": String(periodStart),
+      "phases[0][end_date]": String(currentPeriodEnd),
+      "phases[1][items][0][price]": priceId,
+      "phases[1][items][0][quantity]": "1",
+      "metadata[uid]": context.uid,
+      "metadata[upgrade_type]": `${current.plan}_${target.interval}`,
+    });
+    if (resolvedPromotionCode) {
+      scheduleForm.set(
+        "phases[1][discounts][0][promotion_code]",
+        resolvedPromotionCode,
+      );
+    }
+    const updatedSchedule = stripeObject(
+      await stripeRequest(
+        c.env,
+        `/v1/subscription_schedules/${encodeURIComponent(scheduleId)}`,
+        {
+          method: "POST",
+          form: scheduleForm,
+          idempotencyKey: derivedIdempotencyKey(
+            requestIdempotencyKey,
+            "schedule-update",
+          ),
+        },
+      ),
+      scheduleId,
+    );
+    if (
+      updatedSchedule.status !== "active" &&
+      updatedSchedule.status !== "not_started"
+    ) {
+      throw new Error("invalid Stripe subscription schedule status");
+    }
+    const scheduleStatus = updatedSchedule.status;
+    const projected = await projectSubscription(c.env, stripeSubscription, {
+      expectedSubscriptionId: subscriptionId,
+      uidOverride: context.uid,
+    });
+    if (!projected) throw new Error("subscription projection unavailable");
+    await c.env.APP_DB.prepare(
+      "UPDATE cf_user_subscriptions SET stripe_schedule_id = ?, scheduled_price_id = ?, " +
+        "stripe_schedule_status = ?, schedule_effective_at = ?, updated_at = ? WHERE uid = ?",
+    )
+      .bind(
+        scheduleId,
+        priceId,
+        scheduleStatus,
+        currentPeriodEnd,
+        Math.floor(Date.now() / 1_000),
+        context.uid,
+      )
+      .run();
+    const remainingDays = Math.max(
+      0,
+      Math.floor((currentPeriodEnd - Math.floor(Date.now() / 1_000)) / 86_400),
+    );
+    return c.json({
+      status: "success",
+      message: `Upgrade scheduled! Your monthly plan continues for ${remainingDays} more days, then automatically switches to annual.`,
+      subscription: paymentSubscriptionResponse(projected),
+      days_remaining: remainingDays,
+      schedule_id: scheduleId,
+    });
+  } catch (error) {
+    return paymentError(c, error);
+  }
+}
+
+async function cancelSubscription(
+  c: Context<{ Bindings: JobsEnv }>,
+  requestContext: RequestContext,
+) {
+  const context = await requestContext(c);
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  let body: Record<string, unknown>;
+  let requestIdempotencyKey: string;
+  try {
+    body = objectValue(await optionalBoundedJsonBody(c.req.raw)) || {};
+    requestIdempotencyKey = idempotencyKey(c.req.raw, "subscription-cancel");
+  } catch (error) {
+    return c.json(
+      {
+        detail:
+          error instanceof Error && error.message === "request body too large"
+            ? "Request body too large"
+            : "Invalid payment request",
+      },
+      error instanceof Error && error.message === "request body too large"
+        ? 413
+        : 400,
+    );
+  }
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  const reasonDetails =
+    typeof body.reason_details === "string" ? body.reason_details.trim() : "";
+  if (reason.length > 256 || reasonDetails.length > 4_096) {
+    return c.json({ detail: "Invalid cancellation feedback." }, 400);
+  }
+  const current = await subscriptionRow(c.env, context.uid);
+  if (!current?.stripe_subscription_id) {
+    return c.json({ detail: "No active Stripe subscription found." }, 400);
+  }
+  if (!(await liveCloudflareAccount(c.env, context.uid))) {
+    return c.json(
+      { detail: "Account is not ready for subscription changes." },
+      409,
+    );
+  }
+  try {
+    const subscriptionId = stringValue(
+      current.stripe_subscription_id,
+      STRIPE_SUBSCRIPTION_ID,
+      "subscription id",
+    );
+    const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
+    const stripeSubscription = stripeObject(
+      await stripeRequest(c.env, path),
+      subscriptionId,
+    );
+    await uidForStripeObject(c.env, stripeSubscription, context.uid);
+    const customer = stringValue(
+      stripeSubscription.customer,
+      STRIPE_CUSTOMER_ID,
+      "customer id",
+    );
+    await releaseAttachedSchedules(
+      c.env,
+      subscriptionId,
+      customer,
+      requestIdempotencyKey,
+    );
+    const updated = await stripeRequest(c.env, path, {
+      method: "POST",
+      form: new URLSearchParams({ cancel_at_period_end: "true" }),
+      idempotencyKey: derivedIdempotencyKey(
+        requestIdempotencyKey,
+        "cancel-at-period-end",
+      ),
+    });
+    const projected = await projectSubscription(c.env, updated, {
+      expectedSubscriptionId: subscriptionId,
+      uidOverride: context.uid,
+    });
+    if (!projected || !projected.cancelAtPeriodEnd) {
+      throw new Error("Stripe subscription was not scheduled for cancellation");
+    }
+    const now = Math.floor(Date.now() / 1_000);
+    await c.env.APP_DB.prepare(
+      "UPDATE cf_user_subscriptions SET stripe_schedule_id = NULL, scheduled_price_id = NULL, " +
+        "stripe_schedule_status = NULL, schedule_effective_at = NULL, cancellation_reason = ?, " +
+        "cancellation_reason_details = ?, cancellation_feedback_at = ?, updated_at = ? WHERE uid = ?",
+    )
+      .bind(
+        reason || null,
+        reasonDetails || null,
+        reason ? now : null,
+        now,
+        context.uid,
+      )
+      .run();
+    return c.json({
+      status: "ok",
+      message: "Subscription scheduled for cancellation.",
+    });
+  } catch (error) {
+    return paymentError(c, error);
+  }
+}
+
 async function liveCloudflareAccount(env: JobsEnv, uid: string) {
   if (!validAccountDeletionUid(uid)) return false;
   const row = await env.APP_DB.prepare(
@@ -680,7 +1224,9 @@ async function stripeWebhook(c: Context<{ Bindings: JobsEnv }>) {
       object?.id,
       event.type === "checkout.session.completed"
         ? STRIPE_SESSION_ID
-        : STRIPE_SUBSCRIPTION_ID,
+        : event.type.startsWith("subscription_schedule.")
+          ? STRIPE_SCHEDULE_ID
+          : STRIPE_SUBSCRIPTION_ID,
       "event object id",
     );
   } catch {
@@ -730,18 +1276,21 @@ async function stripeWebhook(c: Context<{ Bindings: JobsEnv }>) {
 async function uidForStripeObject(
   env: JobsEnv,
   object: Record<string, unknown>,
+  uidOverride?: string,
 ): Promise<{ uid: string; customer: string | null }> {
   const metadata = objectValue(object.metadata);
-  const metadataUid =
-    typeof metadata?.uid === "string" && validAccountDeletionUid(metadata.uid)
-      ? metadata.uid
-      : null;
+  const rawMetadataUid =
+    typeof metadata?.uid === "string" ? metadata.uid : null;
+  if (rawMetadataUid && !validAccountDeletionUid(rawMetadataUid)) {
+    throw new Error("Stripe object has an invalid mapped user");
+  }
+  const metadataUid = rawMetadataUid || null;
   const customer =
     typeof object.customer === "string" &&
     STRIPE_CUSTOMER_ID.test(object.customer)
       ? object.customer
       : null;
-  if (metadataUid) return { uid: metadataUid, customer };
+  let customerUid: string | null = null;
   if (customer) {
     const row = await env.APP_DB.prepare(
       "SELECT uid FROM cf_stripe_customers WHERE stripe_customer_id = ?",
@@ -749,30 +1298,50 @@ async function uidForStripeObject(
       .bind(customer)
       .first<{ uid?: unknown }>();
     if (typeof row?.uid === "string" && validAccountDeletionUid(row.uid)) {
-      return { uid: row.uid, customer };
+      customerUid = row.uid;
     }
   }
+  if (metadataUid && customerUid && metadataUid !== customerUid) {
+    throw new Error("Stripe metadata and customer users do not match");
+  }
+  if (
+    uidOverride &&
+    ((metadataUid && metadataUid !== uidOverride) ||
+      (customerUid && customerUid !== uidOverride))
+  ) {
+    throw new Error("Stripe subscription is owned by another user");
+  }
+  if (uidOverride) return { uid: uidOverride, customer };
+  if (metadataUid) return { uid: metadataUid, customer };
+  if (customerUid) return { uid: customerUid, customer };
   throw new Error("Stripe object has no mapped user");
 }
 
-async function syncSubscription(
+async function projectSubscription(
   env: JobsEnv,
-  event: StripeWebhookRow,
   rawSubscription: unknown,
-  uidOverride?: string,
-) {
-  const subscription = stripeObject(rawSubscription, event.object_id);
+  options: {
+    expectedSubscriptionId?: string;
+    event?: StripeWebhookRow;
+    uidOverride?: string;
+  } = {},
+): Promise<ProjectedSubscription | null> {
+  const subscription = stripeObject(
+    rawSubscription,
+    options.expectedSubscriptionId,
+  );
   const subscriptionId = stringValue(
     subscription.id,
     STRIPE_SUBSCRIPTION_ID,
     "subscription id",
   );
-  const mapped = await uidForStripeObject(env, subscription);
-  if (uidOverride && mapped.uid !== uidOverride) {
-    throw new Error("Stripe checkout and subscription users do not match");
-  }
-  const uid = uidOverride || mapped.uid;
-  if (!(await liveCloudflareAccount(env, uid))) return "ignored" as const;
+  const mapped = await uidForStripeObject(
+    env,
+    subscription,
+    options.uidOverride,
+  );
+  const uid = mapped.uid;
+  if (!(await liveCloudflareAccount(env, uid))) return null;
   const status =
     typeof subscription.status === "string" ? subscription.status : "";
   if (!status || status.length > 80)
@@ -808,6 +1377,18 @@ async function syncSubscription(
     current.stripe_subscription_id !== subscriptionId &&
     current.current_period_end !== null &&
     current.current_period_end > now;
+  const projected: ProjectedSubscription = {
+    uid,
+    plan,
+    status: "active",
+    stripeStatus: status,
+    subscriptionId,
+    customerId: mapped.customer,
+    currentPriceId: active ? priceId : null,
+    currentPeriodStart: optionalInteger(subscription.current_period_start),
+    currentPeriodEnd: optionalInteger(subscription.current_period_end),
+    cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+  };
   const statements = [];
   if (!staleInactiveDifferentSubscription) {
     if (mapped.customer) {
@@ -833,11 +1414,12 @@ async function syncSubscription(
            current_period_end = excluded.current_period_end,
            stripe_subscription_id = excluded.stripe_subscription_id,
            current_price_id = excluded.current_price_id,
+           features_json = excluded.features_json,
            cancel_at_period_end = excluded.cancel_at_period_end,
            show_subscription_ui = excluded.show_subscription_ui,
            updated_at = excluded.updated_at,
            stripe_status = excluded.stripe_status,
-           stripe_event_id = excluded.stripe_event_id`,
+           stripe_event_id = COALESCE(excluded.stripe_event_id, cf_user_subscriptions.stripe_event_id)`,
       ).bind(
         uid,
         plan,
@@ -848,18 +1430,41 @@ async function syncSubscription(
         subscription.cancel_at_period_end === true ? 1 : 0,
         now,
         status,
-        event.event_id,
+        options.event?.event_id || null,
       ),
     );
   }
-  statements.push(
-    env.APP_DB.prepare(
-      "UPDATE cf_stripe_webhook_events SET uid_hint = ?, customer_id = ?, subscription_id = ?, " +
-        "status = 'processed', processed_at = ?, last_error = NULL, updated_at = ? WHERE event_id = ?",
-    ).bind(uid, mapped.customer, subscriptionId, now, now, event.event_id),
-  );
+  if (options.event) {
+    statements.push(
+      env.APP_DB.prepare(
+        "UPDATE cf_stripe_webhook_events SET uid_hint = ?, customer_id = ?, subscription_id = ?, " +
+          "status = 'processed', processed_at = ?, last_error = NULL, updated_at = ? WHERE event_id = ?",
+      ).bind(
+        uid,
+        mapped.customer,
+        subscriptionId,
+        now,
+        now,
+        options.event.event_id,
+      ),
+    );
+  }
   await env.APP_DB.batch(statements);
-  return "processed" as const;
+  return projected;
+}
+
+async function syncSubscription(
+  env: JobsEnv,
+  event: StripeWebhookRow,
+  rawSubscription: unknown,
+  uidOverride?: string,
+) {
+  const projected = await projectSubscription(env, rawSubscription, {
+    expectedSubscriptionId: event.object_id,
+    event,
+    uidOverride,
+  });
+  return projected ? ("processed" as const) : ("ignored" as const);
 }
 
 async function processCheckoutWebhook(env: JobsEnv, event: StripeWebhookRow) {
@@ -922,6 +1527,112 @@ async function processCheckoutWebhook(env: JobsEnv, event: StripeWebhookRow) {
   return syncSubscription(env, projectedEvent, subscription, uid);
 }
 
+function scheduledTarget(schedule: Record<string, unknown>) {
+  const phases = Array.isArray(schedule.phases) ? schedule.phases : [];
+  const last = objectValue(phases.at(-1));
+  const items = Array.isArray(last?.items) ? last.items : [];
+  const first = objectValue(items[0]);
+  const rawPrice = objectValue(first?.price)?.id || first?.price;
+  return {
+    priceId:
+      typeof rawPrice === "string" && STRIPE_PRICE_ID.test(rawPrice)
+        ? rawPrice
+        : null,
+    effectiveAt: optionalInteger(last?.start_date),
+  };
+}
+
+async function processScheduleWebhook(env: JobsEnv, event: StripeWebhookRow) {
+  const schedule = stripeObject(
+    await stripeRequest(
+      env,
+      `/v1/subscription_schedules/${encodeURIComponent(event.object_id)}`,
+    ),
+    event.object_id,
+  );
+  const status = typeof schedule.status === "string" ? schedule.status : "";
+  if (
+    !["active", "not_started", "completed", "canceled", "released"].includes(
+      status,
+    )
+  ) {
+    throw new Error("invalid Stripe subscription schedule status");
+  }
+  const subscriptionId = stringValue(
+    schedule.subscription || schedule.released_subscription,
+    STRIPE_SUBSCRIPTION_ID,
+    "subscription id",
+  );
+  const currentOwner = await env.APP_DB.prepare(
+    "SELECT uid FROM cf_user_subscriptions WHERE stripe_subscription_id = ?",
+  )
+    .bind(subscriptionId)
+    .first<{ uid?: unknown }>();
+  const uidOverride =
+    typeof currentOwner?.uid === "string" &&
+    validAccountDeletionUid(currentOwner.uid)
+      ? currentOwner.uid
+      : undefined;
+  const mapped = await uidForStripeObject(env, schedule, uidOverride);
+  if (!(await liveCloudflareAccount(env, mapped.uid))) {
+    return "ignored" as const;
+  }
+  const latestSubscription = await stripeRequest(
+    env,
+    `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`,
+  );
+  const projected = await projectSubscription(env, latestSubscription, {
+    expectedSubscriptionId: subscriptionId,
+    uidOverride: mapped.uid,
+  });
+  if (!projected) return "ignored" as const;
+  const target = scheduledTarget(schedule);
+  const ongoing = status === "active" || status === "not_started";
+  if (ongoing && !target.priceId) {
+    throw new Error("active Stripe subscription schedule has no target price");
+  }
+  const current = await subscriptionRow(env, mapped.uid);
+  const updateScheduleProjection =
+    ongoing ||
+    !current?.stripe_schedule_id ||
+    current.stripe_schedule_id === event.object_id;
+  const now = Math.floor(Date.now() / 1_000);
+  const projectionStatement = updateScheduleProjection
+    ? env.APP_DB.prepare(
+        "UPDATE cf_user_subscriptions SET stripe_schedule_id = ?, scheduled_price_id = ?, " +
+          "stripe_schedule_status = ?, schedule_effective_at = ?, stripe_event_id = ?, updated_at = ? " +
+          "WHERE uid = ? AND stripe_subscription_id = ?",
+      ).bind(
+        ongoing ? event.object_id : null,
+        ongoing ? target.priceId : null,
+        status,
+        ongoing ? target.effectiveAt : null,
+        event.event_id,
+        now,
+        mapped.uid,
+        subscriptionId,
+      )
+    : env.APP_DB.prepare(
+        "UPDATE cf_user_subscriptions SET stripe_event_id = ?, updated_at = ? " +
+          "WHERE uid = ? AND stripe_subscription_id = ?",
+      ).bind(event.event_id, now, mapped.uid, subscriptionId);
+  await env.APP_DB.batch([
+    projectionStatement,
+    env.APP_DB.prepare(
+      "UPDATE cf_stripe_webhook_events SET uid_hint = ?, customer_id = ?, subscription_id = ?, " +
+        "status = 'processed', processed_at = ?, last_error = NULL, updated_at = ? WHERE event_id = ?",
+    ).bind(
+      mapped.uid,
+      projected.customerId,
+      subscriptionId,
+      now,
+      now,
+      event.event_id,
+    ),
+  ]);
+  return "processed" as const;
+}
+
 async function markWebhookIgnored(env: JobsEnv, eventId: string) {
   const now = Math.floor(Date.now() / 1_000);
   await env.APP_DB.prepare(
@@ -956,8 +1667,9 @@ export async function processStripeWebhookMessage(
     .bind(now, eventId)
     .run();
   try {
-    const result =
-      event.event_type === "checkout.session.completed"
+    const result = event.event_type.startsWith("subscription_schedule.")
+      ? await processScheduleWebhook(env, event)
+      : event.event_type === "checkout.session.completed"
         ? await processCheckoutWebhook(env, event)
         : await syncSubscription(
             env,
@@ -1020,6 +1732,12 @@ export function registerStripeBillingRoutes(
   );
   app.post("/v1/payments/customer-portal", (c) =>
     createCustomerPortal(c, requestContext),
+  );
+  app.post("/v1/payments/upgrade-subscription", (c) =>
+    upgradeSubscription(c, requestContext),
+  );
+  app.delete("/v1/payments/subscription", (c) =>
+    cancelSubscription(c, requestContext),
   );
   app.post("/v1/stripe/webhook", stripeWebhook);
 }

@@ -105,7 +105,9 @@ describe("staging smoke helpers", () => {
       }
       if (
         url.endsWith("/v1/payments/checkout-session") ||
-        url.endsWith("/v1/payments/customer-portal")
+        url.endsWith("/v1/payments/customer-portal") ||
+        url.endsWith("/v1/payments/upgrade-subscription") ||
+        url.endsWith("/v1/payments/subscription")
       ) {
         return new Response(null, { status: 400 });
       }
@@ -344,12 +346,14 @@ describe("staging smoke helpers", () => {
       overageInfo: 200,
       checkoutBoundary: 400,
       customerPortalBoundary: 400,
+      upgradeBoundary: 400,
+      cancelSubscriptionBoundary: 400,
       fairUseStatus: 200,
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(75);
+    expect(calls).toHaveLength(77);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -613,7 +617,9 @@ describe("staging smoke helpers", () => {
         url.endsWith("/v1/stt/transcribe-workers-ai") ||
         url.endsWith("/v2/voice-message/transcribe") ||
         url.endsWith("/v1/payments/checkout-session") ||
-        url.endsWith("/v1/payments/customer-portal")
+        url.endsWith("/v1/payments/customer-portal") ||
+        url.endsWith("/v1/payments/upgrade-subscription") ||
+        url.endsWith("/v1/payments/subscription")
       )
         return new Response(null, { status: 400 });
       return new Response(new Uint8Array([0xff, 0xfb]), {

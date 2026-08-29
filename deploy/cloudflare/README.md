@@ -60,8 +60,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 225 already match a
-  Cloudflare staging owner and 352 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 238 already match a
+  Cloudflare staging owner and 339 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -271,9 +271,10 @@ printf '%s' "$FAIR_USE_ADMIN_KEY" | npx wrangler secret put FAIR_USE_ADMIN_KEY -
 # Required only when an isolated staging account has a registered FCM device.
 # Use a staging Firebase service account; never copy production credentials.
 printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | npx wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON --name omi-cf-jobs-staging
-# Required for checkout, customer portal, webhook reconciliation, and deleting
-# an account whose D1 subscription row contains a Stripe subscription id. Use
-# the environment-matched restricted/secret key.
+# Required for checkout, customer portal, subscription upgrade/cancel,
+# webhook reconciliation, and deleting an account whose D1 subscription row
+# contains a Stripe subscription id. Use the environment-matched
+# restricted/secret key.
 printf '%s' "$STRIPE_SECRET_KEY" | npx wrangler secret put STRIPE_SECRET_KEY --name omi-cf-jobs-staging
 # Configure the Stripe endpoint as POST
 # https://omi-cf-edge-staging.<account>.workers.dev/v1/stripe/webhook and use
@@ -883,21 +884,26 @@ the legacy per-user timezone lookup is still an explicit parity gap.
 `cf_subscription_prices` is the allowlisted price catalog. An empty price
 catalog returns HTTP 200 with no plans and `show_subscription_ui: false`, so
 the Web Worker does not offer a checkout that cannot succeed. The Jobs Worker
-now owns checkout-session creation, customer-portal creation, and Stripe
-webhook reconciliation in staging. Checkout and portal calls use Stripe
-idempotency keys, while the webhook verifies the exact raw request body before
-persisting an event-id/hash inbox row and publishing only the event id to the
-Queue. Queue processing retrieves the current Checkout Session or Subscription
-from Stripe instead of trusting delivery order, then projects only allowlisted
-prices for a live Cloudflare-cutover account. Missing Stripe credentials fail
-closed; no staging price IDs are synthesized or copied from production.
-This staging endpoint currently projects `checkout.session.completed` plus
-subscription created/updated/deleted events for regular Omi plans. Keep it on
-an isolated Stripe test-mode endpoint: Payment Link app entitlements and
-subscription-schedule events are later migration slices and are not projected
-by this Worker yet.
-Upgrade, cancel, BYOK/reviewer overrides, phone quota, and production
-subscription import remain legacy-owned.
+now owns checkout-session creation, customer-portal creation, immediate and
+scheduled subscription changes, cancellation-at-period-end, and Stripe webhook
+reconciliation in staging. Payment mutations use Stripe idempotency keys.
+Cross-plan changes use immediate invoiced proration; same-plan interval changes
+use the provider-required create-then-update Subscription Schedule sequence.
+Cancellation first releases any active schedule and stores bounded feedback on
+the D1 subscription projection. The webhook verifies the exact raw request body
+before persisting an event-id/hash inbox row and publishing only the event id to
+the Queue. Queue processing retrieves current Stripe objects instead of trusting
+delivery order, then projects only allowlisted prices for a live
+Cloudflare-cutover account. Missing Stripe credentials fail closed; no staging
+price IDs are synthesized or copied from production.
+This staging endpoint currently projects `checkout.session.completed`,
+subscription created/updated/deleted, and Subscription Schedule
+created/updated/completed/canceled/released events for regular Omi plans. Schedule processing
+retrieves both the latest schedule and its current subscription before changing
+D1, so out-of-order deliveries cannot roll the price projection backward. Keep
+it on an isolated Stripe test-mode endpoint: Payment Link app entitlements are
+a later migration slice and are not projected by this Worker yet. BYOK/reviewer
+overrides, phone quota, and production subscription import remain legacy-owned.
 
 `GET /v1/users/me/usage-quota` and the mobile subscription projection now read
 the UTC-month `cf_chat_quota_events` authority. Free, Neo, Plus, Unlimited, and
@@ -1391,9 +1397,12 @@ identity column without extending the inventory. D1 queries are parameterized,
 R2 checks expose presence only, and partial batches, storage errors, or
 non-zero residuals fail closed. For accounts with a Stripe subscription id,
 admission requires the Jobs-only `STRIPE_SECRET_KEY`; after the durable fence
-settles, Jobs reads the subscription and idempotently sets
+settles, Jobs reads the subscription, lists its customer's active Subscription
+Schedules from Stripe, releases every schedule attached to that subscription,
+and idempotently sets
 `cancel_at_period_end=true` before any product purge. An already scheduled or
-terminal subscription satisfies the goal without another mutation. Transport,
+terminal subscription satisfies the cancellation goal without another
+subscription mutation. Transport,
 credential, malformed-response, and non-terminal-result failures retain the
 intent and all product data for reconciliation. Production account deletion
 remains blocked on production secret provisioning and identity/cutover
@@ -1404,8 +1413,9 @@ real SQLite trigger boundary, and proves that both an
 active intent and the tombstone block late writes while expired tombstone
 cleanup restores writes. The TypeScript suite additionally covers the full
 D1/R2 purge, two residual scans, Auth finalization, Queue-send recovery,
-Auth-retry recovery, idempotent repeated deletion, Stripe cancellation,
-already-terminal subscriptions, and fail-closed provider retry behavior.
+Auth-retry recovery, idempotent repeated deletion, Stripe schedule release and
+cancellation, already-terminal subscriptions, and fail-closed provider retry
+behavior.
 
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains

@@ -599,24 +599,44 @@ describe("Cloudflare account deletion workflow", () => {
     }
   });
 
-  it("cancels Stripe at period end after the durable fence and before product purge", async () => {
+  it("releases a Stripe schedule and cancels at period end after the durable fence", async () => {
     const stripeRequests: Request[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const request = new Request(input, init);
         stripeRequests.push(request);
+        if (request.url.includes("/v1/subscription_schedules?")) {
+          return Response.json({
+            object: "list",
+            data: [
+              {
+                id: "sub_sched_liveSchedule123",
+                status: "active",
+                subscription: "sub_liveSubscription123",
+              },
+            ],
+          });
+        }
+        if (request.url.includes("/v1/subscription_schedules/")) {
+          return Response.json({
+            id: "sub_sched_liveSchedule123",
+            status: request.url.endsWith("/release") ? "released" : "active",
+          });
+        }
         if (request.method === "GET") {
           return Response.json({
             id: "sub_liveSubscription123",
             status: "active",
             cancel_at_period_end: false,
+            customer: "cus_liveDeletion123",
           });
         }
         return Response.json({
           id: "sub_liveSubscription123",
           status: "active",
           cancel_at_period_end: true,
+          customer: "cus_liveDeletion123",
         });
       }),
     );
@@ -626,10 +646,15 @@ describe("Cloudflare account deletion workflow", () => {
       state.database.database
         .prepare(
           `INSERT INTO cf_user_subscriptions
-             (uid, plan, status, stripe_subscription_id, updated_at)
-           VALUES (?, 'plus', 'active', ?, ?)`,
+             (uid, plan, status, stripe_subscription_id, stripe_schedule_id, updated_at)
+           VALUES (?, 'plus', 'active', ?, ?, ?)`,
         )
-        .run("deletion-user", "sub_liveSubscription123", 1);
+        .run(
+          "deletion-user",
+          "sub_liveSubscription123",
+          "sub_sched_liveSchedule123",
+          1,
+        );
       const path = "/v1/users/delete-account";
       const response = await jobs.fetch(
         new Request(`https://jobs.test${path}`, {
@@ -651,18 +676,29 @@ describe("Cloudflare account deletion workflow", () => {
 
       expect(stripeRequests.map(({ method }) => method)).toEqual([
         "GET",
+        "GET",
+        "POST",
         "POST",
       ]);
       expect(stripeRequests[0]?.url).toBe(
         "https://api.stripe.com/v1/subscriptions/sub_liveSubscription123",
       );
-      expect(stripeRequests[1]?.headers.get("authorization")).toBe(
+      expect(stripeRequests[1]?.url).toBe(
+        "https://api.stripe.com/v1/subscription_schedules?customer=cus_liveDeletion123&limit=10",
+      );
+      expect(stripeRequests[2]?.url).toBe(
+        "https://api.stripe.com/v1/subscription_schedules/sub_sched_liveSchedule123/release",
+      );
+      expect(stripeRequests[3]?.headers.get("authorization")).toBe(
         `Basic ${btoa("sk_test_account_deletion:")}`,
       );
-      expect(stripeRequests[1]?.headers.get("idempotency-key")).toMatch(
+      expect(stripeRequests[2]?.headers.get("idempotency-key")).toMatch(
+        /^account-delete-[0-9a-f-]{36}-release-sub_sched_liveSchedule123$/,
+      );
+      expect(stripeRequests[3]?.headers.get("idempotency-key")).toMatch(
         /^account-delete-[0-9a-f-]{36}$/,
       );
-      await expect(stripeRequests[1]?.text()).resolves.toBe(
+      await expect(stripeRequests[3]?.text()).resolves.toBe(
         "cancel_at_period_end=true",
       );
       expect(

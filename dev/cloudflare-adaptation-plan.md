@@ -918,8 +918,9 @@ dry-run 成功。随后本批次已部署到 live staging：`0052` 远端执行 
 Worker 与 Web 新版本、全量 authenticated smoke 均通过。以专用隔离账号调用公开删除返回
 200，live Queue 完成两次零 residual scan 后，App D1 intent/cutover/conversation/chat/memory
 与 Auth user/session/account 均验证为 0，25 小时 tombstone 已落库。存在 Stripe
-subscription id 的账号仍会在建立 fence 前 fail closed，外部 provider cleanup 与生产身份/
-cutover 证据仍是生产删号的阻塞项。
+subscription id 的账号会在建立 fence 前验证 Jobs 凭据；建立 fence 后从 Stripe 列出并释放
+挂载在该 subscription 的 active Schedule，再幂等设置 `cancel_at_period_end=true`，任一步失败都保留 intent
+和产品数据。生产 secret provisioning 与身份/cutover 证据仍是生产删号的阻塞项。
 
 Firebase 身份导入也已选择性移植为 D1 tooling：导入保留 Firebase uid，只接受 password、
 Google 与 Apple authority，拒绝 disabled、phone、custom claims 和未知 provider；密码使用

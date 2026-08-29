@@ -764,6 +764,28 @@ export async function runSmoke({
     400,
   );
 
+  const upgradeBoundary = await request(
+    fetchImpl,
+    `${base}/v1/payments/upgrade-subscription`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ price_id: "price_cfSmokeUnavailable" }),
+    },
+  );
+  expectStatus("subscription upgrade price allowlist", upgradeBoundary, 400);
+
+  const cancelSubscriptionBoundary = await request(
+    fetchImpl,
+    `${base}/v1/payments/subscription`,
+    { method: "DELETE", headers: authHeaders },
+  );
+  expectStatus(
+    "subscription cancellation authority",
+    cancelSubscriptionBoundary,
+    400,
+  );
+
   const fairUseStatus = await request(fetchImpl, `${base}/v1/fair-use/status`, {
     headers: authHeaders,
   });
@@ -895,6 +917,8 @@ export async function runSmoke({
     overageInfo: overageInfo.status,
     checkoutBoundary: checkoutBoundary.status,
     customerPortalBoundary: customerPortalBoundary.status,
+    upgradeBoundary: upgradeBoundary.status,
+    cancelSubscriptionBoundary: cancelSubscriptionBoundary.status,
     fairUseStatus: fairUseStatus.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,

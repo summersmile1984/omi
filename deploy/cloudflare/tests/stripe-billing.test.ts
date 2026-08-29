@@ -150,21 +150,47 @@ function seedPrice(
   database: SqliteD1,
   priceId = "price_testOperator123",
   plan = "operator",
+  interval = "month",
 ) {
   database.database
     .prepare(
       `INSERT INTO cf_subscription_prices
          (id, plan_id, title, price_string, interval, unit_amount, active, updated_at)
-       VALUES (?, ?, 'Monthly', '$20/month', 'month', 2000, 1, 1)`,
+       VALUES (?, ?, 'Monthly', '$20/month', ?, 2000, 1, 1)`,
     )
-    .run(priceId, plan);
+    .run(priceId, plan, interval);
 }
 
-async function billingHeaders(uid: string, path: string) {
+function seedSubscription(
+  database: SqliteD1,
+  {
+    uid = "billing-user",
+    plan = "plus",
+    priceId = "price_testPlusMonthly123",
+    subscriptionId = "sub_testBilling123",
+    customerId = "cus_testBilling123",
+  } = {},
+) {
+  database.database
+    .prepare(
+      `INSERT INTO cf_user_subscriptions
+         (uid, plan, status, stripe_subscription_id, current_price_id,
+          cancel_at_period_end, show_subscription_ui, updated_at)
+       VALUES (?, ?, 'active', ?, ?, 0, 1, 1)`,
+    )
+    .run(uid, plan, subscriptionId, priceId);
+  database.database
+    .prepare(
+      "INSERT INTO cf_stripe_customers (uid, stripe_customer_id, updated_at) VALUES (?, ?, 1)",
+    )
+    .run(uid, customerId);
+}
+
+async function billingHeaders(uid: string, path: string, method = "POST") {
   const signed = await createSignedAuthContext(
     { uid, authority: "better-auth", requestId: "stripe-billing-request" },
     "jobs",
-    "POST",
+    method,
     path,
     "stripe-billing-internal-secret",
   );
@@ -351,6 +377,353 @@ describe("Cloudflare Stripe billing", () => {
     }
   });
 
+  it("changes plans immediately with Stripe proration and projects the authoritative subscription", async () => {
+    const state = testEnvironment();
+    seedCloudflareAccount(state.database);
+    seedSubscription(state.database);
+    seedPrice(state.database, "price_testUnlimitedV2123", "unlimited_v2");
+    const periodEnd = Math.floor(Date.now() / 1_000) + 30 * 86_400;
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+        const normalized = new Request(request, init);
+        requests.push(normalized);
+        const url = normalized.url;
+        if (url.includes("/v1/subscription_schedules?")) {
+          return Response.json({ object: "list", data: [] });
+        }
+        if (url.endsWith("/v1/subscriptions/sub_testBilling123")) {
+          const modified = normalized.method === "POST";
+          return Response.json({
+            id: "sub_testBilling123",
+            status: "active",
+            customer: "cus_testBilling123",
+            metadata: {
+              uid: "billing-user",
+              sub_type: modified ? "unlimited_v2" : "plus",
+            },
+            items: {
+              data: [
+                {
+                  id: "si_testBillingItem123",
+                  price: {
+                    id: modified
+                      ? "price_testUnlimitedV2123"
+                      : "price_testPlusMonthly123",
+                  },
+                },
+              ],
+            },
+            current_period_start: periodEnd - 30 * 86_400,
+            current_period_end: periodEnd,
+            cancel_at_period_end: false,
+          });
+        }
+        throw new Error(`unexpected Stripe request ${url}`);
+      }),
+    );
+    try {
+      const path = "/v1/payments/upgrade-subscription";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: {
+            ...(await billingHeaders("billing-user", path)),
+            "idempotency-key": "change-plan-1",
+          },
+          body: JSON.stringify({ price_id: "price_testUnlimitedV2123" }),
+        }),
+        state.env,
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        status: "success",
+        days_remaining: 0,
+        schedule_id: null,
+        subscription: {
+          plan: "unlimited_v2",
+          current_price_id: "price_testUnlimitedV2123",
+          stripe_subscription_id: "sub_testBilling123",
+          limits: { chat_questions_per_month: 1_000 },
+        },
+      });
+      expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+        "/v1/subscriptions/sub_testBilling123",
+        "/v1/subscription_schedules",
+        "/v1/subscriptions/sub_testBilling123",
+      ]);
+      const modify = requests[2];
+      expect(modify.headers.get("idempotency-key")).toBe(
+        "change-plan-1-modify",
+      );
+      const form = new URLSearchParams(await modify.text());
+      expect(form.get("items[0][id]")).toBe("si_testBillingItem123");
+      expect(form.get("items[0][price]")).toBe("price_testUnlimitedV2123");
+      expect(form.get("proration_behavior")).toBe("always_invoice");
+      expect(
+        state.database.row<{ plan: string; current_price_id: string }>(
+          "SELECT plan, current_price_id FROM cf_user_subscriptions WHERE uid = ?",
+          "billing-user",
+        ),
+      ).toEqual({
+        plan: "unlimited_v2",
+        current_price_id: "price_testUnlimitedV2123",
+      });
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("schedules a same-plan interval change with the required two Stripe schedule calls", async () => {
+    const state = testEnvironment();
+    seedCloudflareAccount(state.database);
+    seedSubscription(state.database);
+    seedPrice(state.database, "price_testPlusMonthly123", "plus");
+    seedPrice(state.database, "price_testPlusAnnual123", "plus", "year");
+    const now = Math.floor(Date.now() / 1_000);
+    const periodEnd = now + 10 * 86_400;
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+        const normalized = new Request(request, init);
+        requests.push(normalized);
+        const url = normalized.url;
+        if (url.includes("/v1/subscription_schedules?")) {
+          return Response.json({ object: "list", data: [] });
+        }
+        if (url.endsWith("/v1/subscriptions/sub_testBilling123")) {
+          return Response.json({
+            id: "sub_testBilling123",
+            status: "active",
+            customer: "cus_testBilling123",
+            metadata: { uid: "billing-user", sub_type: "plus" },
+            items: {
+              data: [
+                {
+                  id: "si_testBillingItem123",
+                  price: { id: "price_testPlusMonthly123" },
+                },
+              ],
+            },
+            current_period_start: now - 20 * 86_400,
+            current_period_end: periodEnd,
+            cancel_at_period_end: false,
+          });
+        }
+        if (url.endsWith("/v1/subscription_schedules")) {
+          return Response.json({ id: "sub_sched_testInterval123" });
+        }
+        if (
+          url.endsWith("/v1/subscription_schedules/sub_sched_testInterval123")
+        ) {
+          return Response.json({
+            id: "sub_sched_testInterval123",
+            status: "active",
+          });
+        }
+        throw new Error(`unexpected Stripe request ${url}`);
+      }),
+    );
+    try {
+      const path = "/v1/payments/upgrade-subscription";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: {
+            ...(await billingHeaders("billing-user", path)),
+            "idempotency-key": "change-interval-1",
+          },
+          body: JSON.stringify({ price_id: "price_testPlusAnnual123" }),
+        }),
+        state.env,
+      );
+
+      expect(response.status).toBe(200);
+      const payload = (await response.json()) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        status: "success",
+        schedule_id: "sub_sched_testInterval123",
+        subscription: { plan: "plus" },
+      });
+      expect(Number(payload.days_remaining)).toBeGreaterThanOrEqual(9);
+      const createForm = new URLSearchParams(await requests[2].text());
+      expect(createForm.get("from_subscription")).toBe("sub_testBilling123");
+      const updateForm = new URLSearchParams(await requests[3].text());
+      expect(updateForm.get("phases[0][items][0][price]")).toBe(
+        "price_testPlusMonthly123",
+      );
+      expect(updateForm.get("phases[1][items][0][price]")).toBe(
+        "price_testPlusAnnual123",
+      );
+      expect(
+        state.database.row<{
+          stripe_schedule_id: string;
+          scheduled_price_id: string;
+          schedule_effective_at: number;
+        }>(
+          "SELECT stripe_schedule_id, scheduled_price_id, schedule_effective_at FROM cf_user_subscriptions WHERE uid = ?",
+          "billing-user",
+        ),
+      ).toEqual({
+        stripe_schedule_id: "sub_sched_testInterval123",
+        scheduled_price_id: "price_testPlusAnnual123",
+        schedule_effective_at: periodEnd,
+      });
+
+      const retry = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: {
+            ...(await billingHeaders("billing-user", path)),
+            "idempotency-key": "change-interval-1",
+          },
+          body: JSON.stringify({ price_id: "price_testPlusAnnual123" }),
+        }),
+        state.env,
+      );
+      expect(retry.status).toBe(200);
+      await expect(retry.json()).resolves.toMatchObject({
+        schedule_id: "sub_sched_testInterval123",
+      });
+      expect(requests).toHaveLength(5);
+      expect(new URL(requests[4].url).pathname).toBe(
+        "/v1/subscriptions/sub_testBilling123",
+      );
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("rejects desktop-to-consumer changes before contacting Stripe", async () => {
+    const state = testEnvironment();
+    seedCloudflareAccount(state.database);
+    seedSubscription(state.database, { plan: "architect" });
+    seedPrice(state.database, "price_testPlusAnnual123", "plus", "year");
+    const stripeFetch = vi.fn();
+    vi.stubGlobal("fetch", stripeFetch);
+    try {
+      const path = "/v1/payments/upgrade-subscription";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: await billingHeaders("billing-user", path),
+          body: JSON.stringify({ price_id: "price_testPlusAnnual123" }),
+        }),
+        state.env,
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        detail:
+          "This plan is managed from desktop. Switching to a mobile plan is not available here. Cancel at period end or contact support.",
+      });
+      expect(stripeFetch).not.toHaveBeenCalled();
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("releases an attached schedule before canceling at period end and stores bounded feedback", async () => {
+    const state = testEnvironment();
+    seedCloudflareAccount(state.database);
+    seedSubscription(state.database);
+    seedPrice(state.database, "price_testPlusMonthly123", "plus");
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+        const normalized = new Request(request, init);
+        requests.push(normalized);
+        const url = normalized.url;
+        if (url.includes("/v1/subscription_schedules?")) {
+          return Response.json({
+            object: "list",
+            data: [
+              {
+                id: "sub_sched_testCancel123",
+                status: "active",
+                subscription: "sub_testBilling123",
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/release")) {
+          return Response.json({ id: "sub_sched_testCancel123" });
+        }
+        if (url.endsWith("/v1/subscriptions/sub_testBilling123")) {
+          return Response.json({
+            id: "sub_testBilling123",
+            status: "active",
+            customer: "cus_testBilling123",
+            metadata: { uid: "billing-user", sub_type: "plus" },
+            items: {
+              data: [
+                {
+                  id: "si_testBillingItem123",
+                  price: { id: "price_testPlusMonthly123" },
+                },
+              ],
+            },
+            current_period_start: 1_800_000_000,
+            current_period_end: 1_802_592_000,
+            cancel_at_period_end: normalized.method === "POST",
+          });
+        }
+        throw new Error(`unexpected Stripe request ${url}`);
+      }),
+    );
+    try {
+      const path = "/v1/payments/subscription";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: {
+            ...(await billingHeaders("billing-user", path, "DELETE")),
+            "idempotency-key": "cancel-subscription-1",
+          },
+          body: JSON.stringify({
+            reason: "too_expensive",
+            reason_details: "Switching plans later",
+          }),
+        }),
+        state.env,
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        status: "ok",
+        message: "Subscription scheduled for cancellation.",
+      });
+      expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+        "/v1/subscriptions/sub_testBilling123",
+        "/v1/subscription_schedules",
+        "/v1/subscription_schedules/sub_sched_testCancel123/release",
+        "/v1/subscriptions/sub_testBilling123",
+      ]);
+      const cancelForm = new URLSearchParams(await requests[3].text());
+      expect(cancelForm.get("cancel_at_period_end")).toBe("true");
+      expect(
+        state.database.row<{
+          cancel_at_period_end: number;
+          cancellation_reason: string;
+          cancellation_reason_details: string;
+        }>(
+          "SELECT cancel_at_period_end, cancellation_reason, cancellation_reason_details FROM cf_user_subscriptions WHERE uid = ?",
+          "billing-user",
+        ),
+      ).toEqual({
+        cancel_at_period_end: 1,
+        cancellation_reason: "too_expensive",
+        cancellation_reason_details: "Switching plans later",
+      });
+    } finally {
+      state.database.close();
+    }
+  });
+
   it("verifies, deduplicates, queues, and projects a Checkout webhook", async () => {
     const state = testEnvironment();
     seedCloudflareAccount(state.database);
@@ -459,6 +832,182 @@ describe("Cloudflare Stripe billing", () => {
       );
       expect(duplicate.status).toBe(200);
       expect(state.sent).toHaveLength(1);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("retrieves latest schedule and subscription state before completing a scheduled change", async () => {
+    const state = testEnvironment();
+    seedCloudflareAccount(state.database);
+    seedSubscription(state.database);
+    seedPrice(state.database, "price_testPlusMonthly123", "plus");
+    seedPrice(state.database, "price_testPlusAnnual123", "plus", "year");
+    state.database.database
+      .prepare(
+        "UPDATE cf_user_subscriptions SET stripe_schedule_id = ?, scheduled_price_id = ?, " +
+          "stripe_schedule_status = 'active', schedule_effective_at = 1802592000 WHERE uid = ?",
+      )
+      .run(
+        "sub_sched_testCompleted123",
+        "price_testPlusAnnual123",
+        "billing-user",
+      );
+    const event = JSON.stringify({
+      id: "evt_scheduleCompleted123",
+      object: "event",
+      type: "subscription_schedule.completed",
+      data: { object: { id: "sub_sched_testCompleted123" } },
+    });
+    const timestamp = Math.floor(Date.now() / 1_000);
+    const response = await jobs.fetch(
+      new Request("https://jobs.test/v1/stripe/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "stripe-signature": stripeSignature(
+            event,
+            "whsec_stripe_billing",
+            timestamp,
+          ),
+        },
+        body: event,
+      }),
+      state.env,
+    );
+    expect(response.status).toBe(200);
+    expect(state.sent).toHaveLength(1);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: RequestInfo | URL) => {
+        const url = String(request instanceof Request ? request.url : request);
+        if (
+          url.endsWith("/v1/subscription_schedules/sub_sched_testCompleted123")
+        ) {
+          return Response.json({
+            id: "sub_sched_testCompleted123",
+            status: "completed",
+            subscription: "sub_testBilling123",
+            customer: "cus_testBilling123",
+            metadata: { uid: "billing-user" },
+            phases: [
+              {
+                start_date: 1_802_592_000,
+                items: [{ price: "price_testPlusAnnual123" }],
+              },
+            ],
+          });
+        }
+        if (
+          url.endsWith(
+            "/v1/subscription_schedules/sub_sched_testReleasedOld123",
+          )
+        ) {
+          return Response.json({
+            id: "sub_sched_testReleasedOld123",
+            status: "released",
+            released_subscription: "sub_testBilling123",
+            customer: "cus_testBilling123",
+            metadata: { uid: "billing-user" },
+            phases: [],
+          });
+        }
+        if (url.endsWith("/v1/subscriptions/sub_testBilling123")) {
+          return Response.json({
+            id: "sub_testBilling123",
+            status: "active",
+            customer: "cus_testBilling123",
+            metadata: { uid: "billing-user", sub_type: "plus" },
+            items: {
+              data: [
+                {
+                  id: "si_testBillingItem123",
+                  price: { id: "price_testPlusAnnual123" },
+                },
+              ],
+            },
+            current_period_start: 1_802_592_000,
+            current_period_end: 1_834_128_000,
+            cancel_at_period_end: false,
+          });
+        }
+        throw new Error(`unexpected Stripe request ${url}`);
+      }),
+    );
+    const queued = queueMessage(state.sent[0]);
+    try {
+      await processStripeWebhookMessage(queued.message, state.env);
+      expect(queued.ack).toHaveBeenCalledOnce();
+      expect(
+        state.database.row<{
+          current_price_id: string;
+          stripe_schedule_id: string | null;
+          stripe_schedule_status: string;
+          stripe_event_id: string | null;
+        }>(
+          "SELECT current_price_id, stripe_schedule_id, stripe_schedule_status, stripe_event_id " +
+            "FROM cf_user_subscriptions WHERE uid = ?",
+          "billing-user",
+        ),
+      ).toEqual({
+        current_price_id: "price_testPlusAnnual123",
+        stripe_schedule_id: null,
+        stripe_schedule_status: "completed",
+        stripe_event_id: "evt_scheduleCompleted123",
+      });
+      expect(
+        state.database.row<{ status: string; subscription_id: string }>(
+          "SELECT status, subscription_id FROM cf_stripe_webhook_events WHERE event_id = ?",
+          "evt_scheduleCompleted123",
+        ),
+      ).toEqual({
+        status: "processed",
+        subscription_id: "sub_testBilling123",
+      });
+
+      state.database.database
+        .prepare(
+          "UPDATE cf_user_subscriptions SET stripe_schedule_id = ?, scheduled_price_id = ?, " +
+            "stripe_schedule_status = 'active', schedule_effective_at = 1900000000 WHERE uid = ?",
+        )
+        .run(
+          "sub_sched_testNewerSchedule123",
+          "price_testPlusAnnual123",
+          "billing-user",
+        );
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_stripe_webhook_events
+             (event_id, event_type, object_id, payload_sha256, status,
+              next_attempt_at, created_at, updated_at)
+           VALUES (?, 'subscription_schedule.released', ?, ?, 'pending', 1, 1, 1)`,
+        )
+        .run(
+          "evt_scheduleReleasedOld123",
+          "sub_sched_testReleasedOld123",
+          "0".repeat(64),
+        );
+      const oldRelease = queueMessage({
+        jobId: "evt_scheduleReleasedOld123",
+        uid: "stripe-webhook",
+        kind: "stripe_webhook",
+        payload: { eventId: "evt_scheduleReleasedOld123" },
+      });
+      await processStripeWebhookMessage(oldRelease.message, state.env);
+      expect(oldRelease.ack).toHaveBeenCalledOnce();
+      expect(
+        state.database.row<{
+          stripe_schedule_id: string;
+          stripe_schedule_status: string;
+        }>(
+          "SELECT stripe_schedule_id, stripe_schedule_status FROM cf_user_subscriptions WHERE uid = ?",
+          "billing-user",
+        ),
+      ).toEqual({
+        stripe_schedule_id: "sub_sched_testNewerSchedule123",
+        stripe_schedule_status: "active",
+      });
     } finally {
       state.database.close();
     }

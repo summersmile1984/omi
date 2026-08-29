@@ -311,13 +311,15 @@ describe("edge gateway", () => {
     expect(jobRequests[0].headers.get("x-omi-auth-context")).toBeNull();
     await expect(jobRequests[0].text()).resolves.toBe(rawWebhook);
 
-    for (const path of [
-      "/v1/payments/checkout-session",
-      "/v1/payments/customer-portal",
+    for (const [method, path] of [
+      ["POST", "/v1/payments/checkout-session"],
+      ["POST", "/v1/payments/customer-portal"],
+      ["POST", "/v1/payments/upgrade-subscription"],
+      ["DELETE", "/v1/payments/subscription"],
     ]) {
       const response = await edge.fetch(
         new Request(`https://edge.test${path}`, {
-          method: "POST",
+          method,
           headers: {
             authorization: "Bearer opaque-session",
             "content-type": "application/json",
@@ -334,6 +336,8 @@ describe("edge gateway", () => {
     ).toEqual([
       "/v1/payments/checkout-session",
       "/v1/payments/customer-portal",
+      "/v1/payments/upgrade-subscription",
+      "/v1/payments/subscription",
     ]);
     for (const request of jobRequests.slice(1)) {
       expect(
