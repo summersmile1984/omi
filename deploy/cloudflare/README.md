@@ -1587,6 +1587,26 @@ request returned HTTP 401. The permanent release smoke separately verifies the
 authenticated empty-audio 400 boundary without billable inference. All test
 account rows and generated audio were deleted after validation.
 
+On 2026-08-30 the stronger versioned LibriSpeech release fixture (mono PCM,
+16 kHz, manifest-pinned SHA-256 and exact expected transcript) passed the same
+public staging Edge. The authoritative multipart probe matched the complete
+normalized phrase; raw Workers AI requests matched it twice with timed segments
+in 2,713/2,615 ms; desktop linear16 matched in 1,629 ms; and the Queue path
+returned the same job ID on idempotent replay before completing with the exact
+phrase and timings on its fourth two-second poll. Those four logical operations
+created exactly four positive `sync_fresh` speech sources and zero Deepgram
+usage, and the completed async job's temporary R2 object was absent. The formal
+account-deletion path then removed the Auth user, job, usage, and cutover rows;
+their combined residual was zero. The release probe now sends a stable Omi
+product User-Agent because Cloudflare's security layer rejected Python urllib's
+default User-Agent with HTTP 403 before the Edge route executed.
+
+This is clean-English prerecorded-ASR evidence, not a multilingual/noisy WER
+qualification. The Realtime Worker currently has no `ASR_WS_URL` or
+`ASR_API_KEY` staging secret, so a live external streaming-provider connection
+is still an explicit CF-08 gap; its authentication, interval metering, retry,
+and alarm behavior remain covered by the hermetic Worker suite only.
+
 `/v1/translate` preserves the standalone NLLB request/response shape while
 using the native `@cf/meta/m2m100-1.2b` binding in staging. The Worker explicitly
 limits this route to English, Chinese, French, Spanish, Arabic, Russian, German,

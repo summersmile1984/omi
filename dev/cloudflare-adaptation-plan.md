@@ -1099,5 +1099,17 @@ account control 的 grant-only 身份随后按精确测试标识从 Auth D1 清�
 
 Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules
 均约 8.0 MiB，实际 gzip 上传约 2.0 MiB，应继续作为依赖预算的硬闸门。
-Embedding/ASR 的真实 provider、音频质量基线以及更多产品 route group 仍按
-CF-04～CF-10 单独验收；当前 staging 不宣称生产迁移完成。
+固定 SHA-256 与精确英文转写的 LibriSpeech release fixture 随后通过 public Edge 的
+multipart、raw Workers AI、desktop linear16 和 Queue 四条真实音频路径；raw 两次分别
+约 2,713/2,615 ms，linear16 约 1,629 ms，Queue 第四次两秒轮询完成且幂等重放保持
+同一 job。四个逻辑操作恰好生成四条正 speech `sync_fresh` 计量、Deepgram 用量为 0，
+异步 R2 临时对象和删号后的 Auth/job/usage/cutover 残留均为 0。该验证还发现原
+Cloud Run release probe 的 Python urllib 默认 User-Agent 被 Cloudflare 安全层在 Edge
+前以 HTTP 403 拒绝；探针改用稳定 Omi 产品 User-Agent 后，精确 phrase gate 通过，
+并由回归测试固定请求头。
+
+这只完成 clean-English prerecorded ASR 的 provider/协议证据。Realtime staging 当前
+只配置 `INTERNAL_ASSERTION_SECRET`，尚无 `ASR_WS_URL`/`ASR_API_KEY`，因此真实 streaming
+provider 连接、断线恢复和首字/final 延迟仍是 CF-08 的明确未完成项；多语言/噪声音频
+质量基线以及更多产品 route group 继续按 CF-04～CF-10 单独验收。当前 staging 不宣称
+生产迁移完成。

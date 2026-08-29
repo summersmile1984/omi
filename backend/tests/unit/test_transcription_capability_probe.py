@@ -119,6 +119,7 @@ def test_full_route_posts_versioned_fixture_and_validates_exact_candidate_contra
     assert request.get_method() == 'POST'
     headers = _headers(request)
     assert headers['authorization'] == 'Bearer probe-token-that-must-not-leak'
+    assert headers['user-agent'] == module.PROBE_USER_AGENT
     assert 'x-serverless-authorization' not in headers
     assert headers['content-type'].startswith('multipart/form-data; boundary=')
     assert b'name="files"; filename="transcription-release-probe.wav"' in request.data

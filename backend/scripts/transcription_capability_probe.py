@@ -41,6 +41,7 @@ MAX_NORMALIZED_TRANSCRIPT_CHARS = 512
 MAX_BEARER_TOKEN_CHARS = 8192
 LANGUAGE_PATTERN = re.compile(r'^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})?$')
 SHA256_PATTERN = re.compile(r'^[0-9a-f]{64}$')
+PROBE_USER_AGENT = 'Omi-Transcription-Release-Probe/1.0'
 
 
 @dataclass(frozen=True)
@@ -263,6 +264,11 @@ def _probe_full_route(
                 'Accept': 'application/json',
                 'Authorization': f'Bearer {config.bearer_token}',
                 'Content-Type': content_type,
+                # Python urllib's default user agent is rejected by the
+                # Cloudflare staging security layer before Edge auth runs.
+                # Keep a stable product identity for both Cloud Run and
+                # Workers candidates instead of impersonating a browser.
+                'User-Agent': PROBE_USER_AGENT,
                 **(
                     {'X-Serverless-Authorization': f'Bearer {config.cloud_run_identity_token}'}
                     if config.cloud_run_identity_token
