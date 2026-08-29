@@ -97,10 +97,19 @@ batch. Notification/chat delivery uses the shared Jobs outboxes. No Firestore,
 Redis, local model, or legacy fallback participates in this boundary.
 
 MCP API-key creation, metadata listing, and revocation are owned by the Jobs
-Worker and its uid-scoped D1 table. API Core does not yet accept those bearer
-keys: MCP data tools, OAuth grants/transport, and semantic search remain an
-explicit downstream cutover boundary until their own scope and projection
-contracts are migrated.
+Worker and its uid-scoped D1 table. `mcp_routes.py` accepts only exact
+`omi_mcp_` bearer keys, hashes the 32-hex secret payload, validates the
+persisted scope set, and requires a completed destination-bound Cloudflare
+account cutover with no deletion fence. The migrated REST tools read and write
+the existing D1 memory, conversation, action-item, goal, chat, people,
+screen-activity, daily-summary, and AI-profile projections. Profile contact
+metadata is a best-effort signed service-binding call to Auth; API Core never
+receives an Auth D1 binding. Edge strips cookies and forged internal identity
+headers, and write limits use only an irreversible key digest. Legacy key
+metadata can be backfilled without raw secrets and uses the reserved
+`omi_mcp_legacy` display prefix. OAuth grants/transport and the three semantic
+search routes remain explicit downstream cutover boundaries until their
+Vectorize and token lifecycles migrate as one authority.
 
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional

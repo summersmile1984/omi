@@ -86,6 +86,39 @@ const TABLES = {
     integers: ["unit_amount", "created_at", "updated_at"],
     json: [],
   },
+  cf_mcp_api_keys: {
+    key_columns: ["key_id"],
+    required: ["uid", "key_id", "key_hash", "created_at"],
+    columns: [
+      "uid",
+      "key_id",
+      "name",
+      "key_hash",
+      "key_prefix",
+      "app_id",
+      "scopes_json",
+      "created_at",
+      "last_used_at",
+    ],
+    defaults: {
+      name: "Legacy MCP API key",
+      key_prefix: "omi_mcp_legacy",
+      app_id: "mcp-api",
+      scopes_json: JSON.stringify([
+        "action_items.read",
+        "action_items.write",
+        "chat.read",
+        "conversations.read",
+        "goals.read",
+        "memories.read",
+        "memories.write",
+        "people.read",
+        "screen_activity.read",
+      ]),
+    },
+    integers: ["created_at", "last_used_at"],
+    json: ["scopes_json"],
+  },
   cf_user_enabled_apps: {
     key_columns: ["uid", "app_id"],
     required: ["uid", "app_id", "created_at"],
@@ -676,6 +709,27 @@ export function normalizeRow(table, input) {
   if (!input || typeof input !== "object" || Array.isArray(input))
     fail(`${table} row must be an object`);
   const row = { ...input };
+  if (table === "cf_mcp_api_keys") {
+    for (const forbidden of [
+      "key",
+      "raw_key",
+      "raw_token",
+      "api_key",
+      "token",
+      "secret",
+      "secret_key",
+    ]) {
+      if (row[forbidden] !== undefined)
+        fail(`cf_mcp_api_keys must not contain raw secret field ${forbidden}`);
+    }
+    if (row.user_id !== undefined && row.uid === undefined)
+      row.uid = row.user_id;
+    if (row.id !== undefined && row.key_id === undefined) row.key_id = row.id;
+    if (row.hashed_key !== undefined && row.key_hash === undefined)
+      row.key_hash = row.hashed_key;
+    if (row.scopes !== undefined && row.scopes_json === undefined)
+      row.scopes_json = row.scopes;
+  }
   if (row.provenance !== undefined && row.provenance_json === undefined)
     row.provenance_json = row.provenance;
   if (
@@ -874,6 +928,45 @@ export function normalizeRow(table, input) {
     } catch {
       fail("cf_app_payment_links.payment_link_url is invalid");
     }
+  }
+  if (table === "cf_mcp_api_keys") {
+    if (
+      typeof normalized.key_hash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(normalized.key_hash)
+    ) {
+      fail("cf_mcp_api_keys.key_hash is invalid");
+    }
+    if (
+      normalized.key_prefix !== "omi_mcp_legacy" &&
+      !/^omi_mcp_[0-9a-f]{4}\.\.\.[0-9a-f]{4}$/.test(normalized.key_prefix)
+    ) {
+      fail("cf_mcp_api_keys.key_prefix is invalid");
+    }
+    if (normalized.app_id !== "mcp-api")
+      fail("cf_mcp_api_keys.app_id is invalid");
+    const fullScopes = [
+      "action_items.read",
+      "action_items.write",
+      "chat.read",
+      "conversations.read",
+      "goals.read",
+      "memories.read",
+      "memories.write",
+      "people.read",
+      "screen_activity.read",
+    ];
+    const parsedScopes = JSON.parse(normalized.scopes_json);
+    if (
+      !Array.isArray(parsedScopes) ||
+      parsedScopes.length !== fullScopes.length ||
+      new Set(parsedScopes).size !== fullScopes.length ||
+      [...parsedScopes]
+        .sort()
+        .some((scope, index) => scope !== fullScopes[index])
+    ) {
+      fail("cf_mcp_api_keys.scopes_json must contain the full MCP scope set");
+    }
+    normalized.scopes_json = JSON.stringify(fullScopes);
   }
   return normalized;
 }

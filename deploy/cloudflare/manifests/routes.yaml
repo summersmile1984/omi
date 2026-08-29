@@ -3090,3 +3090,185 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/mcp/memories
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: memories:create
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/mcp/memories/:memory_id
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/mcp/memories/:memory_id
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/profile
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [auth-worker, d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/memories
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/conversations
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/conversations/:conversation_id
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/action-items
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/mcp/action-items
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: action_items:write
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/mcp/action-items/:action_item_id/complete
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: action_items:write
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/mcp/action-items/:action_item_id
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: action_items:write
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/mcp/action-items/:action_item_id
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: action_items:write
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/goals
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/chat
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/people
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/screen-activity
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/daily-summaries
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy

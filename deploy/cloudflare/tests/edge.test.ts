@@ -2644,6 +2644,119 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-internal-signature")).toBeNull();
   });
 
+  it("routes MCP data tools directly to API Core with only the MCP bearer", async () => {
+    const forwarded: Request[] = [];
+    let authCalls = 0;
+    const rateLimitNames: string[] = [];
+    const env = {
+      AUTH: rawService(() => {
+        authCalls += 1;
+        return Response.json({ status: "unexpected" });
+      }),
+      API_CORE: rawService((request) => {
+        forwarded.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
+    } as never;
+    const cases = [
+      ["POST", "/v1/mcp/memories", "{}"],
+      ["DELETE", "/v1/mcp/memories/memory-1"],
+      ["PATCH", "/v1/mcp/memories/memory-1"],
+      ["GET", "/v1/mcp/profile"],
+      ["GET", "/v1/mcp/memories"],
+      ["GET", "/v1/mcp/conversations"],
+      ["GET", "/v1/mcp/conversations/conversation-1"],
+      ["GET", "/v1/mcp/action-items"],
+      ["POST", "/v1/mcp/action-items", "{}"],
+      ["POST", "/v1/mcp/action-items/item-1/complete", "{}"],
+      ["PATCH", "/v1/mcp/action-items/item-1", "{}"],
+      ["DELETE", "/v1/mcp/action-items/item-1"],
+      ["GET", "/v1/mcp/goals"],
+      ["GET", "/v1/mcp/chat"],
+      ["GET", "/v1/mcp/people"],
+      ["GET", "/v1/mcp/screen-activity"],
+      ["GET", "/v1/mcp/daily-summaries"],
+    ] as const;
+    const bearer = `Bearer omi_mcp_${"a".repeat(32)}`;
+
+    for (const [method, path, body] of cases) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: bearer,
+            cookie: "session=must-not-forward",
+            "content-type": "application/json",
+            "x-omi-auth-context": "attacker-context",
+            "x-omi-internal-signature": "attacker-signature",
+          },
+          body,
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    expect(authCalls).toBe(0);
+    expect(forwarded).toHaveLength(cases.length);
+    for (const [index, request] of forwarded.entries()) {
+      expect(request.method).toBe(cases[index][0]);
+      expect(new URL(request.url).pathname).toBe(cases[index][1]);
+      expect(request.headers.get("authorization")).toBe(bearer);
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeNull();
+      expect(request.headers.get("x-omi-internal-signature")).toBeNull();
+    }
+    expect(rateLimitNames).toHaveLength(5);
+    expect(rateLimitNames).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^memories:create:mcp:[0-9a-f]{64}$/),
+        expect.stringMatching(/^action_items:write:mcp:[0-9a-f]{64}$/),
+      ]),
+    );
+    expect(rateLimitNames.join(" ")).not.toContain("a".repeat(32));
+  });
+
+  it("keeps MCP conversation search on the legacy route before the detail parameter", async () => {
+    const originalFetch = globalThis.fetch;
+    const legacyPaths: string[] = [];
+    const corePaths: string[] = [];
+    globalThis.fetch = vi.fn(async (request: RequestInfo | URL) => {
+      legacyPaths.push(
+        new URL(request instanceof Request ? request.url : request).pathname,
+      );
+      return Response.json({ owner: "legacy" });
+    }) as typeof fetch;
+    try {
+      const env = {
+        LEGACY_BACKEND_URL: "https://legacy.example.test",
+        API_CORE: rawService((request) => {
+          corePaths.push(new URL(request.url).pathname);
+          return Response.json({ owner: "api-core" });
+        }),
+      } as never;
+      const search = await edge.fetch(
+        new Request("https://edge.test/v1/mcp/conversations/search", {
+          headers: { authorization: `Bearer omi_mcp_${"b".repeat(32)}` },
+        }),
+        env,
+      );
+      const detail = await edge.fetch(
+        new Request("https://edge.test/v1/mcp/conversations/conversation-1", {
+          headers: { authorization: `Bearer omi_mcp_${"b".repeat(32)}` },
+        }),
+        env,
+      );
+      expect(await search.json()).toEqual({ owner: "legacy" });
+      expect(await detail.json()).toEqual({ owner: "api-core" });
+      expect(legacyPaths).toEqual(["/v1/mcp/conversations/search"]);
+      expect(corePaths).toEqual(["/v1/mcp/conversations/conversation-1"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("routes app API key management through authenticated Jobs", async () => {
     let forwarded: Request | undefined;
     const response = await edge.fetch(

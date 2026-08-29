@@ -302,7 +302,7 @@ Cloudflare `1042`、连续两次 readiness degraded、5 分钟窗口 5xx 超过 
 - 旧 GCS chunk 的 R2 导入与缺失历史 artifact 重建；Worker 原生 WAL 的
   `/v1/sync/audio/*` 多段 WAV 与 dense conversation WAV 已经迁移；
 - cascade conversation deletion、memory extraction、downstream integration fanout；
-- private app 管理、账户删除、Calendar OAuth、speaker sample、完整 vector lifecycle；
+- private app 管理、账户删除、Calendar OAuth、speaker sample、完整 vector lifecycle（含 MCP semantic search）与 MCP OAuth/hosted transport；
 - Better Auth Google/Apple 真实 callback/link 资格检查；服务端契约已部署，但 staging
   OAuth client 凭据未配置前 capability 必须返回空 provider 列表并隐藏对应入口。
 

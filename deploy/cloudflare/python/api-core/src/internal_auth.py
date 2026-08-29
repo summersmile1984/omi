@@ -3,10 +3,52 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from typing import Any
 
 MAX_ASSERTION_LIFETIME_SECONDS = 60
 CLOCK_SKEW_SECONDS = 5
+
+
+def create_request_context(
+    uid: str,
+    secret: str | None,
+    *,
+    audience: str,
+    method: str,
+    path: str,
+    request_id: str,
+    authority: str = "internal",
+    now: int | None = None,
+) -> tuple[str, str] | None:
+    """Create the same request-bound HMAC assertion used by TypeScript Workers."""
+
+    if (
+        not uid
+        or not secret
+        or authority not in {"firebase", "better-auth", "internal"}
+        or audience not in {"api-core", "api-ai", "auth", "jobs", "realtime"}
+        or not path.startswith("/")
+        or not request_id
+    ):
+        return None
+    issued_at = int(time.time()) if now is None else now
+    context = {
+        "uid": uid,
+        "authority": authority,
+        "requestId": request_id,
+        "version": 1,
+        "audience": audience,
+        "assertionId": str(uuid.uuid4()),
+        "issuedAt": issued_at,
+        "expiresAt": issued_at + MAX_ASSERTION_LIFETIME_SECONDS,
+        "method": method.upper(),
+        "path": path,
+    }
+    payload = json.dumps(context, separators=(",", ":")).encode()
+    encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    signature = base64.urlsafe_b64encode(hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()).decode()
+    return encoded, signature.rstrip("=")
 
 
 def decode_context(encoded: str | None, signature: str | None, secret: str | None) -> dict[str, Any] | None:

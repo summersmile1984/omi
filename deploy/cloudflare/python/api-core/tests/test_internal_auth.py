@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from internal_auth import verify_request_context  # noqa: E402
+from internal_auth import create_request_context, verify_request_context  # noqa: E402
 
 
 def signed_context(secret: str) -> tuple[str, str]:
@@ -48,3 +48,30 @@ def test_internal_context_is_bound_to_request_and_lifetime():
     assert verify(method="POST") is None
     assert verify(path="/v1/conversations/other") is None
     assert verify(now=161) is None
+
+
+def test_internal_context_creation_matches_the_request_bound_verifier():
+    signed = create_request_context(
+        "user-1",
+        "test-secret",
+        audience="auth",
+        method="get",
+        path="/internal/profile",
+        request_id="request-2",
+        now=100,
+    )
+    assert signed is not None
+    encoded, signature = signed
+    context = verify_request_context(
+        encoded,
+        signature,
+        "test-secret",
+        audience="auth",
+        method="GET",
+        path="/internal/profile",
+        now=120,
+    )
+    assert context is not None
+    assert context["uid"] == "user-1"
+    assert context["authority"] == "internal"
+    assert context["requestId"] == "request-2"

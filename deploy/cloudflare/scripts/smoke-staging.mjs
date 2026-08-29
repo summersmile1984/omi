@@ -257,6 +257,12 @@ export async function runSmoke({
     stripeBrowserRefreshBoundary,
     403,
   );
+  const mcpDataInvalidKey = await request(
+    fetchImpl,
+    `${base}/v1/mcp/memories`,
+    { headers: { authorization: `Bearer omi_mcp_${"f".repeat(32)}` } },
+  );
+  expectStatus("MCP data invalid key", mcpDataInvalidKey, 403);
 
   const result = {
     edgeHealth: health.status,
@@ -270,6 +276,7 @@ export async function runSmoke({
     stripeSupportedCountriesBoundary: stripeSupportedCountriesBoundary.status,
     stripeReturnMissing: stripeReturnMissing.status,
     stripeBrowserRefreshBoundary: stripeBrowserRefreshBoundary.status,
+    mcpDataInvalidKey: mcpDataInvalidKey.status,
   };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 
@@ -924,15 +931,11 @@ export async function runSmoke({
     headers: authHeaders,
   });
   expectStatus("MCP API key list", mcpApiKeyList, 200);
-  const mcpApiKeyValidation = await request(
-    fetchImpl,
-    `${base}/v1/mcp/keys`,
-    {
-      method: "POST",
-      headers: { ...authHeaders, "content-type": "application/json" },
-      body: JSON.stringify({ name: "   " }),
-    },
-  );
+  const mcpApiKeyValidation = await request(fetchImpl, `${base}/v1/mcp/keys`, {
+    method: "POST",
+    headers: { ...authHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ name: "   " }),
+  });
   expectStatus("MCP API key validation", mcpApiKeyValidation, 422);
   const mcpApiKeyDeleteMissing = await request(
     fetchImpl,

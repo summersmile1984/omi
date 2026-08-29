@@ -73,6 +73,9 @@ function creatorPaymentBoundary(
   if (url.endsWith("/v1/mcp/keys")) {
     return new Response(null, { status: init?.method === "POST" ? 422 : 200 });
   }
+  if (url.endsWith("/v1/mcp/memories")) {
+    return new Response(null, { status: 403 });
+  }
   if (
     url.endsWith("/v1/integrations/notification") ||
     url.includes("/v2/integrations/cf-smoke-missing/")
@@ -365,6 +368,7 @@ describe("staging smoke helpers", () => {
       stripeSupportedCountriesBoundary: 503,
       stripeReturnMissing: 404,
       stripeBrowserRefreshBoundary: 403,
+      mcpDataInvalidKey: 403,
       unauthenticatedProbe: 401,
       unauthenticatedAnnouncements: 401,
       unauthenticatedAnnouncementsAdmin: 403,
@@ -462,7 +466,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(110);
+    expect(calls).toHaveLength(111);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

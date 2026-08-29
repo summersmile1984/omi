@@ -102,6 +102,47 @@ describe("D1 backfill SQL generator", () => {
     ).toContain("cf_user_calendar_onboarding");
   });
 
+  it("backfills legacy MCP key metadata without accepting raw key material", () => {
+    const normalized = normalizeRow("cf_mcp_api_keys", {
+      id: "legacy-key-1",
+      user_id: "user-1",
+      name: "Imported key",
+      hashed_key: "a".repeat(64),
+      created_at: "2026-08-28T10:00:00Z",
+    });
+    expect(normalized).toMatchObject({
+      uid: "user-1",
+      key_id: "legacy-key-1",
+      name: "Imported key",
+      key_hash: "a".repeat(64),
+      key_prefix: "omi_mcp_legacy",
+      app_id: "mcp-api",
+      created_at: 1787911200,
+    });
+    expect(JSON.parse(String(normalized.scopes_json))).toHaveLength(9);
+    expect(
+      renderBackfillSql([{ table: "cf_mcp_api_keys", row: normalized }]),
+    ).toContain("ON CONFLICT(key_id) DO UPDATE SET uid = excluded.uid");
+
+    expect(() =>
+      normalizeRow("cf_mcp_api_keys", {
+        id: "legacy-key-2",
+        user_id: "user-1",
+        hashed_key: "b".repeat(64),
+        created_at: 1,
+        raw_key: `omi_mcp_${"f".repeat(32)}`,
+      }),
+    ).toThrow("must not contain raw secret");
+    expect(() =>
+      normalizeRow("cf_mcp_api_keys", {
+        id: "legacy-key-3",
+        user_id: "user-1",
+        hashed_key: "not-a-hash",
+        created_at: 1,
+      }),
+    ).toThrow("key_hash is invalid");
+  });
+
   it("renders history rows with their three-column uid-scoped key", () => {
     const sql = renderBackfillSql([
       {

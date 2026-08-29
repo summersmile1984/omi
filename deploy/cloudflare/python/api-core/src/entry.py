@@ -60,6 +60,7 @@ from llm_usage_routes import router as llm_usage_router
 from overage_routes import router as overage_router
 from payment_callback_routes import router as payment_callback_router
 from integration_routes import router as integration_router
+from mcp_routes import router as mcp_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
@@ -85,6 +86,7 @@ app.include_router(llm_usage_router)
 app.include_router(overage_router)
 app.include_router(payment_callback_router)
 app.include_router(integration_router)
+app.include_router(mcp_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
 ASSET_CLEANUP_GRACE_SECONDS = 15 * 60
 ASSET_CLEANUP_BATCH_SIZE = 10

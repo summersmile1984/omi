@@ -17,6 +17,11 @@ export type EdgeRateLimitPolicy = {
 };
 
 export const EDGE_RATE_LIMIT_POLICIES = {
+  "action_items:write": {
+    name: "action_items:write",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
   "chat:send_message": {
     name: "chat:send_message",
     maxRequests: 120,
@@ -82,6 +87,8 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     EDGE_RATE_LIMIT_POLICIES["conversations:search"],
   ],
   ["POST /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
+  ["POST /v1/mcp/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
+  ["POST /v1/mcp/action-items", EDGE_RATE_LIMIT_POLICIES["action_items:write"]],
   ["DELETE /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:delete_all"]],
   [
     "DELETE /v3/memories/batch",
@@ -107,6 +114,14 @@ export function edgeRateLimitPolicyForRequest(
       /^\/v3\/memories\/[^/]+\/review$/.test(path))
   ) {
     return EDGE_RATE_LIMIT_POLICIES["memories:modify"];
+  }
+  if (
+    (normalizedMethod === "POST" &&
+      /^\/v1\/mcp\/action-items\/[^/]+\/complete$/.test(path)) ||
+    ((normalizedMethod === "PATCH" || normalizedMethod === "DELETE") &&
+      /^\/v1\/mcp\/action-items\/[^/]+$/.test(path))
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["action_items:write"];
   }
   return null;
 }

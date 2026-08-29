@@ -9,6 +9,12 @@
   "ai": {
     "binding": "AI"
   },
+  "services": [
+    {
+      "binding": "AUTH",
+      "service": "omi-cf-auth-staging"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "APP_DB",

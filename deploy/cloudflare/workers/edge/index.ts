@@ -120,6 +120,78 @@ const proxyIntegrationCore = async (
   return withRequestId(response, id);
 };
 
+async function mcpRateLimitSubject(
+  authorization: string | null,
+): Promise<string | null> {
+  const match = /^Bearer omi_mcp_([0-9a-f]{32})$/.exec(authorization || "");
+  if (!match) return null;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(match[1]),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+// MCP REST tools authenticate with their own D1-backed key family. The Edge
+// strips cookies and caller identity assertions, keeps only Authorization, and
+// rate-limits valid key-shaped write traffic by an irreversible key digest.
+const proxyMcpCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const subject = await mcpRateLimitSubject(
+      c.req.raw.headers.get("authorization"),
+    );
+    if (subject) {
+      const rateLimitDenial = await enforceEdgeRateLimit(
+        c.env,
+        { uid: `mcp:${subject}`, authority: "internal", requestId: id },
+        policy,
+        id,
+      );
+      if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+    }
+  }
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  headers.delete("cookie");
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+const proxyLegacyBackend = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (!envLegacy(c.env)) {
+    return withRequestId(
+      Response.json({ error: "route not migrated" }, { status: 404 }),
+      id,
+    );
+  }
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  const legacy = new URL(c.req.url);
+  legacy.protocol = new URL(c.env.LEGACY_BACKEND_URL).protocol;
+  legacy.host = new URL(c.env.LEGACY_BACKEND_URL).host;
+  const response = await fetch(
+    new Request(legacy, {
+      method: c.req.method,
+      headers,
+      body: c.req.raw.body,
+    }),
+  );
+  return withRequestId(response, id);
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 app.get("/v2/firmware/stable", proxyPublicFirmware);
@@ -148,19 +220,31 @@ app.patch("/v1/apps/:appId/popular", proxyPublicJobs);
 app.post("/v1/apps/:appId/approve", proxyPublicJobs);
 app.post("/v1/apps/:appId/reject", proxyPublicJobs);
 app.post("/v1/integrations/notification", proxyIntegrationCore);
-app.post(
-  "/v2/integrations/:app_id/user/conversations",
-  proxyIntegrationCore,
-);
+app.post("/v2/integrations/:app_id/user/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/user/memories", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/memories", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/conversations", proxyIntegrationCore);
-app.post(
-  "/v2/integrations/:app_id/search/conversations",
-  proxyIntegrationCore,
-);
+app.post("/v2/integrations/:app_id/search/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/notification", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/tasks", proxyIntegrationCore);
+app.post("/v1/mcp/memories", proxyMcpCore);
+app.delete("/v1/mcp/memories/:memory_id", proxyMcpCore);
+app.patch("/v1/mcp/memories/:memory_id", proxyMcpCore);
+app.get("/v1/mcp/profile", proxyMcpCore);
+app.get("/v1/mcp/memories", proxyMcpCore);
+app.get("/v1/mcp/conversations", proxyMcpCore);
+app.get("/v1/mcp/conversations/search", proxyLegacyBackend);
+app.get("/v1/mcp/conversations/:conversation_id", proxyMcpCore);
+app.get("/v1/mcp/action-items", proxyMcpCore);
+app.post("/v1/mcp/action-items", proxyMcpCore);
+app.post("/v1/mcp/action-items/:action_item_id/complete", proxyMcpCore);
+app.patch("/v1/mcp/action-items/:action_item_id", proxyMcpCore);
+app.delete("/v1/mcp/action-items/:action_item_id", proxyMcpCore);
+app.get("/v1/mcp/goals", proxyMcpCore);
+app.get("/v1/mcp/chat", proxyMcpCore);
+app.get("/v1/mcp/people", proxyMcpCore);
+app.get("/v1/mcp/screen-activity", proxyMcpCore);
+app.get("/v1/mcp/daily-summaries", proxyMcpCore);
 app.get("/v1/payments/success", proxyPublicCore);
 app.get("/v1/payments/cancel", proxyPublicCore);
 app.get("/v1/payments/portal-return", proxyPublicCore);
@@ -849,20 +933,7 @@ app.all("/*", async (c) => {
     return withRequestId(response, id);
   }
   if (envLegacy(c.env)) {
-    const headers = stripUntrustedHeaders(c.req.raw, {
-      preserveClientAuth: true,
-    });
-    const legacy = new URL(c.req.url);
-    legacy.protocol = new URL(c.env.LEGACY_BACKEND_URL!).protocol;
-    legacy.host = new URL(c.env.LEGACY_BACKEND_URL!).host;
-    const response = await fetch(
-      new Request(legacy, {
-        method: c.req.method,
-        headers,
-        body: c.req.raw.body,
-      }),
-    );
-    return withRequestId(response, id);
+    return proxyLegacyBackend(c);
   }
   if (auth) return c.json({ error: "route not migrated" }, 404);
   return c.json({ error: "unauthorized" }, 401);
