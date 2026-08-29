@@ -4,7 +4,7 @@
     {"method": "DELETE", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/advice/{advice_id}", "protocol": "http", "target_runtime": "legacy"},
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/announcements/{announcement_id}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "DELETE", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/apps/tester/access", "protocol": "http", "target_runtime": "legacy"},
-    {"method": "DELETE", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/apps/{app_id}", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "DELETE", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/apps/{app_id}", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "DELETE", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/apps/{app_id}/keys/{key_id}", "protocol": "http", "target_runtime": "legacy"},
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/apps/{app_id}/subscription", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}", "protocol": "http", "target_runtime": "python-worker"},

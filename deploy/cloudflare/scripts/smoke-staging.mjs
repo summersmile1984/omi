@@ -845,6 +845,13 @@ export async function runSmoke({
     404,
   );
 
+  const appDeleteBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing`,
+    { method: "DELETE", headers: authHeaders },
+  );
+  expectStatus("app deletion ownership boundary", appDeleteBoundary, 404);
+
   const connectAccountBoundary = await request(
     fetchImpl,
     `${base}/v1/stripe/connect-accounts?country=USA`,
@@ -1044,6 +1051,7 @@ export async function runSmoke({
     cancelSubscriptionBoundary: cancelSubscriptionBoundary.status,
     appSubscription: appSubscription.status,
     cancelAppSubscriptionBoundary: cancelAppSubscriptionBoundary.status,
+    appDeleteBoundary: appDeleteBoundary.status,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
     stripeRefreshOwnership: stripeRefreshOwnership.status,

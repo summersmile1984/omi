@@ -1800,6 +1800,7 @@ async function projectAppSubscription(
          cancel_at_period_end = excluded.cancel_at_period_end,
          price_id = excluded.price_id,
          stripe_event_id = COALESCE(excluded.stripe_event_id, cf_app_subscriptions.stripe_event_id),
+         app_delete_verified_at = NULL,
          updated_at = excluded.updated_at`,
     ).bind(
       uid,
@@ -1840,6 +1841,12 @@ async function syncAppSubscription(
   event: StripeWebhookRow,
   rawSubscription: unknown,
 ) {
+  const subscription = stripeObject(rawSubscription, event.object_id);
+  const appId = appIdForStripeSubscription(subscription);
+  if (appId && (await appOwnerDeletionFenced(env, appId))) {
+    await cancelFencedAppSubscription(env, event, subscription, appId);
+    return "ignored" as const;
+  }
   const projected = await projectAppSubscription(env, rawSubscription, {
     expectedSubscriptionId: event.object_id,
     event,
@@ -1873,15 +1880,66 @@ async function appOwnerDeletionFenced(env: JobsEnv, appId: string) {
        ) AS deleted,
        EXISTS(
          SELECT 1 FROM cf_retired_paid_apps r WHERE r.app_id = ?
-       ) AS retired`,
+       ) AS retired,
+       EXISTS(
+         SELECT 1 FROM cf_app_deletion_fences f WHERE f.app_id = ?
+       ) AS deleting_app`,
   )
-    .bind(appId, appId, appId)
-    .first<{ deleting?: unknown; deleted?: unknown; retired?: unknown }>();
+    .bind(appId, appId, appId, appId)
+    .first<{
+      deleting?: unknown;
+      deleted?: unknown;
+      retired?: unknown;
+      deleting_app?: unknown;
+    }>();
   return (
     Number(row?.deleting) === 1 ||
     Number(row?.deleted) === 1 ||
-    Number(row?.retired) === 1
+    Number(row?.retired) === 1 ||
+    Number(row?.deleting_app) === 1
   );
+}
+
+async function cancelFencedAppSubscription(
+  env: JobsEnv,
+  event: StripeWebhookRow,
+  subscription: Record<string, unknown>,
+  appId: string,
+) {
+  if (
+    appIdForStripeSubscription(subscription) !== appId ||
+    typeof subscription.status !== "string" ||
+    (subscription.cancel_at_period_end !== undefined &&
+      typeof subscription.cancel_at_period_end !== "boolean")
+  ) {
+    throw new Error("Stripe fenced app subscription does not match");
+  }
+  if (
+    subscription.cancel_at_period_end === true ||
+    TERMINAL_STRIPE_STATUSES.has(subscription.status)
+  ) {
+    return;
+  }
+  const canceled = stripeObject(
+    await stripeRequest(
+      env,
+      `/v1/subscriptions/${encodeURIComponent(event.object_id)}`,
+      {
+        method: "POST",
+        form: new URLSearchParams({ cancel_at_period_end: "true" }),
+        idempotencyKey: `stripe-webhook-${event.event_id}-fenced-cancel`,
+      },
+    ),
+    event.object_id,
+  );
+  if (
+    appIdForStripeSubscription(canceled) !== appId ||
+    (canceled.cancel_at_period_end !== true &&
+      (typeof canceled.status !== "string" ||
+        !TERMINAL_STRIPE_STATUSES.has(canceled.status)))
+  ) {
+    throw new Error("Stripe fenced app subscription remains billable");
+  }
 }
 
 async function cancelFencedAppCheckout(

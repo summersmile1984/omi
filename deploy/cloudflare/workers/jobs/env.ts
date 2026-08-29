@@ -7,6 +7,7 @@ export type JobMessage = {
     | "sync_local_files"
     | "legacy_audio_rebuild"
     | "account_delete"
+    | "app_delete"
     | "stripe_webhook";
   payload: Record<string, unknown>;
 };

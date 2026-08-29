@@ -47,6 +47,12 @@ function creatorPaymentBoundary(
     });
   }
   if (
+    url.endsWith("/v1/apps/cf-smoke-missing") &&
+    init?.method === "DELETE"
+  ) {
+    return new Response(null, { status: 404 });
+  }
+  if (
     url.endsWith("/v1/stripe/onboarded") ||
     url.endsWith("/v1/paypal/payment-details") ||
     url.endsWith("/v1/payment-methods/default") ||
@@ -391,6 +397,7 @@ describe("staging smoke helpers", () => {
       cancelSubscriptionBoundary: 400,
       appSubscription: 200,
       cancelAppSubscriptionBoundary: 404,
+      appDeleteBoundary: 404,
       connectAccountBoundary: 400,
       stripeOnboardingStatus: 200,
       stripeRefreshOwnership: 403,
@@ -403,7 +410,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(90);
+    expect(calls).toHaveLength(91);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

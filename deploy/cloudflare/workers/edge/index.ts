@@ -543,6 +543,7 @@ app.delete("/v2/desktop/messages", proxyAuthenticatedCore);
 app.patch("/v2/desktop/messages/:messageId/rating", proxyAuthenticatedCore);
 app.get("/v1/apps/popular", proxyAuthenticatedCore);
 app.get("/v1/apps/:appId", proxyAuthenticatedCore);
+app.delete("/v1/apps/:appId", proxyAuthenticatedJobs);
 app.get("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
 app.delete("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
 app.post("/v1/apps/review", proxyAuthenticatedCore);

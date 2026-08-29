@@ -95,6 +95,26 @@ export async function stripeOwnedAppPaymentLinks(
   return rows;
 }
 
+export async function stripeAppPaymentLink(
+  env: JobsEnv,
+  appId: string,
+): Promise<AppPaymentLinkRow | null> {
+  const row = await env.APP_DB.prepare(
+    `SELECT app_id, owner_uid, stripe_account_id, stripe_product_id,
+            stripe_price_id, stripe_payment_link_id, payment_link_url,
+            unit_amount, currency, interval, active
+     FROM cf_app_payment_links
+     WHERE app_id = ? LIMIT 1`,
+  )
+    .bind(appId)
+    .first<AppPaymentLinkRow>();
+  if (!row) return null;
+  if (!validAppPaymentLinkRow(row) || row.app_id !== appId) {
+    throw new Error("invalid Stripe app payment link mapping");
+  }
+  return row;
+}
+
 export async function retireOwnedPaidApps(
   env: JobsEnv,
   ownerUid: string,

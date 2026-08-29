@@ -42,6 +42,11 @@ import {
   registerStripeBillingRoutes,
 } from "./stripe-billing";
 import { registerCreatorPaymentRoutes } from "./creator-payments";
+import {
+  processAppDeletionMessage,
+  reconcileAppDeletions,
+  registerAppDeletionRoutes,
+} from "./app-deletion";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -94,6 +99,7 @@ registerSyncRoutes(app, requestContext);
 registerAccountDeletionRoutes(app, requestContext);
 registerStripeBillingRoutes(app, requestContext);
 registerCreatorPaymentRoutes(app, requestContext);
+registerAppDeletionRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -923,6 +929,10 @@ async function processJobMessage(
     await processLegacyAudioRebuild(message, env, now);
     return;
   }
+  if (row.kind === "app_delete") {
+    await processAppDeletionMessage(message, env);
+    return;
+  }
   if (row.kind !== "probe") {
     await markJobFailed(
       env,
@@ -1022,6 +1032,7 @@ export default {
       evaluateFairUseBatch(env),
       drainFairUseNotifications(env),
       reconcileAccountDeletions(env, now),
+      reconcileAppDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),
       reconcileStripeWebhookEvents(env, now),
       ...syncMaintenance,

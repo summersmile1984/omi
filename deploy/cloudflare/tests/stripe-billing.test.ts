@@ -62,8 +62,7 @@ class SqliteD1 {
       bind: (...values: unknown[]) => build(values),
       first: async <T>() => {
         const row = this.database.prepare(sql).get(...args.map(sqliteValue)) as
-          | T
-          | undefined;
+          T | undefined;
         return row ?? null;
       },
       all: async <T>() => ({
@@ -109,8 +108,7 @@ class SqliteD1 {
   row<T>(sql: string, ...args: unknown[]): T | null {
     return (
       (this.database.prepare(sql).get(...args.map(sqliteValue)) as
-        | T
-        | undefined) ?? null
+        T | undefined) ?? null
     );
   }
 
@@ -1487,6 +1485,76 @@ describe("Cloudflare Stripe billing", () => {
         state.database.row<{ status: string }>(
           "SELECT status FROM cf_stripe_webhook_events WHERE event_id = ?",
           "evt_retiredApp123",
+        )?.status,
+      ).toBe("ignored");
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("cancels a subscription update that races with a single-app deletion fence", async () => {
+    const state = testEnvironment();
+    seedCloudflareAccount(state.database);
+    seedPaidApp(state.database);
+    seedAppSubscription(state.database);
+    state.database.database
+      .prepare("UPDATE cf_app_catalog SET owner_uid = ? WHERE id = ?")
+      .run("creator-user", "paid-app");
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_jobs
+           (job_id, uid, kind, payload_json, status, attempts, created_at, updated_at)
+         VALUES ('app-delete-job', 'creator-user', 'app_delete',
+                 '{"app_id":"paid-app"}', 'queued', 0, 1, 1)`,
+      )
+      .run();
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_app_deletion_fences (app_id, job_id, created_at)
+         VALUES ('paid-app', 'app-delete-job', 1)`,
+      )
+      .run();
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_stripe_webhook_events
+           (event_id, event_type, object_id, payload_sha256, status,
+            next_attempt_at, created_at, updated_at)
+         VALUES ('evt_appDeleteRace123', 'customer.subscription.updated',
+                 'sub_testPaidApp123', ?, 'pending', 1, 1, 1)`,
+      )
+      .run("0".repeat(64));
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        return Response.json({
+          id: "sub_testPaidApp123",
+          status: "active",
+          customer: "cus_testPaidApp123",
+          metadata: { app_id: "paid-app", uid: "billing-user" },
+          cancel_at_period_end: request.method === "POST",
+        });
+      }),
+    );
+    const queued = queueMessage({
+      jobId: "evt_appDeleteRace123",
+      uid: "stripe-webhook",
+      kind: "stripe_webhook",
+      payload: { eventId: "evt_appDeleteRace123" },
+    });
+    try {
+      await processStripeWebhookMessage(queued.message, state.env);
+      expect(queued.ack).toHaveBeenCalledOnce();
+      expect(requests.map(({ method }) => method)).toEqual(["GET", "POST"]);
+      expect(requests[1].headers.get("idempotency-key")).toBe(
+        "stripe-webhook-evt_appDeleteRace123-fenced-cancel",
+      );
+      expect(
+        state.database.row<{ status: string }>(
+          "SELECT status FROM cf_stripe_webhook_events WHERE event_id = ?",
+          "evt_appDeleteRace123",
         )?.status,
       ).toBe("ignored");
     } finally {

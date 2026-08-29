@@ -60,7 +60,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 250 already match a
+  gate. The current inventory contains 577 backend routes: 251 already match a
   Cloudflare staging owner and 327 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
@@ -938,7 +938,24 @@ an entitlement after the catalog row is gone. Creator deletion also cancels all
 projected subscriber renewals before product data is purged. Production cutover
 remains blocked until existing paid-app provider identifiers have been imported
 and verified in `cf_app_payment_links`, the Jobs Stripe secret is provisioned,
-and app-owner create/update/delete mutations have moved from the legacy owner.
+and app-owner create/update mutations have moved from the legacy owner.
+
+Migration `0062_app_deletion_fences.sql` moves owner-authorized
+`DELETE /v1/apps/{app_id}` to Jobs without making provider cleanup synchronous
+with the browser request. Admission validates paid-app mapping completeness and
+Stripe configuration before hiding the app and removing its install mappings,
+then atomically stores a generic job plus an app-scoped deletion fence. Queue
+processing deactivates the Payment
+Link, expires open Checkout Sessions, verifies every projected subscriber
+against Stripe, releases matching Subscription Schedules, and stops renewal in
+bounded batches. Each provider event clears the job's per-subscription
+verification marker, while Checkout and subscription webhooks observe the fence
+and cancel rather than re-project a billable entitlement. Only after every
+subscription has been reverified does one D1 batch remove installs and catalog
+data, persist the paid-app retirement tombstone, and complete the job. Provider
+or ownership failures keep the app hidden and the durable job retryable; the
+scheduled reconciler bounds automatic attempts, and an exact owner retry resets
+that budget. The HTTP response retains the legacy `{"status":"ok"}` shape.
 
 Migration `0060_app_subscriptions.sql` projects paid-app subscriptions into D1
 from the same raw-body-verified Stripe inbox. Checkout processing requires the
