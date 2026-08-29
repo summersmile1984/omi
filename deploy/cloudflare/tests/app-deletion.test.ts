@@ -139,6 +139,13 @@ function fakeQueue(options: { fail?: boolean } = {}) {
   };
 }
 
+function fakeVectorize() {
+  return {
+    upsert: vi.fn(async () => undefined),
+    deleteByIds: vi.fn(async () => undefined),
+  };
+}
+
 function environment(options: { queueFail?: boolean } = {}) {
   const database = new SqliteD1();
   const queue = fakeQueue({ fail: options.queueFail });
@@ -155,6 +162,10 @@ function environment(options: { queueFail?: boolean } = {}) {
       AUTH: { fetch: vi.fn() } as unknown as Fetcher,
       ASSETS: { delete: assetDeletes } as unknown as R2Bucket,
       AI: { run: vi.fn() },
+      MEMORY_VECTORS: fakeVectorize(),
+      ACTION_ITEM_VECTORS: fakeVectorize(),
+      CONVERSATION_VECTORS: fakeVectorize(),
+      TRANSCRIPT_CHUNK_VECTORS: fakeVectorize(),
       SYNC_FRESH: queue.binding,
       SYNC_BACKFILL: queue.binding,
     } satisfies JobsEnv,

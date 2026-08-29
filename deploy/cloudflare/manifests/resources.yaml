@@ -60,3 +60,19 @@ resources:
     name: omi-cf-jobs-staging
     owner: jobs
     environment: staging
+  - kind: vectorize
+    name: omi-cf-conversations-v2
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-memories-v2
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-action-items-v2
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-transcript-chunks-v2
+    owner: jobs
+    environment: staging

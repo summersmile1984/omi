@@ -1,6 +1,6 @@
 # Cloudflare 适配架构与完成度审计
 
-本目录保存 Cloudflare Workers 适配的架构视图，以及截至 2026-08-28 的 staging 完成度审计。结论先行：当前已完成的是一条可运行、可验证的 Cloudflare staging 切片，不是完整的生产迁移目标。生产身份、生产数据、全部路由和旧基础设施清理均仍需单独的发布门槛。
+本目录保存 Cloudflare Workers 适配的架构视图，以及截至 2026-08-30 的 staging 完成度审计。结论先行：当前已完成的是一条可运行、可验证的 Cloudflare staging 切片，不是完整的生产迁移目标。生产身份、生产数据、全部路由和旧基础设施清理均仍需单独的发布门槛。
 
 ## 架构图
 
@@ -16,16 +16,16 @@
 
 | 项目                       | 状态                    | 已有证据                                                                                                                                                                                                                                                                                 | 尚未闭合                                                                                                                    |
 | -------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| CF-00 清单/scaffold        | 已完成                  | hermetic FastAPI 注册表确认 577 条唯一后端路由（573 HTTP、4 WebSocket，含显式 HEAD/OPTIONS）；198 条已匹配 Cloudflare staging owner，379 条显式保留 legacy owner；216 条 Cloudflare 路由、15 个隔离资源、34 个 Redis family、7 个 vector namespace、9 个 R2 namespace 均有机械校验       | 未迁路由的实现工作归入 CF-10，不再是清单未知项                                                                              |
+| CF-00 清单/scaffold        | 已完成                  | hermetic FastAPI 注册表确认 577 条唯一后端路由（573 HTTP、4 WebSocket，含显式 HEAD/OPTIONS）；298 条已匹配 Cloudflare staging owner，279 条显式保留 legacy owner；314 条 Cloudflare 路由、19 个隔离资源、34 个 Redis family、7 个 vector namespace、9 个 R2 namespace 均有机械校验       | 未迁路由的实现工作归入 CF-10，不再是清单未知项                                                                              |
 | CF-01 Edge                 | staging 已验证          | header 剥离、防重放、CORS、owner 标记、health/smoke                                                                                                                                                                                                                                      | 生产回滚与非幂等超时的 live 证据                                                                                            |
-| CF-02 Python Workers       | staging 已验证          | api-core/api-ai、110+37 个 Python 测试、真实 Worker smoke；API AI 已验证跨 Worker DO binding                                                                                                                                                                                             | 生产规模 bundle/CPU/内存/cold-start/外连预算                                                                                |
+| CF-02 Python Workers       | staging 已验证          | api-core/api-ai、179+61 个 Python 测试、真实 Worker smoke；API AI 已验证跨 Worker DO binding                                                                                                                                                                                             | 生产规模 bundle/CPU/内存/cold-start/外连预算                                                                                |
 | CF-03 Better Auth          | 部分完成                | 独立 D1、signup/login/session/JWT、staging 浏览器登录；内部身份查询/原子删除/residual；Better Auth-only 隔离 staging 账号的 Edge→Jobs→Auth 删除链路已通过 live Queue、双 residual scan、产品清理、身份清理与 tombstone 验证；Firebase password verifier、首次登录原生 rehash、参数化 D1 import ledger/checksum/replay tooling；真实 workerd+D1 已验证错误密码不写、成功升级和移除迁移密钥后再登录 | 真实 OAuth/link、Stripe provider cleanup、真实 Firebase export 导入演练、JWKS retired/grace live 证据和生产身份连续性 |
 | CF-04 R2                   | 部分完成                | PUT/GET/range/conditional/checksum/delete smoke                                                                                                                                                                                                                                          | multipart、presigned expiry、迁移中断重放、全量 residual/cutover                                                            |
 | CF-05 App D1               | 选定 route group 已验证 | 用户设置、conversation、memory、recap/chat 等投影路由                                                                                                                                                                                                                                    | 生产规模回放、账户级 authority cutover、全量领域迁移                                                                        |
 | CF-06 Queues/Workflows     | 部分完成                | transcription Queue、幂等/重复/冲突/终态、DLQ 相关验证；账号删除已有 durable D1 intent、intent/tombstone mutation fence、无 uid Queue payload、分批 D1/R2 purge、双 residual scan、Jobs→Auth finalization 与 Queue-send/Auth-failure recovery 契约，并已通过 live staging Queue 完整执行                                                                                                                                                                   | Stripe provider cleanup、DLQ replay、其他高风险 finalization contracts         |
 | CF-07 Redis primitive 拆分 | 部分完成                | staging 新 Worker 不接 Redis；当前 Cloudflare-owned 的 14 条通用限流路由/9 个 policy 与桌面 TTS 20/min+50k chars/UTC-day 细粒度额度已进入独立 rate-limit Durable Object，并覆盖并发、TTL、日切、boost/shadow、429、fail-open/fail-closed；部署依赖保持 `rate-limit → api-ai → edge` 单向 | 尚未迁移的 legacy route policy，以及 KV cache、锁/连接状态和 Queue primitive 仍待逐 family 迁移                             |
 | CF-08 Realtime + ASR       | 部分完成                | Realtime DO 协议/WebSocket、Workers AI ASR/STT/TTS/翻译 smoke                                                                                                                                                                                                                            | 多语言/噪声 WER、首字/final p50/p95/p99、重连、成本、区域与 cohort                                                          |
-| CF-09 Vectorize            | 部分完成                | embedding seam/768 维路径、现有检索约束已记录                                                                                                                                                                                                                                            | namespace/backfill/recall/hydrate/delete；3072 维 screenshot embedding 仍不能直接迁移                                       |
+| CF-09 Vectorize            | 部分完成                | memory、action-item、conversation summary、transcript chunk 四个多语言 BGE-M3/1024 维 staging index；D1 authoritative hydrate、hashed namespace、outbox/Queue/cron repair、删除清理、semantic recall 和 UTC 日期 filter 已 live 验证                                                             | 生产数据全量 backfill/recall 基线；workstream 与 3072 维 screenshot embedding 仍需独立迁移                                  |
 | CF-10 其余 API 领域        | 部分完成                | 已迁移并声明 owner 的 core/ai 路由                                                                                                                                                                                                                                                       | 大量 legacy route、Firebase/Redis/同步 SDK/复杂 fan-out 仍待领域化改造                                                      |
 | CF-11 Web/vinext           | staging 已验证          | Web Worker build/deploy、login/recaps/chat/conversations 等浏览器路径                                                                                                                                                                                                                    | 生产域名、生产身份、Firebase 连续性和完整 E2E 门槛                                                                          |
 | CF-12 生产数据迁移         | 未开始                  | 无生产数据切换证据                                                                                                                                                                                                                                                                       | snapshot/checksum、规模回放、备份恢复、账户 cutover/rollback、DR                                                            |
@@ -33,12 +33,13 @@
 
 ## 本轮验证证据
 
-- Cloudflare TypeScript：29 个文件、210 个测试通过；类型检查和生产依赖审计通过。
-- `api-core`：133 个测试通过；`api-ai`：57 个测试通过。
+- Cloudflare TypeScript：37 个测试文件、296 个测试通过；类型检查和生产依赖审计通过。
+- `api-core`：179 个测试通过；`api-ai`：61 个测试通过。
 - Web：8 个测试文件、33 个测试通过；vinext staging build 与 Worker dry-run 通过。
-- manifest：216 条 Cloudflare 路由、577 条完整 backend 路由和 15 个 staging 资源通过校验；379 条 legacy-owned 路由成为可量化迁移队列。
-- Wrangler 本地 D1 实际执行全部 52 个 App migration（123 条 SQL 命令），验证删除 intent/tombstone 均阻止迟到写入，清理过期 tombstone 后恢复写入。
-- `0052` 已在远端 staging D1 执行 123 条 SQL 命令；Auth、Rate-limit、Realtime、Jobs、Edge、api-core、api-ai 与 Web Worker 已发布新版本，完整 authenticated smoke 通过。
+- manifest：314 条 Cloudflare 路由、577 条完整 backend 路由和 19 个 staging 资源通过校验；279 条 legacy-owned 路由成为可量化迁移队列。
+- Wrangler 本地 D1 曾实际执行截至 `0052` 的 52 个 App migration（123 条 SQL 命令），验证删除 intent/tombstone 均阻止迟到写入，清理过期 tombstone 后恢复写入；本轮新增 `0068` 并在远端单独验证。
+- `0068_vector_projection_outbox.sql` 已在远端 staging D1 执行 9 条命令；Auth、Rate-limit、Realtime、Jobs、Edge、api-core、api-ai 与 Web Worker 已发布新版本，完整 authenticated smoke 通过。
+- 一次性 MCP key 写入 memory/action-item/conversation 后，英文和中文 semantic query 均由 BGE-M3/1024 Vectorize 召回并通过 D1 hydrate；conversation UTC 日期包含/排除过滤在 metadata WAL 收敛后分别命中/不命中。会话 Queue 路径 19.9 秒可搜索，删除后源数据、projection state、outbox 和 key 回读均为 0。
 - 隔离 smoke 账号的真实公开删号返回 200，随后 live Queue 完成两次零 residual scan；App D1 intent/cutover/conversation/chat/memory 和 Auth user/session/account 均验证为 0，25 小时 tombstone 已落库。
 - `npm run deploy:staging`：健康检查、迁移和 smoke 全部通过；Edge health 为 200。
 - 浏览器 staging：`/recaps`、`/chat`、`/conversations`、`/memories`、`/my-apps`、`/tasks`、`/settings` 均无新的 API error/404。
@@ -51,7 +52,7 @@
 2. 完成 R2 全量对象迁移、checksum/residual、multipart/presigned 和中断恢复演练。
 3. 为每个 Redis key family 选择 KV/DO/Queues owner，并完成并发、TTL、锁故障测试。
 4. 补齐 Workflows 和高风险异步任务 contract，包含 DLQ/replay/backlog recovery。
-5. 建立 ASR 质量/延迟/成本基线和 Vectorize projection/recall/hydrate 证据。
+5. 建立 ASR 质量/延迟/成本基线，并为剩余 workstream/screenshot Vectorize projection 建立 recall/hydrate 证据。
 6. 逐领域迁移剩余 legacy routes，完成生产规模 D1/数据迁移与灾备演练。
 7. 通过生产 rollout、监控/告警/成本预算和 legacy cleanup 门槛后，才切生产 DNS/identity。
 

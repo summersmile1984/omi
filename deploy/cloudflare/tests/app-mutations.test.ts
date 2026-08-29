@@ -182,6 +182,22 @@ function environment(
     APP_DB: database as unknown as D1Database,
     ASSETS: assets as unknown as R2Bucket,
     AI: { run: vi.fn() },
+    MEMORY_VECTORS: {
+      upsert: vi.fn(async () => undefined),
+      deleteByIds: vi.fn(async () => undefined),
+    },
+    ACTION_ITEM_VECTORS: {
+      upsert: vi.fn(async () => undefined),
+      deleteByIds: vi.fn(async () => undefined),
+    },
+    CONVERSATION_VECTORS: {
+      upsert: vi.fn(async () => undefined),
+      deleteByIds: vi.fn(async () => undefined),
+    },
+    TRANSCRIPT_CHUNK_VECTORS: {
+      upsert: vi.fn(async () => undefined),
+      deleteByIds: vi.fn(async () => undefined),
+    },
     JOBS: { send: vi.fn() } as unknown as Queue,
     SYNC_FRESH: { send: vi.fn() } as unknown as Queue,
     SYNC_BACKFILL: { send: vi.fn() } as unknown as Queue,

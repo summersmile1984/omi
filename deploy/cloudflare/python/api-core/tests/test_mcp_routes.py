@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -29,6 +30,9 @@ from mcp_routes import (  # noqa: E402
     get_people,
     get_profile,
     get_screen_activity,
+    search_action_items,
+    search_conversations,
+    search_memories,
     update_action_item,
 )
 
@@ -116,7 +120,27 @@ class FakeAi:
 
     async def run(self, model, payload):
         self.calls.append((model, payload))
+        if "text" in payload:
+            return {"data": [[0.01] * 1024 for _ in payload["text"]]}
         return {"response": {"category": self.category}}
+
+
+class FakeVectorIndex:
+    def __init__(self):
+        self.matches = []
+        self.calls = []
+
+    async def query(self, vector, options):
+        self.calls.append((vector, options))
+        return {"count": len(self.matches), "matches": list(self.matches)}
+
+
+class FakeQueue:
+    def __init__(self):
+        self.messages = []
+
+    async def send(self, message):
+        self.messages.append(message)
 
 
 class FakeAuthResponse:
@@ -139,12 +163,19 @@ def environment(*, scopes=None, state="new", key_prefix=None):
     db = FakeDb()
     auth = FakeAuth()
     ai = FakeAi()
+    queue = FakeQueue()
     env = SimpleNamespace(
         APP_DB=db,
         AUTH=auth,
         AI=ai,
+        JOBS=queue,
+        MEMORY_VECTORS=FakeVectorIndex(),
+        ACTION_ITEM_VECTORS=FakeVectorIndex(),
+        CONVERSATION_VECTORS=FakeVectorIndex(),
+        TRANSCRIPT_CHUNK_VECTORS=FakeVectorIndex(),
         INTERNAL_ASSERTION_SECRET=INTERNAL_SECRET,
         WORKERS_AI_INTEGRATION_MODEL="test-model",
+        WORKERS_AI_VECTOR_MODEL="test-vector-model",
     )
     digest = hashlib.sha256(RAW_SECRET.encode()).hexdigest()
     prefix = key_prefix or f"omi_mcp_{RAW_SECRET[:4]}...{RAW_SECRET[-4:]}"
@@ -170,6 +201,15 @@ def response_body(response):
 
 def run(awaitable):
     return asyncio.run(awaitable)
+
+
+def insert_vector_state(db, kind, source_id, vector_id, *, sub_id="000000", version=10):
+    db.connection.execute(
+        "INSERT INTO cf_vector_projection_state "
+        "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
+        "VALUES ('mcp-user', ?, ?, ?, ?, ?, 'test-vector-model', ?)",
+        (kind, source_id, sub_id, vector_id, version, version),
+    )
 
 
 def test_mcp_key_auth_is_exact_scoped_and_fenced_to_active_cloudflare_accounts():
@@ -281,6 +321,11 @@ def test_mcp_memory_create_list_edit_delete_is_uid_scoped_and_uses_workers_ai():
 
     assert run(edit_memory(FakeRequest(env, query={"value": "Updated memory"}), memory_id)) == {"status": "ok"}
     assert run(delete_memory(FakeRequest(env), memory_id)) == {"status": "ok"}
+    projection = db.connection.execute(
+        "SELECT operation FROM cf_vector_projection_outbox WHERE uid = 'mcp-user' AND source_kind = 'memory'"
+    ).fetchone()
+    assert dict(projection) == {"operation": "delete"}
+    assert [message["kind"] for message in env.JOBS.messages] == ["vector_project"] * 3
     assert run(get_memories(FakeRequest(env))) == []
     missing = run(delete_memory(FakeRequest(env), "other-memory"))
     assert missing.status_code == 404
@@ -319,6 +364,127 @@ def test_mcp_conversations_skip_malformed_rows_and_protect_locked_detail():
     assert other.status_code == 404
 
 
+def test_mcp_memory_search_uses_vector_candidates_then_hydrates_active_d1_rows():
+    db, env = environment()
+    locked_id = "locked-memory"
+    visible_id = "visible-memory"
+    for memory_id, content, locked in (
+        (locked_id, "Private launch phrase", 1),
+        (visible_id, "The launch plan uses Cloudflare", 0),
+    ):
+        db.connection.execute(
+            "INSERT INTO cf_memories "
+            "(uid, id, content, category, reviewed, user_review, is_locked, memory_tier, valid_at, created_at, updated_at) "
+            "VALUES ('mcp-user', ?, ?, 'system', 1, 1, ?, 'long_term', 10, 10, 10)",
+            (memory_id, content, locked),
+        )
+    locked_vector = "a" * 64
+    visible_vector = "b" * 64
+    insert_vector_state(db, "memory", locked_id, locked_vector)
+    insert_vector_state(db, "memory", visible_id, visible_vector)
+    db.connection.commit()
+    env.MEMORY_VECTORS.matches = [
+        {"id": locked_vector, "score": 0.98},
+        {"id": visible_vector, "score": 0.87},
+    ]
+
+    result = run(search_memories(FakeRequest(env, query={"query": "launch", "limit": "1"})))
+
+    assert result == [
+        {
+            "id": visible_id,
+            "content": "The launch plan uses Cloudflare",
+            "category": "system",
+            "relevance_score": 0.87,
+        }
+    ]
+    assert env.MEMORY_VECTORS.calls[0][1]["topK"] == 3
+    assert len(env.MEMORY_VECTORS.calls[0][1]["namespace"]) == 64
+
+
+def test_mcp_action_item_search_preserves_vector_order_and_threshold():
+    db, env = environment()
+    for item_id, description in (("action-1", "Deploy staging"), ("action-2", "Buy tea")):
+        db.connection.execute(
+            "INSERT INTO cf_action_items "
+            "(uid, id, description, status, completed, created_at, updated_at) "
+            "VALUES ('mcp-user', ?, ?, 'active', 0, 10, 10)",
+            (item_id, description),
+        )
+    first_vector = "c" * 64
+    second_vector = "d" * 64
+    insert_vector_state(db, "action_item", "action-1", first_vector)
+    insert_vector_state(db, "action_item", "action-2", second_vector)
+    db.connection.commit()
+    env.ACTION_ITEM_VECTORS.matches = [
+        {"id": first_vector, "score": 0.91},
+        {"id": second_vector, "score": 0.29},
+    ]
+
+    result = run(search_action_items(FakeRequest(env, query={"query": "release", "limit": "10"})))
+
+    assert [item["id"] for item in result] == ["action-1"]
+    missing = run(search_action_items(FakeRequest(env, query={"query": ""})))
+    assert missing.status_code == 422
+
+
+def test_mcp_conversation_search_merges_transcript_first_filters_dates_and_attaches_snippets():
+    db, env = environment()
+    created_at = int(datetime(2026, 8, 30, 12, tzinfo=timezone.utc).timestamp())
+    structured = json.dumps({"title": "Launch", "overview": "Staging review", "category": "work"})
+    transcript = json.dumps(
+        [
+            {"id": "s1", "text": "We confirmed the launch window", "speaker_id": 0, "start": 1, "end": 2},
+            {"id": "s2", "text": "It is tomorrow", "is_user": True, "speaker_id": 1, "start": 2, "end": 3},
+        ]
+    )
+    for conversation_id in ("summary-hit", "transcript-hit"):
+        db.connection.execute(
+            "INSERT INTO cf_conversations "
+            "(uid, id, created_at, updated_at, started_at, finished_at, status, discarded, structured_json, "
+            "transcript_segments_json, apps_results_json) "
+            "VALUES ('mcp-user', ?, ?, ?, ?, ?, 'completed', 0, ?, ?, '[]')",
+            (conversation_id, created_at, created_at, created_at, created_at + 60, structured, transcript),
+        )
+    summary_vector = "e" * 64
+    transcript_vector = "f" * 64
+    insert_vector_state(db, "conversation", "summary-hit", summary_vector, version=created_at)
+    insert_vector_state(
+        db,
+        "transcript_chunk",
+        "transcript-hit",
+        transcript_vector,
+        sub_id="000001",
+        version=created_at,
+    )
+    db.connection.commit()
+    env.CONVERSATION_VECTORS.matches = [{"id": summary_vector, "score": 0.8}]
+    env.TRANSCRIPT_CHUNK_VECTORS.matches = [{"id": transcript_vector, "score": 0.9}]
+
+    result = run(
+        search_conversations(
+            FakeRequest(
+                env,
+                query={
+                    "query": "launch window",
+                    "limit": "10",
+                    "start_date": "2026-08-30",
+                    "end_date": "2026-08-30",
+                },
+            )
+        )
+    )
+
+    assert [conversation["id"] for conversation in result] == ["transcript-hit", "summary-hit"]
+    assert result[0]["match_snippets"][0]["segment_id"] == "s1"
+    assert "launch window" in result[0]["match_snippets"][0]["text"]
+    for index in (env.CONVERSATION_VECTORS, env.TRANSCRIPT_CHUNK_VECTORS):
+        created_filter = index.calls[0][1]["filter"]["created_at"]
+        assert set(created_filter) == {"$gte", "$lte"}
+    invalid = run(search_conversations(FakeRequest(env, query={"query": "launch", "start_date": "nope"})))
+    assert invalid.status_code == 400
+
+
 def test_mcp_action_item_crud_is_idempotent_and_locked_writes_fail_closed():
     db, env = environment()
     request = FakeRequest(env, body={"description": "Ship the Cloudflare adapter"})
@@ -345,6 +511,10 @@ def test_mcp_action_item_crud_is_idempotent_and_locked_writes_fail_closed():
     locked = run(delete_action_item(FakeRequest(env), "locked-item"))
     assert locked.status_code == 402
     assert run(delete_action_item(FakeRequest(env), first["id"])) == {"status": "ok"}
+    projection = db.connection.execute(
+        "SELECT operation FROM cf_vector_projection_outbox " "WHERE uid = 'mcp-user' AND source_kind = 'action_item'"
+    ).fetchone()
+    assert dict(projection) == {"operation": "delete"}
     assert run(get_action_items(FakeRequest(env))) == [
         {
             "id": "locked-item",

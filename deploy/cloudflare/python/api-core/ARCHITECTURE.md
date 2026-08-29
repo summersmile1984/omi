@@ -107,9 +107,15 @@ metadata is a best-effort signed service-binding call to Auth; API Core never
 receives an Auth D1 binding. Edge strips cookies and forged internal identity
 headers, and write limits use only an irreversible key digest. Legacy key
 metadata can be backfilled without raw secrets and uses the reserved
-`omi_mcp_legacy` display prefix. OAuth grants/transport and the three semantic
-search routes remain explicit downstream cutover boundaries until their
-Vectorize and token lifecycles migrate as one authority.
+`omi_mcp_legacy` display prefix. The three semantic-search routes embed queries
+with the 1024-dimensional multilingual Workers AI BGE-M3 model, request
+candidate IDs from four
+tenant-namespaced Vectorize indexes, map those IDs through
+`cf_vector_projection_state`, and hydrate uid-scoped D1 rows before returning.
+Memory, action-item, and pre-transcribed conversation vector writes use a
+durable D1 outbox plus Jobs Queue hints and cron repair. Account deletion removes
+recorded vector IDs before D1 state purge. OAuth grants and hosted transport
+remain explicit downstream cutover boundaries.
 
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional

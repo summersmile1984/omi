@@ -495,7 +495,11 @@ export function discoverVectorNamespaces(sourceTexts) {
   return [...namespaces].sort();
 }
 
-export function validateVectorNamespaceManifest(manifest, sourceTexts) {
+export function validateVectorNamespaceManifest(
+  manifest,
+  sourceTexts,
+  resourceManifest,
+) {
   if (manifest?.policy?.vectorize_is_authoritative !== false) {
     throw new Error(
       "vector-namespaces.yaml must keep Vectorize non-authoritative",
@@ -573,6 +577,23 @@ export function validateVectorNamespaceManifest(manifest, sourceTexts) {
       throw new Error(
         `vector namespace ${namespace.id} has unsupported migration_state: ${namespace.migration_state}`,
       );
+    }
+    if (
+      resourceManifest &&
+      ["shadowing", "staging-owned", "production-owned"].includes(
+        namespace.migration_state,
+      )
+    ) {
+      const provisioned = resourceManifest.resources?.some(
+        (resource) =>
+          resource.kind === "vectorize" &&
+          resource.name === namespace.target_index,
+      );
+      if (!provisioned) {
+        throw new Error(
+          `vector namespace ${namespace.id} is active without a provisioned resource`,
+        );
+      }
     }
   }
   const declared = namespaces
@@ -799,6 +820,7 @@ export async function validateManifests() {
     vectorNamespaces: validateVectorNamespaceManifest(
       vectorManifest,
       vectorSources,
+      resourceManifest,
     ),
     r2Namespaces: validateR2NamespaceManifest(r2Manifest, storageSource),
   };

@@ -49,6 +49,11 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0040_conversation_search.sql").read_text())
         self.connection.execute("ALTER TABLE cf_conversations ADD COLUMN app_id TEXT")
         self.connection.executescript((migration_dir / "0046_account_usage.sql").read_text())
+        self.connection.executescript(
+            "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
+            "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);"
+        )
+        self.connection.executescript((migration_dir / "0068_vector_projection_outbox.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -86,6 +91,14 @@ class FakeStoredObject:
 
     async def arrayBuffer(self):
         return self.value
+
+
+class FakeQueue:
+    def __init__(self):
+        self.messages = []
+
+    async def send(self, message):
+        self.messages.append(message)
 
 
 class FakeStatement:
@@ -364,7 +377,8 @@ def test_conversation_delete_is_uid_scoped_updates_folder_counts_and_fts():
         ("conversation-user", "item-1", "keep by default", "active", 0, "delete-me", 200, 200),
     )
     db.connection.commit()
-    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+    queue = FakeQueue()
+    env = type("Env", (), {"APP_DB": db, "JOBS": queue, "INTERNAL_ASSERTION_SECRET": secret})()
 
     deleted = asyncio.run(delete_conversation(FakeRequest(env, signed_headers(secret)), "delete-me"))
     assert deleted == {"status": "Ok"}
@@ -387,6 +401,21 @@ def test_conversation_delete_is_uid_scoped_updates_folder_counts_and_fts():
         ).fetchone()[0]
         == 1
     )
+    outbox = db.connection.execute(
+        "SELECT operation, desired_version FROM cf_vector_projection_outbox "
+        "WHERE uid = ? AND source_kind = 'conversation' AND source_id = ?",
+        ("conversation-user", "delete-me"),
+    ).fetchone()
+    assert outbox["operation"] == "delete"
+    assert int(outbox["desired_version"]) > 200
+    assert queue.messages == [
+        {
+            "jobId": queue.messages[0]["jobId"],
+            "uid": "conversation-user",
+            "kind": "vector_project",
+            "payload": {"sourceKind": "conversation", "sourceId": "delete-me"},
+        }
+    ]
     search = asyncio.run(search_conversations(FakeRequest(env, signed_headers(secret), body={"query": "delete-me"})))
     assert search["items"] == []
     assert asyncio.run(delete_conversation(FakeRequest(env, signed_headers(secret)), "missing")).status_code == 404
@@ -1216,10 +1245,12 @@ def test_canonical_conversation_action_item_delete_removes_both_projections():
 def test_conversation_projection_write_is_idempotent_and_bounded():
     secret = "conversation-secret"
     db = FakeDb()
-    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+    queue = FakeQueue()
+    env = type("Env", (), {"APP_DB": db, "JOBS": queue, "INTERNAL_ASSERTION_SECRET": secret})()
     body = {
         "id": "write-1",
         "created_at": "2026-08-28T10:00:00Z",
+        "updated_at": "2026-08-28T10:00:00Z",
         "started_at": "2026-08-28T10:00:00Z",
         "finished_at": "2026-08-28T10:01:00Z",
         "source": "desktop",
@@ -1257,6 +1288,16 @@ def test_conversation_projection_write_is_idempotent_and_bounded():
         "words_transcribed": 1,
         "insights_gained": 0,
     }
+    outbox = env.APP_DB.connection.execute(
+        "SELECT operation, desired_version FROM cf_vector_projection_outbox "
+        "WHERE uid = ? AND source_kind = 'conversation' AND source_id = ?",
+        ("conversation-user", "write-1"),
+    ).fetchone()
+    assert dict(outbox) == {"operation": "upsert", "desired_version": 1787911200}
+    assert [message["payload"] for message in queue.messages] == [
+        {"sourceKind": "conversation", "sourceId": "write-1"},
+        {"sourceKind": "conversation", "sourceId": "write-1"},
+    ]
 
     invalid = asyncio.run(
         store_conversation_projection(FakeRequest(env, signed_headers(secret), body={**body, "status": "unknown"}))

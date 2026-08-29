@@ -3145,12 +3145,32 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v1/mcp/memories/search
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, vectorize, workers-ai-binding]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /v1/mcp/conversations
     owner: api-core
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: mcp-api-key
     dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/conversations/search
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, vectorize, workers-ai-binding]
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -3171,6 +3191,16 @@ routes:
     target_runtime: python-worker
     auth_authority: mcp-api-key
     dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/action-items/search
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, vectorize, workers-ai-binding]
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy

@@ -60,8 +60,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 295 already match a
-  Cloudflare staging owner and 282 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 298 already match a
+  Cloudflare staging owner and 279 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -816,8 +816,9 @@ The text-only screen-activity routes (`POST /v1/screen-activity/sync`,
 `GET /v1/screen-activity`, and `GET /v1/screen-activity/summary`) use an
 idempotent uid/device-scoped D1 upsert and bounded date/app queries. Incoming
 embeddings are accepted for client compatibility but are not stored or searched;
-vector lifecycle, paid semantic search, and MCP advanced search remain on the
-legacy owner until their contracts move.
+screen-activity vector lifecycle and paid semantic search remain on the legacy
+owner until their contracts move. MCP memory, conversation, and action-item
+semantic search use separate staging Vectorize projections described below.
 
 `npm run backfill:d1 -- --input export.ndjson` generates a transactional SQL
 backfill from newline-delimited records. Every record must name one of the
@@ -1332,8 +1333,8 @@ The app catalog metadata routes (`/v1/app-categories`,
 `/v1/app/payment-plans`) are static, public responses and now run in API Core
 without D1 or external providers. App create/update/delete, subscriptions,
 enable/disable side effects and MCP key/data routes are Cloudflare-owned; MCP
-OAuth grants, transport, and semantic search remain separate migration
-surfaces. The three installation routes below accept approved
+OAuth grants and hosted transport remain separate migration surfaces. The three
+installation routes below accept approved
 public catalog rows, owner rows, or a pending app explicitly assigned through
 `cf_app_tester_access`, provided there is no external setup callback. A paid
 row additionally requires a current signed-webhook D1 entitlement. Owner and
@@ -1352,7 +1353,7 @@ uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
 install counter for idempotent retries. Paid installs fail closed unless
 `cf_app_subscriptions` is active/trialing and its current period has not ended;
 the enabled-app read applies the same check. Persona mutation, external setup
-callbacks, and MCP OAuth/search state remain separate migration surfaces;
+callbacks, and MCP OAuth/transport state remain separate migration surfaces;
 no production cutover is implied.
 
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
@@ -1375,7 +1376,7 @@ rows are backfilled. Review/reply push notifications remain an external API
 boundary. App tester membership/access and moderation now use D1 plus an
 independent `APPS_ADMIN_KEY`; approve/reject verifies the catalog owner before
 atomically changing approval state and publishing to the shared leased FCM
-outbox. Persona mutation, setup callbacks, and MCP OAuth/search state remain
+outbox. Persona mutation, setup callbacks, and MCP OAuth/transport state remain
 separate migration work.
 
 MCP API credentials now use `cf_mcp_api_keys`. `POST /v1/mcp/keys` returns the
@@ -1388,7 +1389,7 @@ The prefix constraint uses bounded `substr` checks plus simple GLOB predicates:
 repeated character-class GLOBs accepted by local SQLite exceed D1's deployed
 pattern-complexity limit, so the final-schema regression test forbids them.
 
-The non-search MCP REST tools consume those keys in API Core. Exact bearer
+The MCP REST tools consume those keys in API Core. Exact bearer
 parsing, persisted scopes, account deletion fences, and destination-bound
 cutover state are checked before every uid-scoped query. Memory, conversation,
 action-item, goal, chat, people, screen-activity, daily-summary, and profile
@@ -1397,9 +1398,23 @@ same projections and write limits. Edge forwards only Authorization and uses a
 SHA-256 key digest as the Durable Object rate-limit subject. Profile name/email
 come from a request-bound Auth service binding, not a direct Auth D1 binding.
 The backfill tool maps legacy key metadata to D1, rejects raw key material, and
-uses `omi_mcp_legacy` when the historical display prefix is absent. MCP OAuth,
-hosted transports, and memory/conversation/action-item semantic search remain
-legacy-owned pending their token and Vectorize migrations.
+uses `omi_mcp_legacy` when the historical display prefix is absent. Memory,
+conversation-summary, transcript-chunk, and action-item embeddings are rebuilt
+with multilingual Workers AI BGE-M3 (1024 dimensions) into four versioned
+staging Vectorize indexes.
+D1 remains authoritative: Vectorize stores only hashed tenant namespaces and
+candidate IDs, each hit maps through `cf_vector_projection_state`, and the
+uid-scoped source row is hydrated with lock/deletion/date checks before return.
+Memory, action-item, and pre-transcribed conversation writes publish a Queue
+hint after atomically recording a D1 outbox; the Jobs cron backfills missed
+writes, retries provider failures, removes stale vectors, and participates in
+account deletion before D1 purge. Live staging tests verified English and
+Chinese semantic recall, transcript-first conversation merge, UTC date metadata
+filters after Vectorize metadata-index convergence, and post-test source/key
+deletion. A conversation created through the public staging Edge became
+searchable in 19.9 seconds through the Queue path rather than waiting for the
+five-minute repair cron. MCP OAuth and hosted transports remain legacy-owned
+pending their token lifecycle migration.
 
 App integration credentials now use `cf_app_api_keys`. `POST` returns the
 `sk_` secret once, while D1 stores only the SHA-256 digest of its 32-hex-byte
@@ -1422,8 +1437,8 @@ destination, sends the bounded payload with a stable idempotency key and a
 successful response message in the target app chat. Integration notifications
 share `cf_notification_outbox`, the existing FCM sender, and the canonical chat
 tables; no Redis, Firestore, local process, or parallel notification sender is
-introduced. OAuth setup callbacks and MCP OAuth/search surfaces remain separate
-migration work; MCP key lifecycle and non-search REST data tools are
+introduced. OAuth setup callbacks and MCP OAuth/hosted-transport surfaces remain
+separate migration work; MCP key lifecycle and REST data tools are
 Cloudflare-owned.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
@@ -1536,10 +1551,10 @@ native provider-token streaming remains a later latency qualification.
 
 `/v1/embeddings-workers-ai` is an additive text-embedding seam backed by the
 native `@cf/baai/bge-base-en-v1.5` binding. It accepts a bounded string or batch
-and returns OpenAI-style `data[].embedding` vectors. The model's 768-dimensional
-output is intentionally not substituted for the existing external embedding
-model; Vectorize/index compatibility and retrieval quality must be qualified
-before any client or index cutover.
+and returns OpenAI-style `data[].embedding` vectors. It remains separate from
+the multilingual 1024-dimensional BGE-M3 model used by the four isolated MCP
+semantic-search projections; other embedding/index contracts still require
+their own model, dimension, and retrieval-quality qualification.
 
 `/v1/users/assistant-settings` stores the partial, sectioned settings document
 as JSON in D1 and deep-merges section updates so a toggle cannot erase sibling

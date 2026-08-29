@@ -13,6 +13,7 @@
   "limits": { "cpu_ms": 300000 },
   "vars": {
     "PUBLIC_API_BASE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev",
+    "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
   },
   // Secrets provisioned with `wrangler secret put`: APPS_ADMIN_KEY,
   // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets.
@@ -26,6 +27,21 @@
   ],
   "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "omi-cf-staging" }],
   "ai": { "binding": "AI" },
+  "vectorize": [
+    { "binding": "MEMORY_VECTORS", "index_name": "omi-cf-memories-v2" },
+    {
+      "binding": "ACTION_ITEM_VECTORS",
+      "index_name": "omi-cf-action-items-v2",
+    },
+    {
+      "binding": "CONVERSATION_VECTORS",
+      "index_name": "omi-cf-conversations-v2",
+    },
+    {
+      "binding": "TRANSCRIPT_CHUNK_VECTORS",
+      "index_name": "omi-cf-transcript-chunks-v2",
+    },
+  ],
   "triggers": { "crons": ["*/5 * * * *"] },
   "queues": {
     "producers": [

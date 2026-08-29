@@ -649,14 +649,18 @@ describe("jobs scheduled cleanup", () => {
     let failOrphanOnce = true;
     const env = {
       APP_DB: {
+        batch: async () => [],
         prepare: (sql: string) => ({
           bind: (...args: unknown[]) => ({
-            all: async () => ({
-              results: [...tasks].map(([storage_key, task]) => ({
-                storage_key,
-                uid: task.uid,
-              })),
-            }),
+            all: async () =>
+              sql.includes("cf_vector_projection")
+                ? { results: [] }
+                : {
+                    results: [...tasks].map(([storage_key, task]) => ({
+                      storage_key,
+                      uid: task.uid,
+                    })),
+                  },
             first: async () =>
               active.has(String(args[1])) ? { active: 1 } : null,
             run: async () => {

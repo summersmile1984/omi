@@ -52,6 +52,10 @@ import { registerAppModerationRoutes } from "./app-moderation";
 import { registerAppApiKeyRoutes } from "./app-api-keys";
 import { registerMcpApiKeyRoutes } from "./mcp-api-keys";
 import { drainIntegrationWebhooks } from "./integration-webhooks";
+import {
+  processVectorProjectionMessage,
+  reconcileVectorProjections,
+} from "./vector-projection";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -887,6 +891,10 @@ async function processJobMessage(
     await processStripeWebhookMessage(message, env);
     return;
   }
+  if (message.body.kind === "vector_project") {
+    await processVectorProjectionMessage(message, env);
+    return;
+  }
   const row = await env.APP_DB.prepare(
     "SELECT status, kind, updated_at FROM cf_jobs WHERE job_id = ? AND uid = ?",
   )
@@ -1045,6 +1053,7 @@ export default {
       reconcileAppDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),
       reconcileStripeWebhookEvents(env, now),
+      reconcileVectorProjections(env, now),
       ...syncMaintenance,
     ]);
     const failure = results.find(

@@ -23,6 +23,7 @@ import {
   stripeRequest,
   stripeSecretKey,
 } from "./stripe-client";
+import { purgeAccountVectorProjections } from "./vector-projection";
 
 const MAX_REQUEST_BODY_BYTES = 4_096;
 const FENCE_QUIESCENCE_SECONDS = 60;
@@ -972,6 +973,19 @@ export async function processAccountDeletionMessage(
       intent.phase = "purging";
     }
     if (intent.phase === "purging") {
+      const removedVectors = await purgeAccountVectorProjections(
+        env,
+        intent.uid,
+      );
+      if (removedVectors) {
+        await releaseIntent(env, intent, {
+          phase: "purging",
+          settledAt: null,
+          delaySeconds: 1,
+        });
+        message.ack();
+        return;
+      }
       const removedR2 = await purgeOneR2Page(env, intent.uid);
       if (removedR2) {
         await releaseIntent(env, intent, {

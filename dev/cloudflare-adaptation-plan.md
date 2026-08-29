@@ -764,7 +764,7 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、Web/Flutter multipart 与 desktop linear16 PCM 的 `/v2/voice-message/transcribe`、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；Python Worker 在完成 TTS/provider 校验后通过跨 Worker Durable Object binding 原子消费细粒度额度，`/health` 用非变更 RPC 验证 binding；provider 未配置时按原契约安全回退或返回 `503`。voice-message route 已保留 Web/Flutter 响应字段和 `expected_silence`，但用户语言偏好、context keywords、trial paywall 与每日音频时长额度仍是明确未迁 authority，因此只属于 staging。
 - `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，支持稳定 `jobId` 的 `probe` 与 raw-audio `transcribe` kind；后者用临时 R2 对象、幂等键和最多三次 Workers AI 重试完成异步 Whisper 投影，并提供 uid-scoped job status/result read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：311 条 Cloudflare 路由和 15 个 staging 资源；`manifests/backend-routes.json` 由 hermetic FastAPI import 生成并逐条记录 577 条唯一后端路由（573 HTTP、4 WebSocket，含显式 HEAD/OPTIONS），其中 295 条匹配 staging Worker owner、282 条显式保留 legacy owner。新注册路由在生成时保持 `unclassified`，OpenAPI CI 与 manifest 契约会拒绝未审查状态。`redis-primitives.yaml` 将 `backend/database/redis_db.py` 的公开 helper（另显式豁免装饰器）归入 34 个 key family，并覆盖绕过 helper 或直接依赖 Redis package 的生产/工具调用点；`vector-namespaces.yaml` 覆盖 7 个现有 Pinecone namespace；`r2-namespaces.yaml` 覆盖 9 个 `BUCKET_*` 对象 namespace。`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership、Edge 路由表示、完整 backend route parity、源码清单完整性、Vectorize 维度/re-embedding 契约、R2 环境隔离，以及 Cloudflare Worker 禁止连接 Redis。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：314 条 Cloudflare 路由和 19 个 staging 资源；`manifests/backend-routes.json` 由 hermetic FastAPI import 生成并逐条记录 577 条唯一后端路由（573 HTTP、4 WebSocket，含显式 HEAD/OPTIONS），其中 298 条匹配 staging Worker owner、279 条显式保留 legacy owner。新注册路由在生成时保持 `unclassified`，OpenAPI CI 与 manifest 契约会拒绝未审查状态。`redis-primitives.yaml` 将 `backend/database/redis_db.py` 的公开 helper（另显式豁免装饰器）归入 34 个 key family，并覆盖绕过 helper 或直接依赖 Redis package 的生产/工具调用点；`vector-namespaces.yaml` 覆盖 7 个现有 Pinecone namespace，其中 memory、action-item、conversation summary 与 transcript chunk 四个多语言 BGE-M3/1024 维 projection 已由 staging Vectorize 接管；`r2-namespaces.yaml` 覆盖 9 个 `BUCKET_*` 对象 namespace。`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership、Edge 路由表示、完整 backend route parity、源码清单完整性、Vectorize 维度/re-embedding 契约、R2 环境隔离，以及 Cloudflare Worker 禁止连接 Redis。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
@@ -1025,24 +1025,33 @@ error 为 0。临时 Better Auth 用户、session/account、51 个 App D1 用户
 `b3c63017-cb46-4fce-a833-037fd7f7388e`、Web
 `c3329326-6261-4728-b46b-0332520121cc`。
 
-2026-08-30 又将 17 条非搜索、非 OAuth 的 `/v1/mcp/*` 数据 API 迁入 API Core，
+2026-08-30 将 17 条非 OAuth 的 `/v1/mcp/*` 数据 API 及 memory、conversation、
+action-item 三条语义搜索路由迁入 API Core，
 MCP key 继续使用仅保存 SHA-256 digest 的 D1 authority，并由 Edge 按 key subject
-执行 memory/action-item 写限流。全量发布验证通过 291 个 TypeScript、176 个 API
+执行 memory/action-item 写限流。语义搜索使用四个隔离 Vectorize index；英文专用
+BGE-base 资格测试暴露中文任务排序错误后，改用 Workers AI 多语言 BGE-M3 1024 维重嵌入。
+D1 outbox + Queue/Jobs cron 维护 projection；Vectorize 只返回
+候选 ID，所有结果必须回到 uid-scoped D1 authority hydrate。全量发布验证通过 296 个 TypeScript、179 个 API
 Core、61 个 API AI 和 33 个 Web 测试。一次性 staging MCP key 已实测 profile、memory、
 conversation、action item、goal、chat、people、screen activity、daily summary 的读路径，
-以及 memory/action item 的创建、编辑、完成和删除；撤销后再次访问返回 HTTP 403，
-临时 key 和测试数据均已回读确认为清理完成。右侧已登录浏览器刷新
+以及 memory/action item 的创建、编辑、完成和删除；额外使用字面不同的查询实测三类
+semantic recall。BGE-M3 中文资格样本中目标 memory/action-item 均排第一，memory scores
+为 `0.785/0.6628/0.551`；英文 conversation transcript/summary 合并和 UTC 日期 metadata
+filter 在 metadata WAL 收敛后均通过。会话 D1 写入与 vector outbox 同批提交并发送 Queue
+hint，live 路径在 19.9 秒后可搜索，不再依赖五分钟 repair cron。撤销后再次访问返回 HTTP
+403，临时 key、权威测试数据、projection state 和 outbox 均已
+回读确认为清理完成。右侧已登录浏览器刷新
 `/conversations` 后，Edge tail 显示 `/v1/conversations`、`/v1/folders` 和
 `/v2/apps/search` 均为 HTTP 200，控制台 error/warning 为 0。当前 staging 版本为 Auth
-`47554174-bdf6-467f-9add-ba82329e562d`、Rate Limit
-`671aaf38-57c9-46c7-a697-4d695270931e`、API Core
-`ca3a2a9a-991c-46a0-a97a-f7fee9d312da`、API AI
-`85f90b81-df98-4373-8a8b-1ffcd8480c50`、Realtime
-`c7dda39c-6a06-4fab-bbe8-2702397c0434`、Jobs
-`34f7ca28-daa9-4f56-a43a-2a3025ed54b1`、Edge
-`40512ea2-038f-4c51-93ed-c3ead7fcd5c4`、Web
-`54fff01d-8aea-4e93-9f63-5d80e214af59`。MCP semantic search、OAuth 和 hosted
-transport 仍明确保留 legacy authority。
+`e38069ec-18c1-4e60-bffb-6d349895f09c`、Rate Limit
+`6b9b7bf3-0ea0-4e7f-b8f5-ee0e76deb589`、API Core
+`f610b763-cc0d-407b-b8ff-098bc5180f67`、API AI
+`17752ca1-5b4d-4e09-96cd-d3c5059efad4`、Realtime
+`813cc7d9-265d-465a-af33-2a7ea060da02`、Jobs
+`2335ace2-2f93-438d-9cec-14fa55824b3e`、Edge
+`a6dabd15-bdf4-48ae-9418-a99ac76305b3`、Web
+`7838e65e-df6a-4b68-8e0a-9b346e935173`。MCP OAuth 和 hosted transport 仍明确
+保留 legacy authority。
 
 Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules
 均约 8.0 MiB，实际 gzip 上传约 2.0 MiB，应继续作为依赖预算的硬闸门。

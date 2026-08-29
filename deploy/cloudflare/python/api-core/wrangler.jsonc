@@ -7,13 +7,31 @@
   "workers_dev": false,
   "preview_urls": false,
   "ai": {
-    "binding": "AI"
+    "binding": "AI",
+  },
+  "vectorize": [
+    { "binding": "MEMORY_VECTORS", "index_name": "omi-cf-memories-v2" },
+    {
+      "binding": "ACTION_ITEM_VECTORS",
+      "index_name": "omi-cf-action-items-v2",
+    },
+    {
+      "binding": "CONVERSATION_VECTORS",
+      "index_name": "omi-cf-conversations-v2",
+    },
+    {
+      "binding": "TRANSCRIPT_CHUNK_VECTORS",
+      "index_name": "omi-cf-transcript-chunks-v2",
+    },
+  ],
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "omi-cf-jobs-staging" }],
   },
   "services": [
     {
       "binding": "AUTH",
-      "service": "omi-cf-auth-staging"
-    }
+      "service": "omi-cf-auth-staging",
+    },
   ],
   "d1_databases": [
     {
@@ -40,5 +58,6 @@
     "TRIAL_PAYWALL_ENABLED": "false",
     "TRIAL_LENGTH_SECONDS": "259200",
     "WORKERS_AI_INTEGRATION_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
   },
 }

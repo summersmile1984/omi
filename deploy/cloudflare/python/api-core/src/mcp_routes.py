@@ -9,6 +9,7 @@ Vectorize/token lifecycles migrate as one boundary.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -38,6 +39,13 @@ from goal_routes import _response as goal_response
 from integration_routes import _json_schema, _workers_ai_json
 from internal_auth import create_request_context
 from memory_routes import MemoryCreate, _SELECT as MEMORY_SELECT
+from vector_search import (
+    embed_query,
+    hydrate_candidate_ids,
+    publish_vector_projection,
+    query_vector_ids,
+    vector_outbox_statement,
+)
 
 router = APIRouter()
 
@@ -203,6 +211,102 @@ def _parse_datetime(value: str | None, name: str, *, status: int = 422) -> datet
     except ValueError:
         return _detail(f"Invalid {name} format: '{value}'. Expected ISO 8601.", status)
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _date_only_epoch(value: str | None, name: str, *, end_of_day: bool = False) -> int | None | JSONResponse:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.strptime(str(value), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return _detail(f"Invalid {name} format: '{value}'. Expected YYYY-MM-DD.", 400)
+    if end_of_day:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return int(parsed.timestamp())
+
+
+async def _rows_for_ids(
+    env: object,
+    select: str,
+    uid: str,
+    ids: list[str],
+    suffix: str,
+) -> list[dict[str, object]]:
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    result = (
+        await env.APP_DB.prepare(select + f"WHERE uid = ? AND id IN ({placeholders}) " + suffix).bind(uid, *ids).all()
+    )
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    by_id = {str(row["id"]): row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)}
+    return [by_id[item_id] for item_id in ids if item_id in by_id]
+
+
+def _query_terms(query: str) -> list[str]:
+    return [term.lower() for term in re.findall(r"[a-z0-9]+", query, re.IGNORECASE) if len(term) >= 2]
+
+
+def _transcript_match_snippets(row: dict[str, object], query: str) -> list[dict[str, object]]:
+    if _bool(row.get("is_locked")):
+        return []
+    segments = [item for item in conversation_json_list(row.get("transcript_segments_json")) if isinstance(item, dict)]
+    if not segments:
+        return []
+    query_lower = query.strip().lower()
+    terms = _query_terms(query)
+    matches: list[int] = []
+    for index, segment in enumerate(segments):
+        text = str(segment.get("text") or "").lower()
+        if query_lower and query_lower in text:
+            matches.append(index)
+        elif len(terms) >= 2 and all(term in text for term in terms):
+            matches.append(index)
+        elif len(terms) == 1 and terms[0] in text:
+            matches.append(index)
+    snippets: list[dict[str, object]] = []
+    used: set[int] = set()
+    for center in matches:
+        if len(snippets) >= 3:
+            break
+        if center in used:
+            continue
+        start_index = max(0, center - 1)
+        end_index = min(len(segments), center + 2)
+        used.update(range(start_index, end_index))
+        lines: list[str] = []
+        for segment in segments[start_index:end_index]:
+            text = str(segment.get("text") or "").strip()
+            if not text:
+                continue
+            if _bool(segment.get("is_user")):
+                label = "User"
+            elif segment.get("speaker_id") is not None:
+                label = f"Speaker {segment['speaker_id']}"
+            else:
+                label = "Speaker"
+            lines.append(f"{label}: {text}")
+        if not lines:
+            continue
+        hit = segments[center]
+        try:
+            start = float(hit["start"]) if hit.get("start") is not None else None
+            end = float(hit["end"]) if hit.get("end") is not None else None
+        except (TypeError, ValueError):
+            start = None
+            end = None
+        snippets.append(
+            {
+                "text": "\n".join(lines),
+                "segment_id": hit.get("id") if isinstance(hit.get("id"), str) else None,
+                "start": start,
+                "end": end,
+                "start_ms": int(start * 1_000) if start is not None else None,
+                "end_ms": int(end * 1_000) if end is not None else None,
+                "speaker_id": hit.get("speaker_id") if isinstance(hit.get("speaker_id"), int) else None,
+            }
+        )
+    return snippets
 
 
 async def _bounded_json(request: Request) -> object:
@@ -497,9 +601,18 @@ async def create_memory(request: Request):
             memories_created=1,
             updated_at=now,
         )
-        await env.APP_DB.batch([statement, usage])
+        projection = vector_outbox_statement(
+            env,
+            uid=principal.uid,
+            source_kind="memory",
+            source_id=memory_id,
+            desired_version=now,
+            operation="upsert",
+        )
+        await env.APP_DB.batch([statement, usage, projection])
     except Exception:
         return _error("memories unavailable", 503)
+    await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
     response = memory.model_dump(mode="json")
     response["category"] = category
     return response
@@ -525,12 +638,22 @@ async def delete_memory(request: Request, memory_id: str):
         if not isinstance(row, dict):
             return _detail("Memory not found", 404)
         now = int(time.time())
-        await env.APP_DB.prepare(
+        update = env.APP_DB.prepare(
             "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(now, now, principal.uid, memory_id).run()
+        ).bind(now, now, principal.uid, memory_id)
+        projection = vector_outbox_statement(
+            env,
+            uid=principal.uid,
+            source_kind="memory",
+            source_id=memory_id,
+            desired_version=now,
+            operation="delete",
+        )
+        await env.APP_DB.batch([update, projection])
     except Exception:
         return _error("memories unavailable", 503)
+    await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
     return {"status": "ok"}
 
 
@@ -554,12 +677,23 @@ async def edit_memory(request: Request, memory_id: str):
         )
         if not isinstance(row, dict):
             return _detail("Memory not found", 404)
-        await env.APP_DB.prepare(
+        now = int(time.time())
+        update = env.APP_DB.prepare(
             "UPDATE cf_memories SET content = ?, edited = 1, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(value.strip(), int(time.time()), principal.uid, memory_id).run()
+        ).bind(value.strip(), now, principal.uid, memory_id)
+        projection = vector_outbox_statement(
+            env,
+            uid=principal.uid,
+            source_kind="memory",
+            source_id=memory_id,
+            desired_version=now,
+            operation="upsert",
+        )
+        await env.APP_DB.batch([update, projection])
     except Exception:
         return _error("memories unavailable", 503)
+    await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
     return {"status": "ok"}
 
 
@@ -663,6 +797,51 @@ async def get_memories(request: Request):
             reverse=True,
         )
     return [_memory_output(row) for row in filtered[int(offset) : int(offset) + int(limit)]]
+
+
+@router.get("/v1/mcp/memories/search")
+async def search_memories(request: Request):
+    principal, denial = await _authenticate(request, "memories.read")
+    if denial:
+        return denial
+    limit = _query_int(request, "limit", 10, 1, 20)
+    if isinstance(limit, JSONResponse):
+        return limit
+    query = request.query_params.get("query")
+    assert principal is not None
+    env = request.scope["env"]
+    try:
+        vector = await embed_query(env, query if isinstance(query, str) else "")
+        matches = await query_vector_ids(
+            env,
+            "MEMORY_VECTORS",
+            principal.uid,
+            vector,
+            top_k=min(int(limit) * 3, 60),
+        )
+        candidates = await hydrate_candidate_ids(env, principal.uid, "memory", matches)
+        rows = await _rows_for_ids(
+            env,
+            MEMORY_SELECT,
+            principal.uid,
+            [source_id for source_id, _ in candidates],
+            "AND deleted_at IS NULL AND invalid_at IS NULL AND memory_tier != 'archive' "
+            "AND COALESCE(user_review, 1) != 0 AND is_locked = 0",
+        )
+    except ValueError as error:
+        return _detail(str(error), 422)
+    except Exception:
+        return _error("memory search unavailable", 503)
+    score_by_id = dict(candidates)
+    return [
+        {
+            "id": str(row.get("id") or ""),
+            "content": str(row.get("content") or ""),
+            "category": str(row.get("category") or "interesting"),
+            "relevance_score": round(float(score_by_id.get(str(row.get("id") or ""), 0.0)), 4),
+        }
+        for row in rows
+    ][: int(limit)]
 
 
 def _app_results(value: object) -> list[dict[str, object]] | None:
@@ -771,6 +950,105 @@ async def get_conversations(request: Request):
     rows = result.get("results", []) if isinstance(result, dict) else []
     conversations = [_conversation_base(row) for row in rows if isinstance(row, dict)]
     return [conversation for conversation in conversations if conversation is not None]
+
+
+@router.get("/v1/mcp/conversations/search")
+async def search_conversations(request: Request):
+    principal, denial = await _authenticate(request, "conversations.read")
+    if denial:
+        return denial
+    limit = _query_int(request, "limit", 10, 1, 100)
+    if isinstance(limit, JSONResponse):
+        return limit
+    starts_at = _date_only_epoch(request.query_params.get("start_date"), "start_date")
+    ends_at = _date_only_epoch(request.query_params.get("end_date"), "end_date", end_of_day=True)
+    if isinstance(starts_at, JSONResponse) or isinstance(ends_at, JSONResponse):
+        return starts_at if isinstance(starts_at, JSONResponse) else ends_at
+    if isinstance(starts_at, int) and isinstance(ends_at, int) and starts_at > ends_at:
+        return []
+    query = request.query_params.get("query")
+    assert principal is not None
+    env = request.scope["env"]
+    created_at_filter: dict[str, object] = {}
+    if isinstance(starts_at, int):
+        created_at_filter["$gte"] = starts_at
+    if isinstance(ends_at, int):
+        created_at_filter["$lte"] = ends_at
+    try:
+        vector = await embed_query(env, query if isinstance(query, str) else "")
+        summary_result, transcript_result = await asyncio.gather(
+            query_vector_ids(
+                env,
+                "CONVERSATION_VECTORS",
+                principal.uid,
+                vector,
+                top_k=int(limit),
+                created_at_filter=created_at_filter or None,
+            ),
+            query_vector_ids(
+                env,
+                "TRANSCRIPT_CHUNK_VECTORS",
+                principal.uid,
+                vector,
+                top_k=min(int(limit) * 3, 100),
+                created_at_filter=created_at_filter or None,
+            ),
+            return_exceptions=True,
+        )
+        if isinstance(summary_result, BaseException):
+            raise summary_result
+        summary_candidates = await hydrate_candidate_ids(env, principal.uid, "conversation", summary_result)
+        transcript_candidates: list[tuple[str, float]] = []
+        if isinstance(transcript_result, BaseException):
+            record_fallback(
+                component="other",
+                from_mode="transcript_vectorize",
+                to_mode="summary_vectorize",
+                reason="dependency_unavailable",
+                outcome="degraded",
+            )
+        else:
+            transcript_candidates = await hydrate_candidate_ids(
+                env, principal.uid, "transcript_chunk", transcript_result
+            )
+    except ValueError as error:
+        return _detail(str(error), 422)
+    except Exception:
+        return _error("conversation search unavailable", 503)
+
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for source_id, _ in transcript_candidates + summary_candidates:
+        if source_id in seen:
+            continue
+        seen.add(source_id)
+        ordered_ids.append(source_id)
+        if len(ordered_ids) >= int(limit):
+            break
+    clauses = ["AND discarded = 0", "AND status = 'completed'"]
+    if isinstance(starts_at, int):
+        clauses.append(f"AND created_at >= {starts_at}")
+    if isinstance(ends_at, int):
+        clauses.append(f"AND created_at <= {ends_at}")
+    try:
+        rows = await _rows_for_ids(
+            env,
+            _CONVERSATION_SELECT,
+            principal.uid,
+            ordered_ids,
+            " ".join(clauses),
+        )
+    except Exception:
+        return _error("conversation search unavailable", 503)
+    response: list[dict[str, object]] = []
+    query_text = query if isinstance(query, str) else ""
+    for row in rows:
+        conversation = _conversation_base(row)
+        if conversation is None:
+            continue
+        conversation["match_snippets"] = _transcript_match_snippets(row, query_text)
+        response.append(conversation)
+    return response
 
 
 @router.get("/v1/mcp/conversations/{conversation_id}")
@@ -891,6 +1169,47 @@ async def get_action_items(request: Request):
     return [_mcp_action_item(row) for row in rows if isinstance(row, dict)]
 
 
+@router.get("/v1/mcp/action-items/search")
+async def search_action_items(request: Request):
+    principal, denial = await _authenticate(request, "action_items.read")
+    if denial:
+        return denial
+    limit = _query_int(request, "limit", 10, 1, 50)
+    if isinstance(limit, JSONResponse):
+        return limit
+    query = request.query_params.get("query")
+    assert principal is not None
+    env = request.scope["env"]
+    try:
+        vector = await embed_query(env, query if isinstance(query, str) else "")
+        matches = await query_vector_ids(
+            env,
+            "ACTION_ITEM_VECTORS",
+            principal.uid,
+            vector,
+            top_k=int(limit),
+        )
+        candidates = await hydrate_candidate_ids(
+            env,
+            principal.uid,
+            "action_item",
+            matches,
+            minimum_score=0.3,
+        )
+        rows = await _rows_for_ids(
+            env,
+            ACTION_ITEM_SELECT,
+            principal.uid,
+            [source_id for source_id, _ in candidates],
+            "AND deleted = 0",
+        )
+    except ValueError as error:
+        return _detail(str(error), 422)
+    except Exception:
+        return _error("action item search unavailable", 503)
+    return [_mcp_action_item(row) for row in rows[: int(limit)]]
+
+
 @router.post("/v1/mcp/action-items")
 async def create_action_item(request: Request):
     principal, denial = await _authenticate(request, "action_items.write")
@@ -912,29 +1231,50 @@ async def create_action_item(request: Request):
             .first()
         )
         if isinstance(existing, dict):
-            return _mcp_action_item(existing)
-        now = int(time.time())
-        item_id = uuid.uuid4().hex
-        await env.APP_DB.prepare(
-            "INSERT INTO cf_action_items "
-            "(uid, id, description, status, completed, owner, due_at, source, provenance_json, created_at, "
-            "updated_at, completed_at, idempotency_key, sync_requested, deleted) "
-            "VALUES (?, ?, ?, ?, ?, 'user', ?, 'mcp', '[]', ?, ?, ?, ?, 0, 0)"
-        ).bind(
-            principal.uid,
-            item_id,
-            item.description,
-            "completed" if item.completed else "active",
-            1 if item.completed else 0,
-            _epoch(item.due_at),
-            now,
-            now,
-            now if item.completed else None,
-            key,
-        ).run()
-        row = await _action_item(env, principal.uid, item_id)
+            item_id = str(existing["id"])
+            version = int(existing.get("updated_at") or existing.get("created_at") or time.time())
+            await vector_outbox_statement(
+                env,
+                uid=principal.uid,
+                source_kind="action_item",
+                source_id=item_id,
+                desired_version=version,
+                operation="upsert",
+            ).run()
+            row = existing
+        else:
+            now = int(time.time())
+            item_id = uuid.uuid4().hex
+            insert = env.APP_DB.prepare(
+                "INSERT INTO cf_action_items "
+                "(uid, id, description, status, completed, owner, due_at, source, provenance_json, created_at, "
+                "updated_at, completed_at, idempotency_key, sync_requested, deleted) "
+                "VALUES (?, ?, ?, ?, ?, 'user', ?, 'mcp', '[]', ?, ?, ?, ?, 0, 0)"
+            ).bind(
+                principal.uid,
+                item_id,
+                item.description,
+                "completed" if item.completed else "active",
+                1 if item.completed else 0,
+                _epoch(item.due_at),
+                now,
+                now,
+                now if item.completed else None,
+                key,
+            )
+            projection = vector_outbox_statement(
+                env,
+                uid=principal.uid,
+                source_kind="action_item",
+                source_id=item_id,
+                desired_version=now,
+                operation="upsert",
+            )
+            await env.APP_DB.batch([insert, projection])
+            row = await _action_item(env, principal.uid, item_id)
     except Exception:
         return _error("action item unavailable", 503)
+    await publish_vector_projection(env, uid=principal.uid, source_kind="action_item", source_id=item_id)
     return _mcp_action_item(row) if row else _error("action item unavailable", 503)
 
 
@@ -1007,14 +1347,25 @@ async def update_action_item(request: Request, action_item_id: str):
         if update.due_at is not None:
             assignments.append("due_at = ?")
             values.append(_epoch(update.due_at))
+        now = int(time.time())
         assignments.append("updated_at = ?")
-        values.append(int(time.time()))
-        await env.APP_DB.prepare(
+        values.append(now)
+        statement = env.APP_DB.prepare(
             "UPDATE cf_action_items SET " + ", ".join(assignments) + " WHERE uid = ? AND id = ? AND deleted = 0"
-        ).bind(*values, principal.uid, action_item_id).run()
+        ).bind(*values, principal.uid, action_item_id)
+        projection = vector_outbox_statement(
+            env,
+            uid=principal.uid,
+            source_kind="action_item",
+            source_id=action_item_id,
+            desired_version=now,
+            operation="upsert",
+        )
+        await env.APP_DB.batch([statement, projection])
         row = await _action_item(env, principal.uid, action_item_id)
     except Exception:
         return _error("action item unavailable", 503)
+    await publish_vector_projection(env, uid=principal.uid, source_kind="action_item", source_id=action_item_id)
     return _mcp_action_item(row) if row else _detail("Action item not found", 404)
 
 
@@ -1029,11 +1380,22 @@ async def delete_action_item(request: Request, action_item_id: str):
         _, item_denial = await _unlocked_action_item(env, principal.uid, action_item_id)
         if item_denial:
             return item_denial
-        await env.APP_DB.prepare("DELETE FROM cf_action_items WHERE uid = ? AND id = ? AND deleted = 0").bind(
+        now = int(time.time())
+        statement = env.APP_DB.prepare("DELETE FROM cf_action_items WHERE uid = ? AND id = ? AND deleted = 0").bind(
             principal.uid, action_item_id
-        ).run()
+        )
+        projection = vector_outbox_statement(
+            env,
+            uid=principal.uid,
+            source_kind="action_item",
+            source_id=action_item_id,
+            desired_version=now,
+            operation="delete",
+        )
+        await env.APP_DB.batch([statement, projection])
     except Exception:
         return _error("action item unavailable", 503)
+    await publish_vector_projection(env, uid=principal.uid, source_kind="action_item", source_id=action_item_id)
     return {"status": "ok"}
 
 

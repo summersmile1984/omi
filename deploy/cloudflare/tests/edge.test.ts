@@ -2665,9 +2665,12 @@ describe("edge gateway", () => {
       ["PATCH", "/v1/mcp/memories/memory-1"],
       ["GET", "/v1/mcp/profile"],
       ["GET", "/v1/mcp/memories"],
+      ["GET", "/v1/mcp/memories/search"],
       ["GET", "/v1/mcp/conversations"],
+      ["GET", "/v1/mcp/conversations/search"],
       ["GET", "/v1/mcp/conversations/conversation-1"],
       ["GET", "/v1/mcp/action-items"],
+      ["GET", "/v1/mcp/action-items/search"],
       ["POST", "/v1/mcp/action-items", "{}"],
       ["POST", "/v1/mcp/action-items/item-1/complete", "{}"],
       ["PATCH", "/v1/mcp/action-items/item-1", "{}"],
@@ -2718,43 +2721,32 @@ describe("edge gateway", () => {
     expect(rateLimitNames.join(" ")).not.toContain("a".repeat(32));
   });
 
-  it("keeps MCP conversation search on the legacy route before the detail parameter", async () => {
-    const originalFetch = globalThis.fetch;
-    const legacyPaths: string[] = [];
+  it("routes MCP conversation search to API Core before the detail parameter", async () => {
     const corePaths: string[] = [];
-    globalThis.fetch = vi.fn(async (request: RequestInfo | URL) => {
-      legacyPaths.push(
-        new URL(request instanceof Request ? request.url : request).pathname,
-      );
-      return Response.json({ owner: "legacy" });
-    }) as typeof fetch;
-    try {
-      const env = {
-        LEGACY_BACKEND_URL: "https://legacy.example.test",
-        API_CORE: rawService((request) => {
-          corePaths.push(new URL(request.url).pathname);
-          return Response.json({ owner: "api-core" });
-        }),
-      } as never;
-      const search = await edge.fetch(
-        new Request("https://edge.test/v1/mcp/conversations/search", {
-          headers: { authorization: `Bearer omi_mcp_${"b".repeat(32)}` },
-        }),
-        env,
-      );
-      const detail = await edge.fetch(
-        new Request("https://edge.test/v1/mcp/conversations/conversation-1", {
-          headers: { authorization: `Bearer omi_mcp_${"b".repeat(32)}` },
-        }),
-        env,
-      );
-      expect(await search.json()).toEqual({ owner: "legacy" });
-      expect(await detail.json()).toEqual({ owner: "api-core" });
-      expect(legacyPaths).toEqual(["/v1/mcp/conversations/search"]);
-      expect(corePaths).toEqual(["/v1/mcp/conversations/conversation-1"]);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const env = {
+      API_CORE: rawService((request) => {
+        corePaths.push(new URL(request.url).pathname);
+        return Response.json({ owner: "api-core" });
+      }),
+    } as never;
+    const search = await edge.fetch(
+      new Request("https://edge.test/v1/mcp/conversations/search", {
+        headers: { authorization: `Bearer omi_mcp_${"b".repeat(32)}` },
+      }),
+      env,
+    );
+    const detail = await edge.fetch(
+      new Request("https://edge.test/v1/mcp/conversations/conversation-1", {
+        headers: { authorization: `Bearer omi_mcp_${"b".repeat(32)}` },
+      }),
+      env,
+    );
+    expect(await search.json()).toEqual({ owner: "api-core" });
+    expect(await detail.json()).toEqual({ owner: "api-core" });
+    expect(corePaths).toEqual([
+      "/v1/mcp/conversations/search",
+      "/v1/mcp/conversations/conversation-1",
+    ]);
   });
 
   it("routes app API key management through authenticated Jobs", async () => {

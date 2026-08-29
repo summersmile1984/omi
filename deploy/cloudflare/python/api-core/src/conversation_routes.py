@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from internal_auth import decode_context
 from account_routes import usage_source_statement
+from vector_search import publish_vector_projection, vector_outbox_statement
 
 router = APIRouter()
 
@@ -852,9 +853,18 @@ async def store_conversation_projection(request: Request):
             insights_gained=0 if projection.discarded else _usage_insights(projection),
             updated_at=updated_at,
         )
-        await env.APP_DB.batch([conversation_statement, usage_statement])
+        vector_projection = vector_outbox_statement(
+            env,
+            uid=uid,
+            source_kind="conversation",
+            source_id=projection.id,
+            desired_version=updated_at,
+            operation="upsert" if projection.status == "completed" and not projection.discarded else "delete",
+        )
+        await env.APP_DB.batch([conversation_statement, usage_statement, vector_projection])
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    await publish_vector_projection(env, uid=uid, source_kind="conversation", source_id=projection.id)
     return {"conversation_id": projection.id, "status": "stored"}
 
 
@@ -1010,8 +1020,11 @@ async def delete_conversation(request: Request, conversation_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        if await _first_conversation(env, uid, conversation_id) is None:
+        conversation = await _first_conversation(env, uid, conversation_id)
+        if conversation is None:
             return JSONResponse({"error": "conversation not found"}, status_code=404)
+        previous_version = int(conversation.get("updated_at") or conversation.get("created_at") or 0)
+        desired_version = max(int(time.time()), previous_version + 1)
         await env.APP_DB.batch(
             [
                 env.APP_DB.prepare("DELETE FROM cf_conversations WHERE uid = ? AND id = ?").bind(uid, conversation_id),
@@ -1021,10 +1034,19 @@ async def delete_conversation(request: Request, conversation_id: str):
                     "WHERE c.uid = cf_folders.uid AND c.folder_id = cf_folders.id AND c.discarded = 0"
                     ") WHERE uid = ?"
                 ).bind(uid),
+                vector_outbox_statement(
+                    env,
+                    uid=uid,
+                    source_kind="conversation",
+                    source_id=conversation_id,
+                    desired_version=desired_version,
+                    operation="delete",
+                ),
             ]
         )
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    await publish_vector_projection(env, uid=uid, source_kind="conversation", source_id=conversation_id)
     return {"status": "Ok"}
 
 

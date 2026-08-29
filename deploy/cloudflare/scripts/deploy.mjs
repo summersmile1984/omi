@@ -157,6 +157,52 @@ function queueExists(name) {
   return result.stdout.split(/\s+/).includes(name);
 }
 
+function vectorizeExists(name) {
+  return runQuiet("npx", ["wrangler", "vectorize", "get", name, "--json"]).ok;
+}
+
+function vectorizeMetadataIndexState(name, property) {
+  const result = runQuiet("npx", [
+    "wrangler",
+    "vectorize",
+    "list-metadata-index",
+    name,
+    "--json",
+  ]);
+  if (!result.ok) return { exists: false, ready: false };
+  try {
+    const payload = JSON.parse(result.stdout);
+    const entries = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.metadataIndexes)
+        ? payload.metadataIndexes
+        : Array.isArray(payload?.indexes)
+          ? payload.indexes
+          : [];
+    const match = entries.find((entry) => {
+      const propertyName = entry?.propertyName ?? entry?.property_name;
+      return propertyName === property;
+    });
+    if (!match) return { exists: false, ready: false };
+    const status = String(
+      match?.status ?? match?.state ?? "ready",
+    ).toLowerCase();
+    return { exists: true, ready: status === "ready" };
+  } catch {
+    return { exists: false, ready: false };
+  }
+}
+
+function waitForVectorizeMetadataIndex(name, property) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (vectorizeMetadataIndexState(name, property).ready) return;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
+  }
+  throw new Error(
+    `Vectorize metadata index did not become ready: ${name}.${property}`,
+  );
+}
+
 function lifecycleExists(bucket, id) {
   const result = runQuiet("npx", [
     "wrangler",
@@ -189,6 +235,45 @@ function ensureResources() {
       "create",
       "omi-cf-sync-backfill-staging",
     ]);
+  for (const name of [
+    "omi-cf-conversations-v2",
+    "omi-cf-memories-v2",
+    "omi-cf-action-items-v2",
+    "omi-cf-transcript-chunks-v2",
+  ]) {
+    if (!vectorizeExists(name)) {
+      run("npx", [
+        "wrangler",
+        "vectorize",
+        "create",
+        name,
+        "--dimensions",
+        "1024",
+        "--metric",
+        "cosine",
+        "--description",
+        "Omi multilingual rebuildable D1-hydrated staging search projection",
+      ]);
+    }
+  }
+  for (const name of [
+    "omi-cf-conversations-v2",
+    "omi-cf-transcript-chunks-v2",
+  ]) {
+    if (!vectorizeMetadataIndexState(name, "created_at").exists) {
+      run("npx", [
+        "wrangler",
+        "vectorize",
+        "create-metadata-index",
+        name,
+        "--propertyName",
+        "created_at",
+        "--type",
+        "number",
+      ]);
+    }
+    waitForVectorizeMetadataIndex(name, "created_at");
+  }
   if (!lifecycleExists("omi-cf-staging", "expire-staged-transcriptions")) {
     run("npx", [
       "wrangler",

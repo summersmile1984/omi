@@ -13,11 +13,11 @@ namespaces:
     source_model: openai/text-embedding-3-large
     source_dimensions: 3072
     target: vectorize
-    target_index: omi-cf-conversations-v1
-    target_model: "@cf/baai/bge-base-en-v1.5"
-    target_dimensions: 768
+    target_index: omi-cf-conversations-v2
+    target_model: "@cf/baai/bge-m3"
+    target_dimensions: 1024
     migration_mode: reembed
-    migration_state: qualification-required
+    migration_state: staging-owned
     candidate_only: true
   - id: memories
     legacy_namespace: ns2
@@ -25,11 +25,11 @@ namespaces:
     source_model: openai/text-embedding-3-large
     source_dimensions: 3072
     target: vectorize
-    target_index: omi-cf-memories-v1
-    target_model: "@cf/baai/bge-base-en-v1.5"
-    target_dimensions: 768
+    target_index: omi-cf-memories-v2
+    target_model: "@cf/baai/bge-m3"
+    target_dimensions: 1024
     migration_mode: reembed
-    migration_state: qualification-required
+    migration_state: staging-owned
     candidate_only: true
   - id: workstream-associations
     legacy_namespace: workstream-association-v1
@@ -73,11 +73,11 @@ namespaces:
     source_model: openai/text-embedding-3-large
     source_dimensions: 3072
     target: vectorize
-    target_index: omi-cf-action-items-v1
-    target_model: "@cf/baai/bge-base-en-v1.5"
-    target_dimensions: 768
+    target_index: omi-cf-action-items-v2
+    target_model: "@cf/baai/bge-m3"
+    target_dimensions: 1024
     migration_mode: reembed
-    migration_state: qualification-required
+    migration_state: staging-owned
     candidate_only: true
   - id: transcript-chunks
     legacy_namespace: ns_tchunks
@@ -85,9 +85,9 @@ namespaces:
     source_model: openai/text-embedding-3-large
     source_dimensions: 3072
     target: vectorize
-    target_index: omi-cf-transcript-chunks-v1
-    target_model: "@cf/baai/bge-base-en-v1.5"
-    target_dimensions: 768
+    target_index: omi-cf-transcript-chunks-v2
+    target_model: "@cf/baai/bge-m3"
+    target_dimensions: 1024
     migration_mode: reembed
-    migration_state: qualification-required
+    migration_state: staging-owned
     candidate_only: true
