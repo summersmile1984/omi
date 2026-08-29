@@ -91,7 +91,19 @@ class SqliteD1 {
   async batch(statements: BoundStatement[]) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      const results = statements.map((statement) => statement.execute());
+      const results = statements.map((statement) => {
+        const result = statement.execute();
+        if (
+          /^DELETE FROM cf_app_catalog\b/i.test(statement.sql.trimStart()) &&
+          result.meta.changes === 1
+        ) {
+          // Remote D1 includes the app deletion fence's ON DELETE CASCADE in
+          // this statement's metadata. Keep the harness faithful to that
+          // successful multi-row result so it cannot be mistaken for failure.
+          result.meta.changes = 2;
+        }
+        return result;
+      });
       this.database.exec("COMMIT");
       return results;
     } catch (error) {

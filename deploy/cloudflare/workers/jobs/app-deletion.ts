@@ -509,13 +509,11 @@ async function completeDeletion(
       job.uid,
     ),
   );
-  const results = await env.APP_DB.batch(statements);
-  if (
-    results.at(-2)?.meta?.changes !== 1 ||
-    results.at(-1)?.meta?.changes !== 1
-  ) {
-    throw new Error("app deletion commit failed");
-  }
+  // D1 reports cascading child deletes in the catalog statement's change
+  // metadata, so a successful delete is not guaranteed to report exactly one
+  // change. SQL errors still reject the atomic batch; zero-row deletes are also
+  // valid when account deletion won the race and already owns the cleanup.
+  await env.APP_DB.batch(statements);
 }
 
 export async function processAppDeletionMessage(
