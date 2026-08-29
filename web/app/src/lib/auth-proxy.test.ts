@@ -4,6 +4,7 @@ import {
   betterAuthResponseHeaders,
   betterAuthTarget,
   betterAuthUpstreamRequest,
+  proxyBetterAuthMetadata,
   sanitizeBetterAuthResponse,
 } from './auth-proxy';
 
@@ -95,5 +96,43 @@ describe('sanitizeBetterAuthResponse', () => {
     expect(headers.get('cookie')).toContain('session_token');
     expect(headers.has('x-forwarded-for')).toBe(false);
     expect(headers.has('x-omi-auth-context')).toBe(false);
+  });
+
+  it('proxies both root and issuer-path OAuth metadata aliases without following redirects', async () => {
+    const requests: Request[] = [];
+    const authService = {
+      fetch: async (request: Request) => {
+        requests.push(request);
+        return Response.json(
+          { issuer: 'https://web.test/api/better-auth' },
+          { headers: { 'cache-control': 'public, max-age=300' } },
+        );
+      },
+    };
+
+    const response = await proxyBetterAuthMetadata(
+      new Request('https://web.test/.well-known/oauth-authorization-server'),
+      authService,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      issuer: 'https://web.test/api/better-auth',
+    });
+    expect(response.headers.get('cache-control')).toBe('no-store');
+
+    const head = await proxyBetterAuthMetadata(
+      new Request('https://web.test/.well-known/oauth-authorization-server', {
+        method: 'HEAD',
+      }),
+      authService,
+    );
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe('');
+    expect(requests.map((request) => request.method)).toEqual(['GET', 'GET']);
+    expect(requests.every((request) => request.redirect === 'manual')).toBe(true);
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      '/api/better-auth/.well-known/oauth-authorization-server',
+      '/api/better-auth/.well-known/oauth-authorization-server',
+    ]);
   });
 });

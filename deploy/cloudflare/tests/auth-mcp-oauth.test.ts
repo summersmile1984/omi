@@ -6,6 +6,11 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import auth from "../workers/auth/index";
 import type { AuthEnv } from "../workers/auth/env";
+import {
+  AUTH_CONTEXT_HEADER,
+  AUTH_SIGNATURE_HEADER,
+  createSignedAuthContext,
+} from "../workers/shared/auth-context";
 
 function sqliteValue(value: unknown) {
   return value as never;
@@ -32,7 +37,8 @@ class SqliteD1 {
       bind: (...values: unknown[]) => build(values),
       first: async <T>() =>
         (this.database.prepare(sql).get(...args.map(sqliteValue)) as
-          T | undefined) ?? null,
+          | T
+          | undefined) ?? null,
       all: async <T>() => ({
         success: true as const,
         results: this.database
@@ -68,7 +74,7 @@ class SqliteD1 {
 
 const databases: SqliteD1[] = [];
 
-function environment(): AuthEnv {
+function environment(overrides: Partial<AuthEnv> = {}): AuthEnv {
   const database = new SqliteD1();
   databases.push(database);
   return {
@@ -76,8 +82,10 @@ function environment(): AuthEnv {
     BETTER_AUTH_SECRET: "test-auth-secret-with-at-least-32-bytes",
     BETTER_AUTH_URL: "https://auth.test",
     MCP_RESOURCE_URL: "https://edge.test/v1/mcp/sse",
+    MCP_ALLOW_UNAUTHENTICATED_DCR: "true",
     ALLOWED_ORIGINS: "https://web.test",
     INTERNAL_ASSERTION_SECRET: "internal-secret",
+    ...overrides,
   };
 }
 
@@ -103,6 +111,33 @@ async function accessToken(scope = "memories.read offline_access") {
     .setExpirationTime("5m")
     .sign(privateKey);
   return { publicJwk, token };
+}
+
+async function internalAuthRequest(
+  url: string,
+  method: "GET" | "DELETE",
+  uid: string,
+): Promise<Request> {
+  const path = new URL(url).pathname;
+  const signed = await createSignedAuthContext(
+    {
+      uid,
+      authority: "better-auth",
+      requestId: "mcp-grant-test",
+    },
+    "auth",
+    method,
+    path,
+    "internal-secret",
+  );
+  if (!signed) throw new Error("failed to sign internal test request");
+  return new Request(url, {
+    method,
+    headers: {
+      [AUTH_CONTEXT_HEADER]: signed.encoded,
+      [AUTH_SIGNATURE_HEADER]: signed.signature,
+    },
+  });
 }
 
 describe("auth worker MCP OAuth provider", () => {
@@ -222,6 +257,7 @@ describe("auth worker MCP OAuth provider", () => {
         "https://auth.test/api/better-auth/oauth2/register",
       code_challenge_methods_supported: ["S256"],
     });
+    expect(metadata.client_id_metadata_document_supported).toBeUndefined();
     expect(metadata.scopes_supported).toEqual(
       expect.arrayContaining(["memories.read", "offline_access"]),
     );
@@ -260,14 +296,154 @@ describe("auth worker MCP OAuth provider", () => {
         "SELECT identifier, allowedScopes FROM oauthResource WHERE identifier = ?",
       )
       .get("https://edge.test/v1/mcp/sse") as
-      { identifier: string; allowedScopes: string | null } | undefined;
+      | { identifier: string; allowedScopes: string | null }
+      | undefined;
     expect(resource?.identifier).toBe("https://edge.test/v1/mcp/sse");
 
     const link = database
       ?.prepare("SELECT resourceId FROM oauthClientResource WHERE clientId = ?")
       .get(registration.client_id as string) as
-      { resourceId: string } | undefined;
+      | { resourceId: string }
+      | undefined;
     expect(link?.resourceId).toBe("https://edge.test/v1/mcp/sse");
+  });
+
+  it("keeps anonymous DCR closed unless the deployment explicitly enables it", async () => {
+    const env = environment({ MCP_ALLOW_UNAUTHENTICATED_DCR: undefined });
+    const metadataResponse = await auth.fetch(
+      new Request(
+        "https://auth.test/api/better-auth/.well-known/oauth-authorization-server",
+      ),
+      env,
+    );
+
+    expect(metadataResponse.status).toBe(200);
+    const metadata = (await metadataResponse.json()) as Record<string, unknown>;
+    expect(metadata.registration_endpoint).toBeUndefined();
+    expect(metadata.client_id_metadata_document_supported).toBeUndefined();
+
+    const registrationResponse = await auth.fetch(
+      new Request("https://auth.test/api/better-auth/oauth2/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: "untrusted client",
+          redirect_uris: ["https://client.example/callback"],
+          token_endpoint_auth_method: "none",
+        }),
+      }),
+      env,
+    );
+    expect(registrationResponse.status).toBe(403);
+  });
+
+  it("lists only the caller's Better Auth MCP grants", async () => {
+    const env = environment();
+    const database = databases.at(-1)?.database;
+    const now = Date.now();
+    const insertUser = database?.prepare(
+      `INSERT INTO user
+         (id, name, email, emailVerified, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    insertUser?.run(
+      "grant-user",
+      "Grant User",
+      "grant@example.test",
+      1,
+      now,
+      now,
+    );
+    insertUser?.run(
+      "other-user",
+      "Other User",
+      "other@example.test",
+      1,
+      now,
+      now,
+    );
+    const insertClient = database?.prepare(
+      `INSERT INTO oauthClient (id, clientId, name, uri, redirectUris)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    insertClient?.run(
+      "grant-client-row",
+      "grant-client",
+      "Grant Client",
+      "https://client.example",
+      JSON.stringify(["https://client.example/callback"]),
+    );
+    insertClient?.run(
+      "other-client-row",
+      "other-client",
+      "Other Client",
+      "https://other.example",
+      JSON.stringify(["https://other.example/callback"]),
+    );
+    const insertConsent = database?.prepare(
+      `INSERT INTO oauthConsent
+         (id, clientId, userId, resources, scopes, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insertConsent?.run(
+      "grant-1",
+      "grant-client",
+      "grant-user",
+      JSON.stringify(["https://edge.test/v1/mcp/sse"]),
+      JSON.stringify(["memories.read", "offline_access"]),
+      now - 100,
+      now,
+    );
+    insertConsent?.run(
+      "grant-2",
+      "other-client",
+      "other-user",
+      JSON.stringify(["https://edge.test/v1/mcp/sse"]),
+      JSON.stringify(["conversations.read"]),
+      now,
+      now,
+    );
+
+    const response = await auth.fetch(
+      await internalAuthRequest(
+        "https://auth.test/internal/mcp/grants",
+        "GET",
+        "grant-user",
+      ),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      grants: [
+        expect.objectContaining({
+          id: "grant-1",
+          client_id: "grant-client",
+          client_name: "Grant Client",
+          client_uri: "https://client.example",
+          resource: "https://edge.test/v1/mcp/sse",
+          resources: ["https://edge.test/v1/mcp/sse"],
+          scopes: ["memories.read", "offline_access"],
+          status: "active",
+          revoked_at: null,
+        }),
+      ],
+    });
+
+    const otherDelete = await auth.fetch(
+      await internalAuthRequest(
+        "https://auth.test/internal/mcp/grants/grant-2",
+        "DELETE",
+        "grant-user",
+      ),
+      env,
+    );
+    expect(otherDelete.status).toBe(404);
+    expect(
+      database
+        ?.prepare("SELECT COUNT(*) AS count FROM oauthConsent WHERE id = ?")
+        .get("grant-2"),
+    ).toEqual({ count: 1 });
   });
 
   it("verifies an audience-bound MCP token without forwarding it to API workers", async () => {
@@ -287,6 +463,46 @@ describe("auth worker MCP OAuth provider", () => {
         new Date().toISOString(),
         "ES256",
         "P-256",
+      );
+    const database = databases.at(-1)?.database;
+    database
+      ?.prepare(
+        `INSERT INTO user
+           (id, name, email, emailVerified, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "mcp-user",
+        "MCP User",
+        "mcp-user@example.test",
+        1,
+        Date.now(),
+        Date.now(),
+      );
+    database
+      ?.prepare(
+        `INSERT INTO oauthClient (id, clientId, redirectUris)
+         VALUES (?, ?, ?)`,
+      )
+      .run(
+        "mcp-client-row",
+        "mcp-test-client",
+        JSON.stringify(["https://client.example/callback"]),
+      );
+    database
+      ?.prepare(
+        `INSERT INTO oauthConsent
+           (id, clientId, userId, resources, scopes, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "mcp-consent-row",
+        "mcp-test-client",
+        "mcp-user",
+        JSON.stringify(["https://edge.test/v1/mcp/sse"]),
+        JSON.stringify(["memories.read", "offline_access"]),
+        Date.now(),
+        Date.now(),
       );
     const publicFetch = vi.fn(async () => {
       throw new Error("MCP verification must not fetch its own public Worker");
@@ -333,5 +549,32 @@ describe("auth worker MCP OAuth provider", () => {
       env,
     );
     expect(mismatchedResource.status).toBe(400);
+
+    const revoke = await auth.fetch(
+      await internalAuthRequest(
+        "https://auth.test/internal/mcp/grants/mcp-consent-row",
+        "DELETE",
+        "mcp-user",
+      ),
+      env,
+    );
+    expect(revoke.status).toBe(204);
+
+    const revokedToken = await auth.fetch(
+      new Request("https://auth.test/internal/mcp/verify", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-internal-assertion-secret": "internal-secret",
+        },
+        body: JSON.stringify({
+          method: "POST",
+          url: "https://edge.test/v1/mcp/sse",
+        }),
+      }),
+      env,
+    );
+    expect(revokedToken.status).toBe(401);
   });
 });

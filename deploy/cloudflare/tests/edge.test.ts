@@ -205,6 +205,104 @@ describe("edge gateway", () => {
     );
   });
 
+  it("serves the root OAuth discovery alias from the Auth Worker", async () => {
+    const methods: string[] = [];
+    const paths: string[] = [];
+    const env = {
+      AUTH: rawService((request) => {
+        methods.push(request.method);
+        paths.push(new URL(request.url).pathname);
+        return Response.json(
+          {
+            issuer: "https://web.test/api/better-auth",
+            token_endpoint: "https://web.test/api/better-auth/oauth2/token",
+          },
+          { headers: { "cache-control": "no-store" } },
+        );
+      }),
+    };
+
+    const getResponse = await edge.fetch(
+      new Request("https://edge.test/.well-known/oauth-authorization-server"),
+      env as never,
+    );
+    expect(getResponse.status).toBe(200);
+    expect(await getResponse.json()).toMatchObject({
+      issuer: "https://web.test/api/better-auth",
+    });
+
+    const headResponse = await edge.fetch(
+      new Request("https://edge.test/.well-known/oauth-authorization-server", {
+        method: "HEAD",
+      }),
+      env as never,
+    );
+    expect(headResponse.status).toBe(200);
+    expect(await headResponse.text()).toBe("");
+    expect(methods).toEqual(["GET", "GET"]);
+    expect(paths).toEqual([
+      "/api/better-auth/.well-known/oauth-authorization-server",
+      "/api/better-auth/.well-known/oauth-authorization-server",
+    ]);
+  });
+
+  it("keeps MCP grant management beside Better Auth and outside product cutover", async () => {
+    const grantRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: rawService((request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/internal/verify") {
+          return Response.json({ uid: "grant-user", authority: "better-auth" });
+        }
+        grantRequests.push(request);
+        return request.method === "DELETE"
+          ? new Response(null, { status: 204 })
+          : Response.json({ grants: [{ id: "grant-1" }] });
+      }),
+      API_CORE: rawService(() => {
+        throw new Error("MCP grants must not consult product cutover");
+      }),
+    };
+
+    const list = await edge.fetch(
+      new Request("https://edge.test/v1/mcp/oauth/grants", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+    expect(list.status).toBe(200);
+    expect(await list.json()).toEqual({ grants: [{ id: "grant-1" }] });
+
+    const revoke = await edge.fetch(
+      new Request("https://edge.test/v1/mcp/oauth/grants/grant-1", {
+        method: "DELETE",
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+    expect(revoke.status).toBe(204);
+    expect(
+      grantRequests.map((request) => new URL(request.url).pathname),
+    ).toEqual(["/internal/mcp/grants", "/internal/mcp/grants/grant-1"]);
+    expect(grantRequests.map((request) => request.method)).toEqual([
+      "GET",
+      "DELETE",
+    ]);
+    for (const request of grantRequests) {
+      expect(
+        decodeAuthContext(request.headers.get("x-omi-auth-context")),
+      ).toMatchObject({
+        uid: "grant-user",
+        audience: "auth",
+        method: request.method,
+        path: new URL(request.url).pathname,
+      });
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+    }
+  });
+
   it("routes static app catalog metadata through the public core worker", async () => {
     const paths: string[] = [];
     const env = {

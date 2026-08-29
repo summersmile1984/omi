@@ -56,6 +56,38 @@ export function betterAuthUpstreamRequest(request: Request, target: URL): Reques
   });
 }
 
+export async function proxyBetterAuthMetadata(
+  request: Request,
+  authService: { fetch(request: Request): Promise<Response> } | undefined,
+  authServerUrl?: string,
+): Promise<Response> {
+  if (!authService && !authServerUrl) {
+    return Response.json({ error: 'auth proxy is not configured' }, { status: 503 });
+  }
+  const target = betterAuthTarget(
+    '.well-known/oauth-authorization-server',
+    new URL(request.url).search,
+    authServerUrl,
+  );
+  try {
+    const upstream = new Request(target, {
+      method: 'GET',
+      headers: betterAuthRequestHeaders(request.headers),
+      redirect: 'manual',
+    });
+    const response = authService
+      ? await authService.fetch(upstream)
+      : await fetch(upstream);
+    const body = request.method === 'HEAD' ? null : await response.text();
+    return new Response(body, {
+      status: response.status,
+      headers: betterAuthResponseHeaders(response),
+    });
+  } catch {
+    return Response.json({ error: 'auth service unavailable' }, { status: 503 });
+  }
+}
+
 export function sanitizeBetterAuthResponse(
   authPath: string,
   response: Response,

@@ -755,12 +755,42 @@ routes:
     rollout: staging-only
     rollback: restore-worker-deployment-snapshot
   - method: ANY
+    path: /.well-known/oauth-authorization-server
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: [auth]
+    protocol: http
+    rollout: staging-only
+    rollback: restore-worker-deployment-snapshot
+  - method: ANY
     path: /api/better-auth/*
     owner: auth
     runtime: auth-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
     dependencies: [d1-auth]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/oauth/grants
+    owner: auth
+    runtime: auth-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [auth, d1-auth, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/mcp/oauth/grants/{grant_id}
+    owner: auth
+    runtime: auth-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [auth, d1-auth, worker-secrets]
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy

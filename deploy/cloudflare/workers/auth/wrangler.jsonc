@@ -8,6 +8,7 @@
   "vars": {
     "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",
     "MCP_RESOURCE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev/v1/mcp/sse",
+    "MCP_ALLOW_UNAUTHENTICATED_DCR": "true",
   },
   "d1_databases": [
     {

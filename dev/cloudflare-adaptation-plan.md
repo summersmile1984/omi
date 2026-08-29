@@ -1050,8 +1050,39 @@ hint，live 路径在 19.9 秒后可搜索，不再依赖五分钟 repair cron�
 `813cc7d9-265d-465a-af33-2a7ea060da02`、Jobs
 `2335ace2-2f93-438d-9cec-14fa55824b3e`、Edge
 `a6dabd15-bdf4-48ae-9418-a99ac76305b3`、Web
-`7838e65e-df6a-4b68-8e0a-9b346e935173`。MCP OAuth 和 hosted transport 仍明确
-保留 legacy authority。
+`7838e65e-df6a-4b68-8e0a-9b346e935173`。截至该批次，MCP OAuth 和 hosted transport
+仍明确保留 legacy authority。
+
+同日随后完成 MCP OAuth 的剩余 Worker-owned 管理面：Edge 与 Web 同时提供根路径和
+Better Auth 后缀的 authorization-server discovery，`GET/HEAD` 均实测为 HTTP 200；
+`GET /v1/mcp/oauth/grants` 与 `DELETE /v1/mcp/oauth/grants/{grant_id}` 由 Edge 认证后
+使用绑定 `auth` audience/path/method 的内部断言交给 Auth Worker。撤销会在一个 D1
+batch 中删除该用户/客户端的 access token、refresh token 和 consent，Auth token
+verification 也会复核 live consent，因此自包含的一小时 JWT 会在撤销后立即失效。
+生产默认关闭匿名 DCR，只有隔离 staging 通过
+`MCP_ALLOW_UNAUTHENTICATED_DCR=true` 保留兼容行为。
+
+CIMD 没有被伪装成已支持：Better Auth 的安全 fetch contract 要求一次 DNS 解析、拒绝
+全部 special-use 地址、固定公网 IP 且保持原始 Host/SNI/证书身份并禁止 redirect。
+Cloudflare Workers 的 TCP sockets 对通用 HTTPS 443 实测被平台拒绝；普通 `fetch()` 与
+`resolveOverride` 又不能为任意第三方 hostname 提供相同的 DNS pinning。因此当前元数据
+不发布 `client_id_metadata_document_supported`，后续必须接入并独立资格验证一个安全的
+metadata-fetch API/boundary，而不能退回有 DNS rebinding 风险的普通 fetch。
+
+本批 staging release 通过 311 个 Cloudflare TypeScript、184 个 API Core、61 个 API AI
+和 37 个 Web 测试，manifest 为 323 条 Cloudflare route、577 条 backend route、266 条
+legacy-owned。版本为 Auth `9ec87906-fc3c-41b3-a39c-ccb5fb517712`、Rate Limit
+`aa231022-47fa-4f8a-b439-90dfcc9a12d4`、API Core
+`8321101f-e499-408e-bb79-f7da47c47134`、API AI
+`4ec245da-839d-4757-8904-de0963e6e7de`、Realtime
+`eb097c2b-a49d-4ab5-8dcf-3d91983ca333`、Jobs
+`1de5f52b-93c0-4602-bc74-83bdf0acfe8a`、Edge
+`ded3a0a6-9c60-4da4-8ce3-8061e860b1cd`、Web
+`9675099a-dcd8-4a4e-8ac1-6121d0a022a6`。authenticated smoke 全部通过；独立
+Better Auth 账号实测 grant list 为 HTTP 200，未认证请求为 401；这个未建立 product
+account control 的 grant-only 身份随后按精确测试标识从 Auth D1 清理并回读为 0。右侧已
+登录浏览器完整 hydration 后验证 conversations、memories、tasks、my-apps
+和 chat 均无新增 console warning/error，也不再出现 API error/404。
 
 Python Workers 仍属于 Beta；当前 `api-core` 与 `api-ai` 的 Python vendored modules
 均约 8.0 MiB，实际 gzip 上传约 2.0 MiB，应继续作为依赖预算的硬闸门。

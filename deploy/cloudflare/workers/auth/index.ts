@@ -109,6 +109,7 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
   const socialProviders = configuredSocialProviders(env);
   const trustedProviders = Object.keys(socialProviders) as SocialProviderId[];
   const resource = env.MCP_RESOURCE_URL || new URL("/v1/mcp/sse", baseURL).href;
+  const allowUnauthenticatedDcr = env.MCP_ALLOW_UNAUTHENTICATED_DCR === "true";
   return betterAuth({
     database: env.AUTH_DB,
     secret: env.BETTER_AUTH_SECRET,
@@ -207,8 +208,8 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
         accessTokenExpiresIn: 60 * 60,
         refreshTokenExpiresIn: 30 * 24 * 60 * 60,
         allowPublicClientPrelogin: true,
-        allowDynamicClientRegistration: true,
-        allowUnauthenticatedClientRegistration: true,
+        allowDynamicClientRegistration: allowUnauthenticatedDcr,
+        allowUnauthenticatedClientRegistration: allowUnauthenticatedDcr,
         clientRegistrationRequirePKCE: true,
       }),
     ],
@@ -244,6 +245,7 @@ function payloadUid(payload: unknown): string | null {
 function verifiedMcpClaims(payload: unknown): {
   uid: string;
   scopes: string[];
+  tokenScopes: string[];
   clientId: string;
 } | null {
   if (!payload || typeof payload !== "object") return null;
@@ -276,8 +278,182 @@ function verifiedMcpClaims(payload: unknown): {
   return {
     uid,
     clientId,
+    tokenScopes: granted,
     scopes: granted.filter((scope) => MCP_DATA_SCOPE_SET.has(scope)),
   };
+}
+
+type McpConsentRow = {
+  id?: unknown;
+  clientId?: unknown;
+  resources?: unknown;
+  scopes?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  lastUsedAt?: unknown;
+  clientName?: unknown;
+  clientUri?: unknown;
+  clientIcon?: unknown;
+};
+
+function oauthStringArray(value: unknown): string[] | null {
+  if (value === null || value === undefined) return [];
+  let decoded = value;
+  if (typeof value === "string") {
+    try {
+      decoded = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (
+    !Array.isArray(decoded) ||
+    decoded.some((entry) => typeof entry !== "string")
+  ) {
+    return null;
+  }
+  return decoded as string[];
+}
+
+function requiredOauthString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function oauthGrantId(value: string): string | null {
+  return value.length > 0 &&
+    value.length <= 512 &&
+    !/[\0-\x1f\x7f/]/.test(value)
+    ? value
+    : null;
+}
+
+function oauthTimestamp(value: unknown): string | null {
+  if (typeof value === "number" && value <= 0) return null;
+  return profileCreatedAt(value);
+}
+
+function oauthGrantFromRow(row: McpConsentRow): Record<string, unknown> {
+  const id = requiredOauthString(row.id);
+  const clientId = requiredOauthString(row.clientId);
+  const scopes = oauthStringArray(row.scopes);
+  const resources = oauthStringArray(row.resources);
+  if (!id || !clientId || !scopes || !resources) {
+    throw new Error("invalid OAuth consent row");
+  }
+  return {
+    id,
+    client_id: clientId,
+    client_name:
+      typeof row.clientName === "string" && row.clientName.trim()
+        ? row.clientName.trim().slice(0, 200)
+        : null,
+    client_uri: typeof row.clientUri === "string" ? row.clientUri : null,
+    logo_uri: typeof row.clientIcon === "string" ? row.clientIcon : null,
+    resource: resources[0] || null,
+    resources,
+    scopes,
+    status: "active",
+    created_at: oauthTimestamp(row.createdAt),
+    updated_at: oauthTimestamp(row.updatedAt),
+    last_used_at: oauthTimestamp(row.lastUsedAt),
+    revoked_at: null,
+  };
+}
+
+async function listMcpOauthGrants(
+  database: D1Database,
+  uid: string,
+): Promise<Record<string, unknown>[]> {
+  const result = await database
+    .prepare(
+      `SELECT consent.id,
+              consent.clientId,
+              consent.resources,
+              consent.scopes,
+              consent.createdAt,
+              consent.updatedAt,
+              client.name AS clientName,
+              client.uri AS clientUri,
+              client.icon AS clientIcon,
+              MAX(
+                COALESCE(
+                  (SELECT MAX(token.createdAt)
+                     FROM oauthAccessToken AS token
+                    WHERE token.userId = consent.userId
+                      AND token.clientId = consent.clientId),
+                  0
+                ),
+                COALESCE(
+                  (SELECT MAX(token.createdAt)
+                     FROM oauthRefreshToken AS token
+                    WHERE token.userId = consent.userId
+                      AND token.clientId = consent.clientId),
+                  0
+                )
+              ) AS lastUsedAt
+         FROM oauthConsent AS consent
+         LEFT JOIN oauthClient AS client
+           ON client.clientId = consent.clientId
+        WHERE consent.userId = ?
+        ORDER BY consent.updatedAt DESC, consent.createdAt DESC`,
+    )
+    .bind(uid)
+    .all<McpConsentRow>();
+  return result.results.map(oauthGrantFromRow);
+}
+
+async function activeMcpConsent(
+  database: D1Database,
+  uid: string,
+  clientId: string,
+  resource: string,
+  tokenScopes: string[],
+): Promise<boolean> {
+  const result = await database
+    .prepare(
+      `SELECT scopes, resources
+         FROM oauthConsent
+        WHERE userId = ? AND clientId = ?`,
+    )
+    .bind(uid, clientId)
+    .all<{ scopes?: unknown; resources?: unknown }>();
+  return result.results.some((row) => {
+    const scopes = oauthStringArray(row.scopes);
+    const resources = oauthStringArray(row.resources);
+    return Boolean(
+      scopes &&
+        resources &&
+        tokenScopes.every((scope) => scopes.includes(scope)) &&
+        resources.includes(resource),
+    );
+  });
+}
+
+async function revokeMcpOauthGrant(
+  database: D1Database,
+  uid: string,
+  grantId: string,
+): Promise<boolean> {
+  const consent = await database
+    .prepare("SELECT clientId FROM oauthConsent WHERE id = ? AND userId = ?")
+    .bind(grantId, uid)
+    .first<{ clientId?: unknown }>();
+  const clientId = requiredOauthString(consent?.clientId);
+  if (!clientId) return false;
+  await database.batch([
+    database
+      .prepare("DELETE FROM oauthAccessToken WHERE userId = ? AND clientId = ?")
+      .bind(uid, clientId),
+    database
+      .prepare(
+        "DELETE FROM oauthRefreshToken WHERE userId = ? AND clientId = ?",
+      )
+      .bind(uid, clientId),
+    database
+      .prepare("DELETE FROM oauthConsent WHERE id = ? AND userId = ?")
+      .bind(grantId, uid),
+  ]);
+  return true;
 }
 
 function profileCreatedAt(value: unknown): string | null {
@@ -589,6 +765,17 @@ app.post("/internal/mcp/verify", async (c) => {
         if (!identity) {
           return Response.json({ error: "invalid_token" }, { status: 401 });
         }
+        if (
+          !(await activeMcpConsent(
+            c.env.AUTH_DB,
+            identity.uid,
+            identity.clientId,
+            resource,
+            identity.tokenScopes,
+          ))
+        ) {
+          return Response.json({ error: "invalid_token" }, { status: 401 });
+        }
         return Response.json(
           {
             uid: identity.uid,
@@ -602,6 +789,46 @@ app.post("/internal/mcp/verify", async (c) => {
     return await verify(publicRequest);
   } catch {
     return c.json({ error: "authorization_unavailable" }, 503);
+  }
+});
+
+app.get("/internal/mcp/grants", async (c) => {
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const grants = await listMcpOauthGrants(c.env.AUTH_DB, context.uid);
+    c.header("cache-control", "no-store");
+    return c.json({ grants });
+  } catch {
+    return c.json({ error: "oauth_grants_unavailable" }, 503);
+  }
+});
+
+app.delete("/internal/mcp/grants/:grantId", async (c) => {
+  const grantId = oauthGrantId(c.req.param("grantId"));
+  if (!grantId) return c.json({ error: "invalid_request" }, 400);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const revoked = await revokeMcpOauthGrant(
+      c.env.AUTH_DB,
+      context.uid,
+      grantId,
+    );
+    if (!revoked) return c.json({ detail: "OAuth grant not found" }, 404);
+    return c.body(null, 204);
+  } catch {
+    return c.json({ error: "oauth_grants_unavailable" }, 503);
   }
 });
 

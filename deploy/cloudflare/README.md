@@ -154,7 +154,12 @@ session token or an Auth service binding. MCP OAuth discovery, login
 continuation, and consent stay on the same Web origin. The consent page sends
 only Better Auth's signed authorization query, and MCP access tokens terminate
 at Edge; API Core receives a request-bound signed principal instead of the
-bearer token. Public Better Auth routes retain the
+bearer token. Root and Better Auth-suffixed authorization-server discovery are
+served by both Edge and Web, including bodyless `HEAD`. MCP grant listing and
+revocation traverse Edge → Auth with a request-bound assertion; revocation
+removes the user's matching access tokens, refresh tokens, and consent, and
+subsequent token verification requires that live consent to remain present.
+Public Better Auth routes retain the
 D1-backed per-IP limiter. The secret-guarded Edge session-verification request
 bypasses that public limiter so service-binding calls without a client IP cannot
 collapse every staging user into one shared rate-limit bucket.
@@ -1340,7 +1345,8 @@ The app catalog metadata routes (`/v1/app-categories`,
 `/v1/app/payment-plans`) are static, public responses and now run in API Core
 without D1 or external providers. App create/update/delete, subscriptions,
 enable/disable side effects and MCP key/data routes are Cloudflare-owned; MCP
-OAuth grants and hosted transport remain separate migration surfaces. The three
+OAuth grants and hosted transport are Cloudflare-owned, while the secure CIMD
+metadata-fetch boundary remains a separate migration surface. The three
 installation routes below accept approved
 public catalog rows, owner rows, or a pending app explicitly assigned through
 `cf_app_tester_access`, provided there is no external setup callback. A paid
@@ -1360,8 +1366,8 @@ uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
 install counter for idempotent retries. Paid installs fail closed unless
 `cf_app_subscriptions` is active/trialing and its current period has not ended;
 the enabled-app read applies the same check. Persona mutation, external setup
-callbacks, and MCP OAuth/transport state remain separate migration surfaces;
-no production cutover is implied.
+callbacks, and CIMD remain separate migration surfaces; no production cutover
+is implied.
 
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
 responses from the same public D1 rows. It preserves the legacy pagination
@@ -1383,8 +1389,8 @@ rows are backfilled. Review/reply push notifications remain an external API
 boundary. App tester membership/access and moderation now use D1 plus an
 independent `APPS_ADMIN_KEY`; approve/reject verifies the catalog owner before
 atomically changing approval state and publishing to the shared leased FCM
-outbox. Persona mutation, setup callbacks, and MCP OAuth/transport state remain
-separate migration work.
+outbox. Persona mutation, setup callbacks, and CIMD remain separate migration
+work.
 
 MCP API credentials now use `cf_mcp_api_keys`. `POST /v1/mcp/keys` returns the
 `omi_mcp_` secret once, while D1 stores only the SHA-256 digest of its 32-hex
@@ -1430,11 +1436,22 @@ five-minute repair cron. The Auth Worker now installs Better Auth's MCP OAuth
 Provider on the existing D1/session/JWKS authority. Migration `auth/0005`
 creates the provider's client, protected-resource, token, consent, and client
 assertion tables; the existing verification table supplies database-backed
-DPoP replay reservations. Dynamic public-client registration is the temporary
-MCP compatibility profile, requires PKCE, and links every registered client to
-the single `MCP_RESOURCE_URL`. The hosted transport remains legacy-owned until
-the Edge token-verification and Streamable HTTP slices are cut over; verified
-Client ID Metadata Documents remain the final replacement for open DCR.
+DPoP replay reservations. Public clients require PKCE and are linked to the
+single `MCP_RESOURCE_URL`. Anonymous dynamic client registration is fail-closed
+unless `MCP_ALLOW_UNAUTHENTICATED_DCR=true`; only the isolated staging profile
+sets that compatibility flag. The Streamable HTTP/SSE transport, token
+verification, 22-tool registry, grant management, and discovery aliases are
+Cloudflare-owned.
+
+Client ID Metadata Documents (CIMD) are intentionally not advertised. Better
+Auth's secure CIMD transport must resolve once, reject every special-use
+address, pin an approved address while preserving the original TLS identity,
+and refuse redirects. Workers cannot use raw TCP sockets for generic HTTPS on
+port 443, while ordinary `fetch()` and `resolveOverride` do not provide that
+arbitrary-host pinning contract. Enabling the plugin with a transport that
+cannot satisfy those requirements would create an SSRF or availability defect;
+production therefore keeps anonymous DCR closed until a separately qualified
+secure metadata-fetch boundary exists.
 
 App integration credentials now use `cf_app_api_keys`. `POST` returns the
 `sk_` secret once, while D1 stores only the SHA-256 digest of its 32-hex-byte
@@ -1457,8 +1474,8 @@ destination, sends the bounded payload with a stable idempotency key and a
 successful response message in the target app chat. Integration notifications
 share `cf_notification_outbox`, the existing FCM sender, and the canonical chat
 tables; no Redis, Firestore, local process, or parallel notification sender is
-introduced. OAuth setup callbacks and MCP OAuth/hosted-transport surfaces remain
-separate migration work; MCP key lifecycle and REST data tools are
+introduced. OAuth setup callbacks and CIMD remain separate migration work; MCP
+OAuth, hosted transport, key lifecycle, and REST data tools are
 Cloudflare-owned.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible

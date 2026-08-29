@@ -120,6 +120,40 @@ app.on(
   },
 );
 
+app.on(
+  ["GET", "HEAD"],
+  "/.well-known/oauth-authorization-server",
+  async (c) => {
+    const id = requestId(c.req.raw);
+    const target = new URL(
+      "/api/better-auth/.well-known/oauth-authorization-server",
+      "https://auth.internal",
+    );
+    try {
+      const response = await c.env.AUTH.fetch(new Request(target));
+      if (c.req.method === "HEAD") {
+        await response.arrayBuffer();
+        return withRequestId(
+          new Response(null, {
+            status: response.status,
+            headers: response.headers,
+          }),
+          id,
+        );
+      }
+      return withRequestId(response, id);
+    } catch {
+      return withRequestId(
+        Response.json(
+          { error: "authorization_server_unavailable" },
+          { status: 503 },
+        ),
+        id,
+      );
+    }
+  },
+);
+
 app.get("/v1/mcp/sse/info", (c) =>
   c.json({
     transport: "streamable-http",
@@ -656,6 +690,29 @@ const proxyAuthenticatedAuthProfile = async (
   return withRequestId(response, id);
 };
 
+const proxyAuthenticatedMcpGrants = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return withRequestId(c.json({ error: "unauthorized" }, 401), id);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  const target = new URL("/internal/mcp/grants", "https://auth.internal");
+  const grantId = c.req.param("grantId");
+  if (grantId) target.pathname += `/${encodeURIComponent(grantId)}`;
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "auth",
+    { method: c.req.method, url: target },
+  );
+  const response = await c.env.AUTH.fetch(
+    new Request(target, { method: c.req.method, headers }),
+  );
+  return withRequestId(response, id);
+};
+
 const proxyAuthenticatedAI = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -949,6 +1006,8 @@ app.patch("/v1/users/assistant-settings", proxyAuthenticatedCore);
 app.get("/v1/users/ai-profile", proxyAuthenticatedCore);
 app.patch("/v1/users/ai-profile", proxyAuthenticatedCore);
 app.get("/v1/users/profile", proxyAuthenticatedAuthProfile);
+app.get("/v1/mcp/oauth/grants", proxyAuthenticatedMcpGrants);
+app.delete("/v1/mcp/oauth/grants/:grantId", proxyAuthenticatedMcpGrants);
 app.get("/v1/users/location-context-consent", proxyAuthenticatedCore);
 app.put("/v1/users/location-context-consent", proxyAuthenticatedCore);
 app.post("/v1/tts/synthesize", proxyAuthenticatedAI);
