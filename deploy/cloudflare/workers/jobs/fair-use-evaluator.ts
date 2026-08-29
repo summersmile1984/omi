@@ -315,7 +315,8 @@ async function classifyCandidate(
     const fenced = responseText.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
     try {
       const parsed = JSON.parse((fenced || responseText).trim());
-      validJsonObject = !!parsed && typeof parsed === "object" && !Array.isArray(parsed);
+      validJsonObject =
+        !!parsed && typeof parsed === "object" && !Array.isArray(parsed);
     } catch {
       validJsonObject = false;
     }
@@ -442,9 +443,9 @@ async function persistEvaluation(
     const notification = fairUseNotification(transition.action, caseRef);
     statements.push(
       env.APP_DB.prepare(
-        "INSERT INTO cf_fair_use_notification_outbox " +
-          "(notification_id, event_id, uid, title, body, data_json, status, attempts, not_before, created_at, updated_at) " +
-          "SELECT ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ? FROM cf_fair_use_events WHERE event_id = ?",
+        "INSERT INTO cf_notification_outbox " +
+          "(notification_id, source_kind, source_id, uid, title, body, data_json, status, attempts, not_before, created_at, updated_at) " +
+          "SELECT ?, 'fair_use', ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ? FROM cf_fair_use_events WHERE event_id = ?",
       ).bind(
         crypto.randomUUID(),
         eventId,

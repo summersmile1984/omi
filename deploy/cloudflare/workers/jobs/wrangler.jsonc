@@ -14,6 +14,8 @@
   "vars": {
     "PUBLIC_API_BASE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev",
   },
+  // Secrets provisioned with `wrangler secret put`: APPS_ADMIN_KEY,
+  // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets.
   "services": [{ "binding": "AUTH", "service": "omi-cf-auth-staging" }],
   "d1_databases": [
     {

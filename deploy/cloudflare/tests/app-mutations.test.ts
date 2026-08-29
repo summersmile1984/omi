@@ -161,7 +161,9 @@ class MemoryR2 {
   }
 }
 
-function environment(options: { stripeSecret?: string } = {}) {
+function environment(
+  options: { stripeSecret?: string; adminKey?: string } = {},
+) {
   const database = new SqliteD1();
   const assets = new MemoryR2();
   const env = {
@@ -186,6 +188,7 @@ function environment(options: { stripeSecret?: string } = {}) {
     INTERNAL_ASSERTION_SECRET: "app-mutation-assertion-secret",
     PUBLIC_API_BASE_URL: "https://edge.test",
     STRIPE_SECRET_KEY: options.stripeSecret,
+    APPS_ADMIN_KEY: options.adminKey,
   } satisfies JobsEnv;
   return { database, assets, env };
 }
@@ -243,6 +246,239 @@ function freeApp(overrides: Record<string, unknown> = {}) {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("Cloudflare app tester and moderation controls", () => {
+  it("replaces tester access atomically and exposes only public pending apps to admins", async () => {
+    const state = environment({ adminKey: "apps-admin-secret" });
+    try {
+      for (const [id, isPrivate] of [
+        ["pending-public", false],
+        ["pending-private", true],
+      ] as const) {
+        state.database.database
+          .prepare(
+            "INSERT INTO cf_app_catalog " +
+              "(id, owner_uid, approved, status, disabled, is_popular, installs, rating_count, data_json, updated_at) " +
+              "VALUES (?, 'creator-user', 0, 'under-review', 0, 0, 0, 0, ?, 1)",
+          )
+          .run(
+            id,
+            JSON.stringify({
+              id,
+              name: id,
+              description: "pending app",
+              capabilities: ["chat"],
+              private: isPrivate,
+            }),
+          );
+      }
+      const denied = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps/tester", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            uid: "tester-user",
+            apps: ["pending-public"],
+          }),
+        }),
+        state.env,
+      );
+      expect(denied.status).toBe(403);
+
+      const headers = {
+        "content-type": "application/json",
+        "secret-key": "apps-admin-secret",
+      };
+      const added = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps/tester", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            uid: "tester-user",
+            apps: ["pending-public", "pending-private"],
+          }),
+        }),
+        state.env,
+      );
+      expect(added.status).toBe(200);
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_tester_access WHERE uid = 'tester-user'",
+        )?.count,
+      ).toBe(2);
+
+      const replaced = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps/tester", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            uid: "tester-user",
+            apps: ["pending-public"],
+          }),
+        }),
+        state.env,
+      );
+      expect(replaced.status).toBe(200);
+      expect(
+        state.database.row<{ app_id: string }>(
+          "SELECT app_id FROM cf_app_tester_access WHERE uid = 'tester-user'",
+        )?.app_id,
+      ).toBe("pending-public");
+
+      const accessBody = JSON.stringify({
+        uid: "tester-user",
+        app_id: "pending-private",
+      });
+      const accessAdded = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps/tester/access", {
+          method: "POST",
+          headers,
+          body: accessBody,
+        }),
+        state.env,
+      );
+      expect(accessAdded.status).toBe(200);
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_tester_access WHERE uid = 'tester-user'",
+        )?.count,
+      ).toBe(2);
+      const accessRemoved = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps/tester/access", {
+          method: "DELETE",
+          headers,
+          body: accessBody,
+        }),
+        state.env,
+      );
+      expect(accessRemoved.status).toBe(200);
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_tester_access WHERE uid = 'tester-user'",
+        )?.count,
+      ).toBe(1);
+
+      const listed = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps/public/unapproved", {
+          headers: { "secret-key": "apps-admin-secret" },
+        }),
+        state.env,
+      );
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual([
+        expect.objectContaining({
+          id: "pending-public",
+          uid: "creator-user",
+          approved: false,
+          private: false,
+        }),
+      ]);
+
+      const popular = await jobs.fetch(
+        new Request(
+          "https://jobs.test/v1/apps/pending-public/popular?value=true",
+          {
+            method: "PATCH",
+            headers: { "secret-key": "apps-admin-secret" },
+          },
+        ),
+        state.env,
+      );
+      expect(popular.status).toBe(200);
+      expect(
+        state.database.row<{ is_popular: number }>(
+          "SELECT is_popular FROM cf_app_catalog WHERE id = 'pending-public'",
+        )?.is_popular,
+      ).toBe(1);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("moderates only the authoritative owner and publishes one durable notification per decision", async () => {
+    const state = environment({ adminKey: "apps-admin-secret" });
+    try {
+      state.database.database
+        .prepare(
+          "INSERT INTO cf_app_catalog " +
+            "(id, owner_uid, approved, status, disabled, is_popular, installs, rating_count, data_json, updated_at) " +
+            "VALUES ('review-app', 'creator-user', 0, 'under-review', 0, 0, 0, 0, ?, 1)",
+        )
+        .run(
+          JSON.stringify({
+            id: "review-app",
+            name: "Review App",
+            capabilities: ["chat"],
+            private: false,
+          }),
+        );
+      const mismatch = await jobs.fetch(
+        new Request(
+          "https://jobs.test/v1/apps/review-app/approve?uid=other-user",
+          {
+            method: "POST",
+            headers: { "secret-key": "apps-admin-secret" },
+          },
+        ),
+        state.env,
+      );
+      expect(mismatch.status).toBe(409);
+
+      const approve = await jobs.fetch(
+        new Request(
+          "https://jobs.test/v1/apps/review-app/approve?uid=creator-user",
+          {
+            method: "POST",
+            headers: { "secret-key": "apps-admin-secret" },
+          },
+        ),
+        state.env,
+      );
+      expect(approve.status).toBe(200);
+      expect(
+        state.database.row<{ approved: number; status: string }>(
+          "SELECT approved, status FROM cf_app_catalog WHERE id = 'review-app'",
+        ),
+      ).toEqual({ approved: 1, status: "approved" });
+      expect(
+        state.database.row<{
+          uid: string;
+          source_kind: string;
+          data_json: string;
+        }>(
+          "SELECT uid, source_kind, data_json FROM cf_notification_outbox WHERE source_kind = 'app_moderation'",
+        ),
+      ).toMatchObject({
+        uid: "creator-user",
+        source_kind: "app_moderation",
+      });
+
+      const reject = await jobs.fetch(
+        new Request(
+          "https://jobs.test/v1/apps/review-app/reject?uid=creator-user",
+          {
+            method: "POST",
+            headers: { "secret-key": "apps-admin-secret" },
+          },
+        ),
+        state.env,
+      );
+      expect(reject.status).toBe(200);
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_notification_outbox WHERE source_kind = 'app_moderation'",
+        )?.count,
+      ).toBe(2);
+      expect(
+        state.database.row<{ approved: number; status: string }>(
+          "SELECT approved, status FROM cf_app_catalog WHERE id = 'review-app'",
+        ),
+      ).toEqual({ approved: 0, status: "rejected" });
+    } finally {
+      state.database.close();
+    }
+  });
 });
 
 describe("Cloudflare app mutations", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { drainFairUseNotifications } from "../workers/jobs/firebase-messaging";
+import { drainNotifications } from "../workers/jobs/firebase-messaging";
 
 type Outbox = {
   notification_id: string;
@@ -95,7 +95,7 @@ describe("fair-use Firebase outbox", () => {
     const fake = messagingDatabase(now);
     fake.tokens.clear();
 
-    const delivered = await drainFairUseNotifications(
+    const delivered = await drainNotifications(
       { APP_DB: fake.database } as never,
       now,
     );
@@ -109,7 +109,7 @@ describe("fair-use Firebase outbox", () => {
     const now = 2_000_000_000;
     const fake = messagingDatabase(now);
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
-    const delivered = await drainFairUseNotifications(
+    const delivered = await drainNotifications(
       {
         APP_DB: fake.database,
         FIREBASE_SERVICE_ACCOUNT_JSON: credentials,
@@ -144,7 +144,7 @@ describe("fair-use Firebase outbox", () => {
   it("removes an unregistered token without retrying the durable notification", async () => {
     const now = 2_000_000_000;
     const fake = messagingDatabase(now);
-    const delivered = await drainFairUseNotifications(
+    const delivered = await drainNotifications(
       {
         APP_DB: fake.database,
         FIREBASE_SERVICE_ACCOUNT_JSON: credentials,
@@ -166,7 +166,7 @@ describe("fair-use Firebase outbox", () => {
   it("returns a transient provider failure to the pending outbox with backoff", async () => {
     const now = 2_000_000_000;
     const fake = messagingDatabase(now);
-    const delivered = await drainFairUseNotifications(
+    const delivered = await drainNotifications(
       {
         APP_DB: fake.database,
         FIREBASE_SERVICE_ACCOUNT_JSON: credentials,

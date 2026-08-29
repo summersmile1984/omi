@@ -38,4 +38,5 @@ export type JobsEnv = {
   WORKERS_AI_SYNC_SUMMARY_MODEL?: string;
   WORKERS_AI_FAIR_USE_MODEL?: string;
   FIREBASE_SERVICE_ACCOUNT_JSON?: string;
+  APPS_ADMIN_KEY?: string;
 };

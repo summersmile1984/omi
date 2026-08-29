@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from app_projection_routes import get_app, get_approved_apps, get_popular_apps  # noqa: E402
+from app_projection_routes import check_is_tester, get_app, get_apps, get_approved_apps, get_popular_apps  # noqa: E402
 
 
 class FakeStatement:
@@ -101,6 +101,12 @@ def test_approved_projection_filters_disabled_and_persona_apps_and_hides_reviews
         catalog_row("popular", popular=1, installs=20),
         catalog_row("disabled", disabled=1),
         catalog_row("persona", capabilities=["persona"]),
+        {
+            **catalog_row("private-approved"),
+            "data_json": json.dumps(
+                {"id": "private-approved", "name": "private-approved", "capabilities": ["chat"], "private": True}
+            ),
+        },
     ]
     env = type("Env", (), {"APP_DB": FakeDb(rows), "INTERNAL_ASSERTION_SECRET": secret})()
 
@@ -109,6 +115,69 @@ def test_approved_projection_filters_disabled_and_persona_apps_and_hides_reviews
     assert [app["id"] for app in result] == ["popular"]
     assert result[0]["is_popular"] is True
     assert "reviews" not in result[0]
+
+
+def test_authenticated_catalog_unions_public_owned_and_assigned_apps_without_leaking_owner_fields():
+    secret = "catalog-secret"
+    public = {**catalog_row("public-app"), "owner_uid": "public-owner", "user_enabled": 1, "user_entitled": 0}
+    owned = {
+        **catalog_row("owned-app"),
+        "owner_uid": "catalog-user",
+        "approved": 0,
+        "tester_access": 0,
+        "user_enabled": 0,
+        "user_entitled": 0,
+    }
+    assigned = {
+        **catalog_row("assigned-app"),
+        "owner_uid": "other-owner",
+        "approved": 0,
+        "tester_access": 1,
+        "user_enabled": 0,
+        "user_entitled": 0,
+    }
+    for row in (public, owned, assigned):
+        payload = json.loads(row["data_json"])
+        payload.update({"email": "owner@example.com", "chat_prompt": "owner-only", "private": row is not public})
+        row["data_json"] = json.dumps(payload)
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": FakeDb([public, owned, assigned], review_rows=[]),
+            "INTERNAL_ASSERTION_SECRET": secret,
+        },
+    )()
+
+    unauthorized = asyncio.run(get_apps(FakeRequest(env)))
+    result = asyncio.run(get_apps(FakeRequest(env, signed_headers(secret), {"include_reviews": "false"})))
+
+    assert unauthorized.status_code == 401
+    assert [app["id"] for app in result] == ["public-app", "owned-app", "assigned-app"]
+    assert result[0]["enabled"] is True
+    assert result[1]["email"] == "owner@example.com"
+    assert result[1]["chat_prompt"] == "owner-only"
+    assert "email" not in result[2]
+    assert "chat_prompt" not in result[2]
+    assert result[2]["rejected"] is True
+
+
+def test_tester_check_requires_auth_and_uses_durable_tester_membership():
+    secret = "catalog-secret"
+    member_env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row={"uid": "catalog-user"}), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+    missing_env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=None), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+
+    assert asyncio.run(check_is_tester(FakeRequest(member_env))).status_code == 401
+    assert asyncio.run(check_is_tester(FakeRequest(member_env, signed_headers(secret)))) == {"is_tester": True}
+    assert asyncio.run(check_is_tester(FakeRequest(missing_env, signed_headers(secret)))) == {"is_tester": False}
 
 
 def test_popular_projection_requires_signed_auth_and_can_include_reviews():
@@ -270,6 +339,40 @@ def test_single_app_exposes_private_pending_disabled_record_only_to_its_owner():
     assert owner["private"] is True
     assert owner["email"] == "owner@example.com"
     assert owner["chat_prompt"] == "owner-only prompt"
+    assert stranger.status_code == 404
+
+
+def test_single_app_exposes_assigned_unapproved_private_record_to_tester_but_not_stranger():
+    secret = "catalog-secret"
+    row = {
+        **catalog_row("tester-app"),
+        "owner_uid": "owner-user",
+        "approved": 0,
+        "tester_access": 1,
+        "user_enabled": 0,
+        "user_entitled": 0,
+    }
+    payload = json.loads(row["data_json"])
+    payload.update({"private": True, "email": "owner@example.com", "chat_prompt": "owner-only"})
+    row["data_json"] = json.dumps(payload)
+    tester_env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=row), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+    stranger_row = {**row, "tester_access": 0}
+    stranger_env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=stranger_row), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+
+    tester = asyncio.run(get_app(FakeRequest(tester_env, signed_headers(secret, "tester-user")), "tester-app"))
+    stranger = asyncio.run(get_app(FakeRequest(stranger_env, signed_headers(secret, "stranger")), "tester-app"))
+
+    assert tester["id"] == "tester-app"
+    assert "email" not in tester
+    assert "chat_prompt" not in tester
     assert stranger.status_code == 404
 
 

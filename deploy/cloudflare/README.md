@@ -268,6 +268,8 @@ cf_dev_issuer_secret="$(openssl rand -base64 48)"
 printf '%s' "$cf_dev_issuer_secret" | npx wrangler secret put AUTH_DEV_ISSUER_SECRET --name omi-cf-auth-staging
 # Independent staging-only credential for the Fair Use support/admin routes.
 printf '%s' "$FAIR_USE_ADMIN_KEY" | npx wrangler secret put FAIR_USE_ADMIN_KEY --name omi-cf-api-core-staging
+# Independent staging-only credential for app tester and moderation routes.
+printf '%s' "$APPS_ADMIN_KEY" | npx wrangler secret put APPS_ADMIN_KEY --name omi-cf-jobs-staging
 # Required only when an isolated staging account has a registered FCM device.
 # Use a staging Firebase service account; never copy production credentials.
 printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | npx wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON --name omi-cf-jobs-staging
@@ -585,6 +587,8 @@ GET  /v1/app/payment-plans
                               MCP credentials remain on dedicated routes
 GET  /v1/approved-apps         Edge → Python API Core → approved public app D1 projection
 GET  /v1/apps/popular          Edge → Python API Core → popular public app D1 projection
+GET  /v1/apps                  Edge → Python API Core → public + owned + tester-assigned apps
+GET  /v1/apps/tester/check     Edge → Python API Core → D1 tester membership
 POST /v1/apps                  Edge → Jobs → multipart + R2 logo + D1/Stripe mapping
 PATCH /v1/apps/{appId}         Edge → Jobs → owner-only D1/R2/Stripe update
 PATCH /v1/apps/{appId}/change-visibility
@@ -594,6 +598,12 @@ POST /v1/apps/{appId}/refresh-manifest
 DELETE /v1/apps/{appId}        Edge → Jobs Queue → provider-safe app deletion
 GET  /v1/apps/{appId}/logo/{version}
                               Edge → Jobs → immutable current-logo R2 object
+POST /v1/apps/tester
+POST/DELETE /v1/apps/tester/access
+GET  /v1/apps/public/unapproved
+PATCH /v1/apps/{appId}/popular
+POST /v1/apps/{appId}/approve
+POST /v1/apps/{appId}/reject  Edge → Jobs → independent admin key + D1/outbox
 GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
 GET  /v2/apps/capability/{capability_id}/grouped
                               Edge → Python API Core → capability/category D1 projection
@@ -1304,12 +1314,16 @@ The app catalog metadata routes (`/v1/app-categories`,
 without D1 or external providers. App create/update/delete, subscriptions, and
 enable/disable side effects are Cloudflare-owned; MCP credentials remain on
 their dedicated routes. The three installation routes below accept approved
-public catalog rows with no
-external setup callback; a paid row additionally requires a current signed-
-webhook D1 entitlement.
+public catalog rows, owner rows, or a pending app explicitly assigned through
+`cf_app_tester_access`, provided there is no external setup callback. A paid
+row additionally requires a current signed-webhook D1 entitlement. Owner and
+tester installs never change the public install counter.
 
 `/v1/approved-apps` and the authenticated `/v1/apps/popular` route read only the
-approved, non-disabled, non-persona records in `cf_app_catalog`. Existing rows
+approved, public, non-disabled, non-persona records in `cf_app_catalog`.
+Authenticated `GET /v1/apps` unions that public set with the caller's owned
+apps and explicitly assigned pending tester apps, deduplicates by catalog id,
+and strips owner-only prompts and credentials from tester projections. Existing rows
 enter through the whitelisted D1 backfill generator; new owner mutations write
 the same authority while list reducers continue to omit reviews, payment
 identifiers, credentials, and prompts. `GET /v1/apps/enabled`,
@@ -1330,15 +1344,19 @@ authenticated `/v2/apps/search` filters are also read from the same projection.
 Search exposes approved public catalog fields and uid-scoped installed-app
 state; `my_apps=true` instead reads the caller's own pending/private/disabled
 rows without weakening the public filter. Authenticated app detail reads use
-the same owner exception, add the caller-bound Payment Link client reference,
-and expose `is_user_paid` only from the current D1 entitlement.
+the same owner and explicit tester-access exceptions, add the caller-bound
+Payment Link client reference, and expose `is_user_paid` only from the current
+D1 entitlement.
 Public-app reviews now use `cf_app_reviews`; writes update the catalog's
 rating average/count in the same D1 transaction, and catalog reads hydrate
 bounded review lists plus the signed user's own review. `owner_uid` is an
 explicit non-public catalog column, so review writes fail closed until older
 rows are backfilled. Review/reply push notifications remain an external API
-boundary. Persona mutation, setup callbacks, MCP state, and the remaining app
-administration routes are still separate migration work.
+boundary. App tester membership/access and moderation now use D1 plus an
+independent `APPS_ADMIN_KEY`; approve/reject verifies the catalog owner before
+atomically changing approval state and publishing to the shared leased FCM
+outbox. Persona mutation, setup callbacks, and MCP state remain separate
+migration work.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
@@ -1496,7 +1514,7 @@ minutes. The D1 intent-to-tombstone transition is atomic, duplicate public
 requests are idempotent, and the scheduled reconciler republishes durable
 intents whose initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 68 product identity-bearing column
+The explicit residual inventory covers 71 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,
@@ -1538,10 +1556,10 @@ outbox contract.
 
 `POST /v1/users/fcm-token` stores one token per sanitized
 `platform + device-id-hash` key in staging D1 and keeps the legacy `{"status":"Ok"}`
-response. Tokens are not returned by any public route. The legacy FCM sender
-still owns non-fair-use notifications. Fair-use delivery now reads this D1
-token authority through the leased Jobs outbox and FCM HTTP v1 adapter
-described above.
+response. Tokens are not returned by any public route. Fair-use and app
+moderation delivery read this D1 token authority through the shared leased Jobs
+outbox and FCM HTTP v1 adapter described above; other notification producers
+remain on their legacy sender.
 
 The memory-summary and chat-message feedback routes store uid-scoped ratings
 in `cf_user_feedback`. Chat feedback also updates the matching D1 message JSON

@@ -100,7 +100,7 @@ function fairUseDatabase() {
         state.leaseUntil = null;
         return { meta: { changes: 1 } };
       }
-      if (sql.startsWith("INSERT INTO cf_fair_use_notification_outbox")) {
+      if (sql.startsWith("INSERT INTO cf_notification_outbox")) {
         if (events.some((event) => event.eventId === this.args[9])) {
           notifications.push({
             eventId: this.args[1],

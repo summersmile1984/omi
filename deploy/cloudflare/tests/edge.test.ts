@@ -493,6 +493,22 @@ describe("edge gateway", () => {
       }),
       env as never,
     );
+    const catalogUnauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/apps"),
+      env as never,
+    );
+    const catalog = await edge.fetch(
+      new Request("https://edge.test/v1/apps", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+    const testerCheck = await edge.fetch(
+      new Request("https://edge.test/v1/apps/tester/check", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
     const detailUnauthenticated = await edge.fetch(
       new Request("https://edge.test/v1/apps/summary-app"),
       env as never,
@@ -507,13 +523,60 @@ describe("edge gateway", () => {
     expect(approved.status).toBe(200);
     expect(popularUnauthenticated.status).toBe(401);
     expect(popular.status).toBe(200);
+    expect(catalogUnauthenticated.status).toBe(401);
+    expect(catalog.status).toBe(200);
+    expect(testerCheck.status).toBe(200);
     expect(detailUnauthenticated.status).toBe(401);
     expect(detail.status).toBe(200);
     expect(corePaths).toEqual([
       "/v1/approved-apps",
       "/v1/apps/popular",
+      "/v1/apps",
+      "/v1/apps/tester/check",
       "/v1/apps/summary-app",
     ]);
+  });
+
+  it("preserves the independent app admin key while stripping caller auth", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      JOBS: service((request) => {
+        jobsRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+    };
+    for (const [method, path] of [
+      ["GET", "/v1/apps/public/unapproved"],
+      ["POST", "/v1/apps/review-app/approve?uid=creator-user"],
+    ] as const) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: "Bearer attacker-token",
+            cookie: "better-auth.session=attacker",
+            "secret-key": "apps-admin-secret",
+            "x-omi-auth-context": "attacker-context",
+          },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(
+      jobsRequests.map(
+        (request) => `${request.method} ${new URL(request.url).pathname}`,
+      ),
+    ).toEqual([
+      "GET /v1/apps/public/unapproved",
+      "POST /v1/apps/review-app/approve",
+    ]);
+    for (const request of jobsRequests) {
+      expect(request.headers.get("secret-key")).toBe("apps-admin-secret");
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeNull();
+    }
   });
 
   it("serves immutable app logos publicly and signs app create/update for Jobs", async () => {

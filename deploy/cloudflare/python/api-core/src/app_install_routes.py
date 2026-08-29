@@ -41,13 +41,13 @@ def _app_id(request: Request) -> str | None:
     return value if value and len(value) <= MAX_APP_ID_LENGTH else None
 
 
-def _installable(payload: object) -> tuple[bool, int, str | None]:
+def _installable(payload: object, *, allow_private: bool) -> tuple[bool, int, str | None]:
     if not isinstance(payload, dict):
         return False, 503, "app catalog unavailable"
     capabilities = payload.get("capabilities", [])
     if not isinstance(capabilities, (list, tuple, set)) or any(not isinstance(item, str) for item in capabilities):
         return False, 503, "app catalog unavailable"
-    if "persona" in capabilities or _flag(payload.get("private")):
+    if "persona" in capabilities or (_flag(payload.get("private")) and not allow_private):
         return False, 403, "app is not publicly installable"
     external = payload.get("external_integration")
     if isinstance(external, dict) and external.get("setup_completed_url"):
@@ -76,16 +76,30 @@ async def _load_installable_app(
     try:
         row = (
             await env.APP_DB.prepare(
-                "SELECT id, approved, disabled, data_json FROM cf_app_catalog "
-                "WHERE id = ? AND approved = 1 AND disabled = 0"
+                "SELECT c.id, c.owner_uid, c.approved, c.disabled, c.data_json, "
+                "CASE WHEN ta.app_id IS NULL THEN 0 ELSE 1 END AS tester_access, "
+                "CASE WHEN t.uid IS NULL THEN 0 ELSE 1 END AS is_tester "
+                "FROM cf_app_catalog c "
+                "LEFT JOIN cf_app_tester_access ta ON ta.app_id = c.id AND ta.uid = ? "
+                "LEFT JOIN cf_app_testers t ON t.uid = ? "
+                "WHERE c.id = ?"
             )
-            .bind(app_id)
+            .bind(uid, uid, app_id)
             .first()
         )
     except Exception:
         return None, JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     if not isinstance(row, dict):
         return None, JSONResponse({"error": "App not found"}, status_code=404)
+    if _flag(row.get("disabled")):
+        return None, JSONResponse(
+            {
+                "error": (
+                    "This app is currently unavailable due to connectivity issues. " "The developer has been notified."
+                )
+            },
+            status_code=400,
+        )
     raw = row.get("data_json")
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_APP_PAYLOAD_BYTES:
         return None, JSONResponse({"error": "app catalog unavailable"}, status_code=503)
@@ -97,7 +111,12 @@ async def _load_installable_app(
         return None, JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     if payload.get("id") not in (None, app_id):
         return None, JSONResponse({"error": "app catalog unavailable"}, status_code=503)
-    allowed, status, message = _installable(payload)
+    owner = isinstance(row.get("owner_uid"), str) and row.get("owner_uid") == uid
+    tester_access = _flag(row.get("tester_access")) and not _flag(row.get("approved"))
+    public = _flag(row.get("approved")) and not _flag(payload.get("private"))
+    if not owner and not tester_access and not public:
+        return None, JSONResponse({"error": "App not found"}, status_code=404)
+    allowed, status, message = _installable(payload, allow_private=owner or tester_access)
     if not allowed:
         return None, JSONResponse({"error": message}, status_code=status)
     if _paid_app(payload):
@@ -113,7 +132,11 @@ async def _load_installable_app(
             return None, JSONResponse({"error": "app entitlement unavailable"}, status_code=503)
         if not _entitled(entitlement):
             return None, JSONResponse({"error": "You are not authorized to perform this action"}, status_code=403)
-    return {"id": str(row.get("id") or app_id), "payload": payload}, None
+    return {
+        "id": str(row.get("id") or app_id),
+        "payload": payload,
+        "counts_install": public and not owner and not _flag(row.get("is_tester")),
+    }, None
 
 
 @router.get("/v1/apps/enabled")
@@ -176,7 +199,7 @@ async def enable_app(request: Request):
             .run()
         )
         changes = result.get("meta", {}).get("changes", 0) if isinstance(result, dict) else 0
-        if int(changes or 0) > 0:
+        if int(changes or 0) > 0 and _flag(app.get("counts_install")):
             await env.APP_DB.prepare(
                 "UPDATE cf_app_catalog SET installs = MAX(0, installs + 1), updated_at = ? WHERE id = ?"
             ).bind(int(time.time()), app["id"]).run()
@@ -205,8 +228,12 @@ async def disable_app(request: Request):
         if int(changes or 0) <= 0:
             return JSONResponse({"error": "App not found"}, status_code=404)
         await env.APP_DB.prepare(
-            "UPDATE cf_app_catalog SET installs = MAX(0, installs - 1), updated_at = ? WHERE id = ?"
-        ).bind(int(time.time()), app_id).run()
+            "UPDATE cf_app_catalog SET installs = MAX(0, installs - 1), updated_at = ? "
+            "WHERE id = ? AND approved = 1 "
+            "AND COALESCE(json_extract(data_json, '$.private'), 0) NOT IN (1, 'true') "
+            "AND (owner_uid IS NULL OR owner_uid != ?) "
+            "AND NOT EXISTS (SELECT 1 FROM cf_app_testers WHERE uid = ?)"
+        ).bind(int(time.time()), app_id, uid, uid).run()
     except Exception:
         return JSONResponse({"error": "enabled apps unavailable"}, status_code=503)
     return {"status": "ok"}

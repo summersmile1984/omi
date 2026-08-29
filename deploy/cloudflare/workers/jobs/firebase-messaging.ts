@@ -220,7 +220,7 @@ async function recordDeliveryFailure(
   const terminal = attempts >= MAX_DELIVERY_ATTEMPTS;
   const delay = Math.min(6 * 60 * 60, 30 * 2 ** Math.min(attempts, 10));
   await env.APP_DB.prepare(
-    "UPDATE cf_fair_use_notification_outbox SET status = ?, not_before = ?, lease_until = NULL, " +
+    "UPDATE cf_notification_outbox SET status = ?, not_before = ?, lease_until = NULL, " +
       "last_error = ?, updated_at = ? WHERE notification_id = ? AND status = 'sending'",
   )
     .bind(
@@ -233,14 +233,14 @@ async function recordDeliveryFailure(
     .run();
 }
 
-export async function drainFairUseNotifications(
+export async function drainNotifications(
   env: JobsEnv,
   now = Math.floor(Date.now() / 1000),
   options: DeliveryOptions = {},
 ): Promise<number> {
   const result = await env.APP_DB.prepare(
     "SELECT notification_id, uid, title, body, data_json, attempts " +
-      "FROM cf_fair_use_notification_outbox WHERE " +
+      "FROM cf_notification_outbox WHERE " +
       "(status = 'pending' AND not_before <= ?) OR (status = 'sending' AND lease_until <= ?) " +
       "ORDER BY created_at ASC LIMIT ?",
   )
@@ -256,7 +256,7 @@ export async function drainFairUseNotifications(
   let delivered = 0;
   for (const row of rows) {
     const claimed = await env.APP_DB.prepare(
-      "UPDATE cf_fair_use_notification_outbox SET status = 'sending', attempts = attempts + 1, " +
+      "UPDATE cf_notification_outbox SET status = 'sending', attempts = attempts + 1, " +
         "lease_until = ?, updated_at = ? WHERE notification_id = ? AND " +
         "((status = 'pending' AND not_before <= ?) OR (status = 'sending' AND lease_until <= ?))",
     )
@@ -334,7 +334,7 @@ export async function drainFairUseNotifications(
       continue;
     }
     await env.APP_DB.prepare(
-      "UPDATE cf_fair_use_notification_outbox SET status = 'sent', lease_until = NULL, " +
+      "UPDATE cf_notification_outbox SET status = 'sent', lease_until = NULL, " +
         "last_error = NULL, updated_at = ? WHERE notification_id = ? AND status = 'sending'",
     )
       .bind(now, row.notification_id)

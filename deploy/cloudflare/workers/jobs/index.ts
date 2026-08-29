@@ -10,7 +10,7 @@ import {
 } from "../shared/fair-use-enforcement";
 import type { JobMessage, JobsEnv } from "./env";
 import { evaluateFairUseBatch } from "./fair-use-evaluator";
-import { drainFairUseNotifications } from "./firebase-messaging";
+import { drainNotifications } from "./firebase-messaging";
 import {
   LegacyAudioSourceError,
   legacyAudioFiles,
@@ -48,6 +48,7 @@ import {
   registerAppDeletionRoutes,
 } from "./app-deletion";
 import { registerAppMutationRoutes } from "./app-mutations";
+import { registerAppModerationRoutes } from "./app-moderation";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -102,6 +103,7 @@ registerStripeBillingRoutes(app, requestContext);
 registerCreatorPaymentRoutes(app, requestContext);
 registerAppMutationRoutes(app, requestContext);
 registerAppDeletionRoutes(app, requestContext);
+registerAppModerationRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -1032,7 +1034,7 @@ export default {
     const results = await Promise.allSettled([
       drainAssetCleanup(env),
       evaluateFairUseBatch(env),
-      drainFairUseNotifications(env),
+      drainNotifications(env),
       reconcileAccountDeletions(env, now),
       reconcileAppDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),

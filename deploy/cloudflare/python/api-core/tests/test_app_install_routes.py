@@ -44,6 +44,12 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0035_app_catalog.sql").read_text())
         self.connection.executescript((migration_dir / "0036_app_installations.sql").read_text())
         self.connection.executescript(
+            "ALTER TABLE cf_app_catalog ADD COLUMN owner_uid TEXT;"
+            "CREATE TABLE cf_app_testers (uid TEXT PRIMARY KEY, added_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);"
+            "CREATE TABLE cf_app_tester_access ("
+            "uid TEXT NOT NULL, app_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (uid, app_id));"
+        )
+        self.connection.executescript(
             "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
             "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);"
         )
@@ -154,3 +160,32 @@ def test_install_route_validates_app_id():
     env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
     invalid = asyncio.run(enable_app(FakeRequest(env, signed_headers(secret), {"app_id": ""})))
     assert invalid.status_code == 400
+
+
+def test_owner_and_assigned_tester_can_install_private_pending_app_without_changing_public_installs():
+    secret = "install-secret"
+    db = FakeDb()
+    catalog_row(
+        db.connection,
+        "private-app",
+        {"id": "private-app", "capabilities": ["chat"], "private": True},
+        installs=7,
+    )
+    db.connection.execute("UPDATE cf_app_catalog SET owner_uid = 'owner-user', approved = 0 WHERE id = 'private-app'")
+    db.connection.execute("INSERT INTO cf_app_testers (uid, added_at, updated_at) VALUES ('tester-user', 1, 1)")
+    db.connection.execute(
+        "INSERT INTO cf_app_tester_access (uid, app_id, added_at) VALUES ('tester-user', 'private-app', 1)"
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    owner = FakeRequest(env, signed_headers(secret, "owner-user"), {"app_id": "private-app"})
+    tester = FakeRequest(env, signed_headers(secret, "tester-user"), {"app_id": "private-app"})
+    stranger = FakeRequest(env, signed_headers(secret, "stranger"), {"app_id": "private-app"})
+
+    assert asyncio.run(enable_app(owner)) == {"status": "ok"}
+    assert asyncio.run(enable_app(tester)) == {"status": "ok"}
+    assert asyncio.run(enable_app(stranger)).status_code == 404
+    assert db.connection.execute("SELECT installs FROM cf_app_catalog WHERE id = 'private-app'").fetchone()[0] == 7
+    assert asyncio.run(disable_app(tester)) == {"status": "ok"}
+    assert db.connection.execute("SELECT installs FROM cf_app_catalog WHERE id = 'private-app'").fetchone()[0] == 7
