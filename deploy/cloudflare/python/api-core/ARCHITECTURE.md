@@ -80,6 +80,11 @@ explainer. Neo and Operator use proportional excess-question attribution;
 Architect uses exact cost above the configured allowance. Any unsettled API-AI
 provider event fails the billing projection closed until settlement completes.
 
+`payment_callback_routes.py` owns the public, stateless checkout success,
+checkout cancel, and customer-portal return pages consumed as terminal URLs by
+native web views. Subscription state is never inferred from those navigations;
+Stripe webhook projection remains the billing authority.
+
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional
 three-day desktop trial in quota, paywall, and trial reads; it never receives

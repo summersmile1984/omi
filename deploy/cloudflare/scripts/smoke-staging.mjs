@@ -188,11 +188,26 @@ export async function runSmoke({
     `${base}/v1/apps/cf-staging-search-app/reviews`,
   );
   expectStatus("public app reviews", appReviews, 200);
+  const paymentSuccess = await request(
+    fetchImpl,
+    `${base}/v1/payments/success?session_id=cf_smoke_session`,
+  );
+  expectStatus("public payment success page", paymentSuccess, 200);
+  const paymentCancel = await request(fetchImpl, `${base}/v1/payments/cancel`);
+  expectStatus("public payment cancel page", paymentCancel, 200);
+  const paymentPortalReturn = await request(
+    fetchImpl,
+    `${base}/v1/payments/portal-return`,
+  );
+  expectStatus("public payment portal return page", paymentPortalReturn, 200);
 
   const result = {
     edgeHealth: health.status,
     announcementsGeneral: announcementsGeneral.status,
     appReviews: appReviews.status,
+    paymentSuccess: paymentSuccess.status,
+    paymentCancel: paymentCancel.status,
+    paymentPortalReturn: paymentPortalReturn.status,
   };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 

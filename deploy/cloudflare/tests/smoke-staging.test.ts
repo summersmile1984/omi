@@ -106,6 +106,10 @@ describe("staging smoke helpers", () => {
           ? 200
           : url.endsWith("/v1/apps/cf-staging-search-app/reviews")
             ? 200
+            : url.includes("/v1/payments/success?") ||
+                url.endsWith("/v1/payments/cancel") ||
+                url.endsWith("/v1/payments/portal-return")
+              ? 200
             : url.endsWith("/v1/cf/probe")
               ? init?.headers
                 ? 200
@@ -261,6 +265,9 @@ describe("staging smoke helpers", () => {
       edgeHealth: 200,
       announcementsGeneral: 200,
       appReviews: 200,
+      paymentSuccess: 200,
+      paymentCancel: 200,
+      paymentPortalReturn: 200,
       unauthenticatedProbe: 401,
       unauthenticatedAnnouncements: 401,
       unauthenticatedAnnouncementsAdmin: 403,
@@ -325,7 +332,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(69);
+    expect(calls).toHaveLength(72);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -365,7 +372,10 @@ describe("staging smoke helpers", () => {
       if (
         url.endsWith("/health") ||
         url.endsWith("/v1/announcements/general") ||
-        url.endsWith("/v1/apps/cf-staging-search-app/reviews")
+        url.endsWith("/v1/apps/cf-staging-search-app/reviews") ||
+        url.includes("/v1/payments/success?") ||
+        url.endsWith("/v1/payments/cancel") ||
+        url.endsWith("/v1/payments/portal-return")
       ) {
         return new Response(null, { status: 200 });
       }
@@ -461,6 +471,13 @@ describe("staging smoke helpers", () => {
       }
       if (url.endsWith("/health")) return new Response(null, { status: 200 });
       if (url.endsWith("/v1/announcements/general"))
+        return new Response(null, { status: 200 });
+      if (
+        url.endsWith("/v1/apps/cf-staging-search-app/reviews") ||
+        url.includes("/v1/payments/success?") ||
+        url.endsWith("/v1/payments/cancel") ||
+        url.endsWith("/v1/payments/portal-return")
+      )
         return new Response(null, { status: 200 });
       if (url.endsWith("/v1/cf/probe"))
         return new Response(null, { status: init?.headers ? 200 : 401 });

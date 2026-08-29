@@ -233,6 +233,48 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("keeps native payment terminal pages public", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return new Response("<html>ok</html>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }),
+    };
+
+    for (const path of [
+      "/v1/payments/success?session_id=cs_test_123",
+      "/v1/payments/cancel",
+      "/v1/payments/portal-return",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          headers: { authorization: "Bearer untrusted" },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/html");
+    }
+
+    expect(
+      coreRequests.map(
+        (request) =>
+          `${new URL(request.url).pathname}${new URL(request.url).search}`,
+      ),
+    ).toEqual([
+      "/v1/payments/success?session_id=cs_test_123",
+      "/v1/payments/cancel",
+      "/v1/payments/portal-return",
+    ]);
+    for (const request of coreRequests) {
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeNull();
+    }
+  });
+
   it("keeps share previews public and signs the Better Auth display name for share creation", async () => {
     const coreRequests: Request[] = [];
     const env = {

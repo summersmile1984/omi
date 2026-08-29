@@ -191,6 +191,33 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v1/payments/success
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/payments/cancel
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/payments/portal-return
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /health
     owner: edge
     runtime: edge-worker
