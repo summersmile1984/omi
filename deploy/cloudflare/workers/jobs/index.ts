@@ -41,6 +41,7 @@ import {
   reconcileStripeWebhookEvents,
   registerStripeBillingRoutes,
 } from "./stripe-billing";
+import { registerCreatorPaymentRoutes } from "./creator-payments";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -92,6 +93,7 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
 registerSyncRoutes(app, requestContext);
 registerAccountDeletionRoutes(app, requestContext);
 registerStripeBillingRoutes(app, requestContext);
+registerCreatorPaymentRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.

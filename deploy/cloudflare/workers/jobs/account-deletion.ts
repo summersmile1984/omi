@@ -13,7 +13,11 @@ import {
   validAccountDeletionUid,
 } from "./account-deletion-residual";
 import type { JobMessage, JobsEnv } from "./env";
-import { stripeRequest, stripeSecretKey } from "./stripe-client";
+import {
+  StripeResponseError,
+  stripeRequest,
+  stripeSecretKey,
+} from "./stripe-client";
 
 const MAX_REQUEST_BODY_BYTES = 4_096;
 const FENCE_QUIESCENCE_SECONDS = 60;
@@ -29,6 +33,7 @@ const ISOLATED_STAGING_MANIFEST = "isolated-staging-v1";
 const STRIPE_SUBSCRIPTION_ID = /^sub_[A-Za-z0-9]{8,128}$/;
 const STRIPE_SCHEDULE_ID = /^sub_sched_[A-Za-z0-9]{8,128}$/;
 const STRIPE_CUSTOMER_ID = /^cus_[A-Za-z0-9]{8,128}$/;
+const STRIPE_CONNECT_ACCOUNT_ID = /^acct_[A-Za-z0-9]{7,155}$/;
 const STRIPE_TERMINAL_STATUSES = new Set(["canceled", "incomplete_expired"]);
 
 type AccountDeletionIntent = {
@@ -259,11 +264,35 @@ async function stripeSubscriptionId(
   return subscriptionId;
 }
 
+async function stripeConnectAccountId(
+  env: JobsEnv,
+  uid: string,
+): Promise<string | null> {
+  const row = await env.APP_DB.prepare(
+    "SELECT stripe_account_id FROM cf_creator_payment_profiles WHERE uid = ?",
+  )
+    .bind(uid)
+    .first<{ stripe_account_id?: unknown }>();
+  const raw = row?.stripe_account_id;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return null;
+  }
+  const accountId = String(raw).trim();
+  if (!STRIPE_CONNECT_ACCOUNT_ID.test(accountId)) {
+    throw new Error("invalid Stripe Connect account id");
+  }
+  return accountId;
+}
+
 async function assertExternalProviderCleanupConfigured(
   env: JobsEnv,
   uid: string,
 ) {
-  if (await stripeSubscriptionId(env, uid)) stripeSecretKey(env);
+  const [subscriptionId, accountId] = await Promise.all([
+    stripeSubscriptionId(env, uid),
+    stripeConnectAccountId(env, uid),
+  ]);
+  if (subscriptionId || accountId) stripeSecretKey(env);
 }
 
 type StripeSubscription = {
@@ -369,39 +398,68 @@ async function cleanupExternalProviders(
   intent: ParsedAccountDeletionIntent,
 ) {
   const subscriptionId = await stripeSubscriptionId(env, intent.uid);
-  if (!subscriptionId) return;
-  const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
-  const current = await parseStripeSubscription(
-    await stripeRequest(env, path),
-    subscriptionId,
-  );
-  if (STRIPE_TERMINAL_STATUSES.has(current.status)) {
-    return;
+  if (subscriptionId) {
+    const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
+    const current = await parseStripeSubscription(
+      await stripeRequest(env, path),
+      subscriptionId,
+    );
+    if (!STRIPE_TERMINAL_STATUSES.has(current.status)) {
+      if (!current.customerId) {
+        throw new Error("Stripe subscription customer is unavailable");
+      }
+      await releaseActiveStripeSchedules(
+        env,
+        intent,
+        subscriptionId,
+        current.customerId,
+      );
+      if (!current.cancelAtPeriodEnd) {
+        const form = new URLSearchParams({ cancel_at_period_end: "true" });
+        const canceled = await parseStripeSubscription(
+          await stripeRequest(env, path, {
+            method: "POST",
+            form,
+            idempotencyKey: `account-delete-${intent.jobId}`,
+          }),
+          subscriptionId,
+        );
+        if (
+          !canceled.cancelAtPeriodEnd &&
+          !STRIPE_TERMINAL_STATUSES.has(canceled.status)
+        ) {
+          throw new Error("Stripe subscription remains billable");
+        }
+      }
+    }
   }
-  if (!current.customerId) {
-    throw new Error("Stripe subscription customer is unavailable");
-  }
-  await releaseActiveStripeSchedules(
-    env,
-    intent,
-    subscriptionId,
-    current.customerId,
-  );
-  if (current.cancelAtPeriodEnd) return;
-  const form = new URLSearchParams({ cancel_at_period_end: "true" });
-  const canceled = await parseStripeSubscription(
-    await stripeRequest(env, path, {
-      method: "POST",
-      form,
-      idempotencyKey: `account-delete-${intent.jobId}`,
-    }),
-    subscriptionId,
-  );
-  if (
-    !canceled.cancelAtPeriodEnd &&
-    !STRIPE_TERMINAL_STATUSES.has(canceled.status)
-  ) {
-    throw new Error("Stripe subscription remains billable");
+
+  const accountId = await stripeConnectAccountId(env, intent.uid);
+  if (!accountId) return;
+  try {
+    const deleted = await stripeRequest(
+      env,
+      `/v1/accounts/${encodeURIComponent(accountId)}`,
+      {
+        method: "DELETE",
+        idempotencyKey: `account-delete-${intent.jobId}-connect`,
+      },
+    );
+    if (
+      !deleted ||
+      typeof deleted !== "object" ||
+      Array.isArray(deleted) ||
+      (deleted as Record<string, unknown>).id !== accountId ||
+      (deleted as Record<string, unknown>).deleted !== true
+    ) {
+      throw new Error("Stripe Connect account remains active");
+    }
+  } catch (error) {
+    // A retry can arrive after Stripe committed the deletion but before D1/R2
+    // cleanup advanced. Stripe's 404 is the idempotent goal state here.
+    if (!(error instanceof StripeResponseError && error.status === 404)) {
+      throw error;
+    }
   }
 }
 

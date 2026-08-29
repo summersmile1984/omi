@@ -272,9 +272,9 @@ printf '%s' "$FAIR_USE_ADMIN_KEY" | npx wrangler secret put FAIR_USE_ADMIN_KEY -
 # Use a staging Firebase service account; never copy production credentials.
 printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | npx wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON --name omi-cf-jobs-staging
 # Required for checkout, customer portal, subscription upgrade/cancel,
-# webhook reconciliation, and deleting an account whose D1 subscription row
-# contains a Stripe subscription id. Use the environment-matched
-# restricted/secret key.
+# regular-billing webhook reconciliation, Stripe Connect onboarding/status,
+# country specs, and deletion of a mapped subscription or connected account.
+# Use the environment-matched restricted/secret key.
 printf '%s' "$STRIPE_SECRET_KEY" | npx wrangler secret put STRIPE_SECRET_KEY --name omi-cf-jobs-staging
 # Configure the Stripe endpoint as POST
 # https://omi-cf-edge-staging.<account>.workers.dev/v1/stripe/webhook and use
@@ -282,6 +282,13 @@ printf '%s' "$STRIPE_SECRET_KEY" | npx wrangler secret put STRIPE_SECRET_KEY --n
 # is accepted only when it is provisioned explicitly.
 printf '%s' "$STRIPE_WEBHOOK_SECRET" | npx wrangler secret put STRIPE_WEBHOOK_SECRET --name omi-cf-jobs-staging
 printf '%s' "$STRIPE_WEBHOOK_SECRET_PREVIOUS" | npx wrangler secret put STRIPE_WEBHOOK_SECRET_PREVIOUS --name omi-cf-jobs-staging
+# Connect uses a distinct endpoint/signing secret. The refresh secret signs
+# browser GET callbacks that replace expired single-use Account Links; generate
+# an independent high-entropy value instead of reusing an internal assertion.
+printf '%s' "$STRIPE_CONNECT_WEBHOOK_SECRET" | npx wrangler secret put STRIPE_CONNECT_WEBHOOK_SECRET --name omi-cf-jobs-staging
+printf '%s' "$STRIPE_CONNECT_WEBHOOK_SECRET_PREVIOUS" | npx wrangler secret put STRIPE_CONNECT_WEBHOOK_SECRET_PREVIOUS --name omi-cf-jobs-staging
+stripe_connect_refresh_secret="$(openssl rand -base64 48)"
+printf '%s' "$stripe_connect_refresh_secret" | npx wrangler secret put STRIPE_CONNECT_REFRESH_SECRET --name omi-cf-jobs-staging
 ```
 
 The `/auth-issue` bridge is hidden (`404`) unless `AUTH_DEV_ISSUER_SECRET` is
@@ -905,6 +912,20 @@ it on an isolated Stripe test-mode endpoint: Payment Link app entitlements are
 a later migration slice and are not projected by this Worker yet. BYOK/reviewer
 overrides, phone quota, and production subscription import remain legacy-owned.
 
+Migration `0059_creator_payments.sql` makes the Jobs Worker authoritative for
+creator payout setup: Stripe Connect account creation, onboarding status,
+Account Link refresh/return, `account.updated` webhook projection, supported
+countries, PayPal details, and default payment-method selection. The D1
+`uid ↔ acct_*` mapping is unique and every authenticated refresh verifies that
+mapping before calling Stripe. Account creation uses a uid-derived Stripe
+idempotency key. Stripe's browser refresh callback is a GET, so the Worker
+accepts a bounded signed refresh URL and redirects directly to a newly created
+single-use Account Link; the legacy authenticated POST response remains
+available to existing clients. Connect webhook signatures use their own
+rotatable secret and the exact raw body. Paid-app Payment Links, checkout
+entitlements, and app-subscription cancellation remain a separate migration
+slice.
+
 `GET /v1/users/me/usage-quota` and the mobile subscription projection now read
 the UTC-month `cf_chat_quota_events` authority. Free, Neo, Plus, Unlimited, and
 Operator use the same question limits as the backend contract. Architect uses
@@ -1219,7 +1240,7 @@ projection is the first dynamic catalog slice. `GET /v1/apps/enabled`,
 `POST /v1/apps/enable`, and `POST /v1/apps/disable` project only the
 uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
 install counter for idempotent retries. Paid apps, private/persona apps, setup
-callbacks, app creation, subscriptions, and MCP state remain
+callbacks, app creation, paid-app entitlements/subscriptions, and MCP state remain
 legacy-owned; no production cutover is implied.
 
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
@@ -1390,17 +1411,21 @@ intent-to-tombstone transition is atomic, duplicate public requests are
 idempotent, and the scheduled reconciler republishes durable intents whose
 initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 64 product identity-bearing column
+The explicit residual inventory covers 66 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,
 R2 checks expose presence only, and partial batches, storage errors, or
-non-zero residuals fail closed. For accounts with a Stripe subscription id,
+non-zero residuals fail closed. For accounts with a Stripe subscription id or
+creator Connect account id,
 admission requires the Jobs-only `STRIPE_SECRET_KEY`; after the durable fence
 settles, Jobs reads the subscription, lists its customer's active Subscription
 Schedules from Stripe, releases every schedule attached to that subscription,
 and idempotently sets
-`cancel_at_period_end=true` before any product purge. An already scheduled or
+`cancel_at_period_end=true`, then deletes the platform-controlled connected
+account before any product purge. Stripe documents that live Express-style
+accounts can be deleted only after their balances reach zero, so a non-zero
+balance or any other provider refusal keeps the deletion intent for retry. An already scheduled or
 terminal subscription satisfies the cancellation goal without another
 subscription mutation. Transport,
 credential, malformed-response, and non-terminal-result failures retain the
@@ -1413,9 +1438,9 @@ real SQLite trigger boundary, and proves that both an
 active intent and the tombstone block late writes while expired tombstone
 cleanup restores writes. The TypeScript suite additionally covers the full
 D1/R2 purge, two residual scans, Auth finalization, Queue-send recovery,
-Auth-retry recovery, idempotent repeated deletion, Stripe schedule release and
-cancellation, already-terminal subscriptions, and fail-closed provider retry
-behavior.
+Auth-retry recovery, idempotent repeated deletion, Stripe schedule release,
+subscription cancellation, Connect-account deletion, already-terminal
+subscriptions, and fail-closed provider retry behavior.
 
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains

@@ -220,6 +220,43 @@ export async function runSmoke({
   // A provisioned webhook rejects the unsigned body with 400. An isolated
   // environment without its whsec credential fails closed before parsing.
   expectStatusIn("Stripe webhook boundary", stripeWebhookBoundary, [400, 503]);
+  const stripeConnectWebhookBoundary = await request(
+    fetchImpl,
+    `${base}/v1/stripe/connect/webhook`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    },
+  );
+  expectStatusIn(
+    "Stripe Connect webhook boundary",
+    stripeConnectWebhookBoundary,
+    [400, 503],
+  );
+  const stripeSupportedCountriesBoundary = await request(
+    fetchImpl,
+    `${base}/v1/stripe/supported-countries`,
+  );
+  expectStatusIn(
+    "Stripe supported countries provider boundary",
+    stripeSupportedCountriesBoundary,
+    [200, 503],
+  );
+  const stripeReturnMissing = await request(
+    fetchImpl,
+    `${base}/v1/stripe/return/acct_cfSmokeMissing123`,
+  );
+  expectStatus("Stripe return account authority", stripeReturnMissing, 404);
+  const stripeBrowserRefreshBoundary = await request(
+    fetchImpl,
+    `${base}/v1/stripe/refresh/acct_cfSmokeMissing123?token=invalid`,
+  );
+  expectStatus(
+    "Stripe browser refresh signature",
+    stripeBrowserRefreshBoundary,
+    403,
+  );
 
   const result = {
     edgeHealth: health.status,
@@ -229,6 +266,10 @@ export async function runSmoke({
     paymentCancel: paymentCancel.status,
     paymentPortalReturn: paymentPortalReturn.status,
     stripeWebhookBoundary: stripeWebhookBoundary.status,
+    stripeConnectWebhookBoundary: stripeConnectWebhookBoundary.status,
+    stripeSupportedCountriesBoundary: stripeSupportedCountriesBoundary.status,
+    stripeReturnMissing: stripeReturnMissing.status,
+    stripeBrowserRefreshBoundary: stripeBrowserRefreshBoundary.status,
   };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 
@@ -786,6 +827,70 @@ export async function runSmoke({
     400,
   );
 
+  const connectAccountBoundary = await request(
+    fetchImpl,
+    `${base}/v1/stripe/connect-accounts?country=USA`,
+    { method: "POST", headers: authHeaders },
+  );
+  expectStatus(
+    "Stripe Connect country validation",
+    connectAccountBoundary,
+    400,
+  );
+
+  const stripeOnboardingStatus = await request(
+    fetchImpl,
+    `${base}/v1/stripe/onboarded`,
+    { headers: authHeaders },
+  );
+  expectStatus("Stripe onboarding status", stripeOnboardingStatus, 200);
+
+  const stripeRefreshOwnership = await request(
+    fetchImpl,
+    `${base}/v1/stripe/refresh/acct_cfSmokeMissing123`,
+    { method: "POST", headers: authHeaders },
+  );
+  expectStatus("Stripe refresh account authority", stripeRefreshOwnership, 403);
+
+  const paypalSave = await request(
+    fetchImpl,
+    `${base}/v1/paypal/payment-details`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "cf-smoke@example.invalid",
+        paypalme_url: "paypal.me/cf-smoke",
+      }),
+    },
+  );
+  expectStatus("PayPal payment details mutation", paypalSave, 200);
+
+  const paypalDetails = await request(
+    fetchImpl,
+    `${base}/v1/paypal/payment-details`,
+    { headers: authHeaders },
+  );
+  expectStatus("PayPal payment details", paypalDetails, 200);
+
+  const defaultPaymentMethod = await request(
+    fetchImpl,
+    `${base}/v1/payment-methods/default`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ method: "paypal" }),
+    },
+  );
+  expectStatus("default creator payment method", defaultPaymentMethod, 200);
+
+  const paymentMethodStatus = await request(
+    fetchImpl,
+    `${base}/v1/payment-methods/status`,
+    { headers: authHeaders },
+  );
+  expectStatus("creator payment method status", paymentMethodStatus, 200);
+
   const fairUseStatus = await request(fetchImpl, `${base}/v1/fair-use/status`, {
     headers: authHeaders,
   });
@@ -919,6 +1024,13 @@ export async function runSmoke({
     customerPortalBoundary: customerPortalBoundary.status,
     upgradeBoundary: upgradeBoundary.status,
     cancelSubscriptionBoundary: cancelSubscriptionBoundary.status,
+    connectAccountBoundary: connectAccountBoundary.status,
+    stripeOnboardingStatus: stripeOnboardingStatus.status,
+    stripeRefreshOwnership: stripeRefreshOwnership.status,
+    paypalSave: paypalSave.status,
+    paypalDetails: paypalDetails.status,
+    defaultPaymentMethod: defaultPaymentMethod.status,
+    paymentMethodStatus: paymentMethodStatus.status,
     fairUseStatus: fairUseStatus.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,

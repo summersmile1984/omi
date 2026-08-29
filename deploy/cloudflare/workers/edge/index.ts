@@ -126,6 +126,10 @@ app.get("/v1/payments/success", proxyPublicCore);
 app.get("/v1/payments/cancel", proxyPublicCore);
 app.get("/v1/payments/portal-return", proxyPublicCore);
 app.post("/v1/stripe/webhook", proxyPublicJobs);
+app.post("/v1/stripe/connect/webhook", proxyPublicJobs);
+app.get("/v1/stripe/supported-countries", proxyPublicJobs);
+app.get("/v1/stripe/refresh/:accountId", proxyPublicJobs);
+app.get("/v1/stripe/return/:accountId", proxyPublicJobs);
 app.get("/v1/action-items/shared/:token", proxyPublicCore);
 app.get("/v2/messages/shared/:token", proxyPublicCore);
 app.get("/v1/fair-use/case/:case_ref/status", proxyPublicCore);
@@ -397,6 +401,13 @@ app.post("/v1/payments/checkout-session", proxyAuthenticatedJobs);
 app.post("/v1/payments/customer-portal", proxyAuthenticatedJobs);
 app.post("/v1/payments/upgrade-subscription", proxyAuthenticatedJobs);
 app.delete("/v1/payments/subscription", proxyAuthenticatedJobs);
+app.post("/v1/stripe/connect-accounts", proxyAuthenticatedJobs);
+app.get("/v1/stripe/onboarded", proxyAuthenticatedJobs);
+app.post("/v1/stripe/refresh/:accountId", proxyAuthenticatedJobs);
+app.post("/v1/paypal/payment-details", proxyAuthenticatedJobs);
+app.get("/v1/paypal/payment-details", proxyAuthenticatedJobs);
+app.get("/v1/payment-methods/status", proxyAuthenticatedJobs);
+app.post("/v1/payment-methods/default", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 
 const proxyAuthenticatedCore = async (

@@ -22,6 +22,33 @@ function workersAiChatResponse(text = "Cloudflare staging is ready") {
   });
 }
 
+function creatorPaymentBoundary(url: string): Response | null {
+  if (url.endsWith("/v1/stripe/connect/webhook")) {
+    return new Response(null, { status: 503 });
+  }
+  if (url.endsWith("/v1/stripe/supported-countries")) {
+    return new Response(null, { status: 503 });
+  }
+  if (url.includes("/v1/stripe/return/")) {
+    return new Response(null, { status: 404 });
+  }
+  if (url.includes("/v1/stripe/refresh/")) {
+    return new Response(null, { status: 403 });
+  }
+  if (url.includes("/v1/stripe/connect-accounts?")) {
+    return new Response(null, { status: 400 });
+  }
+  if (
+    url.endsWith("/v1/stripe/onboarded") ||
+    url.endsWith("/v1/paypal/payment-details") ||
+    url.endsWith("/v1/payment-methods/default") ||
+    url.endsWith("/v1/payment-methods/status")
+  ) {
+    return new Response(null, { status: 200 });
+  }
+  return null;
+}
+
 describe("staging smoke helpers", () => {
   it("normalizes a valid edge URL and rejects unsupported protocols", () => {
     expect(resolveEdgeUrl("https://edge.example.test/")).toBe(
@@ -103,6 +130,8 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
+      const creatorPayment = creatorPaymentBoundary(url);
+      if (creatorPayment) return creatorPayment;
       if (
         url.endsWith("/v1/payments/checkout-session") ||
         url.endsWith("/v1/payments/customer-portal") ||
@@ -285,6 +314,10 @@ describe("staging smoke helpers", () => {
       paymentCancel: 200,
       paymentPortalReturn: 200,
       stripeWebhookBoundary: 503,
+      stripeConnectWebhookBoundary: 503,
+      stripeSupportedCountriesBoundary: 503,
+      stripeReturnMissing: 404,
+      stripeBrowserRefreshBoundary: 403,
       unauthenticatedProbe: 401,
       unauthenticatedAnnouncements: 401,
       unauthenticatedAnnouncementsAdmin: 403,
@@ -348,12 +381,19 @@ describe("staging smoke helpers", () => {
       customerPortalBoundary: 400,
       upgradeBoundary: 400,
       cancelSubscriptionBoundary: 400,
+      connectAccountBoundary: 400,
+      stripeOnboardingStatus: 200,
+      stripeRefreshOwnership: 403,
+      paypalSave: 200,
+      paypalDetails: 200,
+      defaultPaymentMethod: 200,
+      paymentMethodStatus: 200,
       fairUseStatus: 200,
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(77);
+    expect(calls).toHaveLength(88);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -406,6 +446,8 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
+      const creatorPayment = creatorPaymentBoundary(url);
+      if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending")) {
         return new Response(null, { status: 401 });
       }
@@ -451,6 +493,8 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
+      const creatorPayment = creatorPaymentBoundary(url);
+      if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending")) {
         return new Response(null, { status: 401 });
       }
@@ -510,6 +554,8 @@ describe("staging smoke helpers", () => {
         return new Response(null, { status: init?.headers ? 200 : 401 });
       if (url.endsWith("/v1/stripe/webhook"))
         return new Response(null, { status: 503 });
+      const creatorPayment = creatorPaymentBoundary(url);
+      if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending"))
         return new Response(null, { status: 401 });
       if (url.endsWith("/v1/announcements/all"))
@@ -651,6 +697,8 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
+      const creatorPayment = creatorPaymentBoundary(url);
+      if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending")) {
         return new Response(null, { status: 401 });
       }
@@ -718,6 +766,8 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
+      const creatorPayment = creatorPaymentBoundary(url);
+      if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending")) {
         return new Response(null, { status: 401 });
       }

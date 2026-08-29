@@ -311,35 +311,89 @@ describe("edge gateway", () => {
     expect(jobRequests[0].headers.get("x-omi-auth-context")).toBeNull();
     await expect(jobRequests[0].text()).resolves.toBe(rawWebhook);
 
+    const rawConnectWebhook =
+      '{"id":"evt_connect_raw","data":{"object":{"id":"acct_raw"}}}';
+    const connectWebhook = await edge.fetch(
+      new Request("https://edge.test/v1/stripe/connect/webhook", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer untrusted-client-header",
+          "content-type": "application/json",
+          "stripe-signature": "t=2,v1=def",
+        },
+        body: rawConnectWebhook,
+      }),
+      env as never,
+    );
+    expect(connectWebhook.status).toBe(200);
+    expect(jobRequests[1].headers.get("authorization")).toBeNull();
+    expect(jobRequests[1].headers.get("stripe-signature")).toBe("t=2,v1=def");
+    expect(jobRequests[1].headers.get("x-omi-auth-context")).toBeNull();
+    await expect(jobRequests[1].text()).resolves.toBe(rawConnectWebhook);
+
+    for (const path of [
+      "/v1/stripe/supported-countries",
+      "/v1/stripe/refresh/acct_public123?token=signed",
+      "/v1/stripe/return/acct_public123",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          headers: { authorization: "Bearer untrusted-client-header" },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+      const forwarded = jobRequests.at(-1);
+      expect(forwarded?.headers.get("authorization")).toBeNull();
+      expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
+    }
+
+    const authenticatedStart = jobRequests.length;
     for (const [method, path] of [
       ["POST", "/v1/payments/checkout-session"],
       ["POST", "/v1/payments/customer-portal"],
       ["POST", "/v1/payments/upgrade-subscription"],
       ["DELETE", "/v1/payments/subscription"],
+      ["POST", "/v1/stripe/connect-accounts"],
+      ["GET", "/v1/stripe/onboarded"],
+      ["POST", "/v1/stripe/refresh/acct_owned123"],
+      ["POST", "/v1/paypal/payment-details"],
+      ["GET", "/v1/paypal/payment-details"],
+      ["GET", "/v1/payment-methods/status"],
+      ["POST", "/v1/payment-methods/default"],
     ]) {
+      const init: RequestInit = {
+        method,
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+          "idempotency-key": "billing-attempt-1",
+        },
+      };
+      if (method !== "GET") init.body = "{}";
       const response = await edge.fetch(
-        new Request(`https://edge.test${path}`, {
-          method,
-          headers: {
-            authorization: "Bearer opaque-session",
-            "content-type": "application/json",
-            "idempotency-key": "billing-attempt-1",
-          },
-          body: "{}",
-        }),
+        new Request(`https://edge.test${path}`, init),
         env as never,
       );
       expect(response.status).toBe(200);
     }
+    const authenticatedRequests = jobRequests.slice(authenticatedStart);
     expect(
-      jobRequests.slice(1).map((request) => new URL(request.url).pathname),
+      authenticatedRequests.map((request) => new URL(request.url).pathname),
     ).toEqual([
       "/v1/payments/checkout-session",
       "/v1/payments/customer-portal",
       "/v1/payments/upgrade-subscription",
       "/v1/payments/subscription",
+      "/v1/stripe/connect-accounts",
+      "/v1/stripe/onboarded",
+      "/v1/stripe/refresh/acct_owned123",
+      "/v1/paypal/payment-details",
+      "/v1/paypal/payment-details",
+      "/v1/payment-methods/status",
+      "/v1/payment-methods/default",
     ]);
-    for (const request of jobRequests.slice(1)) {
+    for (const request of authenticatedRequests) {
       expect(
         decodeAuthContext(request.headers.get("x-omi-auth-context")),
       ).toMatchObject({

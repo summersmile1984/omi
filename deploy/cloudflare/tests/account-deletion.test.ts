@@ -577,6 +577,12 @@ describe("Cloudflare account deletion workflow", () => {
            VALUES (?, 'plus', 'active', ?, ?)`,
         )
         .run("deletion-user", "sub_liveSubscription123", 1);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_creator_payment_profiles
+             (uid, stripe_account_id, updated_at) VALUES (?, ?, 1)`,
+        )
+        .run("deletion-user", "acct_liveCreator123");
       const path = "/v1/users/delete-account";
       const response = await jobs.fetch(
         new Request(`https://jobs.test${path}`, {
@@ -704,6 +710,67 @@ describe("Cloudflare account deletion workflow", () => {
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_user_subscriptions WHERE uid = ?",
+          "deletion-user",
+        )?.count,
+      ).toBe(0);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("deletes a platform-controlled Stripe Connect account before purging its D1 mapping", async () => {
+    const stripeRequests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        stripeRequests.push(request);
+        return Response.json({
+          id: "acct_liveCreator123",
+          object: "account",
+          deleted: true,
+        });
+      }),
+    );
+    const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
+    try {
+      seedCloudflareAccount(state.database);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_creator_payment_profiles
+             (uid, stripe_account_id, updated_at) VALUES (?, ?, 1)`,
+        )
+        .run("deletion-user", "acct_liveCreator123");
+      const path = "/v1/users/delete-account";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      expect(stripeRequests).toHaveLength(0);
+
+      const dispatch = state.queue.sent.shift();
+      if (!dispatch) throw new Error("missing account deletion dispatch");
+      vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
+      await processAccountDeletionMessage(
+        queueMessage(dispatch.body).message,
+        state.env,
+      );
+
+      expect(stripeRequests).toHaveLength(1);
+      expect(stripeRequests[0]?.method).toBe("DELETE");
+      expect(stripeRequests[0]?.url).toBe(
+        "https://api.stripe.com/v1/accounts/acct_liveCreator123",
+      );
+      expect(stripeRequests[0]?.headers.get("idempotency-key")).toMatch(
+        /^account-delete-[0-9a-f-]{36}-connect$/,
+      );
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_creator_payment_profiles WHERE uid = ?",
           "deletion-user",
         )?.count,
       ).toBe(0);
