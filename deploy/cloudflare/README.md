@@ -965,7 +965,8 @@ catalog in one D1 batch. If that batch fails, the unpublished hosted link is
 deactivated before the staged logo is removed. When an external integration
 declares a chat-tools manifest, create/update performs one bounded HTTPS fetch,
 validates and normalizes the initial tools into the catalog, and fails open with
-shared fallback telemetry if the dependency is unavailable. The explicit
+shared fallback telemetry if the dependency is unavailable. Its timeout uses
+the `AbortController` and timer APIs supported by workerd. The explicit
 owner-only refresh route reuses the same SSRF, redirect, timeout, size, and
 tool-count limits, but preserves its interactive contract by returning `502`
 without changing D1 when the manifest cannot be fetched. Visibility changes

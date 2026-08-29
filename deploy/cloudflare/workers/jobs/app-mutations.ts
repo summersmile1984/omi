@@ -318,14 +318,18 @@ async function applyChatToolsManifest(
   try {
     if (!publicHttpsUrl(manifestUrl))
       throw new Error("manifest URL is private");
-    const response = await fetch(manifestUrl, {
-      headers: {
-        accept: "application/json",
-        "user-agent": "Omi-App-Store/1.0",
-      },
-      redirect: "error",
-      signal: AbortSignal.timeout(10_000),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    let response: Response;
+    try {
+      response = await fetch(manifestUrl, {
+        headers: { accept: "application/json" },
+        redirect: "error",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error("manifest request failed");

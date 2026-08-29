@@ -621,6 +621,11 @@ describe("Cloudflare app mutations", () => {
 
   it("hydrates bounded chat tools from an HTTPS manifest during create", async () => {
     const state = environment();
+    const staticTimeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation(() => {
+        throw new Error("AbortSignal.timeout is unavailable in workerd");
+      });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (request: RequestInfo | URL) => {
@@ -686,6 +691,7 @@ describe("Cloudflare app mutations", () => {
         chat_messages_target: "main",
         chat_messages_notify: true,
       });
+      expect(staticTimeout).not.toHaveBeenCalled();
     } finally {
       state.database.close();
     }
