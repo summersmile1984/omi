@@ -36,6 +36,10 @@ const PROVIDER_MAP = new Map([
   ["google.com", "google"],
   ["apple.com", "apple"],
 ]);
+const PROVIDER_ISSUER = new Map([
+  ["google", "https://accounts.google.com"],
+  ["apple", "https://appleid.apple.com"],
+]);
 const SHA256 = /^[0-9a-f]{64}$/;
 const DATABASE_ID = /^[0-9a-f-]{36}$/i;
 const IMPORT_LEDGER_ID = "firebase";
@@ -306,6 +310,7 @@ function normalizeProviderAccounts(user, userId, timestamps) {
     }
     accounts.push({
       id: deterministicAccountRowId(providerId, accountId),
+      issuer: PROVIDER_ISSUER.get(providerId),
       accountId,
       providerId,
       userId,
@@ -424,6 +429,7 @@ export function planFirebaseIdentityImport(source, hashConfig) {
     if (passwordHash && passwordSalt) {
       accounts.push({
         id: deterministicAccountRowId("credential", userId),
+        issuer: "local:credential",
         accountId: userId,
         providerId: "credential",
         userId,
@@ -516,6 +522,7 @@ function canonicalizeDatabaseRows(userRows, accountRows) {
     })),
     accounts: accountRows.map((row) => ({
       id: row.id,
+      issuer: row.issuer,
       accountId: row.accountId,
       providerId: row.providerId,
       userId: row.userId,
@@ -582,7 +589,7 @@ async function readIdentityRows(client) {
        FROM user ORDER BY id COLLATE BINARY`,
     ),
     client.query(
-      `SELECT id, accountId, providerId, userId, password, createdAt, updatedAt
+      `SELECT id, issuer, accountId, providerId, userId, password, createdAt, updatedAt
        FROM account ORDER BY id COLLATE BINARY`,
     ),
     client.query("SELECT COUNT(*) AS count FROM session"),
@@ -685,10 +692,11 @@ function accountInsert(account) {
   if (account.password === null) {
     return {
       sql: `INSERT OR IGNORE INTO account
-              (id, accountId, providerId, userId, password, createdAt, updatedAt)
-            VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+              (id, issuer, accountId, providerId, userId, password, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
       params: [
         account.id,
+        account.issuer,
         account.accountId,
         account.providerId,
         account.userId,
@@ -699,10 +707,11 @@ function accountInsert(account) {
   }
   return {
     sql: `INSERT OR IGNORE INTO account
-            (id, accountId, providerId, userId, password, createdAt, updatedAt)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            (id, issuer, accountId, providerId, userId, password, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     params: [
       account.id,
+      account.issuer,
       account.accountId,
       account.providerId,
       account.userId,

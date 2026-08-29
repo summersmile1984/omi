@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { env } from 'cloudflare:workers';
 import {
-  betterAuthRequestHeaders,
   betterAuthResponseHeaders,
   betterAuthTarget,
+  betterAuthUpstreamRequest,
   sanitizeBetterAuthResponse,
 } from '@/lib/auth-proxy';
 
@@ -55,15 +55,9 @@ async function proxyAuthRequest(
 
   const authPath = params.path.join('/');
   const target = betterAuthTarget(authPath, request.nextUrl.search, AUTH_SERVER_URL);
-  const headers = betterAuthRequestHeaders(request.headers);
 
   try {
-    const upstreamRequest = new Request(target, {
-      method: request.method,
-      headers,
-      body:
-        request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
-    });
+    const upstreamRequest = betterAuthUpstreamRequest(request, target);
     // Worker-to-Worker requests on workers.dev can return Cloudflare's 1042
     // synthetic error. Use a service binding in Cloudflare and retain direct
     // fetch as a local-development fallback.

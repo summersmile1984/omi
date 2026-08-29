@@ -4,6 +4,7 @@ describe('Better Auth web client', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();
+    vi.unstubAllGlobals();
   });
 
   it('signs up through the same-origin proxy without retaining the session token', async () => {
@@ -33,7 +34,8 @@ describe('Better Auth web client', () => {
       displayName: 'Staging User',
       email: 'staging@example.invalid',
     });
-    expect(await user.getIdToken?.()).toBeNull();
+    expect(user).not.toBeNull();
+    expect(await user?.getIdToken?.()).toBeNull();
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/better-auth/sign-up/email',
       expect.objectContaining({
@@ -123,5 +125,69 @@ describe('Better Auth web client', () => {
     await expect(getBetterAuthSocialSignInUrl('google')).rejects.toThrow(
       'untrusted OAuth redirect',
     );
+  });
+
+  it('forwards only the server-signed OAuth query through email login', async () => {
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://web.test',
+        search:
+          '?client_id=mcp-client&scope=memories.read&unsigned=drop-me&sig=signed&ba_param=client_id&ba_param=scope&ba_param=exp&ba_param=sig&ba_param=ba_param&exp=9999999999',
+        assign: vi.fn(),
+      },
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        user: { id: 'oauth-user', email: 'oauth@example.invalid' },
+      }),
+    );
+    const { signInWithEmail } = await import('./better-auth');
+
+    await signInWithEmail('oauth@example.invalid', 'password-123');
+
+    const request = fetchMock.mock.calls[0][1];
+    const body = JSON.parse(String(request?.body));
+    expect(body.oauth_query).toContain('client_id=mcp-client');
+    expect(body.oauth_query).toContain('scope=memories.read');
+    expect(body.oauth_query).not.toContain('unsigned=drop-me');
+  });
+
+  it('loads public client metadata and submits a signed consent decision', async () => {
+    vi.stubGlobal('window', {
+      location: { origin: 'https://web.test', search: '', assign: vi.fn() },
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        Response.json({
+          client_id: 'mcp-client',
+          client_name: 'Claude Desktop',
+          client_uri: 'https://client.example',
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          redirect: true,
+          url: 'http://127.0.0.1:8123/callback?code=opaque',
+        }),
+      );
+    const { getBetterAuthOAuthClient, submitBetterAuthOAuthConsent } =
+      await import('./better-auth');
+
+    await expect(getBetterAuthOAuthClient('mcp-client', 'signed-query')).resolves.toEqual(
+      {
+        clientId: 'mcp-client',
+        name: 'Claude Desktop',
+        uri: 'https://client.example',
+        icon: null,
+      },
+    );
+    await expect(submitBetterAuthOAuthConsent(true, 'signed-query')).resolves.toBe(
+      'http://127.0.0.1:8123/callback?code=opaque',
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      accept: true,
+      oauth_query: 'signed-query',
+    });
   });
 });

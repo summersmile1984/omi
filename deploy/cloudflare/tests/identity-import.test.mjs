@@ -141,15 +141,18 @@ function memoryD1(options = {}) {
         };
         if (!state.users.has(row.id)) state.users.set(row.id, row);
       } else if (normalized.startsWith("INSERT OR IGNORE INTO account")) {
-        const hasPasswordParameter = !normalized.includes("?, ?, ?, ?, NULL,");
+        const hasPasswordParameter = !normalized.includes(
+          "?, ?, ?, ?, ?, NULL,",
+        );
         const row = {
           id: params[0],
-          accountId: params[1],
-          providerId: params[2],
-          userId: params[3],
-          password: hasPasswordParameter ? params[4] : null,
-          createdAt: params[hasPasswordParameter ? 5 : 4],
-          updatedAt: params[hasPasswordParameter ? 6 : 5],
+          issuer: params[1],
+          accountId: params[2],
+          providerId: params[3],
+          userId: params[4],
+          password: hasPasswordParameter ? params[5] : null,
+          createdAt: params[hasPasswordParameter ? 6 : 5],
+          updatedAt: params[hasPasswordParameter ? 7 : 6],
         };
         if (!state.accounts.has(row.id)) state.accounts.set(row.id, row);
       } else {
@@ -192,6 +195,15 @@ describe("Firebase identity import", () => {
       "credential",
       "google",
     ]);
+    expect(
+      Object.fromEntries(
+        first.accounts.map((account) => [account.providerId, account.issuer]),
+      ),
+    ).toEqual({
+      apple: "https://appleid.apple.com",
+      credential: "local:credential",
+      google: "https://accounts.google.com",
+    });
     expect(first.requiredSocialProviders).toEqual(["apple", "google"]);
     expect(
       first.accounts.find((account) => account.providerId === "credential")

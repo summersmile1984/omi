@@ -3,6 +3,7 @@ import {
   betterAuthRequestHeaders,
   betterAuthResponseHeaders,
   betterAuthTarget,
+  betterAuthUpstreamRequest,
   sanitizeBetterAuthResponse,
 } from './auth-proxy';
 
@@ -51,6 +52,33 @@ describe('sanitizeBetterAuthResponse', () => {
     expect(headers.get('location')).toBe('https://accounts.example.test/authorize');
     expect(headers.get('set-cookie')).toContain('__Secure-better-auth.state=opaque');
     expect(headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('leaves OAuth redirects for the browser instead of following them in the Auth Worker', () => {
+    const incoming = new Request(
+      'https://web.test/api/better-auth/oauth2/authorize?client_id=client-1',
+      {
+        headers: {
+          cookie: '__Secure-better-auth.session_token=opaque',
+          'x-omi-auth-context': 'forged',
+        },
+      },
+    );
+    const upstream = betterAuthUpstreamRequest(
+      incoming,
+      betterAuthTarget(
+        'oauth2/authorize',
+        '?client_id=client-1',
+        'https://auth.internal',
+      ),
+    );
+
+    expect(upstream.redirect).toBe('manual');
+    expect(upstream.url).toBe(
+      'https://auth.internal/api/better-auth/oauth2/authorize?client_id=client-1',
+    );
+    expect(upstream.headers.get('cookie')).toContain('session_token');
+    expect(upstream.headers.has('x-omi-auth-context')).toBe(false);
   });
 
   it('forwards Cloudflare client identity without trusting proxy chains', () => {

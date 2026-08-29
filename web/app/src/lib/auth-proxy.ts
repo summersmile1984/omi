@@ -42,6 +42,20 @@ export function betterAuthRequestHeaders(requestHeaders: Headers): Headers {
   return headers;
 }
 
+export function betterAuthUpstreamRequest(request: Request, target: URL): Request {
+  return new Request(target, {
+    method: request.method,
+    headers: betterAuthRequestHeaders(request.headers),
+    body:
+      request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
+    // Better Auth intentionally redirects OAuth authorization requests to the
+    // Web login/consent pages. Following that redirect inside the Auth service
+    // binding would resolve `/login` against the Auth Worker and turn it into a
+    // misleading 404 instead of returning the redirect to the browser.
+    redirect: 'manual',
+  });
+}
+
 export function sanitizeBetterAuthResponse(
   authPath: string,
   response: Response,

@@ -1,6 +1,7 @@
 import { betterAuth } from "better-auth";
-import { mcp, requireMcpAuth } from "@better-auth/mcp";
+import { createMcpProtectedRequestHandler, mcp } from "@better-auth/mcp";
 import { createAuthMiddleware } from "better-auth/api";
+import { createDpopReplayStore } from "better-auth/oauth2";
 import { bearer } from "better-auth/plugins/bearer";
 import { jwt } from "better-auth/plugins/jwt";
 import { Hono } from "hono";
@@ -570,8 +571,19 @@ app.post("/internal/mcp/verify", async (c) => {
       headers: publicHeaders,
     });
     const auth = buildAuth(c.env, c.req.url);
-    const verify = requireMcpAuth(
-      auth,
+    const { baseURL: issuer, internalAdapter } = await auth.$context;
+    if (!issuer) throw new Error("Better Auth issuer is unavailable");
+    const verify = createMcpProtectedRequestHandler(
+      {
+        issuer,
+        audience: resource,
+        challengeScopes: MCP_SCOPES,
+        // Better Auth's verifier accepts a function source internally. Keep
+        // JWKS resolution inside this Worker so Cloudflare never has to make a
+        // same-account public Worker fetch, which is rejected with error 1042.
+        jwksUrl: (async () => await auth.api.getJwks()) as unknown as string,
+        dpop: { replayStore: createDpopReplayStore(internalAdapter) },
+      },
       async (_request, claims) => {
         const identity = verifiedMcpClaims(claims);
         if (!identity) {
@@ -586,7 +598,6 @@ app.post("/internal/mcp/verify", async (c) => {
           { headers: { "cache-control": "no-store" } },
         );
       },
-      { resource, challengeScopes: MCP_SCOPES },
     );
     return await verify(publicRequest);
   } catch {

@@ -6,6 +6,60 @@ const listeners = new Set<(user: WebAuthUser | null) => void>();
 
 export const isBetterAuthEnabled = process.env.NEXT_PUBLIC_AUTH_MODE === 'better-auth';
 export type BetterAuthSocialProvider = 'google' | 'apple';
+export type BetterAuthOAuthClient = {
+  clientId: string;
+  name: string;
+  uri: string | null;
+  icon: string | null;
+};
+
+const MAX_OAUTH_QUERY_LENGTH = 16_384;
+
+export function signedOAuthQuery(search: string): string | undefined {
+  if (!search || search.length > MAX_OAUTH_QUERY_LENGTH) return undefined;
+  const params = new URLSearchParams(search);
+  if (params.getAll('sig').length !== 1) return undefined;
+  const signedNames = params.getAll('ba_param');
+  if (!signedNames.length || signedNames.length > 64) return undefined;
+  const allowed = new Set(signedNames);
+  const signed = new URLSearchParams();
+  for (const [key, value] of params.entries()) {
+    if (key === 'sig' || key === 'ba_param' || allowed.has(key)) {
+      signed.append(key, value);
+    }
+  }
+  return signed.toString() || undefined;
+}
+
+function browserOAuthQuery(): string | undefined {
+  return typeof window === 'undefined'
+    ? undefined
+    : signedOAuthQuery(window.location.search);
+}
+
+export function oauthRedirectUrl(body: unknown, origin: string): string | null {
+  if (
+    !body ||
+    typeof body !== 'object' ||
+    (body as { redirect?: unknown }).redirect !== true ||
+    typeof (body as { url?: unknown }).url !== 'string'
+  ) {
+    return null;
+  }
+  const raw = (body as { url: string }).url;
+  if (!raw || raw.length > 4_096) return null;
+  try {
+    const target = new URL(raw, origin);
+    const localHttp =
+      target.protocol === 'http:' &&
+      (target.hostname === 'localhost' ||
+        target.hostname === '127.0.0.1' ||
+        target.hostname === '[::1]');
+    return target.protocol === 'https:' || localHttp ? target.href : null;
+  } catch {
+    return null;
+  }
+}
 
 function publish(user: WebAuthUser | null): void {
   currentUser = user;
@@ -76,12 +130,27 @@ function completeAuth(body: unknown): WebAuthUser {
 export async function signInWithEmail(
   email: string,
   password: string,
-): Promise<WebAuthUser> {
+): Promise<WebAuthUser | null> {
+  const oauthQuery = browserOAuthQuery();
   const { response, body } = await authRequest('sign-in/email', {
     method: 'POST',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({
+      email,
+      password,
+      ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
+    }),
   });
   if (!response.ok) throw new Error(errorMessage(body, 'Unable to sign in'));
+  const redirect = oauthRedirectUrl(
+    body,
+    typeof window === 'undefined' ? 'https://invalid.local' : window.location.origin,
+  );
+  if (redirect) {
+    if (typeof window === 'undefined')
+      throw new Error('OAuth redirect requires a browser');
+    window.location.assign(redirect);
+    return null;
+  }
   return completeAuth(body);
 }
 
@@ -89,12 +158,28 @@ export async function signUpWithEmail(
   name: string,
   email: string,
   password: string,
-): Promise<WebAuthUser> {
+): Promise<WebAuthUser | null> {
+  const oauthQuery = browserOAuthQuery();
   const { response, body } = await authRequest('sign-up/email', {
     method: 'POST',
-    body: JSON.stringify({ name, email, password }),
+    body: JSON.stringify({
+      name,
+      email,
+      password,
+      ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
+    }),
   });
   if (!response.ok) throw new Error(errorMessage(body, 'Unable to create account'));
+  const redirect = oauthRedirectUrl(
+    body,
+    typeof window === 'undefined' ? 'https://invalid.local' : window.location.origin,
+  );
+  if (redirect) {
+    if (typeof window === 'undefined')
+      throw new Error('OAuth redirect requires a browser');
+    window.location.assign(redirect);
+    return null;
+  }
   return completeAuth(body);
 }
 
@@ -114,12 +199,14 @@ export async function getBetterAuthSocialProviders(): Promise<
 export async function getBetterAuthSocialSignInUrl(
   provider: BetterAuthSocialProvider,
 ): Promise<string> {
+  const oauthQuery = browserOAuthQuery();
   const { response, body } = await authRequest('sign-in/social', {
     method: 'POST',
     body: JSON.stringify({
       provider,
       callbackURL: '/conversations',
       errorCallbackURL: '/login',
+      ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
     }),
   });
   if (!response.ok) {
@@ -139,6 +226,52 @@ export async function getBetterAuthSocialSignInUrl(
     throw new Error('Better Auth returned an untrusted OAuth redirect');
   }
   return url;
+}
+
+export async function getBetterAuthOAuthClient(
+  clientId: string,
+  oauthQuery: string,
+): Promise<BetterAuthOAuthClient> {
+  if (!clientId || clientId.length > 2_048 || !oauthQuery) {
+    throw new Error('Invalid OAuth authorization request');
+  }
+  const { response, body } = await authRequest('oauth2/public-client-prelogin', {
+    method: 'POST',
+    body: JSON.stringify({ client_id: clientId, oauth_query: oauthQuery }),
+  });
+  if (!response.ok || !body || typeof body !== 'object') {
+    throw new Error(errorMessage(body, 'Unable to load OAuth client'));
+  }
+  const value = body as Record<string, unknown>;
+  if (value.client_id !== clientId)
+    throw new Error('Better Auth returned an invalid OAuth client');
+  return {
+    clientId,
+    name:
+      typeof value.client_name === 'string' && value.client_name.trim()
+        ? value.client_name.trim().slice(0, 200)
+        : 'MCP client',
+    uri: typeof value.client_uri === 'string' ? value.client_uri : null,
+    icon: typeof value.logo_uri === 'string' ? value.logo_uri : null,
+  };
+}
+
+export async function submitBetterAuthOAuthConsent(
+  accept: boolean,
+  oauthQuery: string,
+): Promise<string> {
+  if (!oauthQuery) throw new Error('Invalid OAuth authorization request');
+  const { response, body } = await authRequest('oauth2/consent', {
+    method: 'POST',
+    body: JSON.stringify({ accept, oauth_query: oauthQuery }),
+  });
+  if (!response.ok) throw new Error(errorMessage(body, 'Unable to save OAuth consent'));
+  const redirect = oauthRedirectUrl(
+    body,
+    typeof window === 'undefined' ? 'https://invalid.local' : window.location.origin,
+  );
+  if (!redirect) throw new Error('Better Auth returned an invalid OAuth redirect');
+  return redirect;
 }
 
 export async function signOutBetterAuth(): Promise<void> {

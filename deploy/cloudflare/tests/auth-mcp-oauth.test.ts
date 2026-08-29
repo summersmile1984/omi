@@ -106,6 +106,102 @@ async function accessToken(scope = "memories.read offline_access") {
 }
 
 describe("auth worker MCP OAuth provider", () => {
+  it("backfills existing Better Auth accounts onto issuer-scoped identities", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      const migrations = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../migrations/auth",
+      );
+      database.exec(
+        readFileSync(path.join(migrations, "0001_better_auth.sql"), "utf8"),
+      );
+      database
+        .prepare(
+          `INSERT INTO user
+             (id, name, email, emailVerified, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run("user-1", "User", "user@example.test", 1, 1, 1);
+      const insert = database.prepare(
+        `INSERT INTO account
+           (id, accountId, providerId, userId, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run("credential-1", "user-1", "credential", "user-1", 1, 1);
+      insert.run("google-1", "google-subject", "google", "user-1", 1, 1);
+      insert.run("apple-1", "apple-subject", "apple", "user-1", 1, 1);
+
+      database.exec(
+        readFileSync(path.join(migrations, "0006_account_issuer.sql"), "utf8"),
+      );
+
+      expect(
+        database
+          .prepare("SELECT providerId, issuer FROM account ORDER BY providerId")
+          .all(),
+      ).toEqual([
+        { providerId: "apple", issuer: "https://appleid.apple.com" },
+        { providerId: "credential", issuer: "local:credential" },
+        { providerId: "google", issuer: "https://accounts.google.com" },
+      ]);
+      expect(
+        database
+          .prepare("PRAGMA table_info(account)")
+          .all()
+          .find((column) => column.name === "issuer"),
+      ).toMatchObject({ notnull: 1 });
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO account
+               (id, issuer, accountId, providerId, userId, createdAt, updatedAt)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            "credential-2",
+            "local:credential",
+            "user-1",
+            "credential",
+            "user-1",
+            1,
+            1,
+          ),
+      ).toThrow();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("creates credential accounts with the Better Auth issuer identity key", async () => {
+    const env = environment();
+    const response = await auth.fetch(
+      new Request("https://auth.test/api/better-auth/sign-up/email", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://web.test",
+        },
+        body: JSON.stringify({
+          name: "MCP test user",
+          email: "mcp-user@example.test",
+          password: "Correct-Horse-Battery-Staple-1!",
+        }),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(
+      databases
+        .at(-1)
+        ?.database.prepare(
+          "SELECT issuer FROM account WHERE providerId = 'credential'",
+        )
+        .get(),
+    ).toEqual({ issuer: "local:credential" });
+  });
+
   it("publishes OAuth metadata and registers a PKCE public client for the MCP resource", async () => {
     const env = environment();
     const metadataResponse = await auth.fetch(
@@ -177,11 +273,25 @@ describe("auth worker MCP OAuth provider", () => {
   it("verifies an audience-bound MCP token without forwarding it to API workers", async () => {
     const env = environment();
     const { publicJwk, token } = await accessToken();
-    const fetchJwks = vi.fn(
-      async (_input: string | URL | Request, _init?: RequestInit) =>
-        Response.json({ keys: [publicJwk] }),
-    );
-    vi.stubGlobal("fetch", fetchJwks);
+    databases
+      .at(-1)
+      ?.database.prepare(
+        `INSERT INTO jwks
+           (id, publicKey, privateKey, createdAt, alg, crv)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "mcp-test-key",
+        JSON.stringify(publicJwk),
+        "unused-test-private-key",
+        new Date().toISOString(),
+        "ES256",
+        "P-256",
+      );
+    const publicFetch = vi.fn(async () => {
+      throw new Error("MCP verification must not fetch its own public Worker");
+    });
+    vi.stubGlobal("fetch", publicFetch);
 
     const response = await auth.fetch(
       new Request("https://auth.test/internal/mcp/verify", {
@@ -205,10 +315,7 @@ describe("auth worker MCP OAuth provider", () => {
       scopes: ["memories.read"],
       clientId: "mcp-test-client",
     });
-    expect(fetchJwks).toHaveBeenCalledOnce();
-    const [jwksUrl, jwksInit] = fetchJwks.mock.calls[0] || [];
-    expect(String(jwksUrl)).toBe("https://auth.test/api/better-auth/jwks");
-    expect(jwksInit).toMatchObject({ method: "GET", redirect: "manual" });
+    expect(publicFetch).not.toHaveBeenCalled();
 
     const mismatchedResource = await auth.fetch(
       new Request("https://auth.test/internal/mcp/verify", {

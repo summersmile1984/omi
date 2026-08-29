@@ -39,7 +39,7 @@ export function LoginClient() {
     setError(null);
     try {
       await signInWithGoogle();
-      router.push('/conversations');
+      if (!isBetterAuthEnabled) router.push('/conversations');
     } catch (err) {
       setError('Failed to sign in with Google. Please try again.');
       console.error(err);
@@ -53,7 +53,7 @@ export function LoginClient() {
     setError(null);
     try {
       await signInWithApple();
-      router.push('/conversations');
+      if (!isBetterAuthEnabled) router.push('/conversations');
     } catch (err) {
       setError('Failed to sign in with Apple. Please try again.');
       console.error(err);
@@ -67,11 +67,10 @@ export function LoginClient() {
     setIsEmailSubmitting(true);
     setError(null);
     try {
-      if (isSignUp) {
-        await signUpWithEmail(name.trim(), email.trim(), password);
-      } else {
-        await signInWithEmail(email.trim(), password);
-      }
+      const authenticatedUser = isSignUp
+        ? await signUpWithEmail(name.trim(), email.trim(), password)
+        : await signInWithEmail(email.trim(), password);
+      if (!authenticatedUser) return;
       MixpanelManager.track('Sign In Completed', { method: 'email' });
       router.push('/conversations');
     } catch (err) {
