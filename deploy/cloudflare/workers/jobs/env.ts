@@ -6,7 +6,8 @@ export type JobMessage = {
     | "transcribe"
     | "sync_local_files"
     | "legacy_audio_rebuild"
-    | "account_delete";
+    | "account_delete"
+    | "stripe_webhook";
   payload: Record<string, unknown>;
 };
 
@@ -26,6 +27,9 @@ export type JobsEnv = {
   SYNC_CONTENT_ID_SECRET?: string;
   LEGACY_AUDIO_ENCRYPTION_SECRET?: string;
   STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_WEBHOOK_SECRET_PREVIOUS?: string;
+  PUBLIC_API_BASE_URL?: string;
   WORKERS_AI_ASR_MODEL?: string;
   WORKERS_AI_SYNC_SUMMARY_MODEL?: string;
   WORKERS_AI_FAIR_USE_MODEL?: string;

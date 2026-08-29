@@ -93,6 +93,16 @@ const proxyPublicCore = async (
   return withRequestId(response, id);
 };
 
+const proxyPublicJobs = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const response = await c.env.JOBS.fetch(
+    new Request(c.req.raw, { headers: stripUntrustedHeaders(c.req.raw) }),
+  );
+  return withRequestId(response, id);
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 app.get("/v2/firmware/stable", proxyPublicFirmware);
@@ -115,6 +125,7 @@ app.get("/v1/apps/:appId/reviews", proxyPublicCore);
 app.get("/v1/payments/success", proxyPublicCore);
 app.get("/v1/payments/cancel", proxyPublicCore);
 app.get("/v1/payments/portal-return", proxyPublicCore);
+app.post("/v1/stripe/webhook", proxyPublicJobs);
 app.get("/v1/action-items/shared/:token", proxyPublicCore);
 app.get("/v2/messages/shared/:token", proxyPublicCore);
 app.get("/v1/fair-use/case/:case_ref/status", proxyPublicCore);
@@ -382,6 +393,8 @@ const proxyAuthenticatedAsyncTranscriptionStatus = async (
 
 app.all("/v1/cf/jobs", proxyAuthenticatedJobs);
 app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
+app.post("/v1/payments/checkout-session", proxyAuthenticatedJobs);
+app.post("/v1/payments/customer-portal", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 
 const proxyAuthenticatedCore = async (

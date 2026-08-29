@@ -36,6 +36,11 @@ import {
   reconcileAccountDeletions,
   registerAccountDeletionRoutes,
 } from "./account-deletion";
+import {
+  processStripeWebhookMessage,
+  reconcileStripeWebhookEvents,
+  registerStripeBillingRoutes,
+} from "./stripe-billing";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -86,6 +91,7 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
 
 registerSyncRoutes(app, requestContext);
 registerAccountDeletionRoutes(app, requestContext);
+registerStripeBillingRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -860,6 +866,10 @@ async function processJobMessage(
     await processSyncJobMessage(message, env);
     return;
   }
+  if (message.body.kind === "stripe_webhook") {
+    await processStripeWebhookMessage(message, env);
+    return;
+  }
   const row = await env.APP_DB.prepare(
     "SELECT status, kind, updated_at FROM cf_jobs WHERE job_id = ? AND uid = ?",
   )
@@ -1011,6 +1021,7 @@ export default {
       drainFairUseNotifications(env),
       reconcileAccountDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),
+      reconcileStripeWebhookEvents(env, now),
       ...syncMaintenance,
     ]);
     const failure = results.find(

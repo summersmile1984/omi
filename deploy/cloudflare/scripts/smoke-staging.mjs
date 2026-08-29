@@ -84,6 +84,14 @@ function expectStatus(label, response, expected) {
   }
 }
 
+function expectStatusIn(label, response, expected) {
+  if (!expected.includes(response.status)) {
+    throw new Error(
+      `${label} expected HTTP ${expected.join(" or ")}, received HTTP ${response.status}`,
+    );
+  }
+}
+
 async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
   const preflight = await requestJson(
     fetchImpl,
@@ -200,6 +208,18 @@ export async function runSmoke({
     `${base}/v1/payments/portal-return`,
   );
   expectStatus("public payment portal return page", paymentPortalReturn, 200);
+  const stripeWebhookBoundary = await request(
+    fetchImpl,
+    `${base}/v1/stripe/webhook`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    },
+  );
+  // A provisioned webhook rejects the unsigned body with 400. An isolated
+  // environment without its whsec credential fails closed before parsing.
+  expectStatusIn("Stripe webhook boundary", stripeWebhookBoundary, [400, 503]);
 
   const result = {
     edgeHealth: health.status,
@@ -208,6 +228,7 @@ export async function runSmoke({
     paymentSuccess: paymentSuccess.status,
     paymentCancel: paymentCancel.status,
     paymentPortalReturn: paymentPortalReturn.status,
+    stripeWebhookBoundary: stripeWebhookBoundary.status,
   };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 
@@ -721,6 +742,28 @@ export async function runSmoke({
   );
   expectStatus("overage info", overageInfo, 200);
 
+  const checkoutBoundary = await request(
+    fetchImpl,
+    `${base}/v1/payments/checkout-session`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ price_id: "price_cfSmokeUnavailable" }),
+    },
+  );
+  expectStatus("checkout price allowlist", checkoutBoundary, 400);
+
+  const customerPortalBoundary = await request(
+    fetchImpl,
+    `${base}/v1/payments/customer-portal`,
+    { method: "POST", headers: authHeaders },
+  );
+  expectStatus(
+    "customer portal customer authority",
+    customerPortalBoundary,
+    400,
+  );
+
   const fairUseStatus = await request(fetchImpl, `${base}/v1/fair-use/status`, {
     headers: authHeaders,
   });
@@ -850,6 +893,8 @@ export async function runSmoke({
     llmTotalCost: llmTotalCost.status,
     availablePlans: availablePlans.status,
     overageInfo: overageInfo.status,
+    checkoutBoundary: checkoutBoundary.status,
+    customerPortalBoundary: customerPortalBoundary.status,
     fairUseStatus: fairUseStatus.status,
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,

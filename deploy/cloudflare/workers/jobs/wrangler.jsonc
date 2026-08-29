@@ -11,6 +11,9 @@
   "workers_dev": false,
   "preview_urls": false,
   "limits": { "cpu_ms": 300000 },
+  "vars": {
+    "PUBLIC_API_BASE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev",
+  },
   "services": [{ "binding": "AUTH", "service": "omi-cf-auth-staging" }],
   "d1_databases": [
     {

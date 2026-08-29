@@ -1,7 +1,12 @@
 import type { JobsEnv } from "./env";
 
 type IdentityColumn =
-  "uid" | "owner_uid" | "recipient_uid" | "reviewer_uid" | "sender_uid";
+  | "uid"
+  | "owner_uid"
+  | "recipient_uid"
+  | "reviewer_uid"
+  | "sender_uid"
+  | "uid_hint";
 
 type D1IdentitySurface = Readonly<{
   table: string;
@@ -49,6 +54,8 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_realtime_sessions", column: "uid" },
   { table: "cf_realtime_usage", column: "uid" },
   { table: "cf_screen_activity", column: "uid" },
+  { table: "cf_stripe_customers", column: "uid" },
+  { table: "cf_stripe_webhook_events", column: "uid_hint" },
   { table: "cf_sync_capture_claims", column: "uid" },
   { table: "cf_sync_content_ledger", column: "uid" },
   { table: "cf_sync_job_files", column: "uid" },

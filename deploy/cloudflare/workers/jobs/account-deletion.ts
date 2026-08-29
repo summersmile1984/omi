@@ -13,6 +13,7 @@ import {
   validAccountDeletionUid,
 } from "./account-deletion-residual";
 import type { JobMessage, JobsEnv } from "./env";
+import { stripeRequest, stripeSecretKey } from "./stripe-client";
 
 const MAX_REQUEST_BODY_BYTES = 4_096;
 const FENCE_QUIESCENCE_SECONDS = 60;
@@ -25,9 +26,6 @@ const R2_DELETE_BATCH_SIZE = 1_000;
 const D1_DELETE_BATCH_SIZE = 250;
 const RECONCILE_BATCH_SIZE = 50;
 const ISOLATED_STAGING_MANIFEST = "isolated-staging-v1";
-const STRIPE_API_ORIGIN = "https://api.stripe.com";
-const STRIPE_RESPONSE_MAX_BYTES = 64 * 1_024;
-const STRIPE_TIMEOUT_MS = 15_000;
 const STRIPE_SUBSCRIPTION_ID = /^sub_[A-Za-z0-9]{8,128}$/;
 const STRIPE_TERMINAL_STATUSES = new Set(["canceled", "incomplete_expired"]);
 
@@ -259,63 +257,11 @@ async function stripeSubscriptionId(
   return subscriptionId;
 }
 
-function stripeSecretKey(env: JobsEnv): string {
-  const key = env.STRIPE_SECRET_KEY?.trim();
-  if (
-    !key ||
-    key.length > 512 ||
-    key.includes(":") ||
-    /[^\x21-\x7e]/.test(key)
-  ) {
-    throw new Error("Stripe cleanup credential unavailable");
-  }
-  return key;
-}
-
 async function assertExternalProviderCleanupConfigured(
   env: JobsEnv,
   uid: string,
 ) {
   if (await stripeSubscriptionId(env, uid)) stripeSecretKey(env);
-}
-
-async function boundedStripeJson(response: Response): Promise<unknown> {
-  const declared = Number(response.headers.get("content-length"));
-  if (
-    Number.isFinite(declared) &&
-    (declared < 0 || declared > STRIPE_RESPONSE_MAX_BYTES)
-  ) {
-    response.body?.cancel();
-    throw new Error("Stripe response is too large");
-  }
-  if (!response.body) throw new Error("Stripe response body is missing");
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > STRIPE_RESPONSE_MAX_BYTES) {
-        throw new Error("Stripe response is too large");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const body = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
-  } catch {
-    throw new Error("Stripe response is invalid");
-  }
 }
 
 type StripeSubscription = {
@@ -324,14 +270,9 @@ type StripeSubscription = {
 };
 
 async function parseStripeSubscription(
-  response: Response,
+  body: unknown,
   expectedId: string,
 ): Promise<StripeSubscription> {
-  if (!response.ok) {
-    response.body?.cancel();
-    throw new Error("Stripe subscription request failed");
-  }
-  const body = await boundedStripeJson(response);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Stripe subscription response is invalid");
   }
@@ -356,14 +297,9 @@ async function cleanupExternalProviders(
 ) {
   const subscriptionId = await stripeSubscriptionId(env, intent.uid);
   if (!subscriptionId) return;
-  const secret = stripeSecretKey(env);
-  const url = `${STRIPE_API_ORIGIN}/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
-  const authorization = `Basic ${btoa(`${secret}:`)}`;
+  const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
   const current = await parseStripeSubscription(
-    await fetch(url, {
-      headers: { authorization, accept: "application/json" },
-      signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
-    }),
+    await stripeRequest(env, path),
     subscriptionId,
   );
   if (
@@ -372,17 +308,12 @@ async function cleanupExternalProviders(
   ) {
     return;
   }
+  const form = new URLSearchParams({ cancel_at_period_end: "true" });
   const canceled = await parseStripeSubscription(
-    await fetch(url, {
+    await stripeRequest(env, path, {
       method: "POST",
-      headers: {
-        authorization,
-        accept: "application/json",
-        "content-type": "application/x-www-form-urlencoded",
-        "idempotency-key": `account-delete-${intent.jobId}`,
-      },
-      body: "cancel_at_period_end=true",
-      signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
+      form,
+      idempotencyKey: `account-delete-${intent.jobId}`,
     }),
     subscriptionId,
   );

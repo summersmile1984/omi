@@ -271,9 +271,16 @@ printf '%s' "$FAIR_USE_ADMIN_KEY" | npx wrangler secret put FAIR_USE_ADMIN_KEY -
 # Required only when an isolated staging account has a registered FCM device.
 # Use a staging Firebase service account; never copy production credentials.
 printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | npx wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON --name omi-cf-jobs-staging
-# Required before deleting an account whose D1 subscription row contains a
-# Stripe subscription id. Use the environment-matched restricted/secret key.
+# Required for checkout, customer portal, webhook reconciliation, and deleting
+# an account whose D1 subscription row contains a Stripe subscription id. Use
+# the environment-matched restricted/secret key.
 printf '%s' "$STRIPE_SECRET_KEY" | npx wrangler secret put STRIPE_SECRET_KEY --name omi-cf-jobs-staging
+# Configure the Stripe endpoint as POST
+# https://omi-cf-edge-staging.<account>.workers.dev/v1/stripe/webhook and use
+# its environment-matched signing secret. During rotation, the previous secret
+# is accepted only when it is provisioned explicitly.
+printf '%s' "$STRIPE_WEBHOOK_SECRET" | npx wrangler secret put STRIPE_WEBHOOK_SECRET --name omi-cf-jobs-staging
+printf '%s' "$STRIPE_WEBHOOK_SECRET_PREVIOUS" | npx wrangler secret put STRIPE_WEBHOOK_SECRET_PREVIOUS --name omi-cf-jobs-staging
 ```
 
 The `/auth-issue` bridge is hidden (`404`) unless `AUTH_DEV_ISSUER_SECRET` is
@@ -872,13 +879,25 @@ and memory writes update one idempotent `cf_usage_sources` row in the same D1
 batch as the source projection, and migration `0046_account_usage.sql`
 backfills existing projected rows. Usage periods and history buckets are UTC;
 the legacy per-user timezone lookup is still an explicit parity gap.
-`cf_user_subscriptions` and `cf_subscription_prices` are import/configuration
-tables rather than live Stripe calls. An empty price catalog returns HTTP 200
-with no plans and `show_subscription_ui: false`, so the Web Worker does not
-offer a checkout that cannot succeed. Checkout, upgrade, cancel, customer
-portal, Stripe webhook reconciliation, BYOK/reviewer overrides, phone quota,
-and production subscription import remain legacy-owned.
-No staging price IDs are synthesized or copied from production.
+`cf_user_subscriptions` is the isolated D1 subscription projection and
+`cf_subscription_prices` is the allowlisted price catalog. An empty price
+catalog returns HTTP 200 with no plans and `show_subscription_ui: false`, so
+the Web Worker does not offer a checkout that cannot succeed. The Jobs Worker
+now owns checkout-session creation, customer-portal creation, and Stripe
+webhook reconciliation in staging. Checkout and portal calls use Stripe
+idempotency keys, while the webhook verifies the exact raw request body before
+persisting an event-id/hash inbox row and publishing only the event id to the
+Queue. Queue processing retrieves the current Checkout Session or Subscription
+from Stripe instead of trusting delivery order, then projects only allowlisted
+prices for a live Cloudflare-cutover account. Missing Stripe credentials fail
+closed; no staging price IDs are synthesized or copied from production.
+This staging endpoint currently projects `checkout.session.completed` plus
+subscription created/updated/deleted events for regular Omi plans. Keep it on
+an isolated Stripe test-mode endpoint: Payment Link app entitlements and
+subscription-schedule events are later migration slices and are not projected
+by this Worker yet.
+Upgrade, cancel, BYOK/reviewer overrides, phone quota, and production
+subscription import remain legacy-owned.
 
 `GET /v1/users/me/usage-quota` and the mobile subscription projection now read
 the UTC-month `cf_chat_quota_events` authority. Free, Neo, Plus, Unlimited, and
@@ -1365,7 +1384,7 @@ intent-to-tombstone transition is atomic, duplicate public requests are
 idempotent, and the scheduled reconciler republishes durable intents whose
 initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 62 product identity-bearing column
+The explicit residual inventory covers 64 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,

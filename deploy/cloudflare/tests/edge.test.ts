@@ -275,6 +275,78 @@ describe("edge gateway", () => {
     }
   });
 
+  it("preserves the raw public Stripe webhook and signs payment mutations for Jobs", async () => {
+    const jobRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      JOBS: service(async (request) => {
+        jobRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+    };
+
+    const rawWebhook = '{"id":"evt_raw","data":{"object":{"id":"sub_raw"}}}';
+    const webhook = await edge.fetch(
+      new Request("https://edge.test/v1/stripe/webhook", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer untrusted-client-header",
+          "content-type": "application/json",
+          "stripe-signature": "t=1,v1=abc",
+        },
+        body: rawWebhook,
+      }),
+      env as never,
+    );
+    expect(webhook.status).toBe(200);
+    expect(jobRequests[0].headers.get("authorization")).toBeNull();
+    expect(jobRequests[0].headers.get("stripe-signature")).toBe("t=1,v1=abc");
+    expect(jobRequests[0].headers.get("x-omi-auth-context")).toBeNull();
+    await expect(jobRequests[0].text()).resolves.toBe(rawWebhook);
+
+    for (const path of [
+      "/v1/payments/checkout-session",
+      "/v1/payments/customer-portal",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer opaque-session",
+            "content-type": "application/json",
+            "idempotency-key": "billing-attempt-1",
+          },
+          body: "{}",
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(
+      jobRequests.slice(1).map((request) => new URL(request.url).pathname),
+    ).toEqual([
+      "/v1/payments/checkout-session",
+      "/v1/payments/customer-portal",
+    ]);
+    for (const request of jobRequests.slice(1)) {
+      expect(
+        decodeAuthContext(request.headers.get("x-omi-auth-context")),
+      ).toMatchObject({
+        uid: "user-1",
+        audience: "jobs",
+      });
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("idempotency-key")).toBe("billing-attempt-1");
+    }
+  });
+
   it("keeps share previews public and signs the Better Auth display name for share creation", async () => {
     const coreRequests: Request[] = [];
     const env = {
