@@ -7,7 +7,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from internal_auth import create_request_context, verify_request_context  # noqa: E402
+from internal_auth import (  # noqa: E402
+    create_request_context,
+    decode_context,
+    verify_request_context,
+)
 
 
 def signed_context(secret: str) -> tuple[str, str]:
@@ -115,3 +119,22 @@ def test_internal_context_validates_mcp_oauth_identity_fields():
     assert verify(base)["oauthClientId"] == base["oauthClientId"]
     assert verify({**base, "scopes": ["memories.read", "memories.read"]}) is None
     assert verify({**base, "authority": "better-auth"}) is None
+
+
+def test_legacy_uid_only_hmac_context_stays_valid_without_gaining_oauth_fields():
+    secret = "test-secret"
+
+    def sign(payload):
+        encoded = (
+            base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+        )
+        signature = (
+            base64.urlsafe_b64encode(hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest())
+            .decode()
+            .rstrip("=")
+        )
+        return decode_context(encoded, signature, secret)
+
+    assert sign({"uid": "legacy-user"}) == {"uid": "legacy-user"}
+    assert sign({"uid": "legacy-user", "scopes": ["memories.read"]}) is None
+    assert sign({"uid": "legacy-user", "oauthClientId": "client"}) is None

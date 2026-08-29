@@ -12,10 +12,14 @@ AUTH_AUTHORITIES = frozenset({"firebase", "better-auth", "internal", "mcp-oauth"
 
 def _valid_identity_context(context: dict[str, Any]) -> bool:
     authority = context.get("authority")
-    if authority not in AUTH_AUTHORITIES:
-        return False
     scopes = context.get("scopes")
     client_id = context.get("oauthClientId")
+    # Existing direct route seams still use the original uid-only, HMAC-signed
+    # envelope. It has no delegated OAuth authority or scope semantics.
+    if authority is None:
+        return scopes is None and client_id is None
+    if authority not in AUTH_AUTHORITIES:
+        return False
     if authority != "mcp-oauth":
         return scopes is None and client_id is None
     return (

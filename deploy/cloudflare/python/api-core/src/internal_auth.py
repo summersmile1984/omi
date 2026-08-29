@@ -14,10 +14,15 @@ AUTH_AUDIENCES = frozenset({"api-core", "api-ai", "auth", "jobs", "realtime"})
 
 def _valid_identity_context(context: dict[str, Any]) -> bool:
     authority = context.get("authority")
-    if authority not in AUTH_AUTHORITIES:
-        return False
     scopes = context.get("scopes")
     client_id = context.get("oauthClientId")
+    # Several existing direct route seams consume the original uid-only HMAC
+    # envelope. It remains secret-authenticated but cannot be treated as OAuth
+    # because it carries neither an authority nor delegated identity fields.
+    if authority is None:
+        return scopes is None and client_id is None
+    if authority not in AUTH_AUTHORITIES:
+        return False
     if authority != "mcp-oauth":
         return scopes is None and client_id is None
     return (
