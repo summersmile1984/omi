@@ -967,11 +967,12 @@ declares a chat-tools manifest, create/update performs one bounded HTTPS fetch,
 validates and normalizes the initial tools into the catalog, and fails open with
 shared fallback telemetry if the dependency is unavailable. Its timeout uses
 the `AbortController` and timer APIs supported by workerd. The explicit
-owner-only refresh route reuses the same SSRF, redirect, timeout, size, and
-tool-count limits, but preserves its interactive contract by returning `502`
-without changing D1 when the manifest cannot be fetched. Visibility changes
-are also owner-only and use an optimistic catalog update so they cannot
-overwrite a concurrent app mutation.
+owner-only refresh route reuses the same SSRF, timeout, size, and tool-count
+limits. Fetch uses workerd's manual redirect mode and rejects every non-2xx
+response without following its location. The route preserves its interactive
+contract by returning `502` without changing D1 when the manifest cannot be
+fetched. Visibility changes are also owner-only and use an optimistic catalog
+update so they cannot overwrite a concurrent app mutation.
 
 Migration `0062_app_deletion_fences.sql` moves owner-authorized
 `DELETE /v1/apps/{app_id}` to Jobs without making provider cleanup synchronous

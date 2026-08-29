@@ -413,21 +413,24 @@ describe("Cloudflare app mutations", () => {
   it("refreshes the owner manifest through the bounded external fetch", async () => {
     const state = environment();
     let revision = 1;
-    const fetchManifest = vi.fn(async () =>
-      Response.json({
-        tools: [
-          {
-            name: `Tool ${revision}`,
-            description: `Manifest revision ${revision}`,
-            endpoint: `/tools/${revision}`,
+    const fetchManifest = vi.fn(
+      async (_request: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.redirect).toBe("manual");
+        return Response.json({
+          tools: [
+            {
+              name: `Tool ${revision}`,
+              description: `Manifest revision ${revision}`,
+              endpoint: `/tools/${revision}`,
+            },
+          ],
+          chat_messages: {
+            enabled: revision === 2,
+            target: "main",
+            notify: true,
           },
-        ],
-        chat_messages: {
-          enabled: revision === 2,
-          target: "main",
-          notify: true,
-        },
-      }),
+        });
+      },
     );
     vi.stubGlobal("fetch", fetchManifest);
     try {
@@ -498,7 +501,13 @@ describe("Cloudflare app mutations", () => {
     const state = environment();
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("unavailable", { status: 503 })),
+      vi.fn(async (_request: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.redirect).toBe("manual");
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://redirected.example.test/omi.json" },
+        });
+      }),
     );
     try {
       const created = await jobs.fetch(

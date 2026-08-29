@@ -324,7 +324,7 @@ async function applyChatToolsManifest(
     try {
       response = await fetch(manifestUrl, {
         headers: { accept: "application/json" },
-        redirect: "error",
+        redirect: "manual",
         signal: controller.signal,
       });
     } finally {
