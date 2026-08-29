@@ -1488,10 +1488,13 @@ fences that reject later inserts and updates for the uid while either the
 intent or the 25-hour deletion tombstone exists. The consumer deletes the
 seven uid-scoped `ASSETS` prefixes and all inventoried product D1 rows in
 bounded batches, requires two zero-residual scans separated by 30 seconds,
-then calls the signed Auth delete and verifies its identity residual. The D1
-intent-to-tombstone transition is atomic, duplicate public requests are
-idempotent, and the scheduled reconciler republishes durable intents whose
-initial Queue send failed. Queue and DLQ payloads contain no uid.
+then calls the signed Auth delete and validates the zero identity residual in
+that response before transferring the intent to its tombstone. The internal
+Auth call has a 15-second workerd-compatible timeout so a stalled Service
+Binding releases the durable lease for retry instead of holding it for five
+minutes. The D1 intent-to-tombstone transition is atomic, duplicate public
+requests are idempotent, and the scheduled reconciler republishes durable
+intents whose initial Queue send failed. Queue and DLQ payloads contain no uid.
 
 The explicit residual inventory covers 68 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and

@@ -28,6 +28,7 @@ const MAX_REQUEST_BODY_BYTES = 4_096;
 const FENCE_QUIESCENCE_SECONDS = 60;
 const ZERO_SCAN_SETTLE_SECONDS = 30;
 const INTENT_LEASE_SECONDS = 5 * 60;
+const AUTH_LIFECYCLE_TIMEOUT_MS = 15_000;
 const RETRY_BASE_SECONDS = 60;
 const RETRY_MAX_SECONDS = 60 * 60;
 const TOMBSTONE_SECONDS = 25 * 60 * 60;
@@ -861,15 +862,33 @@ async function authLifecycleRequest(
     env.INTERNAL_ASSERTION_SECRET,
   );
   if (!signed) throw new Error("Auth lifecycle assertion unavailable");
-  return env.AUTH.fetch(
-    new Request(`https://auth.internal${path}`, {
-      method,
-      headers: {
-        [AUTH_CONTEXT_HEADER]: signed.encoded,
-        [AUTH_SIGNATURE_HEADER]: signed.signature,
-        "x-request-id": requestId,
-      },
-    }),
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    AUTH_LIFECYCLE_TIMEOUT_MS,
+  );
+  try {
+    return await env.AUTH.fetch(
+      new Request(`https://auth.internal${path}`, {
+        method,
+        headers: {
+          [AUTH_CONTEXT_HEADER]: signed.encoded,
+          [AUTH_SIGNATURE_HEADER]: signed.signature,
+          "x-request-id": requestId,
+        },
+        signal: controller.signal,
+      }),
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function authIdentityResidualIsEmpty(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const residual = value as Record<string, unknown>;
+  return ["users", "sessions", "accounts", "deletionVerifications"].every(
+    (field) => residual[field] === 0,
   );
 }
 
@@ -886,19 +905,10 @@ async function deleteAuthIdentity(
     `account-deletion:${intent.jobId}:delete`,
   );
   if (!deleted.ok) throw new Error("Auth identity deletion failed");
-  await deleted.arrayBuffer();
-  const residualPath = `${path}/residual`;
-  const residual = await authLifecycleRequest(
-    env,
-    intent.uid,
-    "GET",
-    residualPath,
-    `account-deletion:${intent.jobId}:residual`,
-  );
-  if (!residual.ok) throw new Error("Auth residual check failed");
-  const body = (await residual.json()) as { empty?: unknown };
-  if (body.empty !== true)
+  const body = (await deleted.json()) as { residual?: unknown };
+  if (!authIdentityResidualIsEmpty(body.residual)) {
     throw new Error("Auth identity residual is not empty");
+  }
 }
 
 async function transferFenceToTombstone(

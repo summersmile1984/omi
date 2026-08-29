@@ -166,7 +166,9 @@ function fakeQueue(options: { fail?: boolean } = {}) {
   };
 }
 
-function fakeAuth(options: { failDelete?: boolean } = {}) {
+function fakeAuth(
+  options: { failDelete?: boolean; hangDelete?: boolean } = {},
+) {
   const requests: Array<{ method: string; path: string }> = [];
   return {
     requests,
@@ -176,9 +178,26 @@ function fakeAuth(options: { failDelete?: boolean } = {}) {
         requests.push({ method: request.method, path });
         if (path === "/ready") return Response.json({ status: "ready" });
         if (request.method === "DELETE") {
+          if (options.hangDelete) {
+            return await new Promise<Response>((_resolve, reject) => {
+              request.signal.addEventListener(
+                "abort",
+                () => reject(request.signal.reason),
+                { once: true },
+              );
+            });
+          }
           return options.failDelete
             ? Response.json({ error: "unavailable" }, { status: 503 })
-            : Response.json({ status: "deleted", residual: {} });
+            : Response.json({
+                status: "deleted",
+                residual: {
+                  users: 0,
+                  sessions: 0,
+                  accounts: 0,
+                  deletionVerifications: 0,
+                },
+              });
         }
         return Response.json({ empty: true, residual: {} });
       }),
@@ -236,6 +255,7 @@ function environment(
   options: {
     queueFail?: boolean;
     authFailDelete?: boolean;
+    authHangDelete?: boolean;
     r2?: Record<string, Uint8Array>;
     stripeSecretKey?: string;
   } = {},
@@ -243,7 +263,10 @@ function environment(
   const database = new SqliteD1();
   const bucket = fakeBucket(options.r2);
   const queue = fakeQueue({ fail: options.queueFail });
-  const auth = fakeAuth({ failDelete: options.authFailDelete });
+  const auth = fakeAuth({
+    failDelete: options.authFailDelete,
+    hangDelete: options.authHangDelete,
+  });
   const env = {
     APP_DB: database as unknown as D1Database,
     ASSETS: bucket.binding,
@@ -424,7 +447,6 @@ describe("Cloudflare account deletion workflow", () => {
       ).toBe(1);
       expect(state.auth.requests.map(({ method }) => method)).toEqual([
         "DELETE",
-        "GET",
       ]);
       expect(
         state.database.row<{ count: number }>(
@@ -515,7 +537,6 @@ describe("Cloudflare account deletion workflow", () => {
       );
       expect(recoveredAuth.requests.map(({ method }) => method)).toEqual([
         "DELETE",
-        "GET",
       ]);
       expect(
         state.database.row<{ count: number }>(
@@ -527,6 +548,69 @@ describe("Cloudflare account deletion workflow", () => {
           "SELECT COUNT(*) AS count FROM cf_account_deletion_tombstones",
         )?.count,
       ).toBe(1);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("releases the identity lease when the Auth lifecycle request stalls", async () => {
+    const state = environment({ authHangDelete: true });
+    try {
+      const now = Math.floor(Date.now() / 1_000);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_account_deletion_intents
+             (uid, job_id, status, phase, attempts, lease_token, lease_until,
+              next_attempt_at, settled_at, created_at, updated_at)
+           VALUES (?, ?, 'pending', 'identity', 0, NULL, NULL, ?, ?, ?, ?)`,
+        )
+        .run("deletion-user", "stalled-identity-job", now, now, now, now);
+      const queued = queueMessage({
+        uid: "",
+        jobId: "stalled-identity-job",
+        kind: "account_delete",
+        payload: {},
+      });
+      const processing = processAccountDeletionMessage(
+        queued.message,
+        state.env,
+      );
+      await vi.waitFor(() => expect(state.auth.requests).toHaveLength(1));
+      expect(state.auth.requests).toEqual([
+        { method: "DELETE", path: "/internal/users/deletion-user" },
+      ]);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await processing;
+
+      expect(queued.ack).toHaveBeenCalledOnce();
+      expect(
+        state.database.row<{
+          status: string;
+          phase: string;
+          last_error: string;
+          lease_token: string | null;
+        }>(
+          `SELECT status, phase, last_error, lease_token
+           FROM cf_account_deletion_intents WHERE uid = ?`,
+          "deletion-user",
+        ),
+      ).toEqual({
+        status: "failed",
+        phase: "identity",
+        last_error: "account deletion dependency unavailable",
+        lease_token: null,
+      });
+      expect(state.queue.sent).toEqual([
+        {
+          body: {
+            uid: "",
+            jobId: "stalled-identity-job",
+            kind: "account_delete",
+            payload: {},
+          },
+          delaySeconds: 120,
+        },
+      ]);
     } finally {
       state.database.close();
     }
