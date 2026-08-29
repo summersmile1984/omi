@@ -97,20 +97,18 @@ class FakeAi:
 
     async def run(self, model, payload):
         self.calls.append((model, payload))
+        assert payload["response_format"]["type"] == "json_schema"
         prompt = payload["messages"][1]["content"]
         if prompt.startswith("Extract durable"):
             return {"response": json.dumps({"memories": ["The user prefers tea."]})}
         return {
-            "response": json.dumps(
-                {
-                    "title": "Tea planning",
-                    "overview": "The user planned a tea tasting.",
-                    "emoji": "🍵",
-                    "category": "other",
-                    "action_items": [{"description": "Buy green tea"}],
-                    "events": [],
-                }
-            )
+            "response": {
+                "title": "Tea planning",
+                "overview": "The user planned a tea tasting.",
+                "emoji": "🍵",
+                "category": "other",
+                "action_items": [{"description": "Buy green tea"}],
+            }
         }
 
 

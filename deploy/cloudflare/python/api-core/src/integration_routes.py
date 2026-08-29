@@ -406,7 +406,54 @@ def _structured_json(value: str) -> object | None:
             return None
 
 
-async def _workers_ai_json(env: object, prompt: str, max_tokens: int) -> object | None:
+def _json_schema(name: str, properties: dict[str, object], required: list[str]) -> dict[str, object]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+CONVERSATION_SCHEMA = _json_schema(
+    "omi_integration_conversation",
+    {
+        "title": {"type": "string"},
+        "overview": {"type": "string"},
+        "emoji": {"type": "string"},
+        "category": {"type": "string"},
+        "action_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"description": {"type": "string"}},
+                "required": ["description"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    ["title", "overview", "emoji", "category", "action_items"],
+)
+MEMORY_SCHEMA = _json_schema(
+    "omi_integration_memories",
+    {"memories": {"type": "array", "items": {"type": "string"}}},
+    ["memories"],
+)
+
+
+async def _workers_ai_json(
+    env: object,
+    prompt: str,
+    max_tokens: int,
+    response_format: dict[str, object],
+) -> object | None:
     ai = getattr(env, "AI", None)
     if ai is None:
         return None
@@ -422,6 +469,7 @@ async def _workers_ai_json(env: object, prompt: str, max_tokens: int) -> object 
                     },
                     {"role": "user", "content": prompt},
                 ],
+                "response_format": response_format,
                 "max_tokens": max_tokens,
                 "temperature": 0,
             },
@@ -430,16 +478,21 @@ async def _workers_ai_json(env: object, prompt: str, max_tokens: int) -> object 
         return None
     mapping = _rpc_mapping(result)
     response = mapping.get("response") if mapping else None
-    return _structured_json(response) if isinstance(response, str) else None
+    if isinstance(response, dict):
+        return response
+    if isinstance(response, str):
+        return _structured_json(response)
+    return mapping if isinstance(mapping, dict) and "response" not in mapping else None
 
 
 async def _conversation_summary(env: object, text: str) -> dict[str, object] | None:
     result = await _workers_ai_json(
         env,
         "Summarize the following conversation. Return an object with string fields title, overview, emoji, category; "
-        "an action_items array of objects with a non-empty description; and an empty events array. "
+        "and an action_items array of objects with a non-empty description. "
         "Keep title under 160 characters, overview under 2000 characters, and at most 20 action items.\n\n" + text,
         1_024,
+        CONVERSATION_SCHEMA,
     )
     if not isinstance(result, dict):
         return None
@@ -476,6 +529,7 @@ async def _extracted_memories(env: object, payload: ExternalMemoryCreate) -> lis
         "Return an object with a memories array of concise strings, at most 50 items. "
         f"Source: {source}\n\n{payload.text}",
         1_024,
+        MEMORY_SCHEMA,
     )
     values = result.get("memories") if isinstance(result, dict) else None
     if not isinstance(values, list):
