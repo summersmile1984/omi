@@ -235,3 +235,67 @@ def test_single_app_hides_unavailable_rows_and_fails_closed_for_malformed_projec
 
     assert missing.status_code == 404
     assert malformed.status_code == 503
+
+
+def test_single_app_exposes_private_pending_disabled_record_only_to_its_owner():
+    secret = "catalog-secret"
+    row = {
+        **catalog_row("owner-app", disabled=1),
+        "owner_uid": "owner-user",
+        "approved": 0,
+        "user_enabled": 0,
+    }
+    payload = json.loads(row["data_json"])
+    payload.update(
+        {
+            "private": True,
+            "status": "under-review",
+            "email": "owner@example.com",
+            "chat_prompt": "owner-only prompt",
+        }
+    )
+    row["data_json"] = json.dumps(payload)
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=row), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+
+    owner = asyncio.run(get_app(FakeRequest(env, signed_headers(secret, "owner-user")), "owner-app"))
+    stranger = asyncio.run(get_app(FakeRequest(env, signed_headers(secret, "other-user")), "owner-app"))
+
+    assert owner["id"] == "owner-app"
+    assert owner["approved"] is False
+    assert owner["disabled"] is True
+    assert owner["private"] is True
+    assert owner["email"] == "owner@example.com"
+    assert owner["chat_prompt"] == "owner-only prompt"
+    assert stranger.status_code == 404
+
+
+def test_single_public_app_strips_owner_only_payload_fields():
+    secret = "catalog-secret"
+    row = {**catalog_row("public-app"), "owner_uid": "owner-user", "user_enabled": 0}
+    payload = json.loads(row["data_json"])
+    payload.update(
+        {
+            "email": "owner@example.com",
+            "chat_prompt": "private implementation prompt",
+            "payment_product_id": "prod_private",
+            "external_integration": {"mcp_oauth_tokens": {"access_token": "secret"}},
+        }
+    )
+    row["data_json"] = json.dumps(payload)
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=row), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+
+    result = asyncio.run(get_app(FakeRequest(env, signed_headers(secret, "viewer-user")), "public-app"))
+
+    assert result["id"] == "public-app"
+    assert "email" not in result
+    assert "chat_prompt" not in result
+    assert "payment_product_id" not in result
+    assert result["external_integration"] == {}

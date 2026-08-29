@@ -62,8 +62,7 @@ class SqliteD1 {
       bind: (...values: unknown[]) => build(values),
       first: async <T>() => {
         const row = this.database.prepare(sql).get(...args.map(sqliteValue)) as
-          | T
-          | undefined;
+          T | undefined;
         return row ?? null;
       },
       all: async <T>() => ({
@@ -109,8 +108,7 @@ class SqliteD1 {
   row<T>(sql: string, ...args: unknown[]): T | null {
     return (
       (this.database.prepare(sql).get(...args.map(sqliteValue)) as
-        | T
-        | undefined) ?? null
+        T | undefined) ?? null
     );
   }
 
@@ -374,6 +372,7 @@ describe("Cloudflare account deletion workflow", () => {
   it("purges R2 and D1, performs two zero scans, then deletes Auth idempotently", async () => {
     const state = environment({
       r2: {
+        "cf-app-logos/deletion-user/app/version": new Uint8Array([4, 5, 6]),
         "cf-assets/deletion-user/content": new Uint8Array([1, 2, 3]),
       },
     });

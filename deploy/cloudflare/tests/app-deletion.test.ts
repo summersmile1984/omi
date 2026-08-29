@@ -142,16 +142,18 @@ function fakeQueue(options: { fail?: boolean } = {}) {
 function environment(options: { queueFail?: boolean } = {}) {
   const database = new SqliteD1();
   const queue = fakeQueue({ fail: options.queueFail });
+  const assetDeletes = vi.fn(async () => undefined);
   return {
     database,
     queue,
+    assetDeletes,
     env: {
       APP_DB: database as unknown as D1Database,
       JOBS: queue.binding,
       INTERNAL_ASSERTION_SECRET: "app-deletion-assertion-secret",
       STRIPE_SECRET_KEY: "sk_test_app_deletion",
       AUTH: { fetch: vi.fn() } as unknown as Fetcher,
-      ASSETS: {} as R2Bucket,
+      ASSETS: { delete: assetDeletes } as unknown as R2Bucket,
       AI: { run: vi.fn() },
       SYNC_FRESH: queue.binding,
       SYNC_BACKFILL: queue.binding,
@@ -159,7 +161,10 @@ function environment(options: { queueFail?: boolean } = {}) {
   };
 }
 
-function seedApp(database: SqliteD1, options: { paid?: boolean } = {}) {
+function seedApp(
+  database: SqliteD1,
+  options: { paid?: boolean; cloudflareLogo?: boolean } = {},
+) {
   database.database
     .prepare(
       `INSERT INTO cf_app_catalog
@@ -171,6 +176,9 @@ function seedApp(database: SqliteD1, options: { paid?: boolean } = {}) {
         id: "owned-app",
         name: "Owned app",
         is_paid: options.paid === true,
+        image: options.cloudflareLogo
+          ? "https://edge.test/v1/apps/owned-app/logo/00000000-0000-4000-8000-000000000000"
+          : "https://storage.googleapis.com/legacy/logo.png",
       }),
     );
 }
@@ -263,6 +271,38 @@ afterEach(() => {
 });
 
 describe("Cloudflare app deletion", () => {
+  it("removes the current R2 logo before completing a free app deletion", async () => {
+    const state = environment();
+    try {
+      seedApp(state.database, { cloudflareLogo: true });
+      const response = await jobs.fetch(
+        new Request("https://jobs.test/v1/apps/owned-app", {
+          method: "DELETE",
+          headers: await deletionHeaders("creator-user"),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      const message = await runQueuedDeletion(state);
+      expect(message.ack).toHaveBeenCalledOnce();
+      expect(state.assetDeletes).toHaveBeenCalledWith(
+        "cf-app-logos/creator-user/owned-app/00000000-0000-4000-8000-000000000000",
+      );
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_catalog WHERE id = 'owned-app'",
+        )?.count,
+      ).toBe(0);
+      expect(
+        state.database.row<{ status: string }>(
+          "SELECT status FROM cf_jobs WHERE kind = 'app_delete'",
+        )?.status,
+      ).toBe("completed");
+    } finally {
+      state.database.close();
+    }
+  });
+
   it("retires a paid app only after its Payment Link, Checkout, and subscriber renewal are stopped", async () => {
     const stripeRequests: Request[] = [];
     vi.stubGlobal(

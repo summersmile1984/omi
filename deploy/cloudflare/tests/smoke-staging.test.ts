@@ -48,8 +48,14 @@ function creatorPaymentBoundary(
   }
   if (
     url.endsWith("/v1/apps/cf-smoke-missing") &&
-    init?.method === "DELETE"
+    (init?.method === "DELETE" || init?.method === "PATCH")
   ) {
+    return new Response(null, { status: 404 });
+  }
+  if (url.endsWith("/v1/apps") && init?.method === "POST") {
+    return new Response(null, { status: 400 });
+  }
+  if (url.includes("/v1/apps/cf-smoke-missing/logo/")) {
     return new Response(null, { status: 404 });
   }
   if (
@@ -398,6 +404,9 @@ describe("staging smoke helpers", () => {
       appSubscription: 200,
       cancelAppSubscriptionBoundary: 404,
       appDeleteBoundary: 404,
+      appCreateBoundary: 400,
+      appUpdateBoundary: 404,
+      appLogoBoundary: 404,
       connectAccountBoundary: 400,
       stripeOnboardingStatus: 200,
       stripeRefreshOwnership: 403,
@@ -410,7 +419,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(91);
+    expect(calls).toHaveLength(94);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

@@ -516,6 +516,68 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("serves immutable app logos publicly and signs app create/update for Jobs", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({
+            uid: "creator-user",
+            authority: "better-auth",
+          });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      JOBS: service((request) => {
+        jobsRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+    };
+    const logo = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/apps/app-1/logo/00000000-0000-4000-8000-000000000000",
+      ),
+      env as never,
+    );
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/apps", { method: "POST" }),
+      env as never,
+    );
+    for (const [method, route] of [
+      ["POST", "/v1/apps"],
+      ["PATCH", "/v1/apps/app-1"],
+    ] as const) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${route}`, {
+          method,
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    expect(logo.status).toBe(200);
+    expect(unauthenticated.status).toBe(401);
+    expect(
+      jobsRequests.map(
+        (request) => `${request.method} ${new URL(request.url).pathname}`,
+      ),
+    ).toEqual([
+      "GET /v1/apps/app-1/logo/00000000-0000-4000-8000-000000000000",
+      "POST /v1/apps",
+      "PATCH /v1/apps/app-1",
+    ]);
+    expect(jobsRequests[0].headers.get("x-omi-auth-context")).toBeNull();
+    for (const request of jobsRequests.slice(1)) {
+      expect(
+        decodeAuthContext(request.headers.get("x-omi-auth-context")),
+      ).toMatchObject({ uid: "creator-user", audience: "jobs" });
+    }
+  });
+
   it("keeps app review lists public and signs every review mutation", async () => {
     const coreRequests: Request[] = [];
     const env = {

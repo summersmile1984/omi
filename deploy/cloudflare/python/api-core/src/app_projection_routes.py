@@ -1,10 +1,10 @@
-"""Public app catalog reads backed by an explicit D1 projection.
+"""App catalog reads backed by the Cloudflare D1 authority.
 
-The legacy catalog is backed by Firestore/Redis and also owns private apps,
-reviews, install mutations, subscriptions, and MCP credentials. This module
-only serves approved public records that have been imported through the
-whitelisted backfill tool. A malformed projection fails closed instead of
-serving a partially trusted catalog.
+Public callers only receive approved marketplace records. Authenticated owners
+may also read their own private, pending, or disabled record so Cloudflare-owned
+create/update flows do not depend on the retired Firestore authority. A
+malformed projection fails closed instead of serving a partially trusted
+catalog.
 """
 
 from __future__ import annotations
@@ -83,6 +83,28 @@ def _public_app(row: dict[str, object], include_reviews: bool) -> dict[str, obje
     return result
 
 
+def _strip_owner_only_fields(app: dict[str, object]) -> dict[str, object]:
+    result = dict(app)
+    for key in (
+        "email",
+        "memory_prompt",
+        "chat_prompt",
+        "persona_prompt",
+        "payment_product_id",
+        "payment_price_id",
+        "payment_link_id",
+        "money_made",
+        "usage_count",
+    ):
+        result.pop(key, None)
+    external = result.get("external_integration")
+    if isinstance(external, dict):
+        sanitized = dict(external)
+        sanitized.pop("mcp_oauth_tokens", None)
+        result["external_integration"] = sanitized
+    return result
+
+
 async def _read_public_apps(request: Request, *, popular: bool, include_reviews: bool):
     env = request.scope["env"]
     clause = "AND is_popular = 1" if popular else ""
@@ -114,7 +136,7 @@ async def _read_public_apps(request: Request, *, popular: bool, include_reviews:
             return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
         if app is None:  # persona apps are intentionally absent from public catalog reads.
             continue
-        apps.append(app)
+        apps.append(_strip_owner_only_fields(app))
     if include_reviews:
         context = _auth_context(request)
         try:
@@ -148,11 +170,7 @@ async def get_popular_apps(request: Request):
 
 @router.get("/v1/apps/{app_id}")
 async def get_app(request: Request, app_id: str):
-    """Return one approved public app plus the current user's install state.
-
-    Private and unapproved apps remain on the legacy authority because the D1
-    projection intentionally contains public catalog data only.
-    """
+    """Return a public app, or the caller's own non-public app, plus user state."""
     context = _auth_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -163,7 +181,7 @@ async def get_app(request: Request, app_id: str):
     try:
         result = (
             await env.APP_DB.prepare(
-                "SELECT c.id, c.approved, c.disabled, c.is_popular, c.installs, "
+                "SELECT c.id, c.owner_uid, c.approved, c.disabled, c.is_popular, c.installs, "
                 "c.rating_avg, c.rating_count, c.data_json, "
                 "CASE WHEN u.app_id IS NULL THEN 0 ELSE 1 END AS user_enabled, "
                 "CASE WHEN s.status IN ('active', 'trialing') AND s.current_period_end > unixepoch() "
@@ -171,7 +189,7 @@ async def get_app(request: Request, app_id: str):
                 "FROM cf_app_catalog c "
                 "LEFT JOIN cf_user_enabled_apps u ON u.app_id = c.id AND u.uid = ? "
                 "LEFT JOIN cf_app_subscriptions s ON s.app_id = c.id AND s.uid = ? "
-                "WHERE c.id = ? AND c.approved = 1 AND c.disabled = 0 LIMIT 1"
+                "WHERE c.id = ? LIMIT 1"
             )
             .bind(str(context["uid"]), str(context["uid"]), app_id)
             .first()
@@ -181,16 +199,22 @@ async def get_app(request: Request, app_id: str):
 
     if not isinstance(result, dict):
         return JSONResponse({"detail": "App not found"}, status_code=404)
-    # Retain application-level guards around the imported projection so a
-    # malformed test adapter or stale row cannot cross the visibility boundary.
-    if str(result.get("id") or "") != app_id or not _flag(result.get("approved")) or _flag(result.get("disabled")):
+    uid = str(context["uid"])
+    owner = isinstance(result.get("owner_uid"), str) and result.get("owner_uid") == uid
+    # Retain application-level guards so a malformed adapter or stale row can
+    # never expose a private/pending record to a non-owner.
+    if str(result.get("id") or "") != app_id:
         return JSONResponse({"detail": "App not found"}, status_code=404)
     try:
         app = _public_app(result, include_reviews=False)
     except (TypeError, ValueError, OverflowError):
         return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
-    if app is None or _flag(app.get("private")):
+    if app is None or (
+        not owner and (not _flag(result.get("approved")) or _flag(result.get("disabled")) or _flag(app.get("private")))
+    ):
         return JSONResponse({"detail": "App not found"}, status_code=404)
+    if not owner:
+        app = _strip_owner_only_fields(app)
     entitled = _flag(result.get("user_entitled"))
     paid = _flag(app.get("is_paid")) or bool(app.get("payment_link") or app.get("payment_link_id"))
     app["is_user_paid"] = entitled
@@ -198,9 +222,9 @@ async def get_app(request: Request, app_id: str):
     payment_link = app.get("payment_link")
     if isinstance(payment_link, str) and payment_link:
         separator = "&" if "?" in payment_link else "?"
-        app["payment_link"] = f"{payment_link}{separator}client_reference_id=uid_{quote(str(context['uid']), safe='')}"
+        app["payment_link"] = f"{payment_link}{separator}client_reference_id=uid_{quote(uid, safe='')}"
     try:
-        await hydrate_app_reviews(env, [app], current_uid=str(context["uid"]))
+        await hydrate_app_reviews(env, [app], current_uid=uid)
     except Exception:
         return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     return app

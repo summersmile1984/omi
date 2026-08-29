@@ -210,3 +210,27 @@ def test_v2_catalog_rejects_invalid_query_and_malformed_rows():
 
     unauthorized = asyncio.run(search_apps(FakeRequest(env)))
     assert unauthorized.status_code == 401
+
+
+def test_v2_my_apps_search_includes_only_the_owners_private_pending_rows():
+    secret = "catalog-search-secret"
+    owned = row("pending-private", capabilities=["chat"])
+    owned.update({"owner_uid": "owner-user", "approved": 0, "disabled": 1})
+    payload = json.loads(owned["data_json"])
+    payload.update({"uid": "owner-user", "private": True, "status": "under-review"})
+    owned["data_json"] = json.dumps(payload)
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": FakeDb([owned]),
+            "INTERNAL_ASSERTION_SECRET": secret,
+        },
+    )()
+
+    mine = asyncio.run(search_apps(FakeRequest(env, {"my_apps": "true"}, signed_headers(secret, "owner-user"))))
+    public = asyncio.run(search_apps(FakeRequest(env, {"my_apps": "false"}, signed_headers(secret, "owner-user"))))
+
+    assert [item["id"] for item in mine["data"]] == ["pending-private"]
+    assert mine["data"][0]["private"] is True
+    assert public["data"] == []

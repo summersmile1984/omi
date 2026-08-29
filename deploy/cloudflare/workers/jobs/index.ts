@@ -47,6 +47,7 @@ import {
   reconcileAppDeletions,
   registerAppDeletionRoutes,
 } from "./app-deletion";
+import { registerAppMutationRoutes } from "./app-mutations";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -99,6 +100,7 @@ registerSyncRoutes(app, requestContext);
 registerAccountDeletionRoutes(app, requestContext);
 registerStripeBillingRoutes(app, requestContext);
 registerCreatorPaymentRoutes(app, requestContext);
+registerAppMutationRoutes(app, requestContext);
 registerAppDeletionRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local

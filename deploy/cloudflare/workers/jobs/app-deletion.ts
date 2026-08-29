@@ -8,6 +8,7 @@ import {
 } from "./app-payment-links";
 import type { JobMessage, JobsEnv } from "./env";
 import { stripeRequest, stripeSecretKey } from "./stripe-client";
+import { appLogoObjectKeyFromPayload } from "./app-logo";
 
 const APP_ID_MAX_LENGTH = 256;
 const SUBSCRIPTION_BATCH_SIZE = 10;
@@ -477,6 +478,12 @@ async function completeDeletion(
   paymentLink: AppPaymentLinkRow | null,
   now: number,
 ) {
+  const logoKey = appLogoObjectKeyFromPayload(
+    job.data_json,
+    job.uid,
+    job.app_id,
+  );
+  if (logoKey) await env.ASSETS.delete(logoKey);
   const statements = [
     env.APP_DB.prepare(
       "DELETE FROM cf_user_enabled_apps WHERE app_id = ?",

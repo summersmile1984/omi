@@ -852,6 +852,25 @@ export async function runSmoke({
   );
   expectStatus("app deletion ownership boundary", appDeleteBoundary, 404);
 
+  const appCreateBoundary = await request(fetchImpl, `${base}/v1/apps`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  expectStatus("app create multipart boundary", appCreateBoundary, 400);
+
+  const appUpdateBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing`,
+    { method: "PATCH", headers: authHeaders },
+  );
+  expectStatus("app update ownership boundary", appUpdateBoundary, 404);
+
+  const appLogoBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing/logo/00000000-0000-4000-8000-000000000000`,
+  );
+  expectStatus("app logo catalog boundary", appLogoBoundary, 404);
+
   const connectAccountBoundary = await request(
     fetchImpl,
     `${base}/v1/stripe/connect-accounts?country=USA`,
@@ -1052,6 +1071,9 @@ export async function runSmoke({
     appSubscription: appSubscription.status,
     cancelAppSubscriptionBoundary: cancelAppSubscriptionBoundary.status,
     appDeleteBoundary: appDeleteBoundary.status,
+    appCreateBoundary: appCreateBoundary.status,
+    appUpdateBoundary: appUpdateBoundary.status,
+    appLogoBoundary: appLogoBoundary.status,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
     stripeRefreshOwnership: stripeRefreshOwnership.status,

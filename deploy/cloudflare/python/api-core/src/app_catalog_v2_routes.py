@@ -1,8 +1,8 @@
-"""D1-backed public marketplace grouping for ``GET /v2/apps``.
+"""D1-backed marketplace grouping and owner search for ``GET /v2/apps``.
 
-This is a read-only catalog projection.  It deliberately does not expose
-private prompts, reviews, payment identifiers, MCP tokens, or user state, and
-does not replace the legacy app authority for writes or external integrations.
+Public reads deliberately exclude private prompts, payment identifiers, MCP
+tokens, and user state. Authenticated ``my_apps`` reads use the D1 owner column
+to include the caller's pending/private records created by the Jobs Worker.
 """
 
 from __future__ import annotations
@@ -224,30 +224,48 @@ def _pagination(total: int, offset: int, limit: int, category: str | None = None
     return result
 
 
-async def _read_apps(request: Request, include_reviews: bool) -> list[dict[str, object]] | JSONResponse:
+async def _read_apps(
+    request: Request, include_reviews: bool, *, owner_uid: str | None = None
+) -> list[dict[str, object]] | JSONResponse:
     try:
-        result = (
-            await request.scope["env"]
-            .APP_DB.prepare(
-                "SELECT id, approved, disabled, is_popular, installs, rating_avg, rating_count, data_json "
-                "FROM cf_app_catalog WHERE approved = 1 AND disabled = 0 "
-                "ORDER BY is_popular DESC, installs DESC, id ASC LIMIT ?"
+        if owner_uid is None:
+            statement = (
+                request.scope["env"]
+                .APP_DB.prepare(
+                    "SELECT id, owner_uid, approved, disabled, is_popular, installs, rating_avg, rating_count, data_json "
+                    "FROM cf_app_catalog WHERE approved = 1 AND disabled = 0 "
+                    "ORDER BY is_popular DESC, installs DESC, id ASC LIMIT ?"
+                )
+                .bind(MAX_RESULTS)
             )
-            .bind(MAX_RESULTS)
-            .all()
-        )
+        else:
+            statement = (
+                request.scope["env"]
+                .APP_DB.prepare(
+                    "SELECT id, owner_uid, approved, disabled, is_popular, installs, rating_avg, rating_count, data_json "
+                    "FROM cf_app_catalog WHERE owner_uid = ? "
+                    "ORDER BY updated_at DESC, id ASC LIMIT ?"
+                )
+                .bind(owner_uid, MAX_RESULTS)
+            )
+        result = await statement.all()
     except Exception:
         return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     rows = result.get("results", []) if isinstance(result, dict) else []
     apps: list[dict[str, object]] = []
     for row in rows:
-        if not isinstance(row, dict) or not _flag(row.get("approved")) or _flag(row.get("disabled")):
+        if not isinstance(row, dict):
+            continue
+        owned = owner_uid is not None and row.get("owner_uid") == owner_uid
+        if owner_uid is not None and not owned:
+            return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
+        if not owned and (not _flag(row.get("approved")) or _flag(row.get("disabled"))):
             continue
         try:
             app = _public_app(row, include_reviews)
         except (TypeError, ValueError, OverflowError):
             return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
-        if app is None or _flag(app.get("private")):
+        if app is None or (not owned and _flag(app.get("private"))):
             continue
         apps.append(app)
     if include_reviews:
@@ -464,10 +482,14 @@ async def search_apps(request: Request):
     if sort is not None and len(sort) > 32:
         return JSONResponse({"error": "invalid sort"}, status_code=400)
 
-    apps = await _read_apps(request, include_reviews=False)
+    uid = str(context["uid"])
+    apps = await _read_apps(
+        request,
+        include_reviews=False,
+        owner_uid=uid if my_apps else None,
+    )
     if isinstance(apps, JSONResponse):
         return apps
-    uid = str(context["uid"])
     try:
         enabled_result = (
             await request.scope["env"]
@@ -481,8 +503,6 @@ async def search_apps(request: Request):
     enabled_ids = {
         str(row["app_id"]) for row in enabled_rows if isinstance(row, dict) and isinstance(row.get("app_id"), str)
     }
-    if my_apps:
-        apps = [app for app in apps if str(app.get("uid") or "") == uid]
     if installed_apps:
         apps = [app for app in apps if str(app.get("id") or "") in enabled_ids]
     if category:

@@ -582,9 +582,14 @@ GET  /v1/app/proactive-notification-scopes
 GET  /v1/app-capabilities
 GET  /v1/app/payment-plans
                               Edge → Python API Core → static catalog metadata;
-                              mutable app records and subscriptions remain legacy
+                              MCP credentials remain on dedicated routes
 GET  /v1/approved-apps         Edge → Python API Core → approved public app D1 projection
 GET  /v1/apps/popular          Edge → Python API Core → popular public app D1 projection
+POST /v1/apps                  Edge → Jobs → multipart + R2 logo + D1/Stripe mapping
+PATCH /v1/apps/{appId}         Edge → Jobs → owner-only D1/R2/Stripe update
+DELETE /v1/apps/{appId}        Edge → Jobs Queue → provider-safe app deletion
+GET  /v1/apps/{appId}/logo/{version}
+                              Edge → Jobs → immutable current-logo R2 object
 GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
 GET  /v2/apps/capability/{capability_id}/grouped
                               Edge → Python API Core → capability/category D1 projection
@@ -923,9 +928,10 @@ idempotency key. Stripe's browser refresh callback is a GET, so the Worker
 accepts a bounded signed refresh URL and redirects directly to a newly created
 single-use Account Link; the legacy authenticated POST response remains
 available to existing clients. Connect webhook signatures use their own
-rotatable secret and the exact raw body. Payment Link creation remains attached
-to legacy app-owner CRUD until that mutation surface moves; existing hosted
-links are consumed directly by the Cloudflare entitlement flow.
+rotatable secret and the exact raw body. Paid app create/update now provisions
+Product, monthly Price, and Payment Link objects through Jobs and commits their
+owner-bound mapping with the D1 catalog row. Existing hosted links are consumed
+directly by the Cloudflare entitlement flow.
 
 Migration `0061_app_payment_links.sql` keeps the Stripe account, product, price,
 Payment Link, and hosted URL in a provider-only D1 mapping instead of the public
@@ -938,7 +944,25 @@ an entitlement after the catalog row is gone. Creator deletion also cancels all
 projected subscriber renewals before product data is purged. Production cutover
 remains blocked until existing paid-app provider identifiers have been imported
 and verified in `cf_app_payment_links`, the Jobs Stripe secret is provisioned,
-and app-owner create/update mutations have moved from the legacy owner.
+and the paid mutation path has been exercised against the intended Stripe mode.
+
+`POST /v1/apps` and owner-authorized `PATCH /v1/apps/{app_id}` now keep mutable
+app records in `cf_app_catalog` while retaining the legacy multipart
+`app_data` + `file` contract. Logos are bounded PNG/JPEG/GIF/WebP bytes stored
+under a versioned `cf-app-logos/{uid}/{app_id}/{version}` R2 key. The catalog
+publishes only the current immutable URL; failed mutations delete the staged
+version, app deletion removes the current object, and account deletion sweeps
+the full uid prefix. Client-supplied identity, approval, payment identifiers,
+reviews, chat tools, persona fields, and MCP credentials cannot cross this
+generic mutation boundary. New rows are always `under-review`; only the owner
+can read private, pending, or disabled rows. Paid mutations require a completed
+creator Stripe profile and write the Product/Price/Payment Link mapping with the
+catalog in one D1 batch. If that batch fails, the unpublished hosted link is
+deactivated before the staged logo is removed. When an external integration
+declares a chat-tools manifest, create/update performs one bounded HTTPS fetch,
+validates and normalizes the initial tools into the catalog, and fails open with
+shared fallback telemetry if the dependency is unavailable; the later explicit
+manifest-refresh route remains a separate migration surface.
 
 Migration `0062_app_deletion_fences.sql` moves owner-authorized
 `DELETE /v1/apps/{app_id}` to Jobs without making provider cleanup synchronous
@@ -1267,25 +1291,25 @@ evidence are approved; records can be loaded with the whitelisted backfill tool.
 The app catalog metadata routes (`/v1/app-categories`,
 `/v1/app/proactive-notification-scopes`, `/v1/app-capabilities`, and
 `/v1/app/payment-plans`) are static, public responses and now run in API Core
-without D1 or external providers. Mutable app records, subscriptions, MCP
-credentials, and enable/disable side effects remain legacy-owned until
-their catalog authority and user-installation state are migrated together. The
-three installation routes below accept approved public catalog rows with no
+without D1 or external providers. App create/update/delete, subscriptions, and
+enable/disable side effects are Cloudflare-owned; MCP credentials remain on
+their dedicated routes. The three installation routes below accept approved
+public catalog rows with no
 external setup callback; a paid row additionally requires a current signed-
 webhook D1 entitlement.
 
 `/v1/approved-apps` and the authenticated `/v1/apps/popular` route read only the
-approved, non-disabled, non-persona records in `cf_app_catalog`. Records enter
-that table through the whitelisted D1 backfill generator, which rejects private
-fields such as reviews, payment identifiers, credentials, and prompts. This
-projection is the first dynamic catalog slice. `GET /v1/apps/enabled`,
+approved, non-disabled, non-persona records in `cf_app_catalog`. Existing rows
+enter through the whitelisted D1 backfill generator; new owner mutations write
+the same authority while list reducers continue to omit reviews, payment
+identifiers, credentials, and prompts. `GET /v1/apps/enabled`,
 `POST /v1/apps/enable`, and `POST /v1/apps/disable` project only the
 uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
 install counter for idempotent retries. Paid installs fail closed unless
 `cf_app_subscriptions` is active/trialing and its current period has not ended;
-the enabled-app read applies the same check. Private/persona apps, setup
-callbacks, app creation/update (including Payment Link creation), and MCP state
-remain legacy-owned; no production cutover is implied.
+the enabled-app read applies the same check. Persona mutation, external setup
+callbacks, manifest refresh, and MCP state remain separate migration surfaces;
+no production cutover is implied.
 
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
 responses from the same public D1 rows. It preserves the legacy pagination
@@ -1293,16 +1317,18 @@ shape and score ordering, but intentionally returns `enabled: false` because
 the public route has no user context; clients should combine it with
 `/v1/apps/enabled`. Capability-specific grouped-category routes and the
 authenticated `/v2/apps/search` filters are also read from the same projection.
-Search only exposes approved public catalog fields and uid-scoped installed-app
-state. Authenticated app detail reads add the caller-bound Payment Link client
-reference and expose `is_user_paid` only from the current D1 entitlement.
+Search exposes approved public catalog fields and uid-scoped installed-app
+state; `my_apps=true` instead reads the caller's own pending/private/disabled
+rows without weakening the public filter. Authenticated app detail reads use
+the same owner exception, add the caller-bound Payment Link client reference,
+and expose `is_user_paid` only from the current D1 entitlement.
 Public-app reviews now use `cf_app_reviews`; writes update the catalog's
 rating average/count in the same D1 transaction, and catalog reads hydrate
 bounded review lists plus the signed user's own review. `owner_uid` is an
 explicit non-public catalog column, so review writes fail closed until older
 rows are backfilled. Review/reply push notifications remain an external API
-boundary. Private apps, setup callbacks, Payment Link creation, MCP state, and
-other app-owner writes remain legacy-owned.
+boundary. Persona mutation, setup callbacks, manifest refresh, MCP state, and
+the remaining app administration routes are still separate migration work.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

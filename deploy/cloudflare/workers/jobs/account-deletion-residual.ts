@@ -135,6 +135,7 @@ export const ACCOUNT_DELETION_D1_PURGE_SURFACES = Object.freeze(
 
 /** User-scoped object families currently stored in the shared ASSETS bucket. */
 export const ACCOUNT_DELETION_R2_PREFIX_PATTERNS = Object.freeze([
+  "cf-app-logos/{uid}/",
   "cf-assets/{uid}/",
   "cf-transcriptions/{uid}/",
   "cf-sync/{uid}/",
