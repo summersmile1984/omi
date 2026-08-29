@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -10,6 +11,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
+import fair_use_routes as fair_use_routes_module  # noqa: E402
 from fair_use_routes import (  # noqa: E402
     get_fair_use_status,
     get_flagged_users,
@@ -103,10 +105,11 @@ def test_default_status_is_authenticated_and_reports_zero_usage():
     assert asyncio.run(get_fair_use_status(FakeRequest(env))).status_code == 401
 
 
-def test_status_uses_live_sources_rolling_windows_paid_limits_and_dg_budget():
+def test_status_uses_live_sources_rolling_windows_paid_limits_and_dg_budget(monkeypatch):
     secret = "fair-use-secret"
     env = make_env(secret)
-    now = int(time.time())
+    now = int(datetime(2026, 8, 15, 12, tzinfo=timezone.utc).timestamp())
+    monkeypatch.setattr(fair_use_routes_module.time, "time", lambda: now)
     env.APP_DB.connection.execute(
         "INSERT INTO cf_user_subscriptions (uid, plan, status, updated_at) VALUES (?, 'architect', 'active', ?)",
         ("fair-use-user", now),
