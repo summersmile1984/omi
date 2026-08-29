@@ -12,6 +12,11 @@ import {
   readAccountProductResidual,
   validAccountDeletionUid,
 } from "./account-deletion-residual";
+import {
+  deactivateAppPaymentLink,
+  retireOwnedPaidApps,
+  stripeOwnedAppPaymentLinks,
+} from "./app-payment-links";
 import type { JobMessage, JobsEnv } from "./env";
 import {
   StripeResponseError,
@@ -348,11 +353,13 @@ async function assertExternalProviderCleanupConfigured(
   ]);
   const appSubscriptionIds = await stripeAppSubscriptionIds(env, uid);
   const ownedAppSubscriptionIds = await stripeOwnedAppSubscriptionIds(env, uid);
+  const ownedAppPaymentLinks = await stripeOwnedAppPaymentLinks(env, uid);
   if (
     subscriptionId ||
     accountId ||
     appSubscriptionIds.length > 0 ||
-    ownedAppSubscriptionIds.length > 0
+    ownedAppSubscriptionIds.length > 0 ||
+    ownedAppPaymentLinks.length > 0
   ) {
     stripeSecretKey(env);
   }
@@ -460,6 +467,20 @@ async function cleanupExternalProviders(
   env: JobsEnv,
   intent: ParsedAccountDeletionIntent,
 ) {
+  const ownedAppPaymentLinks = await stripeOwnedAppPaymentLinks(
+    env,
+    intent.uid,
+  );
+  if (ownedAppPaymentLinks.length > 0) {
+    for (const paymentLink of ownedAppPaymentLinks) {
+      await deactivateAppPaymentLink(
+        env,
+        paymentLink,
+        `account-delete-${intent.jobId}`,
+      );
+    }
+    await retireOwnedPaidApps(env, intent.uid);
+  }
   const subscriptionId = await stripeSubscriptionId(env, intent.uid);
   const appSubscriptionIds = await stripeAppSubscriptionIds(env, intent.uid);
   const ownedAppSubscriptionIds = await stripeOwnedAppSubscriptionIds(

@@ -781,6 +781,116 @@ describe("Cloudflare account deletion workflow", () => {
     }
   });
 
+  it("deactivates owned Payment Links and expires open Checkout Sessions before creator purge", async () => {
+    const stripeRequests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        stripeRequests.push(request);
+        if (request.url.includes("/v1/checkout/sessions?")) {
+          return Response.json({
+            object: "list",
+            has_more: false,
+            data: [
+              {
+                id: "cs_test_creatorDelete123",
+                payment_link: "plink_creatorDelete123",
+                status: "open",
+              },
+            ],
+          });
+        }
+        if (request.url.endsWith("/cs_test_creatorDelete123/expire")) {
+          return Response.json({
+            id: "cs_test_creatorDelete123",
+            payment_link: "plink_creatorDelete123",
+            status: "expired",
+          });
+        }
+        return Response.json({
+          id: "plink_creatorDelete123",
+          active: request.method === "GET",
+          metadata: { app_id: "creator-paid-app" },
+          transfer_data: { destination: "acct_creatorDelete123" },
+        });
+      }),
+    );
+    const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
+    try {
+      seedCloudflareAccount(state.database);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_app_catalog
+             (id, approved, disabled, data_json, updated_at, owner_uid)
+           VALUES ('creator-paid-app', 1, 0,
+                   '{"id":"creator-paid-app","is_paid":true}', 1, ?)`,
+        )
+        .run("deletion-user");
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_app_payment_links
+             (app_id, owner_uid, stripe_account_id, stripe_product_id,
+              stripe_price_id, stripe_payment_link_id, payment_link_url,
+              unit_amount, created_at, updated_at)
+           VALUES ('creator-paid-app', ?, 'acct_creatorDelete123',
+                   'prod_creatorDelete123', 'price_creatorDelete123',
+                   'plink_creatorDelete123',
+                   'https://buy.stripe.com/creator-delete', 900, 1, 1)`,
+        )
+        .run("deletion-user");
+      const path = "/v1/users/delete-account";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      expect(stripeRequests).toHaveLength(0);
+
+      const dispatch = state.queue.sent.shift();
+      if (!dispatch) throw new Error("missing account deletion dispatch");
+      vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
+      await processAccountDeletionMessage(
+        queueMessage(dispatch.body).message,
+        state.env,
+      );
+
+      expect(stripeRequests.map(({ method }) => method)).toEqual([
+        "GET",
+        "POST",
+        "GET",
+        "POST",
+      ]);
+      expect(stripeRequests[0]?.url).toBe(
+        "https://api.stripe.com/v1/payment_links/plink_creatorDelete123",
+      );
+      await expect(stripeRequests[1]?.text()).resolves.toBe("active=false");
+      expect(stripeRequests[2]?.url).toContain(
+        "/v1/checkout/sessions?payment_link=plink_creatorDelete123&status=open&limit=100",
+      );
+      expect(stripeRequests[3]?.headers.get("idempotency-key")).toMatch(
+        /^account-delete-[0-9a-f-]{36}-session-cs_test_creatorDelete123$/,
+      );
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_payment_links WHERE owner_uid = ?",
+          "deletion-user",
+        )?.count,
+      ).toBe(0);
+      expect(
+        state.database.row<{ stripe_payment_link_id: string }>(
+          "SELECT stripe_payment_link_id FROM cf_retired_paid_apps WHERE app_id = ?",
+          "creator-paid-app",
+        )?.stripe_payment_link_id,
+      ).toBe("plink_creatorDelete123");
+    } finally {
+      state.database.close();
+    }
+  });
+
   it("cancels every paid-app subscription before purging its entitlement mapping", async () => {
     const stripeRequests: Request[] = [];
     vi.stubGlobal(
@@ -1004,6 +1114,88 @@ describe("Cloudflare account deletion workflow", () => {
           "deletion-user",
         )?.count,
       ).toBe(1);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("fails closed without purging when a Payment Link maps to another app", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          id: "plink_mismatchedApp123",
+          active: true,
+          metadata: { app_id: "another-app" },
+          transfer_data: { destination: "acct_mismatchedApp123" },
+        }),
+      ),
+    );
+    const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
+    try {
+      seedCloudflareAccount(state.database);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_app_catalog
+             (id, approved, disabled, data_json, updated_at, owner_uid)
+           VALUES ('owned-app', 1, 0, '{"id":"owned-app","is_paid":true}', 1, ?)`,
+        )
+        .run("deletion-user");
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_app_payment_links
+             (app_id, owner_uid, stripe_account_id, stripe_product_id,
+              stripe_price_id, stripe_payment_link_id, payment_link_url,
+              unit_amount, created_at, updated_at)
+           VALUES ('owned-app', ?, 'acct_mismatchedApp123',
+                   'prod_mismatchedApp123', 'price_mismatchedApp123',
+                   'plink_mismatchedApp123',
+                   'https://buy.stripe.com/mismatched-app', 900, 1, 1)`,
+        )
+        .run("deletion-user");
+      const path = "/v1/users/delete-account";
+      await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env,
+      );
+      const dispatch = state.queue.sent.shift();
+      if (!dispatch) throw new Error("missing account deletion dispatch");
+      vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
+      await processAccountDeletionMessage(
+        queueMessage(dispatch.body).message,
+        state.env,
+      );
+
+      expect(
+        state.database.row<{ status: string; last_error: string }>(
+          "SELECT status, last_error FROM cf_account_deletion_intents WHERE uid = ?",
+          "deletion-user",
+        ),
+      ).toEqual({
+        status: "failed",
+        last_error: "account deletion dependency unavailable",
+      });
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_payment_links WHERE app_id = ?",
+          "owned-app",
+        )?.count,
+      ).toBe(1);
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_catalog WHERE id = ?",
+          "owned-app",
+        )?.count,
+      ).toBe(1);
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_retired_paid_apps WHERE app_id = ?",
+          "owned-app",
+        )?.count,
+      ).toBe(0);
     } finally {
       state.database.close();
     }

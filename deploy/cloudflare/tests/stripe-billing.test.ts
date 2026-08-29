@@ -1416,6 +1416,84 @@ describe("Cloudflare Stripe billing", () => {
     }
   });
 
+  it("cancels a delayed Checkout after the retired paid-app catalog row is gone", async () => {
+    const state = testEnvironment();
+    seedCloudflareAccount(state.database);
+    seedPaidApp(state.database);
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_retired_paid_apps
+           (app_id, stripe_payment_link_id, retired_at)
+         VALUES ('paid-app', 'plink_retiredPaidApp123', 1)`,
+      )
+      .run();
+    state.database.database
+      .prepare("DELETE FROM cf_app_catalog WHERE id = ?")
+      .run("paid-app");
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_stripe_webhook_events
+           (event_id, event_type, object_id, payload_sha256, status,
+            next_attempt_at, created_at, updated_at)
+         VALUES ('evt_retiredApp123', 'checkout.session.completed',
+                 'cs_test_retiredApp123', ?, 'pending', 1, 1, 1)`,
+      )
+      .run("0".repeat(64));
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        if (
+          request.url.endsWith("/v1/checkout/sessions/cs_test_retiredApp123")
+        ) {
+          return Response.json({
+            id: "cs_test_retiredApp123",
+            mode: "subscription",
+            client_reference_id: "uid_billing-user",
+            metadata: { app_id: "paid-app" },
+            customer: "cus_testRetiredApp123",
+            subscription: "sub_testRetiredApp123",
+          });
+        }
+        return Response.json({
+          id: "sub_testRetiredApp123",
+          status: "active",
+          customer: "cus_testRetiredApp123",
+          metadata: { app_id: "paid-app" },
+          cancel_at_period_end: request.method === "POST",
+        });
+      }),
+    );
+    const queued = queueMessage({
+      jobId: "evt_retiredApp123",
+      uid: "stripe-webhook",
+      kind: "stripe_webhook",
+      payload: { eventId: "evt_retiredApp123" },
+    });
+    try {
+      await processStripeWebhookMessage(queued.message, state.env);
+      expect(queued.ack).toHaveBeenCalledOnce();
+      expect(requests.map(({ method }) => method)).toEqual([
+        "GET",
+        "GET",
+        "POST",
+      ]);
+      expect(requests[2].headers.get("idempotency-key")).toBe(
+        "stripe-webhook-evt_retiredApp123-fenced-cancel",
+      );
+      expect(
+        state.database.row<{ status: string }>(
+          "SELECT status FROM cf_stripe_webhook_events WHERE event_id = ?",
+          "evt_retiredApp123",
+        )?.status,
+      ).toBe("ignored");
+    } finally {
+      state.database.close();
+    }
+  });
+
   it("revokes an installed paid app when Stripe projects an inactive subscription", async () => {
     const state = testEnvironment();
     seedCloudflareAccount(state.database);

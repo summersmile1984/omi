@@ -37,24 +37,41 @@ describe("D1 backfill SQL generator", () => {
   });
 
   it("supports typed aliases while rejecting unsupported tables and malformed identities", () => {
-    expect(normalizeRow("cf_goals", {
-      uid: "u",
-      id: "g",
-      title: "Goal",
-      desired_outcome: "Outcome",
-      status: "focused",
-      created_at: 1,
-      updated_at: 2,
-    }).source).toBe("imported");
-    expect(() => renderBackfillSql([{ table: "cf_unknown", row: { uid: "u", id: "x" } }])).toThrow(
-      "unsupported table",
-    );
-    expect(() => renderBackfillSql([{ table: "cf_people", row: { uid: "u", id: "x", name: "A" } }])).toThrow(
-      "missing created_at",
-    );
-    expect(() => renderBackfillSql([{ table: "cf_action_items", row: {
-      uid: "u", id: "x", description: "bad", completed: false, status: "completed", created_at: 1, updated_at: 1,
-    } }])).toThrow("completed action item");
+    expect(
+      normalizeRow("cf_goals", {
+        uid: "u",
+        id: "g",
+        title: "Goal",
+        desired_outcome: "Outcome",
+        status: "focused",
+        created_at: 1,
+        updated_at: 2,
+      }).source,
+    ).toBe("imported");
+    expect(() =>
+      renderBackfillSql([{ table: "cf_unknown", row: { uid: "u", id: "x" } }]),
+    ).toThrow("unsupported table");
+    expect(() =>
+      renderBackfillSql([
+        { table: "cf_people", row: { uid: "u", id: "x", name: "A" } },
+      ]),
+    ).toThrow("missing created_at");
+    expect(() =>
+      renderBackfillSql([
+        {
+          table: "cf_action_items",
+          row: {
+            uid: "u",
+            id: "x",
+            description: "bad",
+            completed: false,
+            status: "completed",
+            created_at: 1,
+            updated_at: 1,
+          },
+        },
+      ]),
+    ).toThrow("completed action item");
   });
 
   it("backfills calendar onboarding flags without accepting token material", () => {
@@ -78,22 +95,37 @@ describe("D1 backfill SQL generator", () => {
       reauth_reason: "token_expired",
     });
     expect(normalized).not.toHaveProperty("access_token");
-    expect(renderBackfillSql([{ table: "cf_user_calendar_onboarding", row: normalized }])).toContain(
-      "cf_user_calendar_onboarding",
-    );
+    expect(
+      renderBackfillSql([
+        { table: "cf_user_calendar_onboarding", row: normalized },
+      ]),
+    ).toContain("cf_user_calendar_onboarding");
   });
 
   it("renders history rows with their three-column uid-scoped key", () => {
     const sql = renderBackfillSql([
       {
         table: "cf_goal_progress_history",
-        row: { uid: "u", goal_id: "g", date: "2026-08-28", value: 25, recorded_at: 1 },
+        row: {
+          uid: "u",
+          goal_id: "g",
+          date: "2026-08-28",
+          value: 25,
+          recorded_at: 1,
+        },
       },
     ]);
-    expect(sql).toContain("ON CONFLICT(uid, goal_id, date) DO UPDATE SET value = excluded.value");
-    expect(() => renderBackfillSql([
-      { table: "cf_goal_progress_history", row: { uid: "u", goal_id: "g", date: "2026-08-28", value: 25 } },
-    ])).toThrow("missing recorded_at");
+    expect(sql).toContain(
+      "ON CONFLICT(uid, goal_id, date) DO UPDATE SET value = excluded.value",
+    );
+    expect(() =>
+      renderBackfillSql([
+        {
+          table: "cf_goal_progress_history",
+          row: { uid: "u", goal_id: "g", date: "2026-08-28", value: 25 },
+        },
+      ]),
+    ).toThrow("missing recorded_at");
   });
 
   it("renders goal progress events with the uid/event id key and JSON projections", () => {
@@ -107,16 +139,25 @@ describe("D1 backfill SQL generator", () => {
           sequence: 1,
           kind: "evidence",
           summary: "Captured evidence",
-          evidence_refs_json: [{ kind: "external", id: "source-1", scope: "canonical" }],
+          evidence_refs_json: [
+            { kind: "external", id: "source-1", scope: "canonical" },
+          ],
           created_at: "2026-08-28T10:00:00Z",
         },
       },
     ]);
-    expect(sql).toContain("ON CONFLICT(uid, event_id) DO UPDATE SET goal_id = excluded.goal_id");
+    expect(sql).toContain(
+      "ON CONFLICT(uid, event_id) DO UPDATE SET goal_id = excluded.goal_id",
+    );
     expect(sql).toContain("evidence_refs_json");
-    expect(() => renderBackfillSql([
-      { table: "cf_goal_progress_events", row: { uid: "u", event_id: "gpe-1", goal_id: "g" } },
-    ])).toThrow("missing sequence");
+    expect(() =>
+      renderBackfillSql([
+        {
+          table: "cf_goal_progress_events",
+          row: { uid: "u", event_id: "gpe-1", goal_id: "g" },
+        },
+      ]),
+    ).toThrow("missing sequence");
   });
 
   it("renders workstream projections and journal rows with domain keys", () => {
@@ -147,14 +188,26 @@ describe("D1 backfill SQL generator", () => {
         },
       },
     ]);
-    expect(sql).toContain("ON CONFLICT(uid, id) DO UPDATE SET goal_id = excluded.goal_id");
-    expect(sql).toContain("ON CONFLICT(uid, event_id) DO UPDATE SET workstream_id = excluded.workstream_id");
-    expect(() => renderBackfillSql([
-      {
-        table: "cf_workstreams",
-        row: { uid: "u", id: "ws-1", title: "Incomplete", objective: "Missing status", created_at: 1 },
-      },
-    ])).toThrow("missing status");
+    expect(sql).toContain(
+      "ON CONFLICT(uid, id) DO UPDATE SET goal_id = excluded.goal_id",
+    );
+    expect(sql).toContain(
+      "ON CONFLICT(uid, event_id) DO UPDATE SET workstream_id = excluded.workstream_id",
+    );
+    expect(() =>
+      renderBackfillSql([
+        {
+          table: "cf_workstreams",
+          row: {
+            uid: "u",
+            id: "ws-1",
+            title: "Incomplete",
+            objective: "Missing status",
+            created_at: 1,
+          },
+        },
+      ]),
+    ).toThrow("missing status");
   });
 
   it("renders R2 asset metadata with the integrity checksum", () => {
@@ -174,7 +227,9 @@ describe("D1 backfill SQL generator", () => {
       },
     ]);
     expect(sql).toContain("checksum_sha256");
-    expect(sql).toContain("ON CONFLICT(uid, object_key) DO UPDATE SET content_type = excluded.content_type");
+    expect(sql).toContain(
+      "ON CONFLICT(uid, object_key) DO UPDATE SET content_type = excluded.content_type",
+    );
   });
 
   it("renders conversation projections from Firestore-shaped nested fields", () => {
@@ -187,18 +242,28 @@ describe("D1 backfill SQL generator", () => {
           created_at: "2026-08-28T10:00:00Z",
           started_at: "2026-08-28T09:59:00Z",
           finished_at: "2026-08-28T10:01:00Z",
-          structured: { title: "A conversation", overview: "Summary", action_items: [] },
-          transcript_segments: [{ id: "segment-1", text: "hello", is_user: true, start: 0, end: 1 }],
+          structured: {
+            title: "A conversation",
+            overview: "Summary",
+            action_items: [],
+          },
+          transcript_segments: [
+            { id: "segment-1", text: "hello", is_user: true, start: 0, end: 1 },
+          ],
           starred: true,
         },
       },
     ]);
     expect(sql).toContain("structured_json");
     expect(sql).toContain("transcript_segments_json");
-    expect(sql).toContain("ON CONFLICT(uid, id) DO UPDATE SET created_at = excluded.created_at");
-    expect(() => renderBackfillSql([
-      { table: "cf_conversations", row: { uid: "u", id: "conversation-1" } },
-    ])).toThrow("missing created_at");
+    expect(sql).toContain(
+      "ON CONFLICT(uid, id) DO UPDATE SET created_at = excluded.created_at",
+    );
+    expect(() =>
+      renderBackfillSql([
+        { table: "cf_conversations", row: { uid: "u", id: "conversation-1" } },
+      ]),
+    ).toThrow("missing created_at");
   });
 
   it("renders announcement content and per-user dismissal projections", () => {
@@ -216,13 +281,20 @@ describe("D1 backfill SQL generator", () => {
       },
       {
         table: "cf_announcement_dismissals",
-        row: { uid: "u", announcement_id: "release-1", dismissed_at: 2, cta_clicked: true },
+        row: {
+          uid: "u",
+          announcement_id: "release-1",
+          dismissed_at: 2,
+          cta_clicked: true,
+        },
       },
     ]);
     expect(sql).toContain("cf_announcements");
     expect(sql).toContain("content_json");
     expect(sql).toContain("ON CONFLICT(id) DO UPDATE SET type = excluded.type");
-    expect(sql).toContain("ON CONFLICT(uid, announcement_id) DO UPDATE SET dismissed_at = excluded.dismissed_at");
+    expect(sql).toContain(
+      "ON CONFLICT(uid, announcement_id) DO UPDATE SET dismissed_at = excluded.dismissed_at",
+    );
   });
 
   it("renders public app catalog projections while rejecting private app fields", () => {
@@ -251,23 +323,34 @@ describe("D1 backfill SQL generator", () => {
     expect(sql).toContain("data_json");
     expect(sql).toContain("owner_uid");
     expect(sql).toContain("'owner-1'");
-    expect(sql).toContain("ON CONFLICT(id) DO UPDATE SET approved = excluded.approved");
-    expect(() => renderBackfillSql([
-      {
-        table: "cf_app_catalog",
-        row: {
-          id: "app-1",
-          updated_at: 1,
-          data: { id: "app-1", email: "private@example.test" },
+    expect(sql).toContain(
+      "ON CONFLICT(id) DO UPDATE SET approved = excluded.approved",
+    );
+    expect(() =>
+      renderBackfillSql([
+        {
+          table: "cf_app_catalog",
+          row: {
+            id: "app-1",
+            updated_at: 1,
+            data: { id: "app-1", email: "private@example.test" },
+          },
         },
-      },
-    ])).toThrow("private fields");
-    expect(() => renderBackfillSql([
-      {
-        table: "cf_app_catalog",
-        row: { id: "app-1", owner_uid: "", updated_at: 1, data: { id: "app-1" } },
-      },
-    ])).toThrow("owner_uid is invalid");
+      ]),
+    ).toThrow("private fields");
+    expect(() =>
+      renderBackfillSql([
+        {
+          table: "cf_app_catalog",
+          row: {
+            id: "app-1",
+            owner_uid: "",
+            updated_at: 1,
+            data: { id: "app-1" },
+          },
+        },
+      ]),
+    ).toThrow("owner_uid is invalid");
   });
 
   it("renders uid-scoped enabled-app projections with an idempotent composite key", () => {
@@ -278,9 +361,47 @@ describe("D1 backfill SQL generator", () => {
       },
     ]);
     expect(sql).toContain("cf_user_enabled_apps");
-    expect(sql).toContain("ON CONFLICT(uid, app_id) DO UPDATE SET created_at = excluded.created_at");
-    expect(() => renderBackfillSql([
-      { table: "cf_user_enabled_apps", row: { uid: "u", app_id: "app-1" } },
-    ])).toThrow("missing created_at");
+    expect(sql).toContain(
+      "ON CONFLICT(uid, app_id) DO UPDATE SET created_at = excluded.created_at",
+    );
+    expect(() =>
+      renderBackfillSql([
+        { table: "cf_user_enabled_apps", row: { uid: "u", app_id: "app-1" } },
+      ]),
+    ).toThrow("missing created_at");
+  });
+
+  it("imports provider-owned app Payment Link mappings without putting provider ids in the public catalog", () => {
+    const row = normalizeRow("cf_app_payment_links", {
+      app_id: "paid-app",
+      owner_uid: "creator-user",
+      stripe_account_id: "acct_testCreator123",
+      stripe_product_id: "prod_testPaidApp123",
+      stripe_price_id: "price_testPaidApp123",
+      stripe_payment_link_id: "plink_testPaidApp123",
+      payment_link_url: "https://buy.stripe.com/test_paid_app",
+      unit_amount: 900,
+      created_at: "2026-08-29T00:00:00Z",
+      updated_at: "2026-08-29T00:01:00Z",
+    });
+    expect(row).toMatchObject({
+      app_id: "paid-app",
+      owner_uid: "creator-user",
+      currency: "usd",
+      interval: "month",
+      active: 1,
+      unit_amount: 900,
+    });
+    expect(
+      renderBackfillSql([{ table: "cf_app_payment_links", row }]),
+    ).toContain(
+      "ON CONFLICT(app_id) DO UPDATE SET owner_uid = excluded.owner_uid",
+    );
+    expect(() =>
+      normalizeRow("cf_app_payment_links", {
+        ...row,
+        stripe_payment_link_id: "not-a-link",
+      }),
+    ).toThrow("stripe_payment_link_id is invalid");
   });
 });

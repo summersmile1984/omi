@@ -1870,11 +1870,18 @@ async function appOwnerDeletionFenced(env: JobsEnv, appId: string) {
          SELECT 1 FROM cf_app_catalog c
          JOIN cf_account_deletion_tombstones t ON t.uid = c.owner_uid
          WHERE c.id = ?
-       ) AS deleted`,
+       ) AS deleted,
+       EXISTS(
+         SELECT 1 FROM cf_retired_paid_apps r WHERE r.app_id = ?
+       ) AS retired`,
   )
-    .bind(appId, appId)
-    .first<{ deleting?: unknown; deleted?: unknown }>();
-  return Number(row?.deleting) === 1 || Number(row?.deleted) === 1;
+    .bind(appId, appId, appId)
+    .first<{ deleting?: unknown; deleted?: unknown; retired?: unknown }>();
+  return (
+    Number(row?.deleting) === 1 ||
+    Number(row?.deleted) === 1 ||
+    Number(row?.retired) === 1
+  );
 }
 
 async function cancelFencedAppCheckout(

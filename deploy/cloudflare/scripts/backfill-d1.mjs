@@ -19,7 +19,12 @@ const TABLES = {
     ],
     defaults: { active: 1, device_models_json: "[]", content_json: "{}" },
     integers: ["created_at", "expires_at"],
-    json: ["device_models_json", "targeting_json", "display_json", "content_json"],
+    json: [
+      "device_models_json",
+      "targeting_json",
+      "display_json",
+      "content_json",
+    ],
   },
   cf_app_catalog: {
     key_columns: ["id"],
@@ -48,6 +53,39 @@ const TABLES = {
     integers: ["installs", "rating_count", "updated_at"],
     json: ["data_json"],
   },
+  cf_app_payment_links: {
+    key_columns: ["app_id"],
+    required: [
+      "app_id",
+      "owner_uid",
+      "stripe_account_id",
+      "stripe_product_id",
+      "stripe_price_id",
+      "stripe_payment_link_id",
+      "payment_link_url",
+      "unit_amount",
+      "created_at",
+      "updated_at",
+    ],
+    columns: [
+      "app_id",
+      "owner_uid",
+      "stripe_account_id",
+      "stripe_product_id",
+      "stripe_price_id",
+      "stripe_payment_link_id",
+      "payment_link_url",
+      "unit_amount",
+      "currency",
+      "interval",
+      "active",
+      "created_at",
+      "updated_at",
+    ],
+    defaults: { currency: "usd", interval: "month", active: 1 },
+    integers: ["unit_amount", "created_at", "updated_at"],
+    json: [],
+  },
   cf_user_enabled_apps: {
     key_columns: ["uid", "app_id"],
     required: ["uid", "app_id", "created_at"],
@@ -66,7 +104,15 @@ const TABLES = {
   },
   cf_asset_objects: {
     key_columns: ["uid", "object_key"],
-    required: ["uid", "object_key", "content_type", "size", "etag", "created_at", "updated_at"],
+    required: [
+      "uid",
+      "object_key",
+      "content_type",
+      "size",
+      "etag",
+      "created_at",
+      "updated_at",
+    ],
     columns: [
       "uid",
       "object_key",
@@ -223,7 +269,15 @@ const TABLES = {
     json: ["speech_samples_json", "speech_sample_transcripts_json"],
   },
   cf_goals: {
-    required: ["uid", "id", "title", "desired_outcome", "status", "created_at", "updated_at"],
+    required: [
+      "uid",
+      "id",
+      "title",
+      "desired_outcome",
+      "status",
+      "created_at",
+      "updated_at",
+    ],
     columns: [
       "uid",
       "id",
@@ -297,8 +351,24 @@ const TABLES = {
     json: [],
   },
   cf_focus_sessions: {
-    required: ["uid", "id", "status", "app_or_site", "description", "created_at"],
-    columns: ["uid", "id", "status", "app_or_site", "description", "message", "created_at", "duration_seconds"],
+    required: [
+      "uid",
+      "id",
+      "status",
+      "app_or_site",
+      "description",
+      "created_at",
+    ],
+    columns: [
+      "uid",
+      "id",
+      "status",
+      "app_or_site",
+      "description",
+      "message",
+      "created_at",
+      "duration_seconds",
+    ],
     defaults: {},
     integers: ["created_at", "duration_seconds"],
     json: [],
@@ -332,7 +402,12 @@ const TABLES = {
       "created_at",
       "updated_at",
     ],
-    defaults: { connected: 0, onboarding_skipped: 0, reauth_required: 0, has_access_token: 0 },
+    defaults: {
+      connected: 0,
+      onboarding_skipped: 0,
+      reauth_required: 0,
+      has_access_token: 0,
+    },
     integers: ["created_at", "updated_at"],
     json: [],
   },
@@ -346,7 +421,15 @@ const TABLES = {
   },
   cf_goal_progress_events: {
     key_columns: ["uid", "event_id"],
-    required: ["uid", "event_id", "goal_id", "sequence", "kind", "summary", "created_at"],
+    required: [
+      "uid",
+      "event_id",
+      "goal_id",
+      "sequence",
+      "kind",
+      "summary",
+      "created_at",
+    ],
     columns: [
       "uid",
       "event_id",
@@ -364,7 +447,15 @@ const TABLES = {
   },
   cf_workstreams: {
     key_columns: ["uid", "id"],
-    required: ["uid", "id", "title", "objective", "status", "created_at", "updated_at"],
+    required: [
+      "uid",
+      "id",
+      "title",
+      "objective",
+      "status",
+      "created_at",
+      "updated_at",
+    ],
     columns: [
       "uid",
       "id",
@@ -380,7 +471,11 @@ const TABLES = {
       "created_at",
       "updated_at",
     ],
-    defaults: { current_state_summary: "", latest_event_sequence: 0, account_generation: 0 },
+    defaults: {
+      current_state_summary: "",
+      latest_event_sequence: 0,
+      account_generation: 0,
+    },
     integers: [
       "next_review_at",
       "last_meaningful_progress_at",
@@ -393,7 +488,15 @@ const TABLES = {
   },
   cf_workstream_events: {
     key_columns: ["uid", "event_id"],
-    required: ["uid", "event_id", "workstream_id", "sequence", "kind", "summary", "created_at"],
+    required: [
+      "uid",
+      "event_id",
+      "workstream_id",
+      "sequence",
+      "kind",
+      "summary",
+      "created_at",
+    ],
     columns: [
       "uid",
       "event_id",
@@ -440,7 +543,11 @@ const TABLES = {
       "created_at",
       "account_generation",
     ],
-    defaults: { evidence_event_ids_json: "[]", evidence_refs_json: "[]", account_generation: 0 },
+    defaults: {
+      evidence_event_ids_json: "[]",
+      evidence_refs_json: "[]",
+      account_generation: 0,
+    },
     integers: ["version", "created_at", "account_generation"],
     json: ["evidence_event_ids_json", "evidence_refs_json"],
   },
@@ -490,6 +597,7 @@ const BOOL_COLUMNS = new Set([
   "onboarding_skipped",
   "reauth_required",
   "has_access_token",
+  "active",
 ]);
 const DATE_COLUMNS = new Set([
   "due_at",
@@ -519,8 +627,10 @@ function epochSeconds(value, column) {
 
 function boolValue(value, column) {
   if (value === null || value === undefined) return null;
-  if (value === true || value === 1 || value === "1" || value === "true") return 1;
-  if (value === false || value === 0 || value === "0" || value === "false") return 0;
+  if (value === true || value === 1 || value === "1" || value === "true")
+    return 1;
+  if (value === false || value === 0 || value === "0" || value === "false")
+    return 0;
   fail(`${column} must be boolean`);
 }
 
@@ -542,8 +652,11 @@ function jsonValue(value, column) {
 }
 
 function normalizeTimestamp(value) {
-  const parsed = new Date(String(value).replace(" ", "T").replace(/Z$/, "+00:00"));
-  if (Number.isNaN(parsed.getTime())) fail("timestamp must be ISO-8601 compatible");
+  const parsed = new Date(
+    String(value).replace(" ", "T").replace(/Z$/, "+00:00"),
+  );
+  if (Number.isNaN(parsed.getTime()))
+    fail("timestamp must be ISO-8601 compatible");
   const iso = parsed.toISOString();
   return `${iso.slice(0, 19).replace("T", " ")}.${iso.slice(20, 23)}`;
 }
@@ -560,64 +673,106 @@ function sqlLiteral(value) {
 export function normalizeRow(table, input) {
   const spec = TABLES[table];
   if (!spec) fail(`unsupported table ${table}`);
-  if (!input || typeof input !== "object" || Array.isArray(input)) fail(`${table} row must be an object`);
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    fail(`${table} row must be an object`);
   const row = { ...input };
-  if (row.provenance !== undefined && row.provenance_json === undefined) row.provenance_json = row.provenance;
-  if (row.success_criteria !== undefined && row.success_criteria_json === undefined) {
+  if (row.provenance !== undefined && row.provenance_json === undefined)
+    row.provenance_json = row.provenance;
+  if (
+    row.success_criteria !== undefined &&
+    row.success_criteria_json === undefined
+  ) {
     row.success_criteria_json = row.success_criteria;
   }
-  if (row.content !== undefined && row.content_json === undefined) row.content_json = row.content;
-  if (row.structured !== undefined && row.structured_json === undefined) row.structured_json = row.structured;
-  if (row.transcript_segments !== undefined && row.transcript_segments_json === undefined) {
+  if (row.content !== undefined && row.content_json === undefined)
+    row.content_json = row.content;
+  if (row.structured !== undefined && row.structured_json === undefined)
+    row.structured_json = row.structured;
+  if (
+    row.transcript_segments !== undefined &&
+    row.transcript_segments_json === undefined
+  ) {
     row.transcript_segments_json = row.transcript_segments;
   }
-  if (row.photos !== undefined && row.photos_json === undefined) row.photos_json = row.photos;
-  if (row.audio_files !== undefined && row.audio_files_json === undefined) row.audio_files_json = row.audio_files;
-  if (row.conversation_audio !== undefined && row.conversation_audio_json === undefined) {
+  if (row.photos !== undefined && row.photos_json === undefined)
+    row.photos_json = row.photos;
+  if (row.audio_files !== undefined && row.audio_files_json === undefined)
+    row.audio_files_json = row.audio_files;
+  if (
+    row.conversation_audio !== undefined &&
+    row.conversation_audio_json === undefined
+  ) {
     row.conversation_audio_json = row.conversation_audio;
   }
-  if (row.apps_results !== undefined && row.apps_results_json === undefined) row.apps_results_json = row.apps_results;
-  if (row.suggested_summarization_apps !== undefined && row.suggested_apps_json === undefined) {
+  if (row.apps_results !== undefined && row.apps_results_json === undefined)
+    row.apps_results_json = row.apps_results;
+  if (
+    row.suggested_summarization_apps !== undefined &&
+    row.suggested_apps_json === undefined
+  ) {
     row.suggested_apps_json = row.suggested_summarization_apps;
   }
-  if (row.geolocation !== undefined && row.geolocation_json === undefined) row.geolocation_json = row.geolocation;
-  if (row.external_data !== undefined && row.external_data_json === undefined) row.external_data_json = row.external_data;
-  if (row.calendar_event !== undefined && row.calendar_event_json === undefined) {
+  if (row.geolocation !== undefined && row.geolocation_json === undefined)
+    row.geolocation_json = row.geolocation;
+  if (row.external_data !== undefined && row.external_data_json === undefined)
+    row.external_data_json = row.external_data;
+  if (
+    row.calendar_event !== undefined &&
+    row.calendar_event_json === undefined
+  ) {
     row.calendar_event_json = row.calendar_event;
   }
-  if (row.data !== undefined && row.data_json === undefined) row.data_json = row.data;
-  if (row.targeting !== undefined && row.targeting_json === undefined) row.targeting_json = row.targeting;
-  if (row.display !== undefined && row.display_json === undefined) row.display_json = row.display;
-  if (row.device_models !== undefined && row.device_models_json === undefined) row.device_models_json = row.device_models;
+  if (row.data !== undefined && row.data_json === undefined)
+    row.data_json = row.data;
+  if (row.targeting !== undefined && row.targeting_json === undefined)
+    row.targeting_json = row.targeting;
+  if (row.display !== undefined && row.display_json === undefined)
+    row.display_json = row.display;
+  if (row.device_models !== undefined && row.device_models_json === undefined)
+    row.device_models_json = row.device_models;
   for (const required of spec.required) {
-    if (row[required] === undefined || row[required] === null || row[required] === "") {
+    if (
+      row[required] === undefined ||
+      row[required] === null ||
+      row[required] === ""
+    ) {
       fail(`${table} row is missing ${required}`);
     }
   }
   const keyColumns = spec.key_columns || ["uid", "id"];
   for (const keyColumn of keyColumns) {
-    if (typeof row[keyColumn] !== "string" || row[keyColumn].length === 0 || row[keyColumn].length > 256) {
+    if (
+      typeof row[keyColumn] !== "string" ||
+      row[keyColumn].length === 0 ||
+      row[keyColumn].length > 256
+    ) {
       fail(`${table}.${keyColumn} is invalid`);
     }
   }
   const normalized = {};
   for (const column of spec.columns) {
     let value = row[column];
-    if (value === undefined && Object.hasOwn(spec.defaults, column)) value = spec.defaults[column];
+    if (value === undefined && Object.hasOwn(spec.defaults, column))
+      value = spec.defaults[column];
     if (value === undefined) continue;
     if (spec.json.includes(column)) value = jsonValue(value, column);
     else if (BOOL_COLUMNS.has(column)) value = boolValue(value, column);
-    else if (spec.integers.includes(column)) value = epochSeconds(value, column);
+    else if (spec.integers.includes(column))
+      value = epochSeconds(value, column);
     else if (column === "timestamp") value = normalizeTimestamp(value);
     else if (typeof value !== "string" && value !== null) value = String(value);
     normalized[column] = value;
   }
   if (table === "cf_action_items") {
     const completed = normalized.completed === 1;
-    if (row.status === undefined) normalized.status = completed ? "completed" : "active";
-    if (normalized.status === "completed" && normalized.completed === undefined) normalized.completed = 1;
-    if (normalized.status !== "completed" && normalized.completed === undefined) normalized.completed = 0;
-    if (normalized.status === "completed" && normalized.completed !== 1) fail("completed action item must have completed=1");
+    if (row.status === undefined)
+      normalized.status = completed ? "completed" : "active";
+    if (normalized.status === "completed" && normalized.completed === undefined)
+      normalized.completed = 1;
+    if (normalized.status !== "completed" && normalized.completed === undefined)
+      normalized.completed = 0;
+    if (normalized.status === "completed" && normalized.completed !== 1)
+      fail("completed action item must have completed=1");
   }
   if (table === "cf_app_catalog") {
     const raw = normalized.data_json;
@@ -658,19 +813,66 @@ export function normalizeRow(table, input) {
     }
     if (
       normalized.owner_uid !== undefined &&
-      (typeof normalized.owner_uid !== "string" || normalized.owner_uid.length < 1 || normalized.owner_uid.length > 256)
+      (typeof normalized.owner_uid !== "string" ||
+        normalized.owner_uid.length < 1 ||
+        normalized.owner_uid.length > 256)
     ) {
       fail("cf_app_catalog.owner_uid is invalid");
     }
     if (payload.id !== undefined && payload.id !== normalized.id) {
       fail("cf_app_catalog.data_json id must match id");
     }
-    if (payload.capabilities !== undefined && (!Array.isArray(payload.capabilities) || payload.capabilities.some((value) => typeof value !== "string"))) {
+    if (
+      payload.capabilities !== undefined &&
+      (!Array.isArray(payload.capabilities) ||
+        payload.capabilities.some((value) => typeof value !== "string"))
+    ) {
       fail("cf_app_catalog.data_json capabilities must be a string array");
     }
-    if (String(raw).length > 500_000) fail("cf_app_catalog.data_json is too large");
+    if (String(raw).length > 500_000)
+      fail("cf_app_catalog.data_json is too large");
     if (normalized.installs < 0 || normalized.rating_count < 0) {
       fail("cf_app_catalog counters must be non-negative");
+    }
+  }
+  if (table === "cf_app_payment_links") {
+    const providerIds = [
+      ["stripe_account_id", /^acct_[A-Za-z0-9]{7,155}$/],
+      ["stripe_product_id", /^prod_[A-Za-z0-9]{7,155}$/],
+      ["stripe_price_id", /^price_[A-Za-z0-9]{7,155}$/],
+      ["stripe_payment_link_id", /^plink_[A-Za-z0-9]{7,155}$/],
+    ];
+    for (const [column, pattern] of providerIds) {
+      if (
+        typeof normalized[column] !== "string" ||
+        !pattern.test(normalized[column])
+      ) {
+        fail(`cf_app_payment_links.${column} is invalid`);
+      }
+    }
+    if (
+      typeof normalized.owner_uid !== "string" ||
+      normalized.owner_uid.length < 1 ||
+      normalized.owner_uid.length > 256 ||
+      normalized.owner_uid.includes("/")
+    ) {
+      fail("cf_app_payment_links.owner_uid is invalid");
+    }
+    if (
+      !Number.isSafeInteger(normalized.unit_amount) ||
+      normalized.unit_amount <= 0
+    ) {
+      fail("cf_app_payment_links.unit_amount is invalid");
+    }
+    if (normalized.currency !== "usd" || normalized.interval !== "month") {
+      fail("cf_app_payment_links billing terms are unsupported");
+    }
+    try {
+      const paymentLink = new URL(normalized.payment_link_url);
+      if (paymentLink.protocol !== "https:")
+        throw new Error("invalid protocol");
+    } catch {
+      fail("cf_app_payment_links.payment_link_url is invalid");
     }
   }
   return normalized;
@@ -691,10 +893,15 @@ export function normalizeRows(records, { table = null, maxRows = 5000 } = {}) {
   if (!Array.isArray(records)) fail("input must be an array of records");
   if (records.length > maxRows) fail(`maximum ${maxRows} rows per run`);
   return records.map((record, index) => {
-    if (!record || typeof record !== "object" || Array.isArray(record)) fail(`record ${index + 1} must be an object`);
+    if (!record || typeof record !== "object" || Array.isArray(record))
+      fail(`record ${index + 1} must be an object`);
     const recordTable = table || record.table;
-    if (typeof recordTable !== "string") fail(`record ${index + 1} is missing table`);
-    const sourceRow = record.row && typeof record.row === "object" && !Array.isArray(record.row) ? record.row : record;
+    if (typeof recordTable !== "string")
+      fail(`record ${index + 1} is missing table`);
+    const sourceRow =
+      record.row && typeof record.row === "object" && !Array.isArray(record.row)
+        ? record.row
+        : record;
     return { table: recordTable, row: normalizeRow(recordTable, sourceRow) };
   });
 }
@@ -720,7 +927,10 @@ async function main() {
   const inputPath = inputIndex >= 0 ? args[inputIndex + 1] : null;
   const table = tableIndex >= 0 ? args[tableIndex + 1] : null;
   const maxRows = maxRowsIndex >= 0 ? Number(args[maxRowsIndex + 1]) : 5000;
-  if (maxRowsIndex >= 0 && (!Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 5000)) {
+  if (
+    maxRowsIndex >= 0 &&
+    (!Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 5000)
+  ) {
     fail("--max-rows must be an integer between 1 and 5000");
   }
   const raw = inputPath
@@ -748,7 +958,9 @@ async function main() {
 
 if (process.argv[1]?.endsWith("backfill-d1.mjs")) {
   main().catch((error) => {
-    console.error(`D1 backfill generation failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    console.error(
+      `D1 backfill generation failed: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
     process.exitCode = 1;
   });
 }

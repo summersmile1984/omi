@@ -785,7 +785,8 @@ legacy owner until their contracts move.
 
 `npm run backfill:d1 -- --input export.ndjson` generates a transactional SQL
 backfill from newline-delimited records. Every record must name one of the
-whitelisted D1 tables (including `cf_conversations`) and carries
+whitelisted D1 tables (including `cf_conversations` and the provider-only
+`cf_app_payment_links` mapping) and carries
 `{ "table": "cf_action_items", "row": { ... } }`;
 the generator validates uid/id, normalizes timestamps/booleans/JSON, escapes SQL,
 and uses uid+id upserts. It only writes SQL to stdout. Review the output and
@@ -926,12 +927,18 @@ rotatable secret and the exact raw body. Payment Link creation remains attached
 to legacy app-owner CRUD until that mutation surface moves; existing hosted
 links are consumed directly by the Cloudflare entitlement flow.
 
-Creator deletion cancels projected subscriber renewals before the catalog row
-is purged, and both buyer and creator deletion fences cancel any Checkout that
-races with deletion. Production cutover of paid-app creation remains blocked
-until the static Stripe Payment Link can also be durably identified and
-deactivated after its catalog row is removed; staging does not claim that
-unprojected-link guarantee.
+Migration `0061_app_payment_links.sql` keeps the Stripe account, product, price,
+Payment Link, and hosted URL in a provider-only D1 mapping instead of the public
+app catalog. Creator deletion verifies every mapping against Stripe, deactivates
+the hosted Payment Link, expires every still-open Checkout Session, and only
+then writes a non-identity retirement tombstone and purges the catalog. The
+account-deletion intent fences concurrent Checkout while cleanup is running;
+the retirement tombstone prevents a delayed Checkout webhook from resurrecting
+an entitlement after the catalog row is gone. Creator deletion also cancels all
+projected subscriber renewals before product data is purged. Production cutover
+remains blocked until existing paid-app provider identifiers have been imported
+and verified in `cf_app_payment_links`, the Jobs Stripe secret is provisioned,
+and app-owner create/update/delete mutations have moved from the legacy owner.
 
 Migration `0060_app_subscriptions.sql` projects paid-app subscriptions into D1
 from the same raw-body-verified Stripe inbox. Checkout processing requires the
@@ -1433,19 +1440,21 @@ intent-to-tombstone transition is atomic, duplicate public requests are
 idempotent, and the scheduled reconciler republishes durable intents whose
 initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 67 product identity-bearing column
+The explicit residual inventory covers 68 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,
 R2 checks expose presence only, and partial batches, storage errors, or
 non-zero residuals fail closed. For accounts with an Omi plan subscription id,
-one or more paid-app subscription ids, or a creator Connect account id,
-admission requires the Jobs-only `STRIPE_SECRET_KEY`; after the durable fence
-settles, Jobs reads the subscription, lists its customer's active Subscription
-Schedules from Stripe, releases every schedule attached to that subscription,
-and idempotently sets `cancel_at_period_end=true` on the Omi plan and every
-paid-app subscription, then deletes the platform-controlled connected account
-before any product purge. Stripe documents that live Express-style
+one or more paid-app subscription ids, a creator Connect account id, or an owned
+paid-app Payment Link mapping, admission requires the Jobs-only
+`STRIPE_SECRET_KEY`; after the durable fence settles, Jobs deactivates each owned
+Payment Link and expires its open Checkout Sessions, reads each subscription,
+lists its customer's active Subscription Schedules from Stripe, releases every
+schedule attached to that subscription, and idempotently sets
+`cancel_at_period_end=true` on the Omi plan and every paid-app subscription,
+then deletes the platform-controlled connected account before any product purge.
+Stripe documents that live Express-style
 accounts can be deleted only after their balances reach zero, so a non-zero
 balance or any other provider refusal keeps the deletion intent for retry. An already scheduled or
 terminal subscription satisfies the cancellation goal without another
@@ -1462,7 +1471,8 @@ cleanup restores writes. The TypeScript suite additionally covers the full
 D1/R2 purge, two residual scans, Auth finalization, Queue-send recovery,
 Auth-retry recovery, idempotent repeated deletion, Stripe schedule release,
 subscription cancellation, Connect-account deletion, already-terminal
-subscriptions, and fail-closed provider retry behavior.
+subscriptions, Payment Link retirement, open Checkout expiration, delayed
+webhook fencing, and fail-closed provider retry behavior.
 
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains
