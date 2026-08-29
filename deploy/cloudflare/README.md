@@ -832,15 +832,47 @@ screen-activity vector lifecycle and paid semantic search remain on the legacy
 owner until their contracts move. MCP memory, conversation, and action-item
 semantic search use separate staging Vectorize projections described below.
 
-`npm run backfill:d1 -- --input export.ndjson` generates a transactional SQL
-backfill from newline-delimited records. Every record must name one of the
+`npm run backfill:d1 -- --input export.ndjson` generates reviewed D1-ingestion
+SQL from newline-delimited records. Every record must name one of the
 whitelisted D1 tables (including `cf_conversations` and the provider-only
 `cf_app_payment_links` mapping) and carries
 `{ "table": "cf_action_items", "row": { ... } }`;
 the generator validates uid/id, normalizes timestamps/booleans/JSON, escapes SQL,
 and uses uid+id upserts. It only writes SQL to stdout. Review the output and
-apply it explicitly to the isolated staging database with Wrangler; the command
-does not connect to Firestore or production by itself.
+apply it explicitly to the isolated staging database with Wrangler `--file`;
+the command does not connect to Firestore or production by itself. Generated
+files intentionally omit manual `BEGIN`/`COMMIT`: [D1 remote import is already
+transactional and rejects embedded transaction statements](https://developers.cloudflare.com/d1/best-practices/import-export-data/).
+
+Legacy X posts have an additional explicit-user export boundary. Run the
+exporter only in the source environment that already has authorized Firestore
+credentials; it will not scan all users and requires every uid to be named:
+
+```bash
+cd backend
+uv run python scripts/export_cloudflare_x_posts.py \
+  --uid 'EXACT_SOURCE_UID' \
+  --output /secure/operator-directory/x-posts.jsonl
+
+cd ../deploy/cloudflare
+umask 077
+npm run backfill:d1 -- \
+  --input /secure/operator-directory/x-posts.jsonl \
+  > /secure/operator-directory/x-posts.sql
+npx wrangler d1 execute omi-cf-app-staging \
+  --remote --file /secure/operator-directory/x-posts.sql
+```
+
+The exporter writes a new mode-0600 file, refuses overwrites and more than 5,000
+rows, emits only a row-count/checksum summary, and whitelists post fields so
+OAuth material and unknown Firestore fields cannot cross the boundary. The
+JSONL and reviewed SQL both contain user-authored text: never commit them, and
+remove the exact operator-owned files after reconciliation. Each `cf_x_posts`
+upsert and its `x_post` vector-projection outbox entry share one transaction;
+the Jobs Worker then rebuilds the BGE-M3 projection, while list and search still
+hydrate from uid-scoped D1. Production import additionally requires the
+approved identity/cutover mapping and must target production D1 explicitly;
+staging validation uses isolated synthetic accounts instead of production data.
 
 `CLOUDFLARE_SMOKE_TOKEN_FILE=/path/to/staging-token.json npm run benchmark:staging`
 warms and samples six non-mutating staging endpoints, reporting p50/p95/max and

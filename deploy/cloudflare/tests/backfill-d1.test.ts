@@ -1,8 +1,12 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { normalizeRow, renderBackfillSql } from "../scripts/backfill-d1.mjs";
 
 describe("D1 backfill SQL generator", () => {
-  it("normalizes Firestore-shaped values into whitelisted transactional upserts", () => {
+  it("normalizes Firestore-shaped values into whitelisted D1 ingestion upserts", () => {
     const sql = renderBackfillSql([
       {
         table: "cf_action_items",
@@ -28,12 +32,12 @@ describe("D1 backfill SQL generator", () => {
       },
     ]);
 
-    expect(sql).toContain("BEGIN TRANSACTION;");
+    expect(sql).toContain("D1 remote file ingestion supplies the transaction");
+    expect(sql).not.toMatch(/\b(?:BEGIN|COMMIT|SAVEPOINT)\b[^\n]*;/);
     expect(sql).toContain("status, completed");
     expect(sql).toContain("'completed'");
     expect(sql).toContain("'2026-08-28 10:02:03.123'");
     expect(sql).toContain("'O''Malley'");
-    expect(sql).toContain("COMMIT;");
   });
 
   it("supports typed aliases while rejecting unsupported tables and malformed identities", () => {
@@ -169,12 +173,88 @@ describe("D1 backfill SQL generator", () => {
     expect(
       renderBackfillSql([{ table: "cf_x_posts", row: normalized }]),
     ).toContain("ON CONFLICT(uid, id) DO UPDATE SET text = excluded.text");
+    expect(
+      renderBackfillSql([{ table: "cf_x_posts", row: normalized }]),
+    ).toContain(
+      "ON CONFLICT(uid, source_kind, source_id) DO UPDATE SET desired_version = excluded.desired_version",
+    );
     expect(() =>
       normalizeRow("cf_x_posts", {
         ...normalized,
         kind: "retweet",
       }),
     ).toThrow("cf_x_posts.kind is invalid");
+    expect(() =>
+      normalizeRow("cf_x_posts", {
+        ...normalized,
+        text: " ",
+      }),
+    ).toThrow("cf_x_posts.text is invalid");
+  });
+
+  it("applies X post rows and projection outbox entries idempotently to the real schema", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      const migrations = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../migrations/app",
+      );
+      for (const filename of readdirSync(migrations)
+        .filter((value) => value.endsWith(".sql"))
+        .sort()) {
+        database.exec(readFileSync(path.join(migrations, filename), "utf8"));
+      }
+      const sql = renderBackfillSql([
+        {
+          table: "cf_x_posts",
+          row: {
+            uid: "user-1",
+            id: "tweet-1",
+            text: "Workers deployment notes",
+            kind: "tweet",
+            metrics: { like_count: 3 },
+            created_at: "2026-08-28T10:00:00Z",
+            updated_at: "2026-08-28T10:01:00Z",
+          },
+        },
+      ]);
+
+      database.exec(`BEGIN IMMEDIATE;\n${sql}\nCOMMIT;`);
+      database.exec(`BEGIN IMMEDIATE;\n${sql}\nCOMMIT;`);
+
+      expect(
+        database
+          .prepare(
+            "SELECT text, kind, metrics_json, updated_at FROM cf_x_posts WHERE uid = ? AND id = ?",
+          )
+          .get("user-1", "tweet-1"),
+      ).toMatchObject({
+        text: "Workers deployment notes",
+        kind: "tweet",
+        metrics_json: '{"like_count":3}',
+        updated_at: 1_787_911_260,
+      });
+      expect(
+        database
+          .prepare(
+            "SELECT source_kind, source_id, desired_version, operation, attempts FROM cf_vector_projection_outbox WHERE uid = ?",
+          )
+          .get("user-1"),
+      ).toMatchObject({
+        source_kind: "x_post",
+        source_id: "tweet-1",
+        desired_version: 1_787_911_260,
+        operation: "upsert",
+        attempts: 0,
+      });
+      expect(
+        database
+          .prepare("SELECT COUNT(*) AS count FROM cf_x_posts WHERE uid = ?")
+          .get("user-1"),
+      ).toMatchObject({ count: 1 });
+    } finally {
+      database.close();
+    }
   });
 
   it("renders history rows with their three-column uid-scoped key", () => {

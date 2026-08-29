@@ -851,6 +851,7 @@ goal focus/lifecycle mutations      # five-slot cap, replacement, retain-only li
 goal detail projection              # uid-scoped bounded goal/workstream/task/progress-event D1 composition → unit verified
 backfill SQL generator                 # whitelisted uid/id upserts, type normalization and transactional dry-run → unit verified
 conversation projection backfill      # explicit indexed fields + bounded nested JSON aliases through the same reviewed SQL generator → unit verified
+X post projection backfill             # explicit-uid Firestore export, sensitive-field whitelist, D1 ingestion transaction + Vectorize outbox, idempotent real-schema replay, bilingual hydrate/search and zero-residual deletion → unit + live staging verified
 staging latency benchmark              # six non-mutating endpoints, warm-path p50/p95/max with optional gate → real staging verified
 ```
 
@@ -1052,6 +1053,18 @@ hint，live 路径在 19.9 秒后可搜索，不再依赖五分钟 repair cron�
 `a6dabd15-bdf4-48ae-9418-a99ac76305b3`、Web
 `7838e65e-df6a-4b68-8e0a-9b346e935173`。截至该批次，MCP OAuth 和 hosted transport
 仍明确保留 legacy authority。
+
+同日完成 X post 数据面的回填闭环。新增 Firestore 导出器只接受显式 uid，输出
+mode-0600 JSONL，限制 5,000 行并只保留经过审查的 X 字段；OAuth/未知字段不会进入
+导出。D1 SQL 生成器将每条 `cf_x_posts` upsert 与 `x_post` projection outbox 一起
+交给 Wrangler `--file` 的远程 ingestion transaction。首次 live 尝试发现 D1 错误码
+7500 会拒绝 SQL 文件中的手写 `BEGIN TRANSACTION`；生成器因此改为遵循 D1 原生
+import contract，并由单测固定禁止 `BEGIN`/`COMMIT`/`SAVEPOINT`。隔离 staging 账号将
+同一两行中英合成数据文件导入两次后，D1 仍只有两条源记录和两条 outbox；MCP list
+验证 uid scope 与 newest-first 顺序。Jobs reconciler 生成两条 BGE-M3 projection 后，
+英文与中文的非字面查询均把各自目标排在第一位。测试 key 随后撤销，并通过正式删号
+流程清理；Auth 用户、X 源行、outbox、projection state、MCP key 和 account cutover
+回读合计残留为 0。未把任何生产 Firestore 数据导入 staging。
 
 同日随后完成 MCP OAuth 的剩余 Worker-owned 管理面：Edge 与 Web 同时提供根路径和
 Better Auth 后缀的 authorization-server discovery，`GET/HEAD` 均实测为 HTTP 200；
