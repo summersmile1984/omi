@@ -1389,9 +1389,15 @@ The prefix constraint uses bounded `substr` checks plus simple GLOB predicates:
 repeated character-class GLOBs accepted by local SQLite exceed D1's deployed
 pattern-complexity limit, so the final-schema regression test forbids them.
 
-The MCP REST tools consume those keys in API Core. Exact bearer
-parsing, persisted scopes, account deletion fences, and destination-bound
-cutover state are checked before every uid-scoped query. Memory, conversation,
+The MCP REST tools consume either those keys or a request-bound `mcp-oauth`
+context in API Core. Exact API-key parsing, OAuth scope/client bounds, account
+deletion fences, and destination-bound cutover state are checked before every
+uid-scoped query. OAuth access tokens stop at the Auth Worker: its private
+`POST /internal/mcp/verify` verifies signature, issuer, audience, expiry,
+scope, and DPoP binding against the canonical `MCP_RESOURCE_URL`; Edge may then
+sign only the uid, data scopes, and OAuth client id for one API Core method and
+path. `GET /internal/mcp/principal` applies the same data-plane fence before
+the transport advertises tools. Memory, conversation,
 action-item, goal, chat, people, screen-activity, daily-summary, and profile
 reads share the existing D1 authorities; memory and action-item writes use the
 same projections and write limits. Edge forwards only Authorization and uses a

@@ -2,7 +2,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import auth from "../workers/auth/index";
 import type { AuthEnv } from "../workers/auth/env";
 
@@ -82,7 +83,27 @@ function environment(): AuthEnv {
 
 afterEach(() => {
   for (const database of databases.splice(0)) database.close();
+  vi.unstubAllGlobals();
 });
+
+async function accessToken(scope = "memories.read offline_access") {
+  const { privateKey, publicKey } = await generateKeyPair("ES256");
+  const publicJwk = await exportJWK(publicKey);
+  Object.assign(publicJwk, { alg: "ES256", kid: "mcp-test-key", use: "sig" });
+  const token = await new SignJWT({
+    client_id: "mcp-test-client",
+    azp: "mcp-test-client",
+    scope,
+  })
+    .setProtectedHeader({ alg: "ES256", kid: "mcp-test-key" })
+    .setIssuer("https://auth.test/api/better-auth")
+    .setAudience("https://edge.test/v1/mcp/sse")
+    .setSubject("mcp-user")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
+  return { publicJwk, token };
+}
 
 describe("auth worker MCP OAuth provider", () => {
   it("publishes OAuth metadata and registers a PKCE public client for the MCP resource", async () => {
@@ -151,5 +172,59 @@ describe("auth worker MCP OAuth provider", () => {
       .get(registration.client_id as string) as
       { resourceId: string } | undefined;
     expect(link?.resourceId).toBe("https://edge.test/v1/mcp/sse");
+  });
+
+  it("verifies an audience-bound MCP token without forwarding it to API workers", async () => {
+    const env = environment();
+    const { publicJwk, token } = await accessToken();
+    const fetchJwks = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        Response.json({ keys: [publicJwk] }),
+    );
+    vi.stubGlobal("fetch", fetchJwks);
+
+    const response = await auth.fetch(
+      new Request("https://auth.test/internal/mcp/verify", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-internal-assertion-secret": "internal-secret",
+        },
+        body: JSON.stringify({
+          method: "POST",
+          url: "https://edge.test/v1/mcp/sse",
+        }),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      uid: "mcp-user",
+      scopes: ["memories.read"],
+      clientId: "mcp-test-client",
+    });
+    expect(fetchJwks).toHaveBeenCalledOnce();
+    const [jwksUrl, jwksInit] = fetchJwks.mock.calls[0] || [];
+    expect(String(jwksUrl)).toBe("https://auth.test/api/better-auth/jwks");
+    expect(jwksInit).toMatchObject({ method: "GET", redirect: "manual" });
+
+    const mismatchedResource = await auth.fetch(
+      new Request("https://auth.test/internal/mcp/verify", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-internal-assertion-secret": "internal-secret",
+        },
+        body: JSON.stringify({
+          method: "POST",
+          url: "https://attacker.example/v1/mcp/sse",
+        }),
+      }),
+      env,
+    );
+    expect(mismatchedResource.status).toBe(400);
   });
 });

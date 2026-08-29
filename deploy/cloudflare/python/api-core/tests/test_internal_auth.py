@@ -75,3 +75,43 @@ def test_internal_context_creation_matches_the_request_bound_verifier():
     assert context["uid"] == "user-1"
     assert context["authority"] == "internal"
     assert context["requestId"] == "request-2"
+
+
+def test_internal_context_validates_mcp_oauth_identity_fields():
+    secret = "test-secret"
+
+    def verify(payload):
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        signature = (
+            base64.urlsafe_b64encode(hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest())
+            .decode()
+            .rstrip("=")
+        )
+        return verify_request_context(
+            encoded,
+            signature,
+            secret,
+            audience="api-core",
+            method="POST",
+            path="/v1/mcp/memories/search",
+            now=120,
+        )
+
+    base = {
+        "version": 1,
+        "uid": "mcp-user",
+        "authority": "mcp-oauth",
+        "requestId": "request-1",
+        "audience": "api-core",
+        "assertionId": "assertion-1",
+        "issuedAt": 100,
+        "expiresAt": 160,
+        "method": "POST",
+        "path": "/v1/mcp/memories/search",
+        "scopes": ["memories.read"],
+        "oauthClientId": "https://client.example/metadata.json",
+    }
+    assert verify(base)["oauthClientId"] == base["oauthClientId"]
+    assert verify({**base, "scopes": ["memories.read", "memories.read"]}) is None
+    assert verify({**base, "authority": "better-auth"}) is None

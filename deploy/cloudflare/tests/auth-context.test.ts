@@ -112,4 +112,41 @@ describe("auth context", () => {
       ),
     ).toBeNull();
   });
+
+  it("round-trips bounded MCP OAuth scopes only for the MCP authority", async () => {
+    const mcpIdentity = {
+      uid: "mcp-user",
+      authority: "mcp-oauth" as const,
+      scopes: ["memories.read", "conversations.read"],
+      oauthClientId: "https://client.example/metadata.json",
+      requestId: "mcp-request",
+    };
+    const signed = await createSignedAuthContext(
+      mcpIdentity,
+      "api-core",
+      "POST",
+      "/v1/mcp/memories/search",
+      "test-secret",
+      100,
+    );
+    expect(decodeAuthContext(signed?.encoded || "")).toMatchObject(mcpIdentity);
+
+    const duplicateScopes = signed
+      ? { ...signed.context, scopes: ["memories.read", "memories.read"] }
+      : null;
+    expect(
+      decodeAuthContext(
+        duplicateScopes ? encodeAuthContext(duplicateScopes) : "",
+      ),
+    ).toBeNull();
+
+    const confusedAuthority = signed
+      ? { ...signed.context, authority: "better-auth" as const }
+      : null;
+    expect(
+      decodeAuthContext(
+        confusedAuthority ? encodeAuthContext(confusedAuthority) : "",
+      ),
+    ).toBeNull();
+  });
 });

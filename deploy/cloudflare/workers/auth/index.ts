@@ -1,5 +1,5 @@
 import { betterAuth } from "better-auth";
-import { mcp } from "@better-auth/mcp";
+import { mcp, requireMcpAuth } from "@better-auth/mcp";
 import { createAuthMiddleware } from "better-auth/api";
 import { bearer } from "better-auth/plugins/bearer";
 import { jwt } from "better-auth/plugins/jwt";
@@ -33,6 +33,9 @@ export const MCP_SCOPES = [
   "screen_activity.read",
 ] as const;
 const MCP_OAUTH_SCOPES = [...MCP_SCOPES, "offline_access"];
+const MCP_OAUTH_SCOPE_SET = new Set(MCP_OAUTH_SCOPES);
+const MCP_DATA_SCOPE_SET = new Set<string>(MCP_SCOPES);
+const MAX_MCP_VERIFY_BODY_BYTES = 4_096;
 
 type SocialProviderId = "google" | "apple";
 
@@ -235,6 +238,45 @@ function payloadUid(payload: unknown): string | null {
   if (typeof uid === "string" && uid.length > 0) return uid;
   const subject = (payload as { sub?: unknown }).sub;
   return typeof subject === "string" && subject.length > 0 ? subject : null;
+}
+
+function verifiedMcpClaims(payload: unknown): {
+  uid: string;
+  scopes: string[];
+  clientId: string;
+} | null {
+  if (!payload || typeof payload !== "object") return null;
+  const claims = payload as Record<string, unknown>;
+  const uid = claims.sub;
+  const clientId = claims.client_id;
+  const authorizedParty = claims.azp;
+  const rawScope = claims.scope;
+  if (
+    typeof uid !== "string" ||
+    uid.length === 0 ||
+    uid.length > 256 ||
+    typeof clientId !== "string" ||
+    clientId.length === 0 ||
+    clientId.length > 2_048 ||
+    (authorizedParty !== undefined && authorizedParty !== clientId) ||
+    typeof rawScope !== "string" ||
+    rawScope.length > 4_096
+  ) {
+    return null;
+  }
+  const granted = rawScope.split(/\s+/).filter(Boolean);
+  if (
+    granted.length > MCP_OAUTH_SCOPES.length ||
+    granted.length !== new Set(granted).size ||
+    granted.some((scope) => !MCP_OAUTH_SCOPE_SET.has(scope))
+  ) {
+    return null;
+  }
+  return {
+    uid,
+    clientId,
+    scopes: granted.filter((scope) => MCP_DATA_SCOPE_SET.has(scope)),
+  };
 }
 
 function profileCreatedAt(value: unknown): string | null {
@@ -474,6 +516,81 @@ app.post("/internal/verify", async (c) => {
     return c.json(result);
   } catch {
     return c.json({ error: "unauthorized" }, 401);
+  }
+});
+
+app.post("/internal/mcp/verify", async (c) => {
+  const expected = c.env.INTERNAL_ASSERTION_SECRET;
+  const presentedSecret = c.req.header("x-internal-assertion-secret") || "";
+  if (!expected || !constantTimeEqual(presentedSecret, expected)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const contentLength = Number(c.req.header("content-length") || "0");
+  if (
+    !Number.isFinite(contentLength) ||
+    contentLength < 0 ||
+    contentLength > MAX_MCP_VERIFY_BODY_BYTES
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+
+  let body: unknown;
+  try {
+    const raw = await c.req.text();
+    if (new TextEncoder().encode(raw).length > MAX_MCP_VERIFY_BODY_BYTES) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    body = JSON.parse(raw);
+  } catch {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const method =
+    body && typeof body === "object" && "method" in body
+      ? (body as { method?: unknown }).method
+      : null;
+  const url =
+    body && typeof body === "object" && "url" in body
+      ? (body as { url?: unknown }).url
+      : null;
+  const baseURL = c.env.BETTER_AUTH_URL || new URL(c.req.url).origin;
+  const resource =
+    c.env.MCP_RESOURCE_URL || new URL("/v1/mcp/sse", baseURL).href;
+  if (!["POST", "GET", "DELETE"].includes(String(method)) || url !== resource) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const authorization = c.req.header("authorization");
+  if (!authorization) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const publicHeaders = new Headers({ authorization });
+    const dpop = c.req.header("dpop");
+    if (dpop) publicHeaders.set("dpop", dpop);
+    const publicRequest = new Request(resource, {
+      method: String(method),
+      headers: publicHeaders,
+    });
+    const auth = buildAuth(c.env, c.req.url);
+    const verify = requireMcpAuth(
+      auth,
+      async (_request, claims) => {
+        const identity = verifiedMcpClaims(claims);
+        if (!identity) {
+          return Response.json({ error: "invalid_token" }, { status: 401 });
+        }
+        return Response.json(
+          {
+            uid: identity.uid,
+            scopes: identity.scopes,
+            clientId: identity.clientId,
+          },
+          { headers: { "cache-control": "no-store" } },
+        );
+      },
+      { resource, challengeScopes: MCP_SCOPES },
+    );
+    return await verify(publicRequest);
+  } catch {
+    return c.json({ error: "authorization_unavailable" }, 503);
   }
 });
 

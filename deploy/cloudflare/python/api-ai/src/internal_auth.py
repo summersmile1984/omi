@@ -7,6 +7,25 @@ from typing import Any
 
 MAX_ASSERTION_LIFETIME_SECONDS = 60
 CLOCK_SKEW_SECONDS = 5
+AUTH_AUTHORITIES = frozenset({"firebase", "better-auth", "internal", "mcp-oauth"})
+
+
+def _valid_identity_context(context: dict[str, Any]) -> bool:
+    authority = context.get("authority")
+    if authority not in AUTH_AUTHORITIES:
+        return False
+    scopes = context.get("scopes")
+    client_id = context.get("oauthClientId")
+    if authority != "mcp-oauth":
+        return scopes is None and client_id is None
+    return (
+        isinstance(scopes, list)
+        and len(scopes) <= 16
+        and all(isinstance(scope, str) and 0 < len(scope) <= 128 for scope in scopes)
+        and len(scopes) == len(set(scopes))
+        and isinstance(client_id, str)
+        and 0 < len(client_id) <= 2_048
+    )
 
 
 def decode_context(encoded: str | None, signature: str | None, secret: str | None) -> dict[str, Any] | None:
@@ -21,7 +40,12 @@ def decode_context(encoded: str | None, signature: str | None, secret: str | Non
         context = json.loads(payload.decode())
     except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if not isinstance(context, dict) or not isinstance(context.get("uid"), str) or not context["uid"]:
+    if (
+        not isinstance(context, dict)
+        or not isinstance(context.get("uid"), str)
+        or not context["uid"]
+        or not _valid_identity_context(context)
+    ):
         return None
     return context
 

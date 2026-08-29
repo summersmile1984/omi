@@ -1,10 +1,10 @@
 """D1-backed MCP REST data tools for isolated Cloudflare accounts.
 
-These routes authenticate the opaque ``omi_mcp_`` bearer directly against D1.
-They never accept a caller-provided uid, never fall back to Firebase, and keep
-the same scope names used by the hosted MCP transport. Semantic search and
-OAuth transport routes intentionally remain outside this module until their
-Vectorize/token lifecycles migrate as one boundary.
+These routes authenticate either an opaque ``omi_mcp_`` bearer directly against
+D1 or a request-bound ``mcp-oauth`` context signed by the Edge Worker after the
+Auth Worker verifies the OAuth token. They never accept a caller-provided uid,
+never fall back to Firebase, and keep one exact scope set for both credential
+types.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
 import re
 import time
@@ -121,8 +122,9 @@ MEMORY_CATEGORY_SCHEMA = _json_schema(
 @dataclass(frozen=True)
 class McpPrincipal:
     uid: str
-    key_id: str
+    key_id: str | None
     scopes: frozenset[str]
+    oauth_client_id: str | None = None
 
 
 class McpActionItemCreate(BaseModel):
@@ -316,57 +318,100 @@ async def _bounded_json(request: Request) -> object:
     return json.loads(raw)
 
 
-async def _authenticate(request: Request, required_scope: str) -> tuple[McpPrincipal | None, JSONResponse | None]:
-    authorization = request.headers.get("authorization")
-    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
-        return None, _detail("Missing or invalid Authorization header. Must be 'Bearer API_KEY'", 401)
-    match = MCP_KEY_PATTERN.fullmatch(authorization)
-    if match is None:
-        return None, _detail("Invalid MCP API key", 403)
-
-    secret = match.group(1)
-    digest = hashlib.sha256(secret.encode()).hexdigest()
-    expected_prefix = f"omi_mcp_{secret[:4]}...{secret[-4:]}"
+async def _authenticate(
+    request: Request, required_scope: str | None
+) -> tuple[McpPrincipal | None, JSONResponse | None]:
     env = request.scope["env"]
-    try:
-        row = (
-            await env.APP_DB.prepare(
-                "SELECT uid, key_id, key_hash, key_prefix, app_id, scopes_json, created_at "
-                "FROM cf_mcp_api_keys WHERE key_hash = ? LIMIT 1"
-            )
-            .bind(digest)
-            .first()
-        )
-        if not isinstance(row, dict):
-            return None, _detail("Invalid MCP API key", 403)
-        uid = row.get("uid")
-        key_id = row.get("key_id")
+    principal: McpPrincipal | None = None
+    api_key_created_at: int | None = None
+    state = request.scope.get("state")
+    context = state.get("auth_context") if isinstance(state, dict) else None
+
+    if isinstance(context, dict) and context.get("authority") == "mcp-oauth":
+        uid = context.get("uid")
+        raw_scopes = context.get("scopes")
+        oauth_client_id = context.get("oauthClientId")
         if (
             not isinstance(uid, str)
             or not uid
             or len(uid) > 256
-            or not isinstance(key_id, str)
-            or not key_id
-            or len(key_id) > 64
-            or row.get("key_hash") != digest
-            or row.get("app_id") != "mcp-api"
-            or row.get("key_prefix") not in {expected_prefix, "omi_mcp_legacy"}
+            or not isinstance(raw_scopes, list)
+            or len(raw_scopes) > len(SUPPORTED_SCOPES)
+            or any(not isinstance(scope, str) or scope not in SUPPORTED_SCOPES for scope in raw_scopes)
+            or len(raw_scopes) != len(set(raw_scopes))
+            or not isinstance(oauth_client_id, str)
+            or not oauth_client_id
+            or len(oauth_client_id) > 2_048
         ):
             return None, _error("mcp authentication unavailable", 503)
-        raw_scopes = row.get("scopes_json")
-        if not isinstance(raw_scopes, str) or len(raw_scopes.encode("utf-8")) > 4_096:
-            return None, _error("mcp authentication unavailable", 503)
-        parsed_scopes = json.loads(raw_scopes)
-        if (
-            not isinstance(parsed_scopes, list)
-            or any(not isinstance(scope, str) or scope not in SUPPORTED_SCOPES for scope in parsed_scopes)
-            or len(parsed_scopes) != len(set(parsed_scopes))
-        ):
-            return None, _error("mcp authentication unavailable", 503)
-        scopes = frozenset(parsed_scopes)
-        if required_scope not in scopes:
-            return None, _detail(f"Insufficient permissions. Required scope: {required_scope}", 403)
+        principal = McpPrincipal(
+            uid=uid,
+            key_id=None,
+            scopes=frozenset(raw_scopes),
+            oauth_client_id=oauth_client_id,
+        )
+    else:
+        authorization = request.headers.get("authorization")
+        if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+            return None, _detail("Missing or invalid Authorization header. Must be 'Bearer API_KEY'", 401)
+        match = MCP_KEY_PATTERN.fullmatch(authorization)
+        if match is None:
+            return None, _detail("Invalid MCP API key", 403)
 
+        secret = match.group(1)
+        digest = hashlib.sha256(secret.encode()).hexdigest()
+        expected_prefix = f"omi_mcp_{secret[:4]}...{secret[-4:]}"
+        try:
+            row = (
+                await env.APP_DB.prepare(
+                    "SELECT uid, key_id, key_hash, key_prefix, app_id, scopes_json, created_at "
+                    "FROM cf_mcp_api_keys WHERE key_hash = ? LIMIT 1"
+                )
+                .bind(digest)
+                .first()
+            )
+            if not isinstance(row, dict):
+                return None, _detail("Invalid MCP API key", 403)
+            uid = row.get("uid")
+            key_id = row.get("key_id")
+            if (
+                not isinstance(uid, str)
+                or not uid
+                or len(uid) > 256
+                or not isinstance(key_id, str)
+                or not key_id
+                or len(key_id) > 64
+                or row.get("key_hash") != digest
+                or row.get("app_id") != "mcp-api"
+                or row.get("key_prefix") not in {expected_prefix, "omi_mcp_legacy"}
+            ):
+                return None, _error("mcp authentication unavailable", 503)
+            raw_scopes = row.get("scopes_json")
+            if not isinstance(raw_scopes, str) or len(raw_scopes.encode("utf-8")) > 4_096:
+                return None, _error("mcp authentication unavailable", 503)
+            parsed_scopes = json.loads(raw_scopes)
+            if (
+                not isinstance(parsed_scopes, list)
+                or any(not isinstance(scope, str) or scope not in SUPPORTED_SCOPES for scope in parsed_scopes)
+                or len(parsed_scopes) != len(set(parsed_scopes))
+            ):
+                return None, _error("mcp authentication unavailable", 503)
+            created_at = row.get("created_at")
+            if not isinstance(created_at, int) or isinstance(created_at, bool) or created_at < 0:
+                return None, _error("mcp authentication unavailable", 503)
+            api_key_created_at = created_at
+            principal = McpPrincipal(uid=uid, key_id=key_id, scopes=frozenset(parsed_scopes))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None, _error("mcp authentication unavailable", 503)
+        except Exception:
+            return None, _error("mcp authentication unavailable", 503)
+
+    if principal is None:
+        return None, _error("mcp authentication unavailable", 503)
+    if required_scope is not None and required_scope not in principal.scopes:
+        return None, _detail(f"Insufficient permissions. Required scope: {required_scope}", 403)
+
+    try:
         deletion = (
             await env.APP_DB.prepare(
                 "SELECT lifecycle FROM ("
@@ -375,7 +420,7 @@ async def _authenticate(request: Request, required_scope: str) -> tuple[McpPrinc
                 "FROM cf_account_deletion_tombstones WHERE uid = ? AND expires_at > ?"
                 ") ORDER BY priority LIMIT 1"
             )
-            .bind(uid, uid, int(time.time()))
+            .bind(principal.uid, principal.uid, int(time.time()))
             .first()
         )
         if deletion is not None:
@@ -384,7 +429,7 @@ async def _authenticate(request: Request, required_scope: str) -> tuple[McpPrinc
             await env.APP_DB.prepare(
                 "SELECT state, checkpoint_phase, destination_backend_bound FROM cf_account_cutover WHERE uid = ?"
             )
-            .bind(uid)
+            .bind(principal.uid)
             .first()
         )
         if not isinstance(cutover, dict):
@@ -396,17 +441,42 @@ async def _authenticate(request: Request, required_scope: str) -> tuple[McpPrinc
         ):
             return None, _error("account data plane not active", 409)
 
-        created_at = row.get("created_at")
-        if not isinstance(created_at, int) or isinstance(created_at, bool) or created_at < 0:
-            return None, _error("mcp authentication unavailable", 503)
-        await env.APP_DB.prepare("UPDATE cf_mcp_api_keys SET last_used_at = ? WHERE key_id = ? AND uid = ?").bind(
-            max(created_at, int(time.time())), key_id, uid
-        ).run()
-        return McpPrincipal(uid=uid, key_id=key_id, scopes=scopes), None
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None, _error("mcp authentication unavailable", 503)
+        if principal.key_id is not None and api_key_created_at is not None:
+            await env.APP_DB.prepare("UPDATE cf_mcp_api_keys SET last_used_at = ? WHERE key_id = ? AND uid = ?").bind(
+                max(api_key_created_at, int(time.time())), principal.key_id, principal.uid
+            ).run()
+        return principal, None
     except Exception:
         return None, _error("mcp authentication unavailable", 503)
+
+
+@router.get("/internal/mcp/principal")
+async def get_mcp_principal(request: Request):
+    env = request.scope["env"]
+    state = request.scope.get("state")
+    context = state.get("auth_context") if isinstance(state, dict) else None
+    signed_oauth = isinstance(context, dict) and context.get("authority") == "mcp-oauth"
+    presented = request.headers.get("x-internal-assertion-secret")
+    expected = getattr(env, "INTERNAL_ASSERTION_SECRET", None)
+    internal = (
+        isinstance(presented, str)
+        and isinstance(expected, str)
+        and bool(expected)
+        and hmac.compare_digest(presented, expected)
+    )
+    if not signed_oauth and not internal:
+        return _error("unauthorized", 401)
+
+    principal, denial = await _authenticate(request, None)
+    if denial is not None:
+        return denial
+    assert principal is not None
+    return {
+        "uid": principal.uid,
+        "scopes": sorted(principal.scopes),
+        "auth_type": "oauth" if principal.oauth_client_id is not None else "api_key",
+        "client_id": principal.oauth_client_id,
+    }
 
 
 async def _contact_profile(request: Request, uid: str) -> dict[str, object]:

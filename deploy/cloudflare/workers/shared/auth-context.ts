@@ -1,4 +1,5 @@
-export type AuthAuthority = "firebase" | "better-auth" | "internal";
+export type AuthAuthority =
+  "firebase" | "better-auth" | "internal" | "mcp-oauth";
 export type AuthAudience = "api-core" | "api-ai" | "auth" | "jobs" | "realtime";
 
 export type AuthContext = {
@@ -7,6 +8,8 @@ export type AuthContext = {
   displayName?: string;
   accountCreatedAt?: number;
   sessionGeneration?: string;
+  scopes?: string[];
+  oauthClientId?: string;
   requestId: string;
 };
 
@@ -27,8 +30,32 @@ const CLOCK_SKEW_SECONDS = 5;
 
 function validAuthority(value: unknown): value is AuthAuthority {
   return (
-    value === "firebase" || value === "better-auth" || value === "internal"
+    value === "firebase" ||
+    value === "better-auth" ||
+    value === "internal" ||
+    value === "mcp-oauth"
   );
+}
+
+function validMcpIdentity(parsed: Partial<SignedAuthContext>): boolean {
+  const hasMcpFields =
+    parsed.scopes !== undefined || parsed.oauthClientId !== undefined;
+  if (parsed.authority !== "mcp-oauth") return !hasMcpFields;
+  if (
+    !Array.isArray(parsed.scopes) ||
+    parsed.scopes.length > 16 ||
+    parsed.scopes.some(
+      (scope) =>
+        typeof scope !== "string" || scope.length === 0 || scope.length > 128,
+    ) ||
+    new Set(parsed.scopes).size !== parsed.scopes.length ||
+    typeof parsed.oauthClientId !== "string" ||
+    parsed.oauthClientId.length === 0 ||
+    parsed.oauthClientId.length > 2_048
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function validAudience(value: unknown): value is AuthAudience {
@@ -82,6 +109,7 @@ export function decodeAuthContext(
       !parsed.method ||
       typeof parsed.path !== "string" ||
       !parsed.path.startsWith("/") ||
+      !validMcpIdentity(parsed) ||
       (parsed.accountCreatedAt !== undefined &&
         (typeof parsed.accountCreatedAt !== "number" ||
           !Number.isInteger(parsed.accountCreatedAt) ||

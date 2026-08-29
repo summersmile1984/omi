@@ -26,6 +26,7 @@ from mcp_routes import (  # noqa: E402
     get_conversations,
     get_daily_summaries,
     get_goals,
+    get_mcp_principal,
     get_memories,
     get_people,
     get_profile,
@@ -101,11 +102,24 @@ class Query(dict):
 
 
 class FakeRequest:
-    def __init__(self, env, *, body=None, query=None, authorization=AUTHORIZATION):
+    def __init__(
+        self,
+        env,
+        *,
+        body=None,
+        query=None,
+        authorization=AUTHORIZATION,
+        auth_context=None,
+        internal_secret=None,
+    ):
         self.scope = {"env": env}
+        if auth_context is not None:
+            self.scope["state"] = {"auth_context": auth_context}
         self.headers = {"x-request-id": "mcp-route-test"}
         if authorization is not None:
             self.headers["authorization"] = authorization
+        if internal_secret is not None:
+            self.headers["x-internal-assertion-secret"] = internal_secret
         self.query_params = Query(query or {})
         self._body = b"" if body is None else json.dumps(body).encode()
 
@@ -245,6 +259,61 @@ def test_mcp_key_auth_is_exact_scoped_and_fenced_to_active_cloudflare_accounts()
     deletion_db.connection.commit()
     deleting = run(get_memories(FakeRequest(deletion_env)))
     assert deleting.status_code == 409
+
+
+def test_mcp_oauth_context_uses_the_same_scope_and_data_plane_fences_without_touching_api_keys():
+    db, env = environment()
+    context = {
+        "uid": "mcp-user",
+        "authority": "mcp-oauth",
+        "scopes": ["memories.read"],
+        "oauthClientId": "mcp-oauth-client",
+    }
+    request = FakeRequest(env, authorization=None, auth_context=context)
+    assert run(get_memories(request)) == []
+    key = db.connection.execute("SELECT last_used_at FROM cf_mcp_api_keys WHERE key_id = 'key-1'").fetchone()
+    assert key["last_used_at"] is None
+
+    principal = run(get_mcp_principal(FakeRequest(env, authorization=None, auth_context=context)))
+    assert principal == {
+        "uid": "mcp-user",
+        "scopes": ["memories.read"],
+        "auth_type": "oauth",
+        "client_id": "mcp-oauth-client",
+    }
+
+    denied = run(get_action_items(FakeRequest(env, authorization=None, auth_context=context)))
+    assert denied.status_code == 403
+    assert response_body(denied)["detail"].endswith("action_items.read")
+
+    corrupt = run(
+        get_memories(
+            FakeRequest(
+                env,
+                authorization=None,
+                auth_context={**context, "scopes": ["memories.read", "unknown.scope"]},
+            )
+        )
+    )
+    assert corrupt.status_code == 503
+
+    _, inactive_env = environment(state="legacy")
+    inactive = run(get_memories(FakeRequest(inactive_env, authorization=None, auth_context=context)))
+    assert inactive.status_code == 409
+
+
+def test_mcp_internal_principal_requires_the_edge_secret_for_api_keys():
+    _, env = environment()
+    unsigned = run(get_mcp_principal(FakeRequest(env)))
+    assert unsigned.status_code == 401
+
+    principal = run(get_mcp_principal(FakeRequest(env, internal_secret=INTERNAL_SECRET)))
+    assert principal == {
+        "uid": "mcp-user",
+        "scopes": sorted(SUPPORTED_SCOPES),
+        "auth_type": "api_key",
+        "client_id": None,
+    }
 
 
 def test_mcp_profile_uses_a_request_bound_auth_service_assertion():
