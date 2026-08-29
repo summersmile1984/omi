@@ -116,6 +116,7 @@ function environment(options: { failAi?: boolean } = {}) {
   const action = new FakeVectorize();
   const conversation = new FakeVectorize();
   const transcript = new FakeVectorize();
+  const xPost = new FakeVectorize();
   const ai = {
     run: vi.fn(async (_model: string, input: Record<string, unknown>) => {
       if (options.failAi) throw new Error("simulated Workers AI failure");
@@ -134,9 +135,19 @@ function environment(options: { failAi?: boolean } = {}) {
     ACTION_ITEM_VECTORS: action,
     CONVERSATION_VECTORS: conversation,
     TRANSCRIPT_CHUNK_VECTORS: transcript,
+    X_POST_VECTORS: xPost,
     WORKERS_AI_VECTOR_MODEL: VECTOR_EMBEDDING_MODEL,
   } as unknown as JobsEnv;
-  return { database, env, ai, memory, action, conversation, transcript };
+  return {
+    database,
+    env,
+    ai,
+    memory,
+    action,
+    conversation,
+    transcript,
+    xPost,
+  };
 }
 
 function seedSources(database: SqliteD1) {
@@ -176,6 +187,13 @@ function seedSources(database: SqliteD1) {
         },
       ]),
     );
+  database.database
+    .prepare(
+      `INSERT INTO cf_x_posts
+       (uid, id, text, kind, created_at, updated_at)
+       VALUES ('vector-user', 'post-1', 'Workers deployment notes', 'bookmark', 10, 10)`,
+    )
+    .run();
 }
 
 afterEach(() => {
@@ -187,13 +205,14 @@ describe("Vectorize rebuildable D1 projection", () => {
     const state = environment();
     seedSources(state.database);
 
-    await expect(reconcileVectorProjections(state.env, 100)).resolves.toBe(3);
+    await expect(reconcileVectorProjections(state.env, 100)).resolves.toBe(4);
 
-    expect(state.ai.run).toHaveBeenCalledTimes(3);
+    expect(state.ai.run).toHaveBeenCalledTimes(4);
     expect(state.memory.upserts).toHaveLength(1);
     expect(state.action.upserts).toHaveLength(1);
     expect(state.conversation.upserts).toHaveLength(1);
     expect(state.transcript.upserts).toHaveLength(1);
+    expect(state.xPost.upserts).toHaveLength(1);
     const namespace = await vectorNamespace("vector-user");
     expect(namespace).toHaveLength(64);
     expect(state.memory.upserts[0][0]).toMatchObject({ namespace });
@@ -212,6 +231,7 @@ describe("Vectorize rebuildable D1 projection", () => {
       { projection_kind: "conversation" },
       { projection_kind: "memory" },
       { projection_kind: "transcript_chunk" },
+      { projection_kind: "x_post" },
     ]);
     expect(
       state.database.database
@@ -307,7 +327,7 @@ describe("Vectorize rebuildable D1 projection", () => {
 
     await expect(
       purgeAccountVectorProjections(state.env, "vector-user"),
-    ).resolves.toBe(4);
+    ).resolves.toBe(5);
 
     expect(state.memory.deletes.flat()).toContain(expectedMemoryId);
     expect(

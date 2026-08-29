@@ -47,6 +47,9 @@ Resource names are deliberately isolated from existing account resources:
   `omi-cf-sync-backfill-staging`, and `omi-cf-jobs-dlq-staging`
 - R2: `omi-cf-staging`
 - Durable Objects: Realtime sessions and standalone rate-limit windows
+- Vectorize: `omi-cf-conversations-v2`, `omi-cf-memories-v2`,
+  `omi-cf-action-items-v2`, `omi-cf-transcript-chunks-v2`, and
+  `omi-cf-x-posts-v2` (rebuildable 1024-dimensional BGE-M3 projections)
 
 The deploy script only deploys the named staging environment. It applies D1
 migrations before Workers and deploys Edge last. It never creates production
@@ -147,7 +150,11 @@ and never receives browser cookies. Web recording exchanges the cookie at
 `POST /v1/realtime/web-ticket` for a signed 30-second ticket. The browser sends
 that ticket as its first WebSocket message, and the isolated Durable Object
 claims it once, so the Realtime Worker never receives a long-lived Better Auth
-session token or an Auth service binding. Public Better Auth routes retain the
+session token or an Auth service binding. MCP OAuth discovery, login
+continuation, and consent stay on the same Web origin. The consent page sends
+only Better Auth's signed authorization query, and MCP access tokens terminate
+at Edge; API Core receives a request-bound signed principal instead of the
+bearer token. Public Better Auth routes retain the
 D1-backed per-IP limiter. The secret-guarded Edge session-verification request
 bypasses that public limiter so service-binding calls without a client IP cannot
 collapse every staging user into one shared rate-limit bucket.

@@ -143,6 +143,40 @@ describe("D1 backfill SQL generator", () => {
     ).toThrow("key_hash is invalid");
   });
 
+  it("backfills raw X posts with bounded kinds and JSON metrics", () => {
+    const normalized = normalizeRow("cf_x_posts", {
+      uid: "user-1",
+      id: "tweet-1",
+      text: "Workers deployment notes",
+      kind: "bookmark",
+      lang: "en",
+      metrics: { like_count: 3 },
+      created_at: "2026-08-28T10:00:00Z",
+      ingested_at: "2026-08-28T10:01:00Z",
+      updated_at: "2026-08-28T10:01:00Z",
+      memory_extraction_status: "completed",
+    });
+    expect(normalized).toMatchObject({
+      uid: "user-1",
+      id: "tweet-1",
+      kind: "bookmark",
+      created_at: 1787911200,
+      memory_extraction_status: "completed",
+    });
+    expect(JSON.parse(String(normalized.metrics_json))).toEqual({
+      like_count: 3,
+    });
+    expect(
+      renderBackfillSql([{ table: "cf_x_posts", row: normalized }]),
+    ).toContain("ON CONFLICT(uid, id) DO UPDATE SET text = excluded.text");
+    expect(() =>
+      normalizeRow("cf_x_posts", {
+        ...normalized,
+        kind: "retweet",
+      }),
+    ).toThrow("cf_x_posts.kind is invalid");
+  });
+
   it("renders history rows with their three-column uid-scoped key", () => {
     const sql = renderBackfillSql([
       {

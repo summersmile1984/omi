@@ -76,3 +76,7 @@ resources:
     name: omi-cf-transcript-chunks-v2
     owner: jobs
     environment: staging
+  - kind: vectorize
+    name: omi-cf-x-posts-v2
+    owner: jobs
+    environment: staging

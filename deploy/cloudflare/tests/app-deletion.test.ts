@@ -166,6 +166,7 @@ function environment(options: { queueFail?: boolean } = {}) {
       ACTION_ITEM_VECTORS: fakeVectorize(),
       CONVERSATION_VECTORS: fakeVectorize(),
       TRANSCRIPT_CHUNK_VECTORS: fakeVectorize(),
+      X_POST_VECTORS: fakeVectorize(),
       SYNC_FRESH: queue.binding,
       SYNC_BACKFILL: queue.binding,
     } satisfies JobsEnv,

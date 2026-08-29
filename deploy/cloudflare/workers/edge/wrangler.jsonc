@@ -27,6 +27,8 @@
   ],
   "vars": {
     "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",
+    "MCP_RESOURCE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev/v1/mcp/sse",
+    "MCP_AUTHORIZATION_SERVER_URL": "https://omi-web-app-staging.summersmile1984.workers.dev/api/better-auth",
     "RATE_LIMIT_BOOST": "1.0",
     "RATE_LIMIT_SHADOW_MODE": "false",
   },

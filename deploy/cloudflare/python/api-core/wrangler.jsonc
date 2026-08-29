@@ -23,6 +23,7 @@
       "binding": "TRANSCRIPT_CHUNK_VECTORS",
       "index_name": "omi-cf-transcript-chunks-v2",
     },
+    { "binding": "X_POST_VECTORS", "index_name": "omi-cf-x-posts-v2" },
   ],
   "queues": {
     "producers": [{ "binding": "JOBS", "queue": "omi-cf-jobs-staging" }],

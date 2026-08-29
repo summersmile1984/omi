@@ -15,6 +15,10 @@ import {
 } from "./cutover";
 import type { EdgeEnv, EdgeVariables } from "./env";
 import {
+  handleMcpTransport,
+  mcpProtectedResourceMetadata,
+} from "./mcp-transport";
+import {
   edgeRateLimitPolicyForRequest,
   enforceEdgeRateLimit,
   STT_TRANSCRIBE_RATE_LIMIT,
@@ -82,6 +86,54 @@ app.get("/ready", async (c) => {
     ready ? 200 : 503,
   );
 });
+
+app.on(["GET", "HEAD"], "/.well-known/oauth-protected-resource", (c) => {
+  const metadata = mcpProtectedResourceMetadata(c.env);
+  if (!metadata) return c.json({ error: "mcp unavailable" }, 503);
+  if (c.req.method === "HEAD") {
+    return new Response(null, {
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      },
+    });
+  }
+  c.header("cache-control", "no-store");
+  return c.json(metadata);
+});
+app.on(
+  ["GET", "HEAD"],
+  "/.well-known/oauth-protected-resource/v1/mcp/sse",
+  (c) => {
+    const metadata = mcpProtectedResourceMetadata(c.env);
+    if (!metadata) return c.json({ error: "mcp unavailable" }, 503);
+    if (c.req.method === "HEAD") {
+      return new Response(null, {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        },
+      });
+    }
+    c.header("cache-control", "no-store");
+    return c.json(metadata);
+  },
+);
+
+app.get("/v1/mcp/sse/info", (c) =>
+  c.json({
+    transport: "streamable-http",
+    endpoint: c.env.MCP_RESOURCE_URL || null,
+    protocol_versions: ["2026-07-28", "2025-03-26"],
+    oauth: true,
+    api_key_compatibility: true,
+    migrated_tools: 22,
+    pending_tools: [],
+  }),
+);
+app.on(["GET", "POST", "DELETE"], "/v1/mcp/sse", (c) =>
+  handleMcpTransport(c.req.raw, c.env),
+);
 
 const proxyPublicCore = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
@@ -233,6 +285,8 @@ app.patch("/v1/mcp/memories/:memory_id", proxyMcpCore);
 app.get("/v1/mcp/profile", proxyMcpCore);
 app.get("/v1/mcp/memories/search", proxyMcpCore);
 app.get("/v1/mcp/memories", proxyMcpCore);
+app.get("/v1/mcp/x-posts/search", proxyMcpCore);
+app.get("/v1/mcp/x-posts", proxyMcpCore);
 app.get("/v1/mcp/conversations", proxyMcpCore);
 app.get("/v1/mcp/conversations/search", proxyMcpCore);
 app.get("/v1/mcp/conversations/:conversation_id", proxyMcpCore);

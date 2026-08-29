@@ -18,8 +18,8 @@ VECTOR_MODEL = "@cf/baai/bge-m3"
 VECTOR_DIMENSIONS = 1024
 MAX_QUERY_CHARS = 4_096
 VECTOR_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-PROJECTION_KINDS = frozenset({"memory", "action_item", "conversation", "transcript_chunk"})
-SOURCE_KINDS = frozenset({"memory", "action_item", "conversation"})
+PROJECTION_KINDS = frozenset({"memory", "action_item", "conversation", "transcript_chunk", "x_post"})
+SOURCE_KINDS = frozenset({"memory", "action_item", "conversation", "x_post"})
 
 
 def vector_namespace(uid: str) -> str:

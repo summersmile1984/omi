@@ -98,6 +98,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_workstream_events", column: "uid" },
   { table: "cf_workstream_mutations", column: "uid" },
   { table: "cf_workstreams", column: "uid" },
+  { table: "cf_x_posts", column: "uid" },
 ] satisfies readonly D1IdentitySurface[]);
 
 /**

@@ -111,6 +111,7 @@ MAX_MEMORY_SCAN = 5_000
 MAX_ACTION_DESCRIPTION = 2_000
 MAX_SCREEN_LIMIT = 200
 MAX_SCREEN_SUMMARY_LIMIT = 5_000
+X_POST_SELECT = "SELECT id, text, kind, created_at FROM cf_x_posts "
 
 MEMORY_CATEGORY_SCHEMA = _json_schema(
     "omi_mcp_memory_category",
@@ -912,6 +913,90 @@ async def search_memories(request: Request):
         }
         for row in rows
     ][: int(limit)]
+
+
+def _x_post_output(row: dict[str, object], *, score: float | None = None) -> dict[str, object]:
+    result: dict[str, object] = {
+        "id": str(row.get("id") or ""),
+        "text": str(row.get("text") or ""),
+        "kind": str(row.get("kind") or "tweet"),
+        "created_at": _iso_epoch(row.get("created_at")),
+    }
+    if score is not None:
+        result["relevance_score"] = round(score, 4)
+    return result
+
+
+@router.get("/v1/mcp/x-posts")
+async def get_x_posts(request: Request):
+    principal, denial = await _authenticate(request, "memories.read")
+    if denial:
+        return denial
+    limit = _query_int(request, "limit", 50, 1, 200)
+    if isinstance(limit, JSONResponse):
+        return limit
+    kind = request.query_params.get("kind")
+    if kind not in (None, "", "tweet", "bookmark"):
+        return _detail("Invalid kind. Expected tweet or bookmark.", 422)
+    assert principal is not None
+    clauses = ["uid = ?"]
+    arguments: list[object] = [principal.uid]
+    if kind:
+        clauses.append("kind = ?")
+        arguments.append(kind)
+    try:
+        rows = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                X_POST_SELECT + "WHERE " + " AND ".join(clauses) + " ORDER BY created_at DESC, id DESC LIMIT ?"
+            )
+            .bind(*arguments, int(limit))
+            .all()
+        )
+    except Exception:
+        return _error("X posts unavailable", 503)
+    values = rows.get("results", []) if isinstance(rows, dict) else []
+    return {"posts": [_x_post_output(row) for row in values if isinstance(row, dict)]}
+
+
+@router.get("/v1/mcp/x-posts/search")
+async def search_x_posts(request: Request):
+    principal, denial = await _authenticate(request, "memories.read")
+    if denial:
+        return denial
+    limit = _query_int(request, "limit", 10, 1, 100)
+    if isinstance(limit, JSONResponse):
+        return limit
+    query = request.query_params.get("query")
+    assert principal is not None
+    env = request.scope["env"]
+    try:
+        vector = await embed_query(env, query if isinstance(query, str) else "")
+        matches = await query_vector_ids(
+            env,
+            "X_POST_VECTORS",
+            principal.uid,
+            vector,
+            top_k=int(limit),
+        )
+        candidates = await hydrate_candidate_ids(env, principal.uid, "x_post", matches)
+        rows = await _rows_for_ids(
+            env,
+            X_POST_SELECT,
+            principal.uid,
+            [source_id for source_id, _ in candidates],
+            "",
+        )
+    except ValueError as error:
+        return _detail(str(error), 422)
+    except Exception:
+        return _error("X post search unavailable", 503)
+    score_by_id = dict(candidates)
+    return {
+        "posts": [
+            _x_post_output(row, score=float(score_by_id.get(str(row.get("id") or ""), 0.0))) for row in rows
+        ][: int(limit)]
+    }
 
 
 def _app_results(value: object) -> list[dict[str, object]] | None:

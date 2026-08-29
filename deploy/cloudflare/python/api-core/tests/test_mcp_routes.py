@@ -31,9 +31,11 @@ from mcp_routes import (  # noqa: E402
     get_people,
     get_profile,
     get_screen_activity,
+    get_x_posts,
     search_action_items,
     search_conversations,
     search_memories,
+    search_x_posts,
     update_action_item,
 )
 
@@ -187,6 +189,7 @@ def environment(*, scopes=None, state="new", key_prefix=None):
         ACTION_ITEM_VECTORS=FakeVectorIndex(),
         CONVERSATION_VECTORS=FakeVectorIndex(),
         TRANSCRIPT_CHUNK_VECTORS=FakeVectorIndex(),
+        X_POST_VECTORS=FakeVectorIndex(),
         INTERNAL_ASSERTION_SECRET=INTERNAL_SECRET,
         WORKERS_AI_INTEGRATION_MODEL="test-model",
         WORKERS_AI_VECTOR_MODEL="test-vector-model",
@@ -469,6 +472,55 @@ def test_mcp_memory_search_uses_vector_candidates_then_hydrates_active_d1_rows()
     ]
     assert env.MEMORY_VECTORS.calls[0][1]["topK"] == 3
     assert len(env.MEMORY_VECTORS.calls[0][1]["namespace"]) == 64
+
+
+def test_mcp_x_posts_list_and_search_hydrate_only_uid_scoped_d1_rows():
+    db, env = environment()
+    for uid, post_id, text, kind, created_at in (
+        ("mcp-user", "post-1", "Cloudflare Workers launch", "tweet", 20),
+        ("mcp-user", "post-2", "A useful auth article", "bookmark", 10),
+        ("other-user", "post-other", "Must never leak", "tweet", 30),
+    ):
+        db.connection.execute(
+            "INSERT INTO cf_x_posts "
+            "(uid, id, text, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (uid, post_id, text, kind, created_at, created_at),
+        )
+    visible_vector = "1" * 64
+    foreign_vector = "2" * 64
+    insert_vector_state(db, "x_post", "post-1", visible_vector, version=20)
+    db.connection.execute(
+        "INSERT INTO cf_vector_projection_state "
+        "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
+        "VALUES ('other-user', 'x_post', 'post-other', '000000', ?, 30, 'test-vector-model', 30)",
+        (foreign_vector,),
+    )
+    db.connection.commit()
+
+    listed = run(get_x_posts(FakeRequest(env, query={"kind": "tweet", "limit": "10"})))
+    assert [post["id"] for post in listed["posts"]] == ["post-1"]
+    assert listed["posts"][0]["created_at"].startswith("1970-01-01T00:00:20")
+
+    env.X_POST_VECTORS.matches = [
+        {"id": foreign_vector, "score": 0.99},
+        {"id": visible_vector, "score": 0.88},
+    ]
+    searched = run(search_x_posts(FakeRequest(env, query={"query": "launch", "limit": "10"})))
+    assert searched == {
+        "posts": [
+            {
+                "id": "post-1",
+                "text": "Cloudflare Workers launch",
+                "kind": "tweet",
+                "created_at": "1970-01-01T00:00:20+00:00",
+                "relevance_score": 0.88,
+            }
+        ]
+    }
+    assert env.X_POST_VECTORS.calls[0][1]["namespace"] != "other-user"
+
+    invalid = run(get_x_posts(FakeRequest(env, query={"kind": "like"})))
+    assert invalid.status_code == 422
 
 
 def test_mcp_action_item_search_preserves_vector_order_and_threshold():

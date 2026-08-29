@@ -12,7 +12,8 @@ const RECONCILE_SOURCE_BATCH_SIZE = 20;
 const RECONCILE_OUTBOX_BATCH_SIZE = 20;
 const MAX_PROJECTION_ATTEMPTS = 20;
 
-export type VectorSourceKind = "memory" | "action_item" | "conversation";
+export type VectorSourceKind =
+  "memory" | "action_item" | "conversation" | "x_post";
 export type VectorProjectionKind = VectorSourceKind | "transcript_chunk";
 
 type VectorProjectionOutboxRow = {
@@ -52,7 +53,8 @@ type VectorizeBinding = {
 function sourceKind(value: unknown): VectorSourceKind | null {
   return value === "memory" ||
     value === "action_item" ||
-    value === "conversation"
+    value === "conversation" ||
+    value === "x_post"
     ? value
     : null;
 }
@@ -233,6 +235,7 @@ function vectorBinding(
   if (kind === "memory") return env.MEMORY_VECTORS;
   if (kind === "action_item") return env.ACTION_ITEM_VECTORS;
   if (kind === "conversation") return env.CONVERSATION_VECTORS;
+  if (kind === "x_post") return env.X_POST_VECTORS;
   return env.TRANSCRIPT_CHUNK_VECTORS;
 }
 
@@ -293,6 +296,28 @@ async function sourceDocuments(
       documents: chunkDocuments("action_item", row.description),
     };
   }
+  if (kind === "x_post") {
+    const row = await env.APP_DB.prepare(
+      `SELECT text, created_at, updated_at
+       FROM cf_x_posts WHERE uid = ? AND id = ?`,
+    )
+      .bind(uid, sourceId)
+      .first<Record<string, unknown>>();
+    const version = safeInteger(row?.updated_at);
+    const createdAt = safeInteger(row?.created_at);
+    if (
+      !row ||
+      version === null ||
+      createdAt === null ||
+      typeof row.text !== "string"
+    ) {
+      return null;
+    }
+    return {
+      version,
+      documents: chunkDocuments("x_post", row.text, createdAt),
+    };
+  }
   const row = await env.APP_DB.prepare(
     `SELECT structured_json, transcript_segments_json, created_at,
             COALESCE(updated_at, created_at) AS source_version,
@@ -348,7 +373,8 @@ async function existingState(
       (row.projection_kind === "memory" ||
         row.projection_kind === "action_item" ||
         row.projection_kind === "conversation" ||
-        row.projection_kind === "transcript_chunk"),
+        row.projection_kind === "transcript_chunk" ||
+        row.projection_kind === "x_post"),
   );
 }
 
@@ -683,6 +709,25 @@ async function seedMissingProjections(
        ORDER BY COALESCE(c.updated_at, c.created_at), c.uid, c.id LIMIT ?`,
     ).bind(model, now, RECONCILE_SOURCE_BATCH_SIZE),
     env.APP_DB.prepare(
+      `SELECT x.uid, 'x_post' AS source_kind, x.id AS source_id,
+              x.updated_at AS desired_version, 'upsert' AS operation
+       FROM cf_x_posts x
+       LEFT JOIN cf_vector_projection_state s
+         ON s.uid = x.uid AND s.projection_kind = 'x_post'
+        AND s.source_id = x.id AND s.sub_id = '000000'
+       WHERE length(trim(x.text)) > 0
+         AND (
+           s.source_version IS NULL OR s.source_version < x.updated_at OR
+           s.model != ?
+         )
+         AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents d WHERE d.uid = x.uid)
+         AND NOT EXISTS (
+           SELECT 1 FROM cf_account_deletion_tombstones t
+           WHERE t.uid = x.uid AND t.expires_at > ?
+         )
+       ORDER BY x.updated_at, x.uid, x.id LIMIT ?`,
+    ).bind(model, now, RECONCILE_SOURCE_BATCH_SIZE),
+    env.APP_DB.prepare(
       `SELECT s.uid,
               CASE WHEN s.projection_kind = 'transcript_chunk'
                    THEN 'conversation' ELSE s.projection_kind END AS source_kind,
@@ -698,10 +743,14 @@ async function seedMissingProjections(
        LEFT JOIN cf_conversations c
          ON s.projection_kind IN ('conversation', 'transcript_chunk')
            AND c.uid = s.uid AND c.id = s.source_id AND c.discarded = 0 AND c.status = 'completed'
+       LEFT JOIN cf_x_posts x
+         ON s.projection_kind = 'x_post' AND x.uid = s.uid AND x.id = s.source_id
+           AND length(trim(x.text)) > 0
        WHERE (
          (s.projection_kind = 'memory' AND m.id IS NULL) OR
          (s.projection_kind = 'action_item' AND a.id IS NULL) OR
-         (s.projection_kind IN ('conversation', 'transcript_chunk') AND c.id IS NULL)
+         (s.projection_kind IN ('conversation', 'transcript_chunk') AND c.id IS NULL) OR
+         (s.projection_kind = 'x_post' AND x.id IS NULL)
        )
          AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents d WHERE d.uid = s.uid)
          AND NOT EXISTS (

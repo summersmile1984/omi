@@ -718,6 +718,43 @@ routes:
     rollout: staging-only
     rollback: restore-worker-deployment-snapshot
   - method: ANY
+    path: /v1/mcp/sse
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: mcp-oauth-or-api-key
+    dependencies: [auth, api-core, d1-app, d1-auth, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: restore-worker-deployment-snapshot
+  - method: GET
+    path: /v1/mcp/sse/info
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: restore-worker-deployment-snapshot
+  - method: ANY
+    path: /.well-known/oauth-protected-resource
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: restore-worker-deployment-snapshot
+  - method: ANY
+    path: /.well-known/oauth-protected-resource/v1/mcp/sse
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: restore-worker-deployment-snapshot
+  - method: ANY
     path: /api/better-auth/*
     owner: auth
     runtime: auth-worker
@@ -3146,6 +3183,26 @@ routes:
     rollback: edge-route-to-legacy
   - method: GET
     path: /v1/mcp/memories/search
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app, vectorize, workers-ai-binding]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/x-posts
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: mcp-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/x-posts/search
     owner: api-core
     runtime: python-worker
     target_runtime: python-worker

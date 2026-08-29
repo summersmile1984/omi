@@ -285,6 +285,33 @@ const TABLES = {
     ],
     json: ["provenance_json"],
   },
+  cf_x_posts: {
+    required: ["uid", "id", "text", "kind", "created_at", "updated_at"],
+    columns: [
+      "uid",
+      "id",
+      "text",
+      "kind",
+      "lang",
+      "metrics_json",
+      "created_at",
+      "ingested_at",
+      "updated_at",
+      "memory_extraction_status",
+      "memory_extracted_at",
+    ],
+    defaults: {
+      metrics_json: "{}",
+      memory_extraction_status: "pending",
+    },
+    integers: [
+      "created_at",
+      "ingested_at",
+      "updated_at",
+      "memory_extracted_at",
+    ],
+    json: ["metrics_json"],
+  },
   cf_people: {
     required: ["uid", "id", "name", "created_at", "updated_at"],
     columns: [
@@ -732,6 +759,8 @@ export function normalizeRow(table, input) {
   }
   if (row.provenance !== undefined && row.provenance_json === undefined)
     row.provenance_json = row.provenance;
+  if (row.metrics !== undefined && row.metrics_json === undefined)
+    row.metrics_json = row.metrics;
   if (
     row.success_criteria !== undefined &&
     row.success_criteria_json === undefined
@@ -827,6 +856,17 @@ export function normalizeRow(table, input) {
       normalized.completed = 0;
     if (normalized.status === "completed" && normalized.completed !== 1)
       fail("completed action item must have completed=1");
+  }
+  if (table === "cf_x_posts") {
+    if (!new Set(["tweet", "bookmark", "like"]).has(normalized.kind))
+      fail("cf_x_posts.kind is invalid");
+    if (
+      !new Set(["pending", "completed"]).has(
+        normalized.memory_extraction_status,
+      )
+    ) {
+      fail("cf_x_posts.memory_extraction_status is invalid");
+    }
   }
   if (table === "cf_app_catalog") {
     const raw = normalized.data_json;

@@ -49,11 +49,11 @@ namespaces:
     source_model: openai/text-embedding-3-large
     source_dimensions: 3072
     target: vectorize
-    target_index: omi-cf-x-posts-v1
-    target_model: "@cf/baai/bge-base-en-v1.5"
-    target_dimensions: 768
+    target_index: omi-cf-x-posts-v2
+    target_model: "@cf/baai/bge-m3"
+    target_dimensions: 1024
     migration_mode: reembed
-    migration_state: qualification-required
+    migration_state: staging-owned
     candidate_only: true
   - id: screen-activity
     legacy_namespace: ns3

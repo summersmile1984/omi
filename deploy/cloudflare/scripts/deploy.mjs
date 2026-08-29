@@ -240,6 +240,7 @@ function ensureResources() {
     "omi-cf-memories-v2",
     "omi-cf-action-items-v2",
     "omi-cf-transcript-chunks-v2",
+    "omi-cf-x-posts-v2",
   ]) {
     if (!vectorizeExists(name)) {
       run("npx", [

@@ -198,6 +198,10 @@ function environment(
       upsert: vi.fn(async () => undefined),
       deleteByIds: vi.fn(async () => undefined),
     },
+    X_POST_VECTORS: {
+      upsert: vi.fn(async () => undefined),
+      deleteByIds: vi.fn(async () => undefined),
+    },
     JOBS: { send: vi.fn() } as unknown as Queue,
     SYNC_FRESH: { send: vi.fn() } as unknown as Queue,
     SYNC_BACKFILL: { send: vi.fn() } as unknown as Queue,
