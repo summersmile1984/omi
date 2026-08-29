@@ -49,6 +49,8 @@ import {
 } from "./app-deletion";
 import { registerAppMutationRoutes } from "./app-mutations";
 import { registerAppModerationRoutes } from "./app-moderation";
+import { registerAppApiKeyRoutes } from "./app-api-keys";
+import { drainIntegrationWebhooks } from "./integration-webhooks";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -104,6 +106,7 @@ registerCreatorPaymentRoutes(app, requestContext);
 registerAppMutationRoutes(app, requestContext);
 registerAppDeletionRoutes(app, requestContext);
 registerAppModerationRoutes(app);
+registerAppApiKeyRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -1035,6 +1038,7 @@ export default {
       drainAssetCleanup(env),
       evaluateFairUseBatch(env),
       drainNotifications(env),
+      drainIntegrationWebhooks(env, now),
       reconcileAccountDeletions(env, now),
       reconcileAppDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),

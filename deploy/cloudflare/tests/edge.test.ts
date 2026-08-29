@@ -2607,4 +2607,69 @@ describe("edge gateway", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("preserves only the app API key for integration routes", async () => {
+    let forwarded: Request | undefined;
+    let authCalls = 0;
+    const response = await edge.fetch(
+      new Request(
+        "https://edge.test/v2/integrations/integration-app/tasks?uid=user-1",
+        {
+          headers: {
+            authorization: "Bearer sk_integration-secret",
+            cookie: "session=must-not-forward",
+            "x-omi-auth-context": "attacker-context",
+            "x-omi-internal-signature": "attacker-signature",
+          },
+        },
+      ),
+      {
+        AUTH: rawService(() => {
+          authCalls += 1;
+          return Response.json({ status: "unexpected" });
+        }),
+        API_CORE: rawService((request) => {
+          forwarded = request;
+          return Response.json({ tasks: [] });
+        }),
+      } as never,
+    );
+    expect(response.status).toBe(200);
+    expect(authCalls).toBe(0);
+    expect(forwarded?.headers.get("authorization")).toBe(
+      "Bearer sk_integration-secret",
+    );
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-internal-signature")).toBeNull();
+  });
+
+  it("routes app API key management through authenticated Jobs", async () => {
+    let forwarded: Request | undefined;
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/apps/integration-app/keys", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer owner-session",
+          cookie: "session=owner-session",
+        },
+      }),
+      {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        AUTH: rawService(() =>
+          Response.json({ uid: "owner-user", authority: "better-auth" }),
+        ),
+        API_CORE: service(() => Response.json({ status: "unexpected" })),
+        JOBS: rawService((request) => {
+          forwarded = request;
+          return Response.json({ status: "ok" });
+        }),
+      } as never,
+    );
+    expect(response.status).toBe(200);
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(forwarded?.headers.get("x-omi-internal-signature")).toBeTruthy();
+  });
 });

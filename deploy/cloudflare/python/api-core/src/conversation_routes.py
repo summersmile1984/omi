@@ -92,6 +92,7 @@ class ConversationProjectionWrite(BaseModel):
     folder_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
     client_device_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
     client_platform: str | None = Field(default=None, max_length=64)
+    app_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
     structured: dict[str, object] = Field(default_factory=dict)
     transcript_segments: list[dict[str, object]] = Field(default_factory=list, max_length=MAX_SEGMENTS)
     photos: list[dict[str, object]] = Field(default_factory=list, max_length=MAX_SEGMENTS)
@@ -314,7 +315,7 @@ def _response(row: dict[str, object], *, detail: bool) -> dict[str, object]:
         "suggested_summarization_apps": suggested_apps,
         "plugins_results": [],
         "external_data": _json_value(row.get("external_data_json"), None),
-        "app_id": None,
+        "app_id": row.get("app_id"),
         "discarded": _bool(row.get("discarded")),
         "visibility": row.get("visibility") or "private",
         "starred": _bool(row.get("starred")),
@@ -412,7 +413,7 @@ def _base_query(request: Request, *, count: bool = False) -> tuple[str, list[obj
             "uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
             "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
             "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
-            "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json"
+            "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json, app_id"
         )
     )
     query = f"SELECT {select} FROM cf_conversations WHERE " + " AND ".join(clauses)
@@ -425,7 +426,7 @@ _CONVERSATION_SELECT = (
     "SELECT uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
     "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
     "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
-    "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json "
+    "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json, app_id "
     "FROM cf_conversations "
 )
 
@@ -435,7 +436,7 @@ _CONVERSATION_SEARCH_SELECT = (
     "c.private_cloud_sync_enabled, c.folder_id, c.client_device_id, c.client_platform, "
     "c.structured_json, c.transcript_segments_json, c.photos_json, c.audio_files_json, "
     "c.conversation_audio_json, c.apps_results_json, c.suggested_apps_json, c.geolocation_json, "
-    "c.external_data_json, c.calendar_event_json "
+    "c.external_data_json, c.calendar_event_json, c.app_id "
 )
 
 
@@ -793,7 +794,7 @@ async def store_conversation_projection(request: Request):
             "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, "
             "client_platform, structured_json, transcript_segments_json, photos_json, audio_files_json, "
             "conversation_audio_json, apps_results_json, suggested_apps_json, geolocation_json, external_data_json, "
-            "calendar_event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "calendar_event_json, app_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(uid, id) DO UPDATE SET updated_at = excluded.updated_at, started_at = excluded.started_at, "
             "finished_at = excluded.finished_at, source = excluded.source, language = excluded.language, "
             "status = excluded.status, visibility = excluded.visibility, starred = excluded.starred, "
@@ -804,7 +805,8 @@ async def store_conversation_projection(request: Request):
             "photos_json = excluded.photos_json, audio_files_json = excluded.audio_files_json, "
             "conversation_audio_json = excluded.conversation_audio_json, apps_results_json = excluded.apps_results_json, "
             "suggested_apps_json = excluded.suggested_apps_json, geolocation_json = excluded.geolocation_json, "
-            "external_data_json = excluded.external_data_json, calendar_event_json = excluded.calendar_event_json"
+            "external_data_json = excluded.external_data_json, calendar_event_json = excluded.calendar_event_json, "
+            "app_id = COALESCE(excluded.app_id, cf_conversations.app_id)"
         ).bind(
             uid,
             projection.id,
@@ -834,6 +836,7 @@ async def store_conversation_projection(request: Request):
             json_fields["geolocation_json"],
             json_fields["external_data_json"],
             json_fields["calendar_event_json"],
+            projection.app_id,
         )
         duration = 0
         if started_at is not None and finished_at is not None:
@@ -1040,7 +1043,7 @@ async def get_conversation(request: Request, conversation_id: str):
                 "SELECT uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
                 "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
                 "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
-                "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json "
+                "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json, app_id "
                 "FROM cf_conversations WHERE uid = ? AND id = ?"
             )
             .bind(str(context["uid"]), conversation_id)

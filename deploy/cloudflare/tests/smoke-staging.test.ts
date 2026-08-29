@@ -64,6 +64,15 @@ function creatorPaymentBoundary(
   if (url.includes("/v1/apps/cf-smoke-missing/logo/")) {
     return new Response(null, { status: 404 });
   }
+  if (url.includes("/v1/apps/cf-smoke-missing/keys")) {
+    return new Response(null, { status: 404 });
+  }
+  if (
+    url.endsWith("/v1/integrations/notification") ||
+    url.includes("/v2/integrations/cf-smoke-missing/")
+  ) {
+    return new Response(null, { status: 403 });
+  }
   if (
     url.endsWith("/v1/stripe/onboarded") ||
     url.endsWith("/v1/paypal/payment-details") ||
@@ -421,6 +430,17 @@ describe("staging smoke helpers", () => {
       appVisibilityBoundary: 404,
       appManifestRefreshBoundary: 404,
       appLogoBoundary: 404,
+      appApiKeyCreateBoundary: 404,
+      appApiKeyListBoundary: 404,
+      appApiKeyDeleteBoundary: 404,
+      integrationNotificationV1Boundary: 403,
+      integrationConversationCreateBoundary: 403,
+      integrationMemoryCreateBoundary: 403,
+      integrationMemoriesBoundary: 403,
+      integrationConversationsBoundary: 403,
+      integrationConversationSearchBoundary: 403,
+      integrationNotificationV2Boundary: 403,
+      integrationTasksBoundary: 403,
       connectAccountBoundary: 400,
       stripeOnboardingStatus: 200,
       stripeRefreshOwnership: 403,
@@ -433,7 +453,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(96);
+    expect(calls).toHaveLength(107);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

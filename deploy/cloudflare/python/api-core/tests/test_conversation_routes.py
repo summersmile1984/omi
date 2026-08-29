@@ -47,6 +47,7 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
         self.connection.executescript((migration_dir / "0037_memories.sql").read_text())
         self.connection.executescript((migration_dir / "0040_conversation_search.sql").read_text())
+        self.connection.execute("ALTER TABLE cf_conversations ADD COLUMN app_id TEXT")
         self.connection.executescript((migration_dir / "0046_account_usage.sql").read_text())
 
     def prepare(self, sql):
@@ -685,6 +686,7 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
     )
     assert denied.status_code == 401
 
+
 def test_worker_audio_urls_fail_closed_for_locked_and_missing_objects():
     secret = "conversation-secret"
     db = FakeDb()
@@ -1225,18 +1227,26 @@ def test_conversation_projection_write_is_idempotent_and_bounded():
         "structured": {"title": "First", "overview": "Draft"},
         "transcript_segments": [{"id": "s-1", "text": "hello", "start": 0, "end": 1, "is_user": True}],
         "private_cloud_sync_enabled": True,
+        "app_id": "source-app",
     }
     first = asyncio.run(store_conversation_projection(FakeRequest(env, signed_headers(secret), body=body)))
     assert first == {"conversation_id": "write-1", "status": "stored"}
     second = asyncio.run(
         store_conversation_projection(
-            FakeRequest(env, signed_headers(secret), body={**body, "structured": {"title": "Updated"}})
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={
+                    key: value for key, value in {**body, "structured": {"title": "Updated"}}.items() if key != "app_id"
+                },
+            )
         )
     )
     assert second == first
     detail = asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "write-1"))
     assert detail["structured"]["title"] == "Updated"
     assert detail["private_cloud_sync_enabled"] is True
+    assert detail["app_id"] == "source-app"
     usage = env.APP_DB.connection.execute(
         "SELECT transcription_seconds, words_transcribed, insights_gained "
         "FROM cf_usage_sources WHERE uid = ? AND source_kind = 'conversation' AND source_id = ?",

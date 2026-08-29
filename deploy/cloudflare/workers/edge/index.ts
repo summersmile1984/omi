@@ -103,6 +103,23 @@ const proxyPublicJobs = async (
   return withRequestId(response, id);
 };
 
+// App integrations authenticate with an app-scoped API key, not a Better Auth
+// session. Preserve only that Authorization header while still stripping all
+// caller-controlled internal identity headers and cookies.
+const proxyIntegrationCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  headers.delete("cookie");
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 app.get("/v2/firmware/stable", proxyPublicFirmware);
@@ -130,6 +147,20 @@ app.get("/v1/apps/public/unapproved", proxyPublicJobs);
 app.patch("/v1/apps/:appId/popular", proxyPublicJobs);
 app.post("/v1/apps/:appId/approve", proxyPublicJobs);
 app.post("/v1/apps/:appId/reject", proxyPublicJobs);
+app.post("/v1/integrations/notification", proxyIntegrationCore);
+app.post(
+  "/v2/integrations/:app_id/user/conversations",
+  proxyIntegrationCore,
+);
+app.post("/v2/integrations/:app_id/user/memories", proxyIntegrationCore);
+app.get("/v2/integrations/:app_id/memories", proxyIntegrationCore);
+app.get("/v2/integrations/:app_id/conversations", proxyIntegrationCore);
+app.post(
+  "/v2/integrations/:app_id/search/conversations",
+  proxyIntegrationCore,
+);
+app.post("/v2/integrations/:app_id/notification", proxyIntegrationCore);
+app.get("/v2/integrations/:app_id/tasks", proxyIntegrationCore);
 app.get("/v1/payments/success", proxyPublicCore);
 app.get("/v1/payments/cancel", proxyPublicCore);
 app.get("/v1/payments/portal-return", proxyPublicCore);
@@ -558,6 +589,9 @@ app.patch("/v1/apps/:appId", proxyAuthenticatedJobs);
 app.patch("/v1/apps/:app_id/change-visibility", proxyAuthenticatedJobs);
 app.post("/v1/apps/:app_id/refresh-manifest", proxyAuthenticatedJobs);
 app.delete("/v1/apps/:appId", proxyAuthenticatedJobs);
+app.post("/v1/apps/:app_id/keys", proxyAuthenticatedJobs);
+app.get("/v1/apps/:app_id/keys", proxyAuthenticatedJobs);
+app.delete("/v1/apps/:app_id/keys/:key_id", proxyAuthenticatedJobs);
 app.get("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
 app.delete("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
 app.post("/v1/apps/review", proxyAuthenticatedCore);

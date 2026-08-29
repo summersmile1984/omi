@@ -182,7 +182,7 @@ function httpsUrl(value: unknown, name: string, required = false) {
   return parsed.toString();
 }
 
-function publicHttpsUrl(value: string) {
+export function publicHttpsUrl(value: string) {
   const parsed = new URL(value);
   const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (

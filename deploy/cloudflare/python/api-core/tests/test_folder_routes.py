@@ -30,6 +30,7 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0019_folders.sql").read_text())
         self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
         self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
+        self.connection.execute("ALTER TABLE cf_conversations ADD COLUMN app_id TEXT")
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)

@@ -60,8 +60,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 255 already match a
-  Cloudflare staging owner and 322 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 275 already match a
+  Cloudflare staging owner and 302 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -447,8 +447,10 @@ speech source, and no remaining R2 staging object. The temporary D1 rows and
 Better Auth accounts used by this verification were deleted after the checks.
 
 This staging path intentionally normalizes Whisper output to a single speaker;
-speaker diarization and legacy downstream integrations remain explicit parity
-gaps. It does not call the monolithic Python backend or run a local ASR process.
+speaker diarization and the legacy finalization-trigger integration path remain
+explicit parity gaps. App-key conversation ingest has its own migrated durable
+integration fanout. Neither path calls the monolithic Python backend or runs a
+local ASR process.
 
 Browser WebSockets cannot attach an `Authorization` header during the HTTP
 upgrade. Edge therefore signs a random, 30-second, one-use bootstrap for
@@ -596,6 +598,9 @@ PATCH /v1/apps/{appId}/change-visibility
 POST /v1/apps/{appId}/refresh-manifest
                               Edge → Jobs → bounded HTTPS manifest refresh → D1
 DELETE /v1/apps/{appId}        Edge → Jobs Queue → provider-safe app deletion
+POST/GET /v1/apps/{appId}/keys
+DELETE /v1/apps/{appId}/keys/{keyId}
+                              Edge → Jobs → owner-only one-time app API keys in D1
 GET  /v1/apps/{appId}/logo/{version}
                               Edge → Jobs → immutable current-logo R2 object
 POST /v1/apps/tester
@@ -604,6 +609,15 @@ GET  /v1/apps/public/unapproved
 PATCH /v1/apps/{appId}/popular
 POST /v1/apps/{appId}/approve
 POST /v1/apps/{appId}/reject  Edge → Jobs → independent admin key + D1/outbox
+POST /v1/integrations/notification
+POST /v2/integrations/{appId}/user/conversations
+POST /v2/integrations/{appId}/user/memories
+GET  /v2/integrations/{appId}/memories
+GET  /v2/integrations/{appId}/conversations
+POST /v2/integrations/{appId}/search/conversations
+POST /v2/integrations/{appId}/notification
+GET  /v2/integrations/{appId}/tasks
+                              Edge → Python API Core → app-key D1/Workers AI authority
 GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
 GET  /v2/apps/capability/{capability_id}/grouped
                               Edge → Python API Core → capability/category D1 projection
@@ -1156,10 +1170,12 @@ remains uid-scoped, excludes locked rows, and supports the Web pagination,
 discarded, date, and speaker filters. Default conversation deletion removes the
 D1 projection and refreshes folder counts; `cascade=true` fails closed because
 memory retraction and audio cleanup are not yet Worker-owned. Generic
-conversation creation/finalization, memory extraction, merge, cascade deletion,
-audio deletion, and downstream integration fanout remain legacy-owned;
+first-party conversation creation/finalization, merge, cascade deletion, audio
+deletion, realtime/audio integration fanout, and finalization-triggered fanout
+remain legacy-owned;
 production reader cutover still requires those write authorities and readers to
-move together. The isolated `/v2/sync-local-files` finalizer is the exception:
+move together. App-key conversation/memory ingest is a separate migrated
+boundary described below. The isolated `/v2/sync-local-files` finalizer is the exception:
 when private cloud sync is enabled, Jobs decodes each accepted WAL into bounded
 16 kHz mono WAV windows, stores deterministic `sync-playback/` objects in R2,
 and streams their PCM payloads into one dense `conversation.wav` with an exact
@@ -1358,6 +1374,30 @@ atomically changing approval state and publishing to the shared leased FCM
 outbox. Persona mutation, setup callbacks, and MCP state remain separate
 migration work.
 
+App integration credentials now use `cf_app_api_keys`. `POST` returns the
+`sk_` secret once, while D1 stores only the SHA-256 digest of its 32-hex-byte
+payload; list responses expose metadata only and owner-authorized deletion is
+idempotent. API Core validates the app/key pair, current D1 installation, paid
+entitlement when applicable, and the requested manifest action before reading
+or mutating user data. Reads use the canonical D1 conversation, memory, and
+action-item projections and preserve locked-content redaction. Conversation
+ingest uses the API Core Workers AI binding for structured summary/action-item
+extraction; text-memory ingest uses it for fact extraction, while explicit
+memories remain provider-free. Provider failures fail closed before product
+data is written. The legacy 10/hour conversation, 60/hour memory, and 10/hour
+notification limits are serialized in `cf_integration_hourly_usage`.
+
+Conversation ingest also publishes one row per enabled
+`memory_creation`-trigger app to `cf_integration_webhook_outbox` in the same D1
+batch as the conversation. Jobs leases those rows, revalidates the public HTTPS
+destination, sends the bounded payload with a stable idempotency key and a
+30-second timeout, retries only transient failures, and stores a bounded
+successful response message in the target app chat. Integration notifications
+share `cf_notification_outbox`, the existing FCM sender, and the canonical chat
+tables; no Redis, Firestore, local process, or parallel notification sender is
+introduced. OAuth setup callbacks and MCP credentials remain separate
+migration surfaces.
+
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
 until its rate-limit and provider-shape migration is verified separately.
@@ -1514,7 +1554,7 @@ minutes. The D1 intent-to-tombstone transition is atomic, duplicate public
 requests are idempotent, and the scheduled reconciler republishes durable
 intents whose initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 71 product identity-bearing column
+The explicit residual inventory covers 73 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,
@@ -1551,15 +1591,15 @@ webhook fencing, and fail-closed provider retry behavior.
 `/v1/users/training-data-opt-in` stores the review state in staging D1 and
 enables private cloud sync as the legacy route does. The HTTP response remains
 the legacy success/message shape. Its training-data notification side effect is
-not yet migrated; the new Jobs FCM sender is currently scoped to the fair-use
-outbox contract.
+not yet migrated; the new Jobs FCM sender is currently scoped to the fair-use,
+app-moderation, and app-integration outbox contracts.
 
 `POST /v1/users/fcm-token` stores one token per sanitized
 `platform + device-id-hash` key in staging D1 and keeps the legacy `{"status":"Ok"}`
-response. Tokens are not returned by any public route. Fair-use and app
-moderation delivery read this D1 token authority through the shared leased Jobs
-outbox and FCM HTTP v1 adapter described above; other notification producers
-remain on their legacy sender.
+response. Tokens are not returned by any public route. Fair-use, app moderation,
+and app-integration delivery read this D1 token authority through the shared
+leased Jobs outbox and FCM HTTP v1 adapter described above; other notification
+producers remain on their legacy sender.
 
 The memory-summary and chat-message feedback routes store uid-scoped ratings
 in `cf_user_feedback`. Chat feedback also updates the matching D1 message JSON

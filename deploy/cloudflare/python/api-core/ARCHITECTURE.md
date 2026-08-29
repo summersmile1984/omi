@@ -85,6 +85,17 @@ checkout cancel, and customer-portal return pages consumed as terminal URLs by
 native web views. Subscription state is never inferred from those navigations;
 Stripe webhook projection remains the billing authority.
 
+`integration_routes.py` owns app-scoped API-key consumers without accepting a
+Better Auth identity from the caller. Edge preserves only the client
+Authorization header and strips cookies/internal assertions; API Core hashes
+the presented secret and requires a matching D1 key, enabled app, current paid
+entitlement, and manifest action for the requested uid. Reads share the
+canonical memory/conversation/action-item projections. Writes use the native
+Workers AI binding for conversation structure or text-memory extraction and
+commit product rows, usage, action items, and durable webhook fanout in one D1
+batch. Notification/chat delivery uses the shared Jobs outboxes. No Firestore,
+Redis, local model, or legacy fallback participates in this boundary.
+
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional
 three-day desktop trial in quota, paywall, and trial reads; it never receives

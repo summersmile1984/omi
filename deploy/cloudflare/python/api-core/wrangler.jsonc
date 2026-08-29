@@ -6,6 +6,9 @@
   "compatibility_flags": ["python_workers"],
   "workers_dev": false,
   "preview_urls": false,
+  "ai": {
+    "binding": "AI"
+  },
   "d1_databases": [
     {
       "binding": "APP_DB",
@@ -30,5 +33,6 @@
     "OVERAGE_MARKUP_MULTIPLIER": "1.15",
     "TRIAL_PAYWALL_ENABLED": "false",
     "TRIAL_LENGTH_SECONDS": "259200",
+    "WORKERS_AI_INTEGRATION_MODEL": "@cf/meta/llama-3.2-3b-instruct",
   },
 }

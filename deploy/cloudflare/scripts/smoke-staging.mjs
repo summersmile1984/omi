@@ -889,6 +889,102 @@ export async function runSmoke({
   );
   expectStatus("app logo catalog boundary", appLogoBoundary, 404);
 
+  const appApiKeyCreateBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing/keys`,
+    { method: "POST", headers: authHeaders },
+  );
+  expectStatus(
+    "app API key create ownership boundary",
+    appApiKeyCreateBoundary,
+    404,
+  );
+  const appApiKeyListBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing/keys`,
+    { headers: authHeaders },
+  );
+  expectStatus(
+    "app API key list ownership boundary",
+    appApiKeyListBoundary,
+    404,
+  );
+  const appApiKeyDeleteBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing/keys/cf-smoke-missing-key`,
+    { method: "DELETE", headers: authHeaders },
+  );
+  expectStatus(
+    "app API key delete ownership boundary",
+    appApiKeyDeleteBoundary,
+    404,
+  );
+
+  const integrationHeaders = {
+    authorization: "Bearer sk_cf-smoke-invalid-integration-key",
+    "content-type": "application/json",
+  };
+  const integrationBoundaries = {};
+  for (const boundary of [
+    {
+      key: "integrationNotificationV1Boundary",
+      label: "integration notification v1 key boundary",
+      url: `${base}/v1/integrations/notification`,
+      method: "POST",
+      body: { aid: "cf-smoke-missing", uid: "cf-smoke-user", message: "smoke" },
+    },
+    {
+      key: "integrationConversationCreateBoundary",
+      label: "integration conversation create key boundary",
+      url: `${base}/v2/integrations/cf-smoke-missing/user/conversations?uid=cf-smoke-user`,
+      method: "POST",
+      body: { text: "Cloudflare smoke" },
+    },
+    {
+      key: "integrationMemoryCreateBoundary",
+      label: "integration memory create key boundary",
+      url: `${base}/v2/integrations/cf-smoke-missing/user/memories?uid=cf-smoke-user`,
+      method: "POST",
+      body: { memories: [{ content: "Cloudflare smoke" }] },
+    },
+    {
+      key: "integrationMemoriesBoundary",
+      label: "integration memory read key boundary",
+      url: `${base}/v2/integrations/cf-smoke-missing/memories?uid=cf-smoke-user`,
+    },
+    {
+      key: "integrationConversationsBoundary",
+      label: "integration conversation read key boundary",
+      url: `${base}/v2/integrations/cf-smoke-missing/conversations?uid=cf-smoke-user`,
+    },
+    {
+      key: "integrationConversationSearchBoundary",
+      label: "integration conversation search key boundary",
+      url: `${base}/v2/integrations/cf-smoke-missing/search/conversations?uid=cf-smoke-user`,
+      method: "POST",
+      body: { query: "smoke" },
+    },
+    {
+      key: "integrationNotificationV2Boundary",
+      label: "integration notification v2 key boundary",
+      url: `${base}/v2/integrations/cf-smoke-missing/notification?uid=cf-smoke-user&message=smoke`,
+      method: "POST",
+    },
+    {
+      key: "integrationTasksBoundary",
+      label: "integration task read key boundary",
+      url: `${base}/v2/integrations/cf-smoke-missing/tasks?uid=cf-smoke-user`,
+    },
+  ]) {
+    const response = await request(fetchImpl, boundary.url, {
+      method: boundary.method,
+      headers: integrationHeaders,
+      body: boundary.body ? JSON.stringify(boundary.body) : undefined,
+    });
+    expectStatus(boundary.label, response, 403);
+    integrationBoundaries[boundary.key] = response.status;
+  }
+
   const connectAccountBoundary = await request(
     fetchImpl,
     `${base}/v1/stripe/connect-accounts?country=USA`,
@@ -1094,6 +1190,10 @@ export async function runSmoke({
     appVisibilityBoundary: appVisibilityBoundary.status,
     appManifestRefreshBoundary: appManifestRefreshBoundary.status,
     appLogoBoundary: appLogoBoundary.status,
+    appApiKeyCreateBoundary: appApiKeyCreateBoundary.status,
+    appApiKeyListBoundary: appApiKeyListBoundary.status,
+    appApiKeyDeleteBoundary: appApiKeyDeleteBoundary.status,
+    ...integrationBoundaries,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
     stripeRefreshOwnership: stripeRefreshOwnership.status,

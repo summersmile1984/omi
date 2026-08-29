@@ -412,6 +412,123 @@ routes:
     idempotency: route-resource
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/apps/{app_id}/keys
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/apps/{app_id}/keys
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/apps/{app_id}/keys/{key_id}
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/integrations/notification
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: app-api-key
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/integrations/{app_id}/user/conversations
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: app-api-key
+    dependencies: [d1-app, workers-ai-binding]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/integrations/{app_id}/user/memories
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: app-api-key
+    dependencies: [d1-app, workers-ai-binding]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v2/integrations/{app_id}/memories
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: app-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v2/integrations/{app_id}/conversations
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: app-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/integrations/{app_id}/search/conversations
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: app-api-key
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/integrations/{app_id}/notification
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: app-api-key
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v2/integrations/{app_id}/tasks
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: app-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: DELETE
     path: /v1/apps/{app_id}/subscription
     owner: jobs
