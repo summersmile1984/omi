@@ -124,6 +124,19 @@ beforeEach(() => {
 });
 
 describe("Cloudflare MCP API keys", () => {
+  it("keeps the final prefix constraint within the D1 GLOB complexity boundary", () => {
+    const { database } = environment();
+    const row = database.database
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cf_mcp_api_keys'",
+      )
+      .get() as { sql: string };
+    expect(row.sql).not.toContain("[0-9a-f][0-9a-f]");
+    expect(row.sql).toContain(
+      "substr(key_prefix, 9, 4) NOT GLOB '*[^0-9a-f]*'",
+    );
+  });
+
   it("returns a one-time full-access key, stores only its hash, lists metadata, and revokes immediately", async () => {
     const { database, env } = environment();
     const pathname = "/v1/mcp/keys";

@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -30,35 +31,33 @@ function migrationIdentitySurfaces(): Set<string> {
     path.dirname(fileURLToPath(import.meta.url)),
     "../migrations/app",
   );
-  const columns = new Map<string, Set<string>>();
-  const addColumn = (table: string, column: string) => {
-    if (!columns.has(table)) columns.set(table, new Set());
-    columns.get(table)?.add(column);
-  };
+  const database = new DatabaseSync(":memory:");
+  database.exec("PRAGMA foreign_keys = ON");
   for (const filename of readdirSync(directory)
     .filter((value) => value.endsWith(".sql"))
     .sort()) {
-    const sql = readFileSync(path.join(directory, filename), "utf8");
-    const createPattern =
-      /CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)[\s\S]*?\);/gi;
-    for (const match of sql.matchAll(createPattern)) {
-      const table = match[1];
-      for (const line of match[0].split("\n").slice(1)) {
-        const column = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+/.exec(line)?.[1];
-        if (column && IDENTITY_COLUMNS.has(column)) addColumn(table, column);
+    database.exec(readFileSync(path.join(directory, filename), "utf8"));
+  }
+  try {
+    const tables = database
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+      )
+      .all() as Array<{ name: string }>;
+    const surfaces = new Set<string>();
+    for (const { name } of tables) {
+      const quoted = name.replaceAll('"', '""');
+      const columns = database.prepare(`PRAGMA table_info("${quoted}")`).all() as Array<{
+        name: string;
+      }>;
+      for (const { name: column } of columns) {
+        if (IDENTITY_COLUMNS.has(column)) surfaces.add(`${name}.${column}`);
       }
     }
-    const alterPattern =
-      /ALTER\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+ADD\s+COLUMN\s+([A-Za-z_][A-Za-z0-9_]*)/gi;
-    for (const match of sql.matchAll(alterPattern)) {
-      if (IDENTITY_COLUMNS.has(match[2])) addColumn(match[1], match[2]);
-    }
+    return surfaces;
+  } finally {
+    database.close();
   }
-  return new Set(
-    [...columns.entries()].flatMap(([table, tableColumns]) =>
-      [...tableColumns].map((column) => `${table}.${column}`),
-    ),
-  );
 }
 
 function residualEnvironment(

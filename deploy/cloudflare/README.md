@@ -1384,6 +1384,9 @@ payload. List responses expose the legacy-compatible metadata and full scope
 set without the secret; uid-scoped deletion is idempotent. Account deletion
 fences new writes and purges this table with the rest of the product D1
 authority. MCP bearer consumers are not implied by this slice.
+The prefix constraint uses bounded `substr` checks plus simple GLOB predicates:
+repeated character-class GLOBs accepted by local SQLite exceed D1's deployed
+pattern-complexity limit, so the final-schema regression test forbids them.
 
 App integration credentials now use `cf_app_api_keys`. `POST` returns the
 `sk_` secret once, while D1 stores only the SHA-256 digest of its 32-hex-byte
