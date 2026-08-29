@@ -2672,4 +2672,60 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
     expect(forwarded?.headers.get("x-omi-internal-signature")).toBeTruthy();
   });
+
+  it("routes every MCP API key lifecycle method through authenticated Jobs", async () => {
+    const forwarded: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: rawService(() =>
+        Response.json({ uid: "mcp-owner", authority: "better-auth" }),
+      ),
+      API_CORE: service(() => Response.json({ status: "unexpected" })),
+      JOBS: rawService((request) => {
+        forwarded.push(request);
+        return request.method === "DELETE"
+          ? new Response(null, { status: 204 })
+          : Response.json({ status: "ok" });
+      }),
+    } as never;
+    const cases = [
+      {
+        method: "POST",
+        path: "/v1/mcp/keys",
+        body: JSON.stringify({ name: "Cloudflare smoke" }),
+      },
+      { method: "GET", path: "/v1/mcp/keys" },
+      { method: "DELETE", path: "/v1/mcp/keys/missing-key" },
+    ];
+
+    for (const testCase of cases) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${testCase.path}`, {
+          method: testCase.method,
+          headers: {
+            authorization: "Bearer owner-session",
+            cookie: "session=must-not-forward",
+            "content-type": "application/json",
+            "x-omi-auth-context": "attacker-context",
+          },
+          body: testCase.body,
+        }),
+        env,
+      );
+      expect(response.status).toBe(testCase.method === "DELETE" ? 204 : 200);
+    }
+
+    expect(forwarded).toHaveLength(3);
+    for (const [index, request] of forwarded.entries()) {
+      expect(request.method).toBe(cases[index].method);
+      expect(new URL(request.url).pathname).toBe(cases[index].path);
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(
+        decodeAuthContext(request.headers.get("x-omi-auth-context")),
+      ).toMatchObject({ uid: "mcp-owner", authority: "better-auth" });
+      expect(request.headers.get("x-omi-internal-signature")).toBeTruthy();
+    }
+    await expect(forwarded[0].text()).resolves.toBe(cases[0].body);
+  });
 });

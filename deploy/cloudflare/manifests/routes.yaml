@@ -445,6 +445,38 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v1/mcp/keys
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/mcp/keys
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/mcp/keys/{key_id}
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/integrations/notification
     owner: api-core
     runtime: python-worker

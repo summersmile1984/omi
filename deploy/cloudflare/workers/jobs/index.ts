@@ -50,6 +50,7 @@ import {
 import { registerAppMutationRoutes } from "./app-mutations";
 import { registerAppModerationRoutes } from "./app-moderation";
 import { registerAppApiKeyRoutes } from "./app-api-keys";
+import { registerMcpApiKeyRoutes } from "./mcp-api-keys";
 import { drainIntegrationWebhooks } from "./integration-webhooks";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
@@ -107,6 +108,7 @@ registerAppMutationRoutes(app, requestContext);
 registerAppDeletionRoutes(app, requestContext);
 registerAppModerationRoutes(app);
 registerAppApiKeyRoutes(app, requestContext);
+registerMcpApiKeyRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.

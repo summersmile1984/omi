@@ -920,6 +920,27 @@ export async function runSmoke({
     404,
   );
 
+  const mcpApiKeyList = await request(fetchImpl, `${base}/v1/mcp/keys`, {
+    headers: authHeaders,
+  });
+  expectStatus("MCP API key list", mcpApiKeyList, 200);
+  const mcpApiKeyValidation = await request(
+    fetchImpl,
+    `${base}/v1/mcp/keys`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name: "   " }),
+    },
+  );
+  expectStatus("MCP API key validation", mcpApiKeyValidation, 422);
+  const mcpApiKeyDeleteMissing = await request(
+    fetchImpl,
+    `${base}/v1/mcp/keys/cf-smoke-missing-key`,
+    { method: "DELETE", headers: authHeaders },
+  );
+  expectStatus("MCP API key idempotent deletion", mcpApiKeyDeleteMissing, 204);
+
   const integrationHeaders = {
     authorization: "Bearer sk_cf-smoke-invalid-integration-key",
     "content-type": "application/json",
@@ -1193,6 +1214,9 @@ export async function runSmoke({
     appApiKeyCreateBoundary: appApiKeyCreateBoundary.status,
     appApiKeyListBoundary: appApiKeyListBoundary.status,
     appApiKeyDeleteBoundary: appApiKeyDeleteBoundary.status,
+    mcpApiKeyList: mcpApiKeyList.status,
+    mcpApiKeyValidation: mcpApiKeyValidation.status,
+    mcpApiKeyDeleteMissing: mcpApiKeyDeleteMissing.status,
     ...integrationBoundaries,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,

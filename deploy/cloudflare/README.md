@@ -60,8 +60,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 275 already match a
-  Cloudflare staging owner and 302 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 278 already match a
+  Cloudflare staging owner and 299 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -601,6 +601,9 @@ DELETE /v1/apps/{appId}        Edge → Jobs Queue → provider-safe app deletio
 POST/GET /v1/apps/{appId}/keys
 DELETE /v1/apps/{appId}/keys/{keyId}
                               Edge → Jobs → owner-only one-time app API keys in D1
+POST/GET /v1/mcp/keys
+DELETE /v1/mcp/keys/{keyId}
+                              Edge → Jobs → uid-scoped one-time MCP API keys in D1
 GET  /v1/apps/{appId}/logo/{version}
                               Edge → Jobs → immutable current-logo R2 object
 POST /v1/apps/tester
@@ -1327,9 +1330,10 @@ evidence are approved; records can be loaded with the whitelisted backfill tool.
 The app catalog metadata routes (`/v1/app-categories`,
 `/v1/app/proactive-notification-scopes`, `/v1/app-capabilities`, and
 `/v1/app/payment-plans`) are static, public responses and now run in API Core
-without D1 or external providers. App create/update/delete, subscriptions, and
-enable/disable side effects are Cloudflare-owned; MCP credentials remain on
-their dedicated routes. The three installation routes below accept approved
+without D1 or external providers. App create/update/delete, subscriptions,
+enable/disable side effects, and MCP key lifecycle are Cloudflare-owned; MCP
+tools, OAuth grants, transport, and semantic search remain separate migration
+surfaces. The three installation routes below accept approved
 public catalog rows, owner rows, or a pending app explicitly assigned through
 `cf_app_tester_access`, provided there is no external setup callback. A paid
 row additionally requires a current signed-webhook D1 entitlement. Owner and
@@ -1348,8 +1352,8 @@ uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
 install counter for idempotent retries. Paid installs fail closed unless
 `cf_app_subscriptions` is active/trialing and its current period has not ended;
 the enabled-app read applies the same check. Persona mutation, external setup
-callbacks and MCP state remain separate migration surfaces; no production
-cutover is implied.
+callbacks, and MCP tool/OAuth/search state remain separate migration surfaces;
+no production cutover is implied.
 
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
 responses from the same public D1 rows. It preserves the legacy pagination
@@ -1371,8 +1375,15 @@ rows are backfilled. Review/reply push notifications remain an external API
 boundary. App tester membership/access and moderation now use D1 plus an
 independent `APPS_ADMIN_KEY`; approve/reject verifies the catalog owner before
 atomically changing approval state and publishing to the shared leased FCM
-outbox. Persona mutation, setup callbacks, and MCP state remain separate
-migration work.
+outbox. Persona mutation, setup callbacks, and MCP tool/OAuth/search state
+remain separate migration work.
+
+MCP API credentials now use `cf_mcp_api_keys`. `POST /v1/mcp/keys` returns the
+`omi_mcp_` secret once, while D1 stores only the SHA-256 digest of its 32-hex
+payload. List responses expose the legacy-compatible metadata and full scope
+set without the secret; uid-scoped deletion is idempotent. Account deletion
+fences new writes and purges this table with the rest of the product D1
+authority. MCP bearer consumers are not implied by this slice.
 
 App integration credentials now use `cf_app_api_keys`. `POST` returns the
 `sk_` secret once, while D1 stores only the SHA-256 digest of its 32-hex-byte
@@ -1395,8 +1406,8 @@ destination, sends the bounded payload with a stable idempotency key and a
 successful response message in the target app chat. Integration notifications
 share `cf_notification_outbox`, the existing FCM sender, and the canonical chat
 tables; no Redis, Firestore, local process, or parallel notification sender is
-introduced. OAuth setup callbacks and MCP credentials remain separate
-migration surfaces.
+introduced. OAuth setup callbacks and MCP tool/OAuth/search surfaces remain
+separate migration work; MCP key lifecycle is Cloudflare-owned.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract

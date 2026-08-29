@@ -96,6 +96,12 @@ commit product rows, usage, action items, and durable webhook fanout in one D1
 batch. Notification/chat delivery uses the shared Jobs outboxes. No Firestore,
 Redis, local model, or legacy fallback participates in this boundary.
 
+MCP API-key creation, metadata listing, and revocation are owned by the Jobs
+Worker and its uid-scoped D1 table. API Core does not yet accept those bearer
+keys: MCP data tools, OAuth grants/transport, and semantic search remain an
+explicit downstream cutover boundary until their own scope and projection
+contracts are migrated.
+
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional
 three-day desktop trial in quota, paywall, and trial reads; it never receives

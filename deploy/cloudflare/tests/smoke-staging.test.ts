@@ -67,6 +67,12 @@ function creatorPaymentBoundary(
   if (url.includes("/v1/apps/cf-smoke-missing/keys")) {
     return new Response(null, { status: 404 });
   }
+  if (url.endsWith("/v1/mcp/keys/cf-smoke-missing-key")) {
+    return new Response(null, { status: 204 });
+  }
+  if (url.endsWith("/v1/mcp/keys")) {
+    return new Response(null, { status: init?.method === "POST" ? 422 : 200 });
+  }
   if (
     url.endsWith("/v1/integrations/notification") ||
     url.includes("/v2/integrations/cf-smoke-missing/")
@@ -433,6 +439,9 @@ describe("staging smoke helpers", () => {
       appApiKeyCreateBoundary: 404,
       appApiKeyListBoundary: 404,
       appApiKeyDeleteBoundary: 404,
+      mcpApiKeyList: 200,
+      mcpApiKeyValidation: 422,
+      mcpApiKeyDeleteMissing: 204,
       integrationNotificationV1Boundary: 403,
       integrationConversationCreateBoundary: 403,
       integrationMemoryCreateBoundary: 403,
@@ -453,7 +462,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(107);
+    expect(calls).toHaveLength(110);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
