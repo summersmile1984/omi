@@ -10,6 +10,7 @@ serving a partially trusted catalog.
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -164,12 +165,15 @@ async def get_app(request: Request, app_id: str):
             await env.APP_DB.prepare(
                 "SELECT c.id, c.approved, c.disabled, c.is_popular, c.installs, "
                 "c.rating_avg, c.rating_count, c.data_json, "
-                "CASE WHEN u.app_id IS NULL THEN 0 ELSE 1 END AS user_enabled "
+                "CASE WHEN u.app_id IS NULL THEN 0 ELSE 1 END AS user_enabled, "
+                "CASE WHEN s.status IN ('active', 'trialing') AND s.current_period_end > unixepoch() "
+                "THEN 1 ELSE 0 END AS user_entitled "
                 "FROM cf_app_catalog c "
                 "LEFT JOIN cf_user_enabled_apps u ON u.app_id = c.id AND u.uid = ? "
+                "LEFT JOIN cf_app_subscriptions s ON s.app_id = c.id AND s.uid = ? "
                 "WHERE c.id = ? AND c.approved = 1 AND c.disabled = 0 LIMIT 1"
             )
-            .bind(str(context["uid"]), app_id)
+            .bind(str(context["uid"]), str(context["uid"]), app_id)
             .first()
         )
     except Exception:
@@ -187,7 +191,14 @@ async def get_app(request: Request, app_id: str):
         return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
     if app is None or _flag(app.get("private")):
         return JSONResponse({"detail": "App not found"}, status_code=404)
-    app["enabled"] = _flag(result.get("user_enabled"))
+    entitled = _flag(result.get("user_entitled"))
+    paid = _flag(app.get("is_paid")) or bool(app.get("payment_link") or app.get("payment_link_id"))
+    app["is_user_paid"] = entitled
+    app["enabled"] = _flag(result.get("user_enabled")) and (entitled if paid else True)
+    payment_link = app.get("payment_link")
+    if isinstance(payment_link, str) and payment_link:
+        separator = "&" if "?" in payment_link else "?"
+        app["payment_link"] = f"{payment_link}{separator}client_reference_id=uid_{quote(str(context['uid']), safe='')}"
     try:
         await hydrate_app_reviews(env, [app], current_uid=str(context["uid"]))
     except Exception:

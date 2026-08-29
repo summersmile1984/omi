@@ -179,6 +179,41 @@ def test_single_app_requires_auth_and_returns_user_install_state_without_private
     assert result["user_review"] is None
 
 
+def test_single_paid_app_exposes_user_bound_payment_link_and_entitlement_state():
+    secret = "catalog-secret"
+    payload_row = catalog_row("paid-app", installs=3)
+    payload = json.loads(payload_row["data_json"])
+    payload.update(
+        {
+            "is_paid": True,
+            "payment_link": "https://buy.stripe.com/test_link",
+            "payment_link_id": "plink_test",
+        }
+    )
+    row = {
+        **payload_row,
+        "data_json": json.dumps(payload),
+        "user_enabled": 1,
+        "user_entitled": 1,
+    }
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb([], first_row=row), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+
+    entitled = asyncio.run(get_app(FakeRequest(env, signed_headers(secret, "paid-user")), "paid-app"))
+
+    assert entitled["is_user_paid"] is True
+    assert entitled["enabled"] is True
+    assert entitled["payment_link"] == ("https://buy.stripe.com/test_link?client_reference_id=uid_paid-user")
+
+    row["user_entitled"] = 0
+    expired = asyncio.run(get_app(FakeRequest(env, signed_headers(secret, "paid-user")), "paid-app"))
+    assert expired["is_user_paid"] is False
+    assert expired["enabled"] is False
+
+
 def test_single_app_hides_unavailable_rows_and_fails_closed_for_malformed_projection():
     secret = "catalog-secret"
     headers = signed_headers(secret)

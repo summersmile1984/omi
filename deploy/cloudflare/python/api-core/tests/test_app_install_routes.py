@@ -43,6 +43,11 @@ class FakeDb:
         migration_dir = Path(__file__).parents[3] / "migrations/app"
         self.connection.executescript((migration_dir / "0035_app_catalog.sql").read_text())
         self.connection.executescript((migration_dir / "0036_app_installations.sql").read_text())
+        self.connection.executescript(
+            "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
+            "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);"
+        )
+        self.connection.executescript((migration_dir / "0060_app_subscriptions.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -102,7 +107,11 @@ def test_install_route_rejects_paid_setup_and_unknown_apps_and_requires_auth():
     catalog_row(
         db.connection,
         "setup-app",
-        {"id": "setup-app", "capabilities": ["external_integration"], "external_integration": {"setup_completed_url": "https://example.test/setup"}},
+        {
+            "id": "setup-app",
+            "capabilities": ["external_integration"],
+            "external_integration": {"setup_completed_url": "https://example.test/setup"},
+        },
     )
     catalog_row(db.connection, "mismatch-app", {"id": "different-id", "capabilities": ["chat"]})
     env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
@@ -110,6 +119,28 @@ def test_install_route_rejects_paid_setup_and_unknown_apps_and_requires_auth():
     assert asyncio.run(get_enabled_apps(FakeRequest(env))).status_code == 401
     paid = asyncio.run(enable_app(FakeRequest(env, signed_headers(secret), {"app_id": "paid-app"})))
     assert paid.status_code == 403
+    db.connection.execute(
+        "INSERT INTO cf_app_subscriptions "
+        "(uid, app_id, stripe_customer_id, stripe_subscription_id, status, current_period_end, "
+        "price_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?, 1, 1)",
+        (
+            "install-user",
+            "paid-app",
+            "cus_installUser123",
+            "sub_installUser123",
+            4_000_000_000,
+            "price_installUser123",
+        ),
+    )
+    db.connection.commit()
+    assert asyncio.run(enable_app(FakeRequest(env, signed_headers(secret), {"app_id": "paid-app"}))) == {"status": "ok"}
+    assert asyncio.run(get_enabled_apps(FakeRequest(env, signed_headers(secret)))) == ["paid-app"]
+    db.connection.execute(
+        "UPDATE cf_app_subscriptions SET current_period_end = 1 WHERE uid = ? AND app_id = ?",
+        ("install-user", "paid-app"),
+    )
+    db.connection.commit()
+    assert asyncio.run(get_enabled_apps(FakeRequest(env, signed_headers(secret)))) == []
     setup = asyncio.run(enable_app(FakeRequest(env, signed_headers(secret), {"app_id": "setup-app"})))
     assert setup.status_code == 400
     unknown = asyncio.run(enable_app(FakeRequest(env, signed_headers(secret), {"app_id": "missing"})))

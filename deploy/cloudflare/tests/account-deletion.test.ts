@@ -62,7 +62,8 @@ class SqliteD1 {
       bind: (...values: unknown[]) => build(values),
       first: async <T>() => {
         const row = this.database.prepare(sql).get(...args.map(sqliteValue)) as
-          T | undefined;
+          | T
+          | undefined;
         return row ?? null;
       },
       all: async <T>() => ({
@@ -108,7 +109,8 @@ class SqliteD1 {
   row<T>(sql: string, ...args: unknown[]): T | null {
     return (
       (this.database.prepare(sql).get(...args.map(sqliteValue)) as
-        T | undefined) ?? null
+        | T
+        | undefined) ?? null
     );
   }
 
@@ -772,6 +774,171 @@ describe("Cloudflare account deletion workflow", () => {
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_creator_payment_profiles WHERE uid = ?",
           "deletion-user",
+        )?.count,
+      ).toBe(0);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("cancels every paid-app subscription before purging its entitlement mapping", async () => {
+    const stripeRequests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        stripeRequests.push(request);
+        if (request.url.includes("/v1/subscription_schedules?")) {
+          return Response.json({ object: "list", data: [] });
+        }
+        return Response.json({
+          id: "sub_paidAppDeletion123",
+          status: "active",
+          cancel_at_period_end: request.method === "POST",
+          customer: "cus_paidAppDeletion123",
+        });
+      }),
+    );
+    const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
+    try {
+      seedCloudflareAccount(state.database);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_app_catalog
+             (id, approved, disabled, data_json, updated_at)
+           VALUES ('paid-app', 1, 0, '{"id":"paid-app","is_paid":true}', 1)`,
+        )
+        .run();
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_app_subscriptions
+             (uid, app_id, stripe_customer_id, stripe_subscription_id, status,
+              current_period_end, price_id, created_at, updated_at)
+           VALUES (?, 'paid-app', 'cus_paidAppDeletion123',
+                   'sub_paidAppDeletion123', 'active', 4000000000,
+                   'price_paidAppDeletion123', 1, 1)`,
+        )
+        .run("deletion-user");
+      const path = "/v1/users/delete-account";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      expect(stripeRequests).toHaveLength(0);
+
+      const dispatch = state.queue.sent.shift();
+      if (!dispatch) throw new Error("missing account deletion dispatch");
+      vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
+      await processAccountDeletionMessage(
+        queueMessage(dispatch.body).message,
+        state.env,
+      );
+
+      expect(stripeRequests.map(({ method }) => method)).toEqual([
+        "GET",
+        "GET",
+        "POST",
+      ]);
+      expect(stripeRequests[0]?.url).toBe(
+        "https://api.stripe.com/v1/subscriptions/sub_paidAppDeletion123",
+      );
+      expect(stripeRequests[2]?.headers.get("idempotency-key")).toMatch(
+        /^account-delete-[0-9a-f-]{36}-app-sub_paidAppDeletion123$/,
+      );
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_subscriptions WHERE uid = ?",
+          "deletion-user",
+        )?.count,
+      ).toBe(0);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("cancels subscriber renewals before purging a paid app owned by the deleted creator", async () => {
+    const stripeRequests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        stripeRequests.push(request);
+        if (request.url.includes("/v1/subscription_schedules?")) {
+          return Response.json({ object: "list", data: [] });
+        }
+        return Response.json({
+          id: "sub_creatorAppDeletion123",
+          status: "active",
+          cancel_at_period_end: request.method === "POST",
+          customer: "cus_creatorAppDeletion123",
+        });
+      }),
+    );
+    const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
+    try {
+      seedCloudflareAccount(state.database);
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_app_catalog
+             (id, approved, disabled, data_json, updated_at, owner_uid)
+           VALUES ('creator-paid-app', 1, 0,
+                   '{"id":"creator-paid-app","is_paid":true}', 1, ?)`,
+        )
+        .run("deletion-user");
+      state.database.database
+        .prepare(
+          `INSERT INTO cf_app_subscriptions
+             (uid, app_id, stripe_customer_id, stripe_subscription_id, status,
+              current_period_end, price_id, created_at, updated_at)
+           VALUES ('subscriber-user', 'creator-paid-app',
+                   'cus_creatorAppDeletion123', 'sub_creatorAppDeletion123',
+                   'active', 4000000000, 'price_creatorAppDeletion123', 1, 1)`,
+        )
+        .run();
+      const path = "/v1/users/delete-account";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      expect(stripeRequests).toHaveLength(0);
+
+      const dispatch = state.queue.sent.shift();
+      if (!dispatch) throw new Error("missing account deletion dispatch");
+      vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
+      await processAccountDeletionMessage(
+        queueMessage(dispatch.body).message,
+        state.env,
+      );
+
+      expect(stripeRequests.map(({ method }) => method)).toEqual([
+        "GET",
+        "GET",
+        "POST",
+      ]);
+      expect(stripeRequests[0]?.url).toBe(
+        "https://api.stripe.com/v1/subscriptions/sub_creatorAppDeletion123",
+      );
+      expect(stripeRequests[2]?.headers.get("idempotency-key")).toMatch(
+        /^account-delete-[0-9a-f-]{36}-creator-app-sub_creatorAppDeletion123$/,
+      );
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_catalog WHERE id = ?",
+          "creator-paid-app",
+        )?.count,
+      ).toBe(0);
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_app_subscriptions WHERE app_id = ?",
+          "creator-paid-app",
         )?.count,
       ).toBe(0);
     } finally {

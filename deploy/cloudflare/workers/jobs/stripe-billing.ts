@@ -34,6 +34,7 @@ const PAID_PLANS = new Set([
   "architect",
 ]);
 const ACTIVE_STRIPE_STATUSES = new Set(["active", "trialing"]);
+const TERMINAL_STRIPE_STATUSES = new Set(["canceled", "incomplete_expired"]);
 const STRIPE_EVENT_ID = /^evt_[A-Za-z0-9]{8,156}$/;
 const STRIPE_SESSION_ID = /^cs_[A-Za-z0-9_]{8,156}$/;
 const STRIPE_SUBSCRIPTION_ID = /^sub_[A-Za-z0-9]{8,156}$/;
@@ -41,6 +42,7 @@ const STRIPE_SUBSCRIPTION_ITEM_ID = /^si_[A-Za-z0-9]{8,156}$/;
 const STRIPE_SCHEDULE_ID = /^sub_sched_[A-Za-z0-9]{8,151}$/;
 const STRIPE_CUSTOMER_ID = /^cus_[A-Za-z0-9]{8,156}$/;
 const STRIPE_PRICE_ID = /^price_[A-Za-z0-9]{8,156}$/;
+const APP_ID_MAX_LENGTH = 256;
 
 type RequestContext = (
   c: Context<{ Bindings: JobsEnv }>,
@@ -71,6 +73,18 @@ type SubscriptionRow = {
   scheduled_price_id: string | null;
   stripe_schedule_status: string | null;
   schedule_effective_at: number | null;
+};
+
+type AppSubscriptionRow = {
+  uid: string;
+  app_id: string;
+  stripe_customer_id: string;
+  stripe_subscription_id: string;
+  status: string;
+  current_period_start: number | null;
+  current_period_end: number | null;
+  cancel_at_period_end: number;
+  price_id: string | null;
 };
 
 type ProjectedSubscription = {
@@ -341,6 +355,67 @@ async function subscriptionRow(env: JobsEnv, uid: string) {
   )
     .bind(uid)
     .first<SubscriptionRow>();
+}
+
+function validAppId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= APP_ID_MAX_LENGTH &&
+    !value.includes("/")
+  );
+}
+
+async function appSubscriptionRow(env: JobsEnv, uid: string, appId: string) {
+  return env.APP_DB.prepare(
+    "SELECT uid, app_id, stripe_customer_id, stripe_subscription_id, status, " +
+      "current_period_start, current_period_end, cancel_at_period_end, price_id " +
+      "FROM cf_app_subscriptions WHERE uid = ? AND app_id = ?",
+  )
+    .bind(uid, appId)
+    .first<AppSubscriptionRow>();
+}
+
+function appSubscriptionEntitled(
+  row: Pick<AppSubscriptionRow, "status" | "current_period_end">,
+  now = Math.floor(Date.now() / 1_000),
+) {
+  return (
+    ACTIVE_STRIPE_STATUSES.has(row.status) &&
+    row.current_period_end !== null &&
+    row.current_period_end > now
+  );
+}
+
+async function paidCatalogApp(env: JobsEnv, appId: string) {
+  const row = await env.APP_DB.prepare(
+    "SELECT id, approved, disabled, data_json FROM cf_app_catalog WHERE id = ? LIMIT 1",
+  )
+    .bind(appId)
+    .first<{
+      id?: unknown;
+      approved?: unknown;
+      disabled?: unknown;
+      data_json?: unknown;
+    }>();
+  if (
+    row?.id !== appId ||
+    Number(row.approved) !== 1 ||
+    Number(row.disabled) !== 0 ||
+    typeof row.data_json !== "string" ||
+    row.data_json.length > 500_000
+  ) {
+    return false;
+  }
+  try {
+    const payload = objectValue(JSON.parse(row.data_json));
+    return (
+      payload?.id === appId &&
+      (payload.is_paid === true || payload.is_paid === 1)
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function customerId(env: JobsEnv, uid: string): Promise<string | null> {
@@ -1129,6 +1204,132 @@ async function cancelSubscription(
   }
 }
 
+function appSubscriptionResponse(row: AppSubscriptionRow) {
+  return {
+    id: row.stripe_subscription_id,
+    status: row.status,
+    current_period_end: row.current_period_end,
+    cancel_at_period_end: row.cancel_at_period_end === 1,
+    price_id: row.price_id,
+    customer_id: row.stripe_customer_id,
+  };
+}
+
+async function getAppSubscription(
+  c: Context<{ Bindings: JobsEnv }>,
+  requestContext: RequestContext,
+) {
+  const context = await requestContext(c);
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  const appId = c.req.param("appId");
+  if (!validAppId(appId)) {
+    return c.json({ detail: "App not found" }, 404);
+  }
+  try {
+    const row = await appSubscriptionRow(c.env, context.uid, appId);
+    return c.json({
+      subscription:
+        row && appSubscriptionEntitled(row)
+          ? appSubscriptionResponse(row)
+          : null,
+    });
+  } catch {
+    return c.json(
+      { detail: "Could not retrieve subscription information" },
+      503,
+    );
+  }
+}
+
+async function cancelAppSubscription(
+  c: Context<{ Bindings: JobsEnv }>,
+  requestContext: RequestContext,
+) {
+  const context = await requestContext(c);
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  const appId = c.req.param("appId");
+  if (!validAppId(appId)) {
+    return c.json({ detail: "App not found" }, 404);
+  }
+  let requestIdempotencyKey: string;
+  try {
+    requestIdempotencyKey = idempotencyKey(
+      c.req.raw,
+      "app-subscription-cancel",
+    );
+  } catch {
+    return c.json({ detail: "Invalid payment request" }, 400);
+  }
+  try {
+    const current = await appSubscriptionRow(c.env, context.uid, appId);
+    if (!current || !appSubscriptionEntitled(current)) {
+      return c.json(
+        { detail: "No active subscription found for this app" },
+        404,
+      );
+    }
+    if (!(await liveCloudflareAccount(c.env, context.uid))) {
+      return c.json(
+        { detail: "Account is not ready for subscription changes." },
+        409,
+      );
+    }
+    const subscriptionId = stringValue(
+      current.stripe_subscription_id,
+      STRIPE_SUBSCRIPTION_ID,
+      "subscription id",
+    );
+    const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
+    const latest = await projectAppSubscription(
+      c.env,
+      await stripeRequest(c.env, path),
+      {
+        expectedSubscriptionId: subscriptionId,
+        expectedAppId: appId,
+        expectedCustomerId: current.stripe_customer_id,
+        uidOverride: context.uid,
+      },
+    );
+    if (!latest || !appSubscriptionEntitled(latest)) {
+      return c.json(
+        { detail: "Active subscription not found for this app" },
+        404,
+      );
+    }
+    const updated =
+      latest.cancel_at_period_end === 1
+        ? latest
+        : await projectAppSubscription(
+            c.env,
+            await stripeRequest(c.env, path, {
+              method: "POST",
+              form: new URLSearchParams({ cancel_at_period_end: "true" }),
+              idempotencyKey: requestIdempotencyKey,
+            }),
+            {
+              expectedSubscriptionId: subscriptionId,
+              expectedAppId: appId,
+              expectedCustomerId: current.stripe_customer_id,
+              uidOverride: context.uid,
+            },
+          );
+    if (!updated || updated.cancel_at_period_end !== 1) {
+      throw new Error(
+        "Stripe app subscription was not scheduled for cancellation",
+      );
+    }
+    return c.json({
+      status: "success",
+      message:
+        "Subscription scheduled for cancellation at the end of the current billing period",
+      cancel_at_period_end: true,
+      current_period_end: updated.current_period_end,
+    });
+  } catch (error) {
+    return paymentError(c, error);
+  }
+}
+
 async function liveCloudflareAccount(env: JobsEnv, uid: string) {
   if (!validAccountDeletionUid(uid)) return false;
   const row = await env.APP_DB.prepare(
@@ -1467,6 +1668,325 @@ async function syncSubscription(
   return projected ? ("processed" as const) : ("ignored" as const);
 }
 
+function appIdForStripeSubscription(
+  subscription: Record<string, unknown>,
+): string | null {
+  const metadata = objectValue(subscription.metadata);
+  if (metadata?.app_id === undefined) return null;
+  if (!validAppId(metadata.app_id)) {
+    throw new Error("Stripe app subscription has an invalid app id");
+  }
+  return metadata.app_id;
+}
+
+async function projectAppSubscription(
+  env: JobsEnv,
+  rawSubscription: unknown,
+  options: {
+    expectedSubscriptionId?: string;
+    expectedAppId?: string;
+    expectedCustomerId?: string;
+    uidOverride?: string;
+    event?: StripeWebhookRow;
+  } = {},
+): Promise<AppSubscriptionRow | null> {
+  const subscription = stripeObject(
+    rawSubscription,
+    options.expectedSubscriptionId,
+  );
+  const subscriptionId = stringValue(
+    subscription.id,
+    STRIPE_SUBSCRIPTION_ID,
+    "subscription id",
+  );
+  const appId = appIdForStripeSubscription(subscription);
+  if (!appId) return null;
+  if (options.expectedAppId && options.expectedAppId !== appId) {
+    throw new Error("Stripe app subscription is mapped to another app");
+  }
+  if (!(await paidCatalogApp(env, appId))) return null;
+
+  const customerId = stringValue(
+    subscription.customer,
+    STRIPE_CUSTOMER_ID,
+    "customer id",
+  );
+  if (options.expectedCustomerId && options.expectedCustomerId !== customerId) {
+    throw new Error("Stripe app subscription customer does not match");
+  }
+  const existing = await env.APP_DB.prepare(
+    "SELECT uid, app_id, stripe_customer_id FROM cf_app_subscriptions WHERE stripe_subscription_id = ?",
+  )
+    .bind(subscriptionId)
+    .first<{
+      uid?: unknown;
+      app_id?: unknown;
+      stripe_customer_id?: unknown;
+    }>();
+  if (
+    existing &&
+    (existing.app_id !== appId || existing.stripe_customer_id !== customerId)
+  ) {
+    throw new Error("Stripe app subscription mapping does not match");
+  }
+
+  const metadata = objectValue(subscription.metadata);
+  const metadataUid = typeof metadata?.uid === "string" ? metadata.uid : null;
+  if (metadataUid && !validAccountDeletionUid(metadataUid)) {
+    throw new Error("Stripe app subscription has an invalid user");
+  }
+  const existingUid = typeof existing?.uid === "string" ? existing.uid : null;
+  const uid = options.uidOverride || metadataUid || existingUid;
+  if (!uid || !validAccountDeletionUid(uid)) return null;
+  if (
+    (options.uidOverride &&
+      metadataUid &&
+      options.uidOverride !== metadataUid) ||
+    (options.uidOverride &&
+      existingUid &&
+      options.uidOverride !== existingUid) ||
+    (metadataUid && existingUid && metadataUid !== existingUid)
+  ) {
+    throw new Error("Stripe app subscription is owned by another user");
+  }
+  if (!(await liveCloudflareAccount(env, uid))) return null;
+
+  const status =
+    typeof subscription.status === "string" ? subscription.status : "";
+  if (!status || status.length > 80) {
+    throw new Error("invalid Stripe app subscription status");
+  }
+  const periodStart = optionalInteger(subscription.current_period_start);
+  const periodEnd = optionalInteger(subscription.current_period_end);
+  if (ACTIVE_STRIPE_STATUSES.has(status) && periodEnd === null) {
+    throw new Error("active Stripe app subscription has no period end");
+  }
+  const items = objectValue(subscription.items)?.data;
+  const first = Array.isArray(items) ? objectValue(items[0]) : null;
+  const rawPriceId = objectValue(first?.price)?.id;
+  const priceId =
+    typeof rawPriceId === "string" && STRIPE_PRICE_ID.test(rawPriceId)
+      ? rawPriceId
+      : null;
+  if (ACTIVE_STRIPE_STATUSES.has(status) && !priceId) {
+    throw new Error("active Stripe app subscription has no price");
+  }
+
+  const now = Math.floor(Date.now() / 1_000);
+  const row: AppSubscriptionRow = {
+    uid,
+    app_id: appId,
+    stripe_customer_id: customerId,
+    stripe_subscription_id: subscriptionId,
+    status,
+    current_period_start: periodStart,
+    current_period_end: periodEnd,
+    cancel_at_period_end: subscription.cancel_at_period_end === true ? 1 : 0,
+    price_id: priceId,
+  };
+  const statements = [
+    env.APP_DB.prepare(
+      `INSERT INTO cf_app_subscriptions
+         (uid, app_id, stripe_customer_id, stripe_subscription_id, status,
+          current_period_start, current_period_end, cancel_at_period_end,
+          price_id, stripe_event_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(uid, app_id) DO UPDATE SET
+         stripe_customer_id = excluded.stripe_customer_id,
+         stripe_subscription_id = excluded.stripe_subscription_id,
+         status = excluded.status,
+         current_period_start = excluded.current_period_start,
+         current_period_end = excluded.current_period_end,
+         cancel_at_period_end = excluded.cancel_at_period_end,
+         price_id = excluded.price_id,
+         stripe_event_id = COALESCE(excluded.stripe_event_id, cf_app_subscriptions.stripe_event_id),
+         updated_at = excluded.updated_at`,
+    ).bind(
+      uid,
+      appId,
+      customerId,
+      subscriptionId,
+      status,
+      periodStart,
+      periodEnd,
+      row.cancel_at_period_end,
+      priceId,
+      options.event?.event_id || null,
+      now,
+      now,
+    ),
+  ];
+  if (!appSubscriptionEntitled(row, now)) {
+    statements.push(
+      env.APP_DB.prepare(
+        "DELETE FROM cf_user_enabled_apps WHERE uid = ? AND app_id = ?",
+      ).bind(uid, appId),
+    );
+  }
+  if (options.event) {
+    statements.push(
+      env.APP_DB.prepare(
+        "UPDATE cf_stripe_webhook_events SET uid_hint = ?, customer_id = ?, subscription_id = ?, " +
+          "status = 'processed', processed_at = ?, last_error = NULL, updated_at = ? WHERE event_id = ?",
+      ).bind(uid, customerId, subscriptionId, now, now, options.event.event_id),
+    );
+  }
+  await env.APP_DB.batch(statements);
+  return row;
+}
+
+async function syncAppSubscription(
+  env: JobsEnv,
+  event: StripeWebhookRow,
+  rawSubscription: unknown,
+) {
+  const projected = await projectAppSubscription(env, rawSubscription, {
+    expectedSubscriptionId: event.object_id,
+    event,
+  });
+  return projected ? ("processed" as const) : ("ignored" as const);
+}
+
+async function accountDeletionFenced(env: JobsEnv, uid: string) {
+  const row = await env.APP_DB.prepare(
+    `SELECT
+       EXISTS(SELECT 1 FROM cf_account_deletion_intents WHERE uid = ?) AS deleting,
+       EXISTS(SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = ?) AS deleted`,
+  )
+    .bind(uid, uid)
+    .first<{ deleting?: unknown; deleted?: unknown }>();
+  return Number(row?.deleting) === 1 || Number(row?.deleted) === 1;
+}
+
+async function appOwnerDeletionFenced(env: JobsEnv, appId: string) {
+  const row = await env.APP_DB.prepare(
+    `SELECT
+       EXISTS(
+         SELECT 1 FROM cf_app_catalog c
+         JOIN cf_account_deletion_intents i ON i.uid = c.owner_uid
+         WHERE c.id = ?
+       ) AS deleting,
+       EXISTS(
+         SELECT 1 FROM cf_app_catalog c
+         JOIN cf_account_deletion_tombstones t ON t.uid = c.owner_uid
+         WHERE c.id = ?
+       ) AS deleted`,
+  )
+    .bind(appId, appId)
+    .first<{ deleting?: unknown; deleted?: unknown }>();
+  return Number(row?.deleting) === 1 || Number(row?.deleted) === 1;
+}
+
+async function cancelFencedAppCheckout(
+  env: JobsEnv,
+  event: StripeWebhookRow,
+  session: Record<string, unknown>,
+  appId: string,
+) {
+  const subscriptionId = stringValue(
+    session.subscription,
+    STRIPE_SUBSCRIPTION_ID,
+    "subscription id",
+  );
+  const customerId = stringValue(
+    session.customer,
+    STRIPE_CUSTOMER_ID,
+    "customer id",
+  );
+  const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
+  const current = stripeObject(await stripeRequest(env, path), subscriptionId);
+  if (
+    appIdForStripeSubscription(current) !== appId ||
+    current.customer !== customerId ||
+    typeof current.status !== "string"
+  ) {
+    throw new Error("Stripe fenced app subscription does not match");
+  }
+  if (
+    current.cancel_at_period_end === true ||
+    TERMINAL_STRIPE_STATUSES.has(current.status)
+  ) {
+    return;
+  }
+  const canceled = stripeObject(
+    await stripeRequest(env, path, {
+      method: "POST",
+      form: new URLSearchParams({ cancel_at_period_end: "true" }),
+      idempotencyKey: `stripe-webhook-${event.event_id}-fenced-cancel`,
+    }),
+    subscriptionId,
+  );
+  if (
+    canceled.cancel_at_period_end !== true &&
+    (typeof canceled.status !== "string" ||
+      !TERMINAL_STRIPE_STATUSES.has(canceled.status))
+  ) {
+    throw new Error("Stripe fenced app subscription remains billable");
+  }
+}
+
+async function processAppCheckoutWebhook(
+  env: JobsEnv,
+  event: StripeWebhookRow,
+  session: Record<string, unknown>,
+  appId: string,
+) {
+  const reference =
+    typeof session.client_reference_id === "string"
+      ? session.client_reference_id
+      : "";
+  if (!reference.startsWith("uid_")) {
+    throw new Error("Stripe app checkout has no mapped user");
+  }
+  const uid = reference.slice(4);
+  if (!validAccountDeletionUid(uid)) {
+    return "ignored" as const;
+  }
+  const liveBuyer = await liveCloudflareAccount(env, uid);
+  const buyerFenced = !liveBuyer && (await accountDeletionFenced(env, uid));
+  const ownerFenced = await appOwnerDeletionFenced(env, appId);
+  if (buyerFenced || ownerFenced) {
+    await cancelFencedAppCheckout(env, event, session, appId);
+    return "ignored" as const;
+  }
+  if (!liveBuyer) return "ignored" as const;
+  if (!(await paidCatalogApp(env, appId))) return "ignored" as const;
+  const customerId = stringValue(
+    session.customer,
+    STRIPE_CUSTOMER_ID,
+    "customer id",
+  );
+  const subscriptionId = stringValue(
+    session.subscription,
+    STRIPE_SUBSCRIPTION_ID,
+    "subscription id",
+  );
+  const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
+  const current = stripeObject(await stripeRequest(env, path), subscriptionId);
+  if (
+    appIdForStripeSubscription(current) !== appId ||
+    current.customer !== customerId
+  ) {
+    throw new Error("Stripe app checkout subscription does not match");
+  }
+  const updated = await stripeRequest(env, path, {
+    method: "POST",
+    form: new URLSearchParams({
+      "metadata[uid]": uid,
+      "metadata[app_id]": appId,
+    }),
+    idempotencyKey: `stripe-webhook-${event.event_id}-app-metadata`,
+  });
+  const projected = await projectAppSubscription(env, updated, {
+    expectedSubscriptionId: subscriptionId,
+    expectedAppId: appId,
+    expectedCustomerId: customerId,
+    uidOverride: uid,
+    event,
+  });
+  return projected ? ("processed" as const) : ("ignored" as const);
+}
+
 async function processCheckoutWebhook(env: JobsEnv, event: StripeWebhookRow) {
   const session = stripeObject(
     await stripeRequest(
@@ -1477,6 +1997,12 @@ async function processCheckoutWebhook(env: JobsEnv, event: StripeWebhookRow) {
   );
   if (session.mode !== "subscription") return "ignored" as const;
   const metadata = objectValue(session.metadata);
+  if (metadata?.app_id !== undefined) {
+    if (!validAppId(metadata.app_id)) {
+      throw new Error("Stripe app checkout has an invalid app id");
+    }
+    return processAppCheckoutWebhook(env, event, session, metadata.app_id);
+  }
   const rawUid = session.client_reference_id || metadata?.uid;
   const uid = stringValue(rawUid, /^[A-Za-z0-9_-]{1,128}$/, "checkout user id");
   if (
@@ -1667,18 +2193,21 @@ export async function processStripeWebhookMessage(
     .bind(now, eventId)
     .run();
   try {
-    const result = event.event_type.startsWith("subscription_schedule.")
-      ? await processScheduleWebhook(env, event)
-      : event.event_type === "checkout.session.completed"
-        ? await processCheckoutWebhook(env, event)
-        : await syncSubscription(
-            env,
-            event,
-            await stripeRequest(
-              env,
-              `/v1/subscriptions/${encodeURIComponent(event.object_id)}`,
-            ),
-          );
+    let result: "processed" | "ignored";
+    if (event.event_type.startsWith("subscription_schedule.")) {
+      result = await processScheduleWebhook(env, event);
+    } else if (event.event_type === "checkout.session.completed") {
+      result = await processCheckoutWebhook(env, event);
+    } else {
+      const subscription = await stripeRequest(
+        env,
+        `/v1/subscriptions/${encodeURIComponent(event.object_id)}`,
+      );
+      const normalized = stripeObject(subscription, event.object_id);
+      result = appIdForStripeSubscription(normalized)
+        ? await syncAppSubscription(env, event, normalized)
+        : await syncSubscription(env, event, normalized);
+    }
     if (result === "ignored") await markWebhookIgnored(env, eventId);
     message.ack();
   } catch {
@@ -1738,6 +2267,12 @@ export function registerStripeBillingRoutes(
   );
   app.delete("/v1/payments/subscription", (c) =>
     cancelSubscription(c, requestContext),
+  );
+  app.get("/v1/apps/:appId/subscription", (c) =>
+    getAppSubscription(c, requestContext),
+  );
+  app.delete("/v1/apps/:appId/subscription", (c) =>
+    cancelAppSubscription(c, requestContext),
   );
   app.post("/v1/stripe/webhook", stripeWebhook);
 }

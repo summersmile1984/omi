@@ -827,6 +827,24 @@ export async function runSmoke({
     400,
   );
 
+  const appSubscription = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing/subscription`,
+    { headers: authHeaders },
+  );
+  expectStatus("paid app subscription projection", appSubscription, 200);
+
+  const cancelAppSubscriptionBoundary = await request(
+    fetchImpl,
+    `${base}/v1/apps/cf-smoke-missing/subscription`,
+    { method: "DELETE", headers: authHeaders },
+  );
+  expectStatus(
+    "paid app subscription cancellation authority",
+    cancelAppSubscriptionBoundary,
+    404,
+  );
+
   const connectAccountBoundary = await request(
     fetchImpl,
     `${base}/v1/stripe/connect-accounts?country=USA`,
@@ -1024,6 +1042,8 @@ export async function runSmoke({
     customerPortalBoundary: customerPortalBoundary.status,
     upgradeBoundary: upgradeBoundary.status,
     cancelSubscriptionBoundary: cancelSubscriptionBoundary.status,
+    appSubscription: appSubscription.status,
+    cancelAppSubscriptionBoundary: cancelAppSubscriptionBoundary.status,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
     stripeRefreshOwnership: stripeRefreshOwnership.status,

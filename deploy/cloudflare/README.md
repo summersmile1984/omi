@@ -60,8 +60,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 238 already match a
-  Cloudflare staging owner and 339 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 250 already match a
+  Cloudflare staging owner and 327 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -905,12 +905,12 @@ Cloudflare-cutover account. Missing Stripe credentials fail closed; no staging
 price IDs are synthesized or copied from production.
 This staging endpoint currently projects `checkout.session.completed`,
 subscription created/updated/deleted, and Subscription Schedule
-created/updated/completed/canceled/released events for regular Omi plans. Schedule processing
+created/updated/completed/canceled/released events for regular Omi plans and
+Payment Link subscriptions for paid marketplace apps. Schedule processing
 retrieves both the latest schedule and its current subscription before changing
 D1, so out-of-order deliveries cannot roll the price projection backward. Keep
-it on an isolated Stripe test-mode endpoint: Payment Link app entitlements are
-a later migration slice and are not projected by this Worker yet. BYOK/reviewer
-overrides, phone quota, and production subscription import remain legacy-owned.
+it on an isolated Stripe test-mode endpoint. BYOK/reviewer overrides, phone
+quota, and production subscription import remain legacy-owned.
 
 Migration `0059_creator_payments.sql` makes the Jobs Worker authoritative for
 creator payout setup: Stripe Connect account creation, onboarding status,
@@ -922,9 +922,27 @@ idempotency key. Stripe's browser refresh callback is a GET, so the Worker
 accepts a bounded signed refresh URL and redirects directly to a newly created
 single-use Account Link; the legacy authenticated POST response remains
 available to existing clients. Connect webhook signatures use their own
-rotatable secret and the exact raw body. Paid-app Payment Links, checkout
-entitlements, and app-subscription cancellation remain a separate migration
-slice.
+rotatable secret and the exact raw body. Payment Link creation remains attached
+to legacy app-owner CRUD until that mutation surface moves; existing hosted
+links are consumed directly by the Cloudflare entitlement flow.
+
+Creator deletion cancels projected subscriber renewals before the catalog row
+is purged, and both buyer and creator deletion fences cancel any Checkout that
+races with deletion. Production cutover of paid-app creation remains blocked
+until the static Stripe Payment Link can also be durably identified and
+deactivated after its catalog row is removed; staging does not claim that
+unprojected-link guarantee.
+
+Migration `0060_app_subscriptions.sql` projects paid-app subscriptions into D1
+from the same raw-body-verified Stripe inbox. Checkout processing requires the
+Payment Link's `app_id`, an exact `uid_` client reference, a live cutover
+account, and an approved paid catalog row; it then binds both identities into
+Stripe subscription metadata and the unique D1 mapping. Subsequent subscription
+events refresh or revoke the entitlement, and inactive projections remove the
+installed-app row. Authenticated GET/DELETE app-subscription routes read this
+mapping and verify uid/app/customer ownership before cancellation. Cancellation
+is idempotent and preserves access through the current paid period. No Stripe
+key is needed for D1 reads; provider mutations fail closed when it is absent.
 
 `GET /v1/users/me/usage-quota` and the mobile subscription projection now read
 the UTC-month `cf_chat_quota_events` authority. Free, Neo, Plus, Unlimited, and
@@ -1228,9 +1246,9 @@ The app catalog metadata routes (`/v1/app-categories`,
 without D1 or external providers. Mutable app records, subscriptions, MCP
 credentials, and enable/disable side effects remain legacy-owned until
 their catalog authority and user-installation state are migrated together. The
-three installation routes below are a deliberately smaller projection: they
-only accept approved public catalog rows that are free and have no external
-setup callback.
+three installation routes below accept approved public catalog rows with no
+external setup callback; a paid row additionally requires a current signed-
+webhook D1 entitlement.
 
 `/v1/approved-apps` and the authenticated `/v1/apps/popular` route read only the
 approved, non-disabled, non-persona records in `cf_app_catalog`. Records enter
@@ -1239,9 +1257,11 @@ fields such as reviews, payment identifiers, credentials, and prompts. This
 projection is the first dynamic catalog slice. `GET /v1/apps/enabled`,
 `POST /v1/apps/enable`, and `POST /v1/apps/disable` project only the
 uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
-install counter for idempotent retries. Paid apps, private/persona apps, setup
-callbacks, app creation, paid-app entitlements/subscriptions, and MCP state remain
-legacy-owned; no production cutover is implied.
+install counter for idempotent retries. Paid installs fail closed unless
+`cf_app_subscriptions` is active/trialing and its current period has not ended;
+the enabled-app read applies the same check. Private/persona apps, setup
+callbacks, app creation/update (including Payment Link creation), and MCP state
+remain legacy-owned; no production cutover is implied.
 
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
 responses from the same public D1 rows. It preserves the legacy pagination
@@ -1250,13 +1270,15 @@ the public route has no user context; clients should combine it with
 `/v1/apps/enabled`. Capability-specific grouped-category routes and the
 authenticated `/v2/apps/search` filters are also read from the same projection.
 Search only exposes approved public catalog fields and uid-scoped installed-app
-state. Public-app reviews now use `cf_app_reviews`; writes update the catalog's
+state. Authenticated app detail reads add the caller-bound Payment Link client
+reference and expose `is_user_paid` only from the current D1 entitlement.
+Public-app reviews now use `cf_app_reviews`; writes update the catalog's
 rating average/count in the same D1 transaction, and catalog reads hydrate
 bounded review lists plus the signed user's own review. `owner_uid` is an
 explicit non-public catalog column, so review writes fail closed until older
 rows are backfilled. Review/reply push notifications remain an external API
-boundary. Private apps, paid entitlements, setup callbacks, subscriptions, MCP
-state, and other app-owner writes remain legacy-owned.
+boundary. Private apps, setup callbacks, Payment Link creation, MCP state, and
+other app-owner writes remain legacy-owned.
 
 The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
 contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
@@ -1411,19 +1433,19 @@ intent-to-tombstone transition is atomic, duplicate public requests are
 idempotent, and the scheduled reconciler republishes durable intents whose
 initial Queue send failed. Queue and DLQ payloads contain no uid.
 
-The explicit residual inventory covers 66 product identity-bearing column
+The explicit residual inventory covers 67 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
 the seven R2 prefixes. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,
 R2 checks expose presence only, and partial batches, storage errors, or
-non-zero residuals fail closed. For accounts with a Stripe subscription id or
-creator Connect account id,
+non-zero residuals fail closed. For accounts with an Omi plan subscription id,
+one or more paid-app subscription ids, or a creator Connect account id,
 admission requires the Jobs-only `STRIPE_SECRET_KEY`; after the durable fence
 settles, Jobs reads the subscription, lists its customer's active Subscription
 Schedules from Stripe, releases every schedule attached to that subscription,
-and idempotently sets
-`cancel_at_period_end=true`, then deletes the platform-controlled connected
-account before any product purge. Stripe documents that live Express-style
+and idempotently sets `cancel_at_period_end=true` on the Omi plan and every
+paid-app subscription, then deletes the platform-controlled connected account
+before any product purge. Stripe documents that live Express-style
 accounts can be deleted only after their balances reach zero, so a non-zero
 balance or any other provider refusal keeps the deletion intent for retry. An already scheduled or
 terminal subscription satisfies the cancellation goal without another

@@ -22,7 +22,10 @@ function workersAiChatResponse(text = "Cloudflare staging is ready") {
   });
 }
 
-function creatorPaymentBoundary(url: string): Response | null {
+function creatorPaymentBoundary(
+  url: string,
+  init?: RequestInit,
+): Response | null {
   if (url.endsWith("/v1/stripe/connect/webhook")) {
     return new Response(null, { status: 503 });
   }
@@ -37,6 +40,11 @@ function creatorPaymentBoundary(url: string): Response | null {
   }
   if (url.includes("/v1/stripe/connect-accounts?")) {
     return new Response(null, { status: 400 });
+  }
+  if (url.endsWith("/v1/apps/cf-smoke-missing/subscription")) {
+    return new Response(null, {
+      status: init?.method === "DELETE" ? 404 : 200,
+    });
   }
   if (
     url.endsWith("/v1/stripe/onboarded") ||
@@ -130,7 +138,7 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
-      const creatorPayment = creatorPaymentBoundary(url);
+      const creatorPayment = creatorPaymentBoundary(url, init);
       if (creatorPayment) return creatorPayment;
       if (
         url.endsWith("/v1/payments/checkout-session") ||
@@ -381,6 +389,8 @@ describe("staging smoke helpers", () => {
       customerPortalBoundary: 400,
       upgradeBoundary: 400,
       cancelSubscriptionBoundary: 400,
+      appSubscription: 200,
+      cancelAppSubscriptionBoundary: 404,
       connectAccountBoundary: 400,
       stripeOnboardingStatus: 200,
       stripeRefreshOwnership: 403,
@@ -393,7 +403,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(88);
+    expect(calls).toHaveLength(90);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -446,7 +456,7 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
-      const creatorPayment = creatorPaymentBoundary(url);
+      const creatorPayment = creatorPaymentBoundary(url, init);
       if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending")) {
         return new Response(null, { status: 401 });
@@ -493,7 +503,7 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
-      const creatorPayment = creatorPaymentBoundary(url);
+      const creatorPayment = creatorPaymentBoundary(url, init);
       if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending")) {
         return new Response(null, { status: 401 });
@@ -554,7 +564,7 @@ describe("staging smoke helpers", () => {
         return new Response(null, { status: init?.headers ? 200 : 401 });
       if (url.endsWith("/v1/stripe/webhook"))
         return new Response(null, { status: 503 });
-      const creatorPayment = creatorPaymentBoundary(url);
+      const creatorPayment = creatorPaymentBoundary(url, init);
       if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending"))
         return new Response(null, { status: 401 });
@@ -697,7 +707,7 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
-      const creatorPayment = creatorPaymentBoundary(url);
+      const creatorPayment = creatorPaymentBoundary(url, init);
       if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending")) {
         return new Response(null, { status: 401 });
@@ -766,7 +776,7 @@ describe("staging smoke helpers", () => {
       if (url.endsWith("/v1/stripe/webhook")) {
         return new Response(null, { status: 503 });
       }
-      const creatorPayment = creatorPaymentBoundary(url);
+      const creatorPayment = creatorPaymentBoundary(url, init);
       if (creatorPayment) return creatorPayment;
       if (url.includes("/v1/announcements/pending")) {
         return new Response(null, { status: 401 });

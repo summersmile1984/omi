@@ -264,6 +264,60 @@ async function stripeSubscriptionId(
   return subscriptionId;
 }
 
+async function stripeAppSubscriptionIds(
+  env: JobsEnv,
+  uid: string,
+): Promise<string[]> {
+  const result = await env.APP_DB.prepare(
+    "SELECT stripe_subscription_id FROM cf_app_subscriptions WHERE uid = ? ORDER BY app_id LIMIT 501",
+  )
+    .bind(uid)
+    .all<{ stripe_subscription_id?: unknown }>();
+  if ((result.results || []).length > 500) {
+    throw new Error("too many Stripe app subscriptions");
+  }
+  const ids: string[] = [];
+  for (const row of result.results || []) {
+    const raw = row.stripe_subscription_id;
+    if (raw === undefined || raw === null || String(raw).trim() === "") {
+      continue;
+    }
+    const subscriptionId = String(raw).trim();
+    if (!STRIPE_SUBSCRIPTION_ID.test(subscriptionId)) {
+      throw new Error("invalid Stripe subscription id");
+    }
+    ids.push(subscriptionId);
+  }
+  return [...new Set(ids)];
+}
+
+async function stripeOwnedAppSubscriptionIds(
+  env: JobsEnv,
+  ownerUid: string,
+): Promise<string[]> {
+  const result = await env.APP_DB.prepare(
+    `SELECT s.stripe_subscription_id
+     FROM cf_app_subscriptions s
+     JOIN cf_app_catalog a ON a.id = s.app_id
+     WHERE a.owner_uid = ?
+     ORDER BY s.app_id, s.uid LIMIT 501`,
+  )
+    .bind(ownerUid)
+    .all<{ stripe_subscription_id?: unknown }>();
+  if ((result.results || []).length > 500) {
+    throw new Error("too many Stripe app subscriptions");
+  }
+  const ids: string[] = [];
+  for (const row of result.results || []) {
+    const subscriptionId = String(row.stripe_subscription_id || "").trim();
+    if (!STRIPE_SUBSCRIPTION_ID.test(subscriptionId)) {
+      throw new Error("invalid Stripe subscription id");
+    }
+    ids.push(subscriptionId);
+  }
+  return [...new Set(ids)];
+}
+
 async function stripeConnectAccountId(
   env: JobsEnv,
   uid: string,
@@ -292,7 +346,16 @@ async function assertExternalProviderCleanupConfigured(
     stripeSubscriptionId(env, uid),
     stripeConnectAccountId(env, uid),
   ]);
-  if (subscriptionId || accountId) stripeSecretKey(env);
+  const appSubscriptionIds = await stripeAppSubscriptionIds(env, uid);
+  const ownedAppSubscriptionIds = await stripeOwnedAppSubscriptionIds(env, uid);
+  if (
+    subscriptionId ||
+    accountId ||
+    appSubscriptionIds.length > 0 ||
+    ownedAppSubscriptionIds.length > 0
+  ) {
+    stripeSecretKey(env);
+  }
 }
 
 type StripeSubscription = {
@@ -398,7 +461,28 @@ async function cleanupExternalProviders(
   intent: ParsedAccountDeletionIntent,
 ) {
   const subscriptionId = await stripeSubscriptionId(env, intent.uid);
-  if (subscriptionId) {
+  const appSubscriptionIds = await stripeAppSubscriptionIds(env, intent.uid);
+  const ownedAppSubscriptionIds = await stripeOwnedAppSubscriptionIds(
+    env,
+    intent.uid,
+  );
+  const seenSubscriptions = new Set<string>();
+  const subscriptions = [
+    ...(subscriptionId ? [{ id: subscriptionId, suffix: "" }] : []),
+    ...appSubscriptionIds
+      .filter((id) => id !== subscriptionId)
+      .map((id) => ({ id, suffix: `-app-${id.slice(-48)}` })),
+    ...ownedAppSubscriptionIds.map((id) => ({
+      id,
+      suffix: `-creator-app-${id.slice(-40)}`,
+    })),
+  ].filter(({ id }) => {
+    if (seenSubscriptions.has(id)) return false;
+    seenSubscriptions.add(id);
+    return true;
+  });
+  for (const subscription of subscriptions) {
+    const subscriptionId = subscription.id;
     const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
     const current = await parseStripeSubscription(
       await stripeRequest(env, path),
@@ -420,7 +504,7 @@ async function cleanupExternalProviders(
           await stripeRequest(env, path, {
             method: "POST",
             form,
-            idempotencyKey: `account-delete-${intent.jobId}`,
+            idempotencyKey: `account-delete-${intent.jobId}${subscription.suffix}`,
           }),
           subscriptionId,
         );
