@@ -15,7 +15,9 @@ from memory_routes import (  # noqa: E402
     delete_memories_batch,
     list_memories,
     review_memory,
+    update_memory_baseline,
     update_memory_content,
+    update_memory_read_status,
     update_memory_visibility,
 )
 
@@ -187,6 +189,81 @@ def test_memory_edit_visibility_review_and_delete_are_uid_scoped():
         ("memory-user", memory_id),
     ).fetchone()
     assert tombstone["deleted_at"] is not None
+
+
+def test_memory_read_and_baseline_status_are_uid_scoped_and_locked():
+    secret = "memory-secret"
+    env = make_env(secret)
+    memory = create(env, secret)
+    memory_id = memory["id"]
+
+    read = asyncio.run(
+        update_memory_read_status(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"is_read": True, "is_dismissed": True},
+            ),
+            memory_id,
+        )
+    )
+    assert read["id"] == memory_id
+    assert read["is_read"] is True
+    assert read["is_dismissed"] is True
+    partial = asyncio.run(
+        update_memory_read_status(
+            FakeRequest(env, signed_headers(secret), body={"is_read": False}),
+            memory_id,
+        )
+    )
+    assert partial["is_read"] is False
+    assert partial["is_dismissed"] is True
+    assert asyncio.run(
+        update_memory_baseline(
+            FakeRequest(env, signed_headers(secret), {"value": "yes"}),
+            memory_id,
+        )
+    ) == {"status": "ok"}
+    persisted = env.APP_DB.connection.execute(
+        "SELECT is_read, is_dismissed, is_baseline FROM cf_memories WHERE uid = ? AND id = ?",
+        ("memory-user", memory_id),
+    ).fetchone()
+    assert dict(persisted) == {"is_read": 0, "is_dismissed": 1, "is_baseline": 1}
+
+    missing_value = asyncio.run(
+        update_memory_read_status(
+            FakeRequest(env, signed_headers(secret), body={}),
+            memory_id,
+        )
+    )
+    assert missing_value.status_code == 422
+    unexpected_value = asyncio.run(
+        update_memory_read_status(
+            FakeRequest(env, signed_headers(secret), body={"is_read": True, "unexpected": True}),
+            memory_id,
+        )
+    )
+    assert unexpected_value.status_code == 422
+    other_user = asyncio.run(
+        update_memory_baseline(
+            FakeRequest(env, signed_headers(secret, "other-user"), {"value": "false"}),
+            memory_id,
+        )
+    )
+    assert other_user.status_code == 404
+
+    env.APP_DB.connection.execute(
+        "UPDATE cf_memories SET is_locked = 1 WHERE uid = ? AND id = ?",
+        ("memory-user", memory_id),
+    )
+    env.APP_DB.connection.commit()
+    locked = asyncio.run(
+        update_memory_read_status(
+            FakeRequest(env, signed_headers(secret), body={"is_read": False}),
+            memory_id,
+        )
+    )
+    assert locked.status_code == 402
 
 
 def test_batch_delete_is_all_or_nothing_and_keeps_tombstones():

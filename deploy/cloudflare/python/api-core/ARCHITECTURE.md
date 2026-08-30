@@ -23,10 +23,12 @@ boundary and is not implied by a successful D1 mutation.
 
 `memory_routes.py` is the canonical memory authority only for Better Auth
 accounts created inside the isolated Cloudflare staging profile. It provides
-uid-scoped list/create/edit/review/delete behavior in D1 and retains deletions
-as tombstones. It has no Firestore fallback or dual write. Production account
-promotion remains forbidden until the account-cutover importer, manifest
-verification, and destination binding described by `INV-CUTOVER-1` exist.
+uid-scoped list/create/edit/review/delete behavior in D1, persists desktop
+read/dismiss state and the baseline flag, and retains deletions as tombstones.
+State mutations reject locked memories with the legacy paid-plan boundary. It
+has no Firestore fallback or dual write. Production account promotion remains
+forbidden until the account-cutover importer, manifest verification, and
+destination binding described by `INV-CUTOVER-1` exist.
 
 `account_cutover_routes.py` is the routing authority consumed by Edge. Only
 `ACCOUNT_CUTOVER_PROFILE=isolated-staging` may initialize a missing Better Auth

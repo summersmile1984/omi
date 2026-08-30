@@ -1312,6 +1312,8 @@ describe("edge gateway", () => {
       ["POST", "/v3/memories"],
       ["PATCH", "/v3/memories/memory-1?value=edited"],
       ["PATCH", "/v3/memories/memory-1/visibility?value=public"],
+      ["PATCH", "/v3/memories/memory-1/read"],
+      ["PATCH", "/v3/memories/memory-1/baseline?value=true"],
       ["POST", "/v3/memories/memory-1/review?value=true"],
       ["DELETE", "/v3/memories/batch"],
       ["DELETE", "/v3/memories/memory-1"],
@@ -1338,6 +1340,8 @@ describe("edge gateway", () => {
       "POST /v3/memories",
       "PATCH /v3/memories/memory-1",
       "PATCH /v3/memories/memory-1/visibility",
+      "PATCH /v3/memories/memory-1/read",
+      "PATCH /v3/memories/memory-1/baseline",
       "POST /v3/memories/memory-1/review",
       "DELETE /v3/memories/batch",
       "DELETE /v3/memories/memory-1",
@@ -1350,6 +1354,8 @@ describe("edge gateway", () => {
     ).toBe(true);
     expect(rateLimitNames).toEqual([
       "memories:create:user-1",
+      "memories:modify:user-1",
+      "memories:modify:user-1",
       "memories:modify:user-1",
       "memories:modify:user-1",
       "memories:modify:user-1",

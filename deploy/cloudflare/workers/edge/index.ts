@@ -832,6 +832,8 @@ app.delete("/v3/memories/batch", proxyAuthenticatedCore);
 app.delete("/v3/memories/:memoryId", proxyAuthenticatedCore);
 app.patch("/v3/memories/:memoryId", proxyAuthenticatedCore);
 app.patch("/v3/memories/:memoryId/visibility", proxyAuthenticatedCore);
+app.patch("/v3/memories/:memoryId/read", proxyAuthenticatedCore);
+app.patch("/v3/memories/:memoryId/baseline", proxyAuthenticatedCore);
 app.post("/v3/memories/:memoryId/review", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/shared", proxyPublicCore);
 app.get("/v1/conversations", proxyAuthenticatedCore);

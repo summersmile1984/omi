@@ -234,6 +234,8 @@ describe("SharedRateLimitDurableObject", () => {
       ["DELETE", "/v3/memories/memory-1", "memories:delete"],
       ["PATCH", "/v3/memories/memory-1", "memories:modify"],
       ["PATCH", "/v3/memories/memory-1/visibility", "memories:modify"],
+      ["PATCH", "/v3/memories/memory-1/read", "memories:modify"],
+      ["PATCH", "/v3/memories/memory-1/baseline", "memories:modify"],
       ["POST", "/v3/memories/memory-1/review", "memories:modify"],
       ["POST", "/v1/tts/synthesize", "tts:synthesize"],
       ["POST", "/v1/tts/synthesize-workers-ai", "tts:synthesize"],

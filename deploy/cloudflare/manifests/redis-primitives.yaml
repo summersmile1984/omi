@@ -381,6 +381,8 @@ families:
       - DELETE /v3/memories/:memoryId
       - DELETE /v3/memories/batch
       - PATCH /v3/memories/:memoryId
+      - PATCH /v3/memories/:memoryId/baseline
+      - PATCH /v3/memories/:memoryId/read
       - PATCH /v3/memories/:memoryId/visibility
       - POST /v3/memories
       - POST /v3/memories/:memoryId/review

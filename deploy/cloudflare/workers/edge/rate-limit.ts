@@ -109,7 +109,9 @@ export function edgeRateLimitPolicyForRequest(
   }
   if (
     (normalizedMethod === "PATCH" &&
-      /^\/v3\/memories\/[^/]+(?:\/visibility)?$/.test(path)) ||
+      /^\/v3\/memories\/[^/]+(?:\/(?:visibility|read|baseline))?$/.test(
+        path,
+      )) ||
     (normalizedMethod === "POST" &&
       /^\/v3\/memories\/[^/]+\/review$/.test(path))
   ) {

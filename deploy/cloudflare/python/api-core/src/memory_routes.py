@@ -113,6 +113,19 @@ class MemoryBatchDelete(BaseModel):
         return self
 
 
+class MemoryReadStatusUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    is_read: bool | None = None
+    is_dismissed: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_mutation(self) -> "MemoryReadStatusUpdate":
+        if self.is_read is None and self.is_dismissed is None:
+            raise ValueError("missing memory read mutation value")
+        return self
+
+
 def _auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
@@ -219,9 +232,33 @@ async def _first_active(env: object, uid: str, memory_id: str) -> dict[str, obje
     return row if isinstance(row, dict) else None
 
 
+async def _mutable_memory(env: object, uid: str, memory_id: str) -> dict[str, object] | JSONResponse:
+    row = await _first_active(env, uid, memory_id)
+    if row is None:
+        return JSONResponse({"error": "memory not found"}, status_code=404)
+    if _bool(row.get("is_locked")):
+        return JSONResponse(
+            {"error": "A paid plan is required to access this memory."},
+            status_code=402,
+        )
+    return row
+
+
 def _query_value(request: Request, name: str) -> str | None:
     value = request.query_params.get(name)
     return value if isinstance(value, str) else None
+
+
+def _query_bool(request: Request, name: str) -> bool | None:
+    value = _query_value(request, name)
+    if value is None:
+        return None
+    normalized = value.lower()
+    if normalized in {"1", "true", "on", "yes"}:
+        return True
+    if normalized in {"0", "false", "off", "no"}:
+        return False
+    return None
 
 
 @router.get("/v3/memories")
@@ -481,6 +518,76 @@ async def review_memory(request: Request, memory_id: str):
             return JSONResponse({"error": "memory not found"}, status_code=404)
         await env.APP_DB.prepare(
             "UPDATE cf_memories SET reviewed = 1, user_review = ?, updated_at = ? "
+            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
+        ).bind(int(value), int(time.time()), uid, memory_id).run()
+    except Exception:
+        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    return {"status": "ok"}
+
+
+@router.patch("/v3/memories/{memory_id}/read")
+async def update_memory_read_status(request: Request, memory_id: str):
+    """Persist the durable read and dismiss state used by desktop insights."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not memory_id or len(memory_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "memory not found"}, status_code=404)
+    try:
+        update = MemoryReadStatusUpdate.model_validate(await _bounded_json(request))
+    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid memory read status"}, status_code=422)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _mutable_memory(env, uid, memory_id)
+        if isinstance(existing, JSONResponse):
+            return existing
+        assignments: list[str] = []
+        values: list[object] = []
+        if update.is_read is not None:
+            assignments.append("is_read = ?")
+            values.append(int(update.is_read))
+        if update.is_dismissed is not None:
+            assignments.append("is_dismissed = ?")
+            values.append(int(update.is_dismissed))
+        now = int(time.time())
+        assignments.append("updated_at = ?")
+        values.extend((now, uid, memory_id))
+        await env.APP_DB.prepare(
+            "UPDATE cf_memories SET "
+            + ", ".join(assignments)
+            + " WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
+        ).bind(*values).run()
+        updated = await _first_active(env, uid, memory_id)
+        if not isinstance(updated, dict):
+            return JSONResponse({"error": "memory not found"}, status_code=404)
+        return _response(updated)
+    except Exception:
+        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+
+
+@router.patch("/v3/memories/{memory_id}/baseline")
+async def update_memory_baseline(request: Request, memory_id: str):
+    """Update the canonical baseline flag without changing memory content."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not memory_id or len(memory_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "memory not found"}, status_code=404)
+    value = _query_bool(request, "value")
+    if value is None:
+        return JSONResponse({"error": "invalid memory baseline"}, status_code=422)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _mutable_memory(env, uid, memory_id)
+        if isinstance(existing, JSONResponse):
+            return existing
+        await env.APP_DB.prepare(
+            "UPDATE cf_memories SET is_baseline = ?, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(int(value), int(time.time()), uid, memory_id).run()
     except Exception:
