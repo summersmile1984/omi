@@ -294,6 +294,9 @@ describe("staging smoke helpers", () => {
                                                         url.endsWith(
                                                           "/v1/scores",
                                                         ) ||
+                                                        url.includes(
+                                                          "/v1/advice?",
+                                                        ) ||
                                                         url.endsWith(
                                                           "/v1/focus-sessions",
                                                         ) ||
@@ -416,6 +419,7 @@ describe("staging smoke helpers", () => {
       mentorNotificationSettings: 200,
       dailyScore: 200,
       scores: 200,
+      advice: 200,
       focusSessions: 200,
       focusStats: 200,
       screenActivity: 200,
@@ -466,7 +470,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(111);
+    expect(calls).toHaveLength(112);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -716,6 +720,7 @@ describe("staging smoke helpers", () => {
         url.endsWith("/v1/users/mentor-notification-settings") ||
         url.endsWith("/v1/daily-score") ||
         url.endsWith("/v1/scores") ||
+        url.includes("/v1/advice?") ||
         url.endsWith("/v1/focus-sessions") ||
         url.endsWith("/v1/focus-stats") ||
         url.endsWith("/v1/screen-activity") ||

@@ -1365,6 +1365,64 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("routes the complete advice CRUD surface to the authenticated core worker", async () => {
+    const coreRequests: Request[] = [];
+    const rateLimitNames: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
+    };
+    const authorization = { authorization: "Bearer opaque-session" };
+    const cases = [
+      ["GET", "/v1/advice?limit=25"],
+      ["POST", "/v1/advice"],
+      ["PATCH", "/v1/advice/advice-1"],
+      ["DELETE", "/v1/advice/advice-1"],
+      ["POST", "/v1/advice/mark-all-read"],
+    ] as const;
+
+    for (const [method, path] of cases) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: authorization,
+        }),
+        env,
+      );
+      expect(response.status, `${method} ${path}`).toBe(200);
+    }
+
+    expect(
+      coreRequests.map(
+        (request) => `${request.method} ${new URL(request.url).pathname}`,
+      ),
+    ).toEqual([
+      "GET /v1/advice",
+      "POST /v1/advice",
+      "PATCH /v1/advice/advice-1",
+      "DELETE /v1/advice/advice-1",
+      "POST /v1/advice/mark-all-read",
+    ]);
+    expect(
+      coreRequests.every((request) =>
+        request.headers.has("x-omi-auth-context"),
+      ),
+    ).toBe(true);
+    expect(rateLimitNames).toEqual([]);
+  });
+
   it("routes canonical conversation segment text edits to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

@@ -14,6 +14,12 @@ request reaches this Worker. Legacy workstream search/index refresh and
 candidate automation remain outside this package until their own authority and
 backfill contracts are migrated.
 
+`advice_routes.py` owns the isolated profile's proactive coaching rows in D1.
+Create/list/update/delete and mark-all-read share one uid-scoped authority;
+dismissed filtering and category pagination are computed from the same table.
+The table participates in account-deletion mutation fences and residual purge,
+with no Firestore fallback or dual write.
+
 `app_review_routes.py` owns public-app review rows and rating aggregates in the
 same D1 transaction. Catalog rows carry a non-public `owner_uid` column so
 self-review and developer-reply authorization fail closed when a legacy

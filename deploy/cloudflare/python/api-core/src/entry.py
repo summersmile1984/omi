@@ -39,6 +39,7 @@ from goal_routes import router as goal_router
 from folder_routes import router as folder_router
 from score_routes import router as score_router
 from focus_routes import router as focus_router
+from advice_routes import router as advice_router
 from screen_activity_routes import router as screen_activity_router
 from calendar_onboarding_routes import router as calendar_onboarding_router
 from calendar_meeting_routes import router as calendar_meeting_router
@@ -65,6 +66,7 @@ from mcp_routes import router as mcp_router
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
 app.include_router(focus_router)
+app.include_router(advice_router)
 app.include_router(screen_activity_router)
 app.include_router(calendar_onboarding_router)
 app.include_router(calendar_meeting_router)

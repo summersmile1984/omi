@@ -689,6 +689,11 @@ export async function runSmoke({
   });
   expectStatus("scores", scores, 200);
 
+  const advice = await request(fetchImpl, `${base}/v1/advice?limit=1`, {
+    headers: authHeaders,
+  });
+  expectStatus("advice", advice, 200);
+
   const focusSessions = await request(fetchImpl, `${base}/v1/focus-sessions`, {
     headers: authHeaders,
   });
@@ -1190,6 +1195,7 @@ export async function runSmoke({
     mentorNotificationSettings: mentorNotificationSettings.status,
     dailyScore: dailyScore.status,
     scores: scores.status,
+    advice: advice.status,
     focusSessions: focusSessions.status,
     focusStats: focusStats.status,
     screenActivity: screenActivity.status,

@@ -24,6 +24,7 @@ type D1IdentitySurface = Readonly<{
 export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_account_cutover", column: "uid" },
   { table: "cf_action_items", column: "uid" },
+  { table: "cf_advice", column: "uid" },
   { table: "cf_announcement_dismissals", column: "uid" },
   { table: "cf_app_catalog", column: "owner_uid" },
   { table: "cf_app_payment_links", column: "owner_uid" },
