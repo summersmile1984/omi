@@ -17,18 +17,8 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        for name in (
-            "0016_action_items.sql",
-            "0017_people.sql",
-            "0018_goals.sql",
-            "0023_goal_progress_history.sql",
-            "0025_goal_progress_events.sql",
-            "0026_workstreams.sql",
-            "0032_conversations.sql",
-            "0037_memories.sql",
-            "0042_chat_messages.sql",
-        ):
-            self.connection.executescript((migration_dir / name).read_text())
+        for migration in sorted(migration_dir.glob("*.sql")):
+            self.connection.executescript(migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)

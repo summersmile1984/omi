@@ -102,6 +102,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 120,
     windowSeconds: 3600,
   },
+  "memory_imports:batch": {
+    name: "memory_imports:batch",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
   "knowledge_graph:canonical": {
     name: "knowledge_graph:canonical",
     maxRequests: 120,
@@ -225,6 +230,10 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ],
   ["POST /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v3/memories/batch", EDGE_RATE_LIMIT_POLICIES["memories:batch"]],
+  [
+    "POST /v3/memory-imports/batch",
+    EDGE_RATE_LIMIT_POLICIES["memory_imports:batch"],
+  ],
   ["POST /v1/mcp/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v1/mcp/action-items", EDGE_RATE_LIMIT_POLICIES["action_items:write"]],
   ["POST /v1/dev/user/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],

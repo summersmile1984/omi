@@ -16,6 +16,8 @@ router = APIRouter()
 _EXPORT_QUERIES = (
     ("conversations", "cf_conversations", "created_at DESC, id DESC"),
     ("memories", "cf_memories", "created_at DESC, id DESC"),
+    ("memory_import_runs", "cf_memory_import_runs", "updated_at DESC, run_id DESC"),
+    ("memory_import_artifacts", "cf_memory_import_artifacts", "created_at DESC, artifact_id DESC"),
     ("people", "cf_people", "created_at DESC, id DESC"),
     ("action_items", "cf_action_items", "created_at DESC, id DESC"),
     ("goals", "cf_goals", "created_at DESC, id DESC"),

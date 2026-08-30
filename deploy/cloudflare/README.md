@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 465 already match
-  Cloudflare staging owners and 111 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 467 already match
+  Cloudflare staging owners and 110 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -627,9 +627,12 @@ PATCH /v3/memories/{memoryId}/read
 PATCH /v3/memories/{memoryId}/baseline
 POST  /v3/memories/{memoryId}/review
 DELETE /v3/memories/batch
+POST  /v3/memory-imports/batch
                               uid-scoped canonical D1 memory CRUD for isolated
                               Better Auth staging accounts; deletes tombstone
-                              and there is no Firestore fallback or dual write
+                              and there is no Firestore fallback or dual write;
+                              import batches persist bounded, deduplicated
+                              evidence rows without extraction or promotion
 GET  /v1/account/cutover/control
                               Edge → Python API Core → D1 account migration control projection
 GET  /v1/users/me/usage       Edge → Python API Core → D1 idempotent usage sources

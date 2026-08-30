@@ -386,6 +386,7 @@ families:
       - memories:delete_all
       - memories:delete_batch
       - memories:modify
+      - memory_imports:batch
       - stt:transcribe
       - tools:mutate
       - tools:search
@@ -398,6 +399,7 @@ families:
       - GET /v1/knowledge-graph/canonical
       - POST /v1/conversations/from-segments
       - POST /v1/conversations/search
+      - POST /v3/memory-imports/batch
       - DELETE /v1/mcp/action-items/:action_item_id
       - PATCH /v1/mcp/action-items/:action_item_id
       - POST /v1/mcp/action-items
