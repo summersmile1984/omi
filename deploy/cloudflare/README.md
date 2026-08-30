@@ -374,6 +374,10 @@ printf '%s' "$CLICKUP_CLIENT_SECRET" | npx wrangler secret put CLICKUP_CLIENT_SE
 # Keep the encryption secret stable; rotation requires token re-encryption.
 printf '%s' "$GOOGLE_CALENDAR_CLIENT_ID" | npx wrangler secret put GOOGLE_CALENDAR_CLIENT_ID --name omi-cf-jobs-staging
 printf '%s' "$GOOGLE_CALENDAR_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CALENDAR_CLIENT_SECRET --name omi-cf-jobs-staging
+# If reusing the Better Auth OAuth client, provision the same pair on the Jobs
+# Worker explicitly; service bindings do not share secrets between Workers.
+printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler secret put GOOGLE_CLIENT_ID --name omi-cf-jobs-staging
+printf '%s' "$GOOGLE_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CLIENT_SECRET --name omi-cf-jobs-staging
 printf '%s' "$GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET" | npx wrangler secret put GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET --name omi-cf-jobs-staging
 ```
 
