@@ -418,6 +418,7 @@ app.get("/v1/app/proactive-notification-scopes", proxyPublicCore);
 app.get("/v1/app-capabilities", proxyPublicCore);
 app.get("/v1/app/payment-plans", proxyPublicCore);
 app.get("/v1/approved-apps", proxyPublicCore);
+app.get("/v1/personas", proxyAuthenticatedCore);
 app.get("/v1/apps/:appId/logo/:version", proxyPublicJobs);
 app.get("/v1/x/oauth/callback", proxyPublicJobs);
 app.get("/v2/integrations/todoist/callback", proxyPublicJobs);

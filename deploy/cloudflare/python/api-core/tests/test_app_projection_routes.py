@@ -8,7 +8,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from app_projection_routes import check_is_tester, get_app, get_apps, get_approved_apps, get_popular_apps  # noqa: E402
+from app_projection_routes import (  # noqa: E402
+    check_is_tester,
+    get_app,
+    get_apps,
+    get_approved_apps,
+    get_persona_details,
+    get_popular_apps,
+)
 
 
 class FakeStatement:
@@ -115,6 +122,34 @@ def test_approved_projection_filters_disabled_and_persona_apps_and_hides_reviews
     assert [app["id"] for app in result] == ["popular"]
     assert result[0]["is_popular"] is True
     assert "reviews" not in result[0]
+
+
+def test_owned_persona_projection_is_uid_scoped_and_hides_disabled_rows():
+    secret = "catalog-secret"
+    persona = {
+        **catalog_row("persona", capabilities=["persona"]),
+        "owner_uid": "catalog-user",
+        "approved": 0,
+        "disabled": 0,
+        "data_json": json.dumps(
+            {
+                "id": "persona",
+                "name": "My Persona",
+                "capabilities": ["persona"],
+                "persona_prompt": "private prompt",
+            }
+        ),
+    }
+    env = type("Env", (), {"APP_DB": FakeDb([persona]), "INTERNAL_ASSERTION_SECRET": secret})()
+
+    unauthorized = asyncio.run(get_persona_details(FakeRequest(env)))
+    result = asyncio.run(get_persona_details(FakeRequest(env, signed_headers(secret))))
+    other = asyncio.run(get_persona_details(FakeRequest(env, signed_headers(secret, "other-user"))))
+
+    assert unauthorized.status_code == 401
+    assert result["id"] == "persona"
+    assert result["persona_prompt"] == "private prompt"
+    assert other.status_code == 404
 
 
 def test_authenticated_catalog_unions_public_owned_and_assigned_apps_without_leaking_owner_fields():

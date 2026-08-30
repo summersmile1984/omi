@@ -106,6 +106,26 @@ def _strip_owner_only_fields(app: dict[str, object]) -> dict[str, object]:
     return result
 
 
+def _owned_persona(row: dict[str, object], uid: str) -> dict[str, object] | None:
+    if row.get("owner_uid") != uid:
+        return None
+    raw = row.get("data_json")
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_APP_PAYLOAD_BYTES:
+        raise ValueError("invalid persona payload")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("invalid persona payload")
+    capabilities = payload.get("capabilities")
+    if not isinstance(capabilities, list) or "persona" not in capabilities:
+        return None
+    result = dict(payload)
+    result["id"] = str(row.get("id") or result.get("id") or "")
+    result["approved"] = _flag(row.get("approved"))
+    result["rejected"] = not result["approved"]
+    result["disabled"] = _flag(row.get("disabled"))
+    return result
+
+
 async def _read_public_apps(request: Request, *, popular: bool, include_reviews: bool):
     env = request.scope["env"]
     clause = "AND is_popular = 1" if popular else ""
@@ -158,6 +178,38 @@ async def get_approved_apps(request: Request):
     if isinstance(include_reviews, JSONResponse):
         return include_reviews
     return await _read_public_apps(request, popular=False, include_reviews=include_reviews)
+
+
+@router.get("/v1/personas")
+async def get_persona_details(request: Request):
+    """Return the authenticated user's Persona from the owner projection."""
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = str(context["uid"])
+    try:
+        row = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                "SELECT id, owner_uid, approved, disabled, data_json "
+                "FROM cf_app_catalog WHERE owner_uid = ? "
+                "ORDER BY updated_at DESC, id DESC LIMIT 20"
+            )
+            .bind(uid)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "persona unavailable"}, status_code=503)
+    rows = row.get("results", []) if isinstance(row, dict) else []
+    try:
+        for candidate in rows:
+            if isinstance(candidate, dict):
+                persona = _owned_persona(candidate, uid)
+                if persona is not None and not persona["disabled"]:
+                    return persona
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "persona unavailable"}, status_code=503)
+    return JSONResponse({"detail": "Persona not found"}, status_code=404)
 
 
 @router.get("/v1/apps/popular")
