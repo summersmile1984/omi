@@ -1122,6 +1122,10 @@ app.get(
   proxyAuthenticatedCore,
 );
 app.get("/v1/conversations/:conversationId/analytics", proxyAuthenticatedCore);
+app.post(
+  "/v1/conversations/:conversationId/test-prompt",
+  proxyAuthenticatedCore,
+);
 app.get(
   "/v1/conversations/:conversationId/suggested-apps",
   proxyAuthenticatedCore,
