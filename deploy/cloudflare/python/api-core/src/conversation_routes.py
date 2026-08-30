@@ -41,6 +41,8 @@ MAX_SEGMENTS = 2_000
 MAX_SEARCH_QUERY_LENGTH = 500
 MAX_SEARCH_TERMS = 20
 MAX_AUDIO_FILES = 100
+MAX_SUGGESTED_APP_IDS = 100
+MAX_APP_PAYLOAD_BYTES = 500_000
 AUDIO_URL_TTL_SECONDS = 60 * 60
 CONVERSATION_STATUSES = frozenset({"in_progress", "processing", "merging", "completed", "failed"})
 CONVERSATION_SOURCES = frozenset(
@@ -245,6 +247,54 @@ def _json_value(value: object, fallback: object) -> object:
 def _json_object(value: object) -> dict[str, object]:
     parsed = _json_value(value, {})
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _suggested_app(row: dict[str, object], uid: str) -> dict[str, object] | None:
+    """Project one approved marketplace app for a conversation suggestion."""
+    if not _bool(row.get("approved")) or _bool(row.get("disabled")):
+        return None
+    raw = row.get("data_json")
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_APP_PAYLOAD_BYTES:
+        raise ValueError("invalid app payload")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("invalid app payload")
+    capabilities = payload.get("capabilities", [])
+    if not isinstance(capabilities, list) or any(not isinstance(item, str) for item in capabilities):
+        raise ValueError("invalid app capabilities")
+    if "persona" in capabilities or _bool(payload.get("private")):
+        return None
+
+    app = dict(payload)
+    app["id"] = str(row.get("id") or app.get("id") or "")
+    app["approved"] = True
+    app["rejected"] = False
+    app["disabled"] = False
+    app["is_popular"] = _bool(row.get("is_popular"))
+    app["installs"] = max(0, int(row.get("installs") or 0))
+    app["rating_count"] = max(0, int(row.get("rating_count") or 0))
+    if row.get("rating_avg") is not None:
+        app["rating_avg"] = float(row["rating_avg"])
+    paid = _bool(app.get("is_paid")) or bool(app.get("payment_link") or app.get("payment_link_id"))
+    app["is_user_paid"] = _bool(row.get("user_entitled"))
+    app["enabled"] = _bool(row.get("user_enabled")) and (app["is_user_paid"] if paid else True)
+    payment_link = app.get("payment_link")
+    if isinstance(payment_link, str) and payment_link:
+        separator = "&" if "?" in payment_link else "?"
+        app["payment_link"] = f"{payment_link}{separator}client_reference_id=uid_{quote(uid, safe='')}"
+    for key in (
+        "email",
+        "memory_prompt",
+        "chat_prompt",
+        "persona_prompt",
+        "payment_product_id",
+        "payment_price_id",
+        "payment_link_id",
+        "money_made",
+        "usage_count",
+    ):
+        app.pop(key, None)
+    return app
 
 
 def _usage_words(segments: list[dict[str, object]]) -> int:
@@ -1419,6 +1469,66 @@ async def get_conversation(request: Request, conversation_id: str):
     # Locked conversations preserve metadata but never expose transcript or
     # derived action/event content; `_response` applies that redaction.
     return _response(row, detail=True)
+
+
+@router.get("/v1/conversations/{conversation_id}/suggested-apps")
+async def get_conversation_suggested_apps(request: Request, conversation_id: str):
+    """Return approved marketplace apps suggested by a conversation projection."""
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        conversation = await _first_conversation(env, uid, conversation_id)
+        if conversation is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(conversation.get("is_locked")):
+            return {"suggested_apps": [], "conversation_id": conversation_id}
+        app_ids = [
+            str(value)
+            for value in _json_list(conversation.get("suggested_apps_json"))
+            if isinstance(value, str) and value and len(value) <= MAX_ID_LENGTH
+        ]
+        app_ids = list(dict.fromkeys(app_ids))
+        if len(app_ids) > MAX_SUGGESTED_APP_IDS:
+            return JSONResponse({"error": "too many suggested apps"}, status_code=400)
+        if not app_ids:
+            return {"suggested_apps": [], "conversation_id": conversation_id}
+        placeholders = ", ".join("?" for _ in app_ids)
+        result = (
+            await env.APP_DB.prepare(
+                "SELECT c.id, c.approved, c.disabled, c.is_popular, c.installs, c.rating_avg, c.rating_count, c.data_json, "
+                "CASE WHEN u.app_id IS NULL THEN 0 ELSE 1 END AS user_enabled, "
+                "CASE WHEN s.status IN ('active', 'trialing') AND s.current_period_end > unixepoch() "
+                "THEN 1 ELSE 0 END AS user_entitled "
+                "FROM cf_app_catalog c "
+                "LEFT JOIN cf_user_enabled_apps u ON u.app_id = c.id AND u.uid = ? "
+                "LEFT JOIN cf_app_subscriptions s ON s.app_id = c.id AND s.uid = ? "
+                f"WHERE c.id IN ({placeholders})"
+            )
+            .bind(uid, uid, *app_ids)
+            .all()
+        )
+        rows = result.get("results", []) if isinstance(result, dict) else []
+        by_id: dict[str, dict[str, object]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
+            app_id = str(row.get("id") or "")
+            projected = _suggested_app(row, uid)
+            if projected is not None:
+                by_id[app_id] = projected
+        return {
+            "suggested_apps": [by_id[app_id] for app_id in app_ids if app_id in by_id],
+            "conversation_id": conversation_id,
+        }
+    except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+        return JSONResponse({"error": "app catalog unavailable"}, status_code=503)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
 
 
 @router.get("/v1/conversations/{conversation_id}/photos")

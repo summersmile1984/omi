@@ -1645,15 +1645,23 @@ describe("edge gateway", () => {
       API_AI: service(() => Response.json({ status: "ok" })),
       REALTIME: service(() => Response.json({ status: "ok" })),
     };
-    const response = await edge.fetch(
-      new Request("https://edge.test/v1/cf/conversations?limit=10", {
-        headers: { authorization: "Bearer opaque-session" },
-      }),
-      env,
-    );
-    expect(response.status).toBe(200);
-    expect(coreRequests).toHaveLength(1);
-    expect(new URL(coreRequests[0].url).pathname).toBe("/v1/cf/conversations");
+    for (const path of [
+      "/v1/cf/conversations?limit=10",
+      "/v1/conversations/conversation-1/suggested-apps",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(coreRequests).toHaveLength(2);
+    expect(coreRequests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/v1/cf/conversations",
+      "/v1/conversations/conversation-1/suggested-apps",
+    ]);
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 

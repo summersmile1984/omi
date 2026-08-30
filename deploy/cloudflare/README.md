@@ -639,6 +639,8 @@ GET  /v1/conversations/{conversationId}/photos
 GET  /v1/conversations/{conversationId}/transcripts
 GET  /v1/conversations/{conversationId}/analytics
                               bounded transcript buckets and D1 speaker analytics
+GET  /v1/conversations/{conversationId}/suggested-apps
+                              approved app catalog projection with uid-scoped state
 GET  /v1/conversations/{conversationId}/recording
                               R2 head check for Worker playback or imported uid/{id}.wav
 POST /v1/sync/audio/{conversationId}/precache
@@ -1552,6 +1554,11 @@ per-speaker talk-time, word-count, WPM, and talk-share response from the same
 bounded transcript projection. Person labels are resolved from the uid-scoped
 `cf_people` table; speech-profile extraction and other transcript side effects
 are not part of this read route.
+
+`GET /v1/conversations/{conversation_id}/suggested-apps` resolves the conversation's
+suggested app ids against the approved D1 catalog. Private/persona/disabled apps
+are filtered, payment links receive the caller-bound reference, and enabled/paid
+state is computed from uid-scoped D1 projections.
 
 `PATCH /v1/conversations/{conversation_id}/segments/{segment_idx}/assign` and
 `PATCH /v1/conversations/{conversation_id}/assign-speaker/{speaker_id}` update
