@@ -1,8 +1,8 @@
 """D1-backed calendar meeting metadata for the isolated Cloudflare profile.
 
-This projection owns the calendar event metadata written by clients. OAuth
-tokens, event discovery, and conversation finalization remain on the legacy
-integration/Firestore owner until their readers are migrated together.
+This projection owns the calendar event metadata written by clients. Google
+OAuth tokens and provider event discovery are owned by the Jobs Worker; the
+conversation-linking endpoints use that same Worker-owned Calendar authority.
 """
 
 from __future__ import annotations

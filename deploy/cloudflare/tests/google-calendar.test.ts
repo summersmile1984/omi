@@ -287,6 +287,19 @@ describe("Google Calendar Worker routes", () => {
     expect(
       await (await app.request("/v1/integrations/google_calendar")).json(),
     ).toEqual({ connected: true, app_key: "google_calendar" });
+    expect(
+      database.database
+        .prepare(
+          "SELECT connected, onboarding_skipped, reauth_required, has_access_token, reauth_reason FROM cf_user_calendar_onboarding WHERE uid = ?",
+        )
+        .get("calendar-user"),
+    ).toEqual({
+      connected: 1,
+      onboarding_skipped: 0,
+      reauth_required: 0,
+      has_access_token: 1,
+      reauth_reason: null,
+    });
 
     const row = database.database
       .prepare(
@@ -307,6 +320,18 @@ describe("Google Calendar Worker routes", () => {
         })
       ).status,
     ).toBe(204);
+    expect(
+      database.database
+        .prepare(
+          "SELECT connected, reauth_required, has_access_token, reauth_reason FROM cf_user_calendar_onboarding WHERE uid = ?",
+        )
+        .get("calendar-user"),
+    ).toEqual({
+      connected: 0,
+      reauth_required: 0,
+      has_access_token: 0,
+      reauth_reason: null,
+    });
     expect(
       (
         await app.request("/v1/integrations/google_calendar", {
@@ -370,6 +395,18 @@ describe("Google Calendar Worker routes", () => {
     expect(row.connected).toBe(1);
     expect(JSON.stringify(row)).not.toContain("calendar-access-initial");
     expect(JSON.stringify(row)).not.toContain("calendar-refresh");
+    expect(
+      database.database
+        .prepare(
+          "SELECT connected, reauth_required, has_access_token, reauth_reason FROM cf_user_calendar_onboarding WHERE uid = ?",
+        )
+        .get("calendar-user"),
+    ).toEqual({
+      connected: 1,
+      reauth_required: 0,
+      has_access_token: 1,
+      reauth_reason: null,
+    });
 
     const replay = await app.request(
       `/v2/integrations/google-calendar/callback?code=calendar-code&state=${encodeURIComponent(state!)}`,
@@ -560,6 +597,46 @@ describe("Google Calendar Worker routes", () => {
       calendar_event_json: string;
     };
     expect(JSON.parse(stored.calendar_event_json).event_id).toBe("timed-event");
+  });
+
+  it("marks onboarding as reconnect-required when a stored credential is rejected", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    await app.request("/v1/integrations/google_calendar", {
+      method: "PUT",
+      body: JSON.stringify({
+        connected: true,
+        access_token: "calendar-access",
+        refresh_token: null,
+      }),
+    });
+    fetchImpl.mockImplementationOnce(async () => new Response(null, { status: 401 }));
+
+    const response = await app.request("/v1/calendar/google/events");
+    expect(response.status).toBe(401);
+    expect(
+      database.database
+        .prepare(
+          "SELECT connected, access_token_enc, token_expires_at FROM cf_google_calendar_integrations WHERE uid = ?",
+        )
+        .get("calendar-user"),
+    ).toEqual({
+      connected: 0,
+      access_token_enc: null,
+      token_expires_at: null,
+    });
+    expect(
+      database.database
+        .prepare(
+          "SELECT connected, reauth_required, has_access_token, reauth_reason FROM cf_user_calendar_onboarding WHERE uid = ?",
+        )
+        .get("calendar-user"),
+    ).toEqual({
+      connected: 0,
+      reauth_required: 1,
+      has_access_token: 0,
+      reauth_reason: "token_expired",
+    });
   });
 
   it("creates a Calendar event through the legacy-compatible tool envelope", async () => {

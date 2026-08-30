@@ -219,6 +219,45 @@ async function readCalendar(env: JobsEnv, uid: string) {
     .first<CalendarRow>();
 }
 
+type CalendarOnboardingProjection = {
+  connected: boolean;
+  hasAccessToken: boolean;
+  reauthRequired: boolean;
+  reauthReason: string | null;
+};
+
+async function syncOnboardingProjection(
+  env: JobsEnv,
+  uid: string,
+  projection: CalendarOnboardingProjection,
+  now: number,
+) {
+  const current = await env.APP_DB.prepare(
+    "SELECT onboarding_skipped, created_at FROM cf_user_calendar_onboarding WHERE uid = ?",
+  )
+    .bind(uid)
+    .first<{ onboarding_skipped: number; created_at: number }>();
+  await env.APP_DB.prepare(
+    "INSERT INTO cf_user_calendar_onboarding " +
+      "(uid, connected, onboarding_skipped, reauth_required, has_access_token, reauth_reason, created_at, updated_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+      "ON CONFLICT(uid) DO UPDATE SET connected = excluded.connected, " +
+      "reauth_required = excluded.reauth_required, has_access_token = excluded.has_access_token, " +
+      "reauth_reason = excluded.reauth_reason, updated_at = excluded.updated_at",
+  )
+    .bind(
+      uid,
+      projection.connected ? 1 : 0,
+      current?.onboarding_skipped ?? 0,
+      projection.reauthRequired ? 1 : 0,
+      projection.hasAccessToken ? 1 : 0,
+      projection.reauthReason,
+      current?.created_at ?? now,
+      now,
+    )
+    .run();
+}
+
 async function readJsonObject(c: JobsContext) {
   const declaredLength = Number(c.req.header("content-length") || "0");
   if (
@@ -312,6 +351,17 @@ async function saveCalendar(
       now,
     )
     .run();
+  await syncOnboardingProjection(
+    env,
+    uid,
+    {
+      connected,
+      hasAccessToken: connected && Boolean(accessTokenEnc),
+      reauthRequired: false,
+      reauthReason: null,
+    },
+    now,
+  );
 }
 
 async function providerJson(response: Response) {
@@ -439,6 +489,17 @@ async function storeGoogleConnection(
       now,
     )
     .run();
+  await syncOnboardingProjection(
+    env,
+    uid,
+    {
+      connected: true,
+      hasAccessToken: true,
+      reauthRequired: false,
+      reauthReason: null,
+    },
+    now,
+  );
 }
 
 async function refreshCredentials(
@@ -447,6 +508,23 @@ async function refreshCredentials(
   dependencies?: GoogleCalendarDependencies,
 ) {
   if (!credentials.refreshToken) {
+    const now = nowSeconds(dependencies);
+    await env.APP_DB.prepare(
+      "UPDATE cf_google_calendar_integrations SET connected = 0, access_token_enc = NULL, token_expires_at = NULL, updated_at = ? WHERE uid = ?",
+    )
+      .bind(now, credentials.row.uid)
+      .run();
+    await syncOnboardingProjection(
+      env,
+      credentials.row.uid,
+      {
+        connected: false,
+        hasAccessToken: false,
+        reauthRequired: true,
+        reauthReason: "token_expired",
+      },
+      now,
+    );
     throw new GoogleCalendarError(
       401,
       "Google Calendar authentication expired. Please reconnect.",
@@ -472,10 +550,21 @@ async function refreshCredentials(
   if (!response.ok || typeof accessToken !== "string" || !accessToken) {
     if (response.status === 400 || response.status === 401) {
       await env.APP_DB.prepare(
-        "UPDATE cf_google_calendar_integrations SET connected = 0, updated_at = ? WHERE uid = ?",
+        "UPDATE cf_google_calendar_integrations SET connected = 0, access_token_enc = NULL, token_expires_at = NULL, updated_at = ? WHERE uid = ?",
       )
         .bind(nowSeconds(dependencies), credentials.row.uid)
         .run();
+      await syncOnboardingProjection(
+        env,
+        credentials.row.uid,
+        {
+          connected: false,
+          hasAccessToken: false,
+          reauthRequired: true,
+          reauthReason: "token_expired",
+        },
+        nowSeconds(dependencies),
+      );
     }
     throw new GoogleCalendarError(
       401,
@@ -503,6 +592,17 @@ async function refreshCredentials(
       credentials.row.uid,
     )
     .run();
+  await syncOnboardingProjection(
+    env,
+    credentials.row.uid,
+    {
+      connected: true,
+      hasAccessToken: true,
+      reauthRequired: false,
+      reauthReason: null,
+    },
+    nowSeconds(dependencies),
+  );
   return {
     row: {
       ...credentials.row,
@@ -582,10 +682,21 @@ async function requestCalendar(
   if (response.status !== 401) return response;
   await response.arrayBuffer();
   await env.APP_DB.prepare(
-    "UPDATE cf_google_calendar_integrations SET connected = 0, updated_at = ? WHERE uid = ?",
+    "UPDATE cf_google_calendar_integrations SET connected = 0, access_token_enc = NULL, token_expires_at = NULL, updated_at = ? WHERE uid = ?",
   )
     .bind(nowSeconds(dependencies), uid)
     .run();
+  await syncOnboardingProjection(
+    env,
+    uid,
+    {
+      connected: false,
+      hasAccessToken: false,
+      reauthRequired: true,
+      reauthReason: "token_expired",
+    },
+    nowSeconds(dependencies),
+  );
   throw new GoogleCalendarError(
     401,
     "Google Calendar authentication expired. Please reconnect.",
@@ -1319,6 +1430,17 @@ export function registerGoogleCalendarRoutes(
       if (result.meta?.changes !== 1) {
         return c.json({ detail: "Integration not found" }, 404);
       }
+      await syncOnboardingProjection(
+        c.env,
+        context.uid,
+        {
+          connected: false,
+          hasAccessToken: false,
+          reauthRequired: false,
+          reauthReason: null,
+        },
+        nowSeconds(dependencies),
+      );
       return new Response(null, { status: 204 });
     } catch (error) {
       return errorResponse(c, error);
