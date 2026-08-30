@@ -376,8 +376,10 @@ printf '%s' "$GOOGLE_CALENDAR_CLIENT_ID" | npx wrangler secret put GOOGLE_CALEND
 printf '%s' "$GOOGLE_CALENDAR_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CALENDAR_CLIENT_SECRET --name omi-cf-jobs-staging
 # If reusing the Better Auth OAuth client, provision the same pair on the Jobs
 # Worker explicitly; service bindings do not share secrets between Workers.
-printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler secret put GOOGLE_CLIENT_ID --name omi-cf-jobs-staging
-printf '%s' "$GOOGLE_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CLIENT_SECRET --name omi-cf-jobs-staging
+if [ -n "${GOOGLE_CLIENT_ID:-}" ] && [ -n "${GOOGLE_CLIENT_SECRET:-}" ]; then
+  printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler secret put GOOGLE_CLIENT_ID --name omi-cf-jobs-staging
+  printf '%s' "$GOOGLE_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CLIENT_SECRET --name omi-cf-jobs-staging
+fi
 printf '%s' "$GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET" | npx wrangler secret put GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET --name omi-cf-jobs-staging
 ```
 
