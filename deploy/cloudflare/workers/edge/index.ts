@@ -818,6 +818,7 @@ app.get("/v1/integrations/google_calendar/oauth-url", proxyAuthenticatedJobs);
 app.post("/v1/app/thumbnails", proxyAuthenticatedJobs);
 app.get("/v1/integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
 app.get("/v1/calendar/google/events", proxyAuthenticatedJobs);
+app.get("/v1/personas/twitter/profile", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 
 const proxyAuthenticatedCore = async (

@@ -73,6 +73,7 @@ import {
   registerGoogleCalendarRoutes,
 } from "./google-calendar";
 import { registerAdminNotificationRoutes } from "./admin-notification";
+import { registerTwitterProfileRoutes } from "./twitter-profile";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -136,6 +137,7 @@ registerXConnectorRoutes(app, requestContext);
 registerTaskIntegrationRoutes(app, requestContext);
 registerGoogleCalendarRoutes(app, requestContext);
 registerAdminNotificationRoutes(app);
+registerTwitterProfileRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.

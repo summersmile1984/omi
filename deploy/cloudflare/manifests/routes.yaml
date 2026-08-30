@@ -161,6 +161,16 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v1/personas/twitter/profile
+    owner: jobs
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [worker-secrets, d1-app, external-rapidapi]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /v1/personas/{persona_id}
     owner: api-core
     runtime: python-worker
