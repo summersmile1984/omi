@@ -811,6 +811,16 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v1/notification
+    owner: jobs
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: admin-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/integrations/notification
     owner: api-core
     runtime: python-worker

@@ -939,6 +939,36 @@ describe("edge gateway", () => {
     }
   });
 
+  it("routes the team notification contract to Jobs without forwarding user auth", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      JOBS: service((request) => {
+        jobsRequests.push(request);
+        return Response.json({ status: "Ok" });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/notification", {
+        method: "POST",
+        headers: {
+          "secret-key": "admin-secret",
+          authorization: "Bearer user-token",
+          cookie: "session=untrusted",
+          "x-omi-auth-context": "untrusted-context",
+        },
+        body: JSON.stringify({ uid: "user-1", title: "Title", body: "Body" }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(jobsRequests).toHaveLength(1);
+    expect(new URL(jobsRequests[0].url).pathname).toBe("/v1/notification");
+    expect(jobsRequests[0].headers.get("secret-key")).toBe("admin-secret");
+    expect(jobsRequests[0].headers.get("authorization")).toBeNull();
+    expect(jobsRequests[0].headers.get("cookie")).toBeNull();
+    expect(jobsRequests[0].headers.get("x-omi-auth-context")).toBeNull();
+  });
+
   it("keeps share previews public and signs the Better Auth display name for share creation", async () => {
     const coreRequests: Request[] = [];
     const env = {
@@ -982,9 +1012,7 @@ describe("edge gateway", () => {
       expect(share.status).toBe(200);
     }
 
-    expect(
-      coreRequests.map((request) => new URL(request.url).pathname),
-    ).toEqual([
+    expect(coreRequests.map((request) => new URL(request.url).pathname)).toEqual([
       "/v1/action-items/shared/public-token",
       "/v2/messages/shared/public-token",
       "/v1/conversations/shared-conversation/shared",
@@ -1658,7 +1686,9 @@ describe("edge gateway", () => {
       expect(response.status).toBe(200);
     }
     expect(coreRequests).toHaveLength(2);
-    expect(coreRequests.map((request) => new URL(request.url).pathname)).toEqual([
+    expect(
+      coreRequests.map((request) => new URL(request.url).pathname),
+    ).toEqual([
       "/v1/cf/conversations",
       "/v1/conversations/conversation-1/suggested-apps",
     ]);

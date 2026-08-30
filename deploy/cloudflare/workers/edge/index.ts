@@ -432,6 +432,7 @@ app.get("/v1/summary-app-ids", proxyPublicJobs);
 app.post("/v1/summary-app-ids/:appId", proxyPublicJobs);
 app.delete("/v1/summary-app-ids/:appId", proxyPublicJobs);
 app.post("/v1/integrations/notification", proxyIntegrationCore);
+app.post("/v1/notification", proxyPublicJobs);
 app.post("/v2/integrations/:app_id/user/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/user/memories", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/memories", proxyIntegrationCore);

@@ -72,6 +72,7 @@ import {
   cleanupExpiredGoogleCalendarOAuthStates,
   registerGoogleCalendarRoutes,
 } from "./google-calendar";
+import { registerAdminNotificationRoutes } from "./admin-notification";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -134,6 +135,7 @@ registerDeveloperApiKeyRoutes(app, requestContext);
 registerXConnectorRoutes(app, requestContext);
 registerTaskIntegrationRoutes(app, requestContext);
 registerGoogleCalendarRoutes(app, requestContext);
+registerAdminNotificationRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.

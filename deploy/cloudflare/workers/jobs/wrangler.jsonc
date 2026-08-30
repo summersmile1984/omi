@@ -16,7 +16,7 @@
     "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
     "WORKERS_AI_X_MEMORY_MODEL": "@cf/meta/llama-3.2-3b-instruct",
   },
-  // Secrets provisioned with `wrangler secret put`: APPS_ADMIN_KEY,
+  // Secrets provisioned with `wrangler secret put`: ADMIN_KEY, APPS_ADMIN_KEY,
   // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets,
   // X_OAUTH_CLIENT_ID, X_OAUTH_CLIENT_SECRET, X_OAUTH_REDIRECT_URI,
   // X_TOKEN_ENCRYPTION_SECRET, TASK_INTEGRATION_TOKEN_ENCRYPTION_SECRET,

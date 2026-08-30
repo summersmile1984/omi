@@ -317,6 +317,8 @@ cf_dev_issuer_secret="$(openssl rand -base64 48)"
 printf '%s' "$cf_dev_issuer_secret" | npx wrangler secret put AUTH_DEV_ISSUER_SECRET --name omi-cf-auth-staging
 # Independent staging-only credential for the Fair Use support/admin routes.
 printf '%s' "$FAIR_USE_ADMIN_KEY" | npx wrangler secret put FAIR_USE_ADMIN_KEY --name omi-cf-api-core-staging
+# Team-only notification API key; configure on the Jobs Worker only.
+printf '%s' "$ADMIN_KEY" | npx wrangler secret put ADMIN_KEY --name omi-cf-jobs-staging
 # Independent staging-only credential for app tester and moderation routes.
 printf '%s' "$APPS_ADMIN_KEY" | npx wrangler secret put APPS_ADMIN_KEY --name omi-cf-jobs-staging
 # Required only when an isolated staging account has a registered FCM device.
@@ -1622,6 +1624,11 @@ trigger, time-window, priority, and per-user `show_once` filtering are evaluated
 in the Worker. Admin routes require the `ANNOUNCEMENTS_ADMIN_KEY` Worker secret
 and remain staging-only until content backfill, key rotation, and rollback
 evidence are approved; records can be loaded with the whitelisted backfill tool.
+
+The team-only `POST /v1/notification` contract now writes a bounded request to
+the Jobs Worker's shared leased FCM outbox. It requires the independent
+`ADMIN_KEY` secret and never sends directly from the request; scheduled Jobs
+delivery preserves retry, invalid-token cleanup, and account-deletion fences.
 
 The app catalog metadata routes (`/v1/app-categories`,
 `/v1/app/proactive-notification-scopes`, `/v1/app-capabilities`, and

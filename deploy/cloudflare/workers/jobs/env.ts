@@ -55,6 +55,7 @@ export type JobsEnv = {
   WORKERS_AI_VECTOR_MODEL?: string;
   WORKERS_AI_X_MEMORY_MODEL?: string;
   FIREBASE_SERVICE_ACCOUNT_JSON?: string;
+  ADMIN_KEY?: string;
   APPS_ADMIN_KEY?: string;
   X_OAUTH_CLIENT_ID?: string;
   X_OAUTH_CLIENT_SECRET?: string;
