@@ -133,6 +133,14 @@ writes use updated-at compare-and-set; the legacy-disabled speech-training path
 is not revived, while bulk assignment remains legacy-owned because it still
 extracts person speech samples asynchronously.
 
+`followup_routes.py` owns Joan's follow-up-question read contract. The legacy
+`DELETE /v1/joan/{memory_id}/followup-question` shape is preserved while the
+Worker reads only the uid-scoped D1 transcript projection, returns an empty
+result for short transcripts, and generates longer prompts with Workers AI.
+Missing, in-progress, and locked conversation boundaries retain the legacy
+status responses; malformed transcripts and unavailable model calls fail
+closed without a legacy provider fallback.
+
 `tool_routes.py` owns the first-party conversation, transcript-chunk, memory,
 and action-item REST tools. Lists read the canonical uid-scoped D1 rows;
 semantic searches embed with the Workers AI binding, use tenant-namespaced

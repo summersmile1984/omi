@@ -2736,6 +2736,16 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/joan/:memoryId/followup-question
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, workers-ai-binding]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: POST
     path: /v1/staged-tasks/migrate
     owner: api-core

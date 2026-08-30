@@ -1127,6 +1127,7 @@ app.get(
 app.get("/v1/conversations/:conversationId/recording", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/events", proxyAuthenticatedCore);
 app.patch("/v1/conversations/:conversationId/summary", proxyAuthenticatedCore);
+app.delete("/v1/joan/:memoryId/followup-question", proxyAuthenticatedCore);
 app.delete(
   "/v1/conversations/:conversationId/calendar-event",
   proxyAuthenticatedCore,
