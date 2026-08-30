@@ -3087,6 +3087,12 @@ describe("edge gateway", () => {
       ["POST", "/v1/dev/user/action-items/batch", '{"action_items":[]}'],
       ["PATCH", "/v1/dev/user/action-items/action-1", '{"completed":true}'],
       ["DELETE", "/v1/dev/user/action-items/action-1"],
+      ["POST", "/v1/dev/user/conversations", '{"text":"Worker native"}'],
+      [
+        "POST",
+        "/v1/dev/user/conversations/from-segments",
+        '{"transcript_segments":[{"text":"Worker native","start":0,"end":1}]}',
+      ],
       [
         "PATCH",
         "/v1/dev/user/conversations/conversation-1",

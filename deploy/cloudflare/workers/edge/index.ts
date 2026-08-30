@@ -425,6 +425,8 @@ app.patch("/v1/dev/user/action-items/:action_item_id", proxyDeveloperCore);
 app.delete("/v1/dev/user/action-items/:action_item_id", proxyDeveloperCore);
 app.get("/v1/dev/user/folders", proxyDeveloperCore);
 app.get("/v1/dev/user/conversations", proxyDeveloperCore);
+app.post("/v1/dev/user/conversations/from-segments", proxyDeveloperCore);
+app.post("/v1/dev/user/conversations", proxyDeveloperCore);
 app.get("/v1/dev/user/conversations/:conversationId", proxyDeveloperCore);
 app.patch("/v1/dev/user/conversations/:conversation_id", proxyDeveloperCore);
 app.delete("/v1/dev/user/conversations/:conversation_id", proxyDeveloperCore);

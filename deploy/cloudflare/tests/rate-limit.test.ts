@@ -238,6 +238,8 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v1/dev/user/action-items/batch", "action_items:write"],
       ["PATCH", "/v1/dev/user/action-items/action-1", "action_items:write"],
       ["DELETE", "/v1/dev/user/action-items/action-1", "action_items:write"],
+      ["POST", "/v1/dev/user/conversations", "dev:conversations"],
+      ["POST", "/v1/dev/user/conversations/from-segments", "dev:conversations"],
       [
         "PATCH",
         "/v1/dev/user/conversations/conversation-1",

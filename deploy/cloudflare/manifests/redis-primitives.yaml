@@ -390,6 +390,8 @@ families:
       - PATCH /v1/dev/user/memories/{memory_id}
       - POST /v1/dev/user/action-items
       - POST /v1/dev/user/action-items/batch
+      - POST /v1/dev/user/conversations
+      - POST /v1/dev/user/conversations/from-segments
       - POST /v1/dev/user/goals
       - POST /v1/dev/user/memories
       - POST /v1/dev/user/memories/batch

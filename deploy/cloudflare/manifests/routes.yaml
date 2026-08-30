@@ -674,6 +674,30 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/dev/user/conversations
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, queue-jobs, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: dev:conversations
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/dev/user/conversations/from-segments
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, queue-jobs, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: dev:conversations
+    protocol: http
+    idempotency: optional-client-session-id
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/dev/user/conversations/{conversation_id}
     owner: api-core

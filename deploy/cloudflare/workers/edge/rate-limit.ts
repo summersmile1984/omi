@@ -118,6 +118,14 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     "POST /v1/dev/user/action-items/batch",
     EDGE_RATE_LIMIT_POLICIES["action_items:write"],
   ],
+  [
+    "POST /v1/dev/user/conversations",
+    EDGE_RATE_LIMIT_POLICIES["dev:conversations"],
+  ],
+  [
+    "POST /v1/dev/user/conversations/from-segments",
+    EDGE_RATE_LIMIT_POLICIES["dev:conversations"],
+  ],
   ["POST /v1/dev/user/goals", EDGE_RATE_LIMIT_POLICIES["dev:goals_write"]],
   ["DELETE /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:delete_all"]],
   [

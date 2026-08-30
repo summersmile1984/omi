@@ -35,6 +35,10 @@ from developer_mutation_routes import (  # noqa: E402
     update_developer_goal_progress,
     update_developer_memory,
 )
+from developer_conversation_create_routes import (  # noqa: E402
+    create_developer_conversation,
+    create_developer_conversation_from_segments,
+)
 
 RAW_SECRET = "0123456789abcdef0123456789abcdef"
 AUTHORIZATION = f"Bearer omi_dev_{RAW_SECRET}"
@@ -129,6 +133,29 @@ class FakeAi:
         if "messages" in payload:
             return {"response": {"category": "system"}}
         return {"data": [[0.01] * 1024 for _ in payload["text"]]}
+
+
+class ConversationCreationAi:
+    def __init__(self, *, valid=True, discarded=False):
+        self.calls = []
+        self.valid = valid
+        self.discarded = discarded
+
+    async def run(self, model, payload):
+        self.calls.append((model, payload))
+        if not self.valid:
+            return {"response": {"title": "Incomplete"}}
+        return {
+            "response": {
+                "title": "Cloudflare rollout",
+                "overview": "The team will verify the Worker-native Developer conversation pipeline.",
+                "emoji": "☁️",
+                "category": "technology",
+                "discarded": self.discarded,
+                "action_items": [{"description": "Deploy staging"}, {"description": "Deploy staging"}],
+                "memories": ["The user prefers Cloudflare Workers", "The user prefers Cloudflare Workers"],
+            }
+        }
 
 
 class FakeVectorIndex:
@@ -709,4 +736,194 @@ def test_developer_goal_mutations_preserve_legacy_projection_progress_and_scope_
     assert denied.status_code == 403
     assert read_only_database.connection.execute("SELECT COUNT(*) FROM cf_goals").fetchone()[0] == 0
     read_only_database.connection.close()
+    database.connection.close()
+
+
+def _enable_creation_fanout(database):
+    database.connection.execute(
+        "INSERT INTO cf_user_developer_webhooks "
+        "(uid, webhook_type, url, enabled, created_at, updated_at) "
+        "VALUES ('developer-user', 'memory_created', 'https://developer.example/hook?token=kept', 1, 1, 1)"
+    )
+    database.connection.execute(
+        "INSERT INTO cf_app_catalog "
+        "(id, approved, status, disabled, data_json, updated_at) VALUES (?, 1, 'approved', 0, ?, 1)",
+        (
+            "fanout-app",
+            json.dumps(
+                {
+                    "id": "fanout-app",
+                    "name": "Fanout",
+                    "capabilities": ["external_integration"],
+                    "external_integration": {
+                        "triggers_on": "memory_creation",
+                        "webhook_url": "https://app.example/hook",
+                    },
+                    "is_paid": False,
+                }
+            ),
+        ),
+    )
+    database.connection.execute(
+        "INSERT INTO cf_user_enabled_apps (uid, app_id, created_at) " "VALUES ('developer-user', 'fanout-app', 1)"
+    )
+    database.connection.commit()
+
+
+def test_developer_text_conversation_creation_commits_all_worker_native_effects():
+    database, env = environment(scopes=READ_SCOPES + ["conversations:write"])
+    env.AI = ConversationCreationAi()
+    _enable_creation_fanout(database)
+
+    result = run(
+        create_developer_conversation(
+            FakeRequest(
+                env,
+                body={
+                    "text": "We should deploy the Cloudflare staging service and validate it.",
+                    "text_source": "message",
+                    "text_source_spec": "test-suite",
+                    "started_at": "2026-08-30T10:00:00Z",
+                    "finished_at": "2026-08-30T10:05:00Z",
+                    "language": "en",
+                    "geolocation": {"latitude": 31.2304, "longitude": 121.4737},
+                },
+            )
+        )
+    )
+
+    assert result["status"] == "completed"
+    assert result["discarded"] is False
+    conversation_id = result["id"]
+    conversation = database.connection.execute(
+        "SELECT status, source, structured_json, transcript_segments_json, external_data_json "
+        "FROM cf_conversations WHERE uid = 'developer-user' AND id = ?",
+        (conversation_id,),
+    ).fetchone()
+    assert tuple(conversation[:2]) == ("completed", "external_integration")
+    assert json.loads(conversation[2])["title"] == "Cloudflare rollout"
+    assert json.loads(conversation[3])[0]["text"].startswith("We should deploy")
+    assert json.loads(conversation[4])["developer_api"]["text_source"] == "message"
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 1
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 1
+    usage = database.connection.execute(
+        "SELECT transcription_seconds, memories_created FROM cf_usage_sources "
+        "WHERE uid = 'developer-user' AND source_kind = 'conversation' AND source_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    assert tuple(usage) == (300, 0)
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_vector_projection_outbox").fetchone()[0] == 3
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_integration_webhook_outbox").fetchone()[0] == 1
+    developer_webhook = database.connection.execute(
+        "SELECT webhook_url, payload_json FROM cf_developer_webhook_outbox"
+    ).fetchone()
+    assert developer_webhook[0] == "https://developer.example/hook?token=kept"
+    assert json.loads(developer_webhook[1])["id"] == conversation_id
+    assert {message["payload"]["sourceKind"] for message in env.JOBS.messages} == {
+        "conversation",
+        "action_item",
+        "memory",
+    }
+    database.connection.close()
+
+
+def test_developer_from_segments_is_deterministic_idempotent_and_meeting_eligible():
+    database, env = environment(scopes=READ_SCOPES + ["conversations:write"])
+    env.AI = ConversationCreationAi()
+    body = {
+        "transcript_segments": [
+            {"text": "Opening", "speaker": "SPEAKER_00", "is_user": True, "start": 0, "end": 35},
+            {"text": "Cloudflare plan", "speaker": "SPEAKER_01", "start": 35, "end": 75},
+        ],
+        "client_conversation_id": "stable-session",
+        "source": "desktop",
+        "started_at": "2026-08-30T10:00:00Z",
+        "finished_at": "2026-08-30T10:10:00Z",
+        "conversation_role": "meeting",
+        "conversation_finalization_reason": "meeting_ended",
+    }
+
+    first = run(create_developer_conversation_from_segments(FakeRequest(env, body=body)))
+    second = run(create_developer_conversation_from_segments(FakeRequest(env, body=body)))
+
+    expected_id = str(
+        __import__("uuid").uuid5(
+            __import__("uuid").UUID("fb2f1f36-3c84-47a4-9c62-b3f6fdb3fd13"),
+            "developer-user\0stable-session",
+        )
+    )
+    assert first == second
+    assert first == {
+        "id": expected_id,
+        "status": "completed",
+        "discarded": False,
+        "meeting_treatment_eligible": True,
+    }
+    assert len(env.AI.calls) == 1
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_conversations").fetchone()[0] == 1
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 1
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 1
+    database.connection.close()
+
+
+def test_developer_conversation_creation_fails_closed_and_removes_processing_claim():
+    database, env = environment(scopes=READ_SCOPES + ["conversations:write"])
+    env.AI = ConversationCreationAi(valid=False)
+    body = {
+        "transcript_segments": [{"text": "Retryable", "start": 0, "end": 4}],
+        "client_session_id": "failed-session",
+    }
+
+    failed = run(create_developer_conversation_from_segments(FakeRequest(env, body=body)))
+    assert failed.status_code == 502
+    assert response_body(failed) == {"error": "conversation processing unavailable"}
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_conversations").fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 0
+
+    env.AI = ConversationCreationAi()
+    database.connection.execute("DROP TABLE cf_vector_projection_outbox")
+    database.connection.commit()
+    unavailable = run(create_developer_conversation_from_segments(FakeRequest(env, body=body)))
+    assert unavailable.status_code == 503
+    assert response_body(unavailable) == {"error": "conversations unavailable"}
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_conversations").fetchone()[0] == 0
+    database.connection.close()
+
+
+def test_developer_discarded_conversation_skips_derived_rows_but_keeps_creation_webhook():
+    database, env = environment(scopes=READ_SCOPES + ["conversations:write"])
+    env.AI = ConversationCreationAi(discarded=True)
+    _enable_creation_fanout(database)
+
+    result = run(create_developer_conversation(FakeRequest(env, body={"text": "background noise"})))
+
+    assert result["discarded"] is True
+    assert database.connection.execute("SELECT discarded FROM cf_conversations").fetchone()[0] == 1
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_integration_webhook_outbox").fetchone()[0] == 0
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_developer_webhook_outbox").fetchone()[0] == 1
+    projection = database.connection.execute(
+        "SELECT source_kind, operation FROM cf_vector_projection_outbox"
+    ).fetchone()
+    assert tuple(projection) == ("conversation", "delete")
+    database.connection.close()
+
+
+def test_developer_conversation_creation_validates_scope_and_segment_intervals():
+    read_only_database, read_only_env = environment()
+    denied = run(create_developer_conversation(FakeRequest(read_only_env, body={"text": "Must not persist"})))
+    assert denied.status_code == 403
+    assert read_only_database.connection.execute("SELECT COUNT(*) FROM cf_conversations").fetchone()[0] == 0
+    read_only_database.connection.close()
+
+    database, env = environment(scopes=READ_SCOPES + ["conversations:write"])
+    invalid = run(
+        create_developer_conversation_from_segments(
+            FakeRequest(env, body={"transcript_segments": [{"text": "Bad", "start": 2, "end": 1}]})
+        )
+    )
+    assert invalid.status_code == 422
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_conversations").fetchone()[0] == 0
     database.connection.close()

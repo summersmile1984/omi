@@ -58,6 +58,7 @@ import { registerAppApiKeyRoutes } from "./app-api-keys";
 import { registerMcpApiKeyRoutes } from "./mcp-api-keys";
 import { registerDeveloperApiKeyRoutes } from "./developer-api-keys";
 import { drainIntegrationWebhooks } from "./integration-webhooks";
+import { drainDeveloperWebhooks } from "./developer-webhooks";
 import {
   processVectorProjectionMessage,
   reconcileVectorProjections,
@@ -1063,6 +1064,7 @@ export default {
       evaluateFairUseBatch(env),
       drainNotifications(env),
       drainIntegrationWebhooks(env, now),
+      drainDeveloperWebhooks(env, now),
       reconcileAccountDeletions(env, now),
       reconcileRecordingDeletions(env, now),
       reconcileAppDeletions(env, now),

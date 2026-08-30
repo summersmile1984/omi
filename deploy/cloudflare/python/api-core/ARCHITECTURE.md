@@ -150,9 +150,16 @@ conversation-metadata, and goal write scopes into the existing D1 owners. It
 keeps the public Developer limits and response projections, rejects locked
 rows, preserves goal progress history, and publishes Queue projection hints
 for vector-backed records without turning a Developer key into an internal
-user session. Developer conversation creation remains outside this owner until
-its summary, memory, app, webhook, usage, and vector side effects move as one
-boundary.
+user session. `developer_conversation_create_routes.py` owns both Developer
+conversation-creation shapes. Workers AI produces the summary, action items,
+memories, and discard decision; one D1 batch commits the completed conversation,
+derived records, usage, Vectorize outboxes, installed-app fanout, and the legacy
+`memory_created` Developer webhook outbox. Stable client session IDs use the
+released UUIDv5 namespace and a 15-minute processing claim, so exact retries do
+not repeat model or downstream work and failed enrichment removes its claim.
+Jobs leases and delivers Developer webhooks without exposing response bodies or
+allowing private-network targets. No legacy process, Firestore, Redis, or local
+model participates in this creation boundary.
 
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional
