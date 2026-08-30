@@ -798,6 +798,15 @@ export async function runSmoke({
     unauthenticatedIntegrationStatus,
     401,
   );
+  const unauthenticatedIntegrationOAuth = await request(
+    fetchImpl,
+    `${base}/v1/integrations/gmail/oauth-url`,
+  );
+  expectStatus(
+    "unauthenticated integration OAuth URL",
+    unauthenticatedIntegrationOAuth,
+    401,
+  );
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, {
@@ -1743,6 +1752,7 @@ export async function runSmoke({
     unauthenticatedChatDeferral: unauthenticatedChatDeferral.status,
     unauthenticatedCrispUnread: unauthenticatedCrispUnread.status,
     unauthenticatedIntegrationStatus: unauthenticatedIntegrationStatus.status,
+    unauthenticatedIntegrationOAuth: unauthenticatedIntegrationOAuth.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
     chatFirstValidation: chatFirstValidation.status,

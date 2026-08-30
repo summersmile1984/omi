@@ -945,7 +945,10 @@ describe("edge gateway", () => {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
-          return Response.json({ uid: "integration-user", authority: "better-auth" });
+          return Response.json({
+            uid: "integration-user",
+            authority: "better-auth",
+          });
         }
         return Response.json({ status: "ok" });
       }),
@@ -964,18 +967,35 @@ describe("edge gateway", () => {
       env,
     );
     const calendar = await edge.fetch(
-      new Request("https://edge.test/v1/integrations/google_calendar", { headers }),
+      new Request("https://edge.test/v1/integrations/google_calendar", {
+        headers,
+      }),
+      env,
+    );
+    const gmailOAuth = await edge.fetch(
+      new Request("https://edge.test/v1/integrations/gmail/oauth-url", {
+        headers,
+      }),
       env,
     );
 
     expect(generic.status).toBe(200);
     expect(calendar.status).toBe(200);
+    expect(gmailOAuth.status).toBe(200);
     expect(coreRequests).toHaveLength(1);
-    expect(jobRequests).toHaveLength(1);
-    expect(new URL(coreRequests[0].url).pathname).toBe("/v1/integrations/todoist");
-    expect(new URL(jobRequests[0].url).pathname).toBe("/v1/integrations/google_calendar");
+    expect(jobRequests).toHaveLength(2);
+    expect(new URL(coreRequests[0].url).pathname).toBe(
+      "/v1/integrations/todoist",
+    );
+    expect(new URL(jobRequests[0].url).pathname).toBe(
+      "/v1/integrations/google_calendar",
+    );
+    expect(new URL(jobRequests[1].url).pathname).toBe(
+      "/v1/integrations/gmail/oauth-url",
+    );
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
     expect(jobRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(jobRequests[1].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
   it("routes the team notification contract to Jobs without forwarding user auth", async () => {

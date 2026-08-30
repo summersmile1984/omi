@@ -3,6 +3,14 @@ import type { SignedAuthContext } from "../shared/auth-context";
 import type { JobsEnv } from "./env";
 
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar";
+const GOOGLE_CALENDAR_OAUTH_ALIASES = new Set([
+  "google_calendar",
+  "gmail",
+  "google_mail",
+  "email",
+  "contacts",
+  "google_contacts",
+]);
 const TOKEN_SENTINEL = "configured";
 const OAUTH_STATE_TTL_SECONDS = 10 * 60;
 const TOKEN_REFRESH_BUFFER_SECONDS = 5 * 60;
@@ -1356,9 +1364,22 @@ export function registerGoogleCalendarRoutes(
     oauthCallback(c, dependencies),
   );
 
-  app.get("/v1/integrations/google_calendar/oauth-url", async (c) => {
+  const issueOAuthUrl = async (
+    c: JobsContext,
+    requestedAppKey = "google_calendar",
+  ) => {
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
+    const normalizedAppKey = requestedAppKey
+      .trim()
+      .toLowerCase()
+      .replace(/-/g, "_");
+    if (!GOOGLE_CALENDAR_OAUTH_ALIASES.has(normalizedAppKey)) {
+      return c.json(
+        { detail: `Unsupported integration: ${requestedAppKey}` },
+        400,
+      );
+    }
     try {
       const configuration = googleConfiguration(c.env);
       const state = randomToken(32);
@@ -1386,7 +1407,19 @@ export function registerGoogleCalendarRoutes(
     } catch (error) {
       return errorResponse(c, error);
     }
-  });
+  };
+
+  app.get("/v1/integrations/google_calendar/oauth-url", (c) =>
+    issueOAuthUrl(c),
+  );
+
+  // The legacy integration router exposed one provider-capability URL. Keep
+  // that contract for Google-derived aliases while storing the state in the
+  // Worker-owned D1 OAuth table. The exact Calendar route above remains the
+  // canonical match for google_calendar.
+  app.get("/v1/integrations/:appKey/oauth-url", (c) =>
+    issueOAuthUrl(c, c.req.param("appKey")),
+  );
 
   app.get("/v1/integrations/google_calendar", async (c) => {
     const context = await requestContext(c);

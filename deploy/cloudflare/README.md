@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 443 already match
-  Cloudflare staging owners and 133 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 444 already match
+  Cloudflare staging owners and 132 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1059,6 +1059,12 @@ reported as a bounded `502` without logging credentials or message data.
 Cloudflare Calendar/task-integration projections. It returns only the
 uid-scoped boolean (including Gmail's Calendar grant scope) and treats unknown
 integration keys as disconnected without exposing provider credentials.
+
+`GET /v1/integrations/{app_key}/oauth-url` is also staging-owned by the Jobs
+Worker for the Google Calendar grant and its derived aliases (`gmail`,
+`google_mail`, `email`, `contacts`, and `google_contacts`). It stores a hashed,
+single-use state in D1 and preserves the legacy `400` response for unsupported
+providers; the exact `google_calendar` route remains the canonical match.
 
 `npm run backfill:d1 -- --input export.ndjson` generates reviewed D1-ingestion
 SQL from newline-delimited records. Every record must name one of the

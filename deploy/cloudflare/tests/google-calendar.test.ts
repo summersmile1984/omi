@@ -417,6 +417,32 @@ describe("Google Calendar Worker routes", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("keeps Google-derived integration OAuth aliases on the Worker grant", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+
+    const gmail = await app.request("/v1/integrations/gmail/oauth-url");
+    expect(gmail.status).toBe(200);
+    const authUrl = new URL(
+      (await gmail.json<{ auth_url: string }>()).auth_url,
+    );
+    expect(authUrl.searchParams.get("scope")).toBe(
+      "https://www.googleapis.com/auth/calendar",
+    );
+    expect(
+      database.database
+        .prepare("SELECT uid, expires_at FROM cf_google_calendar_oauth_states")
+        .get(),
+    ).toEqual({ uid: "calendar-user", expires_at: 1_600 });
+
+    expect((await app.request("/v1/integrations/whoop/oauth-url")).status).toBe(
+      400,
+    );
+    expect(
+      (await app.request("/v1/integrations/gmail/oauth-url", {}, false)).status,
+    ).toBe(401);
+  });
+
   it("refreshes an expired token and returns normalized timed/all-day events", async () => {
     const { env, calls, fetchImpl } = environment();
     let now = 1_000;
@@ -610,7 +636,9 @@ describe("Google Calendar Worker routes", () => {
         refresh_token: null,
       }),
     });
-    fetchImpl.mockImplementationOnce(async () => new Response(null, { status: 401 }));
+    fetchImpl.mockImplementationOnce(
+      async () => new Response(null, { status: 401 }),
+    );
 
     const response = await app.request("/v1/calendar/google/events");
     expect(response.status).toBe(401);

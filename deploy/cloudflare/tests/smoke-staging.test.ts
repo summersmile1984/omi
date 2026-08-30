@@ -306,6 +306,11 @@ function publicCompatibilityRoute(
     }
     return Response.json({ connected: false, app_key: "todoist" });
   }
+  if (url.includes("/v1/integrations/gmail/oauth-url")) {
+    return new Response(null, {
+      status: new Headers(init?.headers).has("authorization") ? 503 : 401,
+    });
+  }
   if (url.endsWith("/v1/trends")) {
     return Response.json([]);
   }
@@ -652,6 +657,7 @@ describe("staging smoke helpers", () => {
       unauthenticatedChatDeferral: 401,
       unauthenticatedCrispUnread: 401,
       unauthenticatedIntegrationStatus: 401,
+      unauthenticatedIntegrationOAuth: 401,
       authenticatedProbe: 200,
       accountCutover: 200,
       chatFirstValidation: 200,
@@ -779,7 +785,7 @@ describe("staging smoke helpers", () => {
       voiceMessageEmptyAudio: 400,
       mobileTtsValidation: 400,
     });
-    expect(calls).toHaveLength(162);
+    expect(calls).toHaveLength(163);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
