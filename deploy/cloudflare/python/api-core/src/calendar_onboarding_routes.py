@@ -1,8 +1,8 @@
 """D1-backed calendar onboarding state for the isolated Cloudflare profile.
 
-Only onboarding flags are projected here. Google OAuth tokens, event reads,
-refresh, and calendar writes remain owned by the legacy integration service.
-The projection is staging-only until existing integration rows are backfilled.
+This module owns the uid-scoped onboarding projection. Google OAuth tokens,
+event reads, refresh, and calendar writes are owned by the Jobs Worker, which
+updates this projection whenever the connection state changes.
 """
 
 from __future__ import annotations
