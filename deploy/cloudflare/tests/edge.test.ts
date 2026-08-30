@@ -969,6 +969,54 @@ describe("edge gateway", () => {
     expect(jobsRequests[0].headers.get("x-omi-auth-context")).toBeNull();
   });
 
+  it("routes retired staged-task compatibility endpoints to API Core", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({
+            uid: "compat-user",
+            authority: "better-auth",
+          });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+
+    for (const path of [
+      "/v1/staged-tasks/migrate",
+      "/v1/staged-tasks/migrate-conversation-items?limit=50&cursor=page-1",
+      "/v1/action-items/restore-legacy-conversation-items",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method: "POST",
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env,
+      );
+      expect(response.status, path).toBe(200);
+    }
+
+    expect(coreRequests).toHaveLength(3);
+    expect(coreRequests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/v1/staged-tasks/migrate",
+      "/v1/staged-tasks/migrate-conversation-items",
+      "/v1/action-items/restore-legacy-conversation-items",
+    ]);
+    for (const request of coreRequests) {
+      expect(request.headers.get("x-omi-auth-context")).toBeTruthy();
+      expect(request.headers.get("authorization")).toBeNull();
+    }
+  });
+
   it("keeps share previews public and signs the Better Auth display name for share creation", async () => {
     const coreRequests: Request[] = [];
     const env = {

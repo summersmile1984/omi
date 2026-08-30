@@ -771,6 +771,11 @@ GET  /v2/integrations/google-calendar/callback
 GET  /v1/calendar/google/events
 POST /v1/tools/calendar-events
                               Edge → Jobs → encrypted D1 grant + Google Calendar API
+POST /v1/staged-tasks/migrate
+POST /v1/staged-tasks/migrate-conversation-items
+POST /v1/action-items/restore-legacy-conversation-items
+                              Edge → Python API Core → authenticated inert compatibility
+                              responses; retired Firestore migration behavior is not revived
 GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
 GET  /v2/apps/capability/{capability_id}/grouped
                               Edge → Python API Core → capability/category D1 projection

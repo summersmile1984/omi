@@ -1189,6 +1189,12 @@ app.get("/v1/action-items/pending-sync", proxyAuthenticatedCore);
 app.patch("/v1/action-items/sync-batch", proxyAuthenticatedCore);
 app.post("/v1/action-items/share", proxyAuthenticatedCore);
 app.post("/v1/action-items/accept", proxyAuthenticatedCore);
+app.post(
+  "/v1/action-items/restore-legacy-conversation-items",
+  proxyAuthenticatedCore,
+);
+app.post("/v1/staged-tasks/migrate", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/migrate-conversation-items", proxyAuthenticatedCore);
 app.get("/v1/tools/conversations", proxyAuthenticatedCore);
 app.post("/v1/tools/conversations/search", proxyAuthenticatedCore);
 app.post("/v1/tools/conversations/search-chunks", proxyAuthenticatedCore);
