@@ -27,6 +27,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 120,
     windowSeconds: 3600,
   },
+  "chat:initial": {
+    name: "chat:initial",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
   "conversations:search": {
     name: "conversations:search",
     maxRequests: 60,
@@ -158,6 +163,13 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ["POST /v1/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v1/tts/synthesize-workers-ai", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v2/messages", EDGE_RATE_LIMIT_POLICIES["chat:send_message"]],
+  ["POST /v1/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
+  ["POST /v2/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
+  [
+    "POST /v2/chat/initial-message",
+    EDGE_RATE_LIMIT_POLICIES["chat:initial"],
+  ],
+  ["POST /v2/chat/generate-title", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
   ["POST /v1/stt/transcribe", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/stt/transcribe-workers-ai", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/stt/transcribe-async", STT_TRANSCRIBE_RATE_LIMIT],

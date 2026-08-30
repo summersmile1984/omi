@@ -10,7 +10,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import chat_generation_routes  # noqa: E402
-from chat_generation_routes import chat_messages  # noqa: E402
+from chat_generation_routes import (  # noqa: E402
+    chat_messages,
+    create_initial_message,
+    create_session_initial_message,
+    generate_session_title,
+)
 from chat_quota import reserve_chat_question  # noqa: E402
 
 
@@ -51,7 +56,9 @@ class FakeDb:
             "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);"
         )
         for name in (
+            "0010_user_assistant_profiles.sql",
             "0032_conversations.sql",
+            "0035_app_catalog.sql",
             "0037_memories.sql",
             "0042_chat_messages.sql",
             "0046_account_usage.sql",
@@ -60,6 +67,10 @@ class FakeDb:
             "0056_llm_usage_daily.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
+        self.connection.executescript(
+            "ALTER TABLE cf_app_catalog ADD COLUMN owner_uid TEXT;"
+            "CREATE TABLE cf_app_testers (uid TEXT PRIMARY KEY, added_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);"
+        )
         self.fail_batch = fail_batch
         self.fail_quota_run = fail_quota_run
 
@@ -239,6 +250,191 @@ def test_default_text_chat_uses_workers_ai_persists_one_exchange_and_emits_legac
         "model": "@cf/test/chat",
         "settled": 1,
     }
+
+
+def test_session_initial_message_uses_d1_context_and_persists_one_ai_turn():
+    secret = "chat-secret"
+    db = FakeDb()
+    now = int(__import__("time").time())
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions "
+        "(uid, id, title, preview, created_at, updated_at, app_id, message_count, starred) "
+        "VALUES ('chat-user', 'session-1', 'New Chat', NULL, ?, ?, NULL, 1, 0)",
+        (now, now),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_chat_messages (uid, id, app_id, created_at, message_json) VALUES (?, ?, NULL, ?, ?)",
+        stored("chat-user", "prior", 1, "human", "We were planning Friday's deployment."),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_memories "
+        "(uid,id,content,category,visibility,tags_json,subject_attribution,object_entity_ids_json,qualifiers_json,"
+        "uncertainty_reasons_json,memory_tier,valid_at,created_at,updated_at) "
+        "VALUES ('chat-user','memory-1','The user deploys on Fridays.','manual','private','[]','user','[]','{}','[]',"
+        "'long_term',?,?,?)",
+        (now, now, now),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_user_ai_profiles (uid,profile_text,created_at,updated_at) "
+        "VALUES ('chat-user','- The user maintains Cloudflare infrastructure.',?,?)",
+        (now, now),
+    )
+    db.connection.commit()
+    ai = FakeAi(result={"response": "Ready for Friday's next deployment check?"})
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret, "WORKERS_AI_CHAT_MODEL": "@cf/test/chat"},
+    )()
+
+    result = asyncio.run(
+        create_session_initial_message(FakeRequest(env, signed_headers(secret), body={"session_id": "session-1"}))
+    )
+
+    assert result["message"] == "Ready for Friday's next deployment check?"
+    assert isinstance(result["message_id"], str)
+    prompt = ai.calls[0][1]["messages"]
+    assert "maintains Cloudflare infrastructure" in prompt[1]["content"]
+    assert "deploys on Fridays" in prompt[1]["content"]
+    assert prompt[-2] == {"role": "user", "content": "We were planning Friday's deployment."}
+    persisted = db.connection.execute(
+        "SELECT message_json FROM cf_chat_messages WHERE uid = 'chat-user' AND id = ?", (result["message_id"],)
+    ).fetchone()
+    message = json.loads(persisted[0])
+    assert message["sender"] == "ai"
+    assert message["chat_session_id"] == "session-1"
+    session = db.connection.execute(
+        "SELECT message_count, preview FROM cf_chat_sessions WHERE uid = 'chat-user' AND id = 'session-1'"
+    ).fetchone()
+    assert dict(session) == {"message_count": 2, "preview": "Ready for Friday's next deployment check?"}
+
+
+def test_initial_message_alias_creates_app_session_and_honors_owned_persona_prompt():
+    secret = "chat-secret"
+    db = FakeDb()
+    now = int(__import__("time").time())
+    db.connection.execute(
+        "INSERT INTO cf_app_catalog "
+        "(id,approved,status,disabled,is_popular,installs,rating_count,data_json,updated_at,owner_uid) "
+        "VALUES ('persona-1',0,'pending',0,0,0,0,?,?,?)",
+        (
+            json.dumps(
+                {
+                    "id": "persona-1",
+                    "name": "Friday Coach",
+                    "private": True,
+                    "capabilities": ["persona"],
+                    "persona_prompt": "Challenge the user to ship reliable infrastructure.",
+                }
+            ),
+            now,
+            "chat-user",
+        ),
+    )
+    db.connection.commit()
+    ai = FakeAi(result={"response": "ready to make friday boring?"})
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    result = asyncio.run(
+        create_initial_message(FakeRequest(env, signed_headers(secret), query={"app_id": "persona-1"}))
+    )
+
+    assert result["text"] == "ready to make friday boring?"
+    assert result["app_id"] == "persona-1"
+    assert result["plugin_id"] == "persona-1"
+    assert result["chat_session_id"] == result["session_id"]
+    assert "Challenge the user" in ai.calls[0][1]["messages"][0]["content"]
+    assert "provocative question" in ai.calls[0][1]["messages"][-1]["content"]
+    session = db.connection.execute(
+        "SELECT app_id, message_count FROM cf_chat_sessions WHERE uid = 'chat-user'"
+    ).fetchone()
+    assert dict(session) == {"app_id": "persona-1", "message_count": 1}
+
+
+def test_initial_message_validation_missing_session_and_provider_failure_do_not_write():
+    secret = "chat-secret"
+    db = FakeDb()
+    ai = FakeAi(error=RuntimeError("provider details"))
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+
+    invalid = asyncio.run(create_session_initial_message(FakeRequest(env, headers, body={"session_id": ""})))
+    missing = asyncio.run(create_session_initial_message(FakeRequest(env, headers, body={"session_id": "missing"})))
+    provider = asyncio.run(create_initial_message(FakeRequest(env, headers)))
+
+    assert invalid.status_code == 422
+    assert missing.status_code == 404
+    assert json.loads(missing.body) == {"detail": "Chat session not found"}
+    assert provider.status_code == 502
+    assert b"provider details" not in provider.body
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 0
+
+
+def test_initial_message_d1_batch_failure_returns_retry_without_partial_write():
+    secret = "chat-secret"
+    db = FakeDb(fail_batch=True)
+    ai = FakeAi(result={"response": "Ready"})
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    response = asyncio.run(create_initial_message(FakeRequest(env, signed_headers(secret))))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "chat history unavailable"}
+    assert len(ai.calls) == 1
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 0
+
+
+def test_generate_title_updates_only_the_callers_session_and_uses_empty_fallback():
+    secret = "chat-secret"
+    db = FakeDb()
+    now = int(__import__("time").time())
+    db.connection.executemany(
+        "INSERT INTO cf_chat_sessions "
+        "(uid,id,title,preview,created_at,updated_at,app_id,message_count,starred) "
+        "VALUES (?, 'shared-session', 'New Chat', NULL, ?, ?, NULL, 0, 0)",
+        [("chat-user", now, now), ("other-user", now, now)],
+    )
+    db.connection.commit()
+    ai = FakeAi(result={"response": '"Cloudflare Migration Review"'})
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    result = asyncio.run(
+        generate_session_title(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={
+                    "session_id": "shared-session",
+                    "messages": [
+                        {"sender": "human", "text": "Review the Cloudflare migration"},
+                        {"sender": "ai", "text": "Let's inspect the staging evidence"},
+                    ],
+                },
+            )
+        )
+    )
+
+    assert result == {"title": "Cloudflare Migration Review"}
+    titles = db.connection.execute("SELECT uid, title FROM cf_chat_sessions ORDER BY uid").fetchall()
+    assert [tuple(row) for row in titles] == [
+        ("chat-user", "Cloudflare Migration Review"),
+        ("other-user", "New Chat"),
+    ]
+    assert "Review the Cloudflare migration" in ai.calls[0][1]["messages"][1]["content"]
+
+    ai.result = {"response": "  "}
+    fallback = asyncio.run(
+        generate_session_title(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"session_id": "shared-session", "messages": [{"sender": "human", "text": "Hi"}]},
+            )
+        )
+    )
+    assert fallback == {"title": "New Chat"}
 
 
 def test_chat_rejects_unsupported_modes_before_model_or_history_mutation():

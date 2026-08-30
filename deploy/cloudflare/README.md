@@ -76,8 +76,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 379 already match a
-  Cloudflare staging owner and 198 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 396 already match
+  Cloudflare staging owners and 181 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -778,6 +778,11 @@ GET  /v2/messages/shared/{token}
                               Edge → Python API Core → D1 30-day chat share
 POST /v2/messages              Edge → Python API AI → Workers AI or validated
                               user OpenAI API + D1 text-chat exchange
+POST /v1/initial-message
+POST /v2/initial-message
+POST /v2/chat/initial-message
+POST /v2/chat/generate-title
+                              Edge → Python API AI → Workers AI + D1 chat helper
 GET/POST /v1/action-items      Edge → Python API Core → D1
 GET  /v1/action-items/ids      Edge → Python API Core → D1
 GET  /v1/action-items/search   Edge → Python API Core → Workers AI + Vectorize + D1
@@ -1842,6 +1847,15 @@ exchange rows are committed; a provider or D1 failure emits no partial
 persisted exchange. The Worker emits one compatibility `data:` frame followed
 by the legacy base64 `done:` message; native provider-token streaming remains a
 later latency qualification.
+
+The v1/v2 initial-message aliases and the v2 session initial-message/title
+helpers also run on the native Workers AI binding. Initial messages assemble a
+bounded prompt from the caller's D1 AI profile, visible reviewed memories, the
+last five messages, and an accessible app/persona prompt when supplied. The AI
+message and session preview/count update commit in one D1 batch only after a
+valid model response. Title generation uses at most ten bounded messages and
+updates only the caller's session. All four helper routes retain the legacy
+`chat:initial` limit of 60 requests per hour and require no local model service.
 
 `/v1/embeddings-workers-ai` is an additive text-embedding seam backed by the
 native `@cf/baai/bge-base-en-v1.5` binding. It accepts a bounded string or batch

@@ -218,6 +218,10 @@ describe("SharedRateLimitDurableObject", () => {
   it("maps every Cloudflare-owned request shape to the legacy policy", () => {
     const cases = [
       ["POST", "/v2/messages", "chat:send_message"],
+      ["POST", "/v1/initial-message", "chat:initial"],
+      ["POST", "/v2/initial-message", "chat:initial"],
+      ["POST", "/v2/chat/initial-message", "chat:initial"],
+      ["POST", "/v2/chat/generate-title", "chat:initial"],
       ["POST", "/v1/stt/transcribe", "stt:transcribe"],
       ["POST", "/v1/stt/transcribe-async", "stt:transcribe"],
       ["POST", "/v1/stt/transcribe-workers-ai", "stt:transcribe"],

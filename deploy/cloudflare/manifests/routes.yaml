@@ -4277,3 +4277,51 @@ routes:
     idempotency: none
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/initial-message
+    owner: api-ai
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: chat:initial
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/initial-message
+    owner: api-ai
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: chat:initial
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/chat/initial-message
+    owner: api-ai
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: chat:initial
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/chat/generate-title
+    owner: api-ai
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: chat:initial
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy

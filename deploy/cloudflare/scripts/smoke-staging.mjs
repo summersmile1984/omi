@@ -323,6 +323,56 @@ async function exerciseProfileAndGoalAi(fetchImpl, base, authHeaders) {
   };
 }
 
+async function exerciseChatHelpers(fetchImpl, base, authHeaders) {
+  const probes = [
+    [
+      "session initial-message validation",
+      "/v2/chat/initial-message",
+      { session_id: "" },
+      422,
+    ],
+    [
+      "session title validation",
+      "/v2/chat/generate-title",
+      { session_id: "cf-smoke", messages: [] },
+      422,
+    ],
+    [
+      "session initial-message missing-row",
+      "/v2/chat/initial-message",
+      { session_id: "cf-smoke-missing" },
+      404,
+    ],
+  ];
+  const statuses = {};
+  for (const [label, path, body, expectedStatus] of probes) {
+    const response = await request(fetchImpl, `${base}${path}`, {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expectStatus(label, response, expectedStatus);
+    statuses[label.replaceAll(" ", "_").replaceAll("-", "_")] =
+      response.status;
+  }
+
+  const oversizedAppId = "x".repeat(201);
+  for (const [label, path] of [
+    ["v1 initial-message app boundary", "/v1/initial-message?app_id="],
+    ["v2 initial-message app boundary", "/v2/initial-message?plugin_id="],
+  ]) {
+    const response = await request(
+      fetchImpl,
+      `${base}${path}${oversizedAppId}`,
+      { method: "POST", headers: authHeaders },
+    );
+    expectStatus(label, response, 400);
+    statuses[label.replaceAll(" ", "_").replaceAll("-", "_")] =
+      response.status;
+  }
+  return statuses;
+}
+
 async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
   const preflight = await requestJson(
     fetchImpl,
@@ -786,6 +836,7 @@ export async function runSmoke({
     base,
     authHeaders,
   );
+  const chatHelpers = await exerciseChatHelpers(fetchImpl, base, authHeaders);
   const conversationFromSegmentsValidation = await request(
     fetchImpl,
     `${base}/v1/conversations/from-segments`,
@@ -1663,6 +1714,7 @@ export async function runSmoke({
     ...knowledgeGraph,
     ...returnOnlySynthesis,
     ...profileAndGoalAi,
+    ...chatHelpers,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
     stripeRefreshOwnership: stripeRefreshOwnership.status,

@@ -54,6 +54,8 @@ function retrievalToolBoundary(
   url: string,
   init?: RequestInit,
 ): Response | null {
+  const chatHelper = chatHelperBoundary(url, init);
+  if (chatHelper) return chatHelper;
   const path = new URL(url).pathname;
   if (path === "/v1/knowledge-graph") {
     return init?.method === "DELETE"
@@ -210,6 +212,27 @@ function creatorPaymentBoundary(
     url.endsWith("/v1/payment-methods/status")
   ) {
     return new Response(null, { status: 200 });
+  }
+  return null;
+}
+
+function chatHelperBoundary(url: string, init?: RequestInit): Response | null {
+  if (init?.method !== "POST") return null;
+  const parsed = new URL(url);
+  if (
+    parsed.pathname === "/v1/initial-message" ||
+    parsed.pathname === "/v2/initial-message"
+  ) {
+    return new Response(null, { status: 400 });
+  }
+  if (parsed.pathname === "/v2/chat/generate-title") {
+    return new Response(null, { status: 422 });
+  }
+  if (parsed.pathname === "/v2/chat/initial-message") {
+    const body = JSON.parse(String(init.body));
+    return new Response(null, {
+      status: body.session_id ? 404 : 422,
+    });
   }
   return null;
 }
@@ -601,6 +624,11 @@ describe("staging smoke helpers", () => {
       goalSuggestion: 200,
       currentGoalAdvice: 200,
       missingGoalAdvice: 404,
+      session_initial_message_validation: 422,
+      session_title_validation: 422,
+      session_initial_message_missing_row: 404,
+      v1_initial_message_app_boundary: 400,
+      v2_initial_message_app_boundary: 400,
       conversationFromSegmentsValidation: 422,
       webProxyConversations: 200,
       webProxyEnabledApps: 200,
@@ -692,7 +720,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(147);
+    expect(calls).toHaveLength(152);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

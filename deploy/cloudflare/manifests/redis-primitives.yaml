@@ -360,6 +360,7 @@ families:
     migration_state: staging-partial
     migrated_policies:
       - action_items:write
+      - chat:initial
       - chat:send_message
       - conversations:from-segments
       - conversations:search
@@ -412,6 +413,7 @@ families:
       - POST /v1/dev/user/memories/batch
       - POST /v1/knowledge-graph/extract
       - POST /v1/knowledge-graph/rebuild
+      - POST /v1/initial-message
       - POST /v1/memories/extract
       - POST /v1/connectors/synthesize
       - POST /v1/conversations/topic
@@ -430,6 +432,9 @@ families:
       - POST /v1/tools/memories/search
       - POST /v1/tts/synthesize
       - POST /v1/tts/synthesize-workers-ai
+      - POST /v2/chat/generate-title
+      - POST /v2/chat/initial-message
+      - POST /v2/initial-message
       - POST /v2/messages
       - POST /v2/voice-message/transcribe
       - DELETE /v3/memories
