@@ -48,6 +48,7 @@
 - Calendar staging 闭环已实测：onboarding skip/reset、Jobs integration PUT/GET/DELETE 均成功，连接后 API Core 状态为 `connected`，断开后恢复 `not_started`；staging D1 未残留 integration、OAuth state 或 reconnect-required 记录。
 - Public Trends staging 闭环已实测：远端执行 `0082_trends.sql` 后，`GET /v1/trends` 经 Edge → Python API Core → D1 返回 HTTP 200、`cache-control: public, max-age=60` 和空数组；无趋势数据时保持 fail-closed，不回退到 Firestore。
 - Chat-first staging 边界已覆盖：`POST /v1/chat-first/blocks/validate` 经 Edge → Python API Core → D1 做 uid、account-generation 和实体能力校验，未认证为 401，合法 task block 返回 retry-stable opaque id，失配/缺失实体 fail-closed。
+- Chat-first live 验证：staging 临时 Better Auth 账号创建 task 后，正确 generation 经真实 Edge → API Core 返回 `200 accepted` 和稳定 `cfb_…` ID；generation `0/2` 均返回 `generation_mismatch`，随后公开删号完成产品/Auth 清理，仅保留预期 tombstone。
 - `POST /v2/messages` 当前返回明确的 `503 provider_not_configured`，这是聊天 provider 尚未配置的已知能力缺口，不是路由 404。
 
 ## 发布前必须补齐
