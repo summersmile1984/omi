@@ -258,12 +258,14 @@ function environment(
     authHangDelete?: boolean;
     r2?: Record<string, Uint8Array>;
     conversationR2?: Record<string, Uint8Array>;
+    speechProfileR2?: Record<string, Uint8Array>;
     stripeSecretKey?: string;
   } = {},
 ) {
   const database = new SqliteD1();
   const bucket = fakeBucket(options.r2);
   const conversationBucket = fakeBucket(options.conversationR2);
+  const speechProfileBucket = fakeBucket(options.speechProfileR2);
   const queue = fakeQueue({ fail: options.queueFail });
   const auth = fakeAuth({
     failDelete: options.authFailDelete,
@@ -273,12 +275,21 @@ function environment(
     APP_DB: database as unknown as D1Database,
     ASSETS: bucket.binding,
     CONVERSATION_RECORDINGS: conversationBucket.binding,
+    SPEECH_PROFILES: speechProfileBucket.binding,
     JOBS: queue.binding,
     AUTH: auth.binding,
     INTERNAL_ASSERTION_SECRET: "account-deletion-test-secret",
     STRIPE_SECRET_KEY: options.stripeSecretKey,
   } as JobsEnv;
-  return { database, bucket, conversationBucket, queue, auth, env };
+  return {
+    database,
+    bucket,
+    conversationBucket,
+    speechProfileBucket,
+    queue,
+    auth,
+    env,
+  };
 }
 
 async function deletionHeaders(uid: string, path: string) {
@@ -404,6 +415,11 @@ describe("Cloudflare account deletion workflow", () => {
       conversationR2: {
         "deletion-user/recording.wav": new Uint8Array([7, 8, 9]),
       },
+      speechProfileR2: {
+        "deletion-user/speech_profile.wav": new Uint8Array([10, 11, 12]),
+        "deletion-user/additional_profile_recordings/memory-1_segment_0.wav":
+          new Uint8Array([13, 14, 15]),
+      },
     });
     try {
       seedCloudflareAccount(state.database);
@@ -428,6 +444,7 @@ describe("Cloudflare account deletion workflow", () => {
       expect(processed).toBeLessThan(10);
       expect(state.bucket.objects.size).toBe(0);
       expect(state.conversationBucket.objects.size).toBe(0);
+      expect(state.speechProfileBucket.objects.size).toBe(0);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_worker_probe WHERE uid = ?",

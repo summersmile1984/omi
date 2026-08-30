@@ -29,6 +29,7 @@ const ALLOWED_PRIMITIVE_TARGETS = new Set([
   "d1",
   "queue",
   "workflow",
+  "r2-object-metadata",
   "none",
 ]);
 const ALLOWED_PRIMITIVE_STATES = new Set([

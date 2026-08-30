@@ -9,6 +9,7 @@ import {
   ACCOUNT_DELETION_D1_SURFACES,
   ACCOUNT_DELETION_D1_PURGE_SURFACES,
   ACCOUNT_DELETION_R2_PREFIX_PATTERNS,
+  ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS,
   readAccountProductResidual,
 } from "../workers/jobs/account-deletion-residual";
 import jobs from "../workers/jobs/index";
@@ -67,6 +68,8 @@ function residualEnvironment(
   options: {
     d1Count?: number;
     r2Prefix?: string;
+    conversationR2Prefix?: string;
+    speechProfileR2Prefix?: string;
     malformed?: boolean;
   } = {},
 ) {
@@ -109,8 +112,18 @@ function residualEnvironment(
   const conversationBucket = {
     list: vi.fn(async ({ prefix }: { prefix: string }) => ({
       objects:
-        prefix === options.r2Prefix
+        prefix === options.conversationR2Prefix
           ? [{ key: `${prefix}object`, version: "1", size: 1 }]
+          : [],
+      truncated: false,
+      delimitedPrefixes: [],
+    })),
+  } as unknown as R2Bucket;
+  const speechProfileBucket = {
+    list: vi.fn(async ({ prefix }: { prefix: string }) => ({
+      objects:
+        prefix === options.speechProfileR2Prefix
+          ? [{ key: `${prefix}speech_profile.wav`, version: "1", size: 1 }]
           : [],
       truncated: false,
       delimitedPrefixes: [],
@@ -121,10 +134,12 @@ function residualEnvironment(
       APP_DB: database,
       ASSETS: bucket,
       CONVERSATION_RECORDINGS: conversationBucket,
+      SPEECH_PROFILES: speechProfileBucket,
     },
     statements,
     bucket,
     conversationBucket,
+    speechProfileBucket,
   };
 }
 
@@ -235,6 +250,9 @@ describe("Cloudflare account-deletion residual", () => {
     expect(empty.conversationBucket.list).toHaveBeenCalledTimes(
       ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS.length,
     );
+    expect(empty.speechProfileBucket.list).toHaveBeenCalledTimes(
+      ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.length,
+    );
 
     const populatedPrefix = "cf-sync/account-user/";
     const populated = residualEnvironment({
@@ -248,6 +266,20 @@ describe("Cloudflare account-deletion residual", () => {
     expect(result.empty).toBe(false);
     expect(result.d1["cf_account_cutover.uid"]).toBe(2);
     expect(result.r2[populatedPrefix]).toBe(1);
+
+    const isolatedPrefix = "account-user/";
+    const isolated = residualEnvironment({
+      conversationR2Prefix: isolatedPrefix,
+    });
+    const isolatedResult = await readAccountProductResidual(
+      isolated.env,
+      "account-user",
+    );
+    expect(isolatedResult.empty).toBe(false);
+    expect(isolatedResult.r2[`conversation-recordings:${isolatedPrefix}`]).toBe(
+      1,
+    );
+    expect(isolatedResult.r2[`speech-profiles:${isolatedPrefix}`]).toBe(0);
   });
 
   it("fails closed for invalid identities and incomplete D1 batches", async () => {

@@ -1911,6 +1911,59 @@ describe("edge gateway", () => {
     expect(coreRequests).toHaveLength(2);
   });
 
+  it("authenticates speech-profile APIs while allowing signed profile playback", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return new Response("profile", { status: 200 });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v3/speech-profile"),
+      env,
+    );
+    expect(unauthenticated.status).toBe(401);
+    expect(coreRequests).toHaveLength(0);
+
+    const profile = await edge.fetch(
+      new Request("https://edge.test/v3/speech-profile", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+    expect(profile.status).toBe(200);
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+
+    const playback = await edge.fetch(
+      new Request(
+        "https://edge.test/v3/speech-profile/audio?token=core-signed",
+        {
+          headers: {
+            authorization: "Bearer untrusted-client-token",
+            "x-omi-auth-context": "untrusted-context",
+            "x-omi-internal-signature": "untrusted-signature",
+          },
+        },
+      ),
+      env,
+    );
+    expect(playback.status).toBe(200);
+    expect(coreRequests[1].headers.get("authorization")).toBeNull();
+    expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeNull();
+    expect(coreRequests[1].headers.get("x-omi-internal-signature")).toBeNull();
+  });
+
   it("routes legacy audio precache to Jobs as its single rebuild owner", async () => {
     const jobRequests: Request[] = [];
     const corePaths: string[] = [];

@@ -230,6 +230,14 @@ function ensureResources() {
       "create",
       "omi-cf-conversation-recordings-staging",
     ]);
+  if (!r2Exists("omi-cf-speech-profiles-staging"))
+    run("npx", [
+      "wrangler",
+      "r2",
+      "bucket",
+      "create",
+      "omi-cf-speech-profiles-staging",
+    ]);
   if (!queueExists("omi-cf-jobs-staging"))
     run("npx", ["wrangler", "queues", "create", "omi-cf-jobs-staging"]);
   if (!queueExists("omi-cf-jobs-dlq-staging"))

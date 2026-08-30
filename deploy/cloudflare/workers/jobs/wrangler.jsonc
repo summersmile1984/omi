@@ -34,6 +34,10 @@
       "binding": "CONVERSATION_RECORDINGS",
       "bucket_name": "omi-cf-conversation-recordings-staging",
     },
+    {
+      "binding": "SPEECH_PROFILES",
+      "bucket_name": "omi-cf-speech-profiles-staging",
+    },
   ],
   "ai": { "binding": "AI" },
   "vectorize": [

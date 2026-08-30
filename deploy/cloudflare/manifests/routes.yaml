@@ -4338,3 +4338,75 @@ routes:
     idempotency: none
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v3/speech-profile
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [r2-speech-profiles]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v4/speech-profile
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [r2-speech-profiles, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v3/speech-profile/status
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [r2-speech-profiles, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v3/upload-audio
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [r2-speech-profiles, workers-ai-binding, worker-secrets]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v3/speech-profile/expand
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [r2-speech-profiles, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v3/speech-profile/expand
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [r2-speech-profiles]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v3/speech-profile/audio
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: signed-link
+    dependencies: [r2-speech-profiles, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-disable

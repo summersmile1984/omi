@@ -174,6 +174,10 @@ export const ACCOUNT_DELETION_R2_PREFIX_PATTERNS = Object.freeze([
 export const ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS =
   Object.freeze(["{uid}/"] as const);
 
+export const ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS = Object.freeze([
+  "{uid}/",
+] as const);
+
 export type AccountProductResidual = Readonly<{
   uid: string;
   empty: boolean;
@@ -202,7 +206,10 @@ function r2Prefix(pattern: string, uid: string): string {
 }
 
 export async function readAccountProductResidual(
-  env: Pick<JobsEnv, "APP_DB" | "ASSETS" | "CONVERSATION_RECORDINGS">,
+  env: Pick<
+    JobsEnv,
+    "APP_DB" | "ASSETS" | "CONVERSATION_RECORDINGS" | "SPEECH_PROFILES"
+  >,
   uid: string,
 ): Promise<AccountProductResidual> {
   if (!validAccountDeletionUid(uid)) {
@@ -229,7 +236,23 @@ export async function readAccountProductResidual(
             prefix,
             limit: 1,
           });
-          return [prefix, listed.objects.length > 0 ? 1 : 0] as const;
+          return [
+            `conversation-recordings:${prefix}`,
+            listed.objects.length > 0 ? 1 : 0,
+          ] as const;
+        },
+      ),
+      ...ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.map(
+        async (pattern) => {
+          const prefix = r2Prefix(pattern, uid);
+          const listed = await env.SPEECH_PROFILES.list({
+            prefix,
+            limit: 1,
+          });
+          return [
+            `speech-profiles:${prefix}`,
+            listed.objects.length > 0 ? 1 : 0,
+          ] as const;
         },
       ),
     ]),

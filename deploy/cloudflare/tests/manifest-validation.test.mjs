@@ -53,6 +53,20 @@ describe("Cloudflare migration manifests", () => {
       vectorNamespaces: vector.namespaces.length,
       r2Namespaces: r2.namespaces.length,
     });
+    expect(
+      redis.families.find((family) => family.id === "speech-profile-duration"),
+    ).toMatchObject({
+      target: "r2-object-metadata",
+      target_owner: "api-core",
+      migration_state: "staging-owned",
+    });
+    expect(
+      r2.namespaces.find((namespace) => namespace.id === "speech-profiles"),
+    ).toMatchObject({
+      target_binding: "SPEECH_PROFILES",
+      migration_state: "staging-owned",
+      data_classification: "biometric-sensitive",
+    });
   });
 
   it("requires every registered backend route to retain an explicit migration owner", async () => {

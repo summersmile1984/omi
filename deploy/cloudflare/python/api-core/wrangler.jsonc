@@ -50,6 +50,10 @@
       "binding": "CONVERSATION_RECORDINGS",
       "bucket_name": "omi-cf-conversation-recordings-staging",
     },
+    {
+      "binding": "SPEECH_PROFILES",
+      "bucket_name": "omi-cf-speech-profiles-staging",
+    },
   ],
   "vars": {
     "ACCOUNT_CUTOVER_PROFILE": "isolated-staging",
@@ -63,6 +67,7 @@
     "TRIAL_PAYWALL_ENABLED": "false",
     "TRIAL_LENGTH_SECONDS": "259200",
     "WORKERS_AI_INTEGRATION_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "WORKERS_AI_ASR_MODEL": "@cf/openai/whisper-large-v3-turbo",
     "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
   },
 }

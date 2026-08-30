@@ -28,6 +28,7 @@ export type JobsEnv = {
   APP_DB: D1Database;
   ASSETS: R2Bucket;
   CONVERSATION_RECORDINGS: R2Bucket;
+  SPEECH_PROFILES: R2Bucket;
   AI: WorkersAiBinding;
   MEMORY_VECTORS: VectorizeBinding;
   ACTION_ITEM_VECTORS: VectorizeBinding;

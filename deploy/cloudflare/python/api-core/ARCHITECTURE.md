@@ -84,6 +84,16 @@ the same batch. Request-time cleanup is best-effort, while the Jobs Worker
 reconciles due tasks every 15 minutes and never deletes an object still named by
 an active pointer.
 
+`speech_profile_routes.py` owns the isolated staging account's biometric audio
+in the dedicated `SPEECH_PROFILES` R2 bucket. The uploaded 16 kHz PCM WAV and
+its duration metadata land atomically only after Workers AI detects speech;
+there is no filesystem, local VAD/ASR, Redis, Firestore, or dual write. Profile
+and sample keys are uid-scoped, playback URLs are short-lived HMAC assertions
+bound to the exact object, and downloads support one byte range. Account
+deletion purges and residual-scans this bucket. The legacy best-effort hosted
+speaker-embedding write remains a downstream realtime-identification cutover
+boundary and is not treated as part of the upload success response.
+
 Conversation list/detail/search and default deletion share the
 `cf_conversations` authority. D1 FTS5 triggers project only bounded IDs,
 structured metadata, and transcript text into a uid-token-partitioned search

@@ -58,7 +58,8 @@ Resource names are deliberately isolated from existing account resources:
 - Jobs Worker: `omi-cf-jobs-staging`
 - Queues: `omi-cf-jobs-staging`, `omi-cf-sync-fresh-staging`,
   `omi-cf-sync-backfill-staging`, and `omi-cf-jobs-dlq-staging`
-- R2: `omi-cf-staging`
+- R2: `omi-cf-staging`, `omi-cf-conversation-recordings-staging`, and the
+  biometric-isolated `omi-cf-speech-profiles-staging`
 - Durable Objects: Realtime sessions and standalone rate-limit windows
 - Vectorize: `omi-cf-conversations-v2`, `omi-cf-memories-v2`,
   `omi-cf-action-items-v2`, `omi-cf-transcript-chunks-v2`, and
@@ -76,8 +77,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 397 already match
-  Cloudflare staging owners and 180 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 403 already match
+  Cloudflare staging owners and 174 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -612,6 +613,15 @@ GET  /v1/sync/audio/{conversationId}/urls
 GET  /v1/sync/audio/{conversationId}/{audioFileId}
                               uid-scoped R2 playback metadata, one-hour HMAC URLs,
                               authenticated fallback, and single-range WAV streaming
+GET  /v3/speech-profile
+GET  /v4/speech-profile
+GET  /v3/speech-profile/status
+POST /v3/upload-audio
+GET/DELETE /v3/speech-profile/expand
+GET  /v3/speech-profile/audio
+                              isolated biometric R2 profile/sample ownership,
+                              Workers AI speech validation, 60-second signed URLs,
+                              and single-range PCM WAV streaming
 GET  /v1/conversations/{conversationId}/action-items
 GET  /v1/conversations/{conversationId}/action-items/count
                               standalone D1 action-item projection; locked rows fail closed
@@ -1406,6 +1416,21 @@ fenced by `cf_sync_playback_objects`; the metadata CAS promotes the intent,
 while the five-minute Jobs maintenance pass promotes referenced crash survivors
 or deletes stale unreferenced objects after one hour.
 
+The staging speech-profile boundary stores the released mobile client's 16 kHz
+PCM WAV upload and its post-validation duration in one object write to the
+biometric-isolated `SPEECH_PROFILES` R2 bucket. Workers AI Whisper replaces the
+legacy local VAD process as the fail-closed speech-presence gate; malformed,
+silent, shorter-than-five-second, and longer-than-two-minute uploads never
+reach storage. Read and sample-delete operations are uid-prefix-bound, and
+playback uses a 60-second HMAC token bound to the exact uid and object key with
+single-range streaming. Account deletion purges and residual-scans the bucket.
+The legacy best-effort hosted speaker-embedding side effect is not part of the
+upload success contract and remains a downstream realtime-identification
+cutover boundary; staging does not run or bundle a local speaker model.
+Production promotion remains forbidden until the legacy biometric bucket is
+copied, checksummed, frozen, delta-copied, and residual-verified under the R2
+migration inventory.
+
 ### Legacy private-cloud-sync copy and rebuild
 
 The data plane is intentionally split: Cloudflare's managed migration tools
@@ -1909,7 +1934,8 @@ workflow for Better Auth principals that have a completed, destination-bound
 before publishing an opaque job id to Queue. Migration `0052` installs mutation
 fences that reject later inserts and updates for the uid while either the
 intent or the 25-hour deletion tombstone exists. The consumer deletes the
-seven uid-scoped `ASSETS` prefixes and all inventoried product D1 rows in
+eight uid-scoped `ASSETS` prefixes plus the uid prefix in each isolated
+conversation-recording and speech-profile bucket, and all inventoried product D1 rows in
 bounded batches, requires two zero-residual scans separated by 30 seconds,
 then calls the signed Auth delete and validates the zero identity residual in
 that response before transferring the intent to its tombstone. The internal
@@ -1921,7 +1947,7 @@ intents whose initial Queue send failed. Queue and DLQ payloads contain no uid.
 
 The explicit residual inventory covers 73 product identity-bearing column
 sites introduced by all App-D1 migrations, two deletion-control surfaces, and
-the seven R2 prefixes. A schema guard fails whenever a later migration adds an
+ten R2 prefix surfaces across the three buckets. A schema guard fails whenever a later migration adds an
 identity column without extending the inventory. D1 queries are parameterized,
 R2 checks expose presence only, and partial batches, storage errors, or
 non-zero residuals fail closed. For accounts with an Omi plan subscription id,

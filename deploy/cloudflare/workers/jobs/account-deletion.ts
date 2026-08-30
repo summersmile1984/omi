@@ -10,6 +10,7 @@ import {
   ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS,
   ACCOUNT_DELETION_D1_PURGE_SURFACES,
   ACCOUNT_DELETION_R2_PREFIX_PATTERNS,
+  ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS,
   readAccountProductResidual,
   validAccountDeletionUid,
 } from "./account-deletion-residual";
@@ -762,6 +763,10 @@ async function purgeOneR2Page(env: JobsEnv, uid: string): Promise<boolean> {
     ),
     ...ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map((pattern) => ({
       bucket: env.ASSETS,
+      prefix: prefixFor(pattern, uid),
+    })),
+    ...ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.map((pattern) => ({
+      bucket: env.SPEECH_PROFILES,
       prefix: prefixFor(pattern, uid),
     })),
   ];

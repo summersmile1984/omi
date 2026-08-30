@@ -470,6 +470,7 @@ app.get("/v1/stripe/return/:accountId", proxyPublicJobs);
 app.get("/v1/action-items/shared/:token", proxyPublicCore);
 app.get("/v2/messages/shared/:token", proxyPublicCore);
 app.get("/v1/daily-summaries/:summaryId/shared", proxyPublicCore);
+app.get("/v3/speech-profile/audio", proxyPublicCore);
 app.get("/v1/fair-use/case/:case_ref/status", proxyPublicCore);
 app.get("/v1/admin/fair-use/flagged", proxyPublicCore);
 app.get("/v1/admin/fair-use/user/:uid", proxyPublicCore);
@@ -991,6 +992,12 @@ app.post("/v2/sync-local-files", proxyAuthenticatedJobs);
 app.get("/v2/sync-local-files/:jobId", proxyAuthenticatedJobs);
 app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedJobs);
 app.get("/v1/sync/audio/:conversationId/urls", proxyAuthenticatedCore);
+app.get("/v3/speech-profile", proxyAuthenticatedCore);
+app.get("/v4/speech-profile", proxyAuthenticatedCore);
+app.get("/v3/speech-profile/status", proxyAuthenticatedCore);
+app.post("/v3/upload-audio", proxyAuthenticatedCore);
+app.get("/v3/speech-profile/expand", proxyAuthenticatedCore);
+app.delete("/v3/speech-profile/expand", proxyAuthenticatedCore);
 app.get(
   "/v1/sync/audio/:conversationId/:audioFileId",
   proxyConversationAudioDownload,

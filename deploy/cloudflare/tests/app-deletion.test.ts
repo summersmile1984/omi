@@ -164,6 +164,9 @@ function environment(options: { queueFail?: boolean } = {}) {
       CONVERSATION_RECORDINGS: {
         delete: assetDeletes,
       } as unknown as R2Bucket,
+      SPEECH_PROFILES: {
+        delete: assetDeletes,
+      } as unknown as R2Bucket,
       AI: { run: vi.fn() },
       MEMORY_VECTORS: fakeVectorize(),
       ACTION_ITEM_VECTORS: fakeVectorize(),

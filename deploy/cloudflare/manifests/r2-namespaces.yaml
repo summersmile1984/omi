@@ -17,7 +17,7 @@ namespaces:
       ]
     data_classification: biometric-sensitive
     lifecycle: account-lifetime
-    migration_state: inventory-only
+    migration_state: staging-owned
   - id: postprocessing-audio
     legacy_env: BUCKET_POSTPROCESSING
     target_binding: POSTPROCESSING_AUDIO
