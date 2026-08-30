@@ -141,6 +141,12 @@ Missing, in-progress, and locked conversation boundaries retain the legacy
 status responses; malformed transcripts and unavailable model calls fail
 closed without a legacy provider fallback.
 
+`persona_routes.py` owns the authenticated Twitter-persona initial-message
+read. It resolves the persona prompt from the D1 app catalog and uses the
+Workers AI binding for the short greeting; missing persona data returns the
+legacy empty message, while malformed catalog data or model failures fail
+closed without reading Firestore or contacting the legacy LLM.
+
 `tool_routes.py` owns the first-party conversation, transcript-chunk, memory,
 and action-item REST tools. Lists read the canonical uid-scoped D1 rows;
 semantic searches embed with the Workers AI binding, use tenant-namespaced

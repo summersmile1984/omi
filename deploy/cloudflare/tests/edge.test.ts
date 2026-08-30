@@ -2536,6 +2536,37 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes persona initial-message generation to the authenticated core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ message: "Want to chat about something fun?" });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/personas/twitter/initial-message?username=alice", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ message: "Want to chat about something fun?" });
+    expect(coreRequests).toHaveLength(1);
+    expect(new URL(coreRequests[0].url).pathname).toBe(
+      "/v1/personas/twitter/initial-message",
+    );
+    expect(new URL(coreRequests[0].url).search).toBe("?username=alice");
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes canonical conversation recording existence to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {
