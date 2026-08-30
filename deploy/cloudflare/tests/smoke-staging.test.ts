@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertAuthenticatedSmokeConfigured,
+  expectFenceOrRateLimit,
   parseTokenPayload,
   resolveEdgeUrl,
   resolveWebUrl,
@@ -276,6 +277,33 @@ describe("staging smoke helpers", () => {
         CLOUDFLARE_SMOKE_TOKEN_FILE: "/tmp/token.json",
       }),
     ).not.toThrow();
+  });
+
+  it("accepts a bounded rate limit for a destructive fence probe", () => {
+    expect(() =>
+      expectFenceOrRateLimit(
+        "rebuild fence",
+        new Response(null, { status: 409 }),
+        409,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      expectFenceOrRateLimit(
+        "rebuild fence",
+        new Response(null, {
+          status: 429,
+          headers: { "retry-after": "1800" },
+        }),
+        409,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      expectFenceOrRateLimit(
+        "rebuild fence",
+        new Response(null, { status: 429 }),
+        409,
+      ),
+    ).toThrow("bounded HTTP 429");
   });
 
   it("checks public, auth, Web proxy, and Workers AI boundaries", async () => {

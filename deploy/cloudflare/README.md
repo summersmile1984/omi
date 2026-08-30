@@ -240,6 +240,10 @@ an explicit JSON token file:
 CLOUDFLARE_SMOKE_TOKEN_FILE=/tmp/cf-auth-signup.json npm run smoke:staging
 ```
 
+Repeat smoke runs may reach the two-per-hour knowledge-graph rebuild fence.
+That probe accepts a `429` only when Edge returns a numeric `Retry-After`
+header; all non-rate-limited runs must still return the canonical `409` fence.
+
 To deliberately exercise billable native TTS as part of that authenticated
 smoke, add `CLOUDFLARE_SMOKE_NATIVE_TTS=1`; the check asserts a non-empty
 `audio/mpeg` response and is opt-in.

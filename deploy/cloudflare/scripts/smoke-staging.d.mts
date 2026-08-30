@@ -4,6 +4,11 @@ export function parseTokenPayload(raw: string): string;
 export function assertAuthenticatedSmokeConfigured(
   env?: Record<string, string | undefined>,
 ): void;
+export function expectFenceOrRateLimit(
+  label: string,
+  response: Response,
+  expected: number,
+): void;
 export function runSmoke(options?: {
   edgeUrl?: string;
   webUrl?: string;

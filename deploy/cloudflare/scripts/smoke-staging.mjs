@@ -100,6 +100,15 @@ function expectStatusIn(label, response, expected) {
   }
 }
 
+export function expectFenceOrRateLimit(label, response, expected) {
+  if (response.status === expected) return;
+  const retryAfter = response.headers.get("retry-after") || "";
+  if (response.status === 429 && /^\d+$/.test(retryAfter)) return;
+  throw new Error(
+    `${label} expected HTTP ${expected} or a bounded HTTP 429, received HTTP ${response.status}`,
+  );
+}
+
 async function exerciseRetrievalTools(fetchImpl, base, authHeaders) {
   const actionSearch = await requestJson(
     fetchImpl,
@@ -208,7 +217,11 @@ async function exerciseKnowledgeGraph(fetchImpl, base, authHeaders) {
       headers: authHeaders,
     },
   );
-  expectStatus("canonical knowledge graph rebuild fence", rebuild, 409);
+  expectFenceOrRateLimit(
+    "canonical knowledge graph rebuild fence",
+    rebuild,
+    409,
+  );
   const deletion = await request(fetchImpl, `${base}/v1/knowledge-graph`, {
     method: "DELETE",
     headers: authHeaders,
