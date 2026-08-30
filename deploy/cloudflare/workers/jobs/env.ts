@@ -49,6 +49,14 @@ export type JobsEnv = {
   WORKERS_AI_SYNC_SUMMARY_MODEL?: string;
   WORKERS_AI_FAIR_USE_MODEL?: string;
   WORKERS_AI_VECTOR_MODEL?: string;
+  WORKERS_AI_X_MEMORY_MODEL?: string;
   FIREBASE_SERVICE_ACCOUNT_JSON?: string;
   APPS_ADMIN_KEY?: string;
+  X_OAUTH_CLIENT_ID?: string;
+  X_OAUTH_CLIENT_SECRET?: string;
+  X_OAUTH_REDIRECT_URI?: string;
+  X_OAUTH_SCOPES?: string;
+  X_TOKEN_ENCRYPTION_SECRET?: string;
+  RAPID_API_HOST?: string;
+  RAPID_API_KEY?: string;
 };

@@ -24,6 +24,10 @@ The first staging slice contains:
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
 - `realtime`: the Durable Object/ASR protocol seam; supported mono audio is
   streamed directly to the Workers AI Nova-3 binding and no model runs locally.
+- `jobs`: durable background work plus the D1-backed X connector. X OAuth uses
+  PKCE, stores only hashed OAuth state and AES-GCM-encrypted tokens, calls X or
+  the optional RapidAPI fallback over HTTPS, and projects imported posts and
+  extracted memories through the existing Vectorize outbox.
 
 ## Local setup
 
@@ -64,8 +68,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 323 already match a
-  Cloudflare staging owner and 254 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 329 already match a
+  Cloudflare staging owner and 248 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -304,6 +308,15 @@ printf '%s' "$STRIPE_CONNECT_WEBHOOK_SECRET" | npx wrangler secret put STRIPE_CO
 printf '%s' "$STRIPE_CONNECT_WEBHOOK_SECRET_PREVIOUS" | npx wrangler secret put STRIPE_CONNECT_WEBHOOK_SECRET_PREVIOUS --name omi-cf-jobs-staging
 stripe_connect_refresh_secret="$(openssl rand -base64 48)"
 printf '%s' "$stripe_connect_refresh_secret" | npx wrangler secret put STRIPE_CONNECT_REFRESH_SECRET --name omi-cf-jobs-staging
+
+# X connector. Keep the encryption secret stable; rotating it requires an
+# explicit token re-encryption migration. RAPID_API_* are optional fallbacks.
+printf '%s' "$X_OAUTH_CLIENT_ID" | npx wrangler secret put X_OAUTH_CLIENT_ID --name omi-cf-jobs-staging
+printf '%s' "$X_OAUTH_CLIENT_SECRET" | npx wrangler secret put X_OAUTH_CLIENT_SECRET --name omi-cf-jobs-staging
+printf '%s' "$X_OAUTH_REDIRECT_URI" | npx wrangler secret put X_OAUTH_REDIRECT_URI --name omi-cf-jobs-staging
+printf '%s' "$X_TOKEN_ENCRYPTION_SECRET" | npx wrangler secret put X_TOKEN_ENCRYPTION_SECRET --name omi-cf-jobs-staging
+printf '%s' "$RAPID_API_HOST" | npx wrangler secret put RAPID_API_HOST --name omi-cf-jobs-staging
+printf '%s' "$RAPID_API_KEY" | npx wrangler secret put RAPID_API_KEY --name omi-cf-jobs-staging
 ```
 
 The `/auth-issue` bridge is hidden (`404`) unless `AUTH_DEV_ISSUER_SECRET` is

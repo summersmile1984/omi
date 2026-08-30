@@ -14,9 +14,12 @@
   "vars": {
     "PUBLIC_API_BASE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev",
     "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
+    "WORKERS_AI_X_MEMORY_MODEL": "@cf/meta/llama-3.2-3b-instruct",
   },
   // Secrets provisioned with `wrangler secret put`: APPS_ADMIN_KEY,
-  // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets.
+  // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets,
+  // X_OAUTH_CLIENT_ID, X_OAUTH_CLIENT_SECRET, X_OAUTH_REDIRECT_URI,
+  // X_TOKEN_ENCRYPTION_SECRET, and optional RAPID_API_HOST/RAPID_API_KEY.
   "services": [{ "binding": "AUTH", "service": "omi-cf-auth-staging" }],
   "d1_databases": [
     {

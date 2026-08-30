@@ -56,6 +56,7 @@ import {
   processVectorProjectionMessage,
   reconcileVectorProjections,
 } from "./vector-projection";
+import { reconcileXConnections, registerXConnectorRoutes } from "./x-connector";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -113,6 +114,7 @@ registerAppDeletionRoutes(app, requestContext);
 registerAppModerationRoutes(app);
 registerAppApiKeyRoutes(app, requestContext);
 registerMcpApiKeyRoutes(app, requestContext);
+registerXConnectorRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -1054,6 +1056,7 @@ export default {
       cleanupExpiredAccountDeletionTombstones(env, now),
       reconcileStripeWebhookEvents(env, now),
       reconcileVectorProjections(env, now),
+      reconcileXConnections(env, now),
       ...syncMaintenance,
     ]);
     const failure = results.find(

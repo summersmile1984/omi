@@ -8,12 +8,16 @@ export type WorkerFallbackEvent = {
     | "fcm"
     | "workers_ai_streaming"
     | "workers_ai_classifier"
+    | "x_memory_extraction"
+    | "x_oauth_api"
     | "restrict"
     | "none";
   to:
     | "durable_object_retry"
     | "deepgram_cloud"
     | "conservative_no_action"
+    | "deferred_extraction"
+    | "rapidapi_timeline"
     | "notification_outbox"
     | "throttle"
     | "unlimited"

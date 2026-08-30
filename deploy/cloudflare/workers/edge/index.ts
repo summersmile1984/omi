@@ -297,6 +297,7 @@ app.get("/v1/app-capabilities", proxyPublicCore);
 app.get("/v1/app/payment-plans", proxyPublicCore);
 app.get("/v1/approved-apps", proxyPublicCore);
 app.get("/v1/apps/:appId/logo/:version", proxyPublicJobs);
+app.get("/v1/x/oauth/callback", proxyPublicJobs);
 app.get("/v1/apps/:appId/reviews", proxyPublicCore);
 app.post("/v1/apps/tester", proxyPublicJobs);
 app.post("/v1/apps/tester/access", proxyPublicJobs);
@@ -621,6 +622,11 @@ app.post("/v1/paypal/payment-details", proxyAuthenticatedJobs);
 app.get("/v1/paypal/payment-details", proxyAuthenticatedJobs);
 app.get("/v1/payment-methods/status", proxyAuthenticatedJobs);
 app.post("/v1/payment-methods/default", proxyAuthenticatedJobs);
+app.get("/v1/x/oauth-url", proxyAuthenticatedJobs);
+app.get("/v1/x/connection-status", proxyAuthenticatedJobs);
+app.get("/v1/x/posts", proxyAuthenticatedJobs);
+app.post("/v1/x/sync", proxyAuthenticatedJobs);
+app.post("/v1/x/disconnect", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 
 const proxyAuthenticatedCore = async (

@@ -100,6 +100,8 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_workstream_events", column: "uid" },
   { table: "cf_workstream_mutations", column: "uid" },
   { table: "cf_workstreams", column: "uid" },
+  { table: "cf_x_connections", column: "uid" },
+  { table: "cf_x_oauth_states", column: "uid" },
   { table: "cf_x_posts", column: "uid" },
 ] satisfies readonly D1IdentitySurface[]);
 
@@ -126,6 +128,8 @@ const PURGE_PRIORITY = Object.freeze([
   "cf_notification_outbox.uid",
   "cf_fair_use_notification_outbox.uid",
   "cf_fair_use_events.uid",
+  "cf_x_oauth_states.uid",
+  "cf_x_connections.uid",
   "cf_sync_job_files.uid",
   "cf_sync_jobs.uid",
 ] as const);

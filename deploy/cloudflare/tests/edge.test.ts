@@ -503,6 +503,79 @@ describe("edge gateway", () => {
     }
   });
 
+  it("keeps the X OAuth callback public and signs the authenticated connector surface for Jobs", async () => {
+    const jobRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      JOBS: service((request) => {
+        jobRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+    };
+
+    const callback = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/x/oauth/callback?code=provider-code&state=opaque-state",
+        {
+          headers: {
+            authorization: "Bearer untrusted-client-header",
+            "x-omi-auth-context": "untrusted-context",
+          },
+        },
+      ),
+      env as never,
+    );
+    expect(callback.status).toBe(200);
+    expect(jobRequests[0].headers.get("authorization")).toBeNull();
+    expect(jobRequests[0].headers.get("x-omi-auth-context")).toBeNull();
+
+    for (const [method, path] of [
+      ["GET", "/v1/x/oauth-url"],
+      ["GET", "/v1/x/connection-status"],
+      ["GET", "/v1/x/posts?kind=bookmark&limit=10"],
+      ["POST", "/v1/x/sync"],
+      ["POST", "/v1/x/disconnect"],
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: "Bearer opaque-session",
+            "x-omi-auth-context": "untrusted-context",
+          },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    expect(
+      jobRequests.slice(1).map((request) => {
+        const url = new URL(request.url);
+        return `${request.method} ${url.pathname}${url.search}`;
+      }),
+    ).toEqual([
+      "GET /v1/x/oauth-url",
+      "GET /v1/x/connection-status",
+      "GET /v1/x/posts?kind=bookmark&limit=10",
+      "POST /v1/x/sync",
+      "POST /v1/x/disconnect",
+    ]);
+    for (const request of jobRequests.slice(1)) {
+      expect(
+        decodeAuthContext(request.headers.get("x-omi-auth-context")),
+      ).toMatchObject({ uid: "user-1", audience: "jobs" });
+      expect(request.headers.get("authorization")).toBeNull();
+    }
+  });
+
   it("keeps share previews public and signs the Better Auth display name for share creation", async () => {
     const coreRequests: Request[] = [];
     const env = {
