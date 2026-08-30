@@ -18,6 +18,7 @@ from desktop_release_routes import (  # noqa: E402
     get_latest_version,
     get_update_policy,
     download_redirect,
+    get_windows_update_feed,
 )
 
 
@@ -46,6 +47,7 @@ class FakeDb:
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
         self.connection.executescript((migration_dir / "0084_desktop_release_projections.sql").read_text())
+        self.connection.executescript((migration_dir / "0085_desktop_windows_update_feed.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -60,18 +62,29 @@ def make_env():
     return type("Env", (), {"APP_DB": FakeDb()})()
 
 
-def insert_release(env, *, release_id, version, build_number, channel, is_live=1, manual_download_url=None):
+def insert_release(
+    env,
+    *,
+    release_id,
+    version,
+    build_number,
+    channel,
+    is_live=1,
+    manual_download_url=None,
+    windows_feed_url=None,
+):
     env.APP_DB.connection.execute(
         "INSERT INTO cf_desktop_releases "
-        "(id, version, build_number, download_url, manual_download_url, ed_signature, published_at, "
+        "(id, version, build_number, download_url, manual_download_url, windows_feed_url, ed_signature, published_at, "
         "changelog_json, is_live, is_critical, channel, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             release_id,
             version,
             build_number,
             f"https://downloads.example/{release_id}.zip",
             manual_download_url,
+            windows_feed_url,
             "sig-<safe>",
             "2026-08-31T00:00:00Z",
             json.dumps(["fix <escaping>", "close ]]> marker"]),
@@ -205,3 +218,54 @@ def test_v2_windows_download_falls_back_to_beta_when_stable_is_empty():
     assert response.status_code == 200
     assert "No stable build is published" in body
     assert "3.0.0-beta" in body
+
+
+def test_windows_update_feed_requires_explicit_url_and_allows_beta_to_stable_fallback(capsys):
+    env = make_env()
+    request = FakeRequest(env)
+    with pytest.raises(HTTPException) as empty_error:
+        asyncio.run(get_windows_update_feed(request, channel="stable"))
+    assert empty_error.value.status_code == 404
+
+    insert_release(
+        env,
+        release_id="stable",
+        version="4.0.0",
+        build_number=40,
+        channel="stable",
+        windows_feed_url="https://downloads.example/windows/v4.0.0/",
+    )
+    beta = asyncio.run(get_windows_update_feed(request, channel="beta"))
+    assert beta.status_code == 200
+    assert json.loads(beta.body) == {
+        "requested_channel": "beta",
+        "served_channel": "stable",
+        "version": "4.0.0",
+        "feed_url": "https://downloads.example/windows/v4.0.0/",
+    }
+    assert beta.headers["cache-control"] == "no-store"
+    assert '"event":"fallback"' in capsys.readouterr().out
+
+    env.APP_DB.connection.execute(
+        "UPDATE cf_desktop_releases SET windows_feed_url = ? WHERE id = ?",
+        ("https://downloads.example/windows/beta/", "stable"),
+    )
+    env.APP_DB.connection.commit()
+    stable = asyncio.run(get_windows_update_feed(request, channel="stable"))
+    stable_payload = json.loads(stable.body)
+    assert stable_payload["served_channel"] == "stable"
+    assert stable_payload["feed_url"].endswith("/beta/")
+
+
+def test_windows_update_feed_does_not_infer_url_from_installer():
+    env = make_env()
+    insert_release(
+        env,
+        release_id="stable",
+        version="4.0.0",
+        build_number=40,
+        channel="stable",
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(get_windows_update_feed(FakeRequest(env), channel="stable"))
+    assert error.value.status_code == 404

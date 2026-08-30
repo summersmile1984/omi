@@ -12,7 +12,9 @@ import json
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+
+from fallback import record_fallback
 
 router = APIRouter()
 
@@ -120,6 +122,7 @@ def _release(row: dict[str, object]) -> dict[str, object] | None:
         "is_live": _bool(row.get("is_live")),
         "is_critical": _bool(row.get("is_critical")),
         "channel": channel,
+        "windows_feed_url": _https_url(row.get("windows_feed_url")),
     }
 
 
@@ -128,7 +131,7 @@ async def _live_releases(request: Request) -> list[dict[str, object]]:
         await request.scope["env"]
         .APP_DB.prepare(
             "SELECT version, build_number, download_url, manual_download_url, ed_signature, published_at, "
-            "changelog_json, is_live, is_critical, channel "
+            "changelog_json, is_live, is_critical, channel, windows_feed_url "
             "FROM cf_desktop_releases WHERE is_live = 1 ORDER BY build_number DESC, id DESC LIMIT 100"
         )
         .all()
@@ -350,6 +353,52 @@ async def download_latest_desktop(
 @router.get("/v2/desktop/download/beta")
 async def download_beta_desktop(request: Request, platform: str = Query(default="macos")):
     return await download_latest_desktop(request, platform=platform, channel="beta", identity="beta")
+
+
+@router.get("/v2/desktop/update-feed/windows")
+async def get_windows_update_feed(request: Request, channel: str = Query(default="stable")):
+    """Return the immutable Windows electron-updater feed directory.
+
+    Stable never falls through to beta. A beta request may use the stable feed
+    while the beta slot is empty, matching the legacy Windows client contract.
+    The feed URL is an explicit projection field; installer URLs are never
+    guessed across platforms.
+    """
+    channel = _channel(channel)
+    try:
+        releases = await _live_releases(request)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to fetch releases") from exc
+
+    served_channel = channel
+    release = _pick_channel(releases, channel)
+    if release is None and channel == "beta":
+        release = _pick_channel(releases, "stable")
+        if release is not None:
+            served_channel = "stable"
+            record_fallback(
+                component="other",
+                from_mode="desktop_windows_update_feed_beta",
+                to_mode="desktop_windows_update_feed_stable",
+                reason="other",
+                outcome="recovered",
+            )
+    feed_url = _https_url(release.get("windows_feed_url")) if release else None
+    if release is None or feed_url is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Windows update feed found for channel: {channel}",
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        {
+            "requested_channel": channel,
+            "served_channel": served_channel,
+            "version": release["version"],
+            "feed_url": feed_url,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/v2/desktop/download/windows")

@@ -407,6 +407,7 @@ app.get("/v2/desktop/appcast.xml", proxyPublicCore);
 app.get("/v2/desktop/download/latest", proxyPublicCore);
 app.get("/v2/desktop/download/beta", proxyPublicCore);
 app.get("/v2/desktop/download/windows", proxyPublicCore);
+app.get("/v2/desktop/update-feed/windows", proxyPublicCore);
 app.get("/v2/desktop/update-policy", proxyPublicCore);
 app.get("/v1/announcements/changelogs", proxyPublicCore);
 app.get("/v1/announcements/features", proxyPublicCore);
