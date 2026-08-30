@@ -1146,6 +1146,10 @@ app.patch(
   proxyAuthenticatedCore,
 );
 app.patch(
+  "/v1/conversations/:conversationId/segments/assign-bulk",
+  proxyAuthenticatedCore,
+);
+app.patch(
   "/v1/conversations/:conversationId/assign-speaker/:speakerId",
   proxyAuthenticatedCore,
 );

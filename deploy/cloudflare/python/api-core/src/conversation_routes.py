@@ -129,6 +129,16 @@ class ConversationSegmentTextUpdate(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_SEGMENT_TEXT_LENGTH)
 
 
+class ConversationBulkSegmentAssignment(BaseModel):
+    """Assignment targets used by the released desktop bulk speaker editor."""
+
+    model_config = {"extra": "ignore"}
+
+    segment_ids: list[str] = Field(default_factory=list, max_length=MAX_SEGMENTS)
+    assign_type: str = Field(min_length=1, max_length=32)
+    value: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+
+
 class ConversationEventsStateUpdate(BaseModel):
     """Parallel event indexes and created flags used by the legacy client."""
 
@@ -562,6 +572,35 @@ def _apply_speaker_assignment(segment: dict[str, object], assign_type: str, valu
         return
     segment["is_user"] = False
     segment["person_id"] = value
+
+
+def _resolve_bulk_segment_indices(segments: list[object], requested_ids: list[str], *, status: object) -> list[int]:
+    """Resolve exact transcript IDs and the legacy positional compatibility form."""
+
+    by_id = {
+        str(segment.get("id")): index
+        for index, segment in enumerate(segments)
+        if isinstance(segment, dict) and segment.get("id")
+    }
+    resolved: list[int] = []
+    unresolved: list[str] = []
+    allow_legacy_indices = str(status or "") == "completed"
+    for requested_id in requested_ids:
+        index = by_id.get(requested_id)
+        if index is None and allow_legacy_indices and requested_id.startswith("#index:"):
+            raw_index = requested_id[len("#index:") :]
+            if raw_index.isascii() and raw_index.isdecimal():
+                candidate = int(raw_index)
+                if candidate < len(segments):
+                    index = candidate
+        if index is None:
+            unresolved.append(requested_id)
+        elif index not in resolved:
+            resolved.append(index)
+    if unresolved:
+        targets = ", ".join(unresolved)[:1_000]
+        raise ValueError(f"Unable to resolve transcript segment assignment target(s): {targets}")
+    return resolved
 
 
 async def _write_conversation_segments(
@@ -1426,6 +1465,67 @@ async def assign_conversation_speaker(request: Request, conversation_id: str, sp
         if isinstance(updated, JSONResponse):
             return updated
         _record_speaker_identity_confirmation(scope="speaker", before=before, after=after)
+        return _response(updated, detail=True)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+
+
+@router.patch("/v1/conversations/{conversation_id}/segments/assign-bulk")
+async def assign_conversation_segments_bulk(request: Request, conversation_id: str):
+    """Assign a bounded set of transcript segments in one CAS-protected write."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    try:
+        raw = await request.body()
+        if len(raw) > 64_000:
+            return JSONResponse({"error": "bulk assignment body too large"}, status_code=413)
+        assignment = ConversationBulkSegmentAssignment.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError, TypeError):
+        return JSONResponse({"error": "invalid bulk segment assignment"}, status_code=400)
+
+    if assignment.assign_type not in {"is_user", "person_id"}:
+        return JSONResponse({"error": "Invalid assign type"}, status_code=400)
+    value = None if assignment.value == "null" else assignment.value
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        segments = _json_list(existing.get("transcript_segments_json"))
+        try:
+            indices = _resolve_bulk_segment_indices(
+                segments,
+                assignment.segment_ids,
+                status=existing.get("status"),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        before = [_speaker_assignment(segments[index]) for index in indices if isinstance(segments[index], dict)]
+        for index in indices:
+            segment = segments[index]
+            if isinstance(segment, dict):
+                _apply_speaker_assignment(segment, assignment.assign_type, value)
+        updated = await _write_conversation_segments(
+            env,
+            uid=uid,
+            conversation_id=conversation_id,
+            existing=existing,
+            segments=segments,
+        )
+        if isinstance(updated, JSONResponse):
+            return updated
+        after = [_speaker_assignment(segments[index]) for index in indices if isinstance(segments[index], dict)]
+        _record_speaker_identity_confirmation(scope="bulk", before=before, after=after)
         return _response(updated, detail=True)
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)

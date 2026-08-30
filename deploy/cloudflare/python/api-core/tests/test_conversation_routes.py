@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from conversation_routes import (  # noqa: E402
     assign_conversation_segment,
     assign_conversation_speaker,
+    assign_conversation_segments_bulk,
     count_conversations,
     delete_conversation,
     delete_conversation_action_item,
@@ -1603,6 +1604,73 @@ def test_conversation_speaker_assignments_match_legacy_mutation_contract(capsys)
             FakeRequest(env, signed_headers(secret), query={"assign_type": "is_user", "value": "true"}),
             "locked-assign",
             0,
+        )
+    )
+    assert locked.status_code == 402
+
+
+def test_conversation_bulk_speaker_assignment_resolves_ids_and_legacy_indices():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="bulk-assign-1",
+        created_at=200,
+        transcript_segments=[
+            {"id": "s-1", "text": "one", "speaker_id": 1, "is_user": False},
+            {"id": "s-2", "text": "two", "speaker_id": 2, "is_user": True},
+            {"id": "s-3", "text": "three", "speaker_id": 3, "is_user": False},
+        ],
+    )
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-bulk", created_at=100, locked=1)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    updated = asyncio.run(
+        assign_conversation_segments_bulk(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"segment_ids": ["s-1", "s-2"], "assign_type": "person_id", "value": "person-1"},
+            ),
+            "bulk-assign-1",
+        )
+    )
+    assert [segment.get("person_id") for segment in updated["transcript_segments"][:2]] == ["person-1", "person-1"]
+    assert [segment.get("is_user") for segment in updated["transcript_segments"][:2]] == [False, False]
+
+    positional = asyncio.run(
+        assign_conversation_segments_bulk(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"segment_ids": ["#index:2"], "assign_type": "is_user", "value": "true"},
+            ),
+            "bulk-assign-1",
+        )
+    )
+    assert positional["transcript_segments"][2]["is_user"] is True
+    assert positional["transcript_segments"][2].get("person_id") is None
+
+    unresolved = asyncio.run(
+        assign_conversation_segments_bulk(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"segment_ids": ["missing"], "assign_type": "is_user", "value": "true"},
+            ),
+            "bulk-assign-1",
+        )
+    )
+    assert unresolved.status_code == 409
+    locked = asyncio.run(
+        assign_conversation_segments_bulk(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"segment_ids": ["s-1"], "assign_type": "is_user", "value": "true"},
+            ),
+            "locked-bulk",
         )
     )
     assert locked.status_code == 402

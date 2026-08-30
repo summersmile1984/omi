@@ -318,7 +318,7 @@
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}/assign-speaker/{speaker_id}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}/events", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}/folder", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "PATCH", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/conversations/{conversation_id}/segments/assign-bulk", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}/segments/assign-bulk", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}/segments/text", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}/segments/{segment_idx}/assign", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}/starred", "protocol": "http", "target_runtime": "python-worker"},

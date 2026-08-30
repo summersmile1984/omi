@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 460 already match
-  Cloudflare staging owners and 113 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 465 already match
+  Cloudflare staging owners and 112 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1637,13 +1637,16 @@ suggested app ids against the approved D1 catalog. Private/persona/disabled apps
 are filtered, payment links receive the caller-bound reference, and enabled/paid
 state is computed from uid-scoped D1 projections.
 
-`PATCH /v1/conversations/{conversation_id}/segments/{segment_idx}/assign` and
-`PATCH /v1/conversations/{conversation_id}/assign-speaker/{speaker_id}` update
+`PATCH /v1/conversations/{conversation_id}/segments/{segment_idx}/assign`,
+`PATCH /v1/conversations/{conversation_id}/assign-speaker/{speaker_id}`, and
+`PATCH /v1/conversations/{conversation_id}/segments/assign-bulk` update
 the bounded transcript projection with an updated-at compare-and-set and emit a
 PII-free structured confirmation event. They preserve the legacy `is_user` and
-`person_id` mutation rules. The legacy implementation's per-route speech
-training is disabled too; `/segments/assign-bulk` remains legacy-owned because
-that separate route still schedules real person speech-sample extraction.
+`person_id` mutation rules. Bulk assignment resolves exact segment IDs and
+completed-conversation `#index:N` compatibility targets, while rejecting
+unresolved targets before mutation. The legacy implementation's per-route speech
+training is disabled; person speech-sample extraction remains a separate follow-up
+workflow.
 
 `PATCH /v1/conversations/{conversation_id}/events` updates the `created` flags
 of indexed events in the structured D1 projection. It preserves the legacy

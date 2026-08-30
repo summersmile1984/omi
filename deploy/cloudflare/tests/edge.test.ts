@@ -2398,6 +2398,25 @@ describe("edge gateway", () => {
       "PATCH /v1/conversations/conversation-1/assign-speaker/1",
       "PATCH /v1/conversations/conversation-1/visibility",
     ]);
+
+    const bulkResponse = await edge.fetch(
+      new Request("https://edge.test/v1/conversations/conversation-1/segments/assign-bulk", {
+        method: "PATCH",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ segment_ids: ["segment-1"], assign_type: "person_id", value: "person-1" }),
+      }),
+      env as never,
+    );
+    expect(bulkResponse.status).toBe(200);
+    expect(coreRequests.at(-1)?.method).toBe("PATCH");
+    expect(new URL(coreRequests.at(-1)?.url || "https://invalid").pathname).toBe(
+      "/v1/conversations/conversation-1/segments/assign-bulk",
+    );
+    expect(await coreRequests.at(-1)?.clone().json()).toEqual({
+      segment_ids: ["segment-1"],
+      assign_type: "person_id",
+      value: "person-1",
+    });
     expect(
       coreRequests.every((request) =>
         Boolean(request.headers.get("x-omi-auth-context")),
