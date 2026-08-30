@@ -570,7 +570,7 @@
     {"method": "PUT", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/task-intelligence/context-snapshot", "protocol": "http", "target_runtime": "legacy"},
     {"method": "PUT", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/task-intelligence/open-loop-snapshot", "protocol": "http", "target_runtime": "legacy"},
     {"method": "PUT", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/location-context-consent", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "PUT", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/users/preferences/app", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "PUT", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/preferences/app", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PUT", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/workstreams/{workstream_id}/checkpoints/{runtime_id}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PUT", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/desktop/beta/admission", "protocol": "http", "target_runtime": "legacy"},
     {"method": "WEBSOCKET", "migration_state": "staging-owned", "owner": "realtime", "path": "/v1/omni/relay", "protocol": "websocket", "target_runtime": "realtime-do"},

@@ -1454,6 +1454,15 @@ the enabled-app read applies the same check. Persona mutation, external setup
 callbacks, and CIMD remain separate migration surfaces; no production cutover
 is implied.
 
+`PUT /v1/users/preferences/app` stores the caller's selected catalog row in
+`cf_user_app_preferences`. Selection uses the same D1 public/owner/explicit
+tester visibility boundary, but preserves the legacy setter contract by not
+requiring installation, payment entitlement, or external setup completion.
+Staging D1 is authoritative and does not dual-write the legacy Redis key.
+Production cutover therefore requires importing existing
+`user:{uid}:preferred_app` values and moving the conversation processor's
+preference read to this D1 authority before routing production traffic.
+
 `GET /v2/apps` now builds the marketplace's capability, category, and grouped
 responses from the same public D1 rows. It preserves the legacy pagination
 shape and score ordering, but intentionally returns `enabled: false` because

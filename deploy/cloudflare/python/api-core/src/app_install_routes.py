@@ -139,6 +139,44 @@ async def _load_installable_app(
     }, None
 
 
+async def _preferred_app_is_visible(env: object, app_id: str, uid: str) -> tuple[bool, JSONResponse | None]:
+    """Use the catalog's owner/public/assigned-tester visibility boundary.
+
+    Preference selection intentionally does not require installation, payment
+    entitlement, or external setup completion. The legacy setter admitted any
+    app visible to the user and the downstream conversation processor resolved
+    capability compatibility when it consumed the preference.
+    """
+    try:
+        row = (
+            await env.APP_DB.prepare(
+                "SELECT c.id, c.owner_uid, c.approved, c.data_json, "
+                "CASE WHEN ta.app_id IS NULL THEN 0 ELSE 1 END AS tester_access "
+                "FROM cf_app_catalog c "
+                "LEFT JOIN cf_app_tester_access ta ON ta.app_id = c.id AND ta.uid = ? "
+                "WHERE c.id = ?"
+            )
+            .bind(uid, app_id)
+            .first()
+        )
+    except Exception:
+        return False, JSONResponse({"detail": "App catalog unavailable."}, status_code=503)
+    if not isinstance(row, dict):
+        return False, None
+    raw = row.get("data_json")
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_APP_PAYLOAD_BYTES:
+        return False, JSONResponse({"detail": "App catalog unavailable."}, status_code=503)
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return False, JSONResponse({"detail": "App catalog unavailable."}, status_code=503)
+    if not isinstance(payload, dict) or payload.get("id") not in (None, app_id):
+        return False, JSONResponse({"detail": "App catalog unavailable."}, status_code=503)
+    owner = isinstance(row.get("owner_uid"), str) and row.get("owner_uid") == uid
+    public = _flag(row.get("approved")) and not _flag(payload.get("private"))
+    return owner or _flag(row.get("tester_access")) or public, None
+
+
 @router.get("/v1/apps/enabled")
 async def get_enabled_apps(request: Request):
     context = _auth_context(request)
@@ -237,3 +275,32 @@ async def disable_app(request: Request):
     except Exception:
         return JSONResponse({"error": "enabled apps unavailable"}, status_code=503)
     return {"status": "ok"}
+
+
+@router.put("/v1/users/preferences/app")
+async def set_preferred_app(request: Request, app_id: str):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    visible, catalog_error = await _preferred_app_is_visible(env, app_id, uid)
+    if catalog_error:
+        return catalog_error
+    if not visible:
+        return JSONResponse(
+            {"detail": f"App with ID '{app_id}' not found or not accessible."},
+            status_code=410,
+        )
+    try:
+        await env.APP_DB.prepare(
+            "INSERT INTO cf_user_app_preferences (uid, preferred_app_id, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(uid) DO UPDATE SET preferred_app_id = excluded.preferred_app_id, "
+            "updated_at = excluded.updated_at"
+        ).bind(uid, app_id, int(time.time())).run()
+    except Exception:
+        return JSONResponse({"detail": "Failed to store app preference."}, status_code=500)
+    return {
+        "status": "ok",
+        "message": f"App {app_id} set as preferred app for user {uid}.",
+    }

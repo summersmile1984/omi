@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from app_install_routes import disable_app, enable_app, get_enabled_apps  # noqa: E402
+from app_install_routes import disable_app, enable_app, get_enabled_apps, set_preferred_app  # noqa: E402
 
 
 class FakeStatement:
@@ -54,6 +54,7 @@ class FakeDb:
             "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);"
         )
         self.connection.executescript((migration_dir / "0060_app_subscriptions.sql").read_text())
+        self.connection.executescript((migration_dir / "0074_user_app_preferences.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -189,3 +190,61 @@ def test_owner_and_assigned_tester_can_install_private_pending_app_without_chang
     assert db.connection.execute("SELECT installs FROM cf_app_catalog WHERE id = 'private-app'").fetchone()[0] == 7
     assert asyncio.run(disable_app(tester)) == {"status": "ok"}
     assert db.connection.execute("SELECT installs FROM cf_app_catalog WHERE id = 'private-app'").fetchone()[0] == 7
+
+
+def test_preferred_app_accepts_visible_catalog_rows_without_requiring_installation():
+    secret = "install-secret"
+    db = FakeDb()
+    catalog_row(db.connection, "public-app", {"id": "public-app", "capabilities": ["persona"]})
+    catalog_row(db.connection, "private-app", {"id": "private-app", "private": True, "is_paid": True})
+    db.connection.execute("UPDATE cf_app_catalog SET owner_uid = 'owner-user', approved = 0 WHERE id = 'private-app'")
+    db.connection.execute("INSERT INTO cf_app_testers (uid, added_at, updated_at) VALUES ('tester-user', 1, 1)")
+    db.connection.execute(
+        "INSERT INTO cf_app_tester_access (uid, app_id, added_at) VALUES ('tester-user', 'private-app', 1)"
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    public = asyncio.run(set_preferred_app(FakeRequest(env, signed_headers(secret, "public-user")), "public-app"))
+    assert public == {
+        "status": "ok",
+        "message": "App public-app set as preferred app for user public-user.",
+    }
+    owner = asyncio.run(set_preferred_app(FakeRequest(env, signed_headers(secret, "owner-user")), "private-app"))
+    tester = asyncio.run(set_preferred_app(FakeRequest(env, signed_headers(secret, "tester-user")), "private-app"))
+    assert owner["status"] == "ok"
+    assert tester["status"] == "ok"
+    assert (
+        db.connection.execute(
+            "SELECT preferred_app_id FROM cf_user_app_preferences WHERE uid = 'tester-user'"
+        ).fetchone()[0]
+        == "private-app"
+    )
+
+
+def test_preferred_app_rejects_inaccessible_rows_and_requires_auth():
+    secret = "install-secret"
+    db = FakeDb()
+    catalog_row(db.connection, "private-app", {"id": "private-app", "private": True})
+    db.connection.execute("UPDATE cf_app_catalog SET owner_uid = 'owner-user', approved = 0 WHERE id = 'private-app'")
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    assert asyncio.run(set_preferred_app(FakeRequest(env), "private-app")).status_code == 401
+    missing = asyncio.run(set_preferred_app(FakeRequest(env, signed_headers(secret, "stranger")), "private-app"))
+    empty = asyncio.run(set_preferred_app(FakeRequest(env, signed_headers(secret)), ""))
+    assert missing.status_code == 410
+    assert json.loads(missing.body) == {"detail": "App with ID 'private-app' not found or not accessible."}
+    assert empty.status_code == 410
+
+
+def test_preferred_app_reports_storage_failure_without_legacy_fallback():
+    secret = "install-secret"
+    db = FakeDb()
+    catalog_row(db.connection, "public-app", {"id": "public-app"})
+    db.connection.execute("DROP TABLE cf_user_app_preferences")
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    response = asyncio.run(set_preferred_app(FakeRequest(env, signed_headers(secret)), "public-app"))
+    assert response.status_code == 500
+    assert json.loads(response.body) == {"detail": "Failed to store app preference."}

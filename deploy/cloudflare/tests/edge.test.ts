@@ -919,10 +919,25 @@ describe("edge gateway", () => {
         )
       ).status,
     ).toBe(200);
+    expect(
+      (
+        await edge.fetch(
+          new Request(
+            "https://edge.test/v1/users/preferences/app?app_id=free-app",
+            {
+              method: "PUT",
+              headers: auth,
+            },
+          ),
+          env as never,
+        )
+      ).status,
+    ).toBe(200);
     expect(corePaths).toEqual([
       "GET /v1/apps/enabled",
       "POST /v1/apps/enable",
       "POST /v1/apps/disable",
+      "PUT /v1/users/preferences/app",
     ]);
   });
 

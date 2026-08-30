@@ -812,6 +812,7 @@ app.get("/v2/apps/search", proxyAuthenticatedCore);
 app.get("/v1/apps/enabled", proxyAuthenticatedCore);
 app.post("/v1/apps/enable", proxyAuthenticatedCore);
 app.post("/v1/apps/disable", proxyAuthenticatedCore);
+app.put("/v1/users/preferences/app", proxyAuthenticatedCore);
 app.post("/v2/realtime/session", proxyAuthenticatedAI);
 app.post("/v2/realtime/usage", proxyAuthenticatedAI);
 app.post("/v2/voice-message/transcribe", proxyAuthenticatedAI);
