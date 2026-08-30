@@ -11,7 +11,7 @@ import { RealtimeSession } from "./session";
 const app = new Hono<{ Bindings: RealtimeEnv }>();
 
 app.get("/health", (c) =>
-  c.json({ status: "ok", service: "realtime", version: "cf-09" }),
+  c.json({ status: "ok", service: "realtime", version: "cf-10" }),
 );
 
 app.all("/v2/voice-message/transcribe-stream", (c) =>

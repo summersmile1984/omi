@@ -214,6 +214,9 @@ CLOUDFLARE_SMOKE_TOKEN_FILE=/path/to/staging-token.json npm run smoke:staging
 
 - Web cookie 只能交换一次性、30 秒有效的 realtime ticket；重放 ticket 必须失败；
 - WebSocket 首消息前发送二进制音频被关闭；合法 auth 后才建立 provider socket；
+- 浏览器交付的 Blob/typed-array 必须转成真实二进制帧，不能被 provider 当作文本控制消息；
+- Workers AI upgrade 参数必须使用已实测的绑定子集；不支持的 codec/channel/language 进入
+  明确兼容回退或 `provider_unavailable`，不能建立一个只返回 Error 帧的静默连接；
 - 断线重连不让旧 socket 的 late event 覆盖新 session；多设备 session 不共享 DO；
 - 对已批准的小型多语言合成集实测 streaming ASR 首字、final、断线恢复和 usage；
 - prerecorded ASR、translation、TTS、embedding 使用最小计费 fixture，验证状态、响应

@@ -1,6 +1,6 @@
 # Cloudflare 适配执行方案
 
-状态：实施中；CF-00～CF-03/CF-04～CF-08 首期 staging 切片已部署并完成冒烟，Workers AI ASR、翻译、TTS additive 路由已实测，生产路由仍未切换
+状态：实施中；CF-00～CF-03/CF-04～CF-08 首期 staging 切片已部署并完成冒烟，Workers AI 预录音与 Realtime ASR、翻译、TTS additive 路由已实测，生产路由仍未切换
 工作分支：`codex/cloudflare-adaptation`
 代码基线：`92ee446e89`（`origin/main`）
 调研日期：2026-08-27
@@ -762,9 +762,9 @@ DNS 或生产数据库。当前 staging 已部署：
 - `omi-cf-auth-staging`：Hono + Better Auth 1.6.26 + D1，包含 Better Auth 基础表、数据库限流表和 JWKS 表迁移；Auth 构造按请求创建，避免 abort 后的全局初始化污染。公开路径与 Web 同源代理统一为 `/api/better-auth/*`；Google/Apple provider 仅在完整 staging 凭据存在时暴露，OAuth token 加密存储、隐式同邮箱 linking 禁用，ES256 key 以 30 天周期轮换并保留 2 天验证 grace。
 - `omi-cf-api-core-staging`：FastAPI Python Worker + D1 `cf_worker_probe`、uid-scoped R2 asset API、uid-scoped 转写偏好/语言/onboarding/隐私/通知/城市上下文同意、短时 geolocation TTL row、daily-summary/mentor notification 偏好、training-data opt-in 状态与 private-sync 联动、FCM token 注册、开发者 webhook 配置/开关状态、assistant-settings 深合并和低风险 ai-profile 投影、客户端 API key 配置读取、公开 firmware stable/latest/version APIs、公告/版本更新公开读取与用户 dismiss，以及 staging-only 的 D1-backed action-item CRUD/reconciliation（含 Apple Reminders pending/sync-batch projection）、daily/weekly/overall score projection、focus-session CRUD/stats、text-only screen-activity sync/list/summary、calendar onboarding flags、People 元数据 CRUD、goal 元数据/metric/daily-history/progress-events/canonical-list/canonical-create/focus/lifecycle CRUD、work-intent/workstream journal/artifact/checkpoint CRUD、folder 元数据/排序/bulk move/delete CRUD、daily-summary 列表/详情/删除/visibility/test/regenerate 投影、app-scoped chat history 读/删投影、账户 usage/subscription/price-catalog 读取投影，以及不冒充 speech meter authority 的 fair-use 状态读取；账户用量与 conversation/memory 源记录同批原子更新，未导入 `backend/main.py`。
 - `omi-cf-api-ai-staging`：FastAPI Python Worker + Cloudflare 原生 `workers.fetch` 外部 embedding/预录音 ASR/桌面 TTS/Auto model-pick 和固定目标 AI API proxy seam，并通过原生 `AI` binding 提供受限 raw-audio Workers AI ASR、Web/Flutter multipart 与 desktop linear16 PCM 的 `/v2/voice-message/transcribe`、BGE text embeddings、m2m100 翻译和 Deepgram Aura-1 TTS seam；Python Worker 在完成 TTS/provider 校验后通过跨 Worker Durable Object binding 原子消费细粒度额度，`/health` 用非变更 RPC 验证 binding；provider 未配置时按原契约安全回退或返回 `503`。voice-message route 已保留 Web/Flutter 响应字段和 `expected_silence`，但用户语言偏好、context keywords、trial paywall 与每日音频时长额度仍是明确未迁 authority，因此只属于 staging。
-- `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，ASR 通过外部 WebSocket API 接入。
+- `omi-cf-realtime-staging`：Realtime Worker + Durable Object，每会话按 `uid/session-id` 分片；内部 context 使用 HMAC 校验后才允许 WebSocket upgrade，mono PCM16/linear16、PCM8 与 mulaw 优先通过原生 Workers AI Nova-3 binding，外部 WebSocket 仅作为 stereo、AAC/LC3/device-frame Opus、未覆盖语言与原生建链失败的兼容回退。
 - `omi-cf-jobs-staging`：Jobs Worker + Queue + D1 job ledger，支持稳定 `jobId` 的 `probe` 与 raw-audio `transcribe` kind；后者用临时 R2 对象、幂等键和最多三次 Workers AI 重试完成异步 Whisper 投影，并提供 uid-scoped job status/result read。
-- `manifests/routes.yaml` 与 `manifests/resources.yaml`：314 条 Cloudflare 路由和 19 个 staging 资源；`manifests/backend-routes.json` 由 hermetic FastAPI import 生成并逐条记录 577 条唯一后端路由（573 HTTP、4 WebSocket，含显式 HEAD/OPTIONS），其中 298 条匹配 staging Worker owner、279 条显式保留 legacy owner。新注册路由在生成时保持 `unclassified`，OpenAPI CI 与 manifest 契约会拒绝未审查状态。`redis-primitives.yaml` 将 `backend/database/redis_db.py` 的公开 helper（另显式豁免装饰器）归入 34 个 key family，并覆盖绕过 helper 或直接依赖 Redis package 的生产/工具调用点；`vector-namespaces.yaml` 覆盖 7 个现有 Pinecone namespace，其中 memory、action-item、conversation summary 与 transcript chunk 四个多语言 BGE-M3/1024 维 projection 已由 staging Vectorize 接管；`r2-namespaces.yaml` 覆盖 9 个 `BUCKET_*` 对象 namespace。`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership、Edge 路由表示、完整 backend route parity、源码清单完整性、Vectorize 维度/re-embedding 契约、R2 环境隔离，以及 Cloudflare Worker 禁止连接 Redis。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
+- `manifests/routes.yaml` 与 `manifests/resources.yaml`：323 条 Cloudflare 路由和 20 个 staging 资源；`manifests/backend-routes.json` 由 hermetic FastAPI import 生成并逐条记录 577 条唯一后端路由，其中 311 条匹配 staging Worker owner、266 条显式保留 legacy owner。新注册路由在生成时保持 `unclassified`，OpenAPI CI 与 manifest 契约会拒绝未审查状态。`redis-primitives.yaml` 将 `backend/database/redis_db.py` 的公开 helper（另显式豁免装饰器）归入 34 个 key family，并覆盖绕过 helper 或直接依赖 Redis package 的生产/工具调用点；`vector-namespaces.yaml` 覆盖 7 个现有 Pinecone namespace，其中 memory、action-item、conversation summary、transcript chunk 与 X posts 五个多语言 BGE-M3/1024 维 projection 已由 staging Vectorize 接管；`r2-namespaces.yaml` 覆盖 9 个 `BUCKET_*` 对象 namespace。`npm test` 前置校验会检查字段、命名空间、重复项、禁止 broad `/v1/*` ownership、Edge 路由表示、完整 backend route parity、源码清单完整性、Vectorize 维度/re-embedding 契约、R2 环境隔离，以及 Cloudflare Worker 禁止连接 Redis。Edge 只把显式迁移的 route 送入 partial Worker，未迁移的认证 route 在配置 `LEGACY_BACKEND_URL` 时回旧后端。
 
 已执行并通过：
 
@@ -1108,8 +1108,17 @@ Cloud Run release probe 的 Python urllib 默认 User-Agent 被 Cloudflare 安�
 前以 HTTP 403 拒绝；探针改用稳定 Omi 产品 User-Agent 后，精确 phrase gate 通过，
 并由回归测试固定请求头。
 
-这只完成 clean-English prerecorded ASR 的 provider/协议证据。Realtime staging 当前
-只配置 `INTERNAL_ASSERTION_SECRET`，尚无 `ASR_WS_URL`/`ASR_API_KEY`，因此真实 streaming
-provider 连接、断线恢复和首字/final 延迟仍是 CF-08 的明确未完成项；多语言/噪声音频
-质量基线以及更多产品 route group 继续按 CF-04～CF-10 单独验收。当前 staging 不宣称
-生产迁移完成。
+同一 clean-English fixture 随后在最终 Realtime 版本
+`e6fd4d46-781a-4b99-9355-e11977735426` 通过 Web ticket-first Realtime：原生 Workers AI
+ready 为 1,357 ms，按实时速度送入音频并补一秒静音触发 300 ms endpointing 后，在连接开始
+6,915 ms 得到单一 final segment，完整 normalized phrase 与 manifest 相同；D1 只产生一条
+revision-1 `realtime` source，检测语音 4,560 ms。正式删号后 Auth user/account/session 与 App
+usage/cutover/intent 残留均为 0。
+远程 preview 还锁定 Nova-3 WebSocket binding 的实际参数子集：`sample_rate` 必须为字符串，
+而 `channels`、`interim_results`、`vad_events`、`punctuate`、`smart_format`、`diarize`
+会在 upgrade 时返回 400。Realtime 因此只对已验证的 mono PCM16/linear16、PCM8 转换和
+mulaw 使用原生 binding；stereo、AAC/LC3/device-frame Opus 进入显式外部兼容回退。
+
+这仍只完成 clean-English final ASR 的 provider/协议证据。多语言/噪声音频质量、first
+interim、断线恢复、真实设备 codec、外部 fallback live qualification 以及更多产品 route
+group 继续按 CF-04～CF-10 单独验收。当前 staging 不宣称生产迁移完成。

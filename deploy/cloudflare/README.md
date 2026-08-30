@@ -22,7 +22,8 @@ The first staging slice contains:
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
-- `realtime`: the Durable Object/ASR protocol seam; no model is run locally.
+- `realtime`: the Durable Object/ASR protocol seam; supported mono audio is
+  streamed directly to the Workers AI Nova-3 binding and no model runs locally.
 
 ## Local setup
 
@@ -385,11 +386,14 @@ flutter run --flavor prod \
   --dart-define=OMI_AUTH_DEV_UID=mobile-better-auth-staging
 ```
 
-The AI and realtime paths are API-first. They intentionally return `503` until
-their provider is configured; no ASR/model process runs inside a Worker. The
-Python Workers use Cloudflare's native `workers.fetch` for outbound calls so
-they do not depend on Pyodide socket/DNS support. Add
-the provider endpoint/key as Worker secrets when a staging provider is chosen:
+The AI and realtime paths are API-first; no ASR/model process runs inside a
+Worker. Realtime uses the native Workers AI binding without an API key for mono
+`linear16`/`pcm16`, converted unsigned `pcm8`, and raw `mulaw` streams. An
+external WebSocket provider remains an optional compatibility fallback for
+stereo, AAC, LC3, device-frame Opus, unsupported languages, or a Workers AI
+connection failure. The Python Workers use Cloudflare's native `workers.fetch`
+for outbound calls so they do not depend on Pyodide socket/DNS support. Add only
+the external providers deliberately selected for the remaining seams:
 
 ```bash
 printf '%s' "$ASR_WS_URL" | npx wrangler secret put ASR_WS_URL --name omi-cf-realtime-staging
@@ -471,11 +475,15 @@ verifies the first `{type: "auth", token: ...}` message through the Auth service
 binding before opening the ASR provider socket. Binary audio before successful
 authentication is rejected, and no two browser connections share a default DO
 session. Header-authenticated native realtime routes retain their existing
-upgrade contract. Realtime provider messages are forwarded unchanged, while
-final segment/word intervals are also unioned into one revisioned D1 `realtime`
-source per provider connection. D1 failures store the latest snapshot in
-Durable Object storage and retry it from an alarm; connection or audio duration
-is never substituted for detected speech.
+upgrade contract. External provider messages are forwarded unchanged. Native
+Nova-3 final events are normalized into Omi speaker-segment arrays for current
+Web, Flutter, and desktop consumers; Blob/typed-array client frames are
+converted to binary `ArrayBuffer` before provider forwarding. Provider `Error`
+events fail closed instead of leaving a silent session. Final word intervals
+are also unioned into one revisioned D1 `realtime` source per provider
+connection. D1 failures store the latest snapshot in Durable Object storage and
+retry it from an alarm; connection or audio duration is never substituted for
+detected speech.
 
 Do not point these commands at production names from this worktree. The
 staging smoke surface is:
@@ -1601,11 +1609,27 @@ their combined residual was zero. The release probe now sends a stable Omi
 product User-Agent because Cloudflare's security layer rejected Python urllib's
 default User-Agent with HTTP 403 before the Edge route executed.
 
-This is clean-English prerecorded-ASR evidence, not a multilingual/noisy WER
-qualification. The Realtime Worker currently has no `ASR_WS_URL` or
-`ASR_API_KEY` staging secret, so a live external streaming-provider connection
-is still an explicit CF-08 gap; its authentication, interval metering, retry,
-and alarm behavior remain covered by the hermetic Worker suite only.
+The same clean-English fixture passed the browser ticket-first Realtime path on
+2026-08-30 against Realtime version
+`e6fd4d46-781a-4b99-9355-e11977735426`. The socket reported native
+`workers-ai` readiness in 1,357 ms and emitted one normalized final segment
+6,915 ms after connection start, after the fixture had been paced in real time
+and followed by one second of silence to exercise the 300 ms endpointing
+contract; the complete normalized phrase matched the manifest. Exactly one
+revision-1 `realtime` Fair Use source recorded 4,560 ms of detected speech. The
+formal deletion workflow then reduced the Auth user/account/session and App D1
+usage/cutover/intent residuals to zero, and a prefix scan found no account left
+by the Realtime probes.
+
+This remains clean-English evidence, not a multilingual/noisy WER,
+first-interim, reconnect, or device-codec qualification. The native Nova-3
+WebSocket binding currently requires `sample_rate` as a string and rejects the
+documented `channels`, `interim_results`, `vad_events`, `punctuate`,
+`smart_format`, and `diarize` options during upgrade; the Worker therefore sends
+only the binding subset qualified in remote preview. Staging has no
+`ASR_WS_URL`/`ASR_API_KEY`, so compatibility-only codecs and stereo fail
+explicitly until an external fallback is selected or a Worker-compatible codec
+adapter is qualified.
 
 `/v1/translate` preserves the standalone NLLB request/response shape while
 using the native `@cf/meta/m2m100-1.2b` binding in staging. The Worker explicitly

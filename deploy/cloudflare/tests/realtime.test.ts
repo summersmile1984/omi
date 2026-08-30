@@ -100,6 +100,7 @@ function meterDatabase(failures = 0) {
     writes,
     prepare: (_sql: string) => ({
       bind: (...values: unknown[]) => ({
+        first: async () => null,
         run: async () => {
           if (failures > 0) {
             failures -= 1;
@@ -225,6 +226,7 @@ describe("realtime gateway", () => {
 
   it("uses the accepted server socket and waits for provider readiness", async () => {
     installFakeWebSockets();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const signed = await realtimeContext();
     const work: Promise<unknown>[] = [];
     const session = new RealtimeSession(
@@ -258,6 +260,7 @@ describe("realtime gateway", () => {
 
   it("authenticates the browser first message before opening ASR", async () => {
     installFakeWebSockets();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const upstream = new FakeSocket();
     const work: Promise<unknown>[] = [];
     let providerUrl = "";
@@ -328,6 +331,241 @@ describe("realtime gateway", () => {
     await pair?.server.dispatch("message", { data: audio });
     await Promise.all(work);
     expect(upstream.sent).toEqual([audio]);
+  });
+
+  it("streams PCM8 through Workers AI and emits metered Omi segments", async () => {
+    installFakeWebSockets();
+    const upstream = new FakeSocket();
+    const aiCalls: unknown[][] = [];
+    const work: Promise<unknown>[] = [];
+    const database = meterDatabase();
+    const { state } = durableState(work);
+    const session = new RealtimeSession(
+      state as unknown as DurableObjectState,
+      {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        APP_DB: database,
+        AI: {
+          run: async (...args: unknown[]) => {
+            aiCalls.push(args);
+            return { webSocket: upstream } as unknown as Response;
+          },
+        },
+      } as never,
+    );
+    await session.fetch(
+      new Request(
+        "https://realtime.test/v4/web/listen?language=multi&sample_rate=8000&codec=pcm8&channels=1",
+        { headers: { upgrade: "websocket" } },
+      ),
+    );
+    const pair = FakeWebSocketPair.last;
+    const ticket = await createRealtimeTicket(
+      {
+        uid: "user-1",
+        authority: "better-auth",
+        requestId: "req-1",
+      },
+      "test-secret",
+    );
+    await pair?.server.dispatch("message", {
+      data: JSON.stringify({ type: "auth", ticket }),
+    });
+    await Promise.all(work);
+
+    expect(aiCalls).toHaveLength(1);
+    expect(aiCalls[0]).toEqual([
+      "@cf/deepgram/nova-3",
+      expect.objectContaining({
+        encoding: "linear16",
+        sample_rate: "8000",
+        language: "multi",
+        mip_opt_out: true,
+      }),
+      { websocket: true, tags: ["omi-realtime"] },
+    ]);
+    expect(pair?.server.sent).toEqual([
+      JSON.stringify({ type: "auth_response", success: true }),
+      JSON.stringify({ type: "ready", provider: "workers-ai" }),
+    ]);
+
+    const pcm8 = new Blob([Uint8Array.from([0, 128, 255])]);
+    await pair?.server.dispatch("message", { data: pcm8 });
+    await Promise.all(work);
+    const converted = upstream.sent[0] as ArrayBuffer;
+    const convertedView = new DataView(converted);
+    expect(converted.byteLength).toBe(6);
+    expect([
+      convertedView.getInt16(0, true),
+      convertedView.getInt16(2, true),
+      convertedView.getInt16(4, true),
+    ]).toEqual([-32_768, 0, 32_512]);
+
+    let releaseSlow: () => void = () => undefined;
+    let releaseFast: () => void = () => undefined;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const fastGate = new Promise<void>((resolve) => {
+      releaseFast = resolve;
+    });
+    class GatedBlob extends Blob {
+      constructor(
+        parts: BlobPart[],
+        private readonly gate: Promise<void>,
+      ) {
+        super(parts);
+      }
+
+      override async arrayBuffer(): Promise<ArrayBuffer> {
+        await this.gate;
+        return super.arrayBuffer();
+      }
+    }
+    await Promise.all([
+      pair?.server.dispatch("message", {
+        data: new GatedBlob([Uint8Array.from([1])], slowGate),
+      }),
+      pair?.server.dispatch("message", {
+        data: new GatedBlob([Uint8Array.from([2])], fastGate),
+      }),
+    ]);
+    releaseFast();
+    await Promise.resolve();
+    expect(upstream.sent).toHaveLength(1);
+    releaseSlow();
+    await Promise.all(work);
+    expect(
+      upstream.sent
+        .slice(1)
+        .map((value) => new DataView(value as ArrayBuffer).getInt16(0, true)),
+    ).toEqual([-32_512, -32_256]);
+
+    const interim = JSON.stringify({
+      is_final: false,
+      channel: { alternatives: [{ transcript: "partial", words: [] }] },
+    });
+    await upstream.dispatch("message", { data: interim });
+    await Promise.all(work);
+    expect(pair?.server.sent).toHaveLength(2);
+
+    const final = JSON.stringify({
+      is_final: true,
+      speech_final: true,
+      channel: {
+        alternatives: [
+          {
+            transcript: "Hello world.",
+            words: [
+              {
+                start: 0,
+                end: 0.75,
+                word: "hello",
+                punctuated_word: "Hello",
+                speaker: 0,
+              },
+              {
+                start: 0.75,
+                end: 1.5,
+                word: "world",
+                punctuated_word: "world.",
+                speaker: 1,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await upstream.dispatch("message", {
+      data: new TextEncoder().encode(final).buffer,
+    });
+    await Promise.all(work);
+
+    expect(JSON.parse(String(pair?.server.sent.at(-1)))).toEqual([
+      {
+        speaker: "SPEAKER_00",
+        start: 0,
+        end: 0.75,
+        text: "Hello",
+        is_user: false,
+        person_id: null,
+      },
+      {
+        speaker: "SPEAKER_01",
+        start: 0.75,
+        end: 1.5,
+        text: "world.",
+        is_user: false,
+        person_id: null,
+      },
+    ]);
+    expect(database.writes).toHaveLength(1);
+    expect(database.writes[0]).toMatchObject({
+      0: "user-1",
+      1: "realtime",
+      4: 1_500,
+      7: 1,
+    });
+
+    await upstream.dispatch("message", {
+      data: JSON.stringify({ type: "Error", description: "provider failed" }),
+    });
+    expect(pair?.server.sent).toContain(
+      JSON.stringify({ type: "provider_unavailable" }),
+    );
+    expect(pair?.server.closeCode).toBe(1011);
+  });
+
+  it("falls back to the external stream when Workers AI is unavailable", async () => {
+    installFakeWebSockets();
+    const upstream = new FakeSocket();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ webSocket: upstream }) as unknown as Response),
+    );
+    const warning = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const work: Promise<unknown>[] = [];
+    const signed = await realtimeContext("/v2/voice-message/transcribe-stream");
+    const session = new RealtimeSession(
+      {
+        waitUntil: (promise: Promise<unknown>) => {
+          work.push(promise);
+        },
+      } as unknown as DurableObjectState,
+      {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        ASR_WS_URL: "wss://asr.example/listen",
+        AI: {
+          run: async () => {
+            throw new Error("simulated Workers AI outage");
+          },
+        },
+      } as never,
+    );
+    await session.fetch(
+      new Request(
+        "https://realtime.test/v2/voice-message/transcribe-stream?language=en&sample_rate=16000&codec=linear16",
+        {
+          headers: {
+            upgrade: "websocket",
+            "x-omi-auth-context": signed?.encoded || "",
+            "x-omi-internal-signature": signed?.signature || "",
+          },
+        },
+      ),
+    );
+    await Promise.all(work);
+
+    expect(FakeWebSocketPair.last?.server.sent).toEqual([
+      JSON.stringify({ type: "ready", provider: "external" }),
+    ]);
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '"component":"stt","from":"workers_ai_streaming","to":"deepgram_cloud"',
+      ),
+    );
   });
 
   it("closes a browser socket that sends audio before authentication", async () => {
