@@ -27,11 +27,14 @@ The first staging slice contains:
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
 - `realtime`: the Durable Object/ASR protocol seam; supported mono audio is
   streamed directly to the Workers AI Nova-3 binding and no model runs locally.
-- `jobs`: durable background work plus D1-backed X and task-provider connectors.
+- `jobs`: durable background work plus D1-backed X, task-provider, and Google
+  Calendar connectors.
   X OAuth uses PKCE and the task integrations use one-time, ten-minute D1 state;
   both store only hashed OAuth state and AES-GCM-encrypted tokens. Todoist,
   Asana, Google Tasks, and ClickUp calls run over their hosted HTTPS APIs, so no
-  task-provider service runs locally or in another container.
+  task-provider service runs locally or in another container. Google Calendar
+  uses a dedicated one-scope OAuth grant, encrypted D1 tokens, automatic token
+  refresh, and the hosted Calendar API for event-picker reads.
 
 The admin-key-protected `/v1/summary-app-ids` set is also authoritative in D1
 for staging. It is not dual-written to the legacy Redis set; a production
@@ -351,6 +354,14 @@ printf '%s' "$GOOGLE_TASKS_CLIENT_ID" | npx wrangler secret put GOOGLE_TASKS_CLI
 printf '%s' "$GOOGLE_TASKS_CLIENT_SECRET" | npx wrangler secret put GOOGLE_TASKS_CLIENT_SECRET --name omi-cf-jobs-staging
 printf '%s' "$CLICKUP_CLIENT_ID" | npx wrangler secret put CLICKUP_CLIENT_ID --name omi-cf-jobs-staging
 printf '%s' "$CLICKUP_CLIENT_SECRET" | npx wrangler secret put CLICKUP_CLIENT_SECRET --name omi-cf-jobs-staging
+
+# Google Calendar only. Use a dedicated staging OAuth application with exactly
+# this authorized redirect URI:
+# https://omi-cf-edge-staging.<account>.workers.dev/v2/integrations/google-calendar/callback
+# Keep the encryption secret stable; rotation requires token re-encryption.
+printf '%s' "$GOOGLE_CALENDAR_CLIENT_ID" | npx wrangler secret put GOOGLE_CALENDAR_CLIENT_ID --name omi-cf-jobs-staging
+printf '%s' "$GOOGLE_CALENDAR_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CALENDAR_CLIENT_SECRET --name omi-cf-jobs-staging
+printf '%s' "$GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET" | npx wrangler secret put GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET --name omi-cf-jobs-staging
 ```
 
 The `/auth-issue` bridge is hidden (`404`) unless `AUTH_DEV_ISSUER_SECRET` is
@@ -739,6 +750,11 @@ POST /v2/integrations/{appId}/search/conversations
 POST /v2/integrations/{appId}/notification
 GET  /v2/integrations/{appId}/tasks
                               Edge → Python API Core → app-key D1/Workers AI authority
+GET/PUT/DELETE /v1/integrations/google_calendar
+GET  /v1/integrations/google_calendar/oauth-url
+GET  /v2/integrations/google-calendar/callback
+GET  /v1/calendar/google/events
+                              Edge → Jobs → encrypted D1 grant + Google Calendar API
 GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
 GET  /v2/apps/capability/{capability_id}/grouped
                               Edge → Python API Core → capability/category D1 projection
@@ -919,8 +935,8 @@ GET  /v1/calendar/meetings/{meetingId}
 The calendar meeting routes use a uid-scoped natural key
 (`calendar_source` + `calendar_event_id`) and store bounded metadata in D1.
 They are staging-only until the legacy conversation context reader is migrated
-to the same authority; the Worker does not pretend to own OAuth tokens, event
-discovery, or conversation finalization yet.
+to the same authority. Jobs separately owns the Google Calendar OAuth grant and
+event discovery; conversation finalization is not migrated by either boundary.
 
 Only routes explicitly listed as migrated are sent to the partial Worker
 implementations. Authenticated routes that are not yet migrated use
@@ -1408,8 +1424,9 @@ from uid-scoped D1 before it is returned in the typed tool envelope. Tool task
 create/update calls the canonical action-item D1 authority, which records its
 vector outbox in the same batch and publishes only a Queue hint afterward.
 Edge applies the released `tools:search` and `tools:mutate` one-hour limits.
-Calendar-event creation remains legacy-owned until its Google Calendar provider
-boundary is migrated.
+Google Calendar OAuth, connection state, refresh, and event-picker reads run in
+Jobs against D1 and the hosted Calendar API. Calendar-event creation and other
+tool mutations remain legacy-owned.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC
@@ -1542,8 +1559,8 @@ remain legacy-owned.
 
 `DELETE /v1/conversations/{conversation_id}/calendar-event` clears only the
 local `calendar_event_json` link in the D1 projection. It intentionally does not
-call Google Calendar or mutate the external event; link creation and OAuth
-ownership remain in the legacy integration service.
+call Google Calendar or mutate the external event; link creation and external
+event mutation remain in the legacy integration service.
 
 `PATCH /v1/conversations/{conversation_id}/action-items` updates indexed
 completion flags in the structured projection and mirrors matching standalone
@@ -1564,11 +1581,11 @@ compatibility but does not alter the description identity; reminder/export
 cleanup remains a separate downstream contract.
 
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
-connected/skipped/re-auth-required flags. Google OAuth tokens, refresh, event
-reads, and calendar writes remain on the legacy integration service; tokens are
-never returned by these routes. This group is staging-only until existing
-integration rows are backfilled and every downstream OAuth reader has cut over
-to the same authority.
+connected/skipped/re-auth-required flags. Google Calendar OAuth tokens, refresh,
+and event-picker reads are owned by Jobs in separate fenced D1 tables; tokens
+are never returned by either surface. Calendar writes remain legacy-owned. This
+group is staging-only until existing integration rows are backfilled and every
+downstream OAuth reader has cut over to the same authority.
 
 The announcement routes move public changelogs/features/general reads, the
 authenticated pending/dismissal contract, and secret-gated admin CRUD to D1.

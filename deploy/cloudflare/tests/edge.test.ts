@@ -599,7 +599,7 @@ describe("edge gateway", () => {
         }),
         env as never,
       );
-      expect(response.status).toBe(200);
+      expect(response.status, `${method} ${path}`).toBe(200);
     }
 
     expect(
@@ -694,6 +694,71 @@ describe("edge gateway", () => {
       expect(
         decodeAuthContext(request.headers.get("x-omi-auth-context")),
       ).toMatchObject({ uid: "task-user", audience: "jobs" });
+      expect(request.headers.get("authorization")).toBeNull();
+    }
+  });
+
+  it("keeps the Google Calendar callback public and signs Calendar routes for Jobs", async () => {
+    const jobRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({
+            uid: "calendar-user",
+            authority: "better-auth",
+          });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      JOBS: service((request) => {
+        jobRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+    };
+
+    const callback = await edge.fetch(
+      new Request(
+        "https://edge.test/v2/integrations/google-calendar/callback?code=c&state=s",
+        {
+          headers: {
+            authorization: "Bearer untrusted-client-header",
+            "x-omi-auth-context": "untrusted-context",
+          },
+        },
+      ),
+      env as never,
+    );
+    expect(callback.status).toBe(200);
+    expect(jobRequests[0].headers.get("authorization")).toBeNull();
+    expect(jobRequests[0].headers.get("x-omi-auth-context")).toBeNull();
+
+    for (const [method, path] of [
+      ["GET", "/v1/integrations/google_calendar"],
+      ["PUT", "/v1/integrations/google_calendar"],
+      ["DELETE", "/v1/integrations/google_calendar"],
+      ["GET", "/v1/integrations/google_calendar/oauth-url"],
+      ["GET", "/v1/calendar/google/events?max_results=20"],
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: "Bearer opaque-session",
+            "x-omi-auth-context": "untrusted-context",
+          },
+        }),
+        env as never,
+      );
+      expect(response.status, `${method} ${path}`).toBe(200);
+    }
+
+    expect(jobRequests).toHaveLength(6);
+    for (const request of jobRequests.slice(1)) {
+      expect(
+        decodeAuthContext(request.headers.get("x-omi-auth-context")),
+      ).toMatchObject({ uid: "calendar-user", audience: "jobs" });
       expect(request.headers.get("authorization")).toBeNull();
     }
   });

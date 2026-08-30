@@ -397,6 +397,7 @@ app.get("/v2/integrations/todoist/callback", proxyPublicJobs);
 app.get("/v2/integrations/asana/callback", proxyPublicJobs);
 app.get("/v2/integrations/google-tasks/callback", proxyPublicJobs);
 app.get("/v2/integrations/clickup/callback", proxyPublicJobs);
+app.get("/v2/integrations/google-calendar/callback", proxyPublicJobs);
 app.get("/v1/apps/:appId/reviews", proxyPublicCore);
 app.post("/v1/apps/tester", proxyPublicJobs);
 app.post("/v1/apps/tester/access", proxyPublicJobs);
@@ -771,6 +772,11 @@ app.get("/v1/task-integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
 app.post("/v1/task-integrations/:app_key/tasks", proxyAuthenticatedJobs);
 app.put("/v1/task-integrations/:app_key", proxyAuthenticatedJobs);
 app.delete("/v1/task-integrations/:app_key", proxyAuthenticatedJobs);
+app.get("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
+app.put("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
+app.delete("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
+app.get("/v1/integrations/google_calendar/oauth-url", proxyAuthenticatedJobs);
+app.get("/v1/calendar/google/events", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 
 const proxyAuthenticatedCore = async (

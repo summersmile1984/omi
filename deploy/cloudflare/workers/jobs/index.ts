@@ -68,6 +68,10 @@ import {
   cleanupExpiredTaskIntegrationOAuthStates,
   registerTaskIntegrationRoutes,
 } from "./task-integrations";
+import {
+  cleanupExpiredGoogleCalendarOAuthStates,
+  registerGoogleCalendarRoutes,
+} from "./google-calendar";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -129,6 +133,7 @@ registerMcpApiKeyRoutes(app, requestContext);
 registerDeveloperApiKeyRoutes(app, requestContext);
 registerXConnectorRoutes(app, requestContext);
 registerTaskIntegrationRoutes(app, requestContext);
+registerGoogleCalendarRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -1078,6 +1083,7 @@ export default {
       reconcileVectorProjections(env, now),
       reconcileXConnections(env, now),
       cleanupExpiredTaskIntegrationOAuthStates(env, now),
+      cleanupExpiredGoogleCalendarOAuthStates(env, now),
       ...syncMaintenance,
     ]);
     const failure = results.find(

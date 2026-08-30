@@ -7,6 +7,11 @@ INTERNAL_ASSERTION_SECRET=replace-with-a-different-random-secret
 # client ID and secret are configured.
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+# Dedicated Google Calendar OAuth app for the Jobs Worker. Its callback is
+# /v2/integrations/google-calendar/callback on the public Edge origin.
+GOOGLE_CALENDAR_CLIENT_ID=
+GOOGLE_CALENDAR_CLIENT_SECRET=
+GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET=
 APPLE_CLIENT_ID=
 APPLE_CLIENT_SECRET=
 APPLE_APP_BUNDLE_IDENTIFIER=
