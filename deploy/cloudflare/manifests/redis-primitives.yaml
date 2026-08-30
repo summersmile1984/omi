@@ -360,6 +360,8 @@ families:
     migration_state: staging-partial
     migrated_policies:
       - action_items:write
+      - apps:generate_description
+      - apps:generate_description_emoji
       - apps:generate_prompts
       - chat:initial
       - chat:send_message
@@ -410,6 +412,8 @@ families:
       - POST /v1/dev/user/conversations
       - POST /v1/dev/user/conversations/from-segments
       - GET /v1/app/generate-prompts
+      - POST /v1/app/generate-description
+      - POST /v1/app/generate-description-emoji
       - POST /v1/dev/user/goals
       - POST /v1/dev/user/memories
       - POST /v1/dev/user/memories/batch

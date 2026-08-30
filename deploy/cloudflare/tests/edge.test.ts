@@ -516,6 +516,33 @@ describe("edge gateway", () => {
       "/v1/app/generate-prompts",
     );
     expect(aiRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+
+    for (const path of [
+      "/v1/app/generate-description",
+      "/v1/app/generate-description-emoji",
+    ]) {
+      const generated = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer opaque-session",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            name: "Focus",
+            description: "Tracks focus",
+            prompt: "Tracks focus",
+          }),
+        }),
+        env as never,
+      );
+      expect(generated.status).toBe(200);
+    }
+    expect(aiRequests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/v1/app/generate-prompts",
+      "/v1/app/generate-description",
+      "/v1/app/generate-description-emoji",
+    ]);
   });
 
   it("keeps native payment terminal pages public", async () => {
