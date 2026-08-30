@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 471 already match
-  Cloudflare staging owners and 106 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 472 already match
+  Cloudflare staging owners and 105 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that

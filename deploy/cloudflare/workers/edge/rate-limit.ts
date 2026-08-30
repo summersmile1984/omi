@@ -52,6 +52,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 30,
     windowSeconds: 3600,
   },
+  "apps:generate_icon": {
+    name: "apps:generate_icon",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
   "conversations:search": {
     name: "conversations:search",
     maxRequests: 60,
@@ -206,6 +211,10 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     EDGE_RATE_LIMIT_POLICIES["apps:generate_description_emoji"],
   ],
   ["POST /v1/app/generate", EDGE_RATE_LIMIT_POLICIES["apps:generate_app"]],
+  [
+    "POST /v1/app/generate-icon",
+    EDGE_RATE_LIMIT_POLICIES["apps:generate_icon"],
+  ],
   ["POST /v1/stt/transcribe", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/stt/transcribe-workers-ai", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/stt/transcribe-async", STT_TRANSCRIBE_RATE_LIMIT],

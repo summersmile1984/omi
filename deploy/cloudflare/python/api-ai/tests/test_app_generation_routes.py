@@ -11,12 +11,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from app_generation_routes import (
+    GenerateAppIconRequest,
     GenerateAppRequest,
     GenerateDescriptionEmojiRequest,
     GenerateDescriptionRequest,
     generate_description,
     generate_description_and_emoji,
     generate_app,
+    generate_app_icon,
     generate_sample_prompts,
 )
 
@@ -280,3 +282,61 @@ def test_generate_app_extracts_json_when_workers_ai_adds_explanatory_text():
             "memory_prompt": None,
         },
     }
+
+
+def test_generate_app_icon_uses_flux_and_returns_base64_jpeg():
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            return {"image": base64.b64encode(b"fake-jpeg").decode(), "usage": {"prompt_tokens": 5}}
+
+    secret = "secret"
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), APP_DB=FakeD1()),
+        _signed_headers(secret),
+    )
+    response = asyncio.run(
+        generate_app_icon(
+            request,
+            GenerateAppIconRequest(name="Focus", description="A focus tracker", category="productivity"),
+        )
+    )
+
+    assert response == {
+        "status": "ok",
+        "icon_base64": base64.b64encode(b"fake-jpeg").decode(),
+        "mime_type": "image/jpeg",
+    }
+    assert calls["model"] == "@cf/black-forest-labs/flux-1-schnell"
+    assert calls["payload"]["steps"] == 4
+    assert "Focus" in calls["payload"]["prompt"]
+
+
+def test_generate_app_icon_preserves_auth_and_provider_failure_boundaries():
+    secret = "secret"
+    unauthenticated = asyncio.run(
+        generate_app_icon(
+            FakeRequest(SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret), {}),
+            GenerateAppIconRequest(name="Focus", description="Tracks focus"),
+        )
+    )
+    assert unauthenticated.status_code == 401
+
+    class FailingAI:
+        async def run(self, _model, _payload):
+            raise RuntimeError("provider unavailable")
+
+    failed = asyncio.run(
+        generate_app_icon(
+            FakeRequest(
+                SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FailingAI()),
+                _signed_headers(secret),
+            ),
+            GenerateAppIconRequest(name="Focus", description="Tracks focus"),
+        )
+    )
+    assert failed.status_code == 502
+    assert json.loads(failed.body) == {"error": "app icon generation unavailable"}

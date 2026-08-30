@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 
@@ -41,6 +42,8 @@ Be creative, fun, and varied. No generic ideas."""
 
 MAX_APP_GENERATION_INPUT_CHARS = 2_000
 MAX_DESCRIPTION_RESPONSE_CHARS = 8_000
+ICON_MODEL = "@cf/black-forest-labs/flux-1-schnell"
+MAX_ICON_PROMPT_CHARS = 2_048
 
 
 class GenerateDescriptionRequest(BaseModel):
@@ -55,6 +58,12 @@ class GenerateDescriptionEmojiRequest(BaseModel):
 
 class GenerateAppRequest(BaseModel):
     prompt: str = Field(max_length=MAX_APP_GENERATION_INPUT_CHARS)
+
+
+class GenerateAppIconRequest(BaseModel):
+    name: str = Field(default="", max_length=500)
+    description: str = Field(default="", max_length=2_000)
+    category: str = Field(default="other", max_length=200)
 
 
 DESCRIPTION_SYSTEM_PROMPT = """You are an AI assistant specializing in crafting detailed and engaging descriptions for apps.
@@ -294,6 +303,30 @@ async def _record_usage(env: object, uid: str, model: str, result: object) -> No
         return
 
 
+def _image_base64(value: object) -> str | None:
+    """Normalize the FLUX binding response to the released base64 wire field."""
+    image: object = None
+    if isinstance(value, dict):
+        image = value.get("image")
+    else:
+        to_py = getattr(value, "to_py", None)
+        converted = to_py() if callable(to_py) else None
+        if isinstance(converted, dict):
+            image = converted.get("image")
+        if image is None:
+            image = getattr(value, "image", None)
+    if isinstance(image, str):
+        try:
+            decoded = base64.b64decode(image, validate=True)
+        except (ValueError, TypeError):
+            return None
+        return base64.b64encode(decoded).decode("ascii") if decoded else None
+    if isinstance(image, (bytes, bytearray, memoryview)):
+        encoded = base64.b64encode(bytes(image)).decode("ascii")
+        return encoded or None
+    return None
+
+
 @router.get("/v1/app/generate-prompts")
 async def generate_sample_prompts(request: Request):
     """Generate app-builder ideas, retaining the legacy static fallback."""
@@ -437,8 +470,42 @@ async def generate_app(request: Request, payload: GenerateAppRequest):
     return {"status": "ok", "app": app}
 
 
+@router.post("/v1/app/generate-icon")
+async def generate_app_icon(request: Request, payload: GenerateAppIconRequest):
+    """Generate an app icon with the Cloudflare-hosted FLUX image model."""
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    name = payload.name.strip()
+    description = payload.description.strip()
+    category = payload.category.strip() or "other"
+    if not name:
+        return JSONResponse({"detail": "App name is required"}, status_code=422)
+    if not description:
+        return JSONResponse({"detail": "App description is required"}, status_code=422)
+
+    prompt_prefix = "Create a polished square app icon for an AI companion app. "
+    prompt_suffix = " Use a single clear symbol, strong contrast, clean modern design, no words, no letters, no watermark."
+    prompt_details = f"App name: {name[:500]}. Category: {category[:200]}. Description: "
+    description_limit = max(0, MAX_ICON_PROMPT_CHARS - len(prompt_prefix) - len(prompt_details) - len(prompt_suffix))
+    prompt = prompt_prefix + prompt_details + description[:description_limit] + prompt_suffix
+    ai = getattr(request.scope["env"], "AI", None)
+    if ai is None:
+        return JSONResponse({"error": "app icon generation unavailable"}, status_code=502)
+    try:
+        result = await ai.run(ICON_MODEL, {"prompt": prompt, "steps": 4})
+    except Exception:
+        return JSONResponse({"error": "app icon generation unavailable"}, status_code=502)
+    icon_base64 = _image_base64(result)
+    if icon_base64 is None:
+        return JSONResponse({"error": "app icon generation unavailable"}, status_code=502)
+    await _record_usage(request.scope["env"], str(context["uid"]), ICON_MODEL, result)
+    return {"status": "ok", "icon_base64": icon_base64, "mime_type": "image/jpeg"}
+
+
 __all__ = [
     "generate_app",
+    "generate_app_icon",
     "generate_description",
     "generate_description_and_emoji",
     "generate_sample_prompts",
