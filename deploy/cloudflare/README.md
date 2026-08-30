@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 444 already match
-  Cloudflare staging owners and 132 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 445 already match
+  Cloudflare staging owners and 131 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1493,6 +1493,12 @@ Jobs against D1 and the hosted Calendar API. Calendar-event creation and other
 conversation links (including auto-link) and the calendar-event tool also run in
 Jobs. The Calendar-only OAuth grant accepts attendee email addresses; contact
 lookup and non-Calendar integrations remain outside this cutover.
+
+The read-only data-protection migration inventory now runs in API Core over D1
+at `GET /v1/users/migration/requests?target_level=enhanced`. It preserves the
+legacy public/shared conversation exclusion and treats D1 rows without an
+explicit protection level as `standard`; the mutation endpoints remain on the
+legacy owner until their encryption and batch-write contracts are migrated.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC

@@ -1323,6 +1323,7 @@ app.get("/v1/users/ai-profile", proxyAuthenticatedCore);
 app.patch("/v1/users/ai-profile", proxyAuthenticatedCore);
 app.post("/v1/users/ai-profile/synthesize", proxyAuthenticatedCore);
 app.get("/v1/users/profile", proxyAuthenticatedAuthProfile);
+app.get("/v1/users/migration/requests", proxyAuthenticatedCore);
 app.get("/v1/mcp/oauth/grants", proxyAuthenticatedMcpGrants);
 app.delete("/v1/mcp/oauth/grants/:grantId", proxyAuthenticatedMcpGrants);
 app.get("/v1/users/location-context-consent", proxyAuthenticatedCore);

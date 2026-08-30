@@ -2952,6 +2952,46 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes the data-protection migration inventory to API Core", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "migration-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ needs_migration: [] });
+      }),
+    };
+
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/users/migration/requests?target_level=enhanced"),
+      env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/users/migration/requests?target_level=enhanced", {
+        headers: { authorization: "Bearer opaque-session", cookie: "session=must-not-forward" },
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://invalid").pathname).toBe(
+      "/v1/users/migration/requests",
+    );
+    expect(new URL(forwarded?.url || "https://invalid").search).toBe(
+      "?target_level=enhanced",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes the public high-entropy fair-use case lookup without authentication context", async () => {
     let forwarded: Request | undefined;
     const env = {
