@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
@@ -111,3 +112,25 @@ async def get_app_capabilities() -> list[dict[str, object]]:
 @router.get("/v1/app/payment-plans")
 async def get_payment_plans() -> list[dict[str, str]]:
     return deepcopy(_PAYMENT_PLANS)
+
+
+@router.get("/v1/app/plans", response_model=None)
+async def get_user_payment_plans(request: Request) -> list[dict[str, str]] | JSONResponse:
+    """Return the authenticated app payment-plan selector.
+
+    The legacy endpoint differs from the public ``payment-plans`` metadata
+    route only by requiring a Better Auth session (and by hiding plans from
+    explicitly configured marketplace reviewers). Keep that boundary at the
+    API Core Worker so the Edge never falls through to the legacy backend.
+    """
+
+    context = getattr(request.state, "auth_context", None)
+    uid = context.get("uid") if isinstance(context, dict) else None
+    if not isinstance(uid, str) or not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    reviewers = {
+        value.strip()
+        for value in str(getattr(request.scope["env"], "MARKETPLACE_APP_REVIEWERS", "")).split(",")
+        if value.strip()
+    }
+    return [] if uid in reviewers else deepcopy(_PAYMENT_PLANS)

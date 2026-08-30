@@ -427,6 +427,44 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("routes authenticated app plan reads through the core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "plans-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json([
+          { title: "Monthly Recurring", id: "monthly_recurring" },
+        ]);
+      }),
+    };
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/app/plans"),
+      env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/app/plans", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      { title: "Monthly Recurring", id: "monthly_recurring" },
+    ]);
+    expect(coreRequests).toHaveLength(1);
+    expect(new URL(coreRequests[0].url).pathname).toBe("/v1/app/plans");
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("keeps native payment terminal pages public", async () => {
     const coreRequests: Request[] = [];
     const env = {

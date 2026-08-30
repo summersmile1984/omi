@@ -90,7 +90,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/app-categories", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/app/generate-prompts", "protocol": "http", "target_runtime": "legacy"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/app/payment-plans", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/app/plans", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/app/plans", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/app/proactive-notification-scopes", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/approved-apps", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/apps", "protocol": "http", "target_runtime": "python-worker"},
