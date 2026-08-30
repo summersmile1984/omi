@@ -29,6 +29,11 @@ The first staging slice contains:
   the optional RapidAPI fallback over HTTPS, and projects imported posts and
   extracted memories through the existing Vectorize outbox.
 
+The admin-key-protected `/v1/summary-app-ids` set is also authoritative in D1
+for staging. It is not dual-written to the legacy Redis set; a production
+cutover must explicitly import the existing set before routing these mutations
+to Workers.
+
 ## Local setup
 
 ```bash
@@ -68,8 +73,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 329 already match a
-  Cloudflare staging owner and 248 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 332 already match a
+  Cloudflare staging owner and 245 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 

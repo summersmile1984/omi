@@ -3576,3 +3576,35 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/summary-app-ids
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/summary-app-ids/{app_id}
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/summary-app-ids/{app_id}
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy

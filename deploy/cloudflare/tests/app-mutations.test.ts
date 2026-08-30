@@ -499,6 +499,85 @@ describe("Cloudflare app tester and moderation controls", () => {
       state.database.close();
     }
   });
+
+  it("stores the admin-managed conversation summary app set in D1", async () => {
+    const state = environment({ adminKey: "apps-admin-secret" });
+    try {
+      const denied = await jobs.fetch(
+        new Request("https://jobs.test/v1/summary-app-ids"),
+        state.env,
+      );
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toEqual({ detail: "Forbidden" });
+
+      const headers = { "secret-key": "apps-admin-secret" };
+      for (const appId of ["summary-z", "summary-a"]) {
+        const added = await jobs.fetch(
+          new Request(`https://jobs.test/v1/summary-app-ids/${appId}`, {
+            method: "POST",
+            headers,
+          }),
+          state.env,
+        );
+        expect(added.status).toBe(200);
+        expect(await added.json()).toEqual({
+          status: "ok",
+          message: `App ${appId} added to conversation summary apps`,
+        });
+      }
+
+      const duplicate = await jobs.fetch(
+        new Request("https://jobs.test/v1/summary-app-ids/summary-a", {
+          method: "POST",
+          headers,
+        }),
+        state.env,
+      );
+      expect(await duplicate.json()).toEqual({
+        status: "ok",
+        message: "App summary-a already exists in conversation summary apps",
+      });
+
+      const listed = await jobs.fetch(
+        new Request("https://jobs.test/v1/summary-app-ids", { headers }),
+        state.env,
+      );
+      expect(await listed.json()).toEqual({
+        app_ids: ["summary-a", "summary-z"],
+      });
+
+      const missing = await jobs.fetch(
+        new Request("https://jobs.test/v1/summary-app-ids/missing", {
+          method: "DELETE",
+          headers,
+        }),
+        state.env,
+      );
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toEqual({
+        detail: "App missing not found in conversation summary apps",
+      });
+
+      const removed = await jobs.fetch(
+        new Request("https://jobs.test/v1/summary-app-ids/summary-a", {
+          method: "DELETE",
+          headers,
+        }),
+        state.env,
+      );
+      expect(await removed.json()).toEqual({
+        status: "ok",
+        message: "App summary-a removed from conversation summary apps",
+      });
+      expect(
+        state.database.row<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM cf_conversation_summary_apps",
+        )?.count,
+      ).toBe(1);
+    } finally {
+      state.database.close();
+    }
+  });
 });
 
 describe("Cloudflare app mutations", () => {

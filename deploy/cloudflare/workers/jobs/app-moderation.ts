@@ -310,6 +310,68 @@ async function moderateApp(
   }
 }
 
+async function listConversationSummaryApps(c: JobsContext): Promise<Response> {
+  try {
+    const result = await c.env.APP_DB.prepare(
+      "SELECT app_id FROM cf_conversation_summary_apps ORDER BY app_id",
+    ).all<{ app_id: string }>();
+    return c.json({ app_ids: (result.results || []).map((row) => row.app_id) });
+  } catch {
+    return c.json({ error: "summary_apps_unavailable" }, 503);
+  }
+}
+
+async function addConversationSummaryApp(
+  c: JobsContext,
+  appId: string,
+): Promise<Response> {
+  const normalizedAppId = identifier(appId);
+  if (!normalizedAppId) return c.json({ detail: "invalid app_id" }, 422);
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const result = await c.env.APP_DB.prepare(
+      "INSERT OR IGNORE INTO cf_conversation_summary_apps (app_id, created_at, updated_at) VALUES (?, ?, ?)",
+    )
+      .bind(normalizedAppId, now, now)
+      .run();
+    const message = result.meta?.changes
+      ? `App ${normalizedAppId} added to conversation summary apps`
+      : `App ${normalizedAppId} already exists in conversation summary apps`;
+    return c.json({ status: "ok", message });
+  } catch {
+    return c.json({ error: "summary_apps_unavailable" }, 503);
+  }
+}
+
+async function removeConversationSummaryApp(
+  c: JobsContext,
+  appId: string,
+): Promise<Response> {
+  const normalizedAppId = identifier(appId);
+  if (!normalizedAppId) return c.json({ detail: "invalid app_id" }, 422);
+  try {
+    const result = await c.env.APP_DB.prepare(
+      "DELETE FROM cf_conversation_summary_apps WHERE app_id = ?",
+    )
+      .bind(normalizedAppId)
+      .run();
+    if (result.meta?.changes !== 1) {
+      return c.json(
+        {
+          detail: `App ${normalizedAppId} not found in conversation summary apps`,
+        },
+        404,
+      );
+    }
+    return c.json({
+      status: "ok",
+      message: `App ${normalizedAppId} removed from conversation summary apps`,
+    });
+  } catch {
+    return c.json({ error: "summary_apps_unavailable" }, 503);
+  }
+}
+
 export function registerAppModerationRoutes(app: Hono<{ Bindings: JobsEnv }>) {
   app.post("/v1/apps/tester", async (c) => {
     const denied = requireAdmin(c);
@@ -338,5 +400,17 @@ export function registerAppModerationRoutes(app: Hono<{ Bindings: JobsEnv }>) {
   app.post("/v1/apps/:appId/reject", async (c) => {
     const denied = requireAdmin(c);
     return denied || moderateApp(c, c.req.param("appId"), false);
+  });
+  app.get("/v1/summary-app-ids", async (c) => {
+    if (!adminAuthorized(c)) return c.json({ detail: "Forbidden" }, 403);
+    return listConversationSummaryApps(c);
+  });
+  app.post("/v1/summary-app-ids/:appId", async (c) => {
+    if (!adminAuthorized(c)) return c.json({ detail: "Forbidden" }, 403);
+    return addConversationSummaryApp(c, c.req.param("appId"));
+  });
+  app.delete("/v1/summary-app-ids/:appId", async (c) => {
+    if (!adminAuthorized(c)) return c.json({ detail: "Forbidden" }, 403);
+    return removeConversationSummaryApp(c, c.req.param("appId"));
   });
 }

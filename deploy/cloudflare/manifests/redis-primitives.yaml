@@ -342,8 +342,12 @@ families:
     legacy_features: [set-membership]
     consistency: durable-authoritative
     target: d1
-    target_owner: api-core
-    migration_state: planned
+    target_owner: jobs
+    migration_state: staging-owned
+    migrated_routes:
+      - DELETE /v1/summary-app-ids/:app_id
+      - GET /v1/summary-app-ids
+      - POST /v1/summary-app-ids/:app_id
   - id: request-rate-limits
     source_symbols: [check_rate_limit, reserve_rate_limit, release_rate_limit]
     key_patterns: ["rl:{policy}:{subject}"]

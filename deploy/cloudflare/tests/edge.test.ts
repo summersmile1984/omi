@@ -722,6 +722,9 @@ describe("edge gateway", () => {
     for (const [method, path] of [
       ["GET", "/v1/apps/public/unapproved"],
       ["POST", "/v1/apps/review-app/approve?uid=creator-user"],
+      ["GET", "/v1/summary-app-ids"],
+      ["POST", "/v1/summary-app-ids/summary-app"],
+      ["DELETE", "/v1/summary-app-ids/summary-app"],
     ] as const) {
       const response = await edge.fetch(
         new Request(`https://edge.test${path}`, {
@@ -744,6 +747,9 @@ describe("edge gateway", () => {
     ).toEqual([
       "GET /v1/apps/public/unapproved",
       "POST /v1/apps/review-app/approve",
+      "GET /v1/summary-app-ids",
+      "POST /v1/summary-app-ids/summary-app",
+      "DELETE /v1/summary-app-ids/summary-app",
     ]);
     for (const request of jobsRequests) {
       expect(request.headers.get("secret-key")).toBe("apps-admin-secret");
