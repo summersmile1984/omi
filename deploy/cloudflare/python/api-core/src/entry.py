@@ -182,6 +182,12 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": "api-core", "version": "cf-02"}
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    """Expose the API Core health payload at the legacy root path."""
+    return {"status": "ok", "service": "api-core", "version": "cf-02"}
+
+
 @app.get("/v1/cf/probe")
 async def probe(request: Request):
     context = auth_context(request)

@@ -57,6 +57,34 @@ describe("edge gateway", () => {
     });
   });
 
+  it("forwards the public root health payload to API Core", async () => {
+    const requests: Request[] = [];
+    const env = {
+      API_CORE: service((request) => {
+        requests.push(request);
+        return Response.json({
+          status: "ok",
+          service: "api-core",
+          version: "cf-02",
+        });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/"),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "ok",
+      service: "api-core",
+      version: "cf-02",
+    });
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0].url).pathname).toBe("/");
+    expect(requests[0].headers.get("authorization")).toBeNull();
+    expect(requests[0].headers.get("x-omi-auth-context")).toBeNull();
+  });
+
   it("serves public legacy compatibility routes without dependencies", async () => {
     const v1Health = await edge.fetch(
       new Request("https://edge.test/v1/health"),

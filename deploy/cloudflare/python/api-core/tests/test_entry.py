@@ -8,10 +8,11 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import entry  # noqa: E402
-
 from entry import (  # noqa: E402
     DEVICE_PREFIXES,
     _asset_key,
@@ -20,6 +21,13 @@ from entry import (  # noqa: E402
     _firmware_response,
     _parse_asset_range,
 )
+
+
+def test_root_is_served_by_api_core():
+    with TestClient(entry.app) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "service": "api-core", "version": "cf-02"}
 
 
 class FakeDb:
