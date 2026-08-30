@@ -56,6 +56,7 @@
 - 通用 integration status live 验证：`todoist`、未知 `whoop`、`google_calendar`、`gmail` 均返回 200 且只含连接布尔值，未认证请求为 401；验证账号删除后 App-D1 intent 清零、保留预期 tombstone，Auth user/session/account 均为 0。
 - Google-derived integration OAuth URL staging 边界已接入 Jobs Worker：`gmail` 等别名复用 Calendar 的 D1 哈希 state，未知 provider 保留 400，未认证请求保留 401；真实 Google 授权仍受 Worker client secret 配置门槛约束。
 - 数据保护迁移清单 staging 边界已接入 API Core：`GET /v1/users/migration/requests?target_level=enhanced` 经 Edge → API Core → D1 返回 uid 隔离的 conversation/memory/chat 待迁移项，保留 public/shared 会话排除和无效 target 的 400；写入/加密迁移端点仍明确保留 legacy owner。
+- 数据保护迁移清单 live staging 验证：隔离 Better Auth 账号的合法查询返回 200/空清单，未认证为 401，非法 target 为 400；随后通过公开删号完成 Auth user/session/account 清理，App D1 intent 为 0（仅保留预期 tombstone）。
 - `POST /v2/messages` 当前返回明确的 `503 provider_not_configured`，这是聊天 provider 尚未配置的已知能力缺口，不是路由 404。
 
 ## 发布前必须补齐

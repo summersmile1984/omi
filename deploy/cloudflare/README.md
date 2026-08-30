@@ -1498,7 +1498,10 @@ The read-only data-protection migration inventory now runs in API Core over D1
 at `GET /v1/users/migration/requests?target_level=enhanced`. It preserves the
 legacy public/shared conversation exclusion and treats D1 rows without an
 explicit protection level as `standard`; the mutation endpoints remain on the
-legacy owner until their encryption and batch-write contracts are migrated.
+legacy owner until their encryption and batch-write contracts are migrated. A
+live staging check returned 200 for an isolated Better Auth account, 401 without
+auth, and 400 for an invalid target; the smoke account was then deleted and
+verified absent from Auth and the App D1 deletion intent table.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC
