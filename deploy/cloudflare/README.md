@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 441 already match
-  Cloudflare staging owners and 135 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 442 already match
+  Cloudflare staging owners and 134 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1047,6 +1047,13 @@ embeddings are accepted for client compatibility but are not stored or searched;
 screen-activity vector lifecycle and paid semantic search remain on the legacy
 owner until their contracts move. MCP memory, conversation, and action-item
 semantic search use separate staging Vectorize projections described below.
+
+`GET /v1/crisp/unread` is now a staging-owned support-message read. The Edge
+authenticates the Better Auth session, API Core resolves only the caller's
+non-sensitive profile email through the Auth Worker, and the Worker fetches the
+matching conversation/messages from Crisp. Missing Crisp configuration, profile,
+or conversation preserves the legacy empty response; provider JSON failures are
+reported as a bounded `502` without logging credentials or message data.
 
 `npm run backfill:d1 -- --input export.ndjson` generates reviewed D1-ingestion
 SQL from newline-delimited records. Every record must name one of the

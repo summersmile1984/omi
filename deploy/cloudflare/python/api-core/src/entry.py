@@ -74,6 +74,7 @@ from speech_profile_routes import router as speech_profile_router
 from user_export_routes import router as user_export_router
 from retired_compat_routes import router as retired_compat_router
 from chat_first_routes import router as chat_first_router
+from crisp_routes import router as crisp_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
@@ -113,6 +114,7 @@ app.include_router(speech_profile_router)
 app.include_router(user_export_router)
 app.include_router(retired_compat_router)
 app.include_router(chat_first_router)
+app.include_router(crisp_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
 ASSET_CLEANUP_GRACE_SECONDS = 15 * 60
 ASSET_CLEANUP_BATCH_SIZE = 10

@@ -1940,6 +1940,37 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("routes Crisp unread reads to the authenticated core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "crisp-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ unread_count: 0, messages: [] });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/crisp/unread?since=0", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(coreRequests).toHaveLength(1);
+    expect(new URL(coreRequests[0].url).pathname).toBe("/v1/crisp/unread");
+    expect(new URL(coreRequests[0].url).search).toBe("?since=0");
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes the canonical memory CRUD surface to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const rateLimitNames: string[] = [];

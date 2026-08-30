@@ -784,6 +784,11 @@ export async function runSmoke({
     unauthenticatedChatDeferral,
     401,
   );
+  const unauthenticatedCrispUnread = await request(
+    fetchImpl,
+    `${base}/v1/crisp/unread?since=0`,
+  );
+  expectStatus("unauthenticated Crisp unread", unauthenticatedCrispUnread, 401);
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, {
@@ -829,6 +834,19 @@ export async function runSmoke({
     body: JSON.stringify({}),
   });
   expectStatus("chat deferral validation boundary", chatDeferral, 400);
+
+  const crispUnread = await requestJson(
+    fetchImpl,
+    `${base}/v1/crisp/unread?since=0`,
+    { headers: authHeaders },
+  );
+  expectStatus("Crisp unread", crispUnread.response, 200);
+  if (
+    !Number.isInteger(crispUnread.body?.unread_count) ||
+    !Array.isArray(crispUnread.body?.messages)
+  ) {
+    throw new Error("Crisp unread returned an invalid payload");
+  }
 
   const appSearch = await request(fetchImpl, `${base}/v2/apps/search?limit=1`, {
     headers: authHeaders,
@@ -1701,10 +1719,12 @@ export async function runSmoke({
     unauthenticatedChatFirstValidation:
       unauthenticatedChatFirstValidation.status,
     unauthenticatedChatDeferral: unauthenticatedChatDeferral.status,
+    unauthenticatedCrispUnread: unauthenticatedCrispUnread.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
     chatFirstValidation: chatFirstValidation.status,
     chatDeferral: chatDeferral.status,
+    crispUnread: crispUnread.response.status,
     appSearch: appSearch.status,
     memorySummaryFeedback: memorySummaryFeedback.status,
     conversations: conversations.status,
