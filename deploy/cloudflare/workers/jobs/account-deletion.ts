@@ -7,6 +7,7 @@ import {
 } from "../shared/auth-context";
 import { recordFallback } from "../shared/fallback";
 import {
+  ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS,
   ACCOUNT_DELETION_D1_PURGE_SURFACES,
   ACCOUNT_DELETION_R2_PREFIX_PATTERNS,
   readAccountProductResidual,
@@ -752,15 +753,26 @@ async function assertStorageKeysBoundToAccount(env: JobsEnv, uid: string) {
 }
 
 async function purgeOneR2Page(env: JobsEnv, uid: string): Promise<boolean> {
-  for (const pattern of ACCOUNT_DELETION_R2_PREFIX_PATTERNS) {
-    const prefix = prefixFor(pattern, uid);
-    const listed = await env.ASSETS.list({
-      prefix,
+  const surfaces = [
+    ...ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS.map(
+      (pattern) => ({
+        bucket: env.CONVERSATION_RECORDINGS,
+        prefix: prefixFor(pattern, uid),
+      }),
+    ),
+    ...ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map((pattern) => ({
+      bucket: env.ASSETS,
+      prefix: prefixFor(pattern, uid),
+    })),
+  ];
+  for (const surface of surfaces) {
+    const listed = await surface.bucket.list({
+      prefix: surface.prefix,
       limit: R2_DELETE_BATCH_SIZE,
     });
     const keys = listed.objects.map(({ key }) => key);
     if (!keys.length) continue;
-    await env.ASSETS.delete(keys);
+    await surface.bucket.delete(keys);
     return true;
   }
   return false;

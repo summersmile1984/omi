@@ -12,6 +12,10 @@ resources:
     name: omi-cf-staging
     owner: api-core
     environment: staging
+  - kind: r2
+    name: omi-cf-conversation-recordings-staging
+    owner: jobs
+    environment: staging
   - kind: worker
     name: omi-cf-edge-staging
     owner: edge

@@ -63,6 +63,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_people", column: "uid" },
   { table: "cf_realtime_sessions", column: "uid" },
   { table: "cf_realtime_usage", column: "uid" },
+  { table: "cf_recording_deletion_intents", column: "uid" },
   { table: "cf_screen_activity", column: "uid" },
   { table: "cf_creator_payment_profiles", column: "uid" },
   { table: "cf_stripe_connect_events", column: "uid_hint" },
@@ -167,6 +168,9 @@ export const ACCOUNT_DELETION_R2_PREFIX_PATTERNS = Object.freeze([
   "chunks/{uid}/",
 ] as const);
 
+export const ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS =
+  Object.freeze(["{uid}/"] as const);
+
 export type AccountProductResidual = Readonly<{
   uid: string;
   empty: boolean;
@@ -195,7 +199,7 @@ function r2Prefix(pattern: string, uid: string): string {
 }
 
 export async function readAccountProductResidual(
-  env: Pick<JobsEnv, "APP_DB" | "ASSETS">,
+  env: Pick<JobsEnv, "APP_DB" | "ASSETS" | "CONVERSATION_RECORDINGS">,
   uid: string,
 ): Promise<AccountProductResidual> {
   if (!validAccountDeletionUid(uid)) {
@@ -209,13 +213,23 @@ export async function readAccountProductResidual(
   );
   const [d1Results, r2Results] = await Promise.all([
     env.APP_DB.batch<{ count?: unknown }>(statements),
-    Promise.all(
-      ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map(async (pattern) => {
+    Promise.all([
+      ...ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map(async (pattern) => {
         const prefix = r2Prefix(pattern, uid);
         const listed = await env.ASSETS.list({ prefix, limit: 1 });
         return [prefix, listed.objects.length > 0 ? 1 : 0] as const;
       }),
-    ),
+      ...ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS.map(
+        async (pattern) => {
+          const prefix = r2Prefix(pattern, uid);
+          const listed = await env.CONVERSATION_RECORDINGS.list({
+            prefix,
+            limit: 1,
+          });
+          return [prefix, listed.objects.length > 0 ? 1 : 0] as const;
+        },
+      ),
+    ]),
   ]);
 
   if (d1Results.length !== ACCOUNT_DELETION_D1_SURFACES.length) {

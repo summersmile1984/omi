@@ -77,6 +77,8 @@ function fakeDatabase(initial: ConversationRow) {
     prepare: (sql: string) => ({
       bind: (...args: unknown[]) => ({
         first: async () => {
+          if (sql.includes("FROM cf_user_privacy_settings"))
+            return { enabled: 1 };
           if (!sql.includes("FROM cf_conversations")) return null;
           return args[0] === row.uid && args[1] === row.id ? { ...row } : null;
         },

@@ -2889,8 +2889,8 @@ describe("edge gateway", () => {
     }
   });
 
-  it("keeps destructive recording deletion on the legacy fallback", async () => {
-    let legacyPath = "";
+  it("routes destructive recording deletion to the durable Jobs owner", async () => {
+    let jobsRequest: Request | undefined;
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
       LEGACY_BACKEND_URL: "https://legacy.example.test",
@@ -2903,27 +2903,24 @@ describe("edge gateway", () => {
       API_CORE: service(() => Response.json({ status: "unexpected" })),
       API_AI: service(() => Response.json({ status: "ok" })),
       REALTIME: service(() => Response.json({ status: "ok" })),
+      JOBS: service((request) => {
+        jobsRequest = request;
+        return Response.json({ status: "ok" });
+      }),
     };
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (request) => {
-      legacyPath = new URL(request instanceof Request ? request.url : request)
-        .pathname;
-      return Response.json({ owner: "legacy" });
-    };
-    try {
-      const response = await edge.fetch(
-        new Request("https://edge.test/v1/users/store-recording-permission", {
-          method: "DELETE",
-          headers: { authorization: "Bearer opaque-session" },
-        }),
-        env,
-      );
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ owner: "legacy" });
-      expect(legacyPath).toBe("/v1/users/store-recording-permission");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/users/store-recording-permission", {
+        method: "DELETE",
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "ok" });
+    expect(new URL(jobsRequest!.url).pathname).toBe(
+      "/v1/users/store-recording-permission",
+    );
+    expect(jobsRequest!.headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
   it("preserves only the app API key for integration routes", async () => {

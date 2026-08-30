@@ -47,6 +47,8 @@ function fakeDatabase(isLocked = 0) {
     prepare: (sql: string) => ({
       bind: (...args: unknown[]) => ({
         first: async () => {
+          if (sql.includes("FROM cf_user_privacy_settings"))
+            return { enabled: 1 };
           if (sql.includes("FROM cf_conversations")) {
             return args[0] === "user-1" && args[1] === "conversation-1"
               ? conversation

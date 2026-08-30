@@ -161,6 +161,9 @@ function environment(options: { queueFail?: boolean } = {}) {
       STRIPE_SECRET_KEY: "sk_test_app_deletion",
       AUTH: { fetch: vi.fn() } as unknown as Fetcher,
       ASSETS: { delete: assetDeletes } as unknown as R2Bucket,
+      CONVERSATION_RECORDINGS: {
+        delete: assetDeletes,
+      } as unknown as R2Bucket,
       AI: { run: vi.fn() },
       MEMORY_VECTORS: fakeVectorize(),
       ACTION_ITEM_VECTORS: fakeVectorize(),

@@ -181,6 +181,7 @@ function environment(
     } as unknown as Fetcher,
     APP_DB: database as unknown as D1Database,
     ASSETS: assets as unknown as R2Bucket,
+    CONVERSATION_RECORDINGS: assets as unknown as R2Bucket,
     AI: { run: vi.fn() },
     MEMORY_VECTORS: {
       upsert: vi.fn(async () => undefined),

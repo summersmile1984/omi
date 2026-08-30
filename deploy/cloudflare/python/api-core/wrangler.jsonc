@@ -46,6 +46,10 @@
       "binding": "ASSETS",
       "bucket_name": "omi-cf-staging",
     },
+    {
+      "binding": "CONVERSATION_RECORDINGS",
+      "bucket_name": "omi-cf-conversation-recordings-staging",
+    },
   ],
   "vars": {
     "ACCOUNT_CUTOVER_PROFILE": "isolated-staging",

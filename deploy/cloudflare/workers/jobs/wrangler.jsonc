@@ -28,7 +28,13 @@
       "migrations_dir": "../../migrations/app",
     },
   ],
-  "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "omi-cf-staging" }],
+  "r2_buckets": [
+    { "binding": "ASSETS", "bucket_name": "omi-cf-staging" },
+    {
+      "binding": "CONVERSATION_RECORDINGS",
+      "bucket_name": "omi-cf-conversation-recordings-staging",
+    },
+  ],
   "ai": { "binding": "AI" },
   "vectorize": [
     { "binding": "MEMORY_VECTORS", "index_name": "omi-cf-memories-v2" },

@@ -125,13 +125,10 @@ function processingHarness(
         };
       }
       if (
-        sql.startsWith(
-          "SELECT private_cloud_sync_enabled FROM cf_user_privacy_settings",
-        )
+        sql.startsWith("SELECT EXISTS(") &&
+        sql.includes("FROM cf_user_privacy_settings")
       ) {
-        return options.privateCloudSyncEnabled === false
-          ? { private_cloud_sync_enabled: 0 }
-          : null;
+        return { enabled: options.privateCloudSyncEnabled === false ? 0 : 1 };
       }
       if (
         sql.startsWith(

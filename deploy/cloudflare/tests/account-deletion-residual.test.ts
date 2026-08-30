@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_DELETION_CONTROL_D1_SURFACES,
+  ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS,
   ACCOUNT_DELETION_D1_SURFACES,
   ACCOUNT_DELETION_D1_PURGE_SURFACES,
   ACCOUNT_DELETION_R2_PREFIX_PATTERNS,
@@ -47,7 +48,9 @@ function migrationIdentitySurfaces(): Set<string> {
     const surfaces = new Set<string>();
     for (const { name } of tables) {
       const quoted = name.replaceAll('"', '""');
-      const columns = database.prepare(`PRAGMA table_info("${quoted}")`).all() as Array<{
+      const columns = database
+        .prepare(`PRAGMA table_info("${quoted}")`)
+        .all() as Array<{
         name: string;
       }>;
       for (const { name: column } of columns) {
@@ -103,7 +106,26 @@ function residualEnvironment(
       delimitedPrefixes: [],
     })),
   } as unknown as R2Bucket;
-  return { env: { APP_DB: database, ASSETS: bucket }, statements, bucket };
+  const conversationBucket = {
+    list: vi.fn(async ({ prefix }: { prefix: string }) => ({
+      objects:
+        prefix === options.r2Prefix
+          ? [{ key: `${prefix}object`, version: "1", size: 1 }]
+          : [],
+      truncated: false,
+      delimitedPrefixes: [],
+    })),
+  } as unknown as R2Bucket;
+  return {
+    env: {
+      APP_DB: database,
+      ASSETS: bucket,
+      CONVERSATION_RECORDINGS: conversationBucket,
+    },
+    statements,
+    bucket,
+    conversationBucket,
+  };
 }
 
 async function residualHeaders(uid: string, path: string) {
@@ -209,6 +231,9 @@ describe("Cloudflare account-deletion residual", () => {
     );
     expect(empty.bucket.list).toHaveBeenCalledTimes(
       ACCOUNT_DELETION_R2_PREFIX_PATTERNS.length,
+    );
+    expect(empty.conversationBucket.list).toHaveBeenCalledTimes(
+      ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS.length,
     );
 
     const populatedPrefix = "cf-sync/account-user/";

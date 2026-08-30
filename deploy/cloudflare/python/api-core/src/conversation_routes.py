@@ -487,9 +487,7 @@ def _speaker_assignment(segment: dict[str, object]) -> str:
     return "unassigned"
 
 
-def _record_speaker_identity_confirmation(
-    *, scope: str, before: list[str], after: list[str]
-) -> None:
+def _record_speaker_identity_confirmation(*, scope: str, before: list[str], after: list[str]) -> None:
     """Emit a bounded, PII-free equivalent of the legacy product event."""
 
     if not after:
@@ -545,11 +543,7 @@ async def _write_conversation_segments(
 
 async def _shared_people(env: object, uid: str, segments: list[object]) -> list[dict[str, object]]:
     person_ids = sorted(
-        {
-            str(segment["person_id"])
-            for segment in segments
-            if isinstance(segment, dict) and segment.get("person_id")
-        }
+        {str(segment["person_id"]) for segment in segments if isinstance(segment, dict) and segment.get("person_id")}
     )
     people: list[dict[str, object]] = []
     for start in range(0, len(person_ids), 100):
@@ -590,6 +584,22 @@ async def _shared_people(env: object, uid: str, segments: list[object]) -> list[
 def _audio_signing_secret(env: object) -> str | None:
     value = getattr(env, "AUDIO_URL_SIGNING_SECRET", None) or getattr(env, "INTERNAL_ASSERTION_SECRET", None)
     return value if isinstance(value, str) and len(value) >= 16 else None
+
+
+async def _recording_access_enabled(env: object, uid: str) -> bool:
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT EXISTS("
+            "SELECT 1 FROM cf_user_privacy_settings "
+            "WHERE uid = ? AND store_recording_permission = 1"
+            ") AND NOT EXISTS("
+            "SELECT 1 FROM cf_recording_deletion_intents WHERE uid = ?"
+            ") AS allowed"
+        )
+        .bind(uid, uid)
+        .first()
+    )
+    return isinstance(row, dict) and bool(row.get("allowed"))
 
 
 def _b64url(value: bytes) -> str:
@@ -919,6 +929,10 @@ async def store_conversation_projection(request: Request):
     finished_at = _epoch(projection.finished_at)
     env = request.scope["env"]
     try:
+        recording_enabled = await _recording_access_enabled(env, uid)
+        if not recording_enabled:
+            json_fields["audio_files_json"] = "[]"
+            json_fields["conversation_audio_json"] = None
         conversation_statement = env.APP_DB.prepare(
             "INSERT INTO cf_conversations "
             "(uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
@@ -953,7 +967,7 @@ async def store_conversation_projection(request: Request):
             int(projection.discarded),
             int(projection.is_locked),
             int(projection.deferred),
-            int(projection.private_cloud_sync_enabled),
+            int(projection.private_cloud_sync_enabled and recording_enabled),
             projection.folder_id,
             projection.client_device_id,
             projection.client_platform,
@@ -1200,13 +1214,16 @@ async def get_shared_conversation(conversation_id: str, request: Request):
         return JSONResponse({"error": "invalid conversation id"}, status_code=400)
     env = request.scope["env"]
     try:
-        row = await env.APP_DB.prepare(
-            _CONVERSATION_SEARCH_SELECT
-            + "FROM cf_shared_conversation_index i "
-            "JOIN cf_conversations c ON c.uid = i.uid AND c.id = i.conversation_id "
-            "WHERE i.conversation_id = ? AND i.visibility IN ('shared', 'public') "
-            "AND c.visibility IN ('shared', 'public') LIMIT 1"
-        ).bind(conversation_id).first()
+        row = (
+            await env.APP_DB.prepare(
+                _CONVERSATION_SEARCH_SELECT + "FROM cf_shared_conversation_index i "
+                "JOIN cf_conversations c ON c.uid = i.uid AND c.id = i.conversation_id "
+                "WHERE i.conversation_id = ? AND i.visibility IN ('shared', 'public') "
+                "AND c.visibility IN ('shared', 'public') LIMIT 1"
+            )
+            .bind(conversation_id)
+            .first()
+        )
         if not isinstance(row, dict):
             return JSONResponse({"error": "Conversation is private"}, status_code=404)
         if _bool(row.get("is_locked")):
@@ -1343,9 +1360,7 @@ async def assign_conversation_speaker(request: Request, conversation_id: str, sp
             value = None
         segments = _json_list(existing.get("transcript_segments_json"))
         targets = [
-            segment
-            for segment in segments
-            if isinstance(segment, dict) and segment.get("speaker_id") == speaker_id
+            segment for segment in segments if isinstance(segment, dict) and segment.get("speaker_id") == speaker_id
         ]
         before = [_speaker_assignment(segment) for segment in targets]
         for segment in targets:
@@ -1514,6 +1529,8 @@ async def get_conversation_audio_urls(request: Request, conversation_id: str):
                 {"error": "A paid plan is required to access this conversation."},
                 status_code=402,
             )
+        if not await _recording_access_enabled(env, uid):
+            return {"audio_files": [], "conversation_audio": None, "poll_after_ms": None}
         bucket = getattr(env, "ASSETS", None)
         if bucket is None or not callable(getattr(bucket, "head", None)):
             return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
@@ -1613,6 +1630,8 @@ async def download_conversation_audio(
                 {"error": "A paid plan is required to access this conversation."},
                 status_code=402,
             )
+        if not await _recording_access_enabled(env, uid):
+            return JSONResponse({"error": "audio file not found"}, status_code=404)
         conversation_audio = _conversation_audio(row)
         audio_file = (
             ({**conversation_audio, "id": "conversation"} if conversation_audio else None)
@@ -1677,8 +1696,16 @@ async def conversation_has_recording(request: Request, conversation_id: str):
                 {"error": "A paid plan is required to access this conversation."},
                 status_code=402,
             )
+        if not await _recording_access_enabled(env, uid):
+            return {"has_recording": False}
         bucket = getattr(env, "ASSETS", None)
-        if bucket is None or not callable(getattr(bucket, "head", None)):
+        recordings_bucket = getattr(env, "CONVERSATION_RECORDINGS", None)
+        if (
+            bucket is None
+            or not callable(getattr(bucket, "head", None))
+            or recordings_bucket is None
+            or not callable(getattr(recordings_bucket, "head", None))
+        ):
             return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
         metadata = None
         for audio_file in _audio_files(row):
@@ -1688,7 +1715,7 @@ async def conversation_has_recording(request: Request, conversation_id: str):
         if metadata is None:
             # This key matches the legacy recording namespace (`uid/id.wav`)
             # after its data is copied into the uid-scoped R2 binding.
-            metadata = await bucket.head(f"{uid}/{conversation_id}.wav")
+            metadata = await recordings_bucket.head(f"{uid}/{conversation_id}.wav")
     except Exception:
         return JSONResponse({"error": "recordings unavailable"}, status_code=503)
     return {"has_recording": metadata is not None}

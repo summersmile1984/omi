@@ -37,6 +37,11 @@ import {
   registerAccountDeletionRoutes,
 } from "./account-deletion";
 import {
+  processRecordingDeletionMessage,
+  reconcileRecordingDeletions,
+  registerRecordingDeletionRoutes,
+} from "./recording-deletion";
+import {
   processStripeWebhookMessage,
   reconcileStripeWebhookEvents,
   registerStripeBillingRoutes,
@@ -107,6 +112,7 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
 
 registerSyncRoutes(app, requestContext);
 registerAccountDeletionRoutes(app, requestContext);
+registerRecordingDeletionRoutes(app, requestContext);
 registerStripeBillingRoutes(app, requestContext);
 registerCreatorPaymentRoutes(app, requestContext);
 registerAppMutationRoutes(app, requestContext);
@@ -885,6 +891,10 @@ async function processJobMessage(
     await processAccountDeletionMessage(message, env);
     return;
   }
+  if (message.body.kind === "recording_delete") {
+    await processRecordingDeletionMessage(message, env);
+    return;
+  }
   if (message.body.kind === "sync_local_files") {
     await processSyncJobMessage(message, env);
     return;
@@ -1052,6 +1062,7 @@ export default {
       drainNotifications(env),
       drainIntegrationWebhooks(env, now),
       reconcileAccountDeletions(env, now),
+      reconcileRecordingDeletions(env, now),
       reconcileAppDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),
       reconcileStripeWebhookEvents(env, now),

@@ -53,12 +53,20 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0040_conversation_search.sql").read_text())
         self.connection.execute("ALTER TABLE cf_conversations ADD COLUMN app_id TEXT")
         self.connection.executescript((migration_dir / "0046_account_usage.sql").read_text())
+        self.connection.executescript((migration_dir / "0006_user_privacy_settings.sql").read_text())
         self.connection.executescript(
             "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
             "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);"
+            "CREATE TABLE cf_recording_deletion_intents (uid TEXT PRIMARY KEY);"
         )
         self.connection.executescript((migration_dir / "0068_vector_projection_outbox.sql").read_text())
         self.connection.executescript((migration_dir / "0070_conversation_shares.sql").read_text())
+        self.connection.execute(
+            "INSERT INTO cf_user_privacy_settings "
+            "(uid, store_recording_permission, private_cloud_sync_enabled, created_at, updated_at) "
+            "VALUES ('conversation-user', 1, 1, 1, 1)"
+        )
+        self.connection.commit()
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -178,6 +186,12 @@ def insert_conversation(
     conversation_audio: dict[str, object] | None = None,
 ):
     db.connection.execute(
+        "INSERT INTO cf_user_privacy_settings "
+        "(uid, store_recording_permission, private_cloud_sync_enabled, created_at, updated_at) "
+        "VALUES (?, 1, 1, ?, ?) ON CONFLICT(uid) DO UPDATE SET store_recording_permission = 1",
+        (uid, created_at, created_at),
+    )
+    db.connection.execute(
         "INSERT INTO cf_conversations "
         "(uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
         "starred, discarded, is_locked, deferred, folder_id, structured_json, transcript_segments_json, photos_json) "
@@ -256,9 +270,7 @@ def test_conversation_share_migration_backfills_only_unambiguous_public_ids():
     rows = connection.execute(
         "SELECT conversation_id, uid, visibility FROM cf_shared_conversation_index ORDER BY conversation_id"
     ).fetchall()
-    assert [dict(row) for row in rows] == [
-        {"conversation_id": "unique-public", "uid": "owner", "visibility": "public"}
-    ]
+    assert [dict(row) for row in rows] == [{"conversation_id": "unique-public", "uid": "owner", "visibility": "public"}]
 
 
 def test_conversation_projection_lists_filters_and_redacts_list_details():
@@ -635,8 +647,18 @@ def test_canonical_recording_existence_uses_uid_scoped_r2_and_locked_rows_fail_c
     insert_conversation(db, uid="conversation-user", conversation_id="unrecorded", created_at=150)
     insert_conversation(db, uid="conversation-user", conversation_id="locked-recording", created_at=100, locked=1)
     bucket = FakeBucket()
-    bucket.keys.add("conversation-user/recorded.wav")
-    env = type("Env", (), {"APP_DB": db, "ASSETS": bucket, "INTERNAL_ASSERTION_SECRET": secret})()
+    recordings_bucket = FakeBucket()
+    recordings_bucket.keys.add("conversation-user/recorded.wav")
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": db,
+            "ASSETS": bucket,
+            "CONVERSATION_RECORDINGS": recordings_bucket,
+            "INTERNAL_ASSERTION_SECRET": secret,
+        },
+    )()
 
     exists = asyncio.run(conversation_has_recording(FakeRequest(env, signed_headers(secret)), "recorded"))
     assert exists == {"has_recording": True}
@@ -649,6 +671,12 @@ def test_canonical_recording_existence_uses_uid_scoped_r2_and_locked_rows_fail_c
     no_bucket = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
     unavailable = asyncio.run(conversation_has_recording(FakeRequest(no_bucket, signed_headers(secret)), "recorded"))
     assert unavailable.status_code == 503
+    db.connection.execute("INSERT INTO cf_recording_deletion_intents (uid) VALUES (?)", ("conversation-user",))
+    db.connection.commit()
+    disabled = asyncio.run(conversation_has_recording(FakeRequest(env, signed_headers(secret)), "recorded"))
+    assert disabled == {"has_recording": False}
+    disabled_missing = asyncio.run(conversation_has_recording(FakeRequest(env, signed_headers(secret)), "missing"))
+    assert disabled_missing.status_code == 404
 
 
 def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
@@ -756,6 +784,35 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
         )
     )
     assert denied.status_code == 401
+
+    db.connection.execute("INSERT INTO cf_recording_deletion_intents (uid) VALUES (?)", ("conversation-user",))
+    db.connection.commit()
+    blocked_urls = asyncio.run(
+        get_conversation_audio_urls(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                url="https://edge.test/v1/sync/audio/audio-conversation/urls",
+            ),
+            "audio-conversation",
+        )
+    )
+    assert blocked_urls == {"audio_files": [], "conversation_audio": None, "poll_after_ms": None}
+    blocked_missing = asyncio.run(
+        get_conversation_audio_urls(
+            FakeRequest(env, signed_headers(secret)),
+            "missing-conversation",
+        )
+    )
+    assert blocked_missing.status_code == 404
+    blocked_download = asyncio.run(
+        download_conversation_audio(
+            FakeRequest(env, {}, {"token": token}, url=signed_url),
+            "audio-conversation",
+            "audio-1",
+        )
+    )
+    assert blocked_download.status_code == 404
 
 
 def test_worker_audio_urls_fail_closed_for_locked_and_missing_objects():
@@ -1371,9 +1428,7 @@ def test_conversation_projection_write_keeps_share_index_in_sync_and_rejects_own
     assert dict(indexed) == {"uid": "conversation-user", "visibility": "public"}
 
     private = asyncio.run(
-        store_conversation_projection(
-            FakeRequest(env, signed_headers(secret), body={**body, "visibility": "private"})
-        )
+        store_conversation_projection(FakeRequest(env, signed_headers(secret), body={**body, "visibility": "private"}))
     )
     assert private == stored
     assert (
@@ -1386,9 +1441,7 @@ def test_conversation_projection_write_keeps_share_index_in_sync_and_rejects_own
 
     asyncio.run(store_conversation_projection(FakeRequest(env, signed_headers(secret), body=body)))
     collision = asyncio.run(
-        store_conversation_projection(
-            FakeRequest(env, signed_headers(secret, "other-user"), body=body)
-        )
+        store_conversation_projection(FakeRequest(env, signed_headers(secret, "other-user"), body=body))
     )
     assert collision.status_code == 409
     assert (

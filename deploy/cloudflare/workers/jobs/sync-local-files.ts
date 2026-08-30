@@ -1164,16 +1164,34 @@ function playbackAudioId(
   return `cf-${job.content_id.slice(0, 20)}-${file.ordinal}-${chunkIndex}`;
 }
 
-async function privateCloudSyncEnabled(
+export async function recordingStorageEnabled(
   env: JobsEnv,
   uid: string,
 ): Promise<boolean> {
   const row = await env.APP_DB.prepare(
-    "SELECT private_cloud_sync_enabled FROM cf_user_privacy_settings WHERE uid = ?",
+    `SELECT EXISTS(
+       SELECT 1 FROM cf_user_privacy_settings
+       WHERE uid = ? AND private_cloud_sync_enabled = 1
+         AND store_recording_permission = 1
+     ) AND NOT EXISTS(
+       SELECT 1 FROM cf_recording_deletion_intents WHERE uid = ?
+     ) AS enabled`,
+  )
+    .bind(uid, uid)
+    .first<{ enabled?: unknown }>();
+  return Number(row?.enabled) === 1;
+}
+
+async function recordingDeletionActive(
+  env: JobsEnv,
+  uid: string,
+): Promise<boolean> {
+  const row = await env.APP_DB.prepare(
+    "SELECT 1 AS active FROM cf_recording_deletion_intents WHERE uid = ? LIMIT 1",
   )
     .bind(uid)
-    .first<{ private_cloud_sync_enabled: number }>();
-  return row?.private_cloud_sync_enabled !== 0;
+    .first<{ active?: unknown }>();
+  return Number(row?.active) === 1;
 }
 
 export type PlaybackJob = {
@@ -1356,6 +1374,7 @@ export async function buildConversationPlayback(
   values: unknown[],
   now: number,
 ): Promise<ConversationPlayback | null> {
+  if (!(await recordingStorageEnabled(env, job.uid))) return null;
   const parsed = values.map(playbackFile);
   if (!parsed.length || parsed.some((file) => file === null)) return null;
   const audioFiles = (parsed as PlaybackAudioFile[]).sort((left, right) => {
@@ -1435,7 +1454,7 @@ async function persistConversationPlayback(
   conversationId: string,
   now: number,
 ): Promise<PlaybackAudioFile[]> {
-  if (!(await privateCloudSyncEnabled(env, job.uid))) return [];
+  if (!(await recordingStorageEnabled(env, job.uid))) return [];
 
   const playback: PlaybackAudioFile[] = [];
   for (const file of files) {
@@ -1548,7 +1567,9 @@ async function persistConversationPlayback(
     const updated = await env.APP_DB.prepare(
       "UPDATE cf_conversations SET updated_at = ?, private_cloud_sync_enabled = 1, audio_files_json = ?, " +
         "conversation_audio_json = ? WHERE uid = ? AND id = ? AND COALESCE(updated_at, created_at) = ? " +
-        "RETURNING id",
+        "AND EXISTS (SELECT 1 FROM cf_user_privacy_settings " +
+        "WHERE uid = ? AND private_cloud_sync_enabled = 1 AND store_recording_permission = 1) " +
+        "AND NOT EXISTS (SELECT 1 FROM cf_recording_deletion_intents WHERE uid = ?) RETURNING id",
     )
       .bind(
         nextRevision,
@@ -1557,6 +1578,8 @@ async function persistConversationPlayback(
         job.uid,
         conversationId,
         revision,
+        job.uid,
+        job.uid,
       )
       .run<{ id: string }>();
     if (updated.results?.[0]?.id === conversationId) {
@@ -2369,6 +2392,25 @@ export function registerSyncRoutes(
   app.post("/v2/sync-local-files", async (c) => {
     const context = await authContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      if (await recordingDeletionActive(c.env, context.uid)) {
+        return c.json(
+          {
+            code: "recording_deletion_in_progress",
+            detail: "Recording cleanup is in progress",
+          },
+          409,
+        );
+      }
+    } catch {
+      return c.json(
+        {
+          code: "sync_admission_unavailable",
+          detail: "Sync admission is temporarily unavailable",
+        },
+        503,
+      );
+    }
     const declaredLength = Number(c.req.header("content-length"));
     if (
       Number.isFinite(declaredLength) &&

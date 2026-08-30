@@ -1669,6 +1669,24 @@ routes:
     idempotency: required
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/users/store-recording-permission
+    owner: jobs
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies:
+      [
+        d1-app,
+        r2-assets,
+        r2-conversation-recordings,
+        queue-jobs,
+        worker-secrets,
+      ]
+    protocol: http
+    idempotency: uid-scoped
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/users/private-cloud-sync
     owner: api-core

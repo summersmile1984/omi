@@ -419,6 +419,20 @@ async def _save_privacy_settings(env: object, uid: str, settings: dict[str, obje
     ).run()
 
 
+async def _recording_deletion_active(env: object, uid: str) -> bool:
+    row = (
+        await env.APP_DB.prepare("SELECT 1 AS active FROM cf_recording_deletion_intents WHERE uid = ? LIMIT 1")
+        .bind(uid)
+        .first()
+    )
+    return isinstance(row, dict) and bool(row.get("active"))
+
+
+async def _recording_storage_enabled(env: object, uid: str) -> bool:
+    settings = await _load_privacy_settings(env, uid)
+    return bool(settings["store_recording_permission"]) and not await _recording_deletion_active(env, uid)
+
+
 def _training_data_opt_in(row: object | None) -> dict[str, object]:
     if not isinstance(row, dict):
         return {"opted_in": False, "status": None}
@@ -804,9 +818,16 @@ async def set_store_recording_permission(request: Request):
         return JSONResponse({"error": "invalid boolean value"}, status_code=400)
     env = request.scope["env"]
     uid = str(context["uid"])
+    if value and await _recording_deletion_active(env, uid):
+        return JSONResponse({"error": "recording deletion in progress"}, status_code=409)
     settings = await _load_privacy_settings(env, uid)
     settings["store_recording_permission"] = value
-    await _save_privacy_settings(env, uid, settings)
+    try:
+        await _save_privacy_settings(env, uid, settings)
+    except Exception:
+        if value and await _recording_deletion_active(env, uid):
+            return JSONResponse({"error": "recording deletion in progress"}, status_code=409)
+        return JSONResponse({"error": "privacy settings unavailable"}, status_code=503)
     return {"status": "ok"}
 
 
@@ -1534,6 +1555,10 @@ async def put_asset(requested_key: str, request: Request):
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > MAX_ASSET_BODY_BYTES:
         return JSONResponse({"error": "asset body too large"}, status_code=413)
+    content_type = request.headers.get("content-type", "application/octet-stream")[:200]
+    uid = str(context["uid"])
+    if content_type.startswith("audio/") and not await _recording_storage_enabled(env, uid):
+        return JSONResponse({"error": "recording storage is disabled"}, status_code=409)
     bounded_body = await _read_bounded_asset_body(request)
     if bounded_body is None:
         return JSONResponse({"error": "asset body too large"}, status_code=413)
@@ -1541,16 +1566,15 @@ async def put_asset(requested_key: str, request: Request):
     expected_checksum = request.headers.get("x-content-sha256")
     if expected_checksum and expected_checksum.strip().lower() != checksum:
         return JSONResponse({"error": "asset checksum mismatch"}, status_code=422)
-    content_type = request.headers.get("content-type", "application/octet-stream")[:200]
-    uid = str(context["uid"])
     storage_key = _asset_storage_key(uid, checksum)
     now = int(time.time())
     try:
         await env.APP_DB.prepare(
             "INSERT INTO cf_asset_cleanup_tasks "
-            "(storage_key, uid, logical_key, reason, not_before, attempts, last_error, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'uncommitted-upload', ?, 0, NULL, ?, ?)"
-        ).bind(storage_key, uid, key, now + ASSET_CLEANUP_GRACE_SECONDS, now, now).run()
+            "(storage_key, uid, logical_key, content_type, reason, not_before, attempts, last_error, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'uncommitted-upload', ?, 0, NULL, ?, ?)"
+        ).bind(storage_key, uid, key, content_type, now + ASSET_CLEANUP_GRACE_SECONDS, now, now).run()
     except Exception:
         return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
     try:
@@ -1566,8 +1590,9 @@ async def put_asset(requested_key: str, request: Request):
     etag = str(getattr(stored, "httpEtag", getattr(stored, "etag", "")))
     cleanup_previous = env.APP_DB.prepare(
         "INSERT OR IGNORE INTO cf_asset_cleanup_tasks "
-        "(storage_key, uid, logical_key, reason, not_before, attempts, last_error, created_at, updated_at) "
-        "SELECT storage_key, uid, object_key, 'superseded', ?, 0, NULL, ?, ? FROM cf_asset_objects "
+        "(storage_key, uid, logical_key, content_type, reason, not_before, attempts, last_error, "
+        "created_at, updated_at) "
+        "SELECT storage_key, uid, object_key, content_type, 'superseded', ?, 0, NULL, ?, ? FROM cf_asset_objects "
         "WHERE uid = ? AND object_key = ? AND storage_key IS NOT NULL AND storage_key <> ?"
     ).bind(now, now, now, uid, key, storage_key)
     upsert_metadata = env.APP_DB.prepare(
@@ -1634,6 +1659,10 @@ async def get_asset(requested_key: str, request: Request):
     )
     if not row:
         return JSONResponse({"error": "asset not found"}, status_code=404)
+    if str(row.get("content_type") or "").startswith("audio/") and not await _recording_storage_enabled(
+        env, str(context["uid"])
+    ):
+        return JSONResponse({"error": "asset not found"}, status_code=404)
     etag = str(row.get("etag") or "")
     if _etag_matches(request.headers.get("if-none-match"), etag):
         return Response(status_code=304, headers={"etag": etag})
@@ -1680,8 +1709,9 @@ async def delete_asset(requested_key: str, request: Request):
     now = int(time.time())
     schedule_cleanup = env.APP_DB.prepare(
         "INSERT OR IGNORE INTO cf_asset_cleanup_tasks "
-        "(storage_key, uid, logical_key, reason, not_before, attempts, last_error, created_at, updated_at) "
-        "SELECT storage_key, uid, object_key, 'deleted', ?, 0, NULL, ?, ? FROM cf_asset_objects "
+        "(storage_key, uid, logical_key, content_type, reason, not_before, attempts, last_error, "
+        "created_at, updated_at) "
+        "SELECT storage_key, uid, object_key, content_type, 'deleted', ?, 0, NULL, ?, ? FROM cf_asset_objects "
         "WHERE uid = ? AND object_key = ? AND storage_key IS NOT NULL"
     ).bind(now, now, now, uid, key)
     delete_metadata = env.APP_DB.prepare("DELETE FROM cf_asset_objects WHERE uid = ? AND object_key = ?").bind(uid, key)

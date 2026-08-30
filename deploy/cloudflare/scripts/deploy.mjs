@@ -222,6 +222,14 @@ function ensureResources() {
     run("npx", ["wrangler", "d1", "create", "omi-cf-app-staging"]);
   if (!r2Exists("omi-cf-staging"))
     run("npx", ["wrangler", "r2", "bucket", "create", "omi-cf-staging"]);
+  if (!r2Exists("omi-cf-conversation-recordings-staging"))
+    run("npx", [
+      "wrangler",
+      "r2",
+      "bucket",
+      "create",
+      "omi-cf-conversation-recordings-staging",
+    ]);
   if (!queueExists("omi-cf-jobs-staging"))
     run("npx", ["wrangler", "queues", "create", "omi-cf-jobs-staging"]);
   if (!queueExists("omi-cf-jobs-dlq-staging"))

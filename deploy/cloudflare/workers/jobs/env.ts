@@ -8,6 +8,7 @@ export type JobMessage = {
     | "legacy_audio_rebuild"
     | "vector_project"
     | "account_delete"
+    | "recording_delete"
     | "app_delete"
     | "stripe_webhook";
   payload: Record<string, unknown>;
@@ -26,6 +27,7 @@ export type JobsEnv = {
   AUTH: Fetcher;
   APP_DB: D1Database;
   ASSETS: R2Bucket;
+  CONVERSATION_RECORDINGS: R2Bucket;
   AI: WorkersAiBinding;
   MEMORY_VECTORS: VectorizeBinding;
   ACTION_ITEM_VECTORS: VectorizeBinding;

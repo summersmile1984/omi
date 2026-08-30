@@ -257,11 +257,13 @@ function environment(
     authFailDelete?: boolean;
     authHangDelete?: boolean;
     r2?: Record<string, Uint8Array>;
+    conversationR2?: Record<string, Uint8Array>;
     stripeSecretKey?: string;
   } = {},
 ) {
   const database = new SqliteD1();
   const bucket = fakeBucket(options.r2);
+  const conversationBucket = fakeBucket(options.conversationR2);
   const queue = fakeQueue({ fail: options.queueFail });
   const auth = fakeAuth({
     failDelete: options.authFailDelete,
@@ -270,12 +272,13 @@ function environment(
   const env = {
     APP_DB: database as unknown as D1Database,
     ASSETS: bucket.binding,
+    CONVERSATION_RECORDINGS: conversationBucket.binding,
     JOBS: queue.binding,
     AUTH: auth.binding,
     INTERNAL_ASSERTION_SECRET: "account-deletion-test-secret",
     STRIPE_SECRET_KEY: options.stripeSecretKey,
   } as JobsEnv;
-  return { database, bucket, queue, auth, env };
+  return { database, bucket, conversationBucket, queue, auth, env };
 }
 
 async function deletionHeaders(uid: string, path: string) {
@@ -398,6 +401,9 @@ describe("Cloudflare account deletion workflow", () => {
         "cf-app-logos/deletion-user/app/version": new Uint8Array([4, 5, 6]),
         "cf-assets/deletion-user/content": new Uint8Array([1, 2, 3]),
       },
+      conversationR2: {
+        "deletion-user/recording.wav": new Uint8Array([7, 8, 9]),
+      },
     });
     try {
       seedCloudflareAccount(state.database);
@@ -421,6 +427,7 @@ describe("Cloudflare account deletion workflow", () => {
       }
       expect(processed).toBeLessThan(10);
       expect(state.bucket.objects.size).toBe(0);
+      expect(state.conversationBucket.objects.size).toBe(0);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_worker_probe WHERE uid = ?",

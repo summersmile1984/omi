@@ -4,6 +4,7 @@ import {
   fixedLengthPlaybackStream,
   markPlaybackStored,
   recordPlaybackIntent,
+  recordingStorageEnabled,
   type PlaybackAudioFile,
   type PlaybackJob,
 } from "./sync-local-files";
@@ -769,6 +770,8 @@ export async function rebuildLegacyConversationAudio(
     !isLegacyAudioPathSegment(conversationId)
   )
     throw new LegacyAudioSourceError("legacy audio identity is invalid");
+  if (!(await recordingStorageEnabled(env, job.uid)))
+    throw new LegacyAudioSourceError("recording storage is disabled");
   const initial = await env.APP_DB.prepare(
     "SELECT created_at, updated_at, started_at, is_locked, audio_files_json, conversation_audio_json " +
       "FROM cf_conversations WHERE uid = ? AND id = ?",

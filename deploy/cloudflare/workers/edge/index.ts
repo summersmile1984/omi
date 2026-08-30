@@ -990,6 +990,7 @@ app.all("/v1/users/language", proxyAuthenticatedCore);
 app.all("/v1/users/onboarding", proxyAuthenticatedCore);
 app.get("/v1/users/store-recording-permission", proxyAuthenticatedCore);
 app.post("/v1/users/store-recording-permission", proxyAuthenticatedCore);
+app.delete("/v1/users/store-recording-permission", proxyAuthenticatedJobs);
 app.get("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
 app.post("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
 app.get("/v1/users/training-data-opt-in", proxyAuthenticatedCore);

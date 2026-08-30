@@ -704,6 +704,8 @@ GET  /v1/users/onboarding
 PATCH /v1/users/onboarding
 GET  /v1/users/store-recording-permission
 POST /v1/users/store-recording-permission
+DELETE /v1/users/store-recording-permission
+                              Edge → Jobs → D1 intent + paged R2 cleanup
 GET  /v1/users/private-cloud-sync
 POST /v1/users/private-cloud-sync
 GET  /v1/users/training-data-opt-in
@@ -834,8 +836,17 @@ implementations. Authenticated routes that are not yet migrated use
 `404 route not migrated` instead of silently treating the partial Worker as the
 owner.
 
-The destructive `DELETE /v1/users/store-recording-permission` operation remains
-on the legacy owner until its R2/GCS recording deletion contract is migrated.
+The destructive `DELETE /v1/users/store-recording-permission` operation is
+staging-owned by Jobs. Admission atomically disables recording storage and
+persists a uid-scoped cleanup intent before returning the legacy `{status: ok}`
+shape. The queue worker deletes the dedicated conversation-recordings prefix,
+all private-sync/playback/chunk prefixes, audio-only generic assets, and their
+D1 metadata in bounded pages. Recording reads fail closed as soon as the D1
+intent exists; a lease, exponential retry, scheduled reconciler, and two zero
+scans make the cleanup resumable without treating queue delivery as authority.
+Re-enabling storage is fenced until cleanup completes. This ownership remains
+staging-only until legacy GCS recordings have completed the R2 copy/checksum
+cutover described by `manifests/r2-namespaces.yaml`.
 
 The location-consent route is staging-only while legacy chat still reads its
 Firestore consent projection. Do not cut this route over in production until

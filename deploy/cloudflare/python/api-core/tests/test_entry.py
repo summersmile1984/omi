@@ -27,6 +27,7 @@ class FakeDb:
         self.row = None
         self.onboarding_row = None
         self.privacy_row = None
+        self.recording_deletion_active = False
         self.training_data_opt_in_row = None
         self.fcm_token_row = None
         self.webhook_rows = {}
@@ -75,6 +76,8 @@ class FakeStatement:
             return self.db.onboarding_row
         if self.sql.startswith("SELECT store_recording_permission"):
             return self.db.privacy_row
+        if self.sql.startswith("SELECT 1 AS active FROM cf_recording_deletion_intents"):
+            return {"active": 1} if self.db.recording_deletion_active else None
         if self.sql.startswith("SELECT status FROM cf_user_training_data_opt_in"):
             return self.db.training_data_opt_in_row
         if self.sql.startswith("SELECT url, enabled FROM cf_user_developer_webhooks"):
@@ -118,11 +121,12 @@ class FakeStatement:
 
     async def run(self):
         if self.sql.startswith("INSERT INTO cf_asset_cleanup_tasks"):
-            storage_key, uid, logical_key, not_before, created_at, updated_at = self.args
+            storage_key, uid, logical_key, content_type, not_before, created_at, updated_at = self.args
             self.db.asset_cleanup_tasks[storage_key] = {
                 "storage_key": storage_key,
                 "uid": uid,
                 "logical_key": logical_key,
+                "content_type": content_type,
                 "reason": "uncommitted-upload",
                 "not_before": not_before,
                 "attempts": 0,
@@ -143,6 +147,7 @@ class FakeStatement:
                             "storage_key": storage_key,
                             "uid": uid,
                             "logical_key": object_key,
+                            "content_type": row["content_type"],
                             "reason": "superseded" if "superseded" in self.sql else "deleted",
                             "not_before": not_before,
                             "attempts": 0,
@@ -452,6 +457,7 @@ def test_asset_put_get_range_conditional_and_checksum_contract():
     secret = "asset-secret"
     encoded, signature = signed_context(secret)
     db = FakeDb()
+    db.privacy_row = {"store_recording_permission": 1, "private_cloud_sync_enabled": 1}
     bucket = FakeBucket()
     env = SimpleNamespace(APP_DB=db, ASSETS=bucket, INTERNAL_ASSERTION_SECRET=secret)
     headers = {
@@ -492,12 +498,18 @@ def test_asset_put_get_range_conditional_and_checksum_contract():
         )
     )
     assert rejected.status_code == 422
+    db.privacy_row["store_recording_permission"] = 0
+    blocked_read = asyncio.run(entry.get_asset("audio/clip.wav", AssetRequest(env, headers)))
+    assert blocked_read.status_code == 404
+    blocked_write = asyncio.run(entry.put_asset("audio/blocked.wav", AssetRequest(env, headers, payload)))
+    assert blocked_write.status_code == 409
 
 
 def test_asset_metadata_failure_preserves_the_previous_object_and_pointer():
     secret = "asset-secret"
     encoded, signature = signed_context(secret)
     db = FakeDb()
+    db.privacy_row = {"store_recording_permission": 1, "private_cloud_sync_enabled": 1}
     bucket = FakeBucket()
     env = SimpleNamespace(APP_DB=db, ASSETS=bucket, INTERNAL_ASSERTION_SECRET=secret)
     headers = {
@@ -522,6 +534,7 @@ def test_asset_replacement_keeps_durable_cleanup_work_when_r2_delete_fails():
     secret = "asset-secret"
     encoded, signature = signed_context(secret)
     db = FakeDb()
+    db.privacy_row = {"store_recording_permission": 1, "private_cloud_sync_enabled": 1}
     bucket = FakeBucket()
     env = SimpleNamespace(APP_DB=db, ASSETS=bucket, INTERNAL_ASSERTION_SECRET=secret)
     headers = {
@@ -551,6 +564,7 @@ def test_asset_delete_commits_metadata_before_best_effort_r2_cleanup():
     secret = "asset-secret"
     encoded, signature = signed_context(secret)
     db = FakeDb()
+    db.privacy_row = {"store_recording_permission": 1, "private_cloud_sync_enabled": 1}
     bucket = FakeBucket()
     env = SimpleNamespace(APP_DB=db, ASSETS=bucket, INTERNAL_ASSERTION_SECRET=secret)
     headers = {
@@ -804,6 +818,11 @@ def test_privacy_settings_preserve_defaults_and_accept_query_boolean_contract():
         "store_recording_permission": True
     }
     assert asyncio.run(entry.get_private_cloud_sync(FakeRequest(env, headers))) == {"private_cloud_sync_enabled": False}
+
+    database = env.APP_DB
+    database.recording_deletion_active = True
+    blocked = asyncio.run(entry.set_store_recording_permission(FakeRequest(env, headers, query={"value": "true"})))
+    assert blocked.status_code == 409
 
     invalid = asyncio.run(entry.set_private_cloud_sync(FakeRequest(env, headers, query={"value": "maybe"})))
     assert invalid.status_code == 400

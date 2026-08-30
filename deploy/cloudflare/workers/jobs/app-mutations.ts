@@ -777,12 +777,14 @@ async function cleanupLogo(
     try {
       await env.APP_DB.prepare(
         `INSERT INTO cf_asset_cleanup_tasks
-           (storage_key, uid, logical_key, reason, not_before,
+           (storage_key, uid, logical_key, content_type, reason, not_before,
             attempts, last_error, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 0, 'r2 delete unavailable', ?, ?)
+         VALUES (?, ?, ?, 'image/unknown', ?, ?, 0,
+                 'r2 delete unavailable', ?, ?)
          ON CONFLICT(storage_key) DO UPDATE SET
            uid = excluded.uid,
            logical_key = excluded.logical_key,
+           content_type = excluded.content_type,
            reason = excluded.reason,
            not_before = MIN(cf_asset_cleanup_tasks.not_before, excluded.not_before),
            last_error = excluded.last_error,
