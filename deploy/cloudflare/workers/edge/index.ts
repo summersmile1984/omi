@@ -849,6 +849,8 @@ const proxyAuthenticatedCore = async (
 };
 
 app.get("/v1/personas", proxyAuthenticatedCore);
+app.get("/v1/personas/:personaId", proxyPublicCore);
+app.delete("/v1/personas/:personaId", proxyPublicCore);
 
 const proxyConversationAudioDownload = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,

@@ -542,6 +542,33 @@ describe("edge gateway", () => {
     });
   });
 
+  it("routes admin Persona reads and deletes to the core worker", async () => {
+    const paths: string[] = [];
+    const env = {
+      API_CORE: service((request) => {
+        paths.push(`${request.method} ${new URL(request.url).pathname}`);
+        return Response.json({ status: "ok" });
+      }),
+    };
+    for (const [method, path] of [
+      ["GET", "/v1/personas/alice"],
+      ["DELETE", "/v1/personas/persona-id"],
+    ] as const) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: { "secret-key": "admin-secret" },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(paths).toEqual([
+      "GET /v1/personas/alice",
+      "DELETE /v1/personas/persona-id",
+    ]);
+  });
+
   it("routes authenticated app plan reads through the core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

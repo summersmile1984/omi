@@ -14,6 +14,8 @@ from app_projection_routes import (  # noqa: E402
     get_apps,
     get_approved_apps,
     get_persona_details,
+    get_personas_by_username,
+    delete_persona,
     get_popular_apps,
 )
 
@@ -31,6 +33,9 @@ class FakeStatement:
 
     async def first(self):
         return self.first_row
+
+    async def run(self):
+        return {"meta": {"changes": 1}}
 
 
 class FakeDb:
@@ -150,6 +155,49 @@ def test_owned_persona_projection_is_uid_scoped_and_hides_disabled_rows():
     assert result["id"] == "persona"
     assert result["persona_prompt"] == "private prompt"
     assert other.status_code == 404
+
+
+def test_admin_persona_lookup_matches_username_and_preserves_doc_id():
+    secret = "admin-secret"
+    persona = {
+        **catalog_row("persona", capabilities=["persona"]),
+        "owner_uid": "persona-owner",
+        "status": "under-review",
+        "data_json": json.dumps(
+            {
+                "id": "persona",
+                "username": "alice",
+                "name": "Alice Persona",
+                "capabilities": ["persona"],
+            }
+        ),
+    }
+    env = type("Env", (), {"APP_DB": FakeDb([persona]), "ADMIN_KEY": secret})()
+    unauthorized = asyncio.run(get_personas_by_username(FakeRequest(env), "alice"))
+    result = asyncio.run(get_personas_by_username(FakeRequest(env, {"secret-key": secret}), "alice"))
+    missing = asyncio.run(get_personas_by_username(FakeRequest(env, {"secret-key": secret}), "missing"))
+
+    assert unauthorized.status_code == 403
+    assert result[0]["id"] == "persona"
+    assert result[0]["doc_id"] == "persona"
+    assert result[0]["uid"] == "persona-owner"
+    assert result[0]["status"] == "under-review"
+    assert missing.status_code == 404
+
+
+def test_admin_persona_delete_requires_admin_key_and_removes_only_persona_projection():
+    secret = "admin-secret"
+    persona = {
+        **catalog_row("persona", capabilities=["persona"]),
+        "data_json": json.dumps({"id": "persona", "username": "alice", "capabilities": ["persona"]}),
+    }
+    env = type("Env", (), {"APP_DB": FakeDb([], first_row=persona), "ADMIN_KEY": secret})()
+
+    unauthorized = asyncio.run(delete_persona(FakeRequest(env), "persona"))
+    deleted = asyncio.run(delete_persona(FakeRequest(env, {"secret-key": secret}), "persona"))
+
+    assert unauthorized.status_code == 403
+    assert deleted == {"status": "ok"}
 
 
 def test_authenticated_catalog_unions_public_owned_and_assigned_apps_without_leaking_owner_fields():

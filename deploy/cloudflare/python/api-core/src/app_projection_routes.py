@@ -10,6 +10,7 @@ catalog.
 from __future__ import annotations
 
 import json
+import hmac
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
@@ -23,6 +24,7 @@ router = APIRouter()
 MAX_APP_RESULTS = 500
 MAX_APP_PAYLOAD_BYTES = 500_000
 MAX_APP_ID_LENGTH = 256
+MAX_PERSONA_LOOKUP_LENGTH = 256
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -32,6 +34,45 @@ def _auth_context(request: Request) -> dict[str, object] | None:
         request.headers.get("x-omi-internal-signature"),
         getattr(env, "INTERNAL_ASSERTION_SECRET", None),
     )
+
+
+def _admin_key_valid(request: Request) -> bool:
+    expected = getattr(request.scope["env"], "ADMIN_KEY", None)
+    provided = request.headers.get("secret-key")
+    return (
+        isinstance(expected, str)
+        and bool(expected)
+        and isinstance(provided, str)
+        and hmac.compare_digest(provided, expected)
+    )
+
+
+def _persona_record(row: object) -> dict[str, object] | None:
+    if not isinstance(row, dict):
+        raise ValueError("invalid persona row")
+    raw = row.get("data_json")
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_APP_PAYLOAD_BYTES:
+        raise ValueError("invalid persona payload")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("invalid persona payload")
+    capabilities = payload.get("capabilities")
+    if not isinstance(capabilities, list) or any(not isinstance(value, str) for value in capabilities):
+        raise ValueError("invalid persona payload")
+    if "persona" not in capabilities:
+        return None
+    result = dict(payload)
+    app_id = str(row.get("id") or result.get("id") or "")
+    result["id"] = app_id
+    result["doc_id"] = app_id
+    if row.get("owner_uid") is not None:
+        result["uid"] = str(row["owner_uid"])
+    result["approved"] = _flag(row.get("approved"))
+    result["rejected"] = not result["approved"]
+    result["disabled"] = _flag(row.get("disabled"))
+    if row.get("status") is not None:
+        result["status"] = str(row["status"])
+    return result
 
 
 def _include_reviews(request: Request, *, default: bool = False) -> bool | JSONResponse:
@@ -210,6 +251,65 @@ async def get_persona_details(request: Request):
     except (TypeError, ValueError, json.JSONDecodeError):
         return JSONResponse({"error": "persona unavailable"}, status_code=503)
     return JSONResponse({"detail": "Persona not found"}, status_code=404)
+
+
+@router.get("/v1/personas/{persona_id}")
+async def get_personas_by_username(request: Request, persona_id: str):
+    """Return admin-only Persona records matching the legacy username lookup."""
+    if not _admin_key_valid(request):
+        return JSONResponse({"detail": "You are not authorized to perform this action"}, status_code=403)
+    username = persona_id.strip()
+    if not username or len(username) > MAX_PERSONA_LOOKUP_LENGTH:
+        return JSONResponse({"detail": "Persona not found"}, status_code=404)
+    try:
+        result = await (
+            request.scope["env"]
+            .APP_DB.prepare(
+                "SELECT id, owner_uid, approved, status, disabled, data_json "
+                "FROM cf_app_catalog WHERE json_extract(data_json, '$.username') = ? "
+                "ORDER BY updated_at DESC, id DESC LIMIT 20"
+            )
+            .bind(username)
+            .all()
+        )
+        rows = result.get("results", []) if isinstance(result, dict) else []
+        personas = []
+        for row in rows:
+            persona = _persona_record(row)
+            if persona is not None and persona.get("username") == username:
+                personas.append(persona)
+    except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+        return JSONResponse({"detail": "Persona unavailable"}, status_code=503)
+    if not personas:
+        return JSONResponse({"detail": "Persona not found"}, status_code=404)
+    return personas
+
+
+@router.delete("/v1/personas/{persona_id}")
+async def delete_persona(request: Request, persona_id: str):
+    """Delete one admin-selected Persona projection without touching other apps."""
+    if not _admin_key_valid(request):
+        return JSONResponse({"detail": "You are not authorized to perform this action"}, status_code=403)
+    if not persona_id or len(persona_id) > MAX_APP_ID_LENGTH:
+        return JSONResponse({"detail": "Persona not found"}, status_code=404)
+    try:
+        row = await (
+            request.scope["env"]
+            .APP_DB.prepare("SELECT id, data_json FROM cf_app_catalog WHERE id = ? LIMIT 1")
+            .bind(persona_id)
+            .first()
+        )
+        if row is None or _persona_record(row) is None:
+            return JSONResponse({"detail": "Persona not found"}, status_code=404)
+        result = (
+            await request.scope["env"].APP_DB.prepare("DELETE FROM cf_app_catalog WHERE id = ?").bind(persona_id).run()
+        )
+        changes = result.get("meta", {}).get("changes", 0) if isinstance(result, dict) else 0
+        if int(changes or 0) != 1:
+            return JSONResponse({"detail": "Persona not found"}, status_code=404)
+    except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+        return JSONResponse({"detail": "Persona unavailable"}, status_code=503)
+    return {"status": "ok"}
 
 
 @router.get("/v1/apps/popular")

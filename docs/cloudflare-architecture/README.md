@@ -65,6 +65,7 @@
 - 桌面预览的当前指针和 immutable manifest 读取已接入 API Core/D1，严格校验 slug、source SHA、派生 app identity、签名 DMG URL 和 HTML 转义；发布接口也已接入同一 D1 projection，release pipeline 仍负责制品构建和回填。
 - 桌面预览的 `DELETE /v2/desktop/previews/{slug}` 已接入 API Core/D1，使用独立 `DESKTOP_PREVIEW_PUBLISH_KEY` 和 generation compare-and-delete，仅删除可变指针并保留 immutable manifest；发布流水线仍负责写入 manifest/指针。
 - 当前用户 Persona 读取已接入 API Core/D1：`GET /v1/personas` 仅查询 `owner_uid` 相同且包含 `persona` capability 的投影，未认证为 401、无记录为 404、禁用或损坏投影不泄露；Persona 创建/更新、Twitter 验证和管理员删除仍保留 legacy owner。
+- Persona 管理员按 username 查询及按 id 删除已接入 API Core/D1：`GET/DELETE /v1/personas/{persona_id}` 复用 `secret-key` + `ADMIN_KEY` 管理边界，仅处理含 `persona` capability 的投影；创建/更新、Twitter 验证仍保留 legacy owner。
 - Candidate workflow control live staging 验证：隔离 Better Auth 账号通过 Edge → API Core 返回关闭态（200，`workflow_mode=off`、generation `0`、`chat_first_ui=false`），未认证请求为 401；该账号随后完成公开删号及 Auth/App D1 残留核对。
 - `POST /v2/messages` 当前返回明确的 `503 provider_not_configured`，这是聊天 provider 尚未配置的已知能力缺口，不是路由 404。
 
