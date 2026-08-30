@@ -34,6 +34,8 @@ import {
 const app = new Hono<{ Bindings: EdgeEnv; Variables: EdgeVariables }>();
 const MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES = 5_000_000;
 const MAX_BYOK_ACTIVATION_BODY_BYTES = 8_192;
+const OPENAI_APPS_CHALLENGE_TOKEN =
+  "ZsVB_wpc4R35_tHloCZCokY6H2fBkKyBJrz-4MtXjYE";
 
 async function authenticatedHeaders(
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
@@ -71,6 +73,28 @@ app.use("*", async (c, next) => {
 
 app.get("/health", (c) =>
   c.json({ status: "ok", service: "edge", version: "cf-01" }),
+);
+
+app.on(["GET", "HEAD"], "/v1/health", (c) => {
+  const headers = { "content-type": "application/json; charset=UTF-8" };
+  if (c.req.method === "HEAD") return new Response(null, { headers });
+  return new Response(JSON.stringify({ status: "ok" }), { headers });
+});
+
+app.get(
+  "/.well-known/apple-developer-domain-association.txt",
+  () =>
+    new Response("", {
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    }),
+);
+
+app.get(
+  "/.well-known/openai-apps-challenge",
+  () =>
+    new Response(OPENAI_APPS_CHALLENGE_TOKEN, {
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    }),
 );
 
 app.get("/ready", async (c) => {

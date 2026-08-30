@@ -107,6 +107,34 @@ function creatorPaymentBoundary(
   return null;
 }
 
+function publicCompatibilityRoute(
+  url: string,
+  init?: RequestInit,
+): Response | null {
+  if (url.endsWith("/v1/health")) {
+    return new Response(
+      init?.method === "HEAD" ? null : JSON.stringify({ status: "ok" }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json; charset=UTF-8" },
+      },
+    );
+  }
+  if (url.endsWith("/.well-known/apple-developer-domain-association.txt")) {
+    return new Response("", {
+      status: 200,
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    });
+  }
+  if (url.endsWith("/.well-known/openai-apps-challenge")) {
+    return new Response("ZsVB_wpc4R35_tHloCZCokY6H2fBkKyBJrz-4MtXjYE", {
+      status: 200,
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    });
+  }
+  return null;
+}
+
 describe("staging smoke helpers", () => {
   it("normalizes a valid edge URL and rejects unsupported protocols", () => {
     expect(resolveEdgeUrl("https://edge.example.test/")).toBe(
@@ -145,6 +173,8 @@ describe("staging smoke helpers", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      const publicCompatibility = publicCompatibilityRoute(url, init);
+      if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
       if (url.endsWith("/v1/account/cutover/control")) {
@@ -377,6 +407,10 @@ describe("staging smoke helpers", () => {
 
     expect(result).toEqual({
       edgeHealth: 200,
+      v1Health: 200,
+      v1HealthHead: 200,
+      appleAssociation: 200,
+      openAiAppsChallenge: 200,
       announcementsGeneral: 200,
       appReviews: 200,
       paymentSuccess: 200,
@@ -487,7 +521,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(113);
+    expect(calls).toHaveLength(117);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -524,6 +558,8 @@ describe("staging smoke helpers", () => {
 
   it("fails when staging authentication is not bound to the Cloudflare data plane", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
+      const publicCompatibility = publicCompatibilityRoute(url, init);
+      if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
       if (
@@ -580,6 +616,8 @@ describe("staging smoke helpers", () => {
 
   it("fails when a user-facing Web API path cannot reach Edge", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
+      const publicCompatibility = publicCompatibilityRoute(url, init);
+      if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
@@ -635,6 +673,8 @@ describe("staging smoke helpers", () => {
 
   it("can opt into a real native TTS response check", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
+      const publicCompatibility = publicCompatibilityRoute(url, init);
+      if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
@@ -789,6 +829,8 @@ describe("staging smoke helpers", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      const publicCompatibility = publicCompatibilityRoute(url, init);
+      if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
@@ -860,6 +902,8 @@ describe("staging smoke helpers", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      const publicCompatibility = publicCompatibilityRoute(url, init);
+      if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
       if (url.includes("/v1/users/analytics/memory_summary?")) {

@@ -728,6 +728,42 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v1/health
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: HEAD
+    path: /v1/health
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /.well-known/apple-developer-domain-association.txt
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /.well-known/openai-apps-challenge
+    owner: edge
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /ready
     owner: edge
     runtime: edge-worker

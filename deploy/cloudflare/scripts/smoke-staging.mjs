@@ -76,6 +76,14 @@ async function requestJson(fetchImpl, url, init = {}) {
   return { response, body };
 }
 
+async function requestText(fetchImpl, url, init = {}) {
+  const response = await fetchImpl(url, {
+    ...init,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  return { response, body: await response.text() };
+}
+
 function expectStatus(label, response, expected) {
   if (response.status !== expected) {
     throw new Error(
@@ -186,6 +194,41 @@ export async function runSmoke({
   const webBase = resolveWebUrl(webUrl);
   const health = await request(fetchImpl, `${base}/health`);
   expectStatus("edge health", health, 200);
+  const v1Health = await requestJson(fetchImpl, `${base}/v1/health`);
+  expectStatus("v1 health compatibility", v1Health.response, 200);
+  if (v1Health.body?.status !== "ok") {
+    throw new Error("v1 health compatibility returned an invalid body");
+  }
+  const v1HealthHead = await request(fetchImpl, `${base}/v1/health`, {
+    method: "HEAD",
+  });
+  expectStatus("v1 health HEAD compatibility", v1HealthHead, 200);
+  const appleAssociation = await requestText(
+    fetchImpl,
+    `${base}/.well-known/apple-developer-domain-association.txt`,
+  );
+  expectStatus("Apple domain association", appleAssociation.response, 200);
+  if (
+    !appleAssociation.response.headers
+      .get("content-type")
+      ?.startsWith("text/plain") ||
+    appleAssociation.body !== ""
+  ) {
+    throw new Error("Apple domain association response contract drifted");
+  }
+  const openAiAppsChallenge = await requestText(
+    fetchImpl,
+    `${base}/.well-known/openai-apps-challenge`,
+  );
+  expectStatus("OpenAI Apps challenge", openAiAppsChallenge.response, 200);
+  if (
+    !openAiAppsChallenge.response.headers
+      .get("content-type")
+      ?.startsWith("text/plain") ||
+    openAiAppsChallenge.body !== "ZsVB_wpc4R35_tHloCZCokY6H2fBkKyBJrz-4MtXjYE"
+  ) {
+    throw new Error("OpenAI Apps challenge response contract drifted");
+  }
   const announcementsGeneral = await request(
     fetchImpl,
     `${base}/v1/announcements/general`,
@@ -266,6 +309,10 @@ export async function runSmoke({
 
   const result = {
     edgeHealth: health.status,
+    v1Health: v1Health.response.status,
+    v1HealthHead: v1HealthHead.status,
+    appleAssociation: appleAssociation.response.status,
+    openAiAppsChallenge: openAiAppsChallenge.response.status,
     announcementsGeneral: announcementsGeneral.status,
     appReviews: appReviews.status,
     paymentSuccess: paymentSuccess.status,

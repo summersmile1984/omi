@@ -57,6 +57,52 @@ describe("edge gateway", () => {
     });
   });
 
+  it("serves public legacy compatibility routes without dependencies", async () => {
+    const v1Health = await edge.fetch(
+      new Request("https://edge.test/v1/health"),
+      {} as never,
+    );
+    expect(v1Health.status).toBe(200);
+    expect(v1Health.headers.get("content-type")).toBe(
+      "application/json; charset=UTF-8",
+    );
+    await expect(v1Health.json()).resolves.toEqual({ status: "ok" });
+
+    const v1HealthHead = await edge.fetch(
+      new Request("https://edge.test/v1/health", { method: "HEAD" }),
+      {} as never,
+    );
+    expect(v1HealthHead.status).toBe(200);
+    expect(v1HealthHead.headers.get("content-type")).toBe(
+      "application/json; charset=UTF-8",
+    );
+    await expect(v1HealthHead.text()).resolves.toBe("");
+
+    const appleAssociation = await edge.fetch(
+      new Request(
+        "https://edge.test/.well-known/apple-developer-domain-association.txt",
+      ),
+      {} as never,
+    );
+    expect(appleAssociation.status).toBe(200);
+    expect(appleAssociation.headers.get("content-type")).toBe(
+      "text/plain; charset=UTF-8",
+    );
+    await expect(appleAssociation.text()).resolves.toBe("");
+
+    const openAiChallenge = await edge.fetch(
+      new Request("https://edge.test/.well-known/openai-apps-challenge"),
+      {} as never,
+    );
+    expect(openAiChallenge.status).toBe(200);
+    expect(openAiChallenge.headers.get("content-type")).toBe(
+      "text/plain; charset=UTF-8",
+    );
+    await expect(openAiChallenge.text()).resolves.toBe(
+      "ZsVB_wpc4R35_tHloCZCokY6H2fBkKyBJrz-4MtXjYE",
+    );
+  });
+
   it("reports dependency readiness only through service bindings", async () => {
     const paths: Record<string, string> = {};
     const dependency = (name: string, status = 200) =>
