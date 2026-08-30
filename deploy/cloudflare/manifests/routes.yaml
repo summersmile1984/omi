@@ -41,6 +41,46 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v2/desktop/appcast.xml
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v2/desktop/download/latest
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v2/desktop/download/beta
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v2/desktop/download/windows
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /v1/personas
     owner: api-core
     runtime: python-worker

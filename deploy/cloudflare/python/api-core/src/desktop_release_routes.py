@@ -12,7 +12,7 @@ import json
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 router = APIRouter()
 
@@ -37,6 +37,31 @@ def _manual_download_url(release: dict[str, object]) -> str:
     if download_url.endswith("/Omi.zip"):
         return f"{download_url[:-len('Omi.zip')]}Omi.dmg"
     return download_url
+
+
+def _download_landing_html(url: str, *, platform: str, channel: str, version: str, notice: str = "") -> str:
+    escaped_url = html.escape(url, quote=True)
+    escaped_version = html.escape(version)
+    escaped_channel = "Beta " if channel == "beta" else ""
+    escaped_notice = f'<p class="notice">{html.escape(notice)}</p>' if notice else ""
+    os_name = "Windows" if platform == "windows" else "macOS"
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="2;url={escaped_url}">
+  <title>Download Omi {escaped_channel}for {os_name}</title>
+  <style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#0a0a0a;color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-align:center}}main{{max-width:620px;padding:40px}}a{{color:#fff}}.notice{{color:#fbbf24}}.version{{color:#999}}</style>
+</head>
+<body><main>
+  <h1>Downloading Omi {escaped_channel}for {os_name}</h1>
+  <p class="version">v{escaped_version}</p>
+  {escaped_notice}
+  <p>Your download should start automatically.</p>
+  <p><a href="{escaped_url}">Click here if the download does not start</a></p>
+</main></body>
+</html>"""
 
 
 def _bool(value: object, default: bool = False) -> bool:
@@ -227,6 +252,22 @@ async def _stable_release(request: Request) -> dict[str, object]:
     raise HTTPException(status_code=404, detail="No live releases found")
 
 
+def _platform(value: str) -> str:
+    if value not in VALID_PLATFORMS:
+        raise HTTPException(status_code=422, detail="Invalid platform")
+    return value
+
+
+def _channel(value: str) -> str:
+    if value not in {"stable", "beta"}:
+        raise HTTPException(status_code=422, detail="Invalid channel")
+    return value
+
+
+def _pick_channel(releases: list[dict[str, object]], channel: str) -> dict[str, object] | None:
+    return next((release for release in releases if release["channel"] == channel), None)
+
+
 @router.get("/updates/latest")
 async def get_latest_version(request: Request):
     try:
@@ -247,6 +288,100 @@ async def download_redirect(request: Request):
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Failed to fetch releases") from exc
     return RedirectResponse(_manual_download_url(release), status_code=307)
+
+
+@router.get("/v2/desktop/appcast.xml")
+async def get_desktop_appcast(
+    request: Request,
+    platform: str = Query(default="macos"),
+    identity: str = Query(default="stable"),
+):
+    platform = _platform(platform)
+    if identity not in {"stable", "beta"}:
+        raise HTTPException(status_code=422, detail="Invalid identity")
+    try:
+        releases = await _live_releases(request)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Error generating appcast") from exc
+    if not releases:
+        raise HTTPException(status_code=404, detail=f"No desktop releases found for platform: {platform}")
+    wanted = "beta" if identity == "beta" else "stable"
+    return Response(
+        _appcast_xml([release for release in releases if release["channel"] == wanted], platform),
+        media_type="application/xml",
+        headers={"Cache-Control": "max-age=300"},
+    )
+
+
+@router.get("/v2/desktop/download/latest")
+async def download_latest_desktop(
+    request: Request,
+    platform: str = "macos",
+    channel: str = "stable",
+    identity: str | None = None,
+):
+    platform = _platform(platform)
+    channel = _channel(channel)
+    if identity is not None and identity not in {"stable", "beta"}:
+        raise HTTPException(status_code=422, detail="Invalid identity")
+    if identity == "beta":
+        channel = "beta"
+    effective_identity = identity or channel
+    try:
+        releases = await _live_releases(request)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to fetch releases") from exc
+    if not releases:
+        raise HTTPException(status_code=404, detail=f"No live desktop releases found for platform: {platform}")
+    release = _pick_channel(releases, channel)
+    if release is None:
+        raise HTTPException(status_code=404, detail=f"No installer found for platform {platform}, channel: {channel}")
+    url = _manual_download_url(release)
+    return HTMLResponse(
+        _download_landing_html(
+            url,
+            platform=platform,
+            channel="beta" if effective_identity == "beta" else "stable",
+            version=str(release["version"]),
+        )
+    )
+
+
+@router.get("/v2/desktop/download/beta")
+async def download_beta_desktop(request: Request, platform: str = Query(default="macos")):
+    return await download_latest_desktop(request, platform=platform, channel="beta", identity="beta")
+
+
+@router.get("/v2/desktop/download/windows")
+async def download_windows_desktop(request: Request, channel: str = Query(default="stable")):
+    _channel(channel)
+    try:
+        releases = await _live_releases(request)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to fetch releases") from exc
+    if not releases:
+        raise HTTPException(status_code=404, detail="No live desktop releases found for platform: windows")
+    served_channel = channel
+    release = _pick_channel(releases, channel)
+    if release is None:
+        served_channel = "beta" if channel == "stable" else "stable"
+        release = _pick_channel(releases, served_channel)
+    if release is None:
+        raise HTTPException(status_code=404, detail=f"No installer found for platform windows, channel: {channel}")
+    notice = (
+        ""
+        if served_channel == channel
+        else f"No {channel} build is published right now — serving the latest {served_channel} release instead."
+    )
+    return HTMLResponse(
+        _download_landing_html(
+            _manual_download_url(release),
+            platform="windows",
+            channel=served_channel,
+            version=str(release["version"]),
+            notice=notice,
+        )
+    )
 
 
 @router.get("/v2/desktop/update-policy")

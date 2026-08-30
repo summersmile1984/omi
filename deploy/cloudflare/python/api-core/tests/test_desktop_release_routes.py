@@ -10,6 +10,10 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from desktop_release_routes import (  # noqa: E402
+    download_beta_desktop,
+    download_latest_desktop,
+    download_windows_desktop,
+    get_desktop_appcast,
     get_appcast,
     get_latest_version,
     get_update_policy,
@@ -165,3 +169,39 @@ def test_update_policy_applies_platform_and_maximum_build_guards():
 
     assert asyncio.run(get_update_policy(request, platform="windows", current_build=40))["active"] is False
     assert asyncio.run(get_update_policy(request, platform="macos", current_build=43))["active"] is False
+
+
+def test_v2_appcast_is_identity_strict_and_download_landing_pages_are_channel_scoped():
+    env = make_env()
+    insert_release(env, release_id="stable", version="2.0.0", build_number=20, channel="stable")
+    insert_release(env, release_id="beta", version="2.1.0-beta", build_number=21, channel="beta")
+    request = FakeRequest(env)
+
+    stable_xml = asyncio.run(get_desktop_appcast(request, platform="macos", identity="stable"))
+    beta_xml = asyncio.run(get_desktop_appcast(request, platform="macos", identity="beta"))
+    assert stable_xml.status_code == 200
+    assert stable_xml.body.decode().count("<item>") == 1
+    assert "sparkle:channel" not in stable_xml.body.decode()
+    assert beta_xml.body.decode().count("<item>") == 1
+    assert "sparkle:channel>beta" in beta_xml.body.decode()
+
+    latest = asyncio.run(download_latest_desktop(request, platform="macos", channel="stable"))
+    assert latest.status_code == 200
+    assert "Omi for macOS" in latest.body.decode()
+    assert "https://downloads.example/stable.zip" in latest.body.decode()
+    beta = asyncio.run(download_beta_desktop(request, platform="macos"))
+    assert beta.status_code == 200
+    assert "Omi Beta for macOS" in beta.body.decode()
+    windows = asyncio.run(download_windows_desktop(request, channel="stable"))
+    assert windows.status_code == 200
+    assert "for Windows" in windows.body.decode()
+
+
+def test_v2_windows_download_falls_back_to_beta_when_stable_is_empty():
+    env = make_env()
+    insert_release(env, release_id="beta", version="3.0.0-beta", build_number=30, channel="beta")
+    response = asyncio.run(download_windows_desktop(FakeRequest(env), channel="stable"))
+    body = response.body.decode()
+    assert response.status_code == 200
+    assert "No stable build is published" in body
+    assert "3.0.0-beta" in body
