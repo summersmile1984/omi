@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from synthesis_routes import (  # noqa: E402
     extract_memory_log,
     generate_conversation_topic,
+    synthesize_ai_profile,
     synthesize_connector_data,
 )
 
@@ -193,14 +194,59 @@ def test_validation_and_empty_connector_rows_do_not_call_workers_ai():
 def test_return_only_synthesis_routes_preserve_desktop_trial_paywall():
     ai = FakeAi([])
     env = environment(ai, trial_paywall=True)
-    headers = signed_headers(account_created_at=1, **{"x-app-platform": "desktop"})
+    headers = signed_headers(account_created_at=1)
     probes = [
         (extract_memory_log, {"text": "hello"}),
         (generate_conversation_topic, {"transcript": "hello"}),
         (synthesize_connector_data, {"source": "notes", "items": ["hello"]}),
+        (synthesize_ai_profile, {"memories": ["hello"]}),
     ]
     for route, body in probes:
         response = asyncio.run(route(FakeRequest(env, headers, body)))
         assert response.status_code == 402
         assert response_json(response) == {"detail": "trial_expired"}
+    assert ai.calls == []
+
+
+def test_ai_profile_synthesis_runs_two_bounded_stages_without_persisting():
+    ai = FakeAi(
+        [
+            {"profile_text": "- User builds Omi."},
+            {"profile_text": "- User builds Omi.\n- User prefers tea."},
+        ]
+    )
+    env = environment(ai)
+    result = asyncio.run(
+        synthesize_ai_profile(
+            FakeRequest(
+                env,
+                signed_headers(),
+                {
+                    "memories": [" User builds Omi. ", "   "],
+                    "tasks": ["Ship the Cloudflare route"],
+                    "goals": ["Deploy staging"],
+                    "past_profiles": ["- User prefers tea."],
+                },
+            )
+        )
+    )
+    assert result == {
+        "profile_text": "- User builds Omi.\n- User prefers tea.",
+        "data_sources_used": ["memories", "tasks", "goals"],
+        "item_count": 3,
+    }
+    assert len(ai.calls) == 2
+    assert "untrusted user data" in ai.calls[0][1]["messages"][1]["content"]
+    assert "PAST PROFILES" in ai.calls[1][1]["messages"][1]["content"]
+
+
+def test_ai_profile_synthesis_rejects_empty_or_malformed_requests_without_ai():
+    ai = FakeAi([])
+    env = environment(ai)
+    empty = asyncio.run(synthesize_ai_profile(FakeRequest(env, signed_headers(), {})))
+    assert empty.status_code == 502
+    invalid = asyncio.run(
+        synthesize_ai_profile(FakeRequest(env, signed_headers(), {"memories": ["fact"], "extra": True}))
+    )
+    assert invalid.status_code == 422
     assert ai.calls == []

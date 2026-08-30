@@ -261,6 +261,55 @@ async function exerciseReturnOnlySynthesis(fetchImpl, base, authHeaders) {
   return statuses;
 }
 
+async function exerciseProfileAndGoalAi(fetchImpl, base, authHeaders) {
+  const profileValidation = await request(
+    fetchImpl,
+    `${base}/v1/users/ai-profile/synthesize`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ unexpected: true }),
+    },
+  );
+  expectStatus("AI profile synthesis validation", profileValidation, 422);
+
+  const progressValidation = await request(
+    fetchImpl,
+    `${base}/v1/goals/extract-progress`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ text: "" }),
+    },
+  );
+  expectStatus("goal progress extraction validation", progressValidation, 422);
+
+  const suggestion = await request(fetchImpl, `${base}/v1/goals/suggest`, {
+    headers: authHeaders,
+  });
+  expectStatus("goal suggestion", suggestion, 200);
+
+  const currentAdvice = await request(fetchImpl, `${base}/v1/goals/advice`, {
+    headers: authHeaders,
+  });
+  expectStatus("current goal advice", currentAdvice, 200);
+
+  const missingAdvice = await request(
+    fetchImpl,
+    `${base}/v1/goals/cf-smoke-missing/advice`,
+    { headers: authHeaders },
+  );
+  expectStatus("missing goal advice", missingAdvice, 404);
+
+  return {
+    aiProfileSynthesisValidation: profileValidation.status,
+    goalProgressExtractionValidation: progressValidation.status,
+    goalSuggestion: suggestion.status,
+    currentGoalAdvice: currentAdvice.status,
+    missingGoalAdvice: missingAdvice.status,
+  };
+}
+
 async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
   const preflight = await requestJson(
     fetchImpl,
@@ -715,6 +764,11 @@ export async function runSmoke({
     authHeaders,
   );
   const returnOnlySynthesis = await exerciseReturnOnlySynthesis(
+    fetchImpl,
+    base,
+    authHeaders,
+  );
+  const profileAndGoalAi = await exerciseProfileAndGoalAi(
     fetchImpl,
     base,
     authHeaders,
@@ -1595,6 +1649,7 @@ export async function runSmoke({
     ...integrationBoundaries,
     ...knowledgeGraph,
     ...returnOnlySynthesis,
+    ...profileAndGoalAi,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
     stripeRefreshOwnership: stripeRefreshOwnership.status,

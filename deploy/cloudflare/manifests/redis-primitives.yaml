@@ -371,6 +371,10 @@ families:
       - memories:extract
       - connectors:synthesize
       - conversations:topic
+      - users:ai_profile_synthesize
+      - goals:suggest
+      - goals:advice
+      - goals:extract
       - memories:batch
       - memories:create
       - memories:delete
@@ -411,6 +415,11 @@ families:
       - POST /v1/memories/extract
       - POST /v1/connectors/synthesize
       - POST /v1/conversations/topic
+      - POST /v1/users/ai-profile/synthesize
+      - GET /v1/goals/suggest
+      - GET /v1/goals/advice
+      - GET /v1/goals/{goalId}/advice
+      - POST /v1/goals/extract-progress
       - POST /v1/stt/transcribe
       - POST /v1/stt/transcribe-async
       - POST /v1/stt/transcribe-workers-ai

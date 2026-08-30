@@ -107,6 +107,26 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 60,
     windowSeconds: 3600,
   },
+  "users:ai_profile_synthesize": {
+    name: "users:ai_profile_synthesize",
+    maxRequests: 8,
+    windowSeconds: 86400,
+  },
+  "goals:suggest": {
+    name: "goals:suggest",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
+  "goals:advice": {
+    name: "goals:advice",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
+  "goals:extract": {
+    name: "goals:extract",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
   "stt:transcribe": {
     name: "stt:transcribe",
     maxRequests: 60,
@@ -207,6 +227,16 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     "POST /v1/conversations/topic",
     EDGE_RATE_LIMIT_POLICIES["conversations:topic"],
   ],
+  [
+    "POST /v1/users/ai-profile/synthesize",
+    EDGE_RATE_LIMIT_POLICIES["users:ai_profile_synthesize"],
+  ],
+  ["GET /v1/goals/suggest", EDGE_RATE_LIMIT_POLICIES["goals:suggest"]],
+  ["GET /v1/goals/advice", EDGE_RATE_LIMIT_POLICIES["goals:advice"]],
+  [
+    "POST /v1/goals/extract-progress",
+    EDGE_RATE_LIMIT_POLICIES["goals:extract"],
+  ],
   ["DELETE /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:delete_all"]],
   [
     "DELETE /v3/memories/batch",
@@ -221,6 +251,10 @@ export function edgeRateLimitPolicyForRequest(
   const normalizedMethod = method.toUpperCase();
   const exact = EXACT_ROUTE_POLICIES.get(`${normalizedMethod} ${path}`);
   if (exact) return exact;
+
+  if (normalizedMethod === "GET" && /^\/v1\/goals\/[^/]+\/advice$/.test(path)) {
+    return EDGE_RATE_LIMIT_POLICIES["goals:advice"];
+  }
 
   if (normalizedMethod === "DELETE" && /^\/v3\/memories\/[^/]+$/.test(path)) {
     return EDGE_RATE_LIMIT_POLICIES["memories:delete"];

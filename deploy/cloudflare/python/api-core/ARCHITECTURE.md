@@ -50,11 +50,20 @@ response. Return-only extraction uses the native Workers AI binding, validates
 referential closure and bounded node/edge counts, and never writes D1.
 
 `synthesis_routes.py` owns the return-only desktop memory-log extraction,
-conversation topic, and calendar/Gmail/notes synthesis contracts. It accepts
+conversation topic, calendar/Gmail/notes synthesis, and two-stage AI profile
+contracts. It accepts
 only the signed Better Auth identity from Edge, preserves the desktop trial
 paywall and route-specific Edge limits, bounds untrusted prompt inputs, and
 validates structured Workers AI output before returning it. These routes do
 not write D1, call the legacy backend, or require a local model process.
+
+`goal_ai_routes.py` reads the canonical goal, memory, conversation, chat, and
+Vectorize projections to produce goal suggestions and weekly advice through
+Workers AI. Progress extraction evaluates all active goals in one structured
+model call, accepts only known goal IDs and finite absolute totals, and commits
+the goal metric, progress event, and daily history rows in one D1 batch. The
+free-plan chat quota remains the cost gate for user-initiated extraction;
+suggestion and advice retain their independent Edge limits and safe defaults.
 
 `account_cutover_routes.py` is the routing authority consumed by Edge. Only
 `ACCOUNT_CUTOVER_PROFILE=isolated-staging` may initialize a missing Better Auth

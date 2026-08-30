@@ -81,6 +81,27 @@ function retrievalToolBoundary(
   ) {
     return Response.json({ detail: "invalid synthesis" }, { status: 422 });
   }
+  if (path === "/v1/users/ai-profile/synthesize") {
+    return Response.json(
+      { detail: "invalid ai profile synthesis" },
+      { status: 422 },
+    );
+  }
+  if (path === "/v1/goals/extract-progress") {
+    return Response.json(
+      { detail: "invalid goal progress extraction" },
+      { status: 422 },
+    );
+  }
+  if (path === "/v1/goals/suggest") {
+    return Response.json({ suggested_title: "Test goal" });
+  }
+  if (path === "/v1/goals/advice") {
+    return Response.json({ advice: "Set a goal." });
+  }
+  if (path === "/v1/goals/cf-smoke-missing/advice") {
+    return Response.json({ detail: "Goal not found" }, { status: 404 });
+  }
   if (path === "/v1/action-items/search") {
     return Response.json({ action_items: [] });
   }
@@ -547,6 +568,11 @@ describe("staging smoke helpers", () => {
       memory_extraction_validation: 422,
       conversation_topic_validation: 422,
       connector_synthesis_validation: 422,
+      aiProfileSynthesisValidation: 422,
+      goalProgressExtractionValidation: 422,
+      goalSuggestion: 200,
+      currentGoalAdvice: 200,
+      missingGoalAdvice: 404,
       conversationFromSegmentsValidation: 422,
       webProxyConversations: 200,
       webProxyEnabledApps: 200,
@@ -638,7 +664,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(142);
+    expect(calls).toHaveLength(147);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

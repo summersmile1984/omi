@@ -809,8 +809,15 @@ POST /v1/knowledge-graph/extract
 POST /v1/memories/extract
 POST /v1/conversations/topic
 POST /v1/connectors/synthesize
+POST /v1/users/ai-profile/synthesize
                               Edge → Python API Core → Workers AI return-only synthesis;
                               no local model, legacy backend, or product-state write
+GET /v1/goals/suggest
+GET /v1/goals/advice
+GET /v1/goals/{goalId}/advice
+POST /v1/goals/extract-progress
+                              Edge → Python API Core → D1 + Workers AI/Vectorize;
+                              extracted progress atomically updates goal/event/history
 GET /v1/conversations/{conversationId}/action-items
 GET /v1/conversations/{conversationId}/action-items/count
                               Edge → Python API Core → D1 standalone task projection
