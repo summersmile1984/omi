@@ -511,6 +511,37 @@ describe("edge gateway", () => {
     });
   });
 
+  it("routes preview publication to the core worker without stripping the admin key", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ success: true }, { status: 201 });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/desktop/previews/publish", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "secret-key": "preview-secret",
+        },
+        body: JSON.stringify({
+          slug: "feature-demo",
+          source_sha: "a".repeat(40),
+        }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(201);
+    expect(forwarded?.method).toBe("POST");
+    expect(forwarded?.headers.get("secret-key")).toBe("preview-secret");
+    await expect(forwarded?.json()).resolves.toEqual({
+      slug: "feature-demo",
+      source_sha: "a".repeat(40),
+    });
+  });
+
   it("routes authenticated app plan reads through the core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

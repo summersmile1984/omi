@@ -39,6 +39,24 @@ class DesktopPreviewDelistRequest(BaseModel):
     expected_generation: int = Field(ge=0)
 
 
+class DesktopPreviewPublishRequest(BaseModel):
+    """Immutable metadata for a signed desktop preview artifact."""
+
+    slug: str
+    source_sha: str
+    dmg_url: str
+    dmg_sha256: str
+    app_name: str
+    bundle_id: str
+    url_scheme: str
+    built_at: str
+    signer: str
+    notarization: str
+    notes: str | None = None
+    backend_url: str | None = None
+    expected_generation: int | None = Field(default=None, ge=0)
+
+
 def _https_url(value: object, default: str | None = None) -> str | None:
     candidate = value.strip() if isinstance(value, str) else ""
     parsed = urlparse(candidate)
@@ -63,6 +81,88 @@ def _preview_source_sha(value: object) -> str | None:
 
 def _preview_identity(slug: str) -> str:
     return f"p{hashlib.sha256(slug.encode('utf-8')).hexdigest()[:10]}"
+
+
+def _normalize_preview_publish(payload: DesktopPreviewPublishRequest) -> dict[str, object]:
+    slug = payload.slug.strip()
+    if _preview_slug(slug) is None:
+        raise ValueError("slug must use lowercase letters, digits, and path-safe hyphens")
+    source_sha = payload.source_sha.strip().lower()
+    if _preview_source_sha(source_sha) is None:
+        raise ValueError("source_sha must be a full 40-character commit SHA")
+    app_name = payload.app_name.strip()
+    if not app_name or len(app_name) > 128 or not app_name.startswith("Omi Preview"):
+        raise ValueError("app_name must identify this as an Omi Preview build")
+    preview_id = _preview_identity(slug)
+    if payload.bundle_id.strip() != f"com.omi.preview.{preview_id}":
+        raise ValueError("bundle_id must match the slug-derived com.omi.preview.<id> identity")
+    if payload.url_scheme.strip() != f"omi-preview-{preview_id}":
+        raise ValueError("url_scheme must match the slug-derived omi-preview-<id> identity")
+    if payload.notarization.strip().lower() != "stapled":
+        raise ValueError("notarization must be stapled")
+    dmg_sha256 = payload.dmg_sha256.strip().lower()
+    if not PREVIEW_SHA256_RE.fullmatch(dmg_sha256):
+        raise ValueError("dmg_sha256 must be a SHA-256 digest")
+    built_at = payload.built_at.strip()
+    if len(built_at) > 64:
+        raise ValueError("built_at is too long")
+    try:
+        datetime.fromisoformat(built_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("built_at must be an ISO-8601 timestamp") from exc
+    signer = payload.signer.strip()
+    if not signer or len(signer) > 512:
+        raise ValueError("signer is required")
+
+    dmg_url = payload.dmg_url.strip()
+    if len(dmg_url) > 2_048:
+        raise ValueError("dmg_url is too long")
+    parsed_dmg = urlparse(dmg_url)
+    expected_path = f"/{PREVIEW_BUCKET_NAME}/previews/{slug}/{source_sha}/Omi-Preview.dmg"
+    if (
+        parsed_dmg.scheme != "https"
+        or parsed_dmg.netloc != PREVIEW_BUCKET_HOST
+        or parsed_dmg.path != expected_path
+        or parsed_dmg.params
+        or parsed_dmg.query
+        or parsed_dmg.fragment
+    ):
+        raise ValueError("dmg_url must be the canonical immutable preview artifact URL")
+
+    notes = payload.notes.strip() if isinstance(payload.notes, str) else None
+    if notes == "":
+        notes = None
+    if notes is not None and len(notes) > 2_000:
+        raise ValueError("notes is too long")
+    backend_url = payload.backend_url.strip() if isinstance(payload.backend_url, str) else None
+    if backend_url == "":
+        backend_url = None
+    if backend_url is not None:
+        if len(backend_url) > 2_048:
+            raise ValueError("backend_url is too long")
+        parsed_backend = urlparse(backend_url)
+        if (
+            parsed_backend.scheme != "https"
+            or not parsed_backend.netloc
+            or parsed_backend.params
+            or parsed_backend.query
+            or parsed_backend.fragment
+        ):
+            raise ValueError("backend_url must be an https URL")
+    return {
+        "slug": slug,
+        "source_sha": source_sha,
+        "dmg_url": dmg_url,
+        "dmg_sha256": dmg_sha256,
+        "app_name": app_name,
+        "bundle_id": f"com.omi.preview.{preview_id}",
+        "url_scheme": f"omi-preview-{preview_id}",
+        "built_at": built_at,
+        "signer": signer,
+        "notarization": "stapled",
+        "notes": notes,
+        "backend_url": backend_url,
+    }
 
 
 def _preview_manifest(row: object, *, slug: str, source_sha: str) -> dict[str, object] | None:
@@ -613,6 +713,110 @@ async def _delist_preview_pointer(request: Request, slug: str, expected_generati
     return {"slug": normalized_slug, "deleted": True, "generation": current_generation}
 
 
+async def _publish_preview(request: Request, payload: DesktopPreviewPublishRequest) -> dict[str, object]:
+    manifest = _normalize_preview_publish(payload)
+    env = request.scope["env"]
+    existing = await (
+        env.APP_DB.prepare(_PREVIEW_SELECT + "WHERE slug = ? AND source_sha = ? LIMIT 1")
+        .bind(manifest["slug"], manifest["source_sha"])
+        .first()
+    )
+    if existing is not None:
+        normalized_existing = _preview_manifest(
+            existing,
+            slug=str(manifest["slug"]),
+            source_sha=str(manifest["source_sha"]),
+        )
+        if normalized_existing != manifest:
+            raise HTTPException(
+                status_code=409, detail="preview artifact already exists with different immutable metadata"
+            )
+
+    pointer = await (
+        env.APP_DB.prepare("SELECT source_sha, generation FROM cf_desktop_preview_pointers WHERE slug = ? LIMIT 1")
+        .bind(manifest["slug"])
+        .first()
+    )
+    current_sha = pointer.get("source_sha") if isinstance(pointer, dict) else None
+    current_generation = pointer.get("generation", 0) if isinstance(pointer, dict) else 0
+    if isinstance(current_generation, str) and current_generation.isdigit():
+        current_generation = int(current_generation)
+    if (
+        not isinstance(current_generation, int)
+        or isinstance(current_generation, bool)
+        or current_generation < 0
+        or (current_sha is not None and _preview_source_sha(current_sha) is None)
+    ):
+        raise HTTPException(status_code=409, detail="preview pointer is malformed")
+    if payload.expected_generation is not None and payload.expected_generation != current_generation:
+        raise HTTPException(
+            status_code=409,
+            detail=f"generation mismatch: expected {payload.expected_generation}, current {current_generation}",
+        )
+
+    pointer_payload: dict[str, object] = {
+        "slug": manifest["slug"],
+        "source_sha": current_sha,
+        "generation": current_generation,
+    }
+    pointer_changed = current_sha != manifest["source_sha"]
+    if pointer_changed:
+        pointer_payload = {
+            "slug": manifest["slug"],
+            "source_sha": manifest["source_sha"],
+            "generation": current_generation + 1,
+        }
+    statements = []
+    if existing is None:
+        statements.append(
+            env.APP_DB.prepare(
+                "INSERT INTO cf_desktop_preview_manifests "
+                "(slug, source_sha, dmg_url, dmg_sha256, app_name, bundle_id, url_scheme, built_at, signer, "
+                "notarization, notes, backend_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())"
+            ).bind(
+                manifest["slug"],
+                manifest["source_sha"],
+                manifest["dmg_url"],
+                manifest["dmg_sha256"],
+                manifest["app_name"],
+                manifest["bundle_id"],
+                manifest["url_scheme"],
+                manifest["built_at"],
+                manifest["signer"],
+                manifest["notarization"],
+                manifest["notes"],
+                manifest["backend_url"],
+            )
+        )
+    if pointer_changed:
+        if pointer is None:
+            statements.append(
+                env.APP_DB.prepare(
+                    "INSERT INTO cf_desktop_preview_pointers (slug, source_sha, generation, updated_at) "
+                    "VALUES (?, ?, ?, unixepoch())"
+                ).bind(pointer_payload["slug"], pointer_payload["source_sha"], pointer_payload["generation"])
+            )
+        else:
+            statements.append(
+                env.APP_DB.prepare(
+                    "UPDATE cf_desktop_preview_pointers SET source_sha = ?, generation = ?, updated_at = unixepoch() "
+                    "WHERE slug = ? AND generation = ?"
+                ).bind(
+                    pointer_payload["source_sha"],
+                    pointer_payload["generation"],
+                    pointer_payload["slug"],
+                    current_generation,
+                )
+            )
+    if statements:
+        results = await env.APP_DB.batch(statements)
+        pointer_result = results[-1] if pointer_changed else None
+        changes = pointer_result.get("meta", {}).get("changes", 0) if isinstance(pointer_result, dict) else 0
+        if pointer_changed and int(changes or 0) != 1:
+            raise HTTPException(status_code=409, detail="preview pointer changed concurrently")
+    return {"manifest": manifest, "pointer": pointer_payload}
+
+
 @router.get("/v2/desktop/previews/{slug}")
 async def download_current_desktop_preview(request: Request, slug: str):
     """Serve the current approved preview for one branch slug."""
@@ -631,6 +835,18 @@ async def delist_desktop_preview(request: Request, slug: str, payload: DesktopPr
     if not _preview_publish_key_valid(request):
         raise HTTPException(status_code=403, detail="You are not authorized to delist desktop previews")
     return {"success": True, **await _delist_preview_pointer(request, slug, payload.expected_generation)}
+
+
+@router.post("/v2/desktop/previews/publish", status_code=201)
+async def publish_desktop_preview(request: Request, payload: DesktopPreviewPublishRequest):
+    """Register an immutable preview artifact and advance its mutable pointer."""
+    if not _preview_publish_key_valid(request):
+        raise HTTPException(status_code=403, detail="You are not authorized to publish desktop previews")
+    try:
+        result = await _publish_preview(request, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, **result}
 
 
 @router.get("/v2/desktop/update-feed/windows")

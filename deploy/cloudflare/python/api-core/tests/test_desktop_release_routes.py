@@ -23,7 +23,9 @@ from desktop_release_routes import (  # noqa: E402
     download_current_desktop_preview,
     download_immutable_desktop_preview,
     DesktopPreviewDelistRequest,
+    DesktopPreviewPublishRequest,
     delist_desktop_preview,
+    publish_desktop_preview,
 )
 
 
@@ -62,6 +64,9 @@ class FakeDb:
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
+
+    async def batch(self, statements):
+        return [await statement.run() for statement in statements]
 
 
 class FakeRequest:
@@ -137,6 +142,27 @@ def insert_preview(env, *, slug="feature-demo", source_sha="a" * 40, notes="Read
         (slug, source_sha, 1, 1),
     )
     env.APP_DB.connection.commit()
+
+
+def preview_payload(*, slug="feature-demo", source_sha="a" * 40, notes="Ready for review", expected_generation=None):
+    preview_id = "p" + hashlib.sha256(slug.encode()).hexdigest()[:10]
+    payload = {
+        "slug": slug,
+        "source_sha": source_sha,
+        "dmg_url": f"https://storage.googleapis.com/omi_macos_updates/previews/{slug}/{source_sha}/Omi-Preview.dmg",
+        "dmg_sha256": "b" * 64,
+        "app_name": "Omi Preview Feature Demo",
+        "bundle_id": f"com.omi.preview.{preview_id}",
+        "url_scheme": f"omi-preview-{preview_id}",
+        "built_at": "2026-08-31T00:00:00Z",
+        "signer": "ci@example.invalid",
+        "notarization": "stapled",
+        "notes": notes,
+        "backend_url": "https://api.example.invalid",
+    }
+    if expected_generation is not None:
+        payload["expected_generation"] = expected_generation
+    return payload
 
 
 def test_empty_projection_keeps_feed_usable_but_fails_closed_for_downloads():
@@ -400,3 +426,60 @@ def test_desktop_preview_delist_missing_pointer_is_idempotent_with_valid_key():
         )
     )
     assert result == {"success": True, "slug": "missing", "deleted": False, "generation": None}
+
+
+def test_desktop_preview_publish_projects_manifest_and_pointer_with_idempotent_retry():
+    env = make_env()
+    payload = DesktopPreviewPublishRequest.model_validate(preview_payload(expected_generation=0))
+    request = FakeRequest(env, {"secret-key": "preview-secret"})
+
+    published = asyncio.run(publish_desktop_preview(request, payload))
+    assert published["success"] is True
+    assert published["manifest"]["source_sha"] == "a" * 40
+    assert published["pointer"] == {"slug": "feature-demo", "source_sha": "a" * 40, "generation": 1}
+
+    retry = asyncio.run(
+        publish_desktop_preview(
+            request,
+            DesktopPreviewPublishRequest.model_validate(preview_payload(expected_generation=1)),
+        )
+    )
+    assert retry["pointer"] == published["pointer"]
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT COUNT(*) FROM cf_desktop_preview_manifests WHERE slug = 'feature-demo'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
+def test_desktop_preview_publish_rejects_stale_generation_and_immutable_conflict():
+    env = make_env()
+    request = FakeRequest(env, {"secret-key": "preview-secret"})
+    asyncio.run(
+        publish_desktop_preview(
+            request,
+            DesktopPreviewPublishRequest.model_validate(preview_payload(expected_generation=0)),
+        )
+    )
+    with pytest.raises(HTTPException) as stale:
+        asyncio.run(
+            publish_desktop_preview(
+                request,
+                DesktopPreviewPublishRequest.model_validate(
+                    preview_payload(source_sha="c" * 40, expected_generation=0)
+                ),
+            )
+        )
+    assert stale.value.status_code == 409
+    assert "generation mismatch" in str(stale.value.detail)
+
+    with pytest.raises(HTTPException) as conflict:
+        asyncio.run(
+            publish_desktop_preview(
+                request,
+                DesktopPreviewPublishRequest.model_validate(preview_payload(notes="changed", expected_generation=1)),
+            )
+        )
+    assert conflict.value.status_code == 409
+    assert "immutable metadata" in str(conflict.value.detail)

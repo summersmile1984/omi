@@ -62,7 +62,7 @@
 - 桌面更新的 v2 公共读取也已接入同一 D1 投影：`/v2/desktop/appcast.xml` 严格区分 stable/beta identity，`/v2/desktop/download/latest`、`/beta`、`/windows` 返回受转义保护的下载落地页，并保持 channel 空槽的 404/fallback 约定；发布元数据写入和晋级仍由后续发布流水线迁移负责。
 - Windows electron-updater feed 读取已接入同一 D1 投影：`/v2/desktop/update-feed/windows` 只接受显式 `windows_feed_url`，stable 不回落 beta，beta 空槽可回落 stable；发布回填仍需写入该平台 feed URL。
 - API Core 根路径 `/` 已由 Edge 公共代理接管，返回版本化的 Worker 健康 payload；未知路径仍按 legacy 回滚策略处理。
-- 桌面预览的当前指针和 immutable manifest 读取已接入 API Core/D1，严格校验 slug、source SHA、派生 app identity、签名 DMG URL 和 HTML 转义；发布/回填仍保留在后续 release pipeline。
+- 桌面预览的当前指针和 immutable manifest 读取已接入 API Core/D1，严格校验 slug、source SHA、派生 app identity、签名 DMG URL 和 HTML 转义；发布接口也已接入同一 D1 projection，release pipeline 仍负责制品构建和回填。
 - 桌面预览的 `DELETE /v2/desktop/previews/{slug}` 已接入 API Core/D1，使用独立 `DESKTOP_PREVIEW_PUBLISH_KEY` 和 generation compare-and-delete，仅删除可变指针并保留 immutable manifest；发布流水线仍负责写入 manifest/指针。
 - 当前用户 Persona 读取已接入 API Core/D1：`GET /v1/personas` 仅查询 `owner_uid` 相同且包含 `persona` capability 的投影，未认证为 401、无记录为 404、禁用或损坏投影不泄露；Persona 创建/更新、Twitter 验证和管理员删除仍保留 legacy owner。
 - Candidate workflow control live staging 验证：隔离 Better Auth 账号通过 Edge → API Core 返回关闭态（200，`workflow_mode=off`、generation `0`、`chat_first_ui=false`），未认证请求为 401；该账号随后完成公开删号及 Auth/App D1 残留核对。
