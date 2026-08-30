@@ -1197,6 +1197,7 @@ app.post(
 app.delete("/v1/import/limitless/conversations", proxyAuthenticatedCore);
 app.post("/v1/staged-tasks/migrate", proxyAuthenticatedCore);
 app.post("/v1/staged-tasks/migrate-conversation-items", proxyAuthenticatedCore);
+app.post("/v1/chat-first/blocks/validate", proxyAuthenticatedCore);
 app.get("/v1/tools/conversations", proxyAuthenticatedCore);
 app.post("/v1/tools/conversations/search", proxyAuthenticatedCore);
 app.post("/v1/tools/conversations/search-chunks", proxyAuthenticatedCore);

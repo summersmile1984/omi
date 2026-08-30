@@ -62,6 +62,13 @@ allowlisted category/topic projection in D1, sorts topics by bounded memory
 counts, strips memory identifiers, and returns `503` when the projection is
 unavailable instead of silently falling back to Firestore.
 
+`chat_first_routes.py` owns the isolated staging capability check for
+`POST /v1/chat-first/blocks/validate`. It validates the released block union,
+checks every referenced task, goal, capture, meeting, or memory against the
+uid-scoped D1 projections, and returns retry-stable opaque block IDs. It never
+materializes prompts or writes chat state; cold-start blocks and incomplete
+cutover rows fail closed.
+
 `goal_ai_routes.py` reads the canonical goal, memory, conversation, chat, and
 Vectorize projections to produce goal suggestions and weekly advice through
 Workers AI. Progress extraction evaluates all active goals in one structured

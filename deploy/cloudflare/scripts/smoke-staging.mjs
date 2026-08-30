@@ -756,6 +756,20 @@ export async function runSmoke({
     },
   );
   expectStatus("unauthenticated memory batch", unauthenticatedMemoryBatch, 401);
+  const unauthenticatedChatFirstValidation = await request(
+    fetchImpl,
+    `${base}/v1/chat-first/blocks/validate`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    },
+  );
+  expectStatus(
+    "unauthenticated chat-first block validation",
+    unauthenticatedChatFirstValidation,
+    401,
+  );
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, {
@@ -780,6 +794,21 @@ export async function runSmoke({
       "account cutover control is not bound to the Cloudflare data plane",
     );
   }
+
+  const chatFirstValidation = await request(
+    fetchImpl,
+    `${base}/v1/chat-first/blocks/validate`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({}),
+    },
+  );
+  expectStatus(
+    "chat-first block validation boundary",
+    chatFirstValidation,
+    200,
+  );
 
   const appSearch = await request(fetchImpl, `${base}/v2/apps/search?limit=1`, {
     headers: authHeaders,
@@ -1649,8 +1678,11 @@ export async function runSmoke({
     unauthenticatedSyncUpload: unauthenticatedSyncUpload.status,
     unauthenticatedSyncStatus: unauthenticatedSyncStatus.status,
     unauthenticatedMemoryBatch: unauthenticatedMemoryBatch.status,
+    unauthenticatedChatFirstValidation:
+      unauthenticatedChatFirstValidation.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
+    chatFirstValidation: chatFirstValidation.status,
     appSearch: appSearch.status,
     memorySummaryFeedback: memorySummaryFeedback.status,
     conversations: conversations.status,

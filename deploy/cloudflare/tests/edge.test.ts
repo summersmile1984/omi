@@ -913,10 +913,7 @@ describe("edge gateway", () => {
       ["GET", "/v1/integrations/google_calendar/oauth-url"],
       ["GET", "/v1/calendar/google/events?max_results=20"],
       ["POST", "/v1/conversations/conversation-1/calendar-event"],
-      [
-        "POST",
-        "/v1/conversations/conversation-1/calendar-event/auto-link",
-      ],
+      ["POST", "/v1/conversations/conversation-1/calendar-event/auto-link"],
       ["POST", "/v1/tools/calendar-events"],
     ]) {
       const response = await edge.fetch(
@@ -997,6 +994,7 @@ describe("edge gateway", () => {
       "/v1/staged-tasks/migrate-conversation-items?limit=50&cursor=page-1",
       "/v1/action-items/restore-legacy-conversation-items",
       "/v1/import/limitless/conversations",
+      "/v1/chat-first/blocks/validate",
     ]) {
       const response = await edge.fetch(
         new Request(`https://edge.test${path}`, {
@@ -1008,12 +1006,15 @@ describe("edge gateway", () => {
       expect(response.status, path).toBe(200);
     }
 
-    expect(coreRequests).toHaveLength(4);
-    expect(coreRequests.map((request) => new URL(request.url).pathname)).toEqual([
+    expect(coreRequests).toHaveLength(5);
+    expect(
+      coreRequests.map((request) => new URL(request.url).pathname),
+    ).toEqual([
       "/v1/staged-tasks/migrate",
       "/v1/staged-tasks/migrate-conversation-items",
       "/v1/action-items/restore-legacy-conversation-items",
       "/v1/import/limitless/conversations",
+      "/v1/chat-first/blocks/validate",
     ]);
     for (const request of coreRequests) {
       expect(request.headers.get("x-omi-auth-context")).toBeTruthy();
@@ -1064,7 +1065,9 @@ describe("edge gateway", () => {
       expect(share.status).toBe(200);
     }
 
-    expect(coreRequests.map((request) => new URL(request.url).pathname)).toEqual([
+    expect(
+      coreRequests.map((request) => new URL(request.url).pathname),
+    ).toEqual([
       "/v1/action-items/shared/public-token",
       "/v2/messages/shared/public-token",
       "/v1/conversations/shared-conversation/shared",

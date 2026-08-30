@@ -37,6 +37,20 @@ function unauthenticatedMemoryBatchBoundary(
   return null;
 }
 
+function unauthenticatedChatFirstBoundary(
+  url: string,
+  init?: RequestInit,
+): Response | null {
+  if (
+    url.endsWith("/v1/chat-first/blocks/validate") &&
+    init?.method === "POST" &&
+    !new Headers(init.headers).has("authorization")
+  ) {
+    return new Response(null, { status: 401 });
+  }
+  return null;
+}
+
 function firstPartyConversationWriteBoundary(
   url: string,
   init?: RequestInit,
@@ -262,6 +276,19 @@ function publicCompatibilityRoute(
       headers: { "content-type": "text/plain; charset=UTF-8" },
     });
   }
+  if (
+    url.endsWith("/v1/chat-first/blocks/validate") &&
+    init?.method === "POST"
+  ) {
+    if (!new Headers(init.headers).has("authorization")) {
+      return new Response(null, { status: 401 });
+    }
+    return Response.json({
+      accepted: false,
+      code: "invalid_request",
+      blocks: [],
+    });
+  }
   if (url.endsWith("/v1/trends")) {
     return Response.json([]);
   }
@@ -340,6 +367,8 @@ describe("staging smoke helpers", () => {
       if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
+      const chatFirst = unauthenticatedChatFirstBoundary(url, init);
+      if (chatFirst) return chatFirst;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
       const retrievalTool = retrievalToolBoundary(url, init);
@@ -602,8 +631,10 @@ describe("staging smoke helpers", () => {
       unauthenticatedSyncUpload: 401,
       unauthenticatedSyncStatus: 401,
       unauthenticatedMemoryBatch: 401,
+      unauthenticatedChatFirstValidation: 401,
       authenticatedProbe: 200,
       accountCutover: 200,
+      chatFirstValidation: 200,
       appSearch: 200,
       memorySummaryFeedback: 200,
       conversations: 200,
@@ -725,7 +756,7 @@ describe("staging smoke helpers", () => {
       voiceMessageEmptyAudio: 400,
       mobileTtsValidation: 400,
     });
-    expect(calls).toHaveLength(154);
+    expect(calls).toHaveLength(156);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

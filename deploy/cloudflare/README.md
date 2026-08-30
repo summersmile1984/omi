@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 440 already match
-  Cloudflare staging owners and 137 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 441 already match
+  Cloudflare staging owners and 136 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -892,6 +892,9 @@ GET /v1/goals/{goalId}/advice
 POST /v1/goals/extract-progress
                               Edge → Python API Core → D1 + Workers AI/Vectorize;
                               extracted progress atomically updates goal/event/history
+POST /v1/chat-first/blocks/validate
+                              Edge → Python API Core → D1 capability/entity checks;
+                              bounded block union with retry-stable opaque IDs, no chat-state write
 GET /v1/conversations/{conversationId}/action-items
 GET /v1/conversations/{conversationId}/action-items/count
                               Edge → Python API Core → D1 standalone task projection
@@ -967,6 +970,12 @@ are limited to the five released trend families and topics are returned in
 descending `memories_count` order without exposing the underlying memory IDs.
 Use the reviewed D1 backfill generator for the initial Firestore export; the
 request path has no Firestore or per-user dependency.
+
+`POST /v1/chat-first/blocks/validate` is staging-only and validates the
+main-chat block contract against the isolated account's D1 entities. It is a
+pure capability check: the Worker does not generate prompts, persist chat
+messages, or fall back to the legacy backend. A missing entity, stale account
+generation, cold-start subject, or incomplete cutover returns a typed rejection.
 
 Only routes explicitly listed as migrated are sent to the partial Worker
 implementations. Authenticated routes that are not yet migrated use
