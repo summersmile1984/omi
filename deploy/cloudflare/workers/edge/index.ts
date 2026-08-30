@@ -375,6 +375,28 @@ const proxyLegacyBackend = async (
 
 const proxyPublicFirmware = proxyPublicCore;
 
+// The cloud Agent VM was retired, but released desktop clients still call
+// these endpoints during startup and shutdown. Keep the unauthenticated
+// tombstone contract at the edge so they never fall through to legacy (or
+// trigger Better Auth's 401 sign-out behavior).
+const AGENT_VM_RETIRED =
+  "The cloud Agent VM has been retired and can no longer be provisioned.";
+
+app.post("/v2/agent/provision", () =>
+  Response.json({ detail: AGENT_VM_RETIRED }, { status: 410 }),
+);
+app.post("/v2/agent/vm/stop-self", () =>
+  Response.json({ detail: AGENT_VM_RETIRED }, { status: 410 }),
+);
+app.get(
+  "/v2/agent/status",
+  () =>
+    new Response("null", {
+      status: 200,
+      headers: { "content-type": "application/json; charset=UTF-8" },
+    }),
+);
+
 app.get("/v2/firmware/stable", proxyPublicFirmware);
 app.get("/v2/firmware/latest", proxyPublicFirmware);
 app.get("/v2/firmware/version", proxyPublicFirmware);

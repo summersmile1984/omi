@@ -103,6 +103,56 @@ describe("edge gateway", () => {
     );
   });
 
+  it("serves retired Agent VM tombstones without authentication or dependencies", async () => {
+    const calls: string[] = [];
+    const env = {
+      AUTH: rawService((request) => {
+        calls.push(`auth:${new URL(request.url).pathname}`);
+        return Response.json({ uid: "unexpected" });
+      }),
+      API_CORE: rawService((request) => {
+        calls.push(`core:${new URL(request.url).pathname}`);
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      }),
+      API_AI: rawService((request) => {
+        calls.push(`ai:${new URL(request.url).pathname}`);
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      }),
+      REALTIME: rawService((request) => {
+        calls.push(`realtime:${new URL(request.url).pathname}`);
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      }),
+      JOBS: rawService((request) => {
+        calls.push(`jobs:${new URL(request.url).pathname}`);
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      }),
+    };
+
+    const status = await edge.fetch(
+      new Request("https://edge.test/v2/agent/status"),
+      env,
+    );
+    expect(status.status).toBe(200);
+    expect(status.headers.get("content-type")).toBe(
+      "application/json; charset=UTF-8",
+    );
+    await expect(status.text()).resolves.toBe("null");
+
+    for (const path of ["/v2/agent/provision", "/v2/agent/vm/stop-self"]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, { method: "POST" }),
+        env,
+      );
+      expect(response.status).toBe(410);
+      await expect(response.json()).resolves.toEqual({
+        detail:
+          "The cloud Agent VM has been retired and can no longer be provisioned.",
+      });
+    }
+
+    expect(calls).toEqual([]);
+  });
+
   it("reports dependency readiness only through service bindings", async () => {
     const paths: Record<string, string> = {};
     const dependency = (name: string, status = 200) =>

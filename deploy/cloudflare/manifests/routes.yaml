@@ -1733,6 +1733,26 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/agent/provision
+    owner: edge
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: []
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/agent/vm/stop-self
+    owner: edge
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: []
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v2/desktop/messages
     owner: api-core
@@ -1750,6 +1770,16 @@ routes:
     target_runtime: python-worker
     auth_authority: better-auth
     dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v2/agent/status
+    owner: edge
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: []
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
