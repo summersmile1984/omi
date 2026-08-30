@@ -622,6 +622,82 @@ describe("edge gateway", () => {
     }
   });
 
+  it("keeps task OAuth callbacks public and signs all task integration API routes for Jobs", async () => {
+    const jobRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "task-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      JOBS: service((request) => {
+        jobRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+    };
+
+    for (const path of [
+      "/v2/integrations/todoist/callback?code=c&state=s",
+      "/v2/integrations/asana/callback?code=c&state=s",
+      "/v2/integrations/google-tasks/callback?code=c&state=s",
+      "/v2/integrations/clickup/callback?code=c&state=s",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          headers: {
+            authorization: "Bearer untrusted-client-header",
+            "x-omi-auth-context": "untrusted-context",
+          },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    for (const request of jobRequests) {
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeNull();
+    }
+
+    const authenticatedStart = jobRequests.length;
+    for (const [method, path] of [
+      ["GET", "/v1/task-integrations"],
+      ["GET", "/v1/task-integrations/default"],
+      ["PUT", "/v1/task-integrations/default"],
+      ["GET", "/v1/task-integrations/asana/workspaces"],
+      ["GET", "/v1/task-integrations/asana/projects/workspace-1"],
+      ["GET", "/v1/task-integrations/clickup/teams"],
+      ["GET", "/v1/task-integrations/clickup/spaces/team-1"],
+      ["GET", "/v1/task-integrations/clickup/lists/space-1"],
+      ["GET", "/v1/task-integrations/todoist/oauth-url"],
+      ["POST", "/v1/task-integrations/todoist/tasks"],
+      ["PUT", "/v1/task-integrations/todoist"],
+      ["DELETE", "/v1/task-integrations/todoist"],
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: "Bearer opaque-session",
+            "x-omi-auth-context": "untrusted-context",
+          },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    const authenticatedRequests = jobRequests.slice(authenticatedStart);
+    expect(authenticatedRequests).toHaveLength(12);
+    for (const request of authenticatedRequests) {
+      expect(
+        decodeAuthContext(request.headers.get("x-omi-auth-context")),
+      ).toMatchObject({ uid: "task-user", audience: "jobs" });
+      expect(request.headers.get("authorization")).toBeNull();
+    }
+  });
+
   it("keeps share previews public and signs the Better Auth display name for share creation", async () => {
     const coreRequests: Request[] = [];
     const env = {

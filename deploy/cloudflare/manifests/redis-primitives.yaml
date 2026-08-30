@@ -606,9 +606,9 @@ direct_legacy_callers:
     }
   - {
       path: backend/routers/task_integrations.py,
-      target: durable-object,
-      target_owner: api-core,
-      migration_state: planned,
+      target: d1,
+      target_owner: jobs,
+      migration_state: staging-owned,
     }
   - {
       path: backend/scripts/export_openapi.py,

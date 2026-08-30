@@ -60,6 +60,15 @@ export type JobsEnv = {
   X_OAUTH_REDIRECT_URI?: string;
   X_OAUTH_SCOPES?: string;
   X_TOKEN_ENCRYPTION_SECRET?: string;
+  TASK_INTEGRATION_TOKEN_ENCRYPTION_SECRET?: string;
+  TODOIST_CLIENT_ID?: string;
+  TODOIST_CLIENT_SECRET?: string;
+  ASANA_CLIENT_ID?: string;
+  ASANA_CLIENT_SECRET?: string;
+  GOOGLE_TASKS_CLIENT_ID?: string;
+  GOOGLE_TASKS_CLIENT_SECRET?: string;
+  CLICKUP_CLIENT_ID?: string;
+  CLICKUP_CLIENT_SECRET?: string;
   RAPID_API_HOST?: string;
   RAPID_API_KEY?: string;
 };

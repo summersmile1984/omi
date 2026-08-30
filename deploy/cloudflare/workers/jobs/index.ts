@@ -64,6 +64,10 @@ import {
   reconcileVectorProjections,
 } from "./vector-projection";
 import { reconcileXConnections, registerXConnectorRoutes } from "./x-connector";
+import {
+  cleanupExpiredTaskIntegrationOAuthStates,
+  registerTaskIntegrationRoutes,
+} from "./task-integrations";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -124,6 +128,7 @@ registerAppApiKeyRoutes(app, requestContext);
 registerMcpApiKeyRoutes(app, requestContext);
 registerDeveloperApiKeyRoutes(app, requestContext);
 registerXConnectorRoutes(app, requestContext);
+registerTaskIntegrationRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -1072,6 +1077,7 @@ export default {
       reconcileStripeWebhookEvents(env, now),
       reconcileVectorProjections(env, now),
       reconcileXConnections(env, now),
+      cleanupExpiredTaskIntegrationOAuthStates(env, now),
       ...syncMaintenance,
     ]);
     const failure = results.find(

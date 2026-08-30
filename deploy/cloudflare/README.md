@@ -27,10 +27,11 @@ The first staging slice contains:
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
 - `realtime`: the Durable Object/ASR protocol seam; supported mono audio is
   streamed directly to the Workers AI Nova-3 binding and no model runs locally.
-- `jobs`: durable background work plus the D1-backed X connector. X OAuth uses
-  PKCE, stores only hashed OAuth state and AES-GCM-encrypted tokens, calls X or
-  the optional RapidAPI fallback over HTTPS, and projects imported posts and
-  extracted memories through the existing Vectorize outbox.
+- `jobs`: durable background work plus D1-backed X and task-provider connectors.
+  X OAuth uses PKCE and the task integrations use one-time, ten-minute D1 state;
+  both store only hashed OAuth state and AES-GCM-encrypted tokens. Todoist,
+  Asana, Google Tasks, and ClickUp calls run over their hosted HTTPS APIs, so no
+  task-provider service runs locally or in another container.
 
 The admin-key-protected `/v1/summary-app-ids` set is also authoritative in D1
 for staging. It is not dual-written to the legacy Redis set; a production
@@ -77,8 +78,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 404 already match
-  Cloudflare staging owners and 173 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 420 already match
+  Cloudflare staging owners and 157 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -336,6 +337,20 @@ printf '%s' "$X_OAUTH_REDIRECT_URI" | npx wrangler secret put X_OAUTH_REDIRECT_U
 printf '%s' "$X_TOKEN_ENCRYPTION_SECRET" | npx wrangler secret put X_TOKEN_ENCRYPTION_SECRET --name omi-cf-jobs-staging
 printf '%s' "$RAPID_API_HOST" | npx wrangler secret put RAPID_API_HOST --name omi-cf-jobs-staging
 printf '%s' "$RAPID_API_KEY" | npx wrangler secret put RAPID_API_KEY --name omi-cf-jobs-staging
+
+# Task integrations. The encryption secret must remain stable; rotation needs a
+# token re-encryption migration. Provider credentials must use staging OAuth
+# applications whose redirect URIs are the matching Edge `/v2/integrations/*`
+# callback routes.
+printf '%s' "$TASK_INTEGRATION_TOKEN_ENCRYPTION_SECRET" | npx wrangler secret put TASK_INTEGRATION_TOKEN_ENCRYPTION_SECRET --name omi-cf-jobs-staging
+printf '%s' "$TODOIST_CLIENT_ID" | npx wrangler secret put TODOIST_CLIENT_ID --name omi-cf-jobs-staging
+printf '%s' "$TODOIST_CLIENT_SECRET" | npx wrangler secret put TODOIST_CLIENT_SECRET --name omi-cf-jobs-staging
+printf '%s' "$ASANA_CLIENT_ID" | npx wrangler secret put ASANA_CLIENT_ID --name omi-cf-jobs-staging
+printf '%s' "$ASANA_CLIENT_SECRET" | npx wrangler secret put ASANA_CLIENT_SECRET --name omi-cf-jobs-staging
+printf '%s' "$GOOGLE_TASKS_CLIENT_ID" | npx wrangler secret put GOOGLE_TASKS_CLIENT_ID --name omi-cf-jobs-staging
+printf '%s' "$GOOGLE_TASKS_CLIENT_SECRET" | npx wrangler secret put GOOGLE_TASKS_CLIENT_SECRET --name omi-cf-jobs-staging
+printf '%s' "$CLICKUP_CLIENT_ID" | npx wrangler secret put CLICKUP_CLIENT_ID --name omi-cf-jobs-staging
+printf '%s' "$CLICKUP_CLIENT_SECRET" | npx wrangler secret put CLICKUP_CLIENT_SECRET --name omi-cf-jobs-staging
 ```
 
 The `/auth-issue` bridge is hidden (`404`) unless `AUTH_DEV_ISSUER_SECRET` is
