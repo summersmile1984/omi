@@ -39,6 +39,16 @@ has no Firestore fallback or dual write. Production account promotion remains
 forbidden until the account-cutover importer, manifest verification, and
 destination binding described by `INV-CUTOVER-1` exist.
 
+`knowledge_graph_routes.py` derives both released graph read shapes directly
+from eligible long-term `cf_memories` rows; D1 remains the only authority and
+there is no independently mutable graph store. Canonical pages use a signed,
+uid-bound cursor plus a memory-revision fence, expose one catalog node per
+visible memory, and fail closed if the source changes during a read. Delete and
+rebuild preserve canonical state with the legacy conflict response; only a
+positively identified legacy cutover principal receives the compatible no-op
+response. Return-only extraction uses the native Workers AI binding, validates
+referential closure and bounded node/edge counts, and never writes D1.
+
 `account_cutover_routes.py` is the routing authority consumed by Edge. Only
 `ACCOUNT_CUTOVER_PROFILE=isolated-staging` may initialize a missing Better Auth
 principal directly as `new`; the initializer writes a completed,

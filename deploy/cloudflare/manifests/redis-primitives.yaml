@@ -365,6 +365,9 @@ families:
       - conversations:search
       - dev:conversations
       - dev:goals_write
+      - knowledge_graph:canonical
+      - knowledge_graph:extract
+      - knowledge_graph:rebuild
       - memories:batch
       - memories:create
       - memories:delete
@@ -380,6 +383,7 @@ families:
       - DELETE /v1/dev/user/conversations/{conversation_id}
       - DELETE /v1/dev/user/goals/{goal_id}
       - DELETE /v1/dev/user/memories/{memory_id}
+      - GET /v1/knowledge-graph/canonical
       - POST /v1/conversations/from-segments
       - POST /v1/conversations/search
       - DELETE /v1/mcp/action-items/:action_item_id
@@ -399,6 +403,8 @@ families:
       - POST /v1/dev/user/goals
       - POST /v1/dev/user/memories
       - POST /v1/dev/user/memories/batch
+      - POST /v1/knowledge-graph/extract
+      - POST /v1/knowledge-graph/rebuild
       - POST /v1/stt/transcribe
       - POST /v1/stt/transcribe-async
       - POST /v1/stt/transcribe-workers-ai

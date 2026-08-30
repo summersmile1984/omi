@@ -800,6 +800,12 @@ POST /v1/tools/memories/search
 GET/POST /v1/tools/action-items
 PATCH /v1/tools/action-items/{actionItemId}
                               Edge → Python API Core → D1/Vectorize tool envelope
+GET/DELETE /v1/knowledge-graph
+GET /v1/knowledge-graph/canonical
+POST /v1/knowledge-graph/rebuild
+POST /v1/knowledge-graph/extract
+                              Edge → Python API Core → canonical D1 memory graph;
+                              extraction uses Workers AI and never writes product state
 GET /v1/conversations/{conversationId}/action-items
 GET /v1/conversations/{conversationId}/action-items/count
                               Edge → Python API Core → D1 standalone task projection

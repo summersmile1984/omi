@@ -176,6 +176,64 @@ async function exerciseRetrievalTools(fetchImpl, base, authHeaders) {
   return statuses;
 }
 
+async function exerciseKnowledgeGraph(fetchImpl, base, authHeaders) {
+  const graph = await requestJson(fetchImpl, `${base}/v1/knowledge-graph`, {
+    headers: authHeaders,
+  });
+  expectStatus("knowledge graph", graph.response, 200);
+  if (!Array.isArray(graph.body?.nodes) || !Array.isArray(graph.body?.edges)) {
+    throw new Error("knowledge graph returned an invalid payload");
+  }
+
+  const canonical = await requestJson(
+    fetchImpl,
+    `${base}/v1/knowledge-graph/canonical?limit=1`,
+    { headers: authHeaders },
+  );
+  expectStatus("canonical knowledge graph", canonical.response, 200);
+  if (
+    !Array.isArray(canonical.body?.nodes) ||
+    !Array.isArray(canonical.body?.edges) ||
+    !Array.isArray(canonical.body?.catalog_nodes) ||
+    typeof canonical.body?.has_more !== "boolean"
+  ) {
+    throw new Error("canonical knowledge graph returned an invalid payload");
+  }
+
+  const rebuild = await request(
+    fetchImpl,
+    `${base}/v1/knowledge-graph/rebuild`,
+    {
+      method: "POST",
+      headers: authHeaders,
+    },
+  );
+  expectStatus("canonical knowledge graph rebuild fence", rebuild, 409);
+  const deletion = await request(fetchImpl, `${base}/v1/knowledge-graph`, {
+    method: "DELETE",
+    headers: authHeaders,
+  });
+  expectStatus("canonical knowledge graph delete fence", deletion, 409);
+  const extractValidation = await request(
+    fetchImpl,
+    `${base}/v1/knowledge-graph/extract`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ text: "" }),
+    },
+  );
+  expectStatus("knowledge graph extraction validation", extractValidation, 400);
+
+  return {
+    knowledgeGraph: graph.response.status,
+    canonicalKnowledgeGraph: canonical.response.status,
+    knowledgeGraphRebuildFence: rebuild.status,
+    knowledgeGraphDeleteFence: deletion.status,
+    knowledgeGraphExtractValidation: extractValidation.status,
+  };
+}
+
 async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
   const preflight = await requestJson(
     fetchImpl,
@@ -620,6 +678,11 @@ export async function runSmoke({
   );
   expectStatus("canonical conversation search", conversationSearch, 200);
   const retrievalTools = await exerciseRetrievalTools(
+    fetchImpl,
+    base,
+    authHeaders,
+  );
+  const knowledgeGraph = await exerciseKnowledgeGraph(
     fetchImpl,
     base,
     authHeaders,
@@ -1498,6 +1561,7 @@ export async function runSmoke({
     developerApiKeyValidation: developerApiKeyValidation.status,
     developerApiKeyDeleteMissing: developerApiKeyDeleteMissing.status,
     ...integrationBoundaries,
+    ...knowledgeGraph,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
     stripeRefreshOwnership: stripeRefreshOwnership.status,

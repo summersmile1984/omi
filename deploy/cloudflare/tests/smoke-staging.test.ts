@@ -49,8 +49,31 @@ function firstPartyConversationWriteBoundary(
   return null;
 }
 
-function retrievalToolBoundary(url: string): Response | null {
+function retrievalToolBoundary(
+  url: string,
+  init?: RequestInit,
+): Response | null {
   const path = new URL(url).pathname;
+  if (path === "/v1/knowledge-graph") {
+    return init?.method === "DELETE"
+      ? Response.json({ detail: "canonical graph" }, { status: 409 })
+      : Response.json({ nodes: [], edges: [] });
+  }
+  if (path === "/v1/knowledge-graph/canonical") {
+    return Response.json({
+      nodes: [],
+      edges: [],
+      catalog_nodes: [],
+      has_more: false,
+      next_cursor: null,
+    });
+  }
+  if (path === "/v1/knowledge-graph/rebuild") {
+    return Response.json({ detail: "canonical graph" }, { status: 409 });
+  }
+  if (path === "/v1/knowledge-graph/extract") {
+    return Response.json({ detail: "invalid extraction" }, { status: 400 });
+  }
   if (path === "/v1/action-items/search") {
     return Response.json({ action_items: [] });
   }
@@ -237,7 +260,7 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
-      const retrievalTool = retrievalToolBoundary(url);
+      const retrievalTool = retrievalToolBoundary(url, init);
       if (retrievalTool) return retrievalTool;
       if (url.endsWith("/v1/account/cutover/control")) {
         return Response.json({
@@ -509,6 +532,11 @@ describe("staging smoke helpers", () => {
       toolMemories: 200,
       toolMemorySearch: 200,
       toolActionItems: 200,
+      knowledgeGraph: 200,
+      canonicalKnowledgeGraph: 200,
+      knowledgeGraphRebuildFence: 409,
+      knowledgeGraphDeleteFence: 409,
+      knowledgeGraphExtractValidation: 400,
       conversationFromSegmentsValidation: 422,
       webProxyConversations: 200,
       webProxyEnabledApps: 200,
@@ -600,7 +628,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(134);
+    expect(calls).toHaveLength(139);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -647,7 +675,7 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
-      const retrievalTool = retrievalToolBoundary(url);
+      const retrievalTool = retrievalToolBoundary(url, init);
       if (retrievalTool) return retrievalTool;
       if (
         url.endsWith("/health") ||
@@ -709,7 +737,7 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
-      const retrievalTool = retrievalToolBoundary(url);
+      const retrievalTool = retrievalToolBoundary(url, init);
       if (retrievalTool) return retrievalTool;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
@@ -770,7 +798,7 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
-      const retrievalTool = retrievalToolBoundary(url);
+      const retrievalTool = retrievalToolBoundary(url, init);
       if (retrievalTool) return retrievalTool;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
@@ -930,7 +958,7 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
-      const retrievalTool = retrievalToolBoundary(url);
+      const retrievalTool = retrievalToolBoundary(url, init);
       if (retrievalTool) return retrievalTool;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
@@ -1007,7 +1035,7 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
-      const retrievalTool = retrievalToolBoundary(url);
+      const retrievalTool = retrievalToolBoundary(url, init);
       if (retrievalTool) return retrievalTool;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });

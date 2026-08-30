@@ -77,6 +77,21 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 120,
     windowSeconds: 3600,
   },
+  "knowledge_graph:canonical": {
+    name: "knowledge_graph:canonical",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
+  "knowledge_graph:extract": {
+    name: "knowledge_graph:extract",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
+  "knowledge_graph:rebuild": {
+    name: "knowledge_graph:rebuild",
+    maxRequests: 2,
+    windowSeconds: 3600,
+  },
   "stt:transcribe": {
     name: "stt:transcribe",
     maxRequests: 60,
@@ -156,6 +171,18 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     EDGE_RATE_LIMIT_POLICIES["dev:conversations"],
   ],
   ["POST /v1/dev/user/goals", EDGE_RATE_LIMIT_POLICIES["dev:goals_write"]],
+  [
+    "GET /v1/knowledge-graph/canonical",
+    EDGE_RATE_LIMIT_POLICIES["knowledge_graph:canonical"],
+  ],
+  [
+    "POST /v1/knowledge-graph/extract",
+    EDGE_RATE_LIMIT_POLICIES["knowledge_graph:extract"],
+  ],
+  [
+    "POST /v1/knowledge-graph/rebuild",
+    EDGE_RATE_LIMIT_POLICIES["knowledge_graph:rebuild"],
+  ],
   ["DELETE /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:delete_all"]],
   [
     "DELETE /v3/memories/batch",
