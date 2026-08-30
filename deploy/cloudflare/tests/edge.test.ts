@@ -2645,6 +2645,7 @@ describe("edge gateway", () => {
       "/v1/users/me/llm-usage?days=30",
       "/v1/users/me/llm-usage/top-features?days=30&limit=3",
       "/v1/users/me/llm-usage/total",
+      "/v1/users/export",
       "/v1/payments/available-plans",
       "/v1/payments/overage-info",
     ]) {
@@ -2666,6 +2667,7 @@ describe("edge gateway", () => {
       "/v1/users/me/llm-usage",
       "/v1/users/me/llm-usage/top-features",
       "/v1/users/me/llm-usage/total",
+      "/v1/users/export",
       "/v1/payments/available-plans",
       "/v1/payments/overage-info",
     ]);

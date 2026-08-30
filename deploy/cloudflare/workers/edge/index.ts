@@ -976,6 +976,7 @@ app.get("/v1/users/me/llm-usage", proxyAuthenticatedCore);
 app.post("/v1/users/me/llm-usage", proxyAuthenticatedCore);
 app.get("/v1/users/me/llm-usage/top-features", proxyAuthenticatedCore);
 app.get("/v1/users/me/llm-usage/total", proxyAuthenticatedCore);
+app.get("/v1/users/export", proxyAuthenticatedCore);
 app.get("/v1/payments/available-plans", proxyAuthenticatedCore);
 app.get("/v1/payments/overage-info", proxyAuthenticatedCore);
 app.get("/v1/fair-use/status", proxyAuthenticatedCore);

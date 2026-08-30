@@ -226,7 +226,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/daily-summary-settings", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/developer/webhook/{wtype}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/developer/webhooks/status", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/users/export", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/export", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/language", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/location-context-consent", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/me/llm-usage", "protocol": "http", "target_runtime": "python-worker"},

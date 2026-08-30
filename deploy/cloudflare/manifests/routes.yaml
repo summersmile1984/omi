@@ -3231,6 +3231,16 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/users/export
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, d1-auth]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: DELETE
     path: /v1/users/delete-account
     owner: jobs

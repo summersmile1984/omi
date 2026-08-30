@@ -70,6 +70,7 @@ from knowledge_graph_routes import router as knowledge_graph_router
 from synthesis_routes import router as synthesis_router
 from goal_ai_routes import router as goal_ai_router
 from speech_profile_routes import router as speech_profile_router
+from user_export_routes import router as user_export_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
@@ -105,6 +106,7 @@ app.include_router(knowledge_graph_router)
 app.include_router(synthesis_router)
 app.include_router(goal_ai_router)
 app.include_router(speech_profile_router)
+app.include_router(user_export_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
 ASSET_CLEANUP_GRACE_SECONDS = 15 * 60
 ASSET_CLEANUP_BATCH_SIZE = 10
