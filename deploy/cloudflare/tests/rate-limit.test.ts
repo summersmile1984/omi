@@ -222,6 +222,11 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v1/stt/transcribe-async", "stt:transcribe"],
       ["POST", "/v1/stt/transcribe-workers-ai", "stt:transcribe"],
       ["POST", "/v2/voice-message/transcribe", "stt:transcribe"],
+      ["POST", "/v1/tools/conversations/search", "tools:search"],
+      ["POST", "/v1/tools/conversations/search-chunks", "tools:search"],
+      ["POST", "/v1/tools/memories/search", "tools:search"],
+      ["POST", "/v1/tools/action-items", "tools:mutate"],
+      ["PATCH", "/v1/tools/action-items/action-1", "tools:mutate"],
       ["POST", "/v1/conversations/search", "conversations:search"],
       [
         "POST",

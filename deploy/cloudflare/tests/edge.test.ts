@@ -1460,6 +1460,74 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes first-party retrieval tools and action search to the authenticated core worker", async () => {
+    const coreRequests: Request[] = [];
+    const rateLimitNames: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      API_AI: service(() => Response.json({ status: "wrong owner" })),
+      REALTIME: service(() => Response.json({ status: "wrong owner" })),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
+    };
+    const requests: Array<[string, string, string?]> = [
+      ["GET", "/v1/action-items/search?query=worker"],
+      ["GET", "/v1/tools/conversations?limit=1"],
+      ["POST", "/v1/tools/conversations/search", '{"query":"worker"}'],
+      ["POST", "/v1/tools/conversations/search-chunks", '{"query":"worker"}'],
+      ["GET", "/v1/tools/memories?limit=1"],
+      ["POST", "/v1/tools/memories/search", '{"query":"worker"}'],
+      ["GET", "/v1/tools/action-items?limit=1"],
+      ["POST", "/v1/tools/action-items", '{"description":"ship"}'],
+      ["PATCH", "/v1/tools/action-items/action-1", '{"completed":true}'],
+    ];
+    for (const [method, path, body] of requests) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: "Bearer opaque-session",
+            ...(body ? { "content-type": "application/json" } : {}),
+          },
+          body,
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    expect(
+      coreRequests.map(
+        (request) => `${request.method} ${new URL(request.url).pathname}`,
+      ),
+    ).toEqual(
+      requests.map(([method, path]) => `${method} ${path.split("?")[0]}`),
+    );
+    expect(
+      coreRequests.every((request) =>
+        Boolean(request.headers.get("x-omi-auth-context")),
+      ),
+    ).toBe(true);
+    await expect(coreRequests[2].json()).resolves.toEqual({ query: "worker" });
+    await expect(coreRequests[8].json()).resolves.toEqual({ completed: true });
+    expect(rateLimitNames).toEqual([
+      "tools:search:user-1",
+      "tools:search:user-1",
+      "tools:search:user-1",
+      "tools:mutate:user-1",
+      "tools:mutate:user-1",
+    ]);
+  });
+
   it("routes the canonical memory CRUD surface to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const rateLimitNames: string[] = [];

@@ -73,6 +73,17 @@ writes use updated-at compare-and-set; the legacy-disabled speech-training path
 is not revived, while bulk assignment remains legacy-owned because it still
 extracts person speech samples asynchronously.
 
+`tool_routes.py` owns the first-party conversation, transcript-chunk, memory,
+and action-item REST tools. Lists read the canonical uid-scoped D1 rows;
+semantic searches embed with the Workers AI binding, use tenant-namespaced
+Vectorize candidates, map them through `cf_vector_projection_state`, and
+re-hydrate authoritative unlocked D1 rows before returning the typed tool
+envelope. Action-item create/update reuses `action_item_routes.py`, whose D1
+mutation and vector projection outbox are committed in one batch before a Jobs
+Queue hint is published. Edge owns the Better Auth assertion and the
+`tools:search` / `tools:mutate` limits. Calendar-event creation remains on the
+legacy Google Calendar provider boundary.
+
 `chat_routes.py` and `chat_session_routes.py` share the uid-scoped
 `cf_chat_messages`, `cf_chat_sessions`, and `cf_chat_quota_events` authority.
 Main-chat clear removes the current session atomically, while desktop scoped

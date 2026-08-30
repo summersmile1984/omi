@@ -49,6 +49,30 @@ function firstPartyConversationWriteBoundary(
   return null;
 }
 
+function retrievalToolBoundary(url: string): Response | null {
+  const path = new URL(url).pathname;
+  if (path === "/v1/action-items/search") {
+    return Response.json({ action_items: [] });
+  }
+  const toolNames: Record<string, string> = {
+    "/v1/tools/conversations": "get_conversations",
+    "/v1/tools/conversations/search": "search_conversations",
+    "/v1/tools/conversations/search-chunks": "search_conversation_chunks",
+    "/v1/tools/memories": "get_memories",
+    "/v1/tools/memories/search": "search_memories",
+    "/v1/tools/action-items": "get_action_items",
+  };
+  const toolName = toolNames[path];
+  return toolName
+    ? Response.json({
+        tool_name: toolName,
+        result_text: "No results found.",
+        is_error: false,
+        sources: [],
+      })
+    : null;
+}
+
 function creatorPaymentBoundary(
   url: string,
   init?: RequestInit,
@@ -213,6 +237,8 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
+      const retrievalTool = retrievalToolBoundary(url);
+      if (retrievalTool) return retrievalTool;
       if (url.endsWith("/v1/account/cutover/control")) {
         return Response.json({
           state: "new",
@@ -476,6 +502,13 @@ describe("staging smoke helpers", () => {
       memorySummaryFeedback: 200,
       conversations: 200,
       conversationSearch: 200,
+      actionItemSearch: 200,
+      toolConversations: 200,
+      toolConversationSearch: 200,
+      toolConversationChunkSearch: 200,
+      toolMemories: 200,
+      toolMemorySearch: 200,
+      toolActionItems: 200,
       conversationFromSegmentsValidation: 422,
       webProxyConversations: 200,
       webProxyEnabledApps: 200,
@@ -567,7 +600,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(127);
+    expect(calls).toHaveLength(134);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -614,6 +647,8 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
+      const retrievalTool = retrievalToolBoundary(url);
+      if (retrievalTool) return retrievalTool;
       if (
         url.endsWith("/health") ||
         url.endsWith("/v1/announcements/general") ||
@@ -674,6 +709,8 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
+      const retrievalTool = retrievalToolBoundary(url);
+      if (retrievalTool) return retrievalTool;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -733,6 +770,8 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
+      const retrievalTool = retrievalToolBoundary(url);
+      if (retrievalTool) return retrievalTool;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -891,6 +930,8 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
+      const retrievalTool = retrievalToolBoundary(url);
+      if (retrievalTool) return retrievalTool;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -966,6 +1007,8 @@ describe("staging smoke helpers", () => {
       if (memoryBatch) return memoryBatch;
       const conversationWrite = firstPartyConversationWriteBoundary(url, init);
       if (conversationWrite) return conversationWrite;
+      const retrievalTool = retrievalToolBoundary(url);
+      if (retrievalTool) return retrievalTool;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }

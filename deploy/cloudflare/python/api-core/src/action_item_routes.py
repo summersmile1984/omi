@@ -1,10 +1,8 @@
 """D1-backed action-item routes for the isolated Cloudflare profile.
 
-The module deliberately owns the CRUD/reconciliation surface only. Vector
-projection, task-link validation, Apple Reminders, sharing, and push/reminder
-side effects remain on the legacy owner until their separate contracts are
-migrated. Keeping those boundaries explicit prevents a D1 CRUD cutover from
-silently claiming downstream work it does not perform.
+The module owns CRUD/reconciliation plus the D1-to-Vectorize lifecycle used by
+semantic task search. Task-link validation and push/reminder side effects stay
+explicit until their separate contracts migrate.
 """
 
 from __future__ import annotations
@@ -23,6 +21,13 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from conversation_routes import _first_conversation
 from internal_auth import decode_context
+from vector_search import (
+    embed_query,
+    hydrate_candidate_ids,
+    publish_vector_projection,
+    query_vector_ids,
+    vector_outbox_statement,
+)
 
 router = APIRouter()
 batch_router = APIRouter()
@@ -390,6 +395,26 @@ async def _first_item(env: object, uid: str, item_id: str) -> dict[str, object] 
     return row if isinstance(row, dict) else None
 
 
+async def _items_for_ids(env: object, uid: str, item_ids: list[str]) -> list[dict[str, object]]:
+    if not item_ids:
+        return []
+    placeholders = ",".join("?" for _ in item_ids)
+    result = (
+        await env.APP_DB.prepare(
+            "SELECT id, description, status, completed, goal_id, workstream_id, owner, due_at, due_confidence, "
+            "source, provenance_json, priority, sort_order, indent_level, recurrence_rule, recurrence_parent_id, "
+            "created_at, updated_at, completed_at, superseded_by, conversation_id, is_locked, exported, export_date, "
+            "export_platform, apple_reminder_id FROM cf_action_items "
+            f"WHERE uid = ? AND id IN ({placeholders}) AND deleted = 0 AND is_locked = 0"
+        )
+        .bind(uid, *item_ids)
+        .all()
+    )
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    by_id = {str(row["id"]): row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)}
+    return [by_id[item_id] for item_id in item_ids if item_id in by_id]
+
+
 async def _insert_item(env: object, uid: str, item: ActionItemCreate) -> dict[str, object]:
     key = _idempotency_key(uid, item.description)
     existing = (
@@ -408,7 +433,7 @@ async def _insert_item(env: object, uid: str, item: ActionItemCreate) -> dict[st
 
     now = int(time.time())
     item_id = uuid.uuid4().hex
-    await env.APP_DB.prepare(
+    insert = env.APP_DB.prepare(
         "INSERT INTO cf_action_items (uid, id, description, status, completed, goal_id, workstream_id, owner, "
         "due_at, due_confidence, source, provenance_json, priority, sort_order, indent_level, recurrence_rule, "
         "recurrence_parent_id, conversation_id, is_locked, exported, export_date, export_platform, "
@@ -441,10 +466,24 @@ async def _insert_item(env: object, uid: str, item: ActionItemCreate) -> dict[st
         now,
         now,
         key,
-    ).run()
+    )
+    await env.APP_DB.batch(
+        [
+            insert,
+            vector_outbox_statement(
+                env,
+                uid=uid,
+                source_kind="action_item",
+                source_id=item_id,
+                desired_version=now,
+                operation="upsert",
+            ),
+        ]
+    )
     row = await _first_item(env, uid, item_id)
     if row is None:
         raise RuntimeError("created action item could not be loaded")
+    await publish_vector_projection(env, uid=uid, source_kind="action_item", source_id=item_id)
     return row
 
 
@@ -553,6 +592,43 @@ async def list_action_item_ids(request: Request):
     if completed is not None:
         body["completed_scope"] = completed
     return body
+
+
+@router.get("/v1/action-items/search")
+async def search_action_items(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    query = _query_value(request, "query")
+    limit = _query_int(request, "limit", 10, 1, 50)
+    if not query:
+        return JSONResponse({"detail": "query is required"}, status_code=422)
+    if limit is None:
+        return JSONResponse({"detail": "invalid limit"}, status_code=422)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        vector = await embed_query(env, query)
+        matches = await query_vector_ids(
+            env,
+            "ACTION_ITEM_VECTORS",
+            uid,
+            vector,
+            top_k=limit,
+        )
+        candidates = await hydrate_candidate_ids(
+            env,
+            uid,
+            "action_item",
+            matches,
+            minimum_score=0.3,
+        )
+        rows = await _items_for_ids(env, uid, [source_id for source_id, _ in candidates])
+    except ValueError as error:
+        return JSONResponse({"detail": str(error)}, status_code=422)
+    except Exception:
+        return JSONResponse({"error": "action item search unavailable"}, status_code=503)
+    return {"action_items": [_response(row) for row in rows[:limit]]}
 
 
 async def _task_share(env: object, token: str, now: int) -> dict[str, object] | None:
@@ -889,7 +965,10 @@ async def _apply_update(env: object, uid: str, item_id: str, update: ActionItemU
         values["completed_at"] = int(time.time()) if values["completed"] else None
     if not values:
         return existing
-    values["updated_at"] = int(time.time())
+    values["updated_at"] = max(
+        int(time.time()),
+        int(existing.get("updated_at") or existing.get("created_at") or 0) + 1,
+    )
     allowed = {
         "description",
         "status",
@@ -918,10 +997,55 @@ async def _apply_update(env: object, uid: str, item_id: str, update: ActionItemU
     if "exported" in values:
         values["exported"] = 1 if values["exported"] else 0
     assignments = ", ".join(f"{key} = ?" for key in values)
-    await env.APP_DB.prepare(f"UPDATE cf_action_items SET {assignments} WHERE uid = ? AND id = ? AND deleted = 0").bind(
-        *values.values(), uid, item_id
-    ).run()
-    return await _first_item(env, uid, item_id)
+    desired_version = int(values["updated_at"])
+    await env.APP_DB.batch(
+        [
+            env.APP_DB.prepare(
+                f"UPDATE cf_action_items SET {assignments} WHERE uid = ? AND id = ? AND deleted = 0"
+            ).bind(*values.values(), uid, item_id),
+            vector_outbox_statement(
+                env,
+                uid=uid,
+                source_kind="action_item",
+                source_id=item_id,
+                desired_version=desired_version,
+                operation="upsert",
+            ),
+        ]
+    )
+    row = await _first_item(env, uid, item_id)
+    await publish_vector_projection(env, uid=uid, source_kind="action_item", source_id=item_id)
+    return row
+
+
+async def _delete_item(
+    env: object,
+    uid: str,
+    item_id: str,
+    existing: dict[str, object] | None = None,
+) -> bool:
+    row = existing or await _first_item(env, uid, item_id)
+    if row is None:
+        return False
+    desired_version = max(
+        int(time.time()),
+        int(row.get("updated_at") or row.get("created_at") or 0) + 1,
+    )
+    await env.APP_DB.batch(
+        [
+            env.APP_DB.prepare("DELETE FROM cf_action_items WHERE uid = ? AND id = ?").bind(uid, item_id),
+            vector_outbox_statement(
+                env,
+                uid=uid,
+                source_kind="action_item",
+                source_id=item_id,
+                desired_version=desired_version,
+                operation="delete",
+            ),
+        ]
+    )
+    await publish_vector_projection(env, uid=uid, source_kind="action_item", source_id=item_id)
+    return True
 
 
 @router.patch("/v1/action-items/{action_item_id}")
@@ -964,9 +1088,7 @@ async def delete_action_item(request: Request, action_item_id: str):
     row = await _first_item(env, str(context["uid"]), action_item_id)
     if row is None:
         return JSONResponse({"error": "action item not found"}, status_code=404)
-    await env.APP_DB.prepare("DELETE FROM cf_action_items WHERE uid = ? AND id = ?").bind(
-        str(context["uid"]), action_item_id
-    ).run()
+    await _delete_item(env, str(context["uid"]), action_item_id, row)
     return Response(status_code=204)
 
 
@@ -1096,11 +1218,7 @@ async def batch_delete_action_items(request: Request):
     uid = str(context["uid"])
     deleted_ids: list[str] = []
     for item_id in ids:
-        existing = await _first_item(request.scope["env"], uid, item_id)
-        if existing is None:
+        if not await _delete_item(request.scope["env"], uid, item_id):
             continue
-        await request.scope["env"].APP_DB.prepare("DELETE FROM cf_action_items WHERE uid = ? AND id = ?").bind(
-            uid, item_id
-        ).run()
         deleted_ids.append(item_id)
     return {"status": "Ok", "deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}

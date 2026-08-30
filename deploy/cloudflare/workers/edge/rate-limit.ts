@@ -87,6 +87,16 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 300,
     windowSeconds: 3600,
   },
+  "tools:mutate": {
+    name: "tools:mutate",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
+  "tools:search": {
+    name: "tools:search",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
 } as const satisfies Record<string, EdgeRateLimitPolicy>;
 
 export const TTS_SYNTHESIZE_RATE_LIMIT =
@@ -102,6 +112,16 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ["POST /v1/stt/transcribe-workers-ai", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/stt/transcribe-async", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v2/voice-message/transcribe", STT_TRANSCRIBE_RATE_LIMIT],
+  [
+    "POST /v1/tools/conversations/search",
+    EDGE_RATE_LIMIT_POLICIES["tools:search"],
+  ],
+  [
+    "POST /v1/tools/conversations/search-chunks",
+    EDGE_RATE_LIMIT_POLICIES["tools:search"],
+  ],
+  ["POST /v1/tools/memories/search", EDGE_RATE_LIMIT_POLICIES["tools:search"]],
+  ["POST /v1/tools/action-items", EDGE_RATE_LIMIT_POLICIES["tools:mutate"]],
   [
     "POST /v1/conversations/search",
     EDGE_RATE_LIMIT_POLICIES["conversations:search"],
@@ -171,6 +191,12 @@ export function edgeRateLimitPolicyForRequest(
     return normalizedMethod === "DELETE"
       ? EDGE_RATE_LIMIT_POLICIES["memories:delete"]
       : EDGE_RATE_LIMIT_POLICIES["memories:modify"];
+  }
+  if (
+    normalizedMethod === "PATCH" &&
+    /^\/v1\/tools\/action-items\/[^/]+$/.test(path)
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["tools:mutate"];
   }
   if (
     (normalizedMethod === "POST" &&

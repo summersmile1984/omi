@@ -36,9 +36,34 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
         self.connection.executescript((migration_dir / "0033_conversation_sync_flag.sql").read_text())
         self.connection.execute("ALTER TABLE cf_conversations ADD COLUMN app_id TEXT")
+        self.connection.executescript("""
+            CREATE TABLE cf_vector_projection_outbox (
+              uid TEXT NOT NULL,
+              source_kind TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              desired_version INTEGER NOT NULL,
+              operation TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              next_attempt_at INTEGER NOT NULL,
+              last_error TEXT,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY (uid, source_kind, source_id)
+            );
+            """)
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
+
+    async def batch(self, statements):
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            results = [statement.execute() for statement in statements]
+            self.connection.commit()
+            return results
+        except Exception:
+            self.connection.rollback()
+            raise
 
 
 class FakeStatement:
@@ -63,6 +88,19 @@ class FakeStatement:
         cursor = self.connection.execute(self.sql, self.args)
         self.connection.commit()
         return {"meta": {"changes": cursor.rowcount}}
+
+    def execute(self):
+        cursor = self.connection.execute(self.sql, self.args)
+        rows = cursor.fetchall() if cursor.description else []
+        return {"results": [dict(row) for row in rows], "meta": {"changes": cursor.rowcount}}
+
+
+class FakeQueue:
+    def __init__(self):
+        self.messages = []
+
+    async def send(self, message):
+        self.messages.append(message)
 
 
 class FakeRequest:
@@ -91,7 +129,11 @@ def signed_headers(secret: str, uid: str = "action-user"):
 
 def test_action_item_crud_is_uid_scoped_and_idempotent():
     secret = "action-secret"
-    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret, "JOBS": FakeQueue()},
+    )()
     headers = signed_headers(secret)
 
     invalid = asyncio.run(create_action_item(FakeRequest(env, headers, {"description": ""})))
@@ -115,6 +157,11 @@ def test_action_item_crud_is_uid_scoped_and_idempotent():
     assert created["status"] == "active"
     assert created["completed"] is False
     assert created["due_at"] == "2026-08-30T10:00:00+00:00"
+    projection = env.APP_DB.connection.execute(
+        "SELECT operation FROM cf_vector_projection_outbox WHERE uid = 'action-user' AND source_id = ?",
+        (created["id"],),
+    ).fetchone()
+    assert tuple(projection) == ("upsert",)
 
     retry = asyncio.run(create_action_item(FakeRequest(env, headers, {"description": "send weekly recap"})))
     assert retry["id"] == created["id"]
@@ -148,6 +195,16 @@ def test_action_item_crud_is_uid_scoped_and_idempotent():
 
     deleted = asyncio.run(delete_action_item(FakeRequest(env, headers), created["id"]))
     assert deleted.status_code == 204
+    projection = env.APP_DB.connection.execute(
+        "SELECT operation FROM cf_vector_projection_outbox WHERE uid = 'action-user' AND source_id = ?",
+        (created["id"],),
+    ).fetchone()
+    assert tuple(projection) == ("delete",)
+    assert [message["kind"] for message in env.JOBS.messages] == [
+        "vector_project",
+        "vector_project",
+        "vector_project",
+    ]
     missing = asyncio.run(get_action_item(FakeRequest(env, headers), created["id"]))
     assert missing.status_code == 404
 

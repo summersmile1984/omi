@@ -17,6 +17,7 @@ from account_routes import usage_source_statement
 from action_item_routes import (
     ActionItemUpdate,
     _apply_update as apply_action_item_update,
+    _delete_item as delete_action_item,
     _first_item as first_action_item,
 )
 from conversation_routes import (
@@ -591,20 +592,10 @@ async def update_developer_action_item(request: Request, action_item_id: str):
         row = await apply_action_item_update(env, principal.uid, action_item_id, ActionItemUpdate(**values))
         if row is None:
             return JSONResponse({"detail": "Action item not found"}, status_code=404)
-        version = int(row.get("updated_at") or time.time())
-        await vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="action_item",
-            source_id=action_item_id,
-            desired_version=version,
-            operation="upsert",
-        ).run()
     except (ValidationError, ValueError, TypeError):
         return JSONResponse({"detail": "Invalid action item update"}, status_code=422)
     except Exception:
         return JSONResponse({"error": "action item unavailable"}, status_code=503)
-    await _publish_projection(env, principal.uid, "action_item", action_item_id)
     return _developer_action_item(row)
 
 
@@ -626,22 +617,9 @@ async def delete_developer_action_item(request: Request, action_item_id: str):
                 {"detail": "A paid plan is required to access this action item."},
                 status_code=402,
             )
-        now = int(time.time())
-        deletion = env.APP_DB.prepare("DELETE FROM cf_action_items WHERE uid = ? AND id = ?").bind(
-            principal.uid, action_item_id
-        )
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="action_item",
-            source_id=action_item_id,
-            desired_version=now,
-            operation="delete",
-        )
-        await env.APP_DB.batch([deletion, projection])
+        await delete_action_item(env, principal.uid, action_item_id, existing)
     except Exception:
         return JSONResponse({"error": "action item unavailable"}, status_code=503)
-    await _publish_projection(env, principal.uid, "action_item", action_item_id)
     return {"success": True}
 
 

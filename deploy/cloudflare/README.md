@@ -76,8 +76,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 370 already match a
-  Cloudflare staging owner and 207 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 379 already match a
+  Cloudflare staging owner and 198 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -776,6 +776,7 @@ POST /v2/messages              Edge → Python API AI → Workers AI or validate
                               user OpenAI API + D1 text-chat exchange
 GET/POST /v1/action-items      Edge → Python API Core → D1
 GET  /v1/action-items/ids      Edge → Python API Core → D1
+GET  /v1/action-items/search   Edge → Python API Core → Workers AI + Vectorize + D1
 PATCH /v1/action-items/batch   Edge → Python API Core → D1
 POST  /v1/action-items/batch   Edge → Python API Core → D1
 POST /v1/action-items/batch-delete
@@ -791,6 +792,14 @@ GET/PATCH/DELETE /v1/action-items/{actionItemId}
                               Edge → Python API Core → D1
 PATCH /v1/action-items/{actionItemId}/completed
                               Edge → Python API Core → D1
+GET  /v1/tools/conversations
+POST /v1/tools/conversations/search
+POST /v1/tools/conversations/search-chunks
+GET  /v1/tools/memories
+POST /v1/tools/memories/search
+GET/POST /v1/tools/action-items
+PATCH /v1/tools/action-items/{actionItemId}
+                              Edge → Python API Core → D1/Vectorize tool envelope
 GET /v1/conversations/{conversationId}/action-items
 GET /v1/conversations/{conversationId}/action-items/count
                               Edge → Python API Core → D1 standalone task projection
@@ -1338,6 +1347,16 @@ and streams their PCM payloads into one dense `conversation.wav` with an exact
 wall-clock/captured-audio spans manifest. The file list, dense artifact stamp,
 and R2 intent ledger are committed before the staging WAL is deleted. Disabled
 private cloud sync retains no playback object.
+
+First-party `/v1/tools/*` conversation, transcript-chunk, memory, and
+action-item retrieval runs in Python API Core. Vectorize supplies ranked
+candidates only; every hit is mapped through projection state and re-hydrated
+from uid-scoped D1 before it is returned in the typed tool envelope. Tool task
+create/update calls the canonical action-item D1 authority, which records its
+vector outbox in the same batch and publishes only a Queue hint afterward.
+Edge applies the released `tools:search` and `tools:mutate` one-hour limits.
+Calendar-event creation remains legacy-owned until its Google Calendar provider
+boundary is migrated.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC

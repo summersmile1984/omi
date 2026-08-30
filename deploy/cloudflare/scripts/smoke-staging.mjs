@@ -100,6 +100,82 @@ function expectStatusIn(label, response, expected) {
   }
 }
 
+async function exerciseRetrievalTools(fetchImpl, base, authHeaders) {
+  const actionSearch = await requestJson(
+    fetchImpl,
+    `${base}/v1/action-items/search?query=cf-smoke&limit=1`,
+    { headers: authHeaders },
+  );
+  expectStatus("action-item semantic search", actionSearch.response, 200);
+  if (!Array.isArray(actionSearch.body?.action_items)) {
+    throw new Error("action-item semantic search returned an invalid payload");
+  }
+
+  const probes = [
+    {
+      key: "toolConversations",
+      label: "tool conversation list",
+      toolName: "get_conversations",
+      url: `${base}/v1/tools/conversations?limit=1&include_transcript=false`,
+    },
+    {
+      key: "toolConversationSearch",
+      label: "tool conversation search",
+      toolName: "search_conversations",
+      url: `${base}/v1/tools/conversations/search`,
+      body: { query: "cf-smoke", limit: 1, include_transcript: false },
+    },
+    {
+      key: "toolConversationChunkSearch",
+      label: "tool transcript chunk search",
+      toolName: "search_conversation_chunks",
+      url: `${base}/v1/tools/conversations/search-chunks`,
+      body: { query: "cf-smoke", limit: 1 },
+    },
+    {
+      key: "toolMemories",
+      label: "tool memory list",
+      toolName: "get_memories",
+      url: `${base}/v1/tools/memories?limit=1`,
+    },
+    {
+      key: "toolMemorySearch",
+      label: "tool memory search",
+      toolName: "search_memories",
+      url: `${base}/v1/tools/memories/search`,
+      body: { query: "cf-smoke", limit: 1 },
+    },
+    {
+      key: "toolActionItems",
+      label: "tool action-item list",
+      toolName: "get_action_items",
+      url: `${base}/v1/tools/action-items?limit=1`,
+    },
+  ];
+  const statuses = { actionItemSearch: actionSearch.response.status };
+  for (const probe of probes) {
+    const result = await requestJson(fetchImpl, probe.url, {
+      method: probe.body ? "POST" : "GET",
+      headers: {
+        ...authHeaders,
+        ...(probe.body ? { "content-type": "application/json" } : {}),
+      },
+      body: probe.body ? JSON.stringify(probe.body) : undefined,
+    });
+    expectStatus(probe.label, result.response, 200);
+    if (
+      result.body?.tool_name !== probe.toolName ||
+      typeof result.body?.result_text !== "string" ||
+      typeof result.body?.is_error !== "boolean" ||
+      !Array.isArray(result.body?.sources)
+    ) {
+      throw new Error(`${probe.label} returned an invalid tool envelope`);
+    }
+    statuses[probe.key] = result.response.status;
+  }
+  return statuses;
+}
+
 async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
   const preflight = await requestJson(
     fetchImpl,
@@ -543,6 +619,11 @@ export async function runSmoke({
     },
   );
   expectStatus("canonical conversation search", conversationSearch, 200);
+  const retrievalTools = await exerciseRetrievalTools(
+    fetchImpl,
+    base,
+    authHeaders,
+  );
   const conversationFromSegmentsValidation = await request(
     fetchImpl,
     `${base}/v1/conversations/from-segments`,
@@ -1345,6 +1426,7 @@ export async function runSmoke({
     memorySummaryFeedback: memorySummaryFeedback.status,
     conversations: conversations.status,
     conversationSearch: conversationSearch.status,
+    ...retrievalTools,
     conversationFromSegmentsValidation:
       conversationFromSegmentsValidation.status,
     webProxyConversations: webProxyConversations.status,

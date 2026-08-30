@@ -372,6 +372,8 @@ families:
       - memories:delete_batch
       - memories:modify
       - stt:transcribe
+      - tools:mutate
+      - tools:search
       - tts:synthesize
     migrated_routes:
       - DELETE /v1/dev/user/action-items/{action_item_id}
@@ -400,6 +402,11 @@ families:
       - POST /v1/stt/transcribe
       - POST /v1/stt/transcribe-async
       - POST /v1/stt/transcribe-workers-ai
+      - PATCH /v1/tools/action-items/{action_item_id}
+      - POST /v1/tools/action-items
+      - POST /v1/tools/conversations/search
+      - POST /v1/tools/conversations/search-chunks
+      - POST /v1/tools/memories/search
       - POST /v1/tts/synthesize
       - POST /v1/tts/synthesize-workers-ai
       - POST /v2/messages
