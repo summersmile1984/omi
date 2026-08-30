@@ -82,7 +82,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
   gate. The current inventory contains 577 backend routes: 465 already match
-  Cloudflare staging owners and 112 remain legacy-owned. Edge directly serves
+  Cloudflare staging owners and 111 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1770,6 +1770,14 @@ independent `APPS_ADMIN_KEY`; approve/reject verifies the catalog owner before
 atomically changing approval state and publishing to the shared leased FCM
 outbox. Persona mutation, setup callbacks, and CIMD remain separate migration
 work.
+
+`POST /v1/app/thumbnails` now stores the bounded multipart image directly in
+the public `ASSETS` R2 bucket and returns a Worker-owned immutable thumbnail URL
+plus the generated id. `GET /v1/app/thumbnails/{thumbnail_id}.jpg` streams that
+object with an immutable cache policy and fails closed for malformed or missing
+ids. The route keeps the legacy response shape while removing the per-request
+filesystem/GCS dependency; existing legacy thumbnail URLs are not rewritten by
+this staging slice.
 
 MCP API credentials now use `cf_mcp_api_keys`. `POST /v1/mcp/keys` returns the
 `omi_mcp_` secret once, while D1 stores only the SHA-256 digest of its 32-hex

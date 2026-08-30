@@ -471,6 +471,26 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/app/thumbnails/{thumbnail_id}.jpg
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: [r2-assets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/app/thumbnails
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [r2-assets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: POST
     path: /v1/apps/tester
     owner: jobs

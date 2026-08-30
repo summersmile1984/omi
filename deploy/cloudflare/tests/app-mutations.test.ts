@@ -583,6 +583,45 @@ describe("Cloudflare app tester and moderation controls", () => {
 });
 
 describe("Cloudflare app mutations", () => {
+  it("uploads a public thumbnail to R2 and serves the immutable object", async () => {
+    const state = environment();
+    try {
+      const form = new FormData();
+      form.set("file", new File([png], "thumbnail.png", { type: "image/png" }));
+      const response = await jobs.fetch(
+        new Request("https://jobs.test/v1/app/thumbnails", {
+          method: "POST",
+          headers: await authHeaders("POST", "/v1/app/thumbnails"),
+          body: form,
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        thumbnail_id: string;
+        thumbnail_url: string;
+      };
+      expect(body.thumbnail_id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+      expect(body.thumbnail_url).toBe(
+        `https://edge.test/v1/app/thumbnails/${body.thumbnail_id}.jpg`,
+      );
+      expect(state.assets.objects.size).toBe(1);
+
+      const served = await jobs.fetch(new Request(body.thumbnail_url), state.env);
+      expect(served.status).toBe(200);
+      expect(served.headers.get("content-type")).toBe("image/png");
+      expect(new Uint8Array(await served.arrayBuffer())).toEqual(png);
+
+      const missing = await jobs.fetch(
+        new Request("https://jobs.test/v1/app/thumbnails/not-found.jpg"),
+        state.env,
+      );
+      expect(missing.status).toBe(404);
+    } finally {
+      state.database.close();
+    }
+  });
+
   it("creates a pending owner app with a versioned R2 logo and serves that exact logo", async () => {
     const state = environment();
     try {

@@ -22,6 +22,11 @@ import {
   appLogoUrl,
 } from "./app-logo";
 import {
+  appThumbnailObjectKey,
+  appThumbnailUrl,
+  thumbnailIdFromPath,
+} from "./app-thumbnail";
+import {
   provisionPaidApp,
   setPaidAppLinkActive,
 } from "./app-payment-provisioning";
@@ -37,6 +42,7 @@ const APP_ID_MAX_LENGTH = 256;
 const APP_DATA_MAX_BYTES = 500_000;
 const APP_IMAGE_MAX_BYTES = 10 * 1_024 * 1_024;
 const APP_REQUEST_MAX_BYTES = APP_IMAGE_MAX_BYTES + APP_DATA_MAX_BYTES + 64_000;
+const THUMBNAIL_MAX_BYTES = APP_IMAGE_MAX_BYTES;
 const MAX_NAME_LENGTH = 160;
 const MAX_DESCRIPTION_LENGTH = 20_000;
 const MAX_TEXT_LENGTH = 100_000;
@@ -1327,6 +1333,89 @@ async function publicLogo(c: JobsContext, appId: string, version: string) {
   }
 }
 
+async function uploadAppThumbnail(c: JobsContext, requestContext: RequestContext) {
+  const context = await requestContext(c);
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  const contentLength = Number(c.req.header("content-length") || "0");
+  if (Number.isFinite(contentLength) && contentLength > THUMBNAIL_MAX_BYTES + 64_000) {
+    return c.json({ detail: "App upload is too large" }, 413);
+  }
+
+  let stagedKey: string | null = null;
+  let thumbnailId: string | null = null;
+  try {
+    const form = await parseFormData(
+      c.req.raw,
+      {
+        maxFiles: 1,
+        maxFileSize: THUMBNAIL_MAX_BYTES,
+        maxParts: 2,
+        maxTotalSize: THUMBNAIL_MAX_BYTES + 64_000,
+      },
+      async (file: FileUpload) => {
+        if (file.fieldName !== "file") {
+          throw new AppMutationError(400, "App thumbnail field is invalid");
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (!bytes.length) throw new AppMutationError(422, "App thumbnail is empty");
+        thumbnailId = ulid();
+        stagedKey = appThumbnailObjectKey(thumbnailId);
+        await c.env.ASSETS.put(stagedKey, bytes, {
+          httpMetadata: {
+            contentType: file.type || "application/octet-stream",
+            cacheControl: "public, no-cache",
+          },
+          customMetadata: { thumbnailId },
+        });
+        return stagedKey;
+      },
+    );
+    if (!thumbnailId) {
+      throw new AppMutationError(400, "App thumbnail file is required");
+    }
+    return c.json({
+      thumbnail_url: appThumbnailUrl(c.env, thumbnailId),
+      thumbnail_id: thumbnailId,
+    });
+  } catch (error) {
+    if (stagedKey) await c.env.ASSETS.delete(stagedKey).catch(() => undefined);
+    if (
+      error instanceof MaxFilesExceededError ||
+      error instanceof MaxFileSizeExceededError ||
+      error instanceof MaxTotalSizeExceededError
+    ) {
+      return c.json({ detail: "App upload is too large" }, 413);
+    }
+    if (
+      error instanceof FormDataParseError ||
+      error instanceof MaxPartsExceededError ||
+      error instanceof SyntaxError
+    ) {
+      return c.json({ detail: "App upload is invalid" }, 400);
+    }
+    return mutationResponse(c, error);
+  }
+}
+
+async function publicThumbnail(c: JobsContext, thumbnailFile: string) {
+  const thumbnailId = thumbnailIdFromPath(thumbnailFile);
+  if (!thumbnailId) return c.json({ detail: "App thumbnail not found" }, 404);
+  try {
+    const object = await c.env.ASSETS.get(appThumbnailObjectKey(thumbnailId));
+    if (!object) return c.json({ detail: "App thumbnail not found" }, 404);
+    const headers = new Headers({
+      "cache-control": "public, max-age=31536000, immutable",
+      "content-security-policy": "default-src 'none'",
+      "x-content-type-options": "nosniff",
+    });
+    object.writeHttpMetadata(headers);
+    headers.set("etag", object.httpEtag);
+    return new Response(object.body, { headers });
+  } catch {
+    return c.json({ error: "app_thumbnail_unavailable" }, 503);
+  }
+}
+
 function mutationResponse(c: JobsContext, error: unknown) {
   if (error instanceof AppMutationError) {
     return c.json({ detail: error.detail }, error.status);
@@ -1350,6 +1439,10 @@ export function registerAppMutationRoutes(
   app.get("/v1/apps/:appId/logo/:version", (c) =>
     publicLogo(c, c.req.param("appId"), c.req.param("version")),
   );
+  app.get("/v1/app/thumbnails/:thumbnailFile", (c) =>
+    publicThumbnail(c, c.req.param("thumbnailFile")),
+  );
+  app.post("/v1/app/thumbnails", (c) => uploadAppThumbnail(c, requestContext));
   app.post("/v1/apps", async (c) => {
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);

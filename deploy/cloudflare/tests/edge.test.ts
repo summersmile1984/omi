@@ -1435,6 +1435,12 @@ describe("edge gateway", () => {
       ),
       env as never,
     );
+    const thumbnail = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/app/thumbnails/01ARZ3NDEKTSV4RRFFQ69G5FAV.jpg",
+      ),
+      env as never,
+    );
     const unauthenticated = await edge.fetch(
       new Request("https://edge.test/v1/apps", { method: "POST" }),
       env as never,
@@ -1454,6 +1460,7 @@ describe("edge gateway", () => {
     }
 
     expect(logo.status).toBe(200);
+    expect(thumbnail.status).toBe(200);
     expect(unauthenticated.status).toBe(401);
     expect(
       jobsRequests.map(
@@ -1461,11 +1468,14 @@ describe("edge gateway", () => {
       ),
     ).toEqual([
       "GET /v1/apps/app-1/logo/00000000-0000-4000-8000-000000000000",
+      "GET /v1/app/thumbnails/01ARZ3NDEKTSV4RRFFQ69G5FAV.jpg",
       "POST /v1/apps",
       "PATCH /v1/apps/app-1",
     ]);
-    expect(jobsRequests[0].headers.get("x-omi-auth-context")).toBeNull();
-    for (const request of jobsRequests.slice(1)) {
+    for (const request of jobsRequests.slice(0, 2)) {
+      expect(request.headers.get("x-omi-auth-context")).toBeNull();
+    }
+    for (const request of jobsRequests.slice(2)) {
       expect(
         decodeAuthContext(request.headers.get("x-omi-auth-context")),
       ).toMatchObject({ uid: "creator-user", audience: "jobs" });
