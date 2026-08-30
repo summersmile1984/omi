@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from daily_summary_routes import (  # noqa: E402
     delete_daily_summary,
     get_daily_summary,
+    get_shared_daily_summary,
     list_daily_summaries,
     set_daily_summary_visibility,
     test_daily_summary as generate_daily_summary,
@@ -75,7 +76,7 @@ def signed_headers(secret: str, uid: str = "summary-user"):
     }
 
 
-def insert_summary(db: FakeDb, uid: str, summary_id: str, date_text: str):
+def insert_summary(db: FakeDb, uid: str, summary_id: str, date_text: str, visibility: str = "private"):
     now = 1_700_000_000
     db.connection.execute(
         "INSERT INTO cf_daily_summaries "
@@ -96,12 +97,62 @@ def insert_summary(db: FakeDb, uid: str, summary_id: str, date_text: str):
             "[]",
             "[]",
             "[]",
-            "private",
+            visibility,
             now,
             now,
         ),
     )
     db.connection.commit()
+
+
+def test_shared_daily_summary_is_public_and_excludes_private_fields():
+    db = FakeDb()
+    insert_summary(db, "summary-user", "summary-1", "2026-08-27", "shared")
+    env = type("Env", (), {"APP_DB": db})()
+
+    result = asyncio.run(get_shared_daily_summary(FakeRequest(env, {}), "summary-1"))
+
+    assert result == {
+        "id": "summary-1",
+        "date": "2026-08-27",
+        "headline": "A day",
+        "overview": "Overview",
+        "day_emoji": "📅",
+        "stats": {"total_conversations": 1, "total_duration_minutes": 2, "action_items_count": 0},
+        "highlights": [],
+        "action_items": [],
+        "decisions_made": [],
+        "knowledge_nuggets": [],
+    }
+    assert "uid" not in result
+    assert "locations" not in result
+    assert "unresolved_questions" not in result
+    assert "created_at" not in result
+
+
+def test_shared_daily_summary_fails_closed_for_private_missing_or_ambiguous_ids():
+    db = FakeDb()
+    insert_summary(db, "summary-user", "private-1", "2026-08-27")
+    insert_summary(db, "summary-user", "duplicate-1", "2026-08-28", "shared")
+    insert_summary(db, "other-user", "duplicate-1", "2026-08-29", "shared")
+    env = type("Env", (), {"APP_DB": db})()
+
+    for summary_id in ("private-1", "missing", "duplicate-1"):
+        response = asyncio.run(get_shared_daily_summary(FakeRequest(env, {}), summary_id))
+        assert response.status_code == 404
+        assert json.loads(response.body) == {"detail": "Daily summary not found"}
+
+
+def test_shared_daily_summary_returns_service_unavailable_on_d1_failure():
+    class BrokenDb:
+        def prepare(self, _sql):
+            raise RuntimeError("D1 unavailable")
+
+    env = type("Env", (), {"APP_DB": BrokenDb()})()
+    response = asyncio.run(get_shared_daily_summary(FakeRequest(env, {}), "summary-1"))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "daily summaries unavailable"}
 
 
 def test_daily_summary_projection_is_uid_scoped_and_returns_wrapped_list():

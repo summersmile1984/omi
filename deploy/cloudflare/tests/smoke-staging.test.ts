@@ -132,6 +132,9 @@ function publicCompatibilityRoute(
       headers: { "content-type": "text/plain; charset=UTF-8" },
     });
   }
+  if (url.endsWith("/v1/daily-summaries/cf-smoke-missing/shared")) {
+    return new Response(null, { status: 404 });
+  }
   return null;
 }
 
@@ -412,6 +415,7 @@ describe("staging smoke helpers", () => {
       appleAssociation: 200,
       openAiAppsChallenge: 200,
       announcementsGeneral: 200,
+      sharedDailySummary: 404,
       appReviews: 200,
       paymentSuccess: 200,
       paymentCancel: 200,
@@ -521,7 +525,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(117);
+    expect(calls).toHaveLength(118);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

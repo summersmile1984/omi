@@ -76,8 +76,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 340 already match a
-  Cloudflare staging owner and 237 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 341 already match a
+  Cloudflare staging owner and 236 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -723,9 +723,11 @@ GET  /v1/users/daily-summaries
 GET  /v1/users/daily-summaries/{summaryId}
 PATCH /v1/users/daily-summaries/{summaryId}/visibility
 DELETE /v1/users/daily-summaries/{summaryId}
+GET  /v1/daily-summaries/{summaryId}/shared
 POST /v1/users/daily-summary-settings/test
 POST /v1/users/daily-summaries/{summaryId}/regenerate
                               Edge → Python API Core → D1 daily-summary projection;
+                              public shares fail closed on private or ambiguous IDs;
                               generation is deterministic until the LLM/notification owner moves
 GET  /v1/users/mentor-notification-settings
 PATCH /v1/users/mentor-notification-settings

@@ -79,6 +79,25 @@ def _response(row: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _public_response(row: dict[str, object]) -> dict[str, object]:
+    response = _response(row)
+    return {
+        key: response[key]
+        for key in (
+            "id",
+            "date",
+            "headline",
+            "overview",
+            "day_emoji",
+            "stats",
+            "highlights",
+            "action_items",
+            "decisions_made",
+            "knowledge_nuggets",
+        )
+    }
+
+
 _SELECT = (
     "SELECT uid, id, date, headline, day_emoji, overview, stats_json, highlights_json, "
     "action_items_json, unresolved_questions_json, decisions_made_json, knowledge_nuggets_json, "
@@ -100,6 +119,26 @@ def _pagination(request: Request) -> tuple[int, int] | JSONResponse:
     if limit < 1 or limit > MAX_LIST_LIMIT or offset < 0 or offset > MAX_OFFSET:
         return JSONResponse({"error": "invalid pagination"}, status_code=400)
     return limit, offset
+
+
+@router.get("/v1/daily-summaries/{summary_id}/shared")
+async def get_shared_daily_summary(request: Request, summary_id: str):
+    if not summary_id or len(summary_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid summary id"}, status_code=400)
+    try:
+        result = (
+            await request.scope["env"]
+            .APP_DB.prepare(_SELECT + "WHERE id = ? AND visibility = 'shared' ORDER BY uid ASC LIMIT 2")
+            .bind(summary_id)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "daily summaries unavailable"}, status_code=503)
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    shared = [row for row in rows if isinstance(row, dict)]
+    if len(shared) != 1:
+        return JSONResponse({"detail": "Daily summary not found"}, status_code=404)
+    return _public_response(shared[0])
 
 
 @router.get("/v1/users/daily-summaries")

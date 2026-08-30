@@ -128,7 +128,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/{conversation_id}/transcripts", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/crisp/unread", "protocol": "http", "target_runtime": "legacy"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/daily-score", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/daily-summaries/{summary_id}/shared", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/daily-summaries/{summary_id}/shared", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/dev/keys", "protocol": "http", "target_runtime": "legacy"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/dev/user/action-items", "protocol": "http", "target_runtime": "legacy"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/dev/user/conversations", "protocol": "http", "target_runtime": "legacy"},

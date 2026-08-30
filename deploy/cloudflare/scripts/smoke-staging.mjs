@@ -234,6 +234,11 @@ export async function runSmoke({
     `${base}/v1/announcements/general`,
   );
   expectStatus("public announcements", announcementsGeneral, 200);
+  const sharedDailySummary = await request(
+    fetchImpl,
+    `${base}/v1/daily-summaries/cf-smoke-missing/shared`,
+  );
+  expectStatus("missing shared daily summary", sharedDailySummary, 404);
   const appReviews = await request(
     fetchImpl,
     `${base}/v1/apps/cf-staging-search-app/reviews`,
@@ -314,6 +319,7 @@ export async function runSmoke({
     appleAssociation: appleAssociation.response.status,
     openAiAppsChallenge: openAiAppsChallenge.response.status,
     announcementsGeneral: announcementsGeneral.status,
+    sharedDailySummary: sharedDailySummary.status,
     appReviews: appReviews.status,
     paymentSuccess: paymentSuccess.status,
     paymentCancel: paymentCancel.status,

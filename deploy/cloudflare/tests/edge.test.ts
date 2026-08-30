@@ -646,6 +646,7 @@ describe("edge gateway", () => {
       "/v1/action-items/shared/public-token",
       "/v2/messages/shared/public-token",
       "/v1/conversations/shared-conversation/shared",
+      "/v1/daily-summaries/shared-summary/shared",
     ]) {
       const preview = await edge.fetch(
         new Request(`https://edge.test${path}`),
@@ -670,17 +671,19 @@ describe("edge gateway", () => {
       "/v1/action-items/shared/public-token",
       "/v2/messages/shared/public-token",
       "/v1/conversations/shared-conversation/shared",
+      "/v1/daily-summaries/shared-summary/shared",
       "/v1/action-items/share",
       "/v2/messages/share",
     ]);
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeNull();
     expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeNull();
     expect(coreRequests[2].headers.get("x-omi-auth-context")).toBeNull();
-    expect(
-      decodeAuthContext(coreRequests[3].headers.get("x-omi-auth-context")),
-    ).toMatchObject({ uid: "user-1", displayName: "Alice" });
+    expect(coreRequests[3].headers.get("x-omi-auth-context")).toBeNull();
     expect(
       decodeAuthContext(coreRequests[4].headers.get("x-omi-auth-context")),
+    ).toMatchObject({ uid: "user-1", displayName: "Alice" });
+    expect(
+      decodeAuthContext(coreRequests[5].headers.get("x-omi-auth-context")),
     ).toMatchObject({ uid: "user-1", displayName: "Alice" });
   });
 

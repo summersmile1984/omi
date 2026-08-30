@@ -403,6 +403,7 @@ app.get("/v1/stripe/refresh/:accountId", proxyPublicJobs);
 app.get("/v1/stripe/return/:accountId", proxyPublicJobs);
 app.get("/v1/action-items/shared/:token", proxyPublicCore);
 app.get("/v2/messages/shared/:token", proxyPublicCore);
+app.get("/v1/daily-summaries/:summaryId/shared", proxyPublicCore);
 app.get("/v1/fair-use/case/:case_ref/status", proxyPublicCore);
 app.get("/v1/admin/fair-use/flagged", proxyPublicCore);
 app.get("/v1/admin/fair-use/user/:uid", proxyPublicCore);
