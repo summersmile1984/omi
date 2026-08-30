@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 from pathlib import Path
 import sqlite3
@@ -38,10 +40,12 @@ from developer_mutation_routes import (  # noqa: E402
 from developer_conversation_create_routes import (  # noqa: E402
     create_developer_conversation,
     create_developer_conversation_from_segments,
+    create_user_conversation_from_segments,
 )
 
 RAW_SECRET = "0123456789abcdef0123456789abcdef"
 AUTHORIZATION = f"Bearer omi_dev_{RAW_SECRET}"
+FIRST_PARTY_SECRET = "first-party-conversation-test-secret"
 READ_SCOPES = [
     "conversations:read",
     "memories:read",
@@ -112,9 +116,9 @@ class Query(dict):
 
 
 class FakeRequest:
-    def __init__(self, env, *, query=None, authorization=AUTHORIZATION, body=None):
+    def __init__(self, env, *, query=None, authorization=AUTHORIZATION, headers=None, body=None):
         self.scope = {"env": env}
-        self.headers = {}
+        self.headers = dict(headers or {})
         if authorization is not None:
             self.headers["authorization"] = authorization
         self.query_params = Query(query or {})
@@ -184,6 +188,7 @@ def environment(*, scopes=None, cutover_state="new"):
         AI=FakeAi(),
         MEMORY_VECTORS=FakeVectorIndex(),
         JOBS=FakeQueue(),
+        INTERNAL_ASSERTION_SECRET=FIRST_PARTY_SECRET,
         WORKERS_AI_INTEGRATION_MODEL="developer-category-test-model",
         WORKERS_AI_VECTOR_MODEL="developer-vector-test-model",
     )
@@ -203,6 +208,19 @@ def environment(*, scopes=None, cutover_state="new"):
     )
     database.connection.commit()
     return database, env
+
+
+def first_party_headers(uid="developer-user"):
+    payload = json.dumps(
+        {"uid": uid, "authority": "better-auth", "requestId": "first-party-conversation"},
+        separators=(",", ":"),
+    ).encode()
+    encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    signature = hmac.new(FIRST_PARTY_SECRET.encode(), encoded.encode(), hashlib.sha256).digest()
+    return {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": base64.urlsafe_b64encode(signature).decode().rstrip("="),
+    }
 
 
 def response_body(response):
@@ -875,6 +893,78 @@ def test_developer_from_segments_is_deterministic_idempotent_and_meeting_eligibl
     assert database.connection.execute("SELECT COUNT(*) FROM cf_conversations").fetchone()[0] == 1
     assert database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 1
     assert database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 1
+    database.connection.close()
+
+
+def test_first_party_from_segments_reuses_worker_native_idempotency_and_header_device_identity():
+    database, env = environment()
+    env.AI = ConversationCreationAi()
+    body = {
+        "transcript_segments": [
+            {
+                "text": "I prefer Cloudflare Workers for service deployment.",
+                "speaker": "SPEAKER_00",
+                "is_user": True,
+                "start": 0,
+                "end": 35,
+            },
+            {
+                "text": "We should validate staging and document the result.",
+                "speaker": "SPEAKER_01",
+                "start": 35,
+                "end": 75,
+            },
+        ],
+        "client_session_id": "first-party-stable-session",
+        "source": "desktop",
+        "started_at": "2026-08-30T10:00:00Z",
+        "finished_at": "2026-08-30T10:10:00Z",
+        "conversation_role": "meeting",
+        "conversation_finalization_reason": "meeting_ended",
+        "client_device_id": "body-device-must-not-win",
+        "client_platform": "windows",
+    }
+    headers = {
+        **first_party_headers(),
+        "x-app-platform": "macOS",
+        "x-device-id-hash": "a1b2c3d4",
+    }
+
+    first = run(create_user_conversation_from_segments(FakeRequest(env, body=body, headers=headers)))
+    second = run(create_user_conversation_from_segments(FakeRequest(env, body=body, headers=headers)))
+
+    assert first == second
+    assert first["status"] == "completed"
+    assert first["meeting_treatment_eligible"] is True
+    assert len(env.AI.calls) == 1
+    stored = database.connection.execute(
+        "SELECT client_device_id, client_platform FROM cf_conversations WHERE uid = 'developer-user'"
+    ).fetchone()
+    assert tuple(stored) == ("macos_a1b2c3d4", "macos")
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 1
+    database.connection.close()
+
+
+def test_first_party_from_segments_requires_signed_identity_and_rejects_invalid_body():
+    database, env = environment()
+    unauthorized = run(
+        create_user_conversation_from_segments(
+            FakeRequest(
+                env,
+                authorization=None,
+                body={"transcript_segments": [{"text": "Denied", "start": 0, "end": 1}]},
+            )
+        )
+    )
+    assert unauthorized.status_code == 401
+
+    invalid = run(
+        create_user_conversation_from_segments(
+            FakeRequest(env, body={"transcript_segments": []}, headers=first_party_headers())
+        )
+    )
+    assert invalid.status_code == 422
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_conversations").fetchone()[0] == 0
     database.connection.close()
 
 

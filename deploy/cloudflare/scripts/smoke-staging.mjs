@@ -543,6 +543,20 @@ export async function runSmoke({
     },
   );
   expectStatus("canonical conversation search", conversationSearch, 200);
+  const conversationFromSegmentsValidation = await request(
+    fetchImpl,
+    `${base}/v1/conversations/from-segments`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ transcript_segments: [] }),
+    },
+  );
+  expectStatus(
+    "pre-transcribed conversation validation",
+    conversationFromSegmentsValidation,
+    422,
+  );
   const webProxyConversations = await request(
     fetchImpl,
     `${webBase}/api/proxy/v1/conversations?limit=1`,
@@ -1331,6 +1345,8 @@ export async function runSmoke({
     memorySummaryFeedback: memorySummaryFeedback.status,
     conversations: conversations.status,
     conversationSearch: conversationSearch.status,
+    conversationFromSegmentsValidation:
+      conversationFromSegmentsValidation.status,
     webProxyConversations: webProxyConversations.status,
     webProxyEnabledApps: webProxyEnabledApps.status,
     webProxyMemories: webProxyMemories.status,

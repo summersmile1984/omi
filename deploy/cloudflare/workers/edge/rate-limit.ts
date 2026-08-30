@@ -32,6 +32,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 60,
     windowSeconds: 3600,
   },
+  "conversations:from-segments": {
+    name: "conversations:from-segments",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
   "dev:conversations": {
     name: "dev:conversations",
     maxRequests: 25,
@@ -100,6 +105,10 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   [
     "POST /v1/conversations/search",
     EDGE_RATE_LIMIT_POLICIES["conversations:search"],
+  ],
+  [
+    "POST /v1/conversations/from-segments",
+    EDGE_RATE_LIMIT_POLICIES["conversations:from-segments"],
   ],
   ["POST /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v3/memories/batch", EDGE_RATE_LIMIT_POLICIES["memories:batch"]],

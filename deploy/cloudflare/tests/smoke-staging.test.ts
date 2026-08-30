@@ -36,6 +36,19 @@ function unauthenticatedMemoryBatchBoundary(
   return null;
 }
 
+function firstPartyConversationWriteBoundary(
+  url: string,
+  init?: RequestInit,
+): Response | null {
+  if (
+    url.endsWith("/v1/conversations/from-segments") &&
+    init?.method === "POST"
+  ) {
+    return new Response(null, { status: 422 });
+  }
+  return null;
+}
+
 function creatorPaymentBoundary(
   url: string,
   init?: RequestInit,
@@ -198,6 +211,8 @@ describe("staging smoke helpers", () => {
       if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
+      const conversationWrite = firstPartyConversationWriteBoundary(url, init);
+      if (conversationWrite) return conversationWrite;
       if (url.endsWith("/v1/account/cutover/control")) {
         return Response.json({
           state: "new",
@@ -461,6 +476,7 @@ describe("staging smoke helpers", () => {
       memorySummaryFeedback: 200,
       conversations: 200,
       conversationSearch: 200,
+      conversationFromSegmentsValidation: 422,
       webProxyConversations: 200,
       webProxyEnabledApps: 200,
       webProxyMemories: 200,
@@ -551,7 +567,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(126);
+    expect(calls).toHaveLength(127);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -560,6 +576,10 @@ describe("staging smoke helpers", () => {
     expect(
       calls.find((call) => call.url.endsWith("/v1/conversations/search"))?.init
         ?.method,
+    ).toBe("POST");
+    expect(
+      calls.find((call) => call.url.endsWith("/v1/conversations/from-segments"))
+        ?.init?.method,
     ).toBe("POST");
     expect(
       calls.find((call) => call.url.endsWith("/v1/users/geolocation"))?.init
@@ -592,6 +612,8 @@ describe("staging smoke helpers", () => {
       if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
+      const conversationWrite = firstPartyConversationWriteBoundary(url, init);
+      if (conversationWrite) return conversationWrite;
       if (
         url.endsWith("/health") ||
         url.endsWith("/v1/announcements/general") ||
@@ -650,6 +672,8 @@ describe("staging smoke helpers", () => {
       if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
+      const conversationWrite = firstPartyConversationWriteBoundary(url, init);
+      if (conversationWrite) return conversationWrite;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -707,6 +731,8 @@ describe("staging smoke helpers", () => {
       if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
+      const conversationWrite = firstPartyConversationWriteBoundary(url, init);
+      if (conversationWrite) return conversationWrite;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -863,6 +889,8 @@ describe("staging smoke helpers", () => {
       if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
+      const conversationWrite = firstPartyConversationWriteBoundary(url, init);
+      if (conversationWrite) return conversationWrite;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -936,6 +964,8 @@ describe("staging smoke helpers", () => {
       if (publicCompatibility) return publicCompatibility;
       const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
       if (memoryBatch) return memoryBatch;
+      const conversationWrite = firstPartyConversationWriteBoundary(url, init);
+      if (conversationWrite) return conversationWrite;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }

@@ -3228,6 +3228,18 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v1/conversations/from-segments
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, queue-jobs, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: conversations:from-segments
+    protocol: http
+    idempotency: optional-client-session-id
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/conversations/search
     owner: api-core
     runtime: python-worker

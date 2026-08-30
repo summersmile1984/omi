@@ -361,6 +361,7 @@ families:
     migrated_policies:
       - action_items:write
       - chat:send_message
+      - conversations:from-segments
       - conversations:search
       - dev:conversations
       - dev:goals_write
@@ -377,6 +378,7 @@ families:
       - DELETE /v1/dev/user/conversations/{conversation_id}
       - DELETE /v1/dev/user/goals/{goal_id}
       - DELETE /v1/dev/user/memories/{memory_id}
+      - POST /v1/conversations/from-segments
       - POST /v1/conversations/search
       - DELETE /v1/mcp/action-items/:action_item_id
       - PATCH /v1/mcp/action-items/:action_item_id

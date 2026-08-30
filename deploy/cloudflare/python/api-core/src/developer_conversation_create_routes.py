@@ -24,6 +24,7 @@ from account_routes import usage_source_statement
 from conversation_routes import CONVERSATION_SOURCES, _first_conversation as first_conversation
 from developer_routes import _authenticate, _bool
 from integration_routes import _json_schema, _public_webhook_url, _webhook_targets, _workers_ai_json
+from internal_auth import decode_context
 from vector_search import publish_vector_projection
 
 router = APIRouter()
@@ -39,6 +40,8 @@ MAX_GROUNDED_MEMORIES = 10
 MAX_MEMORY_CONTENT_LENGTH = 1_000
 CLAIM_STALE_SECONDS = 15 * 60
 FROM_SEGMENTS_NAMESPACE = uuid.UUID("fb2f1f36-3c84-47a4-9c62-b3f6fdb3fd13")
+FIRST_PARTY_AUTHORITIES = frozenset({"better-auth", "firebase", "internal"})
+CLIENT_PLATFORMS = frozenset({"android", "ios", "linux", "macos", "web", "windows"})
 
 MEMORY_SUBJECT_PATTERN = re.compile(
     r"^\s*(?:(?:(?:the\s+)?user|i|my|we|our|l['’]utilisateur|el\s+usuario|la\s+usuaria|"
@@ -273,6 +276,31 @@ def _geolocation(value: GeolocationInput | None) -> dict[str, object] | None:
 def _source(value: str | None) -> str:
     normalized = (value or "phone").strip()
     return normalized if normalized in CONVERSATION_SOURCES else "unknown"
+
+
+def _first_party_uid(request: Request) -> str | None:
+    env = request.scope["env"]
+    context = decode_context(
+        request.headers.get("x-omi-auth-context"),
+        request.headers.get("x-omi-internal-signature"),
+        getattr(env, "INTERNAL_ASSERTION_SECRET", None),
+    )
+    if not isinstance(context, dict) or context.get("authority") not in FIRST_PARTY_AUTHORITIES:
+        return None
+    uid = context.get("uid")
+    return uid if isinstance(uid, str) and uid else None
+
+
+def _client_device_from_headers(request: Request) -> tuple[str | None, str | None]:
+    platform = (request.headers.get("x-app-platform") or "").strip().lower()
+    device_hash = (request.headers.get("x-device-id-hash") or "").strip().lower()
+    normalized_platform = platform if 0 < len(platform) <= 64 else None
+    client_device_id = (
+        f"{platform}_{device_hash}"
+        if platform in CLIENT_PLATFORMS and re.fullmatch(r"[0-9a-f]{8}", device_hash)
+        else None
+    )
+    return client_device_id, normalized_platform
 
 
 def _response(row: dict[str, object], *, meeting_eligible: bool = False) -> dict[str, object]:
@@ -1023,16 +1051,17 @@ async def _claim_idempotent_conversation(
     return row
 
 
-@router.post("/v1/dev/user/conversations/from-segments")
-async def create_developer_conversation_from_segments(request: Request):
-    principal, denial = await _authenticate(request, "conversations:write")
-    if denial:
-        return denial
+async def _create_conversation_from_segments(
+    request: Request,
+    *,
+    uid: str,
+    client_device_id: str | None = None,
+    client_platform: str | None = None,
+) -> dict[str, object] | JSONResponse:
     try:
         body = DeveloperConversationFromSegments.model_validate(await _bounded_json(request))
     except (json.JSONDecodeError, ValidationError, ValueError, TypeError) as error:
         return JSONResponse({"detail": str(error)}, status_code=422)
-    assert principal is not None
     now = int(time.time())
     started = _epoch(body.started_at) if body.started_at is not None else now
     finished = (
@@ -1045,10 +1074,12 @@ async def create_developer_conversation_from_segments(request: Request):
     source = _source(body.source)
     language = body.language or "en"
     conversation_id = (
-        str(uuid.uuid5(FROM_SEGMENTS_NAMESPACE, f"{principal.uid}\0{body.client_session_id}"))
+        str(uuid.uuid5(FROM_SEGMENTS_NAMESPACE, f"{uid}\0{body.client_session_id}"))
         if body.client_session_id
         else uuid.uuid4().hex
     )
+    resolved_client_device_id = client_device_id or body.client_device_id
+    resolved_client_platform = client_platform or body.client_platform
     segments = [
         {
             "id": uuid.uuid5(FROM_SEGMENTS_NAMESPACE, f"segment\0{conversation_id}\0{index}").hex,
@@ -1070,7 +1101,7 @@ async def create_developer_conversation_from_segments(request: Request):
         try:
             claimed = await _claim_idempotent_conversation(
                 env,
-                uid=principal.uid,
+                uid=uid,
                 conversation_id=conversation_id,
                 created=now,
                 started=started,
@@ -1079,8 +1110,8 @@ async def create_developer_conversation_from_segments(request: Request):
                 language=language,
                 segments=segments,
                 geolocation=geolocation,
-                client_device_id=body.client_device_id,
-                client_platform=body.client_platform,
+                client_device_id=resolved_client_device_id,
+                client_platform=resolved_client_platform,
                 external_data=external_data,
             )
         except Exception:
@@ -1093,7 +1124,7 @@ async def create_developer_conversation_from_segments(request: Request):
             return _response(claimed, meeting_eligible=_meeting_eligible_from_row(claimed))
     result = await _create(
         request,
-        uid=principal.uid,
+        uid=uid,
         conversation_id=conversation_id,
         created=now,
         started=started,
@@ -1103,8 +1134,8 @@ async def create_developer_conversation_from_segments(request: Request):
         segments=segments,
         geolocation=geolocation,
         external_data={key: value for key, value in external_data.items() if key != "from_segments_claim_token"},
-        client_device_id=body.client_device_id,
-        client_platform=body.client_platform,
+        client_device_id=resolved_client_device_id,
+        client_platform=resolved_client_platform,
         claim_json=claim_json,
     )
     if isinstance(result, JSONResponse) and claim_json is not None:
@@ -1112,10 +1143,38 @@ async def create_developer_conversation_from_segments(request: Request):
             await env.APP_DB.prepare(
                 "DELETE FROM cf_conversations WHERE uid = ? AND id = ? AND status = 'processing' "
                 "AND external_data_json = ?"
-            ).bind(principal.uid, conversation_id, claim_json).run()
+            ).bind(uid, conversation_id, claim_json).run()
         except Exception:
             pass
     return result
 
 
-__all__ = ["create_developer_conversation", "create_developer_conversation_from_segments", "router"]
+@router.post("/v1/conversations/from-segments")
+async def create_user_conversation_from_segments(request: Request):
+    uid = _first_party_uid(request)
+    if uid is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client_device_id, client_platform = _client_device_from_headers(request)
+    return await _create_conversation_from_segments(
+        request,
+        uid=uid,
+        client_device_id=client_device_id,
+        client_platform=client_platform,
+    )
+
+
+@router.post("/v1/dev/user/conversations/from-segments")
+async def create_developer_conversation_from_segments(request: Request):
+    principal, denial = await _authenticate(request, "conversations:write")
+    if denial:
+        return denial
+    assert principal is not None
+    return await _create_conversation_from_segments(request, uid=principal.uid)
+
+
+__all__ = [
+    "create_developer_conversation",
+    "create_developer_conversation_from_segments",
+    "create_user_conversation_from_segments",
+    "router",
+]

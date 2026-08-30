@@ -1340,7 +1340,7 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
-  it("routes conversation search and deletion to the authenticated core worker", async () => {
+  it("routes pre-transcribed creation, search, and deletion to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const rateLimitNames: string[] = [];
     const env = {
@@ -1360,6 +1360,27 @@ describe("edge gateway", () => {
       RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
     };
     const auth = { authorization: "Bearer opaque-session" };
+    expect(
+      (
+        await edge.fetch(
+          new Request("https://edge.test/v1/conversations/from-segments", {
+            method: "POST",
+            headers: {
+              ...auth,
+              "content-type": "application/json",
+              "x-app-platform": "macos",
+              "x-device-id-hash": "a1b2c3d4",
+            },
+            body: JSON.stringify({
+              transcript_segments: [
+                { text: "Worker native", start: 0, end: 1 },
+              ],
+            }),
+          }),
+          env,
+        )
+      ).status,
+    ).toBe(200);
     expect(
       (
         await edge.fetch(
@@ -1388,6 +1409,7 @@ describe("edge gateway", () => {
         (request) => `${request.method} ${new URL(request.url).pathname}`,
       ),
     ).toEqual([
+      "POST /v1/conversations/from-segments",
       "POST /v1/conversations/search",
       "DELETE /v1/conversations/conversation-1",
     ]);
@@ -1396,7 +1418,15 @@ describe("edge gateway", () => {
         Boolean(request.headers.get("x-omi-auth-context")),
       ),
     ).toBe(true);
-    expect(rateLimitNames).toEqual(["conversations:search:user-1"]);
+    expect(coreRequests[0].headers.get("x-app-platform")).toBe("macos");
+    expect(coreRequests[0].headers.get("x-device-id-hash")).toBe("a1b2c3d4");
+    await expect(coreRequests[0].json()).resolves.toEqual({
+      transcript_segments: [{ text: "Worker native", start: 0, end: 1 }],
+    });
+    expect(rateLimitNames).toEqual([
+      "conversations:from-segments:user-1",
+      "conversations:search:user-1",
+    ]);
   });
 
   it("routes canonical conversation photos to the authenticated core worker", async () => {

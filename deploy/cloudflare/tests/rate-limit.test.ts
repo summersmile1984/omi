@@ -223,6 +223,11 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v1/stt/transcribe-workers-ai", "stt:transcribe"],
       ["POST", "/v2/voice-message/transcribe", "stt:transcribe"],
       ["POST", "/v1/conversations/search", "conversations:search"],
+      [
+        "POST",
+        "/v1/conversations/from-segments",
+        "conversations:from-segments",
+      ],
       ["POST", "/v3/memories", "memories:create"],
       ["POST", "/v3/memories/batch", "memories:batch"],
       ["POST", "/v1/mcp/memories", "memories:create"],

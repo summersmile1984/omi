@@ -151,7 +151,10 @@ keeps the public Developer limits and response projections, rejects locked
 rows, preserves goal progress history, and publishes Queue projection hints
 for vector-backed records without turning a Developer key into an internal
 user session. `developer_conversation_create_routes.py` owns both Developer
-conversation-creation shapes. Workers AI produces the summary, action items,
+conversation-creation shapes and the first-party pre-transcribed
+`POST /v1/conversations/from-segments` path. The first-party path derives
+stable device provenance from `X-App-Platform` plus `X-Device-Id-Hash` before
+entering the same client-session-id claim. Workers AI produces the summary, action items,
 memories, and discard decision; one D1 batch commits the completed conversation,
 derived records, usage, Vectorize outboxes, installed-app fanout, and the legacy
 `memory_created` Developer webhook outbox. Stable client session IDs use the

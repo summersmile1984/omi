@@ -76,8 +76,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 367 already match a
-  Cloudflare staging owner and 210 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 370 already match a
+  Cloudflare staging owner and 207 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1322,10 +1322,13 @@ triggers over IDs, titles, summaries, categories, and transcript text. Search
 remains uid-scoped, excludes locked rows, and supports the Web pagination,
 discarded, date, and speaker filters. Default conversation deletion removes the
 D1 projection and refreshes folder counts; `cascade=true` fails closed because
-memory retraction and audio cleanup are not yet Worker-owned. Generic
-first-party conversation creation/finalization, merge, cascade deletion, audio
-deletion, realtime/audio integration fanout, and finalization-triggered fanout
-remain legacy-owned;
+memory retraction and audio cleanup are not yet Worker-owned. The first-party
+pre-transcribed `/v1/conversations/from-segments` route now uses the same
+Workers AI enrichment, D1 batch, client-session-id claim, app/Developer webhook
+fanout, usage, and vector outboxes as Developer ingest, with device provenance
+resolved from the released headers. Redis in-progress finalization, merge,
+cascade deletion, audio deletion, realtime/audio integration fanout, and
+finalization-triggered fanout remain legacy-owned;
 production reader cutover still requires those write authorities and readers to
 move together. App-key conversation/memory ingest is a separate migrated
 boundary described below. The isolated `/v2/sync-local-files` finalizer is the exception:
