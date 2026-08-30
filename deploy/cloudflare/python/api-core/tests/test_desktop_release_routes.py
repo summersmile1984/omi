@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -19,6 +20,8 @@ from desktop_release_routes import (  # noqa: E402
     get_update_policy,
     download_redirect,
     get_windows_update_feed,
+    download_current_desktop_preview,
+    download_immutable_desktop_preview,
 )
 
 
@@ -48,6 +51,7 @@ class FakeDb:
         migration_dir = Path(__file__).parents[3] / "migrations/app"
         self.connection.executescript((migration_dir / "0084_desktop_release_projections.sql").read_text())
         self.connection.executescript((migration_dir / "0085_desktop_windows_update_feed.sql").read_text())
+        self.connection.executescript((migration_dir / "0086_desktop_preview_projections.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -94,6 +98,35 @@ def insert_release(
             1,
             1,
         ),
+    )
+    env.APP_DB.connection.commit()
+
+
+def insert_preview(env, *, slug="feature-demo", source_sha="a" * 40, notes="Ready for review"):
+    preview_id = "p" + hashlib.sha256(slug.encode()).hexdigest()[:10]
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_desktop_preview_manifests "
+        "(slug, source_sha, dmg_url, dmg_sha256, app_name, bundle_id, url_scheme, built_at, signer, "
+        "notarization, notes, backend_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            slug,
+            source_sha,
+            f"https://storage.googleapis.com/omi_macos_updates/previews/{slug}/{source_sha}/Omi-Preview.dmg",
+            "b" * 64,
+            "Omi Preview Feature Demo",
+            f"com.omi.preview.{preview_id}",
+            f"omi-preview-{preview_id}",
+            "2026-08-31T00:00:00Z",
+            "ci@example.invalid",
+            "stapled",
+            notes,
+            "https://api.example.invalid",
+            1,
+        ),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_desktop_preview_pointers (slug, source_sha, generation, updated_at) VALUES (?, ?, ?, ?)",
+        (slug, source_sha, 1, 1),
     )
     env.APP_DB.connection.commit()
 
@@ -269,3 +302,39 @@ def test_windows_update_feed_does_not_infer_url_from_installer():
     with pytest.raises(HTTPException) as error:
         asyncio.run(get_windows_update_feed(FakeRequest(env), channel="stable"))
     assert error.value.status_code == 404
+
+
+def test_desktop_preview_routes_serve_current_and_immutable_manifest_with_escaped_notes():
+    env = make_env()
+    insert_preview(env, notes='<script>alert("x")</script>')
+    request = FakeRequest(env)
+
+    current = asyncio.run(download_current_desktop_preview(request, "feature-demo"))
+    assert current.status_code == 200
+    assert current.headers["cache-control"] == "no-store"
+    body = current.body.decode()
+    assert "Omi Preview Feature Demo" in body
+    assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;" in body
+    assert "https://storage.googleapis.com/omi_macos_updates/previews/feature-demo/" in body
+
+    immutable = asyncio.run(download_immutable_desktop_preview(request, "feature-demo", "a" * 40))
+    assert immutable.status_code == 200
+    assert immutable.body == current.body
+
+
+def test_desktop_preview_routes_fail_closed_for_missing_or_malformed_projection():
+    env = make_env()
+    request = FakeRequest(env)
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(download_current_desktop_preview(request, "missing"))
+    assert missing.value.status_code == 404
+
+    insert_preview(env)
+    env.APP_DB.connection.execute(
+        "UPDATE cf_desktop_preview_manifests SET dmg_url = ? WHERE slug = ?",
+        ("https://downloads.example/not-canonical.dmg", "feature-demo"),
+    )
+    env.APP_DB.connection.commit()
+    with pytest.raises(HTTPException) as malformed:
+        asyncio.run(download_current_desktop_preview(request, "feature-demo"))
+    assert malformed.value.status_code == 404

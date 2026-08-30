@@ -8,7 +8,10 @@ projection therefore fails closed for downloads and latest-version lookups.
 from __future__ import annotations
 
 import html
+import hashlib
 import json
+import re
+from datetime import datetime
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -21,6 +24,11 @@ router = APIRouter()
 DEFAULT_DOWNLOAD_URL = "https://api.omi.me/v2/desktop/download/latest?channel=stable"
 VALID_PLATFORMS = {"macos", "windows", "linux"}
 VALID_SEVERITIES = {"none", "banner", "required"}
+PREVIEW_BUCKET_HOST = "storage.googleapis.com"
+PREVIEW_BUCKET_NAME = "omi_macos_updates"
+PREVIEW_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+PREVIEW_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
+PREVIEW_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _https_url(value: object, default: str | None = None) -> str | None:
@@ -29,6 +37,100 @@ def _https_url(value: object, default: str | None = None) -> str | None:
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return default
     return candidate
+
+
+def _preview_slug(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if PREVIEW_SLUG_RE.fullmatch(candidate) else None
+
+
+def _preview_source_sha(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    return candidate if PREVIEW_SHA40_RE.fullmatch(candidate) else None
+
+
+def _preview_identity(slug: str) -> str:
+    return f"p{hashlib.sha256(slug.encode('utf-8')).hexdigest()[:10]}"
+
+
+def _preview_manifest(row: object, *, slug: str, source_sha: str) -> dict[str, object] | None:
+    if not isinstance(row, dict):
+        return None
+    if _preview_slug(row.get("slug")) != slug or _preview_source_sha(row.get("source_sha")) != source_sha:
+        return None
+    app_name = row.get("app_name")
+    bundle_id = row.get("bundle_id")
+    url_scheme = row.get("url_scheme")
+    built_at = row.get("built_at")
+    signer = row.get("signer")
+    notarization = row.get("notarization")
+    dmg_sha256 = row.get("dmg_sha256")
+    if (
+        not isinstance(app_name, str)
+        or not app_name.startswith("Omi Preview")
+        or not isinstance(bundle_id, str)
+        or bundle_id != f"com.omi.preview.{_preview_identity(slug)}"
+        or not isinstance(url_scheme, str)
+        or url_scheme != f"omi-preview-{_preview_identity(slug)}"
+        or not isinstance(built_at, str)
+        or not built_at.strip()
+        or not isinstance(signer, str)
+        or not signer.strip()
+        or notarization != "stapled"
+        or not isinstance(dmg_sha256, str)
+        or not PREVIEW_SHA256_RE.fullmatch(dmg_sha256.lower())
+    ):
+        return None
+    try:
+        datetime.fromisoformat(built_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    dmg_url = row.get("dmg_url")
+    parsed = urlparse(dmg_url) if isinstance(dmg_url, str) else None
+    expected_path = f"/{PREVIEW_BUCKET_NAME}/previews/{slug}/{source_sha}/Omi-Preview.dmg"
+    if (
+        parsed is None
+        or parsed.scheme != "https"
+        or parsed.netloc != PREVIEW_BUCKET_HOST
+        or parsed.path != expected_path
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    notes = row.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        return None
+    backend_url = row.get("backend_url")
+    if backend_url is not None:
+        backend_parsed = urlparse(backend_url) if isinstance(backend_url, str) else None
+        if (
+            backend_parsed is None
+            or backend_parsed.scheme != "https"
+            or not backend_parsed.netloc
+            or backend_parsed.params
+            or backend_parsed.query
+            or backend_parsed.fragment
+        ):
+            return None
+    return {
+        "slug": slug,
+        "source_sha": source_sha,
+        "dmg_url": dmg_url,
+        "dmg_sha256": dmg_sha256.lower(),
+        "app_name": app_name,
+        "bundle_id": bundle_id,
+        "url_scheme": url_scheme,
+        "built_at": built_at,
+        "signer": signer,
+        "notarization": notarization,
+        "notes": notes,
+        "backend_url": backend_url,
+    }
 
 
 def _manual_download_url(release: dict[str, object]) -> str:
@@ -353,6 +455,105 @@ async def download_latest_desktop(
 @router.get("/v2/desktop/download/beta")
 async def download_beta_desktop(request: Request, platform: str = Query(default="macos")):
     return await download_latest_desktop(request, platform=platform, channel="beta", identity="beta")
+
+
+_PREVIEW_SELECT = (
+    "SELECT slug, source_sha, dmg_url, dmg_sha256, app_name, bundle_id, url_scheme, built_at, signer, "
+    "notarization, notes, backend_url FROM cf_desktop_preview_manifests "
+)
+
+
+async def _preview_from_d1(request: Request, slug: str, source_sha: str | None = None) -> dict[str, object] | None:
+    env = request.scope["env"]
+    resolved_sha = source_sha
+    if resolved_sha is None:
+        pointer = await (
+            env.APP_DB.prepare("SELECT source_sha FROM cf_desktop_preview_pointers WHERE slug = ? LIMIT 1")
+            .bind(slug)
+            .first()
+        )
+        resolved_sha = _preview_source_sha(pointer.get("source_sha")) if isinstance(pointer, dict) else None
+    if resolved_sha is None:
+        return None
+    row = (
+        await env.APP_DB.prepare(_PREVIEW_SELECT + "WHERE slug = ? AND source_sha = ? LIMIT 1")
+        .bind(slug, resolved_sha)
+        .first()
+    )
+    return _preview_manifest(row, slug=slug, source_sha=resolved_sha)
+
+
+def _preview_landing_html(manifest: dict[str, object]) -> str:
+    app_name = html.escape(str(manifest["app_name"]), quote=True)
+    slug = html.escape(str(manifest["slug"]), quote=True)
+    source_sha = html.escape(str(manifest["source_sha"]), quote=True)
+    built_at = html.escape(str(manifest["built_at"]), quote=True)
+    dmg_url = html.escape(str(manifest["dmg_url"]), quote=True)
+    notes = manifest.get("notes")
+    notes_html = f'<p class="notes">{html.escape(str(notes), quote=True)}</p>' if notes else ""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="2;url={dmg_url}">
+    <title>Download {app_name} for macOS</title>
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0a0a0a;
+               color: #f5f5f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+        main {{ width: min(620px, calc(100% - 48px)); padding: 40px; border: 1px solid #2a2a2a; border-radius: 16px;
+               background: #121212; text-align: center; }}
+        h1 {{ margin: 0 0 12px; font-size: 28px; }}
+        p {{ color: #b6b6b6; line-height: 1.5; }}
+        code {{ display: block; overflow-wrap: anywhere; padding: 12px; border-radius: 8px; background: #1c1c1c;
+               color: #e8e8e8; font-size: 13px; }}
+        a {{ color: #ffffff; }}
+        .notes {{ white-space: pre-wrap; }}
+        .meta {{ margin-top: 24px; text-align: left; font-size: 13px; color: #909090; }}
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Downloading {app_name}</h1>
+        <p>Your macOS preview download should start automatically.</p>
+        <p><a href="{dmg_url}">Download the preview DMG</a></p>
+        {notes_html}
+        <div class="meta">
+            <p>Preview branch: <strong>{slug}</strong></p>
+            <p>Approved source commit:</p>
+            <code>{source_sha}</code>
+            <p>Build time: {built_at}</p>
+        </div>
+    </main>
+</body>
+</html>"""
+
+
+async def _serve_preview(request: Request, slug: str, source_sha: str | None = None) -> HTMLResponse:
+    normalized_slug = _preview_slug(slug)
+    normalized_sha = _preview_source_sha(source_sha) if source_sha is not None else None
+    if normalized_slug is None or (source_sha is not None and normalized_sha is None):
+        raise HTTPException(status_code=404, detail="Preview not found")
+    try:
+        manifest = await _preview_from_d1(request, normalized_slug, normalized_sha)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Preview unavailable") from exc
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Preview not found")
+    return HTMLResponse(_preview_landing_html(manifest), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/v2/desktop/previews/{slug}")
+async def download_current_desktop_preview(request: Request, slug: str):
+    """Serve the current approved preview for one branch slug."""
+    return await _serve_preview(request, slug)
+
+
+@router.get("/v2/desktop/previews/{slug}/{source_sha}")
+async def download_immutable_desktop_preview(request: Request, slug: str, source_sha: str):
+    """Serve one immutable approved preview artifact by its full source SHA."""
+    return await _serve_preview(request, slug, source_sha)
 
 
 @router.get("/v2/desktop/update-feed/windows")

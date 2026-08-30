@@ -457,6 +457,33 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("routes public desktop preview reads through the core worker", async () => {
+    const paths: string[] = [];
+    const env = {
+      API_CORE: service((request) => {
+        paths.push(`${request.method} ${new URL(request.url).pathname}`);
+        return new Response("<html>preview</html>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }),
+    };
+    for (const path of [
+      "/v2/desktop/previews/feature-demo",
+      "/v2/desktop/previews/feature-demo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ]) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`),
+        env as never,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/html");
+    }
+    expect(paths).toEqual([
+      "GET /v2/desktop/previews/feature-demo",
+      "GET /v2/desktop/previews/feature-demo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ]);
+  });
+
   it("routes authenticated app plan reads through the core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {
