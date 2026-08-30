@@ -45,6 +45,7 @@
 - 浏览器 staging：`/recaps`、`/chat`、`/conversations`、`/memories`、`/my-apps`、`/tasks`、`/settings` 均无新的 API error/404。
 - MCP OAuth 根路径/后缀 discovery 的 `GET/HEAD` 均为 200；grant list 未认证为 401、隔离 Better Auth 账号为 200；撤销后的 token 在 Auth live-consent 检查处立即失效。CIMD 因 Workers 无法满足 DNS pinning transport contract 而明确不广告。
 - 已验证的直接接口：daily summaries 200、messages GET/DELETE 200、未认证访问 401、未知 summary 404。
+- Calendar staging 闭环已实测：onboarding skip/reset、Jobs integration PUT/GET/DELETE 均成功，连接后 API Core 状态为 `connected`，断开后恢复 `not_started`；staging D1 未残留 integration、OAuth state 或 reconnect-required 记录。
 - `POST /v2/messages` 当前返回明确的 `503 provider_not_configured`，这是聊天 provider 尚未配置的已知能力缺口，不是路由 404。
 
 ## 发布前必须补齐
