@@ -22,6 +22,8 @@ from desktop_release_routes import (  # noqa: E402
     get_windows_update_feed,
     download_current_desktop_preview,
     download_immutable_desktop_preview,
+    DesktopPreviewDelistRequest,
+    delist_desktop_preview,
 )
 
 
@@ -43,6 +45,11 @@ class FakeStatement:
         row = self.connection.execute(self.sql, self.args).fetchone()
         return dict(row) if row is not None else None
 
+    async def run(self):
+        cursor = self.connection.execute(self.sql, self.args)
+        self.connection.commit()
+        return {"meta": {"changes": cursor.rowcount}}
+
 
 class FakeDb:
     def __init__(self):
@@ -58,12 +65,13 @@ class FakeDb:
 
 
 class FakeRequest:
-    def __init__(self, env):
+    def __init__(self, env, headers=None):
         self.scope = {"env": env}
+        self.headers = headers or {}
 
 
 def make_env():
-    return type("Env", (), {"APP_DB": FakeDb()})()
+    return type("Env", (), {"APP_DB": FakeDb(), "DESKTOP_PREVIEW_PUBLISH_KEY": "preview-secret"})()
 
 
 def insert_release(
@@ -338,3 +346,57 @@ def test_desktop_preview_routes_fail_closed_for_missing_or_malformed_projection(
     with pytest.raises(HTTPException) as malformed:
         asyncio.run(download_current_desktop_preview(request, "feature-demo"))
     assert malformed.value.status_code == 404
+
+
+def test_desktop_preview_delist_requires_key_and_compare_deletes_only_pointer():
+    env = make_env()
+    insert_preview(env)
+
+    with pytest.raises(HTTPException) as unauthorized:
+        asyncio.run(
+            delist_desktop_preview(
+                FakeRequest(env),
+                "feature-demo",
+                DesktopPreviewDelistRequest(expected_generation=1),
+            )
+        )
+    assert unauthorized.value.status_code == 403
+
+    payload = DesktopPreviewDelistRequest(expected_generation=0)
+    with pytest.raises(HTTPException) as mismatch:
+        asyncio.run(delist_desktop_preview(FakeRequest(env, {"secret-key": "preview-secret"}), "feature-demo", payload))
+    assert mismatch.value.status_code == 409
+    assert "generation mismatch" in str(mismatch.value.detail)
+
+    deleted = asyncio.run(
+        delist_desktop_preview(
+            FakeRequest(env, {"secret-key": "preview-secret"}),
+            "feature-demo",
+            DesktopPreviewDelistRequest(expected_generation=1),
+        )
+    )
+    assert deleted == {"success": True, "slug": "feature-demo", "deleted": True, "generation": 1}
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT COUNT(*) FROM cf_desktop_preview_pointers WHERE slug = 'feature-demo'"
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT COUNT(*) FROM cf_desktop_preview_manifests WHERE slug = 'feature-demo'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
+def test_desktop_preview_delist_missing_pointer_is_idempotent_with_valid_key():
+    env = make_env()
+    result = asyncio.run(
+        delist_desktop_preview(
+            FakeRequest(env, {"secret-key": "preview-secret"}),
+            "missing",
+            DesktopPreviewDelistRequest(expected_generation=0),
+        )
+    )
+    assert result == {"success": True, "slug": "missing", "deleted": False, "generation": None}

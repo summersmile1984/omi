@@ -484,6 +484,33 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("routes preview delisting to the core worker without stripping the admin key", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ success: true, deleted: true });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/desktop/previews/feature-demo", {
+        method: "DELETE",
+        headers: {
+          "content-type": "application/json",
+          "secret-key": "preview-secret",
+        },
+        body: JSON.stringify({ expected_generation: 1 }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(forwarded?.method).toBe("DELETE");
+    expect(forwarded?.headers.get("secret-key")).toBe("preview-secret");
+    await expect(forwarded?.json()).resolves.toEqual({
+      expected_generation: 1,
+    });
+  });
+
   it("routes authenticated app plan reads through the core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

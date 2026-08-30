@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import hashlib
+import hmac
 import json
 import re
 from datetime import datetime
@@ -16,6 +17,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from pydantic import BaseModel, Field
 
 from fallback import record_fallback
 
@@ -29,6 +31,12 @@ PREVIEW_BUCKET_NAME = "omi_macos_updates"
 PREVIEW_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 PREVIEW_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 PREVIEW_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class DesktopPreviewDelistRequest(BaseModel):
+    """Compare-and-delete request for a mutable preview landing-page pointer."""
+
+    expected_generation: int = Field(ge=0)
 
 
 def _https_url(value: object, default: str | None = None) -> str | None:
@@ -544,6 +552,67 @@ async def _serve_preview(request: Request, slug: str, source_sha: str | None = N
     return HTMLResponse(_preview_landing_html(manifest), headers={"Cache-Control": "no-store"})
 
 
+def _preview_publish_key_valid(request: Request) -> bool:
+    expected = getattr(request.scope["env"], "DESKTOP_PREVIEW_PUBLISH_KEY", None)
+    provided = request.headers.get("secret-key")
+    return (
+        isinstance(expected, str)
+        and bool(expected)
+        and isinstance(provided, str)
+        and hmac.compare_digest(provided, expected)
+    )
+
+
+async def _delist_preview_pointer(request: Request, slug: str, expected_generation: int) -> dict[str, object]:
+    normalized_slug = _preview_slug(slug)
+    if normalized_slug is None:
+        raise HTTPException(status_code=409, detail="slug must use lowercase letters, digits, and path-safe hyphens")
+
+    env = request.scope["env"]
+    pointer = await (
+        env.APP_DB.prepare("SELECT source_sha, generation FROM cf_desktop_preview_pointers WHERE slug = ? LIMIT 1")
+        .bind(normalized_slug)
+        .first()
+    )
+    if pointer is None:
+        return {"slug": normalized_slug, "deleted": False, "generation": None}
+    current_generation = pointer.get("generation") if isinstance(pointer, dict) else None
+    if isinstance(current_generation, str) and current_generation.isdigit():
+        current_generation = int(current_generation)
+    if not isinstance(current_generation, int) or isinstance(current_generation, bool) or current_generation < 0:
+        raise HTTPException(status_code=409, detail="preview pointer is malformed")
+    if expected_generation != current_generation:
+        raise HTTPException(
+            status_code=409,
+            detail=f"generation mismatch: expected {expected_generation}, current {current_generation}",
+        )
+
+    result = await (
+        env.APP_DB.prepare("DELETE FROM cf_desktop_preview_pointers WHERE slug = ? AND generation = ?")
+        .bind(normalized_slug, current_generation)
+        .run()
+    )
+    changes = result.get("meta", {}).get("changes", 0) if isinstance(result, dict) else 0
+    if int(changes or 0) == 0:
+        # A concurrent compare-and-delete won the race. Re-read so callers get
+        # the same conflict contract as the legacy transactional implementation.
+        latest = await (
+            env.APP_DB.prepare("SELECT generation FROM cf_desktop_preview_pointers WHERE slug = ? LIMIT 1")
+            .bind(normalized_slug)
+            .first()
+        )
+        latest_generation = latest.get("generation") if isinstance(latest, dict) else None
+        if isinstance(latest_generation, str) and latest_generation.isdigit():
+            latest_generation = int(latest_generation)
+        if latest_generation is None:
+            return {"slug": normalized_slug, "deleted": False, "generation": None}
+        raise HTTPException(
+            status_code=409,
+            detail=f"generation mismatch: expected {expected_generation}, current {latest_generation}",
+        )
+    return {"slug": normalized_slug, "deleted": True, "generation": current_generation}
+
+
 @router.get("/v2/desktop/previews/{slug}")
 async def download_current_desktop_preview(request: Request, slug: str):
     """Serve the current approved preview for one branch slug."""
@@ -554,6 +623,14 @@ async def download_current_desktop_preview(request: Request, slug: str):
 async def download_immutable_desktop_preview(request: Request, slug: str, source_sha: str):
     """Serve one immutable approved preview artifact by its full source SHA."""
     return await _serve_preview(request, slug, source_sha)
+
+
+@router.delete("/v2/desktop/previews/{slug}")
+async def delist_desktop_preview(request: Request, slug: str, payload: DesktopPreviewDelistRequest):
+    """Remove only a slug's mutable landing-page pointer, retaining artifacts."""
+    if not _preview_publish_key_valid(request):
+        raise HTTPException(status_code=403, detail="You are not authorized to delist desktop previews")
+    return {"success": True, **await _delist_preview_pointer(request, slug, payload.expected_generation)}
 
 
 @router.get("/v2/desktop/update-feed/windows")

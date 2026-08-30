@@ -411,6 +411,7 @@ app.get("/v2/desktop/download/windows", proxyPublicCore);
 app.get("/v2/desktop/update-feed/windows", proxyPublicCore);
 app.get("/v2/desktop/previews/:slug", proxyPublicCore);
 app.get("/v2/desktop/previews/:slug/:source_sha", proxyPublicCore);
+app.delete("/v2/desktop/previews/:slug", proxyPublicCore);
 app.get("/v2/desktop/update-policy", proxyPublicCore);
 app.get("/v1/announcements/changelogs", proxyPublicCore);
 app.get("/v1/announcements/features", proxyPublicCore);

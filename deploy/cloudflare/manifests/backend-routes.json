@@ -45,7 +45,7 @@
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/users/store-recording-permission", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/chat-sessions/{session_id}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/desktop/messages", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "DELETE", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/desktop/previews/{slug}", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "DELETE", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/desktop/previews/{slug}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/messages", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "api-core", "path": "/v3/memories", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "DELETE", "migration_state": "staging-owned", "owner": "api-core", "path": "/v3/memories/batch", "protocol": "http", "target_runtime": "python-worker"},

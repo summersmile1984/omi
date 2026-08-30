@@ -317,6 +317,8 @@ cf_dev_issuer_secret="$(openssl rand -base64 48)"
 printf '%s' "$cf_dev_issuer_secret" | npx wrangler secret put AUTH_DEV_ISSUER_SECRET --name omi-cf-auth-staging
 # Independent staging-only credential for the Fair Use support/admin routes.
 printf '%s' "$FAIR_USE_ADMIN_KEY" | npx wrangler secret put FAIR_USE_ADMIN_KEY --name omi-cf-api-core-staging
+# Independent staging-only credential for desktop preview publish/delist.
+printf '%s' "$DESKTOP_PREVIEW_PUBLISH_KEY" | npx wrangler secret put DESKTOP_PREVIEW_PUBLISH_KEY --name omi-cf-api-core-staging
 # Team-only notification API key; configure on the Jobs Worker only.
 printf '%s' "$ADMIN_KEY" | npx wrangler secret put ADMIN_KEY --name omi-cf-jobs-staging
 # Independent staging-only credential for app tester and moderation routes.
