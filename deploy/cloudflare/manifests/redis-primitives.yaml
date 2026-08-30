@@ -362,6 +362,8 @@ families:
       - action_items:write
       - chat:send_message
       - conversations:search
+      - dev:conversations
+      - dev:goals_write
       - memories:batch
       - memories:create
       - memories:delete
@@ -372,6 +374,8 @@ families:
       - tts:synthesize
     migrated_routes:
       - DELETE /v1/dev/user/action-items/{action_item_id}
+      - DELETE /v1/dev/user/conversations/{conversation_id}
+      - DELETE /v1/dev/user/goals/{goal_id}
       - DELETE /v1/dev/user/memories/{memory_id}
       - POST /v1/conversations/search
       - DELETE /v1/mcp/action-items/:action_item_id
@@ -380,9 +384,13 @@ families:
       - POST /v1/mcp/action-items/:action_item_id/complete
       - POST /v1/mcp/memories
       - PATCH /v1/dev/user/action-items/{action_item_id}
+      - PATCH /v1/dev/user/conversations/{conversation_id}
+      - PATCH /v1/dev/user/goals/{goal_id}
+      - PATCH /v1/dev/user/goals/{goal_id}/progress
       - PATCH /v1/dev/user/memories/{memory_id}
       - POST /v1/dev/user/action-items
       - POST /v1/dev/user/action-items/batch
+      - POST /v1/dev/user/goals
       - POST /v1/dev/user/memories
       - POST /v1/dev/user/memories/batch
       - POST /v1/stt/transcribe

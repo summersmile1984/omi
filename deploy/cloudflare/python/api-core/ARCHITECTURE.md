@@ -145,11 +145,14 @@ read scope before touching the same memory, action-item, folder, conversation,
 goal, and Vectorize-backed projections used by first-party clients. The
 account-cutover and deletion fences run on every credential use; raw keys never
 enter D1, logs, or signed internal identity headers.
-`developer_mutation_routes.py` carries the corresponding memory and action-item
-write scopes into the existing D1 mutation and vector-outbox owners. It keeps
-the public Developer limits and response projections, rejects locked rows, and
-publishes Queue projection hints without turning a Developer key into an
-internal user session.
+`developer_mutation_routes.py` carries the corresponding memory, action-item,
+conversation-metadata, and goal write scopes into the existing D1 owners. It
+keeps the public Developer limits and response projections, rejects locked
+rows, preserves goal progress history, and publishes Queue projection hints
+for vector-backed records without turning a Developer key into an internal
+user session. Developer conversation creation remains outside this owner until
+its summary, memory, app, webhook, usage, and vector side effects move as one
+boundary.
 
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional

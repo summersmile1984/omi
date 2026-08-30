@@ -3063,7 +3063,7 @@ describe("edge gateway", () => {
     }
   });
 
-  it("routes Developer API memory and action-item mutations with the raw bearer and body", async () => {
+  it("routes Developer API mutations with the raw bearer and body", async () => {
     const forwarded: Request[] = [];
     let authCalls = 0;
     const rateLimitNames: string[] = [];
@@ -3087,6 +3087,16 @@ describe("edge gateway", () => {
       ["POST", "/v1/dev/user/action-items/batch", '{"action_items":[]}'],
       ["PATCH", "/v1/dev/user/action-items/action-1", '{"completed":true}'],
       ["DELETE", "/v1/dev/user/action-items/action-1"],
+      [
+        "PATCH",
+        "/v1/dev/user/conversations/conversation-1",
+        '{"discarded":true}',
+      ],
+      ["DELETE", "/v1/dev/user/conversations/conversation-1"],
+      ["POST", "/v1/dev/user/goals", '{"title":"Ship Cloudflare"}'],
+      ["PATCH", "/v1/dev/user/goals/goal-1", '{"title":"Verify Cloudflare"}'],
+      ["PATCH", "/v1/dev/user/goals/goal-1/progress?current_value=7"],
+      ["DELETE", "/v1/dev/user/goals/goal-1"],
     ] as const;
     const bearer = `Bearer omi_dev_${"d".repeat(32)}`;
 
@@ -3112,7 +3122,9 @@ describe("edge gateway", () => {
     expect(forwarded).toHaveLength(cases.length);
     for (const [index, request] of forwarded.entries()) {
       expect(request.method).toBe(cases[index][0]);
-      expect(new URL(request.url).pathname).toBe(cases[index][1]);
+      expect(new URL(request.url).pathname).toBe(
+        new URL(`https://edge.test${cases[index][1]}`).pathname,
+      );
       expect(request.headers.get("authorization")).toBe(bearer);
       expect(request.headers.get("cookie")).toBeNull();
       expect(request.headers.get("x-omi-auth-context")).toBeNull();
@@ -3127,6 +3139,8 @@ describe("edge gateway", () => {
         expect.stringMatching(/^memories:create:developer:[0-9a-f]{64}$/),
         expect.stringMatching(/^memories:batch:developer:[0-9a-f]{64}$/),
         expect.stringMatching(/^action_items:write:developer:[0-9a-f]{64}$/),
+        expect.stringMatching(/^dev:conversations:developer:[0-9a-f]{64}$/),
+        expect.stringMatching(/^dev:goals_write:developer:[0-9a-f]{64}$/),
       ]),
     );
     expect(rateLimitNames.join(" ")).not.toContain("d".repeat(32));

@@ -32,6 +32,16 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 60,
     windowSeconds: 3600,
   },
+  "dev:conversations": {
+    name: "dev:conversations",
+    maxRequests: 25,
+    windowSeconds: 3600,
+  },
+  "dev:goals_write": {
+    name: "dev:goals_write",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
   "memories:create": {
     name: "memories:create",
     maxRequests: 60,
@@ -108,6 +118,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     "POST /v1/dev/user/action-items/batch",
     EDGE_RATE_LIMIT_POLICIES["action_items:write"],
   ],
+  ["POST /v1/dev/user/goals", EDGE_RATE_LIMIT_POLICIES["dev:goals_write"]],
   ["DELETE /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:delete_all"]],
   [
     "DELETE /v3/memories/batch",
@@ -157,6 +168,18 @@ export function edgeRateLimitPolicyForRequest(
     /^\/v1\/dev\/user\/action-items\/[^/]+$/.test(path)
   ) {
     return EDGE_RATE_LIMIT_POLICIES["action_items:write"];
+  }
+  if (
+    (normalizedMethod === "PATCH" || normalizedMethod === "DELETE") &&
+    /^\/v1\/dev\/user\/conversations\/[^/]+$/.test(path)
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["dev:conversations"];
+  }
+  if (
+    (normalizedMethod === "PATCH" || normalizedMethod === "DELETE") &&
+    /^\/v1\/dev\/user\/goals\/[^/]+(?:\/progress)?$/.test(path)
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["dev:goals_write"];
   }
   return null;
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import math
 import time
 from typing import Literal
 import uuid
@@ -18,12 +19,27 @@ from action_item_routes import (
     _apply_update as apply_action_item_update,
     _first_item as first_action_item,
 )
+from conversation_routes import (
+    _first_conversation as first_conversation,
+    _share_index_statement as conversation_share_index_statement,
+)
 from developer_routes import (
     MAX_ID_LENGTH,
     _authenticate,
     _bool,
     _developer_action_item,
+    _developer_conversation,
+    _developer_goal,
     _developer_memory,
+    _folder_names,
+)
+from goal_routes import (
+    GoalCreate,
+    GoalType,
+    GoalUpdate,
+    _first_goal as first_goal,
+    _metric as goal_metric,
+    _update_values as goal_update_values,
 )
 from mcp_routes import _memory_category, _memory_score
 from memory_routes import _first_active as first_active_memory
@@ -104,6 +120,64 @@ class DeveloperActionItemUpdate(BaseModel):
     def validate_update(self) -> "DeveloperActionItemUpdate":
         if not any(value is not None for value in (self.description, self.completed, self.due_at)):
             raise ValueError("at least one action-item field is required")
+        return self
+
+
+class DeveloperConversationUpdate(BaseModel):
+    model_config = {"extra": "ignore", "str_strip_whitespace": True}
+
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    discarded: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "DeveloperConversationUpdate":
+        if self.title is None and self.discarded is None:
+            raise ValueError("at least one conversation field is required")
+        return self
+
+
+class DeveloperGoalCreate(BaseModel):
+    model_config = {"extra": "ignore", "str_strip_whitespace": True}
+
+    title: str = Field(min_length=1, max_length=500)
+    desired_outcome: str | None = Field(default=None, max_length=2_000)
+    why_it_matters: str | None = Field(default=None, max_length=2_000)
+    success_criteria: list[str] = Field(default_factory=list, max_length=20)
+    horizon_at: datetime | None = None
+    goal_type: Literal["boolean", "scale", "numeric"] | None = None
+    target_value: float | None = None
+    current_value: float | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+    unit: str | None = Field(default=None, max_length=64)
+
+
+class DeveloperGoalUpdate(BaseModel):
+    model_config = {"extra": "ignore", "str_strip_whitespace": True}
+
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    desired_outcome: str | None = Field(default=None, max_length=2_000)
+    why_it_matters: str | None = Field(default=None, max_length=2_000)
+    success_criteria: list[str] | None = Field(default=None, max_length=20)
+    horizon_at: datetime | None = None
+    target_value: float | None = None
+    current_value: float | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+    unit: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "DeveloperGoalUpdate":
+        if not self.model_fields_set:
+            raise ValueError("at least one goal field is required")
+        for field_name in ("title", "desired_outcome"):
+            if field_name in self.model_fields_set and getattr(self, field_name) is None:
+                raise ValueError(f"{field_name} cannot be null")
+        if "success_criteria" in self.model_fields_set and self.success_criteria is None:
+            raise ValueError("success_criteria cannot be null")
+        for field_name in ("target_value", "current_value"):
+            if field_name in self.model_fields_set and getattr(self, field_name) is None:
+                raise ValueError(f"{field_name} cannot be null")
         return self
 
 
@@ -568,4 +642,293 @@ async def delete_developer_action_item(request: Request, action_item_id: str):
     except Exception:
         return JSONResponse({"error": "action item unavailable"}, status_code=503)
     await _publish_projection(env, principal.uid, "action_item", action_item_id)
+    return {"success": True}
+
+
+async def _developer_conversation_response(env: object, uid: str, row: dict[str, object]) -> dict[str, object]:
+    await _folder_names(env, uid, [row])
+    return _developer_conversation(row, include_transcript=True)
+
+
+@router.patch("/v1/dev/user/conversations/{conversation_id}")
+async def update_developer_conversation(request: Request, conversation_id: str):
+    principal, denial = await _authenticate(request, "conversations:write")
+    if denial is not None:
+        return denial
+    assert principal is not None
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"detail": "Conversation not found"}, status_code=404)
+    try:
+        update = DeveloperConversationUpdate.model_validate(await _bounded_json(request))
+    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+        return JSONResponse({"detail": "Invalid conversation update"}, status_code=422)
+    env = request.scope["env"]
+    try:
+        existing = await first_conversation(env, principal.uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"detail": "Conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"detail": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        structured_raw = existing.get("structured_json")
+        try:
+            structured = json.loads(structured_raw) if isinstance(structured_raw, str) else {}
+        except (TypeError, ValueError):
+            structured = {}
+        if not isinstance(structured, dict):
+            structured = {}
+        if update.title is not None:
+            structured["title"] = update.title
+        discarded = _bool(existing.get("discarded")) if update.discarded is None else update.discarded
+        previous_version = int(existing.get("updated_at") or existing.get("created_at") or 0)
+        now = max(int(time.time()), previous_version + 1)
+        mutation = env.APP_DB.prepare(
+            "UPDATE cf_conversations SET structured_json = ?, discarded = ?, updated_at = ? WHERE uid = ? AND id = ?"
+        ).bind(
+            json.dumps(structured, ensure_ascii=False, separators=(",", ":")),
+            1 if discarded else 0,
+            now,
+            principal.uid,
+            conversation_id,
+        )
+        share_index = conversation_share_index_statement(
+            env,
+            uid=principal.uid,
+            conversation_id=conversation_id,
+            visibility="private" if discarded else str(existing.get("visibility") or "private"),
+            updated_at=now,
+        )
+        folder_counts = env.APP_DB.prepare(
+            "UPDATE cf_folders SET conversation_count = ("
+            "SELECT COUNT(*) FROM cf_conversations c "
+            "WHERE c.uid = cf_folders.uid AND c.folder_id = cf_folders.id AND c.discarded = 0"
+            ") WHERE uid = ?"
+        ).bind(principal.uid)
+        projection = vector_outbox_statement(
+            env,
+            uid=principal.uid,
+            source_kind="conversation",
+            source_id=conversation_id,
+            desired_version=now,
+            operation=("upsert" if str(existing.get("status") or "") == "completed" and not discarded else "delete"),
+        )
+        await env.APP_DB.batch([mutation, share_index, folder_counts, projection])
+        row = await first_conversation(env, principal.uid, conversation_id)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    if row is None:
+        return JSONResponse({"detail": "Conversation not found"}, status_code=404)
+    await _publish_projection(env, principal.uid, "conversation", conversation_id)
+    return await _developer_conversation_response(env, principal.uid, row)
+
+
+@router.delete("/v1/dev/user/conversations/{conversation_id}")
+async def delete_developer_conversation(request: Request, conversation_id: str):
+    principal, denial = await _authenticate(request, "conversations:write")
+    if denial is not None:
+        return denial
+    assert principal is not None
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"detail": "Conversation not found"}, status_code=404)
+    env = request.scope["env"]
+    try:
+        existing = await first_conversation(env, principal.uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"detail": "Conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"detail": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        previous_version = int(existing.get("updated_at") or existing.get("created_at") or 0)
+        now = max(int(time.time()), previous_version + 1)
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_shared_conversation_index WHERE conversation_id = ? AND uid = ?"
+                ).bind(conversation_id, principal.uid),
+                env.APP_DB.prepare("DELETE FROM cf_conversations WHERE uid = ? AND id = ?").bind(
+                    principal.uid, conversation_id
+                ),
+                env.APP_DB.prepare(
+                    "UPDATE cf_folders SET conversation_count = ("
+                    "SELECT COUNT(*) FROM cf_conversations c "
+                    "WHERE c.uid = cf_folders.uid AND c.folder_id = cf_folders.id AND c.discarded = 0"
+                    ") WHERE uid = ?"
+                ).bind(principal.uid),
+                vector_outbox_statement(
+                    env,
+                    uid=principal.uid,
+                    source_kind="conversation",
+                    source_id=conversation_id,
+                    desired_version=now,
+                    operation="delete",
+                ),
+            ]
+        )
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    await _publish_projection(env, principal.uid, "conversation", conversation_id)
+    return {"success": True}
+
+
+@router.post("/v1/dev/user/goals")
+async def create_developer_goal(request: Request):
+    principal, denial = await _authenticate(request, "goals:write")
+    if denial is not None:
+        return denial
+    assert principal is not None
+    try:
+        payload = DeveloperGoalCreate.model_validate(await _bounded_json(request))
+        goal = GoalCreate.model_validate(payload.model_dump(exclude_none=True))
+    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+        return JSONResponse({"detail": "Invalid goal"}, status_code=422)
+    env = request.scope["env"]
+    now = int(time.time())
+    goal_id = f"goal_{uuid.uuid4().hex[:12]}"
+    metric = goal.metric.model_dump(mode="json") if goal.metric is not None else None
+    try:
+        await env.APP_DB.prepare(
+            "INSERT INTO cf_goals "
+            "(uid, id, title, desired_outcome, why_it_matters, success_criteria_json, horizon_at, status, focus_rank, "
+            "metric_json, source, relationship_disposition, is_active, latest_progress_sequence, ended_at, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'background', NULL, ?, 'user', 'retain', 1, 0, "
+            "NULL, ?, ?)"
+        ).bind(
+            principal.uid,
+            goal_id,
+            goal.title,
+            goal.desired_outcome,
+            goal.why_it_matters,
+            json.dumps(goal.success_criteria, ensure_ascii=False),
+            _epoch(goal.horizon_at),
+            json.dumps(metric, ensure_ascii=False) if metric is not None else None,
+            now,
+            now,
+        ).run()
+        row = await first_goal(env, principal.uid, goal_id)
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    return _developer_goal(row) if row else JSONResponse({"error": "goal unavailable"}, status_code=503)
+
+
+@router.patch("/v1/dev/user/goals/{goal_id}/progress")
+async def update_developer_goal_progress(request: Request, goal_id: str):
+    principal, denial = await _authenticate(request, "goals:write")
+    if denial is not None:
+        return denial
+    assert principal is not None
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"detail": "Goal not found"}, status_code=404)
+    raw_value = request.query_params.get("current_value")
+    try:
+        current_value = float(raw_value) if raw_value not in {None, ""} else None
+    except (TypeError, ValueError):
+        current_value = None
+    if current_value is None or not math.isfinite(current_value):
+        return JSONResponse({"detail": "current_value is required"}, status_code=422)
+    env = request.scope["env"]
+    try:
+        existing = await first_goal(env, principal.uid, goal_id)
+        if existing is None:
+            return JSONResponse({"detail": "Goal not found"}, status_code=404)
+        metric = goal_metric(existing) or {
+            "type": GoalType.numeric.value,
+            "current": 0.0,
+            "target": 0.0,
+            "min": None,
+            "max": None,
+            "unit": None,
+        }
+        metric["current"] = current_value
+        now = int(time.time())
+        today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+        sequence = int(existing.get("latest_progress_sequence") or 0) + 1
+        metric_json = json.dumps(metric, ensure_ascii=False)
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare(
+                    "INSERT INTO cf_goal_progress_events "
+                    "(uid, event_id, goal_id, sequence, kind, summary, evidence_refs_json, metric_json, created_at) "
+                    "VALUES (?, ?, ?, ?, 'metric_update', 'Metric updated', '[]', ?, ?)"
+                ).bind(principal.uid, f"gpe_{uuid.uuid4().hex}", goal_id, sequence, metric_json, now),
+                env.APP_DB.prepare(
+                    "UPDATE cf_goals SET metric_json = ?, latest_progress_sequence = ?, updated_at = ? "
+                    "WHERE uid = ? AND id = ?"
+                ).bind(metric_json, sequence, now, principal.uid, goal_id),
+                env.APP_DB.prepare(
+                    "INSERT INTO cf_goal_progress_history (uid, goal_id, date, value, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?) ON CONFLICT(uid, goal_id, date) DO UPDATE SET "
+                    "value = excluded.value, recorded_at = excluded.recorded_at"
+                ).bind(principal.uid, goal_id, today, current_value, now),
+            ]
+        )
+        row = await first_goal(env, principal.uid, goal_id)
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    return _developer_goal(row) if row else JSONResponse({"detail": "Goal not found"}, status_code=404)
+
+
+@router.patch("/v1/dev/user/goals/{goal_id}")
+async def update_developer_goal(request: Request, goal_id: str):
+    principal, denial = await _authenticate(request, "goals:write")
+    if denial is not None:
+        return denial
+    assert principal is not None
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"detail": "Goal not found"}, status_code=404)
+    try:
+        payload = DeveloperGoalUpdate.model_validate(await _bounded_json(request))
+        update = GoalUpdate.model_validate(payload.model_dump(exclude_unset=True))
+    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+        return JSONResponse({"detail": "Invalid goal update"}, status_code=422)
+    env = request.scope["env"]
+    try:
+        existing = await first_goal(env, principal.uid, goal_id)
+        if existing is None:
+            return JSONResponse({"detail": "Goal not found"}, status_code=404)
+        values = goal_update_values(update, existing)
+        values["updated_at"] = int(time.time())
+        allowed = {
+            "title",
+            "desired_outcome",
+            "why_it_matters",
+            "success_criteria_json",
+            "horizon_at",
+            "metric_json",
+            "updated_at",
+        }
+        values = {key: value for key, value in values.items() if key in allowed}
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        await env.APP_DB.prepare(f"UPDATE cf_goals SET {assignments} WHERE uid = ? AND id = ?").bind(
+            *values.values(), principal.uid, goal_id
+        ).run()
+        row = await first_goal(env, principal.uid, goal_id)
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
+    return _developer_goal(row) if row else JSONResponse({"detail": "Goal not found"}, status_code=404)
+
+
+@router.delete("/v1/dev/user/goals/{goal_id}")
+async def delete_developer_goal(request: Request, goal_id: str):
+    principal, denial = await _authenticate(request, "goals:write")
+    if denial is not None:
+        return denial
+    assert principal is not None
+    if not goal_id or len(goal_id) > MAX_ID_LENGTH:
+        return JSONResponse({"detail": "Goal not found"}, status_code=404)
+    env = request.scope["env"]
+    try:
+        existing = await first_goal(env, principal.uid, goal_id)
+        if existing is None:
+            return JSONResponse({"detail": "Goal not found"}, status_code=404)
+        now = int(time.time())
+        await env.APP_DB.prepare(
+            "UPDATE cf_goals SET status = 'abandoned', focus_rank = NULL, is_active = 0, ended_at = ?, updated_at = ? "
+            "WHERE uid = ? AND id = ?"
+        ).bind(now, now, principal.uid, goal_id).run()
+    except Exception:
+        return JSONResponse({"error": "goals unavailable"}, status_code=503)
     return {"success": True}

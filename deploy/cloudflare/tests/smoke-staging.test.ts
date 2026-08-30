@@ -102,6 +102,12 @@ function creatorPaymentBoundary(
   if (url.endsWith("/v1/dev/user/action-items")) {
     return new Response(null, { status: 403 });
   }
+  if (url.endsWith("/v1/dev/user/conversations/cf-smoke-missing")) {
+    return new Response(null, { status: 403 });
+  }
+  if (url.endsWith("/v1/dev/user/goals")) {
+    return new Response(null, { status: 403 });
+  }
   if (
     url.endsWith("/v1/integrations/notification") ||
     url.includes("/v2/integrations/cf-smoke-missing/")
@@ -523,6 +529,8 @@ describe("staging smoke helpers", () => {
       developerApiKeyList: 200,
       developerApiKeyValidation: 422,
       developerApiKeyDeleteMissing: 204,
+      developerConversationWriteInvalidKey: 403,
+      developerGoalWriteInvalidKey: 403,
       integrationNotificationV1Boundary: 403,
       integrationConversationCreateBoundary: 403,
       integrationMemoryCreateBoundary: 403,
@@ -543,7 +551,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(124);
+    expect(calls).toHaveLength(126);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

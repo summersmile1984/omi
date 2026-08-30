@@ -684,6 +684,30 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/dev/user/conversations/{conversation_id}
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, queue-jobs, rate-limit-do]
+    rate_limit_policy: dev:conversations
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/dev/user/conversations/{conversation_id}
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, queue-jobs, rate-limit-do]
+    rate_limit_policy: dev:conversations
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/dev/user/goals
     owner: api-core
@@ -692,6 +716,18 @@ routes:
     auth_authority: developer-api-key
     dependencies: [d1-app]
     protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/dev/user/goals
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: dev:goals_write
+    protocol: http
+    idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
@@ -712,6 +748,42 @@ routes:
     auth_authority: developer-api-key
     dependencies: [d1-app]
     protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/dev/user/goals/{goal_id}/progress
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: dev:goals_write
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/dev/user/goals/{goal_id}
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: dev:goals_write
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/dev/user/goals/{goal_id}
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: dev:goals_write
+    protocol: http
+    idempotency: route-resource
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST

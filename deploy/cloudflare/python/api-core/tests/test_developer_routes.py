@@ -22,11 +22,17 @@ from developer_routes import (  # noqa: E402
 from developer_mutation_routes import (  # noqa: E402
     create_developer_action_item,
     create_developer_action_items_batch,
+    create_developer_goal,
     create_developer_memories_batch,
     create_developer_memory,
     delete_developer_action_item,
+    delete_developer_conversation,
+    delete_developer_goal,
     delete_developer_memory,
     update_developer_action_item,
+    update_developer_conversation,
+    update_developer_goal,
+    update_developer_goal_progress,
     update_developer_memory,
 )
 
@@ -545,5 +551,162 @@ def test_developer_action_item_mutations_preserve_projection_lock_and_scope_cont
     denied = run(create_developer_action_item(FakeRequest(read_only_env, body={"description": "Must not persist"})))
     assert denied.status_code == 403
     assert read_only_database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 0
+    read_only_database.connection.close()
+    database.connection.close()
+
+
+def test_developer_conversation_mutations_preserve_lock_projection_and_vector_contracts():
+    database, env = environment(scopes=READ_SCOPES + ["conversations:write"])
+    structured = json.dumps(
+        {
+            "title": "Original title",
+            "overview": "Cloudflare conversation",
+            "emoji": "✅",
+            "category": "work",
+            "action_items": [],
+            "events": [],
+        }
+    )
+    database.connection.execute(
+        "INSERT INTO cf_conversations "
+        "(uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
+        "discarded, is_locked, structured_json, transcript_segments_json) "
+        "VALUES ('developer-user', 'conversation-write', 10, 10, 10, 20, 'external_integration', 'en', "
+        "'completed', 'private', 0, 0, ?, '[]')",
+        (structured,),
+    )
+    database.connection.execute(
+        "INSERT INTO cf_conversations "
+        "(uid, id, created_at, updated_at, source, status, is_locked, structured_json, transcript_segments_json) "
+        "VALUES ('developer-user', 'locked-conversation-write', 10, 10, 'external_integration', 'completed', 1, ?, '[]')",
+        (structured,),
+    )
+    database.connection.commit()
+
+    discarded = run(
+        update_developer_conversation(
+            FakeRequest(env, body={"title": "Updated title", "discarded": True}),
+            "conversation-write",
+        )
+    )
+    assert discarded["structured"]["title"] == "Updated title"
+    assert (
+        database.connection.execute(
+            "SELECT discarded FROM cf_conversations WHERE uid = 'developer-user' AND id = 'conversation-write'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        database.connection.execute(
+            "SELECT operation FROM cf_vector_projection_outbox "
+            "WHERE uid = 'developer-user' AND source_kind = 'conversation' AND source_id = 'conversation-write'"
+        ).fetchone()[0]
+        == "delete"
+    )
+
+    restored = run(
+        update_developer_conversation(
+            FakeRequest(env, body={"discarded": False}),
+            "conversation-write",
+        )
+    )
+    assert restored["structured"]["title"] == "Updated title"
+    assert (
+        database.connection.execute(
+            "SELECT operation FROM cf_vector_projection_outbox "
+            "WHERE uid = 'developer-user' AND source_kind = 'conversation' AND source_id = 'conversation-write'"
+        ).fetchone()[0]
+        == "upsert"
+    )
+
+    locked = run(delete_developer_conversation(FakeRequest(env), "locked-conversation-write"))
+    assert locked.status_code == 402
+    deleted = run(delete_developer_conversation(FakeRequest(env), "conversation-write"))
+    assert deleted == {"success": True}
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM cf_conversations WHERE uid = 'developer-user' AND id = 'conversation-write'"
+        ).fetchone()[0]
+        == 0
+    )
+
+    read_only_database, read_only_env = environment()
+    denied = run(
+        update_developer_conversation(
+            FakeRequest(read_only_env, body={"title": "Denied"}),
+            "missing",
+        )
+    )
+    assert denied.status_code == 403
+    read_only_database.connection.close()
+    database.connection.close()
+
+
+def test_developer_goal_mutations_preserve_legacy_projection_progress_and_scope_contracts():
+    database, env = environment(scopes=READ_SCOPES + ["goals:write"])
+
+    created = run(
+        create_developer_goal(
+            FakeRequest(
+                env,
+                body={
+                    "title": "Migrate Developer goals",
+                    "desired_outcome": "Cloudflare owns goal mutations",
+                    "success_criteria": ["CRUD verified"],
+                    "goal_type": "numeric",
+                    "target_value": 10,
+                    "current_value": 2,
+                    "unit": "routes",
+                },
+            )
+        )
+    )
+    goal_id = created["id"]
+    assert created["goal_id"] == goal_id
+    assert created["goal_type"] == "numeric"
+    assert created["current_value"] == 2
+
+    updated = run(
+        update_developer_goal(
+            FakeRequest(
+                env,
+                body={
+                    "title": "Migrate and verify Developer goals",
+                    "why_it_matters": "Reduce deployment complexity",
+                    "target_value": 12,
+                },
+            ),
+            goal_id,
+        )
+    )
+    assert updated["title"] == "Migrate and verify Developer goals"
+    assert updated["why_it_matters"] == "Reduce deployment complexity"
+    assert updated["target_value"] == 12
+
+    progressed = run(
+        update_developer_goal_progress(
+            FakeRequest(env, query={"current_value": "7"}),
+            goal_id,
+        )
+    )
+    assert progressed["current_value"] == 7
+    history = database.connection.execute(
+        "SELECT value FROM cf_goal_progress_history WHERE uid = 'developer-user' AND goal_id = ?",
+        (goal_id,),
+    ).fetchone()
+    assert history[0] == 7
+
+    deleted = run(delete_developer_goal(FakeRequest(env), goal_id))
+    assert deleted == {"success": True}
+    goal_state = database.connection.execute(
+        "SELECT status, is_active FROM cf_goals WHERE uid = 'developer-user' AND id = ?",
+        (goal_id,),
+    ).fetchone()
+    assert tuple(goal_state) == ("abandoned", 0)
+
+    read_only_database, read_only_env = environment()
+    denied = run(create_developer_goal(FakeRequest(read_only_env, body={"title": "Denied"})))
+    assert denied.status_code == 403
+    assert read_only_database.connection.execute("SELECT COUNT(*) FROM cf_goals").fetchone()[0] == 0
     read_only_database.connection.close()
     database.connection.close()

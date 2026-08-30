@@ -351,6 +351,40 @@ export async function runSmoke({
     developerActionItemWriteInvalidKey,
     403,
   );
+  const developerConversationWriteInvalidKey = await request(
+    fetchImpl,
+    `${base}/v1/dev/user/conversations/cf-smoke-missing`,
+    {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer omi_dev_${"f".repeat(32)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ discarded: true }),
+    },
+  );
+  expectStatus(
+    "Developer API conversation write invalid key",
+    developerConversationWriteInvalidKey,
+    403,
+  );
+  const developerGoalWriteInvalidKey = await request(
+    fetchImpl,
+    `${base}/v1/dev/user/goals`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer omi_dev_${"f".repeat(32)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "Cloudflare smoke" }),
+    },
+  );
+  expectStatus(
+    "Developer API goal write invalid key",
+    developerGoalWriteInvalidKey,
+    403,
+  );
 
   const result = {
     edgeHealth: health.status,
@@ -374,6 +408,9 @@ export async function runSmoke({
     developerMemoryWriteInvalidKey: developerMemoryWriteInvalidKey.status,
     developerActionItemWriteInvalidKey:
       developerActionItemWriteInvalidKey.status,
+    developerConversationWriteInvalidKey:
+      developerConversationWriteInvalidKey.status,
+    developerGoalWriteInvalidKey: developerGoalWriteInvalidKey.status,
   };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 
