@@ -33,7 +33,7 @@
 
 ## 本轮验证证据
 
-- Cloudflare TypeScript：47 个测试文件、368 个测试通过；类型检查和生产依赖审计通过。
+- Cloudflare TypeScript：47 个测试文件、369 个测试通过；类型检查和生产依赖审计通过。
 - `api-core`：246 个测试通过；`api-ai`：81 个测试通过。
 - Web：8 个测试文件、38 个测试通过；vinext staging build 与 Worker dry-run 通过。
 - manifest：458 条 Cloudflare 路由、577 条完整 backend 路由和 22 个 staging 资源通过校验；137 条 legacy-owned 路由成为可量化迁移队列。
@@ -46,6 +46,7 @@
 - MCP OAuth 根路径/后缀 discovery 的 `GET/HEAD` 均为 200；grant list 未认证为 401、隔离 Better Auth 账号为 200；撤销后的 token 在 Auth live-consent 检查处立即失效。CIMD 因 Workers 无法满足 DNS pinning transport contract 而明确不广告。
 - 已验证的直接接口：daily summaries 200、messages GET/DELETE 200、未认证访问 401、未知 summary 404。
 - Calendar staging 闭环已实测：onboarding skip/reset、Jobs integration PUT/GET/DELETE 均成功，连接后 API Core 状态为 `connected`，断开后恢复 `not_started`；staging D1 未残留 integration、OAuth state 或 reconnect-required 记录。
+- Public Trends staging 闭环已实测：远端执行 `0082_trends.sql` 后，`GET /v1/trends` 经 Edge → Python API Core → D1 返回 HTTP 200、`cache-control: public, max-age=60` 和空数组；无趋势数据时保持 fail-closed，不回退到 Firestore。
 - `POST /v2/messages` 当前返回明确的 `503 provider_not_configured`，这是聊天 provider 尚未配置的已知能力缺口，不是路由 404。
 
 ## 发布前必须补齐
