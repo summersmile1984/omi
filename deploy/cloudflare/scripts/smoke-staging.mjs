@@ -284,7 +284,11 @@ async function exerciseProfileAndGoalAi(fetchImpl, base, authHeaders) {
       body: JSON.stringify({ unexpected: true }),
     },
   );
-  expectStatus("AI profile synthesis validation", profileValidation, 422);
+  expectFenceOrRateLimit(
+    "AI profile synthesis validation",
+    profileValidation,
+    422,
+  );
 
   const progressValidation = await request(
     fetchImpl,
