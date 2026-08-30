@@ -518,6 +518,7 @@ describe("edge gateway", () => {
     expect(aiRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
 
     for (const path of [
+      "/v1/app/generate",
       "/v1/app/generate-description",
       "/v1/app/generate-description-emoji",
     ]) {
@@ -540,6 +541,7 @@ describe("edge gateway", () => {
     }
     expect(aiRequests.map((request) => new URL(request.url).pathname)).toEqual([
       "/v1/app/generate-prompts",
+      "/v1/app/generate",
       "/v1/app/generate-description",
       "/v1/app/generate-description-emoji",
     ]);

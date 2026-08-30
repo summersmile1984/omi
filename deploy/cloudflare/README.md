@@ -82,7 +82,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
   gate. The current inventory contains 577 backend routes: 420 already match
-  Cloudflare staging owners and 146 remain legacy-owned. Edge directly serves
+  Cloudflare staging owners and 145 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -118,6 +118,7 @@ Then assign the new entries an explicit owner/runtime; the generated
 provisioned resources and do not imply a production cutover.
 
 The authenticated App Generator routes (`GET /v1/app/generate-prompts`,
+`POST /v1/app/generate`,
 `POST /v1/app/generate-description`, and
 `POST /v1/app/generate-description-emoji`) are served by the API AI Python
 Worker using the native Workers AI binding. Prompt generation keeps the legacy

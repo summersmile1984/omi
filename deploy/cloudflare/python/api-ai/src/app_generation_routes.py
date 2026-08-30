@@ -53,6 +53,10 @@ class GenerateDescriptionEmojiRequest(BaseModel):
     prompt: str = Field(max_length=MAX_APP_GENERATION_INPUT_CHARS)
 
 
+class GenerateAppRequest(BaseModel):
+    prompt: str = Field(max_length=MAX_APP_GENERATION_INPUT_CHARS)
+
+
 DESCRIPTION_SYSTEM_PROMPT = """You are an AI assistant specializing in crafting detailed and engaging descriptions for apps.
 You will be provided with an app's name and a brief description. Expand it into a captivating, concise,
 professional description that highlights the app's features, functionality, and benefits. Use no more than
@@ -63,6 +67,38 @@ Given an app name and what it should do, respond with a JSON object containing:
 1. "description": a concise, engaging description (max 40 words) highlighting what the app does
 2. "emoji": a single emoji that best represents the app's purpose
 Respond ONLY with the JSON object, no other text."""
+
+APP_CATEGORIES = (
+    ("Conversation Analysis", "conversation-analysis"),
+    ("Personality Clone", "personality-emulation"),
+    ("Health", "health-and-wellness"),
+    ("Education", "education-and-learning"),
+    ("Communication", "communication-improvement"),
+    ("Emotional Support", "emotional-and-mental-support"),
+    ("Productivity", "productivity-and-organization"),
+    ("Entertainment", "entertainment-and-fun"),
+    ("Financial", "financial"),
+    ("Travel", "travel-and-exploration"),
+    ("Safety", "safety-and-security"),
+    ("Shopping", "shopping-and-commerce"),
+    ("Social", "social-and-relationships"),
+    ("News", "news-and-information"),
+    ("Utilities", "utilities-and-tools"),
+    ("Other", "other"),
+)
+APP_GENERATOR_SYSTEM_PROMPT = """You are an expert app designer for Omi, an AI-powered wearable device that records conversations and provides intelligent insights.
+
+Design an app based on the user's description. Omi apps can have two capabilities:
+1. Chat apps (capability: "chat"): a persona or assistant with a detailed chat_prompt.
+2. Conversation/memory apps (capability: "memories"): analysis with a detailed memory_prompt.
+An app can have both capabilities when appropriate.
+
+Available categories (use the id exactly):
+{categories}
+
+Return only valid JSON with this structure:
+{{"name":"short catchy name (max 30 chars)","description":"compelling description (50-150 words)","category":"category-id","capabilities":["chat"],"chat_prompt":"...","memory_prompt":"..."}}
+Only include chat_prompt when chat is present and memory_prompt when memories is present."""
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -172,6 +208,55 @@ def _parse_description_emoji(text: str, fallback_description: str) -> dict[str, 
     if not isinstance(emoji, str) or not emoji.strip() or len(emoji) > 16:
         emoji = "✨"
     return {"description": description.strip(), "emoji": emoji.strip()}
+
+
+def _parse_generated_app(text: str) -> dict[str, object] | None:
+    content = text.strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        content = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:]).strip()
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    name = payload.get("name")
+    description = payload.get("description")
+    category = payload.get("category")
+    capabilities = payload.get("capabilities")
+    if not isinstance(name, str) or not name.strip():
+        name = "My App"
+    if not isinstance(description, str) or not description.strip():
+        description = "An AI-powered app"
+    if not isinstance(category, str) or not category.strip():
+        category = "other"
+    if not isinstance(capabilities, list):
+        capabilities = ["chat"]
+    capabilities = [value for value in capabilities if isinstance(value, str) and value in {"chat", "memories"}]
+    if not capabilities:
+        capabilities = ["chat"]
+    result: dict[str, object] = {
+        "name": name.strip()[:50],
+        "description": description.strip()[:MAX_DESCRIPTION_RESPONSE_CHARS],
+        "category": category.strip()[:100],
+        "capabilities": capabilities[:2],
+    }
+    if "chat" in capabilities:
+        chat_prompt = payload.get("chat_prompt")
+        result["chat_prompt"] = (
+            chat_prompt.strip()[:MAX_DESCRIPTION_RESPONSE_CHARS] if isinstance(chat_prompt, str) else None
+        )
+    else:
+        result["chat_prompt"] = None
+    if "memories" in capabilities:
+        memory_prompt = payload.get("memory_prompt")
+        result["memory_prompt"] = (
+            memory_prompt.strip()[:MAX_DESCRIPTION_RESPONSE_CHARS] if isinstance(memory_prompt, str) else None
+        )
+    else:
+        result["memory_prompt"] = None
+    return result
 
 
 async def _record_usage(env: object, uid: str, model: str, result: object) -> None:
@@ -309,7 +394,45 @@ async def generate_description_and_emoji(request: Request, payload: GenerateDesc
     return _parse_description_emoji(response, prompt)
 
 
+@router.post("/v1/app/generate")
+async def generate_app(request: Request, payload: GenerateAppRequest):
+    """Generate an app draft from a natural-language request."""
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    prompt = payload.prompt.strip()
+    if not prompt:
+        return JSONResponse({"detail": "Prompt is required"}, status_code=422)
+    if len(prompt) < 10:
+        return JSONResponse({"detail": "Prompt is too short. Please provide more details."}, status_code=422)
+    categories = "\n".join(f"- {title} (id: {category})" for title, category in APP_CATEGORIES)
+    system_prompt = APP_GENERATOR_SYSTEM_PROMPT.format(categories=categories)
+    try:
+        generated = await _run_generation(
+            request.scope["env"],
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Create an app based on this description:\n\n{prompt}"},
+            ],
+            max_tokens=768,
+            temperature=0.6,
+        )
+    except Exception:
+        generated = None
+    if generated is None:
+        return JSONResponse({"error": "app generation unavailable"}, status_code=502)
+    response, result = generated
+    app = _parse_generated_app(response)
+    if app is None:
+        return JSONResponse({"error": "app generation returned invalid JSON"}, status_code=502)
+    await _record_usage(
+        request.scope["env"], str(context["uid"]), _model_name(request.scope["env"]) or "unknown", result
+    )
+    return {"status": "ok", "app": app}
+
+
 __all__ = [
+    "generate_app",
     "generate_description",
     "generate_description_and_emoji",
     "generate_sample_prompts",

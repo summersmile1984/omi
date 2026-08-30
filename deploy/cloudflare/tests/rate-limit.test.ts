@@ -262,6 +262,7 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v2/chat/initial-message", "chat:initial"],
       ["POST", "/v2/chat/generate-title", "chat:initial"],
       ["GET", "/v1/app/generate-prompts", "apps:generate_prompts"],
+      ["POST", "/v1/app/generate", "apps:generate_app"],
       ["POST", "/v1/app/generate-description", "apps:generate_description"],
       [
         "POST",

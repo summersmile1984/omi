@@ -140,6 +140,7 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     # Test
     "test:prompt": (30, 3600),
     # Apps
+    "apps:generate_app": (30, 3600),
     "apps:generate_description": (30, 3600),
     "apps:generate_description_emoji": (30, 3600),
     "apps:generate_prompts": (30, 3600),

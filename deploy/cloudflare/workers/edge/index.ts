@@ -1008,6 +1008,7 @@ app.get("/v1/app/plans", proxyAuthenticatedCore);
 app.get("/v1/app/generate-prompts", proxyAuthenticatedAI);
 app.post("/v1/app/generate-description", proxyAuthenticatedAI);
 app.post("/v1/app/generate-description-emoji", proxyAuthenticatedAI);
+app.post("/v1/app/generate", proxyAuthenticatedAI);
 app.get("/v1/apps/tester/check", proxyAuthenticatedCore);
 app.get("/v1/apps/:appId", proxyAuthenticatedCore);
 app.post("/v1/apps", proxyAuthenticatedJobs);

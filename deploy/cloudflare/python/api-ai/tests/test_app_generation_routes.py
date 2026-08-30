@@ -11,10 +11,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from app_generation_routes import (
+    GenerateAppRequest,
     GenerateDescriptionEmojiRequest,
     GenerateDescriptionRequest,
     generate_description,
     generate_description_and_emoji,
+    generate_app,
     generate_sample_prompts,
 )
 
@@ -193,3 +195,55 @@ def test_generate_description_fails_closed_when_workers_ai_is_unavailable():
 
     assert response.status_code == 502
     assert json.loads(response.body) == {"error": "app description generation unavailable"}
+
+
+def test_generate_app_validates_prompt_and_normalizes_workers_ai_json():
+    class FakeAI:
+        async def run(self, _model, payload):
+            assert "conversation-analysis" in payload["messages"][0]["content"]
+            return {
+                "response": (
+                    '{"name":"Focus Map","description":"Turns conversations into focused maps.",'
+                    '"category":"productivity-and-organization","capabilities":["memories","chat"],'
+                    '"chat_prompt":"Coach focus","memory_prompt":"Extract topics"}'
+                )
+            }
+
+    secret = "secret"
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), APP_DB=FakeD1()),
+        _signed_headers(secret),
+    )
+    generated = asyncio.run(generate_app(request, GenerateAppRequest(prompt="Build a focus map from conversations")))
+    short = asyncio.run(generate_app(request, GenerateAppRequest(prompt="short")))
+
+    assert generated == {
+        "status": "ok",
+        "app": {
+            "name": "Focus Map",
+            "description": "Turns conversations into focused maps.",
+            "category": "productivity-and-organization",
+            "capabilities": ["memories", "chat"],
+            "chat_prompt": "Coach focus",
+            "memory_prompt": "Extract topics",
+        },
+    }
+    assert short.status_code == 422
+    assert json.loads(short.body) == {"detail": "Prompt is too short. Please provide more details."}
+
+
+def test_generate_app_returns_provider_error_for_invalid_json():
+    class FakeAI:
+        async def run(self, _model, _payload):
+            return {"response": "not json"}
+
+    secret = "secret"
+    response = asyncio.run(
+        generate_app(
+            FakeRequest(SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI()), _signed_headers(secret)),
+            GenerateAppRequest(prompt="Build a useful conversation app"),
+        )
+    )
+
+    assert response.status_code == 502
+    assert json.loads(response.body) == {"error": "app generation returned invalid JSON"}
