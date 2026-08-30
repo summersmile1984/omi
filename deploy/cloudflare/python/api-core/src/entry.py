@@ -67,6 +67,7 @@ from developer_mutation_routes import router as developer_mutation_router
 from developer_conversation_create_routes import router as developer_conversation_create_router
 from tool_routes import router as tool_router
 from knowledge_graph_routes import router as knowledge_graph_router
+from synthesis_routes import router as synthesis_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
 app.include_router(score_router)
@@ -99,6 +100,7 @@ app.include_router(developer_mutation_router)
 app.include_router(developer_conversation_create_router)
 app.include_router(tool_router)
 app.include_router(knowledge_graph_router)
+app.include_router(synthesis_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
 ASSET_CLEANUP_GRACE_SECONDS = 15 * 60
 ASSET_CLEANUP_BATCH_SIZE = 10

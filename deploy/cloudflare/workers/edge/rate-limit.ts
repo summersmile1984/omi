@@ -92,6 +92,21 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 2,
     windowSeconds: 3600,
   },
+  "memories:extract": {
+    name: "memories:extract",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
+  "connectors:synthesize": {
+    name: "connectors:synthesize",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
+  "conversations:topic": {
+    name: "conversations:topic",
+    maxRequests: 60,
+    windowSeconds: 3600,
+  },
   "stt:transcribe": {
     name: "stt:transcribe",
     maxRequests: 60,
@@ -182,6 +197,15 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   [
     "POST /v1/knowledge-graph/rebuild",
     EDGE_RATE_LIMIT_POLICIES["knowledge_graph:rebuild"],
+  ],
+  ["POST /v1/memories/extract", EDGE_RATE_LIMIT_POLICIES["memories:extract"]],
+  [
+    "POST /v1/connectors/synthesize",
+    EDGE_RATE_LIMIT_POLICIES["connectors:synthesize"],
+  ],
+  [
+    "POST /v1/conversations/topic",
+    EDGE_RATE_LIMIT_POLICIES["conversations:topic"],
   ],
   ["DELETE /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:delete_all"]],
   [

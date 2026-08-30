@@ -74,6 +74,13 @@ function retrievalToolBoundary(
   if (path === "/v1/knowledge-graph/extract") {
     return Response.json({ detail: "invalid extraction" }, { status: 400 });
   }
+  if (
+    path === "/v1/memories/extract" ||
+    path === "/v1/conversations/topic" ||
+    path === "/v1/connectors/synthesize"
+  ) {
+    return Response.json({ detail: "invalid synthesis" }, { status: 422 });
+  }
   if (path === "/v1/action-items/search") {
     return Response.json({ action_items: [] });
   }
@@ -537,6 +544,9 @@ describe("staging smoke helpers", () => {
       knowledgeGraphRebuildFence: 409,
       knowledgeGraphDeleteFence: 409,
       knowledgeGraphExtractValidation: 400,
+      memory_extraction_validation: 422,
+      conversation_topic_validation: 422,
+      connector_synthesis_validation: 422,
       conversationFromSegmentsValidation: 422,
       webProxyConversations: 200,
       webProxyEnabledApps: 200,
@@ -628,7 +638,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(139);
+    expect(calls).toHaveLength(142);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

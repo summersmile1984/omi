@@ -806,6 +806,11 @@ POST /v1/knowledge-graph/rebuild
 POST /v1/knowledge-graph/extract
                               Edge → Python API Core → canonical D1 memory graph;
                               extraction uses Workers AI and never writes product state
+POST /v1/memories/extract
+POST /v1/conversations/topic
+POST /v1/connectors/synthesize
+                              Edge → Python API Core → Workers AI return-only synthesis;
+                              no local model, legacy backend, or product-state write
 GET /v1/conversations/{conversationId}/action-items
 GET /v1/conversations/{conversationId}/action-items/count
                               Edge → Python API Core → D1 standalone task projection

@@ -368,6 +368,9 @@ families:
       - knowledge_graph:canonical
       - knowledge_graph:extract
       - knowledge_graph:rebuild
+      - memories:extract
+      - connectors:synthesize
+      - conversations:topic
       - memories:batch
       - memories:create
       - memories:delete
@@ -405,6 +408,9 @@ families:
       - POST /v1/dev/user/memories/batch
       - POST /v1/knowledge-graph/extract
       - POST /v1/knowledge-graph/rebuild
+      - POST /v1/memories/extract
+      - POST /v1/connectors/synthesize
+      - POST /v1/conversations/topic
       - POST /v1/stt/transcribe
       - POST /v1/stt/transcribe-async
       - POST /v1/stt/transcribe-workers-ai

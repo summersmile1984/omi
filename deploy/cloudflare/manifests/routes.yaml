@@ -4184,3 +4184,39 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/memories/extract
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [workers-ai-binding, rate-limit-do]
+    rate_limit_policy: memories:extract
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/connectors/synthesize
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [workers-ai-binding, rate-limit-do]
+    rate_limit_policy: connectors:synthesize
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/conversations/topic
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [workers-ai-binding, rate-limit-do]
+    rate_limit_policy: conversations:topic
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy

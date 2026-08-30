@@ -49,6 +49,13 @@ positively identified legacy cutover principal receives the compatible no-op
 response. Return-only extraction uses the native Workers AI binding, validates
 referential closure and bounded node/edge counts, and never writes D1.
 
+`synthesis_routes.py` owns the return-only desktop memory-log extraction,
+conversation topic, and calendar/Gmail/notes synthesis contracts. It accepts
+only the signed Better Auth identity from Edge, preserves the desktop trial
+paywall and route-specific Edge limits, bounds untrusted prompt inputs, and
+validates structured Workers AI output before returning it. These routes do
+not write D1, call the legacy backend, or require a local model process.
+
 `account_cutover_routes.py` is the routing authority consumed by Edge. Only
 `ACCOUNT_CUTOVER_PROFILE=isolated-staging` may initialize a missing Better Auth
 principal directly as `new`; the initializer writes a completed,

@@ -234,6 +234,33 @@ async function exerciseKnowledgeGraph(fetchImpl, base, authHeaders) {
   };
 }
 
+async function exerciseReturnOnlySynthesis(fetchImpl, base, authHeaders) {
+  const probes = [
+    ["memory extraction validation", "/v1/memories/extract", { text: "" }],
+    [
+      "conversation topic validation",
+      "/v1/conversations/topic",
+      { transcript: "" },
+    ],
+    [
+      "connector synthesis validation",
+      "/v1/connectors/synthesize",
+      { source: "notes", items: [] },
+    ],
+  ];
+  const statuses = {};
+  for (const [label, path, body] of probes) {
+    const response = await request(fetchImpl, `${base}${path}`, {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expectStatus(label, response, 422);
+    statuses[label.replaceAll(" ", "_")] = response.status;
+  }
+  return statuses;
+}
+
 async function exerciseWorkersAiChat(fetchImpl, webBase, authHeaders) {
   const preflight = await requestJson(
     fetchImpl,
@@ -683,6 +710,11 @@ export async function runSmoke({
     authHeaders,
   );
   const knowledgeGraph = await exerciseKnowledgeGraph(
+    fetchImpl,
+    base,
+    authHeaders,
+  );
+  const returnOnlySynthesis = await exerciseReturnOnlySynthesis(
     fetchImpl,
     base,
     authHeaders,
@@ -1562,6 +1594,7 @@ export async function runSmoke({
     developerApiKeyDeleteMissing: developerApiKeyDeleteMissing.status,
     ...integrationBoundaries,
     ...knowledgeGraph,
+    ...returnOnlySynthesis,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
     stripeRefreshOwnership: stripeRefreshOwnership.status,
