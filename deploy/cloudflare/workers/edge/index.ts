@@ -1005,6 +1005,7 @@ app.patch("/v2/desktop/messages/:messageId/rating", proxyAuthenticatedCore);
 app.get("/v1/apps/popular", proxyAuthenticatedCore);
 app.get("/v1/apps", proxyAuthenticatedCore);
 app.get("/v1/app/plans", proxyAuthenticatedCore);
+app.get("/v1/app/generate-prompts", proxyAuthenticatedAI);
 app.get("/v1/apps/tester/check", proxyAuthenticatedCore);
 app.get("/v1/apps/:appId", proxyAuthenticatedCore);
 app.post("/v1/apps", proxyAuthenticatedJobs);

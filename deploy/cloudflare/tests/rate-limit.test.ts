@@ -261,6 +261,7 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v2/initial-message", "chat:initial"],
       ["POST", "/v2/chat/initial-message", "chat:initial"],
       ["POST", "/v2/chat/generate-title", "chat:initial"],
+      ["GET", "/v1/app/generate-prompts", "apps:generate_prompts"],
       ["POST", "/v1/stt/transcribe", "stt:transcribe"],
       ["POST", "/v1/stt/transcribe-async", "stt:transcribe"],
       ["POST", "/v1/stt/transcribe-workers-ai", "stt:transcribe"],

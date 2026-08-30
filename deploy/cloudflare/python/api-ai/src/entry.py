@@ -21,6 +21,7 @@ from internal_auth import decode_context, verify_request_context
 from fair_use_meter import content_source_id, record_fair_use_usage, speech_ms_from_transcription
 from fair_use_enforcement import fair_use_restriction, fair_use_restriction_response
 from auto_model_routes import router as auto_model_router
+from app_generation_routes import router as app_generation_router
 from chat_generation_routes import chat_messages, router as chat_generation_router
 from fallback import record_fallback
 from realtime_routes import router as realtime_router
@@ -28,6 +29,7 @@ from voice_transcription_routes import router as voice_transcription_router
 
 app = FastAPI(title="Omi Cloudflare AI API", version="0.1.0")
 app.include_router(auto_model_router)
+app.include_router(app_generation_router)
 app.include_router(chat_generation_router)
 app.include_router(realtime_router)
 app.include_router(voice_transcription_router)

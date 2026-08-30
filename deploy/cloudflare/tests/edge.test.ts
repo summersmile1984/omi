@@ -465,6 +465,59 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes authenticated app prompt generation through the AI worker", async () => {
+    const aiRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({
+            uid: "prompt-user",
+            authority: "better-auth",
+          });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({
+          state: "new",
+          client_action: "none",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        }),
+      ),
+      API_AI: service((request) => {
+        aiRequests.push(request);
+        return Response.json({
+          prompts: ["one", "two", "three", "four", "five"],
+        });
+      }),
+      RATE_LIMITS: rateLimits(() => allowRateLimit()),
+    };
+
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/app/generate-prompts"),
+      env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/app/generate-prompts", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      prompts: ["one", "two", "three", "four", "five"],
+    });
+    expect(aiRequests).toHaveLength(1);
+    expect(new URL(aiRequests[0].url).pathname).toBe(
+      "/v1/app/generate-prompts",
+    );
+    expect(aiRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("keeps native payment terminal pages public", async () => {
     const coreRequests: Request[] = [];
     const env = {

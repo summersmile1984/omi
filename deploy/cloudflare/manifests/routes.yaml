@@ -1339,6 +1339,17 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v1/app/generate-prompts
+    owner: api-ai
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [workers-ai-binding, rate-limit-do]
+    rate_limit_policy: apps:generate_prompts
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /v1/app/plans
     owner: api-core
     runtime: python-worker
