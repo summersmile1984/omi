@@ -432,6 +432,7 @@ families:
       - POST /v1/tools/memories/search
       - POST /v1/tts/synthesize
       - POST /v1/tts/synthesize-workers-ai
+      - POST /v2/tts/synthesize
       - POST /v2/chat/generate-title
       - POST /v2/chat/initial-message
       - POST /v2/initial-message
@@ -454,11 +455,13 @@ families:
     consistency: strongly-consistent
     target: durable-object
     target_owner: rate-limit
-    migration_state: staging-partial
-    migrated_policies: [desktop-tts-burst-and-daily-chars]
+    migration_state: staging-owned
+    migrated_policies:
+      [desktop-tts-burst-and-daily-chars, mobile-tts-burst-and-daily-chars]
     migrated_routes:
       - POST /v1/tts/synthesize
       - POST /v1/tts/synthesize-workers-ai
+      - POST /v2/tts/synthesize
   - id: write-and-listen-throttles
     source_symbols:
       [

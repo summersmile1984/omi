@@ -19,6 +19,7 @@ from entry import (
     transcribe_workers_ai,
     translate_workers_ai,
     tts_synthesize,
+    tts_synthesize_mobile,
     tts_synthesize_workers_ai,
     chat_messages,
 )  # noqa: E402
@@ -62,8 +63,8 @@ class FakeRateLimitStub:
     def __init__(self, owner):
         self.owner = owner
 
-    async def checkTts(self, char_count):
-        self.owner.calls.append((self.owner.current_name, char_count))
+    async def checkTts(self, char_count, profile="desktop"):
+        self.owner.calls.append((self.owner.current_name, char_count, profile))
         if isinstance(self.owner.result, Exception):
             raise self.owner.result
         return self.owner.result
@@ -604,7 +605,7 @@ def test_tts_validates_contract_and_returns_provider_audio(monkeypatch):
         "response_format": "mp3",
         "instructions": "be warm",
     }
-    assert limiter.calls == [("tts:fine:user-1", 5)]
+    assert limiter.calls == [("tts:fine:user-1", 5, "desktop")]
 
 
 def test_tts_rejects_unsupported_voice_before_provider_call():
@@ -663,7 +664,7 @@ def test_workers_ai_tts_uses_native_binding_and_returns_mp3():
         "payload": {"text": "hello", "speaker": "luna", "encoding": "mp3"},
         "options": {"returnRawResponse": True},
     }
-    assert limiter.calls == [("tts:fine:user-1", 5)]
+    assert limiter.calls == [("tts:fine:user-1", 5, "desktop")]
 
 
 def test_workers_ai_tts_fails_closed_without_binding():
@@ -719,6 +720,180 @@ def test_workers_ai_tts_normalizes_model_failures_to_502():
     assert json.loads(response.body) == {"error": "workers ai tts failed"}
 
 
+def test_mobile_tts_preserves_contract_through_cloudflare_catalog():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            encoded_audio = base64.b64encode(b"ID3-mobile").decode("ascii")
+            return {
+                "state": "Completed",
+                "result": {"audio": f"data:audio/mpeg;base64,{encoded_audio}"},
+            }
+
+    limiter = FakeRateLimits()
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), RATE_LIMITS=limiter),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {
+            "text": " hello ",
+            "voice_settings": {
+                "stability": 0.4,
+                "similarity_boost": 0.8,
+                "use_speaker_boost": True,
+            },
+        },
+        url="https://api.test/v2/tts/synthesize",
+    )
+
+    response = asyncio.run(tts_synthesize_mobile(request))
+
+    assert response.status_code == 200
+    assert response.media_type == "audio/mpeg"
+    assert response.body == b"ID3-mobile"
+    assert calls == {
+        "model": "elevenlabs/eleven-turbo-v2-5",
+        "payload": {
+            "text": "hello",
+            "voice_id": "BAMYoBHLZM7lJgJAmFz0",
+            "output_format": "mp3_44100_128",
+            "voice_settings": {
+                "stability": 0.4,
+                "similarity_boost": 0.8,
+                "use_speaker_boost": True,
+            },
+        },
+    }
+    assert limiter.calls == [("tts:fine:user-1", 5, "mobile")]
+
+
+def test_mobile_tts_rejects_invalid_provider_contract_before_model_call():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class UnexpectedAI:
+        async def run(self, *_args, **_kwargs):
+            raise AssertionError("model must not be called")
+
+    invalid_requests = [
+        ({"text": "hello", "voice_id": "../../history"}, {"detail": "invalid voice_id"}),
+        ({"text": "hello", "model_id": "unknown"}, {"detail": "unsupported model_id"}),
+        ({"text": "hello", "output_format": "wav"}, {"detail": "unsupported output_format"}),
+    ]
+    for body, expected in invalid_requests:
+        limiter = FakeRateLimits()
+        request = FakeRequest(
+            SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=UnexpectedAI(), RATE_LIMITS=limiter),
+            {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+            body,
+            url="https://api.test/v2/tts/synthesize",
+        )
+
+        response = asyncio.run(tts_synthesize_mobile(request))
+
+        assert response.status_code == 400
+        assert json.loads(response.body) == expected
+        assert limiter.calls == []
+
+
+def test_mobile_tts_normalizes_provider_failure_and_invalid_audio():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class FailingAI:
+        async def run(self, *_args, **_kwargs):
+            raise RuntimeError("provider-specific failure")
+
+    class InvalidAudioAI:
+        async def run(self, *_args, **_kwargs):
+            return {"state": "Completed", "result": {"audio": "https://untrusted.test/audio.mp3"}}
+
+    for ai, expected in (
+        (FailingAI(), {"detail": "TTS upstream unavailable"}),
+        (InvalidAudioAI(), {"detail": "TTS upstream returned invalid audio"}),
+    ):
+        request = FakeRequest(
+            SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=ai, RATE_LIMITS=FakeRateLimits()),
+            {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+            {"text": "hello"},
+            url="https://api.test/v2/tts/synthesize",
+        )
+
+        response = asyncio.run(tts_synthesize_mobile(request))
+
+        assert response.status_code == 502
+        assert json.loads(response.body) == expected
+
+
+def test_mobile_tts_returns_retry_after_before_model_call():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits(status=1)
+    limiter.result["retryAfter"] = 42.1
+
+    class UnexpectedAI:
+        async def run(self, *_args, **_kwargs):
+            raise AssertionError("model must not be called")
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=UnexpectedAI(), RATE_LIMITS=limiter),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v2/tts/synthesize",
+    )
+
+    response = asyncio.run(tts_synthesize_mobile(request))
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "43"
+    assert json.loads(response.body) == {"detail": "TTS burst rate limit exceeded"}
+    assert limiter.calls == [("tts:fine:user-1", 5, "mobile")]
+
+
+def test_mobile_tts_preserves_legacy_fail_open_when_limiter_is_unavailable(capsys):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class FakeAI:
+        async def run(self, *_args, **_kwargs):
+            encoded_audio = base64.b64encode(b"ID3-mobile").decode("ascii")
+            return {
+                "state": "Completed",
+                "result": {"audio": f"data:audio/mpeg;base64,{encoded_audio}"},
+            }
+
+    limiter = FakeRateLimits()
+    limiter.result = RuntimeError("simulated DO outage")
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), RATE_LIMITS=limiter),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v2/tts/synthesize",
+    )
+
+    response = asyncio.run(tts_synthesize_mobile(request))
+
+    assert response.status_code == 200
+    log_lines = capsys.readouterr().out.splitlines()
+    assert any(
+        json.loads(line)
+        == {
+            "component": "other",
+            "event": "fallback",
+            "from": "restrict",
+            "outcome": "degraded",
+            "reason": "dependency_unavailable",
+            "to": "none",
+        }
+        for line in log_lines
+    )
+    assert all("user-1" not in line for line in log_lines)
+
+
 def test_tts_fine_limit_rejects_burst_before_provider_call(monkeypatch):
     secret = "test-secret"
     encoded, signature = signed_context(secret)
@@ -742,7 +917,7 @@ def test_tts_fine_limit_rejects_burst_before_provider_call(monkeypatch):
 
     assert response.status_code == 429
     assert json.loads(response.body) == {"detail": "TTS burst rate limit exceeded"}
-    assert limiter.calls == [("tts:fine:user-1", 5)]
+    assert limiter.calls == [("tts:fine:user-1", 5, "desktop")]
 
 
 def test_workers_ai_tts_fine_limit_rejects_daily_budget_before_model_call():

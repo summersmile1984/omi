@@ -719,8 +719,9 @@ describe("staging smoke helpers", () => {
       invalidGeolocation: 200,
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
+      mobileTtsValidation: 400,
     });
-    expect(calls).toHaveLength(152);
+    expect(calls).toHaveLength(153);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -1018,6 +1019,7 @@ describe("staging smoke helpers", () => {
       if (
         url.endsWith("/v1/stt/transcribe-workers-ai") ||
         url.endsWith("/v2/voice-message/transcribe") ||
+        url.endsWith("/v2/tts/synthesize") ||
         url.endsWith("/v1/payments/checkout-session") ||
         url.endsWith("/v1/payments/customer-portal") ||
         url.endsWith("/v1/payments/upgrade-subscription") ||

@@ -49,12 +49,29 @@ export type TtsFineRateLimitResult = {
   dailyResetAt: number;
 };
 
-export const TTS_FINE_RATE_LIMIT = {
-  burstRequests: 20,
-  burstWindowSeconds: 60,
-  dailyChars: 50_000,
-  maxRequestChars: 4_096,
+export const TTS_FINE_RATE_LIMITS = {
+  desktop: {
+    burstRequests: 20,
+    burstWindowSeconds: 60,
+    dailyChars: 50_000,
+    maxRequestChars: 4_096,
+  },
+  mobile: {
+    burstRequests: 50,
+    burstWindowSeconds: 60,
+    dailyChars: 10_000,
+    maxRequestChars: 5_000,
+  },
 } as const;
+export type TtsFineRateLimitProfile = keyof typeof TTS_FINE_RATE_LIMITS;
+type TtsFineRateLimitPolicy =
+  (typeof TTS_FINE_RATE_LIMITS)[TtsFineRateLimitProfile];
+export const TTS_FINE_RATE_LIMIT = TTS_FINE_RATE_LIMITS.desktop;
+const TTS_BURST_RETENTION_WINDOW_SECONDS = Math.max(
+  ...Object.values(TTS_FINE_RATE_LIMITS).map(
+    (policy) => policy.burstWindowSeconds,
+  ),
+);
 
 export class SharedRateLimitDurableObject extends DurableObject<
   Record<string, never>
@@ -75,25 +92,37 @@ export class SharedRateLimitDurableObject extends DurableObject<
       if (request.method !== "POST") {
         return Response.json({ error: "method_not_allowed" }, { status: 405 });
       }
-      let body: { char_count?: unknown };
+      let body: { char_count?: unknown; profile?: unknown };
       try {
-        body = (await request.json()) as { char_count?: unknown };
+        body = (await request.json()) as {
+          char_count?: unknown;
+          profile?: unknown;
+        };
       } catch {
         return Response.json({ error: "invalid_json" }, { status: 400 });
       }
+      const profile = ttsFineRateLimitProfile(body.profile);
+      if (profile === null) {
+        return Response.json(
+          { error: "invalid_tts_character_count" },
+          { status: 400 },
+        );
+      }
+      const policy = TTS_FINE_RATE_LIMITS[profile];
       if (
         !Number.isInteger(body.char_count) ||
         (body.char_count as number) < 1 ||
-        (body.char_count as number) > TTS_FINE_RATE_LIMIT.maxRequestChars
+        (body.char_count as number) > policy.maxRequestChars
       ) {
         return Response.json(
           { error: "invalid_tts_character_count" },
           { status: 400 },
         );
       }
-      return Response.json(await this.checkTts(body.char_count as number), {
-        headers: { "cache-control": "no-store" },
-      });
+      return Response.json(
+        await this.checkTts(body.char_count as number, profile),
+        { headers: { "cache-control": "no-store" } },
+      );
     }
     if (url.pathname !== "/check") {
       return Response.json({ error: "not_found" }, { status: 404 });
@@ -147,16 +176,21 @@ export class SharedRateLimitDurableObject extends DurableObject<
     return { status: "ok", service: "rate-limit" };
   }
 
-  async checkTts(charCount: number): Promise<TtsFineRateLimitResult> {
+  async checkTts(
+    charCount: number,
+    profile: TtsFineRateLimitProfile = "desktop",
+  ): Promise<TtsFineRateLimitResult> {
+    const policy = TTS_FINE_RATE_LIMITS[profile];
     if (
+      !policy ||
       !Number.isInteger(charCount) ||
       charCount < 1 ||
-      charCount > TTS_FINE_RATE_LIMIT.maxRequestChars
+      charCount > policy.maxRequestChars
     ) {
       throw new RangeError("invalid TTS character count");
     }
     const now = Date.now();
-    const windowMs = TTS_FINE_RATE_LIMIT.burstWindowSeconds * 1000;
+    const windowMs = policy.burstWindowSeconds * 1000;
     const { result, nextAlarmAt } = await this.state.storage.transaction(
       async (transaction) => {
         const storedBurst = await transaction.get<StoredTtsBurst>(
@@ -175,15 +209,16 @@ export class SharedRateLimitDurableObject extends DurableObject<
         const dailyChars =
           storedDaily && storedDaily.resetAt > now ? storedDaily.chars : 0;
 
-        if (timestamps.length >= TTS_FINE_RATE_LIMIT.burstRequests) {
+        if (timestamps.length >= policy.burstRequests) {
           await storeOrDeleteBurst(transaction, timestamps);
           return {
             result: ttsFineResult(
               1,
-              TTS_FINE_RATE_LIMIT.burstWindowSeconds,
+              policy.burstWindowSeconds,
               timestamps.length,
               dailyChars,
               dailyResetAt,
+              policy,
             ),
             nextAlarmAt: earliestTimestamp(
               timestamps[0] + windowMs,
@@ -191,7 +226,7 @@ export class SharedRateLimitDurableObject extends DurableObject<
             ),
           };
         }
-        if (dailyChars + charCount > TTS_FINE_RATE_LIMIT.dailyChars) {
+        if (dailyChars + charCount > policy.dailyChars) {
           await storeOrDeleteBurst(transaction, timestamps);
           return {
             result: ttsFineResult(
@@ -200,6 +235,7 @@ export class SharedRateLimitDurableObject extends DurableObject<
               timestamps.length,
               dailyChars,
               dailyResetAt,
+              policy,
             ),
             nextAlarmAt: earliestTimestamp(
               timestamps.length > 0 ? timestamps[0] + windowMs : null,
@@ -222,6 +258,7 @@ export class SharedRateLimitDurableObject extends DurableObject<
             timestamps.length,
             nextDailyChars,
             dailyResetAt,
+            policy,
           ),
           nextAlarmAt: Math.min(timestamps[0] + windowMs, dailyResetAt),
         };
@@ -233,7 +270,7 @@ export class SharedRateLimitDurableObject extends DurableObject<
 
   async alarm(): Promise<void> {
     const now = Date.now();
-    const windowMs = TTS_FINE_RATE_LIMIT.burstWindowSeconds * 1000;
+    const windowMs = TTS_BURST_RETENTION_WINDOW_SECONDS * 1000;
     const nextResetAt = await this.state.storage.transaction(
       async (transaction) => {
         const nextAlarms: number[] = [];
@@ -307,17 +344,22 @@ function ttsFineResult(
   burstCount: number,
   dailyChars: number,
   dailyResetAt: number,
+  policy: TtsFineRateLimitPolicy,
 ): TtsFineRateLimitResult {
   return {
     status,
     retryAfter,
-    burstRemaining: Math.max(0, TTS_FINE_RATE_LIMIT.burstRequests - burstCount),
-    dailyCharsRemaining: Math.max(
-      0,
-      TTS_FINE_RATE_LIMIT.dailyChars - dailyChars,
-    ),
+    burstRemaining: Math.max(0, policy.burstRequests - burstCount),
+    dailyCharsRemaining: Math.max(0, policy.dailyChars - dailyChars),
     dailyResetAt,
   };
+}
+
+function ttsFineRateLimitProfile(
+  value: unknown,
+): TtsFineRateLimitProfile | null {
+  if (value === undefined || value === null || value === "") return "desktop";
+  return value === "desktop" || value === "mobile" ? value : null;
 }
 
 function parsePolicy(body: RateLimitCheckRequest): RateLimitPolicy | null {

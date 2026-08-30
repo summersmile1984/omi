@@ -2820,6 +2820,56 @@ describe("edge gateway", () => {
     expect(rateLimitNames).toEqual(["tts:synthesize:user-1"]);
   });
 
+  it("routes the mobile TTS contract to API AI with the legacy edge policy", async () => {
+    let aiPath = "";
+    const rateLimitNames: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
+      API_AI: service((request) => {
+        aiPath = new URL(request.url).pathname;
+        return new Response("audio", {
+          status: 200,
+          headers: { "content-type": "audio/mpeg" },
+        });
+      }),
+      RATE_LIMITS: rateLimits(
+        () =>
+          Response.json({
+            allowed: true,
+            limit: 300,
+            remaining: 299,
+            retryAfter: 0,
+            resetAt: Date.now() + 3_600_000,
+          }),
+        rateLimitNames,
+      ),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/tts/synthesize", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ text: "hello" }),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(aiPath).toBe("/v2/tts/synthesize");
+    expect(rateLimitNames).toEqual(["tts:synthesize:user-1"]);
+  });
+
   it("returns 429 before invoking TTS when the Durable Object limit is exhausted", async () => {
     let aiCalls = 0;
     const env = {

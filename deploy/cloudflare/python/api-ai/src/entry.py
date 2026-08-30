@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 try:
     from workers import asgi, fetch as worker_fetch
@@ -22,6 +22,7 @@ from fair_use_meter import content_source_id, record_fair_use_usage, speech_ms_f
 from fair_use_enforcement import fair_use_restriction, fair_use_restriction_response
 from auto_model_routes import router as auto_model_router
 from chat_generation_routes import chat_messages, router as chat_generation_router
+from fallback import record_fallback
 from realtime_routes import router as realtime_router
 from voice_transcription_routes import router as voice_transcription_router
 
@@ -43,6 +44,33 @@ MAX_AI_BODY_BYTES = 8_000_000
 MAX_AI_RESPONSE_BYTES = 12_000_000
 MAX_TTS_CHARS = 4_096
 MAX_WORKERS_AI_TTS_CHARS = 4_096
+MAX_MOBILE_TTS_CHARS = 5_000
+MAX_CATALOG_TTS_AUDIO_BYTES = 12_000_000
+DEFAULT_MOBILE_TTS_VOICE_ID = "BAMYoBHLZM7lJgJAmFz0"
+DEFAULT_MOBILE_TTS_MODEL_ID = "eleven_turbo_v2_5"
+DEFAULT_MOBILE_TTS_OUTPUT_FORMAT = "mp3_44100_128"
+MOBILE_TTS_MODELS = {
+    "eleven_turbo_v2_5": "elevenlabs/eleven-turbo-v2-5",
+    "eleven_flash_v2_5": "elevenlabs/eleven-flash-v2-5",
+    "eleven_multilingual_v2": "elevenlabs/eleven-multilingual-v2",
+    "eleven_v3": "elevenlabs/eleven-v3",
+}
+MOBILE_TTS_OUTPUT_FORMATS = frozenset(
+    {
+        "mp3_22050_32",
+        "mp3_24000_48",
+        "mp3_44100_128",
+        "mp3_44100_192",
+        "mp3_44100_32",
+        "mp3_44100_64",
+        "mp3_44100_96",
+        "opus_48000_128",
+        "opus_48000_192",
+        "opus_48000_32",
+        "opus_48000_64",
+        "opus_48000_96",
+    }
+)
 DEFAULT_WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 WORKERS_AI_TTS_SPEAKERS = frozenset(
     {"angus", "asteria", "arcas", "orion", "orpheus", "athena", "luna", "zeus", "perseus", "helios", "hera", "stella"}
@@ -61,6 +89,23 @@ class TtsSynthesizeRequest(BaseModel):
 class WorkersAiTtsRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_WORKERS_AI_TTS_CHARS)
     speaker: str = Field(default="angus", min_length=2, max_length=32)
+
+
+class MobileTtsVoiceSettings(BaseModel):
+    stability: float | None = None
+    similarity_boost: float | None = None
+    style: float | None = None
+    use_speaker_boost: bool | None = None
+
+
+class MobileTtsSynthesizeRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    text: str = Field(min_length=1, max_length=MAX_MOBILE_TTS_CHARS)
+    voice_id: str = DEFAULT_MOBILE_TTS_VOICE_ID
+    model_id: str = DEFAULT_MOBILE_TTS_MODEL_ID
+    output_format: str = DEFAULT_MOBILE_TTS_OUTPUT_FORMAT
+    voice_settings: MobileTtsVoiceSettings | None = None
 
 
 class TranslationRequest(BaseModel):
@@ -131,21 +176,36 @@ async def _enforce_tts_fine_rate_limit(
     request: Request,
     context: dict[str, object],
     char_count: int,
+    *,
+    profile: str = "desktop",
+    fail_open: bool = False,
 ) -> JSONResponse | None:
     """Call the standalone rate-limit DO after TTS/provider validation.
 
-    The legacy desktop route fails closed when its Redis limiter is unavailable,
-    so this Cloudflare path returns the same stable 503 instead of synthesizing
-    unmetered audio.
+    Desktop preserves its legacy fail-closed behavior. Mobile passes
+    ``fail_open=True`` to preserve the legacy best-effort Redis boundary and
+    records the degraded path through the shared fallback telemetry helper.
     """
+
+    def unavailable() -> JSONResponse | None:
+        if fail_open:
+            record_fallback(
+                from_mode="restrict",
+                to_mode="none",
+                reason="dependency_unavailable",
+                outcome="degraded",
+            )
+            return None
+        return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+
     uid = context.get("uid")
     env = request.scope["env"]
     namespace = getattr(env, "RATE_LIMITS", None)
     if not isinstance(uid, str) or not uid or namespace is None:
-        return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+        return unavailable()
     try:
         stub = _durable_object_stub(namespace, f"tts:fine:{uid}")
-        result = _rpc_mapping(await stub.checkTts(char_count))
+        result = _rpc_mapping(await stub.checkTts(char_count, profile))
     except Exception as error:
         print(
             json.dumps(
@@ -158,17 +218,27 @@ async def _enforce_tts_fine_rate_limit(
                 }
             )
         )
-        return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+        return unavailable()
     if result is None:
-        return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+        return unavailable()
     status = result.get("status")
     if status == 0:
         return None
+    retry_after = result.get("retryAfter")
+    retry_after_header = str(max(1, math.ceil(retry_after))) if isinstance(retry_after, (int, float)) else "60"
     if status == 1:
-        return JSONResponse({"detail": "TTS burst rate limit exceeded"}, status_code=429)
+        return JSONResponse(
+            {"detail": "TTS burst rate limit exceeded"},
+            status_code=429,
+            headers={"Retry-After": retry_after_header},
+        )
     if status == 2:
-        return JSONResponse({"detail": "TTS daily character limit exceeded"}, status_code=429)
-    return JSONResponse({"detail": "TTS rate limiting is unavailable"}, status_code=503)
+        return JSONResponse(
+            {"detail": "TTS daily character limit exceeded"},
+            status_code=429,
+            headers={"Retry-After": retry_after_header},
+        )
+    return unavailable()
 
 
 @app.middleware("http")
@@ -390,6 +460,9 @@ def _workers_ai_result_mapping(result: object) -> dict[str, object]:
             return converted
     fields: dict[str, object] = {}
     for field in (
+        "state",
+        "result",
+        "audio",
         "text",
         "translated_text",
         "word_count",
@@ -406,6 +479,27 @@ def _workers_ai_result_mapping(result: object) -> dict[str, object]:
         if value is not None:
             fields[field] = value
     return fields
+
+
+def _catalog_tts_audio_bytes(result: object) -> bytes | None:
+    """Decode the catalog's documented base64 data URI without fetching a model-provided URL."""
+    envelope = _workers_ai_result_mapping(result)
+    if envelope.get("state") != "Completed":
+        return None
+    nested = _workers_ai_result_mapping(envelope.get("result"))
+    audio = nested.get("audio")
+    if not isinstance(audio, str) or not audio.startswith("data:audio/"):
+        return None
+    metadata, separator, encoded = audio.partition(",")
+    if separator != "," or ";base64" not in metadata.lower() or not encoded:
+        return None
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if not decoded or len(decoded) > MAX_CATALOG_TTS_AUDIO_BYTES:
+        return None
+    return decoded
 
 
 def _coerce_audio_bytes(value: object) -> bytes | None:
@@ -763,6 +857,60 @@ async def tts_synthesize_workers_ai(request: Request):
         return JSONResponse({"error": "workers ai tts failed"}, status_code=502)
     if not audio:
         return JSONResponse({"error": "workers ai tts returned empty audio"}, status_code=502)
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+@app.post("/v2/tts/synthesize")
+async def tts_synthesize_mobile(request: Request):
+    """Preserve the mobile ElevenLabs contract through Cloudflare unified AI."""
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = MobileTtsSynthesizeRequest.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid tts request"}, status_code=400)
+
+    text = payload.text.strip()
+    if not text:
+        return JSONResponse({"detail": "text must not be empty"}, status_code=400)
+    voice_id = payload.voice_id.strip()
+    if not (1 <= len(voice_id) <= 128 and voice_id.isalnum()):
+        return JSONResponse({"detail": "invalid voice_id"}, status_code=400)
+    model = MOBILE_TTS_MODELS.get(payload.model_id)
+    if model is None:
+        return JSONResponse({"detail": "unsupported model_id"}, status_code=400)
+    if payload.output_format not in MOBILE_TTS_OUTPUT_FORMATS:
+        return JSONResponse({"detail": "unsupported output_format"}, status_code=400)
+
+    env = request.scope["env"]
+    ai = getattr(env, "AI", None)
+    if ai is None:
+        return JSONResponse({"detail": "cloudflare ai is not configured"}, status_code=503)
+    rate_limit_denial = await _enforce_tts_fine_rate_limit(
+        request,
+        context,
+        len(text),
+        profile="mobile",
+        fail_open=True,
+    )
+    if rate_limit_denial is not None:
+        return rate_limit_denial
+
+    provider_payload: dict[str, object] = {
+        "text": text,
+        "voice_id": voice_id,
+        "output_format": payload.output_format,
+    }
+    if payload.voice_settings is not None:
+        provider_payload["voice_settings"] = payload.voice_settings.model_dump(exclude_none=True)
+    try:
+        result = await ai.run(model, provider_payload)
+        audio = _catalog_tts_audio_bytes(result)
+    except Exception:
+        return JSONResponse({"detail": "TTS upstream unavailable"}, status_code=502)
+    if audio is None:
+        return JSONResponse({"detail": "TTS upstream returned invalid audio"}, status_code=502)
     return Response(content=audio, media_type="audio/mpeg")
 
 

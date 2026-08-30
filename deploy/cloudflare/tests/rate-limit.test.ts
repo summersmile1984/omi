@@ -67,11 +67,14 @@ function checkRequest(maxRequests: number, windowSeconds: number) {
   });
 }
 
-function ttsCheckRequest(charCount: number) {
+function ttsCheckRequest(
+  charCount: number,
+  profile: "desktop" | "mobile" = "desktop",
+) {
   return new Request("https://rate-limit.internal/tts/check", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ char_count: charCount }),
+    body: JSON.stringify({ char_count: charCount, profile }),
   });
 }
 
@@ -213,6 +216,42 @@ describe("SharedRateLimitDurableObject", () => {
     const { limiter } = createLimiter();
     expect((await limiter.fetch(ttsCheckRequest(0))).status).toBe(400);
     expect((await limiter.fetch(ttsCheckRequest(4_097))).status).toBe(400);
+    expect((await limiter.fetch(ttsCheckRequest(5_000, "mobile"))).status).toBe(
+      200,
+    );
+    expect((await limiter.fetch(ttsCheckRequest(5_001, "mobile"))).status).toBe(
+      400,
+    );
+  });
+
+  it("preserves the mobile 50-per-minute and 10,000-character policies", async () => {
+    const burst = createLimiter().limiter;
+    const burstResults = await Promise.all(
+      Array.from({ length: 51 }, async () =>
+        (await burst.fetch(ttsCheckRequest(1, "mobile"))).json(),
+      ),
+    );
+    expect(
+      burstResults.filter(
+        (result) => (result as { status: number }).status === 0,
+      ),
+    ).toHaveLength(50);
+    expect(
+      burstResults.filter(
+        (result) => (result as { status: number }).status === 1,
+      ),
+    ).toHaveLength(1);
+
+    const daily = createLimiter().limiter;
+    expect(
+      await (await daily.fetch(ttsCheckRequest(5_000, "mobile"))).json(),
+    ).toMatchObject({ status: 0, dailyCharsRemaining: 5_000 });
+    expect(
+      await (await daily.fetch(ttsCheckRequest(5_000, "mobile"))).json(),
+    ).toMatchObject({ status: 0, dailyCharsRemaining: 0 });
+    expect(
+      await (await daily.fetch(ttsCheckRequest(1, "mobile"))).json(),
+    ).toMatchObject({ status: 2, dailyCharsRemaining: 0 });
   });
 
   it("maps every Cloudflare-owned request shape to the legacy policy", () => {
@@ -290,6 +329,7 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v3/memories/memory-1/review", "memories:modify"],
       ["POST", "/v1/tts/synthesize", "tts:synthesize"],
       ["POST", "/v1/tts/synthesize-workers-ai", "tts:synthesize"],
+      ["POST", "/v2/tts/synthesize", "tts:synthesize"],
     ] as const;
 
     for (const [method, path, policy] of cases) {

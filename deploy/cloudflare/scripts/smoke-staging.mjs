@@ -352,8 +352,7 @@ async function exerciseChatHelpers(fetchImpl, base, authHeaders) {
       body: JSON.stringify(body),
     });
     expectStatus(label, response, expectedStatus);
-    statuses[label.replaceAll(" ", "_").replaceAll("-", "_")] =
-      response.status;
+    statuses[label.replaceAll(" ", "_").replaceAll("-", "_")] = response.status;
   }
 
   const oversizedAppId = "x".repeat(201);
@@ -367,8 +366,7 @@ async function exerciseChatHelpers(fetchImpl, base, authHeaders) {
       { method: "POST", headers: authHeaders },
     );
     expectStatus(label, response, 400);
-    statuses[label.replaceAll(" ", "_").replaceAll("-", "_")] =
-      response.status;
+    statuses[label.replaceAll(" ", "_").replaceAll("-", "_")] = response.status;
   }
   return statuses;
 }
@@ -1599,6 +1597,17 @@ export async function runSmoke({
   );
   expectStatus("voice-message empty audio", voiceMessageEmpty, 400);
 
+  const mobileTtsValidation = await request(
+    fetchImpl,
+    `${base}/v2/tts/synthesize`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ text: "" }),
+    },
+  );
+  expectStatus("mobile TTS validation", mobileTtsValidation, 400);
+
   let nativeTtsResult = {};
   if (nativeTts) {
     const response = await fetchImpl(`${base}/v1/tts/synthesize-workers-ai`, {
@@ -1726,6 +1735,7 @@ export async function runSmoke({
     invalidGeolocation: invalidGeolocation.status,
     workersAiEmptyAudio: workersAiEmpty.status,
     voiceMessageEmptyAudio: voiceMessageEmpty.status,
+    mobileTtsValidation: mobileTtsValidation.status,
     ...nativeTtsResult,
   };
 }

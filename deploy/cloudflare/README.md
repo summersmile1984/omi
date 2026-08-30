@@ -76,8 +76,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 396 already match
-  Cloudflare staging owners and 181 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 397 already match
+  Cloudflare staging owners and 180 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -549,6 +549,7 @@ POST /v1/translate           Edge → Python API AI → Workers AI m2m100 transl
 POST /v1/tts/synthesize      Edge → Python API AI → hosted OpenAI-compatible TTS API
 POST /v1/tts/synthesize-workers-ai
                               Edge → Python API AI → Workers AI Aura binding
+POST /v2/tts/synthesize      Edge → Python API AI → Cloudflare unified ElevenLabs model
 GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
 GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible AI API
 WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
@@ -1700,12 +1701,22 @@ introduced. OAuth setup callbacks and CIMD remain separate migration work; MCP
 OAuth, hosted transport, key lifecycle, and REST data tools are
 Cloudflare-owned.
 
-The migrated TTS surface is the desktop `/v1/tts/synthesize` OpenAI-compatible
-contract. Mobile `/v2/tts/synthesize` remains on the legacy ElevenLabs contract
-until its rate-limit and provider-shape migration is verified separately.
+The migrated TTS surfaces now include both the desktop
+`/v1/tts/synthesize` OpenAI-compatible contract and the mobile
+`/v2/tts/synthesize` ElevenLabs contract. The mobile route runs through the
+Python Worker's `AI` binding using Cloudflare's unified third-party model
+catalog, so it needs no local TTS process, ElevenLabs SDK, or provider API key.
+The Cloudflare account must have sufficient
+[AI Gateway Unified Billing credits](https://developers.cloudflare.com/ai-gateway/features/unified-billing/)
+before this third-party model can synthesize; missing credits surface as a
+stable upstream `502` without exposing Cloudflare's provider error to clients.
+It preserves the shipped Sloane voice ID, `eleven_turbo_v2_5` model alias,
+`mp3_44100_128` output default, optional voice settings, and raw MPEG response.
+The accepted output formats are the formats published by the
+[Cloudflare Eleven Turbo v2.5 catalog](https://developers.cloudflare.com/ai/models/elevenlabs/eleven-turbo-v2-5/).
 Every Cloudflare-owned route that previously consumed a first-party UID request
 limit now uses the standalone rate-limit Durable Object: chat send, prerecorded/native/
-async STT, conversation search, memory create/delete/modify, and both TTS routes.
+async STT, conversation search, memory create/delete/modify, and all TTS routes.
 The manifest names each route's policy and mechanically checks that it matches
 the Edge matcher. Limits and one-hour windows mirror
 `backend/utils/rate_limit_config.py`; `RATE_LIMIT_BOOST` and
@@ -1715,18 +1726,20 @@ and persists the fixed window; a limiter dependency failure preserves the
 legacy first-party fail-open behavior and emits bounded `recordFallback`
 telemetry.
 
-The desktop TTS fine-grained limiter is also Redis-free in staging. After the
-Python API AI Worker validates the provider-specific request and confirms its
-provider binding, it calls the internal `omi-cf-rate-limit-staging` Durable
-Object directly through a cross-Worker `RATE_LIMITS` binding. Edge uses the
-same object without creating a circular service dependency. Both
-`/v1/tts/synthesize` variants share a
-20-request rolling 60-second window and a 50,000-character UTC-day budget,
-matching `backend/routers/desktop_tts_updates.py`. Invalid/provider-unavailable
-requests do not consume the fine budget, and an unavailable limiter preserves
-the legacy desktop fail-closed `503` behavior. API AI `/health` exercises a
-non-mutating DO RPC so staging readiness verifies the Python-to-TypeScript
-binding without a billable synthesis.
+The TTS fine-grained limiters are also Redis-free in staging. After the Python
+API AI Worker validates the provider-specific request and confirms its provider
+binding, it calls the internal `omi-cf-rate-limit-staging` Durable Object
+directly through a cross-Worker `RATE_LIMITS` binding. Edge uses the same object
+without creating a circular service dependency. Both `/v1/tts/synthesize`
+variants share a 20-request rolling 60-second window and a 50,000-character
+UTC-day budget, matching `backend/routers/desktop_tts_updates.py`. Mobile
+`/v2/tts/synthesize` keeps its separate 50-request rolling 60-second window,
+10,000-character UTC-day budget, and 5,000-character request maximum from
+`backend/routers/tts.py`. Invalid/provider-unavailable requests do not consume
+the fine budget. An unavailable limiter preserves desktop fail-closed `503` and
+mobile fail-open behavior; the latter emits bounded fallback telemetry. API AI
+`/health` exercises a non-mutating DO RPC so staging readiness verifies the
+Python-to-TypeScript binding without a billable synthesis.
 
 `/v1/tts/synthesize-workers-ai` is an additive raw-MP3 route backed by the
 native `@cf/deepgram/aura-1` binding. It accepts bounded `{text, speaker}` JSON
