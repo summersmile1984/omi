@@ -12,6 +12,13 @@
     { "binding": "REALTIME", "service": "omi-cf-realtime-staging" },
     { "binding": "JOBS", "service": "omi-cf-jobs-staging" },
   ],
+  "d1_databases": [
+    {
+      "binding": "APP_DB",
+      "database_name": "omi-cf-app-staging",
+      "migrations_dir": "../../migrations/app",
+    },
+  ],
   "durable_objects": {
     "bindings": [
       {

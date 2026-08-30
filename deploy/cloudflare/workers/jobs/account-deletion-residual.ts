@@ -79,6 +79,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_user_ai_profiles", column: "uid" },
   { table: "cf_user_app_preferences", column: "uid" },
   { table: "cf_user_assistant_settings", column: "uid" },
+  { table: "cf_user_byok_enrollments", column: "uid" },
   { table: "cf_user_calendar_onboarding", column: "uid" },
   { table: "cf_user_developer_webhooks", column: "uid" },
   { table: "cf_user_enabled_apps", column: "uid" },

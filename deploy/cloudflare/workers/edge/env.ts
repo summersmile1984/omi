@@ -6,6 +6,7 @@ export type EdgeEnv = {
   API_AI: Fetcher;
   REALTIME: Fetcher;
   JOBS: Fetcher;
+  APP_DB?: D1Database;
   RATE_LIMITS: DurableObjectNamespace;
   RATE_LIMIT_BOOST?: string;
   RATE_LIMIT_SHADOW_MODE?: string;
@@ -16,6 +17,7 @@ export type EdgeEnv = {
   MCP_RESOURCE_URL?: string;
   MCP_AUTHORIZATION_SERVER_URL?: string;
   INTERNAL_ASSERTION_SECRET?: string;
+  BYOK_FINGERPRINT_PEPPER?: string;
   ALLOWED_ORIGINS?: string;
 };
 

@@ -90,6 +90,26 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/users/me/byok-active
+    owner: edge
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/users/me/byok-active
+    owner: edge
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/users/me/subscription
     owner: api-core
@@ -1204,7 +1224,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
+    dependencies:
+      [d1-app, workers-ai-binding, external-openai-api, rate-limit-do]
     rate_limit_policy: chat:send_message
     protocol: http
     idempotency: optional
@@ -3571,7 +3592,8 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-x-api, vectorize, worker-secrets, workers-ai-binding]
+    dependencies:
+      [d1-app, external-x-api, vectorize, worker-secrets, workers-ai-binding]
     protocol: http
     idempotency: optional
     rollout: staging-only

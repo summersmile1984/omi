@@ -24,6 +24,10 @@ const REQUEST_HEADERS = [
   'x-app-build',
   'x-app-platform',
   'x-app-version',
+  'x-byok-anthropic',
+  'x-byok-deepgram',
+  'x-byok-gemini',
+  'x-byok-openai',
   'x-device-id-hash',
   'x-request-id',
 ] as const;

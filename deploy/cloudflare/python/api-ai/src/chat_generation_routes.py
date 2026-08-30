@@ -12,6 +12,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
+try:
+    from workers import fetch as worker_fetch
+except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodide's `js` module.
+    if error.name != "js":
+        raise
+    worker_fetch = None  # type: ignore[assignment]
+
 from chat_quota import (
     free_quota_detail,
     provider_cost_usd,
@@ -26,6 +33,8 @@ from internal_auth import decode_context
 router = APIRouter()
 
 DEFAULT_WORKERS_AI_CHAT_MODEL = "@cf/meta/llama-3.2-3b-instruct"
+DEFAULT_BYOK_OPENAI_CHAT_MODEL = "gpt-5.6-luna"
+BYOK_OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 MAX_CHAT_BODY_BYTES = 64_000
 MAX_CHAT_TEXT_CHARS = 16_000
 MAX_CHAT_RESPONSE_CHARS = 16_000
@@ -80,11 +89,70 @@ def _account_created_at(context: dict[str, object]) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def _request_has_all_byok_keys(request: Request) -> bool:
-    return all(
-        bool(str(request.headers.get(f"x-byok-{provider}") or "").strip())
+def _byok_openai_key(request: Request, context: dict[str, object]) -> tuple[str | None, str | None]:
+    if context.get("byokActive") is not True:
+        return None, None
+    keys = {
+        provider: str(request.headers.get(f"x-byok-{provider}") or "")
         for provider in ("openai", "anthropic", "gemini", "deepgram")
-    )
+    }
+    missing = [provider for provider, key in keys.items() if not key]
+    if missing:
+        return None, f"BYOK key header missing for enrolled provider: {missing[0]}"
+    return keys["openai"], None
+
+
+class ByokProviderError(Exception):
+    def __init__(self, status_code: int):
+        super().__init__("BYOK provider request failed")
+        self.status_code = status_code
+
+
+async def _run_byok_openai(env: object, api_key: str, prompt: list[dict[str, str]]) -> tuple[str, str]:
+    if worker_fetch is None:
+        raise ByokProviderError(503)
+    model = str(getattr(env, "BYOK_OPENAI_CHAT_MODEL", DEFAULT_BYOK_OPENAI_CHAT_MODEL) or "").strip()
+    if not model or len(model) > 200:
+        raise ByokProviderError(503)
+    try:
+        response = await worker_fetch(
+            BYOK_OPENAI_CHAT_URL,
+            method="POST",
+            headers={
+                "authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            body=json.dumps(
+                {
+                    "model": model,
+                    "messages": prompt,
+                    "stream": False,
+                    "max_completion_tokens": 512,
+                },
+                separators=(",", ":"),
+            ),
+        )
+        status = int(response.status)
+        if status < 200 or status >= 300:
+            if status in {401, 403}:
+                raise ByokProviderError(403)
+            if status == 429:
+                raise ByokProviderError(429)
+            raise ByokProviderError(502)
+        payload = await response.json()
+    except ByokProviderError:
+        raise
+    except Exception:
+        raise ByokProviderError(502)
+    if not isinstance(payload, dict):
+        raise ByokProviderError(502)
+    choices = payload.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    message = choice.get("message") if isinstance(choice, dict) else None
+    answer = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(answer, str) or not answer.strip() or len(answer) > MAX_CHAT_RESPONSE_CHARS:
+        raise ByokProviderError(502)
+    return answer.strip(), model
 
 
 def _rpc_mapping(value: object) -> dict[str, object] | None:
@@ -330,7 +398,10 @@ async def chat_messages(request: Request):
     env = request.scope["env"]
     ai = getattr(env, "AI", None)
     app_db = getattr(env, "APP_DB", None)
-    if ai is None:
+    byok_openai_key, byok_error = _byok_openai_key(request, context)
+    if byok_error:
+        return JSONResponse({"detail": byok_error}, status_code=403)
+    if ai is None and byok_openai_key is None:
         return JSONResponse(
             {"error": "workers ai is not configured", "reason": "provider_not_configured"},
             status_code=503,
@@ -348,31 +419,33 @@ async def chat_messages(request: Request):
     quota_key = f"v2_messages:{human_message_id}"
     platform = request.headers.get("x-app-platform")
     account_created_at = _account_created_at(context)
-    has_byok_keys = _request_has_all_byok_keys(request)
-    try:
-        reserved = await reserve_chat_question(
-            env,
-            uid=uid,
-            idempotency_key=quota_key,
-            message_id=human_message_id,
-            chat_session_id=session_id,
-            platform=platform,
-            account_created_at=account_created_at,
-            has_byok_keys=has_byok_keys,
-        )
-    except Exception:
-        unavailable = _message(
-            message_id=str(uuid.uuid4()),
-            text="Usage accounting is temporarily unavailable. Please retry in a moment — your message was not saved.",
-            sender="ai",
-            created_at=datetime.now(timezone.utc),
-            session_id=session_id,
-        )
-        return StreamingResponse(
-            _done_stream(unavailable),
-            media_type="text/event-stream",
-            headers={"cache-control": "no-store", "x-accel-buffering": "no"},
-        )
+    has_byok_keys = byok_openai_key is not None
+    reserved = has_byok_keys
+    if not has_byok_keys:
+        try:
+            reserved = await reserve_chat_question(
+                env,
+                uid=uid,
+                idempotency_key=quota_key,
+                message_id=human_message_id,
+                chat_session_id=session_id,
+                platform=platform,
+                account_created_at=account_created_at,
+                has_byok_keys=False,
+            )
+        except Exception:
+            unavailable = _message(
+                message_id=str(uuid.uuid4()),
+                text="Usage accounting is temporarily unavailable. Please retry in a moment — your message was not saved.",
+                sender="ai",
+                created_at=datetime.now(timezone.utc),
+                session_id=session_id,
+            )
+            return StreamingResponse(
+                _done_stream(unavailable),
+                media_type="text/event-stream",
+                headers={"cache-control": "no-store", "x-accel-buffering": "no"},
+            )
     if not reserved:
         try:
             detail = await free_quota_detail(
@@ -413,32 +486,47 @@ async def chat_messages(request: Request):
         *history,
         {"role": "user", "content": payload.text.strip()},
     ]
-    model = getattr(env, "WORKERS_AI_CHAT_MODEL", DEFAULT_WORKERS_AI_CHAT_MODEL)
+    model = str(getattr(env, "WORKERS_AI_CHAT_MODEL", DEFAULT_WORKERS_AI_CHAT_MODEL))
+    mapped_result = None
     try:
-        result = await ai.run(
-            model,
-            {
-                "messages": prompt,
-                "stream": False,
-                "max_tokens": 512,
-                "temperature": 0.4,
-            },
+        if byok_openai_key is not None:
+            answer, model = await _run_byok_openai(env, byok_openai_key, prompt)
+        else:
+            result = await ai.run(
+                model,
+                {
+                    "messages": prompt,
+                    "stream": False,
+                    "max_tokens": 512,
+                    "temperature": 0.4,
+                },
+            )
+            mapped_result = _rpc_mapping(result)
+            answer = _response_text(mapped_result)
+    except ByokProviderError as error:
+        return JSONResponse(
+            {"error": "byok provider request failed", "provider": "openai"},
+            status_code=error.status_code,
         )
-        mapped_result = _rpc_mapping(result)
-        answer = _response_text(mapped_result)
     except Exception:
+        if byok_openai_key is not None:
+            return JSONResponse(
+                {"error": "byok provider request failed", "provider": "openai"},
+                status_code=502,
+            )
         try:
             await settle_failed_question(env, uid=uid, idempotency_key=quota_key, model=model)
         except Exception:
             pass
         return JSONResponse({"error": "workers ai chat unavailable"}, status_code=502)
-    usage = provider_usage(mapped_result)
-    if answer is None or usage is None:
-        try:
-            await settle_failed_question(env, uid=uid, idempotency_key=quota_key, model=model)
-        except Exception:
-            pass
-        return JSONResponse({"error": "workers ai returned an invalid chat response"}, status_code=502)
+    usage = provider_usage(mapped_result) if byok_openai_key is None else None
+    if answer is None or (byok_openai_key is None and usage is None):
+        if byok_openai_key is None:
+            try:
+                await settle_failed_question(env, uid=uid, idempotency_key=quota_key, model=model)
+            except Exception:
+                pass
+        return JSONResponse({"error": "chat provider returned an invalid response"}, status_code=502)
 
     now = datetime.now(timezone.utc)
     human_message = _message(
@@ -455,17 +543,19 @@ async def chat_messages(request: Request):
         created_at=now + timedelta(microseconds=1),
         session_id=session_id,
     )
-    prompt_tokens, completion_tokens = usage
-    cost_usd = provider_cost_usd(env, prompt_tokens, completion_tokens)
-    settlement = settlement_statement(
-        env,
-        uid=uid,
-        idempotency_key=quota_key,
-        model=model,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cost_usd=cost_usd,
-    )
+    settlement = None
+    if usage is not None:
+        prompt_tokens, completion_tokens = usage
+        cost_usd = provider_cost_usd(env, prompt_tokens, completion_tokens)
+        settlement = settlement_statement(
+            env,
+            uid=uid,
+            idempotency_key=quota_key,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
+        )
     try:
         await _persist_exchange(
             env,
@@ -480,10 +570,11 @@ async def chat_messages(request: Request):
         # The provider has already completed. Preserve its cost even if message
         # persistence is temporarily unavailable; an Architect projection stays
         # unavailable if this recovery write also fails instead of undercounting.
-        try:
-            await settlement.run()
-        except Exception:
-            pass
+        if settlement is not None:
+            try:
+                await settlement.run()
+            except Exception:
+                pass
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
 
     return StreamingResponse(

@@ -70,10 +70,18 @@ class FakeRequest:
         self.query_params = query or {}
 
 
-def signed_headers(secret: str, uid: str = "account-user", account_created_at=None, **headers):
+def signed_headers(
+    secret: str,
+    uid: str = "account-user",
+    account_created_at=None,
+    byok_active: bool | None = None,
+    **headers,
+):
     context = {"uid": uid, "authority": "better-auth"}
     if account_created_at is not None:
         context["accountCreatedAt"] = account_created_at
+    if byok_active is not None:
+        context["byokActive"] = byok_active
     raw = json.dumps(context, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
     signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
@@ -296,7 +304,7 @@ def test_architect_quota_uses_desktop_bucket_cost_without_requiring_desktop_even
     assert response["allowed"] is True
 
 
-def test_trial_paywall_uses_signed_account_age_desktop_platform_and_byok_escape():
+def test_trial_paywall_uses_signed_account_age_desktop_platform_and_validated_byok():
     secret = "account-secret"
     env = make_env(secret)
     env.TRIAL_PAYWALL_ENABLED = "true"
@@ -321,7 +329,7 @@ def test_trial_paywall_uses_signed_account_age_desktop_platform_and_byok_escape(
         get_user_paywall_status(FakeRequest(env, {**old_headers, "x-app-platform": "ios"}, {"platform": "desktop"}))
     )
     assert mobile == {"paywalled": False}
-    byok = asyncio.run(
+    unvalidated_byok = asyncio.run(
         get_user_paywall_status(
             FakeRequest(
                 env,
@@ -335,7 +343,49 @@ def test_trial_paywall_uses_signed_account_age_desktop_platform_and_byok_escape(
             )
         )
     )
+    assert unvalidated_byok == {"paywalled": True}
+    byok = asyncio.run(
+        get_user_paywall_status(
+            FakeRequest(
+                env,
+                signed_headers(
+                    secret,
+                    account_created_at=now - (4 * 24 * 60 * 60),
+                    byok_active=True,
+                    **{
+                        "x-app-platform": "macos",
+                        "x-byok-openai": "key",
+                        "x-byok-anthropic": "key",
+                        "x-byok-gemini": "key",
+                        "x-byok-deepgram": "key",
+                    },
+                ),
+            )
+        )
+    )
     assert byok == {"paywalled": False}
+
+    subscription = asyncio.run(
+        get_user_subscription(
+            FakeRequest(
+                env,
+                signed_headers(
+                    secret,
+                    byok_active=True,
+                    **{
+                        "x-byok-openai": "key",
+                        "x-byok-anthropic": "key",
+                        "x-byok-gemini": "key",
+                        "x-byok-deepgram": "key",
+                    },
+                ),
+            )
+        )
+    )
+    assert subscription["subscription"]["features"] == ["byok"]
+    assert subscription["subscription"]["limits"]["chat_questions_per_month"] is None
+    assert subscription["chat_quota_unit"] == "questions"
+    assert subscription["chat_quota_allowed"] is True
 
 
 def test_trial_routes_fail_open_when_disabled_paid_or_account_age_is_missing():

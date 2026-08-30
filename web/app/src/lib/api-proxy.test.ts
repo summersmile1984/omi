@@ -77,6 +77,42 @@ describe('proxyApiRequest', () => {
     expect(await response.json()).toEqual({ ok: true });
   });
 
+  it('forwards only the four BYOK provider headers to the Edge authority', async () => {
+    let captured: Request | undefined;
+    const service: WorkerService = {
+      fetch: vi.fn(async (request) => {
+        captured = request;
+        return Response.json({ ok: true });
+      }),
+    };
+
+    const response = await proxyApiRequest(
+      new Request('https://web.example/api/proxy/v2/messages', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer session-token',
+          'content-type': 'application/json',
+          'x-byok-openai': 'openai-key',
+          'x-byok-anthropic': 'anthropic-key',
+          'x-byok-gemini': 'gemini-key',
+          'x-byok-deepgram': 'deepgram-key',
+          'x-byok-mistral': 'must-not-forward',
+          'x-omi-auth-context': 'attacker-context',
+        },
+      }),
+      { path: ['v2', 'messages'] },
+      { service, upstreamBaseUrl: 'https://edge.internal' },
+    );
+
+    expect(response.status).toBe(200);
+    expect(captured?.headers.get('x-byok-openai')).toBe('openai-key');
+    expect(captured?.headers.get('x-byok-anthropic')).toBe('anthropic-key');
+    expect(captured?.headers.get('x-byok-gemini')).toBe('gemini-key');
+    expect(captured?.headers.get('x-byok-deepgram')).toBe('deepgram-key');
+    expect(captured?.headers.has('x-byok-mistral')).toBe(false);
+    expect(captured?.headers.has('x-omi-auth-context')).toBe(false);
+  });
+
   it('forwards an httpOnly session cookie only through the Edge binding', async () => {
     let captured: Request | undefined;
     const service: WorkerService = {

@@ -13,7 +13,7 @@ from chat_quota import (
     chat_quota_snapshot,
     is_trial_paywalled,
     plan_policy,
-    request_has_all_byok_keys,
+    request_has_valid_byok_keys,
     subscription_plan,
     trial_metadata,
 )
@@ -250,6 +250,43 @@ async def get_user_subscription(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     uid = str(context["uid"])
     env = request.scope["env"]
+    has_byok_keys = request_has_valid_byok_keys(context, request.headers)
+    if has_byok_keys:
+        chat_quota = await chat_quota_snapshot(env, uid, has_byok_keys=True)
+        return {
+            "subscription": {
+                "plan": "unlimited",
+                "status": "active",
+                "current_period_start": None,
+                "current_period_end": None,
+                "stripe_subscription_id": None,
+                "current_price_id": None,
+                "features": ["byok"],
+                "cancel_at_period_end": False,
+                "limits": {
+                    "transcription_seconds": None,
+                    "words_transcribed": None,
+                    "insights_gained": None,
+                    "chat_questions_per_month": None,
+                    "chat_cost_usd_per_month": None,
+                },
+            },
+            "transcription_seconds_used": 0,
+            "transcription_seconds_limit": 0,
+            "words_transcribed_used": 0,
+            "words_transcribed_limit": 0,
+            "insights_gained_used": 0,
+            "insights_gained_limit": 0,
+            "memories_created_used": 0,
+            "memories_created_limit": 0,
+            "available_plans": [],
+            "show_subscription_ui": False,
+            "chat_quota_used": chat_quota["used"],
+            "chat_quota_unit": chat_quota["unit"],
+            "chat_quota_percent": chat_quota["percent"],
+            "chat_quota_allowed": chat_quota["allowed"],
+            "chat_quota_reset_at": chat_quota["reset_at"],
+        }
     try:
         row = await _subscription_row(env, uid)
         plan = str((row or {}).get("plan") or "basic") if (row or {}).get("status") == "active" else "basic"
@@ -261,7 +298,7 @@ async def get_user_subscription(request: Request):
             uid,
             platform=request.headers.get("x-app-platform"),
             account_created_at=_account_created_at(context),
-            has_byok_keys=request_has_all_byok_keys(request.headers),
+            has_byok_keys=False,
         )
         catalog = await env.APP_DB.prepare(
             "SELECT COUNT(*) AS count FROM cf_subscription_prices WHERE active = 1"
@@ -320,7 +357,7 @@ async def get_user_chat_usage_quota(request: Request):
             str(context["uid"]),
             platform=request.headers.get("x-app-platform"),
             account_created_at=_account_created_at(context),
-            has_byok_keys=request_has_all_byok_keys(request.headers),
+            has_byok_keys=request_has_valid_byok_keys(context, request.headers),
         )
     except Exception:
         return JSONResponse({"error": "chat quota unavailable"}, status_code=503)
@@ -343,7 +380,7 @@ async def get_user_paywall_status(request: Request):
             plan=plan,
             platform=platform,
             account_created_at=_account_created_at(context),
-            has_byok_keys=request_has_all_byok_keys(request.headers),
+            has_byok_keys=request_has_valid_byok_keys(context, request.headers),
         )
     }
 
@@ -363,7 +400,7 @@ async def get_user_trial_status(request: Request):
         env,
         plan=plan,
         account_created_at=_account_created_at(context),
-        has_byok_keys=request_has_all_byok_keys(request.headers),
+        has_byok_keys=request_has_valid_byok_keys(context, request.headers),
     )
 
 

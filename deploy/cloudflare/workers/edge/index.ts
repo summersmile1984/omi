@@ -10,10 +10,17 @@ import {
 import { createRealtimeTicket } from "../shared/realtime-ticket";
 import { attachAuthContext, stripUntrustedHeaders, verifyBearer } from "./auth";
 import {
+  activateByok,
+  deactivateByok,
+  parseByokActivationPayload,
+  validateByokHeaders,
+} from "./byok";
+import {
   ACCOUNT_CUTOVER_CONTROL_PATH,
   cloudflareProductTrafficDenial,
 } from "./cutover";
 import type { EdgeEnv, EdgeVariables } from "./env";
+import type { AuthAudience, AuthContext } from "../shared/auth-context";
 import {
   handleMcpTransport,
   mcpProtectedResourceMetadata,
@@ -26,6 +33,29 @@ import {
 
 const app = new Hono<{ Bindings: EdgeEnv; Variables: EdgeVariables }>();
 const MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES = 5_000_000;
+const MAX_BYOK_ACTIVATION_BODY_BYTES = 8_192;
+
+async function authenticatedHeaders(
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+  identity: AuthContext,
+  audience: AuthAudience,
+  target: { method: string; url: string | URL } = c.req.raw,
+  options: { recoverInvalidByok?: boolean } = {},
+): Promise<Headers | Response> {
+  const headers = stripUntrustedHeaders(c.req.raw);
+  const validation = await validateByokHeaders(c.env, identity, headers, {
+    recoverInvalid: options.recoverInvalidByok,
+  });
+  if (validation.response) return validation.response;
+  await attachAuthContext(
+    headers,
+    validation.context,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    audience,
+    target,
+  );
+  return headers;
+}
 
 app.use("*", async (c, next) => {
   const origins = (c.env.ALLOWED_ORIGINS || "")
@@ -498,14 +528,8 @@ const proxyAuthenticatedJobs = async (
     id,
   );
   if (denial) return withRequestId(denial, id);
-  const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(
-    headers,
-    auth,
-    c.env.INTERNAL_ASSERTION_SECRET,
-    "jobs",
-    c.req.raw,
-  );
+  const headers = await authenticatedHeaders(c, auth, "jobs");
+  if (headers instanceof Response) return withRequestId(headers, id);
   const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
   return withRequestId(response, id);
 };
@@ -652,14 +676,10 @@ const proxyAuthenticatedCore = async (
     const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
     if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
   }
-  const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(
-    headers,
-    auth,
-    c.env.INTERNAL_ASSERTION_SECRET,
-    "api-core",
-    c.req.raw,
-  );
+  const headers = await authenticatedHeaders(c, auth, "api-core", c.req.raw, {
+    recoverInvalidByok: c.req.path === "/v1/users/me/subscription",
+  });
+  if (headers instanceof Response) return withRequestId(headers, id);
   const response = await c.env.API_CORE.fetch(
     new Request(c.req.raw, { headers }),
   );
@@ -740,14 +760,8 @@ const proxyAuthenticatedAI = async (
     const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
     if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
   }
-  const headers = stripUntrustedHeaders(c.req.raw);
-  await attachAuthContext(
-    headers,
-    auth,
-    c.env.INTERNAL_ASSERTION_SECRET,
-    "api-ai",
-    c.req.raw,
-  );
+  const headers = await authenticatedHeaders(c, auth, "api-ai");
+  if (headers instanceof Response) return withRequestId(headers, id);
   const response = await c.env.API_AI.fetch(
     new Request(c.req.raw, { headers }),
   );
@@ -755,6 +769,59 @@ const proxyAuthenticatedAI = async (
 };
 
 app.get("/v1/config/api-keys", proxyAuthenticatedCore);
+app.post("/v1/users/me/byok-active", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return withRequestId(c.json({ error: "unauthorized" }, 401), id);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const contentLength = Number(c.req.header("content-length"));
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_BYOK_ACTIVATION_BODY_BYTES
+  ) {
+    return withRequestId(
+      c.json({ detail: "Invalid BYOK activation payload" }, 400),
+      id,
+    );
+  }
+  let payload: unknown;
+  try {
+    const body = await c.req.arrayBuffer();
+    if (body.byteLength > MAX_BYOK_ACTIVATION_BODY_BYTES) throw new Error();
+    payload = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return withRequestId(
+      c.json({ detail: "Invalid BYOK activation payload" }, 400),
+      id,
+    );
+  }
+  const parsed = parseByokActivationPayload(payload);
+  if (parsed instanceof Response) return withRequestId(parsed, id);
+  const response = await activateByok(c.env, auth.uid, parsed.fingerprints);
+  response.headers.set("cache-control", "no-store");
+  return withRequestId(response, id);
+});
+app.delete("/v1/users/me/byok-active", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return withRequestId(c.json({ error: "unauthorized" }, 401), id);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const response = await deactivateByok(c.env, auth.uid);
+  response.headers.set("cache-control", "no-store");
+  return withRequestId(response, id);
+});
 app.get("/v1/users/me/usage", proxyAuthenticatedCore);
 app.get("/v1/users/me/subscription", proxyAuthenticatedCore);
 app.get("/v1/users/me/usage-quota", proxyAuthenticatedCore);

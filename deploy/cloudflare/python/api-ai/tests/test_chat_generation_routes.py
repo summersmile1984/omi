@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
+import chat_generation_routes  # noqa: E402
 from chat_generation_routes import chat_messages  # noqa: E402
 from chat_quota import reserve_chat_question  # noqa: E402
 
@@ -110,10 +111,17 @@ class FakeRequest:
         return self.body
 
 
-def signed_headers(secret: str, uid: str = "chat-user", account_created_at=None):
+def signed_headers(
+    secret: str,
+    uid: str = "chat-user",
+    account_created_at=None,
+    byok_active: bool | None = None,
+):
     context = {"uid": uid}
     if account_created_at is not None:
         context["accountCreatedAt"] = account_created_at
+    if byok_active is not None:
+        context["byokActive"] = byok_active
     raw = json.dumps(context, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
     signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
@@ -345,7 +353,7 @@ def test_chat_accounting_failure_returns_retry_sse_before_provider_or_message_wr
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
 
 
-def test_expired_desktop_trial_is_blocked_before_workers_ai_and_byok_headers_escape():
+def test_expired_desktop_trial_rejects_unvalidated_byok_and_validated_byok_uses_openai(monkeypatch):
     secret = "chat-secret"
     db = FakeDb()
     ai = FakeAi()
@@ -381,9 +389,58 @@ def test_expired_desktop_trial_is_blocked_before_workers_ai_and_byok_headers_esc
         "x-byok-gemini": "key",
         "x-byok-deepgram": "key",
     }
-    allowed = asyncio.run(chat_messages(FakeRequest(env, byok_headers, body={"text": "BYOK escape"})))
+    unvalidated = asyncio.run(chat_messages(FakeRequest(env, byok_headers, body={"text": "Unvalidated BYOK"})))
+    unvalidated_body = asyncio.run(response_body(unvalidated)).decode()
+    assert unvalidated.status_code == 200
+    assert ai.calls == []
+    assert (
+        "30 monthly chat question limit"
+        in json.loads(
+            base64.b64decode(
+                next(line.removeprefix("done: ") for line in unvalidated_body.splitlines() if line.startswith("done: "))
+            )
+        )["text"]
+    )
+
+    provider_calls = []
+
+    class FakeProviderResponse:
+        status = 200
+
+        async def json(self):
+            return {"choices": [{"message": {"content": "BYOK answer"}}]}
+
+    async def fake_provider_fetch(url, **options):
+        provider_calls.append((url, options))
+        return FakeProviderResponse()
+
+    monkeypatch.setattr(chat_generation_routes, "worker_fetch", fake_provider_fetch)
+    validated_headers = {
+        **signed_headers(
+            secret,
+            account_created_at=now - (4 * 24 * 60 * 60),
+            byok_active=True,
+        ),
+        "x-app-platform": "desktop",
+        "x-byok-openai": "openai-user-key",
+        "x-byok-anthropic": "anthropic-user-key",
+        "x-byok-gemini": "gemini-user-key",
+        "x-byok-deepgram": "deepgram-user-key",
+    }
+    allowed = asyncio.run(chat_messages(FakeRequest(env, validated_headers, body={"text": "BYOK request"})))
+    allowed_body = asyncio.run(response_body(allowed)).decode()
+
     assert allowed.status_code == 200
-    assert len(ai.calls) == 1
+    assert "BYOK answer" in allowed_body
+    assert ai.calls == []
+    assert len(provider_calls) == 1
+    assert provider_calls[0][0] == "https://api.openai.com/v1/chat/completions"
+    assert provider_calls[0][1]["headers"]["authorization"] == "Bearer openai-user-key"
+    provider_body = json.loads(provider_calls[0][1]["body"])
+    assert provider_body["model"] == "gpt-5.6-luna"
+    assert provider_body["max_completion_tokens"] == 512
+    assert "max_tokens" not in provider_body
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_quota_events").fetchone()[0] == 0
 
 
 def test_paid_plan_overage_remains_allowed_past_its_question_allowance():

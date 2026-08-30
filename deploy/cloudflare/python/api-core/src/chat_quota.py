@@ -51,7 +51,9 @@ def _trial_length(env: object) -> int:
     return int(_positive_number(env, "TRIAL_LENGTH_SECONDS", float(TRIAL_LENGTH_SECONDS)))
 
 
-def request_has_all_byok_keys(headers: object) -> bool:
+def request_has_valid_byok_keys(context: object, headers: object) -> bool:
+    if not isinstance(context, dict) or context.get("byokActive") is not True:
+        return False
     getter = getattr(headers, "get", None)
     if not callable(getter):
         return False
@@ -175,6 +177,18 @@ async def chat_quota_snapshot(
     account_created_at: int | None = None,
     has_byok_keys: bool = False,
 ) -> dict[str, object]:
+    if has_byok_keys:
+        _, reset_at = month_bounds(now)
+        return {
+            "plan": "Free (BYOK)",
+            "plan_type": "unlimited",
+            "unit": "questions",
+            "used": 0.0,
+            "limit": None,
+            "percent": 0.0,
+            "allowed": True,
+            "reset_at": reset_at,
+        }
     plan = await subscription_plan(env, uid)
     usage = await monthly_chat_usage(env, uid, now=now)
     policy = plan_policy(env, plan)
@@ -226,7 +240,7 @@ __all__ = [
     "month_bounds",
     "monthly_chat_usage",
     "plan_policy",
-    "request_has_all_byok_keys",
+    "request_has_valid_byok_keys",
     "subscription_plan",
     "trial_metadata",
 ]

@@ -11,6 +11,9 @@ known product gaps, and rollback criteria are defined in
 The first staging slice contains:
 
 - `edge`: public routing, request IDs, trusted auth context and legacy fallback.
+  It also owns BYOK enrollment and request validation in D1, so downstream
+  Workers receive a signed `byokActive` authority only when all four raw key
+  headers match their HMAC-peppered enrollment fingerprints.
 - `auth`: Hono + Better Auth + D1, with request-scoped auth construction.
 - `api-core`: a minimal FastAPI/Python Worker composition root with a D1 probe,
   uid-scoped R2 asset API (`/v1/cf/assets/{key}`) with checksum and range
@@ -273,6 +276,10 @@ cf_internal_secret="$(openssl rand -base64 48)"
 for worker_name in omi-cf-auth-staging omi-cf-edge-staging omi-cf-api-core-staging omi-cf-api-ai-staging omi-cf-realtime-staging omi-cf-jobs-staging; do
 printf '%s' "$cf_internal_secret" | npx wrangler secret put INTERNAL_ASSERTION_SECRET --name "$worker_name"
 done
+# Independent Edge-only HMAC pepper for BYOK enrollment fingerprints. Keep it
+# stable; rotating it requires users to re-enroll their four provider keys.
+cf_byok_fingerprint_pepper="$(openssl rand -base64 48)"
+printf '%s' "$cf_byok_fingerprint_pepper" | npx wrangler secret put BYOK_FINGERPRINT_PEPPER --name omi-cf-edge-staging
 # Optional isolated staging OAuth clients. A provider is not advertised until
 # both values exist; never reuse production OAuth credentials here.
 printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler secret put GOOGLE_CLIENT_ID --name omi-cf-auth-staging
@@ -727,11 +734,14 @@ GET  /v1/users/ai-profile
 PATCH /v1/users/ai-profile
                               Edge → Python API Core → D1
 GET  /v1/users/profile         Edge → Better Auth → D1
+POST/DELETE /v1/users/me/byok-active
+                              Edge → D1 HMAC fingerprint enrollment
 GET/DELETE /v2/messages        Edge → Python API Core → D1 chat-history projection
 POST /v2/messages/share
 GET  /v2/messages/shared/{token}
                               Edge → Python API Core → D1 30-day chat share
-POST /v2/messages              Edge → Python API AI → Workers AI + D1 text-chat exchange
+POST /v2/messages              Edge → Python API AI → Workers AI or validated
+                              user OpenAI API + D1 text-chat exchange
 GET/POST /v1/action-items      Edge → Python API Core → D1
 GET  /v1/action-items/ids      Edge → Python API Core → D1
 PATCH /v1/action-items/batch   Edge → Python API Core → D1
@@ -1122,6 +1132,15 @@ the UTC-month `cf_llm_usage_daily` cost ledger. A still-running API-AI provider
 event makes that projection return `503` rather than displaying a false zero;
 desktop persistence events are priced by their separate client/server bucket
 report and do not pretend to have an event-local settlement.
+
+Migration `0075_user_byok_enrollments.sql` moves BYOK enrollment to D1. The
+client still sends only the SHA-256 fingerprints of its OpenAI, Anthropic,
+Gemini, and Deepgram keys; Edge stores only HMAC-peppered fingerprints and a
+seven-day heartbeat. Raw `X-BYOK-*` keys remain request-local. Edge strips keys
+for inactive, missing, or expired enrollments, rejects active fingerprint drift,
+and signs `byokActive` into the request-bound internal context only after all
+four keys validate. Subscription and quota reads trust that signed authority,
+not caller-controlled header presence.
 
 Migration `0056_llm_usage_daily.sql` moves the four
 `/v1/users/me/llm-usage` read/write contracts to a D1 daily aggregate. Rows keep
@@ -1711,10 +1730,14 @@ payloads from turning the Python Worker into an unbounded buffer.
 
 Default `POST /v2/messages` text chat uses the native
 `@cf/meta/llama-3.2-3b-instruct` binding with a bounded 24-message/32,000-character
-D1 history. Model output is validated before both exchange rows are committed;
-a provider or D1 failure emits no partial persisted exchange. The Worker emits
-one compatibility `data:` frame followed by the legacy base64 `done:` message;
-native provider-token streaming remains a later latency qualification.
+D1 history. A request carrying Edge-validated BYOK authority instead calls the
+fixed OpenAI Chat Completions endpoint with the user's request-local OpenAI key
+and does not reserve or settle Omi quota. The API AI Worker never accepts raw
+BYOK header presence as authority. Model output is validated before both
+exchange rows are committed; a provider or D1 failure emits no partial
+persisted exchange. The Worker emits one compatibility `data:` frame followed
+by the legacy base64 `done:` message; native provider-token streaming remains a
+later latency qualification.
 
 `/v1/embeddings-workers-ai` is an additive text-embedding seam backed by the
 native `@cf/baai/bge-base-en-v1.5` binding. It accepts a bounded string or batch

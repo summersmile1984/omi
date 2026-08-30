@@ -7,6 +7,7 @@ export type AuthContext = {
   authority: AuthAuthority;
   displayName?: string;
   accountCreatedAt?: number;
+  byokActive?: boolean;
   sessionGeneration?: string;
   scopes?: string[];
   oauthClientId?: string;
@@ -113,7 +114,9 @@ export function decodeAuthContext(
       (parsed.accountCreatedAt !== undefined &&
         (typeof parsed.accountCreatedAt !== "number" ||
           !Number.isInteger(parsed.accountCreatedAt) ||
-          parsed.accountCreatedAt <= 0))
+          parsed.accountCreatedAt <= 0)) ||
+      (parsed.byokActive !== undefined &&
+        typeof parsed.byokActive !== "boolean")
     ) {
       return null;
     }

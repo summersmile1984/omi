@@ -82,6 +82,10 @@ accepted human desktop-chat write records its quota event in the message batch.
 `chat_quota.py` projects UTC-month questions from those events and provider
 cost from `cf_llm_usage_daily`, powering both the desktop quota read and mobile
 subscription fields.
+Edge is the sole BYOK enrollment and key-validation authority. API Core treats
+BYOK as active only when the request-bound signed context contains
+`byokActive: true` and all four provider headers survived Edge validation;
+caller-controlled headers alone never bypass trial, paywall, or quota policy.
 Free-plan reservation is enforced atomically by API AI before provider work;
 Workers AI token usage settles the event cost with the persisted exchange. The
 NULL-to-settled D1 trigger increments `llm_usage_routes.py`'s feature/model
