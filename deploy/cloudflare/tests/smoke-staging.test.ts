@@ -42,7 +42,8 @@ function unauthenticatedChatFirstBoundary(
   init?: RequestInit,
 ): Response | null {
   if (
-    url.endsWith("/v1/chat-first/blocks/validate") &&
+    (url.endsWith("/v1/chat-first/blocks/validate") ||
+      url.endsWith("/v1/chat/deferrals")) &&
     init?.method === "POST" &&
     !new Headers(init.headers).has("authorization")
   ) {
@@ -277,11 +278,15 @@ function publicCompatibilityRoute(
     });
   }
   if (
-    url.endsWith("/v1/chat-first/blocks/validate") &&
+    (url.endsWith("/v1/chat-first/blocks/validate") ||
+      url.endsWith("/v1/chat/deferrals")) &&
     init?.method === "POST"
   ) {
     if (!new Headers(init.headers).has("authorization")) {
       return new Response(null, { status: 401 });
+    }
+    if (url.endsWith("/v1/chat/deferrals")) {
+      return Response.json({ error: "invalid deferral" }, { status: 400 });
     }
     return Response.json({
       accepted: false,
@@ -632,9 +637,11 @@ describe("staging smoke helpers", () => {
       unauthenticatedSyncStatus: 401,
       unauthenticatedMemoryBatch: 401,
       unauthenticatedChatFirstValidation: 401,
+      unauthenticatedChatDeferral: 401,
       authenticatedProbe: 200,
       accountCutover: 200,
       chatFirstValidation: 200,
+      chatDeferral: 400,
       appSearch: 200,
       memorySummaryFeedback: 200,
       conversations: 200,
@@ -756,7 +763,7 @@ describe("staging smoke helpers", () => {
       voiceMessageEmptyAudio: 400,
       mobileTtsValidation: 400,
     });
-    expect(calls).toHaveLength(156);
+    expect(calls).toHaveLength(158);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

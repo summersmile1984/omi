@@ -82,7 +82,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
   gate. The current inventory contains 577 backend routes: 441 already match
-  Cloudflare staging owners and 136 remain legacy-owned. Edge directly serves
+  Cloudflare staging owners and 135 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -895,6 +895,8 @@ POST /v1/goals/extract-progress
 POST /v1/chat-first/blocks/validate
                               Edge → Python API Core → D1 capability/entity checks;
                               bounded block union with retry-stable opaque IDs, no chat-state write
+POST /v1/chat/deferrals     Edge → Python API Core → D1 idempotent deferral outbox
+                              24-hour due receipt, generation/continuity fence, no chat-state write
 GET /v1/conversations/{conversationId}/action-items
 GET /v1/conversations/{conversationId}/action-items/count
                               Edge → Python API Core → D1 standalone task projection
@@ -976,6 +978,11 @@ main-chat block contract against the isolated account's D1 entities. It is a
 pure capability check: the Worker does not generate prompts, persist chat
 messages, or fall back to the legacy backend. A missing entity, stale account
 generation, cold-start subject, or incomplete cutover returns a typed rejection.
+
+`POST /v1/chat/deferrals` is the matching staging-only kernel outbox boundary.
+It stores a bounded question projection in D1 with a stable deferral identity
+and returns the same due receipt on retry. Prompt materialization, provider
+calls, and chat-row writes are intentionally outside this route.
 
 Only routes explicitly listed as migrated are sent to the partial Worker
 implementations. Authenticated routes that are not yet migrated use

@@ -995,6 +995,7 @@ describe("edge gateway", () => {
       "/v1/action-items/restore-legacy-conversation-items",
       "/v1/import/limitless/conversations",
       "/v1/chat-first/blocks/validate",
+      "/v1/chat/deferrals",
     ]) {
       const response = await edge.fetch(
         new Request(`https://edge.test${path}`, {
@@ -1006,7 +1007,7 @@ describe("edge gateway", () => {
       expect(response.status, path).toBe(200);
     }
 
-    expect(coreRequests).toHaveLength(5);
+    expect(coreRequests).toHaveLength(6);
     expect(
       coreRequests.map((request) => new URL(request.url).pathname),
     ).toEqual([
@@ -1015,6 +1016,7 @@ describe("edge gateway", () => {
       "/v1/action-items/restore-legacy-conversation-items",
       "/v1/import/limitless/conversations",
       "/v1/chat-first/blocks/validate",
+      "/v1/chat/deferrals",
     ]);
     for (const request of coreRequests) {
       expect(request.headers.get("x-omi-auth-context")).toBeTruthy();

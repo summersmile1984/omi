@@ -69,6 +69,13 @@ uid-scoped D1 projections, and returns retry-stable opaque block IDs. It never
 materializes prompts or writes chat state; cold-start blocks and incomplete
 cutover rows fail closed.
 
+The same module owns `POST /v1/chat/deferrals`, the generation-bound kernel
+outbox receiver. Deferrals are stored as bounded question JSON with a stable
+uid/generation/continuity identity and a 24-hour due time; retries return the
+original receipt, while continuity conflicts and account fences fail closed.
+Intent materialization and re-raise scheduling remain separate until their
+durable D1 projections are migrated.
+
 `goal_ai_routes.py` reads the canonical goal, memory, conversation, chat, and
 Vectorize projections to produce goal suggestions and weekly advice through
 Workers AI. Progress extraction evaluates all active goals in one structured

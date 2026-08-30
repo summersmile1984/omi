@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from chat_first_routes import validate_chat_first_blocks  # noqa: E402
+from chat_first_routes import record_chat_deferral, validate_chat_first_blocks  # noqa: E402
 
 
 class FakeDb:
@@ -25,6 +25,11 @@ class FakeDb:
             "0037_memories.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
+        self.connection.executescript(
+            "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
+            "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);"
+        )
+        self.connection.executescript((migration_dir / "0083_chat_first_deferrals.sql").read_text())
         self.broken = broken
 
     def prepare(self, sql):
@@ -46,6 +51,11 @@ class FakeStatement:
     async def first(self):
         row = self.connection.execute(self.sql, self.args).fetchone()
         return dict(row) if row is not None else None
+
+    async def run(self):
+        self.connection.execute(self.sql, self.args)
+        self.connection.commit()
+        return {"success": True}
 
 
 class FakeRequest:
@@ -106,6 +116,24 @@ def request_body(*, generation: int = 3, owner: str = "chat-user", blocks=None):
         "run_id": "run-1",
         "attempt_id": "attempt-1",
         "blocks": blocks or [{"type": "taskCard", "task_id": "task-1"}],
+    }
+
+
+def deferral_body(*, generation: int = 3, owner: str = "chat-user", continuity: str = "task:task-1"):
+    subject = {"kind": "task", "id": "task-1"}
+    return {
+        "source_surface": "main_chat",
+        "control_generation": generation,
+        "owner_fence": owner,
+        "continuity_key": continuity,
+        "subject": subject,
+        "question": {
+            "type": "questionCard",
+            "question_id": "question-1",
+            "text": "What next?",
+            "subject": subject,
+            "options": [{"option_id": "option-1", "label": "Now", "prepared_answer": "Now"}],
+        },
     }
 
 
@@ -180,3 +208,49 @@ def test_chat_first_validation_rejects_cold_start_and_cross_account_owner():
         ).code
         == "capability_unavailable"
     )
+
+
+def test_chat_deferral_is_idempotent_and_generation_bound():
+    secret = "chat-first-secret"
+    env = make_env(secret)
+    first = asyncio.run(record_chat_deferral(FakeRequest(env, signed_headers(secret), deferral_body())))
+    second = asyncio.run(record_chat_deferral(FakeRequest(env, signed_headers(secret), deferral_body())))
+
+    assert first == second
+    assert first.state == "pending"
+    assert first.deferral_id.startswith("cfd_")
+    assert second.due_at == first.due_at
+    mismatch = asyncio.run(record_chat_deferral(FakeRequest(env, signed_headers(secret), deferral_body(generation=2))))
+    assert mismatch.status_code == 409
+    conflict = asyncio.run(
+        record_chat_deferral(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                {**deferral_body(), "question": {**deferral_body()["question"], "text": "Different?"}},
+            )
+        )
+    )
+    assert conflict.status_code == 409
+
+
+def test_chat_deferral_rejects_invalid_subject_and_fails_closed():
+    secret = "chat-first-secret"
+    env = make_env(secret)
+    invalid = asyncio.run(
+        record_chat_deferral(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                {
+                    **deferral_body(),
+                    "question": {**deferral_body()["question"], "subject": {"kind": "goal", "id": "goal-1"}},
+                },
+            )
+        )
+    )
+    assert invalid.status_code == 400
+    broken = asyncio.run(
+        record_chat_deferral(FakeRequest(make_env(secret, broken=True), signed_headers(secret), deferral_body()))
+    )
+    assert broken.status_code == 503

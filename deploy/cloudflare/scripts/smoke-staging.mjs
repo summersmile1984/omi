@@ -770,6 +770,20 @@ export async function runSmoke({
     unauthenticatedChatFirstValidation,
     401,
   );
+  const unauthenticatedChatDeferral = await request(
+    fetchImpl,
+    `${base}/v1/chat/deferrals`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    },
+  );
+  expectStatus(
+    "unauthenticated chat deferral",
+    unauthenticatedChatDeferral,
+    401,
+  );
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, {
@@ -809,6 +823,12 @@ export async function runSmoke({
     chatFirstValidation,
     200,
   );
+  const chatDeferral = await request(fetchImpl, `${base}/v1/chat/deferrals`, {
+    method: "POST",
+    headers: { ...authHeaders, "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  expectStatus("chat deferral validation boundary", chatDeferral, 400);
 
   const appSearch = await request(fetchImpl, `${base}/v2/apps/search?limit=1`, {
     headers: authHeaders,
@@ -1680,9 +1700,11 @@ export async function runSmoke({
     unauthenticatedMemoryBatch: unauthenticatedMemoryBatch.status,
     unauthenticatedChatFirstValidation:
       unauthenticatedChatFirstValidation.status,
+    unauthenticatedChatDeferral: unauthenticatedChatDeferral.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
     chatFirstValidation: chatFirstValidation.status,
+    chatDeferral: chatDeferral.status,
     appSearch: appSearch.status,
     memorySummaryFeedback: memorySummaryFeedback.status,
     conversations: conversations.status,

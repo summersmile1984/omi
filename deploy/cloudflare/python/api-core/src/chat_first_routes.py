@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Union
 
 from fastapi import APIRouter, Request
@@ -136,6 +138,29 @@ class ChatFirstBlockValidationReceipt(_StrictModel):
     blocks: list[dict[str, object]] = Field(default_factory=list)
 
 
+class ChatFirstDeferralRequest(_StrictModel):
+    source_surface: Literal["main_chat"]
+    control_generation: int = Field(ge=0)
+    owner_fence: STABLE_ID
+    continuity_key: STABLE_ID
+    subject: ChatFirstSubject
+    question: QuestionCardSpec
+
+    @model_validator(mode="after")
+    def validate_question_subject(self) -> "ChatFirstDeferralRequest":
+        if self.question.subject != self.subject:
+            raise ValueError("deferral question subject must match deferred subject")
+        if self.subject.kind == "cold_start":
+            raise ValueError("cold-start question cards cannot be deferred")
+        return self
+
+
+class ChatFirstDeferralReceipt(_StrictModel):
+    deferral_id: STABLE_ID
+    due_at: datetime
+    state: Literal["pending", "released"]
+
+
 def _auth_context(request: Request) -> dict[str, object] | None:
     env = request.scope["env"]
     return decode_context(
@@ -259,6 +284,15 @@ def _stable_block_id(uid: str, generation: int, block: object) -> str:
     return f"cfb_{digest}"
 
 
+def _stable_deferral_id(uid: str, generation: int, continuity_key: str) -> str:
+    raw = "\x1f".join((uid, str(generation), continuity_key)).encode("utf-8")
+    return f"cfd_{hashlib.sha256(raw).hexdigest()[:32]}"
+
+
+def _utc_datetime(epoch_seconds: int) -> datetime:
+    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
+
+
 @router.post("/v1/chat-first/blocks/validate")
 async def validate_chat_first_blocks(request: Request):
     context = _auth_context(request)
@@ -293,6 +327,78 @@ async def validate_chat_first_blocks(request: Request):
             for block_id, block in zip(block_ids, payload.blocks)
         ],
     )
+
+
+@router.post("/v1/chat/deferrals")
+async def record_chat_deferral(request: Request):
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = ChatFirstDeferralRequest.model_validate(await _bounded_json(request))
+    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid deferral"}, status_code=400)
+    uid = str(context["uid"])
+    if payload.owner_fence != uid:
+        return JSONResponse({"error": "deferral capability unavailable"}, status_code=409)
+    try:
+        generation = await _cutover_generation(request, uid)
+        if generation is None:
+            return JSONResponse({"error": "deferral capability unavailable"}, status_code=409)
+        if generation != payload.control_generation:
+            return JSONResponse({"error": "account generation mismatch"}, status_code=409)
+        now_seconds = int(time.time())
+        due_seconds = now_seconds + int(timedelta(hours=24).total_seconds())
+        deferral_id = _stable_deferral_id(uid, generation, payload.continuity_key)
+        await request.scope["env"].APP_DB.prepare(
+            "INSERT INTO cf_chat_first_deferrals "
+            "(uid, deferral_id, continuity_key, account_generation, subject_kind, subject_id, question_json, "
+            "created_at, due_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending') "
+            "ON CONFLICT(uid, deferral_id) DO NOTHING"
+        ).bind(
+            uid,
+            deferral_id,
+            payload.continuity_key,
+            generation,
+            payload.subject.kind,
+            payload.subject.id,
+            payload.question.model_dump_json(exclude_none=True),
+            now_seconds,
+            due_seconds,
+        ).run()
+        existing = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                "SELECT deferral_id, continuity_key, account_generation, subject_kind, subject_id, question_json, "
+                "due_at, state FROM cf_chat_first_deferrals WHERE uid = ? AND deferral_id = ?"
+            )
+            .bind(uid, deferral_id)
+            .first()
+        )
+        if not isinstance(existing, dict):
+            return JSONResponse({"error": "deferral unavailable"}, status_code=503)
+        try:
+            existing_question = QuestionCardSpec.model_validate(json.loads(str(existing.get("question_json"))))
+        except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
+            return JSONResponse({"error": "deferral continuity conflict"}, status_code=409)
+        if (
+            int(existing.get("account_generation") or -1) != generation
+            or existing.get("continuity_key") != payload.continuity_key
+            or existing.get("subject_kind") != payload.subject.kind
+            or existing.get("subject_id") != payload.subject.id
+            or existing_question != payload.question
+        ):
+            return JSONResponse({"error": "deferral continuity conflict"}, status_code=409)
+        state = existing.get("state")
+        if state not in {"pending", "released"}:
+            return JSONResponse({"error": "deferral continuity conflict"}, status_code=409)
+        return ChatFirstDeferralReceipt(
+            deferral_id=deferral_id,
+            due_at=_utc_datetime(int(existing.get("due_at"))),
+            state=state,
+        )
+    except Exception:
+        return JSONResponse({"error": "deferral unavailable"}, status_code=503)
 
 
 __all__ = ["router"]
