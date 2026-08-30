@@ -202,8 +202,18 @@ function publicApiBase(env: JobsEnv) {
 }
 
 function googleConfiguration(env: JobsEnv) {
-  const clientId = env.GOOGLE_CALENDAR_CLIENT_ID?.trim();
-  const clientSecret = env.GOOGLE_CALENDAR_CLIENT_SECRET?.trim();
+  // Prefer a Calendar-specific client when one is provisioned. The generic
+  // client is the canonical Better Auth/legacy integration credential and can
+  // be reused as long as its Google OAuth client has this callback URI
+  // registered. Keeping the fallback here avoids duplicating one secret across
+  // Workers while preserving an explicit override for deployments that need a
+  // separate consent app.
+  const clientId = (
+    env.GOOGLE_CALENDAR_CLIENT_ID || env.GOOGLE_CLIENT_ID
+  )?.trim();
+  const clientSecret = (
+    env.GOOGLE_CALENDAR_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET
+  )?.trim();
   if (!clientId || !clientSecret) {
     throw new GoogleCalendarError(503, "Google Calendar is not configured");
   }

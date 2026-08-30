@@ -69,6 +69,9 @@ export type JobsEnv = {
   ASANA_CLIENT_SECRET?: string;
   GOOGLE_TASKS_CLIENT_ID?: string;
   GOOGLE_TASKS_CLIENT_SECRET?: string;
+  /** Shared Google OAuth client used by Better Auth and Google integrations. */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_CALENDAR_CLIENT_ID?: string;
   GOOGLE_CALENDAR_CLIENT_SECRET?: string;
   GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET?: string;

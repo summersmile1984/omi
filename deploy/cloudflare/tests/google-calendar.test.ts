@@ -93,7 +93,7 @@ class SqliteD1 {
 
 const databases: SqliteD1[] = [];
 
-function environment(configured = true) {
+function environment(configured = true, sharedConfigured = false) {
   const database = new SqliteD1();
   databases.push(database);
   const calls: Array<{ url: string; init?: RequestInit }> = [];
@@ -201,6 +201,12 @@ function environment(configured = true) {
       ? {
           GOOGLE_CALENDAR_CLIENT_ID: "calendar-client-id",
           GOOGLE_CALENDAR_CLIENT_SECRET: "calendar-client-secret",
+        }
+      : {}),
+    ...(sharedConfigured
+      ? {
+          GOOGLE_CLIENT_ID: "shared-google-client-id",
+          GOOGLE_CLIENT_SECRET: "shared-google-client-secret",
         }
       : {}),
   } as unknown as JobsEnv;
@@ -415,6 +421,24 @@ describe("Google Calendar Worker routes", () => {
     );
     expect(await replay.text()).toContain("invalid or expired");
     expect(calls).toHaveLength(1);
+  });
+
+  it("reuses the shared Better Auth Google OAuth client when no Calendar override exists", async () => {
+    const { env } = environment(false, true);
+    const app = testApp(env, { now: () => 1_000 });
+
+    const response = await app.request(
+      "/v1/integrations/google_calendar/oauth-url",
+    );
+    expect(response.status).toBe(200);
+    const payload = await response.json<{ auth_url: string }>();
+    const authUrl = new URL(payload.auth_url);
+    expect(authUrl.searchParams.get("client_id")).toBe(
+      "shared-google-client-id",
+    );
+    expect(authUrl.searchParams.get("redirect_uri")).toBe(
+      "https://edge.example.test/v2/integrations/google-calendar/callback",
+    );
   });
 
   it("keeps Google-derived integration OAuth aliases on the Worker grant", async () => {

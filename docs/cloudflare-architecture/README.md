@@ -55,6 +55,7 @@
 - 通用 integration status staging 边界已接入：`GET /v1/integrations/{app_key}` 只读 Calendar/task D1 投影中的连接位，Gmail 按已授予 scope 判断，未知 key 返回 disconnected，不暴露 provider 凭据。
 - 通用 integration status live 验证：`todoist`、未知 `whoop`、`google_calendar`、`gmail` 均返回 200 且只含连接布尔值，未认证请求为 401；验证账号删除后 App-D1 intent 清零、保留预期 tombstone，Auth user/session/account 均为 0。
 - Google-derived integration OAuth URL staging 边界已接入 Jobs Worker：`gmail` 等别名复用 Calendar 的 D1 哈希 state，未知 provider 保留 400，未认证请求保留 401；真实 Google 授权仍受 Worker client secret 配置门槛约束。
+- Calendar OAuth 配置优先使用专用 client，缺失时回退到 Better Auth 共用的 `GOOGLE_CLIENT_ID/SECRET`；两者都要求登记 staging callback URI。
 - 数据保护迁移清单 staging 边界已接入 API Core：`GET /v1/users/migration/requests?target_level=enhanced` 经 Edge → API Core → D1 返回 uid 隔离的 conversation/memory/chat 待迁移项，保留 public/shared 会话排除和无效 target 的 400；写入/加密迁移端点仍明确保留 legacy owner。
 - 数据保护迁移清单 live staging 验证：隔离 Better Auth 账号的合法查询返回 200/空清单，未认证为 401，非法 target 为 400；随后通过公开删号完成 Auth user/session/account 清理，App D1 intent 为 0（仅保留预期 tombstone）。
 - 桌面更新公共读取切片已接入 API Core/D1：`/appcast.xml` 返回稳定的 Sparkle XML（按 channel 去重并转义 changelog），`/updates/latest` 和 `/download` 只选择最高 live stable release，`/v2/desktop/update-policy` 保留平台、最大 build 和缺省关闭语义。D1 投影尚未回填发布制品，因此 staging 空表按设计返回空 appcast、latest/download 为 404；发布/晋级写入仍由后续发布流水线迁移负责。

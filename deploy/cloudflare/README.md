@@ -366,8 +366,10 @@ printf '%s' "$GOOGLE_TASKS_CLIENT_SECRET" | npx wrangler secret put GOOGLE_TASKS
 printf '%s' "$CLICKUP_CLIENT_ID" | npx wrangler secret put CLICKUP_CLIENT_ID --name omi-cf-jobs-staging
 printf '%s' "$CLICKUP_CLIENT_SECRET" | npx wrangler secret put CLICKUP_CLIENT_SECRET --name omi-cf-jobs-staging
 
-# Google Calendar only. Use a dedicated staging OAuth application with exactly
-# this authorized redirect URI:
+# Google Calendar. A dedicated client is preferred, but the Jobs Worker falls
+# back to the shared GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET used by Better Auth
+# when the dedicated pair is absent. Whichever client is used must include this
+# authorized redirect URI:
 # https://omi-cf-edge-staging.<account>.workers.dev/v2/integrations/google-calendar/callback
 # Keep the encryption secret stable; rotation requires token re-encryption.
 printf '%s' "$GOOGLE_CALENDAR_CLIENT_ID" | npx wrangler secret put GOOGLE_CALENDAR_CLIENT_ID --name omi-cf-jobs-staging
