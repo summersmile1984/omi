@@ -247,3 +247,36 @@ def test_generate_app_returns_provider_error_for_invalid_json():
 
     assert response.status_code == 502
     assert json.loads(response.body) == {"error": "app generation returned invalid JSON"}
+
+
+def test_generate_app_extracts_json_when_workers_ai_adds_explanatory_text():
+    class FakeAI:
+        async def run(self, _model, _payload):
+            return {
+                "response": (
+                    'Here is the app draft:\n'
+                    '{"name":"Focus Map","description":"Turns conversations into focused maps.",'
+                    '"category":"productivity-and-organization","capabilities":["memories"]}\n'
+                    "Hope this helps!"
+                )
+            }
+
+    secret = "secret"
+    response = asyncio.run(
+        generate_app(
+            FakeRequest(SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI()), _signed_headers(secret)),
+            GenerateAppRequest(prompt="Build a useful conversation app"),
+        )
+    )
+
+    assert response == {
+        "status": "ok",
+        "app": {
+            "name": "Focus Map",
+            "description": "Turns conversations into focused maps.",
+            "category": "productivity-and-organization",
+            "capabilities": ["memories"],
+            "chat_prompt": None,
+            "memory_prompt": None,
+        },
+    }

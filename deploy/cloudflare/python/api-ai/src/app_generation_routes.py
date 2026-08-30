@@ -171,15 +171,36 @@ def _record_generation_fallback(reason: str) -> None:
     )
 
 
-def _parse_prompts(text: str) -> list[str] | None:
+def _json_candidates(text: str):
+    """Yield the complete model response and bounded JSON-looking slices."""
     content = text.strip()
     if content.startswith("```"):
         lines = content.splitlines()
         content = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:]).strip()
-    try:
-        payload = json.loads(content)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
+    if content:
+        yield content
+    for opener, closer in (("[", "]"), ("{", "}")):
+        start = content.find(opener)
+        end = content.rfind(closer)
+        if start >= 0 and end > start:
+            candidate = content[start : end + 1].strip()
+            if candidate != content:
+                yield candidate
+
+
+def _load_json(text: str, expected_type: type | None = None) -> object | None:
+    for candidate in _json_candidates(text):
+        try:
+            payload = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if expected_type is None or isinstance(payload, expected_type):
+            return payload
+    return None
+
+
+def _parse_prompts(text: str) -> list[str] | None:
+    payload = _load_json(text, list)
     if not isinstance(payload, list) or len(payload) < 5:
         return None
     prompts = payload[:5]
@@ -189,15 +210,7 @@ def _parse_prompts(text: str) -> list[str] | None:
 
 
 def _parse_description_emoji(text: str, fallback_description: str) -> dict[str, str]:
-    content = text.strip()
-    if content.startswith("```"):
-        lines = content.splitlines()
-        content = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:]).strip()
-    try:
-        payload = json.loads(content)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        _record_generation_fallback("malformed_doc")
-        return {"description": f"A custom app that {fallback_description}", "emoji": "✨"}
+    payload = _load_json(text, dict)
     if not isinstance(payload, dict):
         _record_generation_fallback("malformed_doc")
         return {"description": f"A custom app that {fallback_description}", "emoji": "✨"}
@@ -211,14 +224,7 @@ def _parse_description_emoji(text: str, fallback_description: str) -> dict[str, 
 
 
 def _parse_generated_app(text: str) -> dict[str, object] | None:
-    content = text.strip()
-    if content.startswith("```"):
-        lines = content.splitlines()
-        content = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:]).strip()
-    try:
-        payload = json.loads(content)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
+    payload = _load_json(text, dict)
     if not isinstance(payload, dict):
         return None
     name = payload.get("name")
