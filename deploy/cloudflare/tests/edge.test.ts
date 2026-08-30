@@ -938,6 +938,46 @@ describe("edge gateway", () => {
     }
   });
 
+  it("routes generic integration status reads to Core while preserving Calendar ownership in Jobs", async () => {
+    const coreRequests: Request[] = [];
+    const jobRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "integration-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ connected: false, app_key: "todoist" });
+      }),
+      JOBS: service((request) => {
+        jobRequests.push(request);
+        return Response.json({ connected: false, app_key: "google_calendar" });
+      }),
+    };
+    const headers = { authorization: "Bearer opaque-session" };
+    const generic = await edge.fetch(
+      new Request("https://edge.test/v1/integrations/todoist", { headers }),
+      env,
+    );
+    const calendar = await edge.fetch(
+      new Request("https://edge.test/v1/integrations/google_calendar", { headers }),
+      env,
+    );
+
+    expect(generic.status).toBe(200);
+    expect(calendar.status).toBe(200);
+    expect(coreRequests).toHaveLength(1);
+    expect(jobRequests).toHaveLength(1);
+    expect(new URL(coreRequests[0].url).pathname).toBe("/v1/integrations/todoist");
+    expect(new URL(jobRequests[0].url).pathname).toBe("/v1/integrations/google_calendar");
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(jobRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes the team notification contract to Jobs without forwarding user auth", async () => {
     const jobsRequests: Request[] = [];
     const env = {

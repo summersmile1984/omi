@@ -300,6 +300,12 @@ function publicCompatibilityRoute(
     }
     return Response.json({ unread_count: 0, messages: [] });
   }
+  if (url.includes("/v1/integrations/todoist")) {
+    if (!new Headers(init?.headers).has("authorization")) {
+      return new Response(null, { status: 401 });
+    }
+    return Response.json({ connected: false, app_key: "todoist" });
+  }
   if (url.endsWith("/v1/trends")) {
     return Response.json([]);
   }
@@ -645,11 +651,13 @@ describe("staging smoke helpers", () => {
       unauthenticatedChatFirstValidation: 401,
       unauthenticatedChatDeferral: 401,
       unauthenticatedCrispUnread: 401,
+      unauthenticatedIntegrationStatus: 401,
       authenticatedProbe: 200,
       accountCutover: 200,
       chatFirstValidation: 200,
       chatDeferral: 400,
       crispUnread: 200,
+      integrationStatus: 200,
       appSearch: 200,
       memorySummaryFeedback: 200,
       conversations: 200,
@@ -771,7 +779,7 @@ describe("staging smoke helpers", () => {
       voiceMessageEmptyAudio: 400,
       mobileTtsValidation: 400,
     });
-    expect(calls).toHaveLength(160);
+    expect(calls).toHaveLength(162);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

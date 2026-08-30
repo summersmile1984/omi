@@ -789,6 +789,15 @@ export async function runSmoke({
     `${base}/v1/crisp/unread?since=0`,
   );
   expectStatus("unauthenticated Crisp unread", unauthenticatedCrispUnread, 401);
+  const unauthenticatedIntegrationStatus = await request(
+    fetchImpl,
+    `${base}/v1/integrations/todoist`,
+  );
+  expectStatus(
+    "unauthenticated integration status",
+    unauthenticatedIntegrationStatus,
+    401,
+  );
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, {
@@ -846,6 +855,19 @@ export async function runSmoke({
     !Array.isArray(crispUnread.body?.messages)
   ) {
     throw new Error("Crisp unread returned an invalid payload");
+  }
+
+  const integrationStatus = await requestJson(
+    fetchImpl,
+    `${base}/v1/integrations/todoist`,
+    { headers: authHeaders },
+  );
+  expectStatus("integration status", integrationStatus.response, 200);
+  if (
+    integrationStatus.body?.app_key !== "todoist" ||
+    typeof integrationStatus.body?.connected !== "boolean"
+  ) {
+    throw new Error("integration status returned an invalid payload");
   }
 
   const appSearch = await request(fetchImpl, `${base}/v2/apps/search?limit=1`, {
@@ -1720,11 +1742,13 @@ export async function runSmoke({
       unauthenticatedChatFirstValidation.status,
     unauthenticatedChatDeferral: unauthenticatedChatDeferral.status,
     unauthenticatedCrispUnread: unauthenticatedCrispUnread.status,
+    unauthenticatedIntegrationStatus: unauthenticatedIntegrationStatus.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
     chatFirstValidation: chatFirstValidation.status,
     chatDeferral: chatDeferral.status,
     crispUnread: crispUnread.response.status,
+    integrationStatus: integrationStatus.response.status,
     appSearch: appSearch.status,
     memorySummaryFeedback: memorySummaryFeedback.status,
     conversations: conversations.status,

@@ -25,6 +25,7 @@ from conversation_routes import (
 )
 from memory_routes import _SELECT as MEMORY_SELECT
 from memory_routes import _response as memory_response
+from internal_auth import decode_context
 
 router = APIRouter()
 
@@ -46,6 +47,9 @@ RATE_LIMITS = {
     "conversation_create": 10,
     "memory_create": 60,
 }
+
+TASK_INTEGRATION_KEYS = frozenset({"apple_reminders", "todoist", "asana", "google_tasks", "clickup"})
+GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
 
 class ExternalConversationCreate(BaseModel):
@@ -128,6 +132,78 @@ class ConversationSearch(BaseModel):
 
 def _detail(message: str, status: int) -> JSONResponse:
     return JSONResponse({"detail": message}, status_code=status)
+
+
+def _better_auth_context(request: Request) -> dict[str, object] | None:
+    env = request.scope["env"]
+    return decode_context(
+        request.headers.get("x-omi-auth-context"),
+        request.headers.get("x-omi-internal-signature"),
+        getattr(env, "INTERNAL_ASSERTION_SECRET", None),
+    )
+
+
+def _connected(row: object) -> bool:
+    return isinstance(row, dict) and row.get("connected") in (1, True, "1", "true")
+
+
+async def _google_gmail_connected(env: object, uid: str) -> bool:
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT connected, granted_scopes_json FROM cf_google_calendar_integrations WHERE uid = ? LIMIT 1"
+        )
+        .bind(uid)
+        .first()
+    )
+    if not _connected(row) or not isinstance(row, dict):
+        return False
+    raw_scopes = row.get("granted_scopes_json")
+    if not isinstance(raw_scopes, str) or len(raw_scopes.encode("utf-8")) > 4_000:
+        return False
+    try:
+        scopes = json.loads(raw_scopes)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(scopes, list) and GMAIL_READONLY_SCOPE in scopes
+
+
+@router.get("/v1/integrations/{app_key}")
+async def get_integration_status(request: Request, app_key: str):
+    """Return only the caller's integration connection bit from D1 projections."""
+    context = _better_auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not isinstance(app_key, str) or not app_key or len(app_key) > MAX_ID_LENGTH or "/" in app_key:
+        return _detail("invalid integration key", 422)
+
+    uid = context.get("uid")
+    if not isinstance(uid, str) or not uid:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    env = request.scope["env"]
+    try:
+        if app_key == "google_calendar":
+            row = (
+                await env.APP_DB.prepare("SELECT connected FROM cf_google_calendar_integrations WHERE uid = ? LIMIT 1")
+                .bind(uid)
+                .first()
+            )
+            connected = _connected(row)
+        elif app_key == "gmail":
+            connected = await _google_gmail_connected(env, uid)
+        elif app_key in TASK_INTEGRATION_KEYS:
+            row = (
+                await env.APP_DB.prepare(
+                    "SELECT connected FROM cf_task_integrations WHERE uid = ? AND app_key = ? LIMIT 1"
+                )
+                .bind(uid, app_key)
+                .first()
+            )
+            connected = _connected(row)
+        else:
+            connected = False
+    except Exception:
+        return JSONResponse({"error": "integration status unavailable"}, status_code=503)
+    return {"connected": connected, "app_key": app_key}
 
 
 def _valid_identifier(value: object) -> str | None:

@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from integration_routes import (  # noqa: E402
     create_conversation,
     create_memories,
+    get_integration_status,
     list_conversations,
     list_memories,
     list_tasks,
@@ -17,6 +18,7 @@ from integration_routes import (  # noqa: E402
     send_notification,
     send_notification_v1,
 )
+from internal_auth import create_request_context  # noqa: E402
 
 
 class FakeStatement:
@@ -186,6 +188,73 @@ def environment():
 
 def response_json(response):
     return json.loads(response.body)
+
+
+def better_auth_status_request(env, app_key, *, uid="integration-user"):
+    secret = "integration-status-secret"
+    env.INTERNAL_ASSERTION_SECRET = secret
+    signed = create_request_context(
+        uid,
+        secret,
+        audience="api-core",
+        method="GET",
+        path=f"/v1/integrations/{app_key}",
+        request_id="integration-status-test",
+        authority="better-auth",
+    )
+    assert signed is not None
+    encoded, signature = signed
+    request = FakeRequest(env, authorization=None)
+    request.headers.update(
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+        }
+    )
+    return request
+
+
+def test_integration_status_uses_calendar_and_task_d1_projections_without_exposing_credentials():
+    db, _, env = environment()
+    db.connection.execute(
+        "INSERT INTO cf_google_calendar_integrations "
+        "(uid, connected, access_token_enc, granted_scopes_json, created_at, updated_at) "
+        "VALUES ('integration-user', 1, 'v1.encrypted', ?, 1, 1)",
+        (json.dumps(["https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly"]),),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_task_integrations "
+        "(uid, app_key, connected, access_token_enc, created_at, updated_at) "
+        "VALUES ('integration-user', 'todoist', 1, 'v1.encrypted', 1, 1)"
+    )
+    db.connection.commit()
+
+    calendar = asyncio.run(
+        get_integration_status(better_auth_status_request(env, "google_calendar"), "google_calendar")
+    )
+    gmail = asyncio.run(get_integration_status(better_auth_status_request(env, "gmail"), "gmail"))
+    todoist = asyncio.run(get_integration_status(better_auth_status_request(env, "todoist"), "todoist"))
+    unknown = asyncio.run(get_integration_status(better_auth_status_request(env, "whoop"), "whoop"))
+
+    assert calendar == {"connected": True, "app_key": "google_calendar"}
+    assert gmail == {"connected": True, "app_key": "gmail"}
+    assert todoist == {"connected": True, "app_key": "todoist"}
+    assert unknown == {"connected": False, "app_key": "whoop"}
+
+
+def test_integration_status_requires_better_auth_and_fails_closed_on_d1_errors():
+    _, _, env = environment()
+    missing_auth = asyncio.run(get_integration_status(FakeRequest(env, authorization=None), "todoist"))
+    assert missing_auth.status_code == 401
+
+    class BrokenDb:
+        def prepare(self, _query):
+            raise RuntimeError("d1 unavailable")
+
+    env.APP_DB = BrokenDb()
+    response = asyncio.run(get_integration_status(better_auth_status_request(env, "todoist"), "todoist"))
+    assert response.status_code == 503
+    assert response_json(response) == {"error": "integration status unavailable"}
 
 
 def test_integration_writes_use_workers_ai_and_persist_canonical_d1_projections():
