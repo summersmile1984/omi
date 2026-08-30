@@ -157,6 +157,11 @@ derived records, usage, Vectorize outboxes, installed-app fanout, and the legacy
 `memory_created` Developer webhook outbox. Stable client session IDs use the
 released UUIDv5 namespace and a 15-minute processing claim, so exact retries do
 not repeat model or downstream work and failed enrichment removes its claim.
+Generated memories cross a deterministic storage boundary first: each entry
+must be a complete user-specific statement, have high token support in the
+transcript, avoid task/scaffolding vocabulary, and survive overlap
+deduplication plus a transcript-sized count cap. Rejected model output never
+reaches D1, usage, webhooks, or Vectorize.
 Jobs leases and delivers Developer webhooks without exposing response bodies or
 allowing private-network targets. No legacy process, Firestore, Redis, or local
 model participates in this creation boundary.

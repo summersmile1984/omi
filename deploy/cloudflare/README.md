@@ -1568,9 +1568,12 @@ only the raw Developer Authorization header and strips cookies and internal
 identity assertions. Memory and action-item create, batch-create, update, and
 delete routes write canonical D1 state and the vector projection outbox.
 Conversation metadata update/delete and goal create/update/progress/delete use
-the same D1 owners; only Developer conversation creation remains legacy-owned
-until its summary, memory, app, webhook, usage, and vector side effects move
-together.
+the same D1 owners. Both Developer conversation-creation shapes now use Workers
+AI in API Core and commit the conversation, grounded memories, action items,
+usage, app/Developer webhook outboxes, and vector outboxes together. Memory
+candidates must be user-specific, transcript-grounded, non-task statements at
+the D1 storage boundary; weak-model topic labels and speaker scaffolding are
+dropped rather than propagated to product data.
 
 The MCP REST tools consume either those keys or a request-bound `mcp-oauth`
 context in API Core. Exact API-key parsing, OAuth scope/client bounds, account

@@ -136,10 +136,11 @@ class FakeAi:
 
 
 class ConversationCreationAi:
-    def __init__(self, *, valid=True, discarded=False):
+    def __init__(self, *, valid=True, discarded=False, memories=None):
         self.calls = []
         self.valid = valid
         self.discarded = discarded
+        self.memories = memories or ["The user prefers Cloudflare Workers", "The user prefers Cloudflare Workers"]
 
     async def run(self, model, payload):
         self.calls.append((model, payload))
@@ -153,7 +154,7 @@ class ConversationCreationAi:
                 "category": "technology",
                 "discarded": self.discarded,
                 "action_items": [{"description": "Deploy staging"}, {"description": "Deploy staging"}],
-                "memories": ["The user prefers Cloudflare Workers", "The user prefers Cloudflare Workers"],
+                "memories": self.memories,
             }
         }
 
@@ -780,7 +781,7 @@ def test_developer_text_conversation_creation_commits_all_worker_native_effects(
             FakeRequest(
                 env,
                 body={
-                    "text": "We should deploy the Cloudflare staging service and validate it.",
+                    "text": "I prefer Cloudflare Workers. We should deploy the staging service and validate it.",
                     "text_source": "message",
                     "text_source_spec": "test-suite",
                     "started_at": "2026-08-30T10:00:00Z",
@@ -802,7 +803,7 @@ def test_developer_text_conversation_creation_commits_all_worker_native_effects(
     ).fetchone()
     assert tuple(conversation[:2]) == ("completed", "external_integration")
     assert json.loads(conversation[2])["title"] == "Cloudflare rollout"
-    assert json.loads(conversation[3])[0]["text"].startswith("We should deploy")
+    assert json.loads(conversation[3])[0]["text"].startswith("I prefer Cloudflare Workers")
     assert json.loads(conversation[4])["developer_api"]["text_source"] == "message"
     assert database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 1
     assert database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 1
@@ -832,8 +833,19 @@ def test_developer_from_segments_is_deterministic_idempotent_and_meeting_eligibl
     env.AI = ConversationCreationAi()
     body = {
         "transcript_segments": [
-            {"text": "Opening", "speaker": "SPEAKER_00", "is_user": True, "start": 0, "end": 35},
-            {"text": "Cloudflare plan", "speaker": "SPEAKER_01", "start": 35, "end": 75},
+            {
+                "text": "I prefer Cloudflare Workers for service deployment.",
+                "speaker": "SPEAKER_00",
+                "is_user": True,
+                "start": 0,
+                "end": 35,
+            },
+            {
+                "text": "We should validate staging and document the result.",
+                "speaker": "SPEAKER_01",
+                "start": 35,
+                "end": 75,
+            },
         ],
         "client_conversation_id": "stable-session",
         "source": "desktop",
@@ -863,6 +875,42 @@ def test_developer_from_segments_is_deterministic_idempotent_and_meeting_eligibl
     assert database.connection.execute("SELECT COUNT(*) FROM cf_conversations").fetchone()[0] == 1
     assert database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 1
     assert database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 1
+    database.connection.close()
+
+
+def test_developer_conversation_creation_rejects_ungrounded_and_scaffolding_memories():
+    database, env = environment(scopes=READ_SCOPES + ["conversations:write"])
+    env.AI = ConversationCreationAi(
+        memories=[
+            "IT deployment best practices",
+            "Cloudflare Workers benefits",
+            "Action item",
+            "SPEAKER_00",
+            "The user Cloudflare Workers deployment",
+            "The user prefers Cloudflare Workers",
+            "The user prefers Cloudflare Workers for service deployment",
+            "The user prefers Azure Functions",
+            "The user plans to validate staging",
+        ]
+    )
+
+    result = run(
+        create_developer_conversation(
+            FakeRequest(
+                env,
+                body={
+                    "text": (
+                        "I prefer Cloudflare Workers for service deployment. "
+                        "We should validate staging and document the result."
+                    )
+                },
+            )
+        )
+    )
+
+    assert result["status"] == "completed"
+    rows = database.connection.execute("SELECT content FROM cf_memories ORDER BY id").fetchall()
+    assert [row[0] for row in rows] == ["The user prefers Cloudflare Workers"]
     database.connection.close()
 
 

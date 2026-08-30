@@ -35,9 +35,95 @@ MAX_SEGMENTS = 500
 MAX_SEGMENT_TEXT_LENGTH = 100_000
 MAX_ACTION_ITEMS = 20
 MAX_MEMORIES = 50
-MAX_MEMORY_CONTENT_LENGTH = 50_000
+MAX_GROUNDED_MEMORIES = 10
+MAX_MEMORY_CONTENT_LENGTH = 1_000
 CLAIM_STALE_SECONDS = 15 * 60
 FROM_SEGMENTS_NAMESPACE = uuid.UUID("fb2f1f36-3c84-47a4-9c62-b3f6fdb3fd13")
+
+MEMORY_SUBJECT_PATTERN = re.compile(
+    r"^\s*(?:(?:(?:the\s+)?user|i|my|we|our|l['’]utilisateur|el\s+usuario|la\s+usuaria|"
+    r"o\s+usuário|a\s+usuária|der\s+benutzer|die\s+benutzerin|пользователь)\b|"
+    r"用户(?:的)?|我(?:们(?:的)?|的)?|ユーザー|使用者|사용자)\s*[,，:：-]*\s*",
+    re.IGNORECASE,
+)
+PERSONAL_SOURCE_PATTERN = re.compile(
+    r"(?:(?<![\w])(?:i|i['’]m|i['’]ve|my|mine|me|we|we['’]re|we['’]ve|our|ours|"
+    r"(?:the\s+)?user|l['’]utilisateur|el\s+usuario|la\s+usuaria|o\s+usuário|a\s+usuária|"
+    r"der\s+benutzer|die\s+benutzerin|пользователь)(?![\w]))|"
+    r"(?:用户|我(?:们(?:的)?|的)?|ユーザー|使用者|사용자)",
+    re.IGNORECASE,
+)
+MEMORY_SCAFFOLDING_PATTERN = re.compile(
+    r"^\s*(?:speaker[_\s-]*\d+|action\s+items?|to-?dos?|tasks?|next\s+steps?|"
+    r"memories?|facts?(?:[-_\s]*\d+)?)\s*[:：-]?\s*$",
+    re.IGNORECASE,
+)
+TRANSIENT_MEMORY_PATTERN = re.compile(
+    r"\b(?:action\s+items?|to-?dos?|tasks?|next\s+steps?|follow[-\s]?ups?|"
+    r"plan(?:s|ned|ning)?\s+to|intend(?:s|ed|ing)?\s+to|should|must|will|"
+    r"need(?:s|ed)?\s+to|today|tomorrow|next\s+(?:week|month|quarter))\b|"
+    r"(?:行动项|待办|下一步|跟进|计划|打算|应该|必须|将要|今天|明天|下周|下个月)",
+    re.IGNORECASE,
+)
+MEMORY_RELATION_PATTERN = re.compile(
+    r"\b(?:am|is|are|has|have|prefer(?:s|red)?|like(?:s|d)?|love(?:s|d)?|dislike(?:s|d)?|"
+    r"use(?:s|d)?|work(?:s|ed)?|live(?:s|d)?|own(?:s|ed)?|speak(?:s)?|value(?:s|d)?|"
+    r"avoid(?:s|ed)?|choose(?:s)?|chose|enjoy(?:s|ed)?|want(?:s|ed)?|favorite|favourite|"
+    r"préfèr(?:e|es|ent)?|aime|utilise|habite|travaille|possède|parle|est|"
+    r"prefiere|gusta|utiliza|vive|trabaja|tiene|habla|"
+    r"prefere|gosta|usa|mora|trabalha|possui|fala|"
+    r"bevorzugt|mag|nutzt|wohnt|arbeitet|besitzt|spricht|ist)\b|"
+    r"(?:偏好|喜欢|不喜欢|使用|常用|居住|住在|工作|拥有|会说|过敏|重视|避免|选择|习惯|"
+    r"好き|使う|使用|住む|働く|持つ|話す|です|좋아|사용|살아|일해|가지|말해|알레르기)",
+    re.IGNORECASE,
+)
+MEMORY_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "being",
+        "by",
+        "do",
+        "does",
+        "for",
+        "from",
+        "has",
+        "have",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "use",
+        "uses",
+        "using",
+        "was",
+        "were",
+        "with",
+        "一",
+        "个",
+        "了",
+        "们",
+        "和",
+        "在",
+        "或",
+        "是",
+        "的",
+        "与",
+        "用",
+    }
+)
 
 ENRICHMENT_SCHEMA = _json_schema(
     "omi_developer_conversation",
@@ -261,13 +347,79 @@ def _meeting_eligible(
     return total + current_end - current_start >= 60
 
 
+def _memory_tokens(value: str) -> list[str]:
+    tokens: list[str] = []
+    for raw in re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE):
+        expanded = list(raw) if re.search(r"[\u3400-\u9fff]", raw) else [raw]
+        tokens.extend(token for token in expanded if token not in MEMORY_STOP_WORDS and not token.isdigit())
+    return tokens
+
+
+def _token_is_grounded(token: str, source_tokens: set[str]) -> bool:
+    if token in source_tokens:
+        return True
+    if not token.isascii() or len(token) < 5:
+        return False
+    return any(
+        source.isascii() and len(source) >= 5 and (source.startswith(token) or token.startswith(source))
+        for source in source_tokens
+    )
+
+
+def _memory_limit(text: str) -> int:
+    statements = [item for item in re.split(r"(?:[.!?。！？]+|\n+)", text) if _memory_tokens(item)]
+    return min(MAX_GROUNDED_MEMORIES, max(1, len(statements)))
+
+
+def _grounded_memories(text: str, raw_memories: object) -> list[str]:
+    if not isinstance(raw_memories, list) or PERSONAL_SOURCE_PATTERN.search(text) is None:
+        return []
+    source_tokens = set(_memory_tokens(text))
+    accepted: list[tuple[str, set[str]]] = []
+    for item in raw_memories[:MAX_MEMORIES]:
+        if not isinstance(item, str):
+            continue
+        normalized = item.strip()
+        if (
+            not normalized
+            or len(normalized) > MAX_MEMORY_CONTENT_LENGTH
+            or MEMORY_SCAFFOLDING_PATTERN.fullmatch(normalized) is not None
+        ):
+            continue
+        subject = MEMORY_SUBJECT_PATTERN.match(normalized)
+        if subject is None:
+            continue
+        body = normalized[subject.end() :].strip()
+        if (
+            not body
+            or TRANSIENT_MEMORY_PATTERN.search(body) is not None
+            or MEMORY_RELATION_PATTERN.search(body) is None
+        ):
+            continue
+        tokens = _memory_tokens(body)
+        token_set = set(tokens)
+        if len(token_set) < 2:
+            continue
+        grounded = sum(_token_is_grounded(token, source_tokens) for token in token_set)
+        if grounded / len(token_set) < 0.8:
+            continue
+        if any(len(token_set & prior) / min(len(token_set), len(prior)) >= 0.75 for _, prior in accepted):
+            continue
+        accepted.append((normalized, token_set))
+        if len(accepted) >= _memory_limit(text):
+            break
+    return [content for content, _ in accepted]
+
+
 async def _enrichment(env: object, text: str, language: str) -> dict[str, object] | None:
     result = await _workers_ai_json(
         env,
         "Process this conversation using the requested language when practical. Produce a concise title and "
         "overview, a representative emoji and category, actionable tasks, and durable user-specific facts. "
-        "Set discarded=true only for empty, incoherent, or non-conversational noise. Exclude guesses and transient "
-        "details from memories. Return at most 20 action_items and 50 memories.\n"
+        "Set discarded=true only for empty, incoherent, or non-conversational noise. Every memories entry must be "
+        "a complete statement about the user that is directly supported by the conversation. A good entry is "
+        "'The user prefers asynchronous updates.' Topic labels, speaker labels, planned tasks, guesses, and "
+        "transient details are invalid entries. Return at most 20 action_items and 50 memories.\n"
         f"Language: {language}\n\n{text}",
         2_048,
         ENRICHMENT_SCHEMA,
@@ -297,18 +449,7 @@ async def _enrichment(env: object, text: str, language: str) -> dict[str, object
             if normalized and key not in seen_actions:
                 seen_actions.add(key)
                 action_items.append(normalized)
-    memories: list[str] = []
-    seen_memories: set[str] = set()
-    raw_memories = result.get("memories")
-    if isinstance(raw_memories, list):
-        for item in raw_memories[:MAX_MEMORIES]:
-            if not isinstance(item, str):
-                continue
-            normalized = item.strip()[:MAX_MEMORY_CONTENT_LENGTH]
-            key = normalized.casefold()
-            if normalized and key not in seen_memories:
-                seen_memories.add(key)
-                memories.append(normalized)
+    memories = _grounded_memories(text, result.get("memories"))
     emoji = result.get("emoji")
     category = result.get("category")
     return {
