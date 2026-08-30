@@ -149,6 +149,47 @@ function environment(configured = true) {
           ],
         });
       }
+      if (
+        url ===
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events/link-event?fields=id%2Csummary%2Cstart%2Cend%2Cattendees%28email%2CdisplayName%2Cself%29%2ChtmlLink%2Cdescription"
+      ) {
+        return Response.json({
+          id: "link-event",
+          summary: "Linked event",
+          start: { dateTime: "2026-09-01T09:00:00+08:00" },
+          end: { dateTime: "2026-09-01T10:00:00+08:00" },
+          attendees: [{ email: "guest@example.test", displayName: "Guest" }],
+          htmlLink: "https://calendar.google.com/event?eid=link",
+          description: "Existing details",
+        });
+      }
+      if (
+        url ===
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+      ) {
+        if (init?.method !== "POST") {
+          return Response.json({ id: "calendar-event" });
+        }
+        return Response.json({
+          id: "created-event",
+          summary: "Created event",
+          htmlLink: "https://calendar.google.com/event?eid=created",
+        });
+      }
+      if (
+        init?.method === "PATCH" &&
+        url.startsWith(
+          "https://www.googleapis.com/calendar/v3/calendars/primary/events/",
+        )
+      ) {
+        return Response.json({ id: url.split("/").at(-1) });
+      }
+      if (
+        url ===
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events/link-event"
+      ) {
+        return Response.json({ id: "link-event" });
+      }
       throw new Error(`unexpected Google URL ${url}`);
     },
   );
@@ -164,6 +205,31 @@ function environment(configured = true) {
       : {}),
   } as unknown as JobsEnv;
   return { database, env, calls, fetchImpl };
+}
+
+function seedConversation(
+  database: SqliteD1,
+  conversationId: string,
+  values: {
+    createdAt?: number;
+    startedAt?: number | null;
+    finishedAt?: number | null;
+    locked?: boolean;
+  } = {},
+) {
+  database.database
+    .prepare(
+      "INSERT INTO cf_conversations (uid, id, created_at, updated_at, started_at, finished_at, is_locked) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(
+      "calendar-user",
+      conversationId,
+      values.createdAt ?? 1_000,
+      values.createdAt ?? 1_000,
+      values.startedAt ?? null,
+      values.finishedAt ?? null,
+      values.locked ? 1 : 0,
+    );
 }
 
 function testApp(env: JobsEnv, dependencies: GoogleCalendarDependencies) {
@@ -371,6 +437,184 @@ describe("Google Calendar Worker routes", () => {
     const calendarUrl = new URL(calendarCall.url);
     expect(calendarUrl.searchParams.get("q")).toBe("Workers");
     expect(calendarUrl.searchParams.get("maxResults")).toBe("20");
+  });
+
+  it("links a selected event in D1 and best-effort patches the provider description", async () => {
+    const { database, env, calls, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    seedConversation(database, "conversation-link");
+    await app.request("/v1/integrations/google_calendar", {
+      method: "PUT",
+      body: JSON.stringify({
+        connected: true,
+        access_token: "calendar-access",
+        refresh_token: "calendar-refresh",
+      }),
+    });
+
+    expect(
+      (
+        await app.request(
+          "/v1/conversations/conversation-link/calendar-event",
+          { method: "POST", body: JSON.stringify({ event_id: "link-event" }) },
+        )
+      ).status,
+    ).toBe(200);
+    const response = await app.request(
+      "/v1/conversations/conversation-link/calendar-event",
+      { method: "POST", body: JSON.stringify({ event_id: "link-event" }) },
+    );
+    expect(await response.json()).toMatchObject({
+      event_id: "link-event",
+      title: "Linked event",
+      attendees: ["Guest"],
+      attendee_emails: ["guest@example.test"],
+      html_link: "https://calendar.google.com/event?eid=link",
+    });
+    const stored = database.database
+      .prepare(
+        "SELECT calendar_event_json FROM cf_conversations WHERE uid = ? AND id = ?",
+      )
+      .get("calendar-user", "conversation-link") as {
+      calendar_event_json: string;
+    };
+    expect(JSON.parse(stored.calendar_event_json)).toMatchObject({
+      event_id: "link-event",
+      title: "Linked event",
+    });
+    expect(
+      calls.some(
+        (call) =>
+          call.url.includes("/events/link-event?") &&
+          new Headers(call.init?.headers).get("authorization") ===
+            "Bearer calendar-access-refreshed",
+      ),
+    ).toBe(true);
+    const patchCall = calls.find(
+      (call) =>
+        call.init?.method === "PATCH" &&
+        call.url.endsWith("/events/link-event"),
+    );
+    expect(patchCall).toBeTruthy();
+    expect(String(patchCall?.init?.body)).toContain(
+      "https://h.omi.me/conversations/conversation-link",
+    );
+
+    expect(
+      (
+        await app.request("/v1/conversations/missing-calendar/calendar-event", {
+          method: "POST",
+          body: JSON.stringify({ event_id: "link-event" }),
+        })
+      ).status,
+    ).toBe(404);
+    seedConversation(database, "conversation-locked", { locked: true });
+    expect(
+      (
+        await app.request(
+          "/v1/conversations/conversation-locked/calendar-event",
+          { method: "POST", body: JSON.stringify({ event_id: "link-event" }) },
+        )
+      ).status,
+    ).toBe(402);
+  });
+
+  it("auto-links the best overlapping event and persists the normalized link", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    const startedAt = Math.floor(
+      Date.parse("2026-09-01T09:15:00+08:00") / 1_000,
+    );
+    const finishedAt = Math.floor(
+      Date.parse("2026-09-01T09:45:00+08:00") / 1_000,
+    );
+    seedConversation(database, "conversation-auto", {
+      startedAt,
+      finishedAt,
+    });
+    await app.request("/v1/integrations/google_calendar", {
+      method: "PUT",
+      body: JSON.stringify({
+        connected: true,
+        access_token: "calendar-access",
+        refresh_token: null,
+      }),
+    });
+
+    const response = await app.request(
+      "/v1/conversations/conversation-auto/calendar-event/auto-link",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      event_id: "timed-event",
+      title: "Workers review",
+      start_time: "2026-09-01T01:00:00.000Z",
+      end_time: "2026-09-01T02:00:00.000Z",
+    });
+    const stored = database.database
+      .prepare(
+        "SELECT calendar_event_json FROM cf_conversations WHERE uid = ? AND id = ?",
+      )
+      .get("calendar-user", "conversation-auto") as {
+      calendar_event_json: string;
+    };
+    expect(JSON.parse(stored.calendar_event_json).event_id).toBe("timed-event");
+  });
+
+  it("creates a Calendar event through the legacy-compatible tool envelope", async () => {
+    const { env, calls, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    await app.request("/v1/integrations/google_calendar", {
+      method: "PUT",
+      body: JSON.stringify({
+        connected: true,
+        access_token: "calendar-access",
+        refresh_token: null,
+      }),
+    });
+    const response = await app.request("/v1/tools/calendar-events", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Created event",
+        start_time: "2026-09-01T09:00:00+08:00",
+        end_time: "2026-09-01T10:00:00+08:00",
+        description: "Discuss Workers",
+        location: "Online",
+        attendees: "guest@example.test",
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      tool_name: "create_calendar_event",
+      result_text: expect.stringContaining(
+        "✅ Successfully created calendar event: Created event",
+      ),
+      is_error: false,
+    });
+    const createCall = calls.find(
+      (call) =>
+        call.init?.method === "POST" &&
+        call.url ===
+          "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+    );
+    expect(createCall).toBeTruthy();
+    const body = JSON.parse(String(createCall?.init?.body));
+    expect(body.start).toEqual({
+      dateTime: "2026-09-01T01:00:00.000Z",
+      timeZone: "UTC",
+    });
+    expect(body.attendees).toEqual([{ email: "guest@example.test" }]);
+
+    const invalid = await app.request("/v1/tools/calendar-events", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "No timezone",
+        start_time: "2026-09-01T09:00:00",
+        end_time: "2026-09-01T10:00:00+08:00",
+      }),
+    });
+    expect(invalid.status).toBe(422);
   });
 
   it("fails closed without OAuth credentials and validates event queries", async () => {

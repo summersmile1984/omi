@@ -1074,6 +1074,15 @@ app.delete(
   "/v1/conversations/:conversationId/calendar-event",
   proxyAuthenticatedCore,
 );
+app.post(
+  "/v1/conversations/:conversationId/calendar-event",
+  proxyAuthenticatedJobs,
+);
+app.post(
+  "/v1/conversations/:conversationId/calendar-event/auto-link",
+  proxyAuthenticatedJobs,
+);
+app.post("/v1/tools/calendar-events", proxyAuthenticatedJobs);
 app.patch(
   "/v1/conversations/:conversationId/segments/text",
   proxyAuthenticatedCore,

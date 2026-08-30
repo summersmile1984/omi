@@ -740,6 +740,12 @@ describe("edge gateway", () => {
       ["DELETE", "/v1/integrations/google_calendar"],
       ["GET", "/v1/integrations/google_calendar/oauth-url"],
       ["GET", "/v1/calendar/google/events?max_results=20"],
+      ["POST", "/v1/conversations/conversation-1/calendar-event"],
+      [
+        "POST",
+        "/v1/conversations/conversation-1/calendar-event/auto-link",
+      ],
+      ["POST", "/v1/tools/calendar-events"],
     ]) {
       const response = await edge.fetch(
         new Request(`https://edge.test${path}`, {
@@ -754,7 +760,7 @@ describe("edge gateway", () => {
       expect(response.status, `${method} ${path}`).toBe(200);
     }
 
-    expect(jobRequests).toHaveLength(6);
+    expect(jobRequests).toHaveLength(9);
     for (const request of jobRequests.slice(1)) {
       expect(
         decodeAuthContext(request.headers.get("x-omi-auth-context")),

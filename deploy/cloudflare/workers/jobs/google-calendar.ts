@@ -9,6 +9,15 @@ const TOKEN_REFRESH_BUFFER_SECONDS = 5 * 60;
 const MAX_PROVIDER_RESPONSE_BYTES = 1_000_000;
 const MAX_MUTATION_BODY_BYTES = 32_000;
 const MAX_SEARCH_QUERY_LENGTH = 500;
+const MAX_CONVERSATION_ID_LENGTH = 256;
+const MAX_EVENT_ID_LENGTH = 512;
+const MAX_TITLE_LENGTH = 500;
+const MAX_DESCRIPTION_LENGTH = 10_000;
+const MAX_LOCATION_LENGTH = 2_000;
+const MAX_ATTENDEES = 50;
+const MIN_OVERLAP_SECONDS = 10;
+const MIN_OVERLAP_PERCENTAGE = 0.5;
+const DEFAULT_SHARE_BASE_URL = "https://h.omi.me";
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type RequestContext = (c: JobsContext) => Promise<SignedAuthContext | null>;
@@ -41,7 +50,7 @@ type CalendarCredentials = {
 
 class GoogleCalendarError extends Error {
   constructor(
-    readonly status: 400 | 401 | 413 | 422 | 502 | 503,
+    readonly status: 400 | 401 | 402 | 404 | 413 | 422 | 502 | 503,
     readonly detail: string,
   ) {
     super(detail);
@@ -556,18 +565,20 @@ async function requestCalendar(
   env: JobsEnv,
   uid: string,
   url: string,
+  init: RequestInit = {},
   dependencies?: GoogleCalendarDependencies,
 ) {
   let credentials = await calendarCredentials(env, uid, dependencies);
-  let response = await providerFetch(dependencies, url, {
-    headers: { authorization: `Bearer ${credentials.accessToken}` },
-  });
+  const makeRequest = (accessToken: string) => {
+    const headers = new Headers(init.headers);
+    headers.set("authorization", `Bearer ${accessToken}`);
+    return providerFetch(dependencies, url, { ...init, headers });
+  };
+  let response = await makeRequest(credentials.accessToken);
   if (response.status !== 401) return response;
   await response.arrayBuffer();
   credentials = await refreshCredentials(env, credentials, dependencies);
-  response = await providerFetch(dependencies, url, {
-    headers: { authorization: `Bearer ${credentials.accessToken}` },
-  });
+  response = await makeRequest(credentials.accessToken);
   if (response.status !== 401) return response;
   await response.arrayBuffer();
   await env.APP_DB.prepare(
@@ -768,6 +779,7 @@ async function listEvents(
     env,
     uid,
     url.toString(),
+    {},
     dependencies,
   );
   const payload = await providerJson(response);
@@ -778,6 +790,432 @@ async function listEvents(
     .map(eventResponse)
     .filter((event) => event !== null)
     .slice(0, maxResults);
+}
+
+type ConversationCalendarRow = {
+  id: string;
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  is_locked: number;
+};
+
+async function readConversationCalendarRow(
+  env: JobsEnv,
+  uid: string,
+  conversationId: string,
+) {
+  return env.APP_DB.prepare(
+    "SELECT id, created_at, started_at, finished_at, is_locked FROM cf_conversations WHERE uid = ? AND id = ?",
+  )
+    .bind(uid, conversationId)
+    .first<ConversationCalendarRow>();
+}
+
+async function requireConversationForCalendar(
+  env: JobsEnv,
+  uid: string,
+  conversationId: string,
+) {
+  if (
+    !conversationId ||
+    conversationId.length > MAX_CONVERSATION_ID_LENGTH ||
+    conversationId.includes("/")
+  ) {
+    throw new GoogleCalendarError(400, "Invalid conversation id");
+  }
+  const conversation = await readConversationCalendarRow(
+    env,
+    uid,
+    conversationId,
+  );
+  if (!conversation) {
+    throw new GoogleCalendarError(404, "Conversation not found");
+  }
+  if (conversation.is_locked === 1) {
+    throw new GoogleCalendarError(
+      402,
+      "A paid plan is required to access this conversation.",
+    );
+  }
+  return conversation;
+}
+
+function validEventId(value: unknown) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > MAX_EVENT_ID_LENGTH ||
+    value.includes("\n") ||
+    value.includes("\r")
+  ) {
+    throw new GoogleCalendarError(422, "Invalid event_id");
+  }
+  return value;
+}
+
+async function getCalendarEvent(
+  env: JobsEnv,
+  uid: string,
+  eventId: string,
+  dependencies?: GoogleCalendarDependencies,
+) {
+  const url = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+  );
+  url.searchParams.set(
+    "fields",
+    "id,summary,start,end,attendees(email,displayName,self),htmlLink,description",
+  );
+  const response = await requestCalendar(
+    env,
+    uid,
+    url.toString(),
+    {},
+    dependencies,
+  );
+  const payload = await providerJson(response);
+  if (response.status === 404) {
+    throw new GoogleCalendarError(404, "Calendar event not found");
+  }
+  if (!response.ok || !payload) {
+    throw new GoogleCalendarError(502, "Failed to fetch calendar event");
+  }
+  return payload;
+}
+
+async function updateCalendarEventDescription(
+  env: JobsEnv,
+  uid: string,
+  eventId: string,
+  conversationId: string,
+  currentDescription: string,
+  dependencies?: GoogleCalendarDependencies,
+) {
+  const shareBase = (
+    env.PUBLIC_SHARE_BASE_URL || DEFAULT_SHARE_BASE_URL
+  ).trim();
+  let base = DEFAULT_SHARE_BASE_URL;
+  try {
+    const parsed = new URL(shareBase || DEFAULT_SHARE_BASE_URL);
+    if (
+      parsed.protocol === "https:" &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.search &&
+      !parsed.hash
+    ) {
+      base = parsed.toString().replace(/\/+$/, "");
+    }
+  } catch {
+    // Keep the stable public share host when an optional override is invalid.
+  }
+  const conversationLink = `${base}/conversations/${encodeURIComponent(conversationId)}`;
+  if (currentDescription.includes(conversationLink)) return;
+  const description = currentDescription
+    ? `${currentDescription}\n\n${conversationLink}`
+    : conversationLink;
+  await requestCalendar(
+    env,
+    uid,
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ description }),
+    },
+    dependencies,
+  );
+}
+
+async function persistCalendarLink(
+  env: JobsEnv,
+  uid: string,
+  conversationId: string,
+  link: Record<string, unknown>,
+  now: number,
+) {
+  await env.APP_DB.prepare(
+    "UPDATE cf_conversations SET calendar_event_json = ?, updated_at = ? WHERE uid = ? AND id = ?",
+  )
+    .bind(JSON.stringify(link), now, uid, conversationId)
+    .run();
+}
+
+async function linkCalendarEvent(
+  env: JobsEnv,
+  uid: string,
+  conversationId: string,
+  eventId: string,
+  dependencies?: GoogleCalendarDependencies,
+) {
+  await requireConversationForCalendar(env, uid, conversationId);
+  const event = await getCalendarEvent(env, uid, eventId, dependencies);
+  const link = eventResponse(event);
+  if (!link || typeof link.event_id !== "string" || !link.event_id) {
+    throw new GoogleCalendarError(400, "Could not parse calendar event times");
+  }
+  await persistCalendarLink(
+    env,
+    uid,
+    conversationId,
+    link,
+    nowSeconds(dependencies),
+  );
+  try {
+    const description =
+      typeof event.description === "string" ? event.description : "";
+    await updateCalendarEventDescription(
+      env,
+      uid,
+      link.event_id,
+      conversationId,
+      description,
+      dependencies,
+    );
+  } catch {
+    // The local link is authoritative. A provider description update is best effort.
+  }
+  return link;
+}
+
+async function findOverlappingCalendarEvent(
+  env: JobsEnv,
+  uid: string,
+  startedAt: number,
+  finishedAt: number,
+  dependencies?: GoogleCalendarDependencies,
+) {
+  const searchStart = startedAt - 30 * 60;
+  const searchEnd = finishedAt + 30 * 60;
+  const url = new URL(
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+  );
+  url.searchParams.set("timeMin", new Date(searchStart * 1_000).toISOString());
+  url.searchParams.set("timeMax", new Date(searchEnd * 1_000).toISOString());
+  url.searchParams.set("singleEvents", "true");
+  url.searchParams.set("orderBy", "startTime");
+  url.searchParams.set("maxResults", "20");
+  url.searchParams.set(
+    "fields",
+    "items(id,summary,start,end,attendees(email,displayName,self),htmlLink,description)",
+  );
+  const response = await requestCalendar(
+    env,
+    uid,
+    url.toString(),
+    {},
+    dependencies,
+  );
+  const payload = await providerJson(response);
+  if (!response.ok || !payload) {
+    throw new GoogleCalendarError(502, "Failed to fetch calendar events");
+  }
+  const conversationStart = startedAt * 1_000;
+  const conversationEnd = Math.max(finishedAt, startedAt) * 1_000;
+  let best: Record<string, unknown> | null = null;
+  let bestOverlap = 0;
+  for (const raw of Array.isArray(payload.items) ? payload.items : []) {
+    const event = objectValue(raw);
+    const link = eventResponse(event);
+    if (!event || !link) continue;
+    const eventStart = Date.parse(link.start_time);
+    const eventEnd = Date.parse(link.end_time);
+    const overlap =
+      Math.min(eventEnd, conversationEnd) -
+      Math.max(eventStart, conversationStart);
+    if (overlap <= 0) continue;
+    const eventDuration = eventEnd - eventStart;
+    const conversationDuration = Math.max(
+      conversationEnd - conversationStart,
+      1,
+    );
+    const meetsPercentage =
+      (eventDuration > 0 &&
+        overlap / eventDuration >= MIN_OVERLAP_PERCENTAGE) ||
+      overlap / conversationDuration >= MIN_OVERLAP_PERCENTAGE;
+    if (
+      overlap >= MIN_OVERLAP_SECONDS * 1_000 &&
+      meetsPercentage &&
+      overlap > bestOverlap
+    ) {
+      best = event;
+      bestOverlap = overlap;
+    }
+  }
+  return best;
+}
+
+async function autoLinkCalendarEvent(
+  env: JobsEnv,
+  uid: string,
+  conversationId: string,
+  dependencies?: GoogleCalendarDependencies,
+) {
+  const conversation = await requireConversationForCalendar(
+    env,
+    uid,
+    conversationId,
+  );
+  const startedAt = conversation.started_at ?? conversation.created_at;
+  const finishedAt = conversation.finished_at ?? startedAt;
+  if (!startedAt) {
+    throw new GoogleCalendarError(
+      400,
+      "Conversation has no timestamp information",
+    );
+  }
+  const event = await findOverlappingCalendarEvent(
+    env,
+    uid,
+    startedAt,
+    finishedAt,
+    dependencies,
+  );
+  if (!event) {
+    throw new GoogleCalendarError(404, "No overlapping calendar event found");
+  }
+  const link = eventResponse(event);
+  if (!link || typeof link.event_id !== "string" || !link.event_id) {
+    throw new GoogleCalendarError(400, "Could not parse calendar event times");
+  }
+  await persistCalendarLink(
+    env,
+    uid,
+    conversationId,
+    link,
+    nowSeconds(dependencies),
+  );
+  try {
+    await updateCalendarEventDescription(
+      env,
+      uid,
+      link.event_id,
+      conversationId,
+      typeof event.description === "string" ? event.description : "",
+      dependencies,
+    );
+  } catch {
+    // Keep the successful local auto-link even when the optional provider patch fails.
+  }
+  return link;
+}
+
+function requiredTimezoneDate(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+  if (typeof value !== "string" || !value) {
+    throw new GoogleCalendarError(422, `Invalid ${key}`);
+  }
+  if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(value)) {
+    throw new GoogleCalendarError(422, `${key} must include timezone`);
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new GoogleCalendarError(422, `Invalid ${key}`);
+  }
+  return { value, timestamp };
+}
+
+function boundedString(
+  payload: Record<string, unknown>,
+  key: string,
+  maxLength: number,
+) {
+  const value = payload[key];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || value.length > maxLength) {
+    throw new GoogleCalendarError(422, `Invalid ${key}`);
+  }
+  return value;
+}
+
+function attendeeEmails(payload: Record<string, unknown>) {
+  const raw = boundedString(payload, "attendees", MAX_DESCRIPTION_LENGTH);
+  if (!raw) return [];
+  const values = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value);
+  if (values.length > MAX_ATTENDEES) {
+    throw new GoogleCalendarError(422, "Too many attendees");
+  }
+  if (values.some((value) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value))) {
+    throw new GoogleCalendarError(
+      422,
+      "Attendees must be email addresses when Calendar-only scope is enabled",
+    );
+  }
+  return values;
+}
+
+async function createCalendarEventTool(
+  env: JobsEnv,
+  uid: string,
+  payload: Record<string, unknown>,
+  dependencies?: GoogleCalendarDependencies,
+) {
+  const title = boundedString(payload, "title", MAX_TITLE_LENGTH)?.trim();
+  if (!title) throw new GoogleCalendarError(422, "Invalid title");
+  const start = requiredTimezoneDate(payload, "start_time");
+  const end = requiredTimezoneDate(payload, "end_time");
+  if (end.timestamp <= start.timestamp) {
+    throw new GoogleCalendarError(422, "end_time must be after start_time");
+  }
+  const description = boundedString(
+    payload,
+    "description",
+    MAX_DESCRIPTION_LENGTH,
+  );
+  const location = boundedString(payload, "location", MAX_LOCATION_LENGTH);
+  const emails = attendeeEmails(payload);
+  const body: Record<string, unknown> = {
+    summary: title,
+    start: {
+      dateTime: new Date(start.timestamp).toISOString(),
+      timeZone: "UTC",
+    },
+    end: {
+      dateTime: new Date(end.timestamp).toISOString(),
+      timeZone: "UTC",
+    },
+  };
+  if (description) body.description = description;
+  if (location) body.location = location;
+  if (emails.length) body.attendees = emails.map((email) => ({ email }));
+
+  try {
+    const response = await requestCalendar(
+      env,
+      uid,
+      "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      dependencies,
+    );
+    const result = await providerJson(response);
+    if (!response.ok || !result) {
+      return `Error creating calendar event: Google Calendar returned HTTP ${response.status}`;
+    }
+    const eventLink =
+      typeof result.htmlLink === "string" ? result.htmlLink : "";
+    const lines = [
+      `✅ Successfully created calendar event: ${title}`,
+      `   Start: ${new Date(start.timestamp).toISOString()}`,
+      `   End: ${new Date(end.timestamp).toISOString()}`,
+    ];
+    if (location) lines.push(`   Location: ${location}`);
+    if (emails.length) lines.push(`   Attendees: ${emails.join(", ")}`);
+    if (eventLink) lines.push(`   View event: ${eventLink}`);
+    return lines.join("\n");
+  } catch (error) {
+    if (error instanceof GoogleCalendarError) {
+      return `Error creating calendar event: ${error.detail}`;
+    }
+    return "Error creating calendar event: Google Calendar is unavailable";
+  }
 }
 
 function errorResponse(c: JobsContext, error: unknown) {
@@ -892,6 +1330,68 @@ export function registerGoogleCalendarRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return c.json(await listEvents(c.env, context.uid, c, dependencies));
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+
+  app.post("/v1/conversations/:conversationId/calendar-event", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      const payload = await readJsonObject(c);
+      const eventId = validEventId(payload.event_id);
+      return c.json(
+        await linkCalendarEvent(
+          c.env,
+          context.uid,
+          c.req.param("conversationId"),
+          eventId,
+          dependencies,
+        ),
+      );
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+
+  app.post(
+    "/v1/conversations/:conversationId/calendar-event/auto-link",
+    async (c) => {
+      const context = await requestContext(c);
+      if (!context) return c.json({ error: "unauthorized" }, 401);
+      try {
+        return c.json(
+          await autoLinkCalendarEvent(
+            c.env,
+            context.uid,
+            c.req.param("conversationId"),
+            dependencies,
+          ),
+        );
+      } catch (error) {
+        return errorResponse(c, error);
+      }
+    },
+  );
+
+  app.post("/v1/tools/calendar-events", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      const resultText = await createCalendarEventTool(
+        c.env,
+        context.uid,
+        await readJsonObject(c),
+        dependencies,
+      );
+      return c.json({
+        tool_name: "create_calendar_event",
+        result_text: resultText,
+        is_error: !resultText.startsWith(
+          "✅ Successfully created calendar event:",
+        ),
+      });
     } catch (error) {
       return errorResponse(c, error);
     }

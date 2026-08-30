@@ -3576,6 +3576,28 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/conversations/:conversationId/calendar-event
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, external-api, worker-secrets]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/conversations/:conversationId/calendar-event/auto-link
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, external-api, worker-secrets]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: PATCH
     path: /v1/conversations/:conversationId/segments/text
     owner: api-core
@@ -4299,6 +4321,17 @@ routes:
     auth_authority: better-auth
     dependencies: [d1-app]
     protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/tools/calendar-events
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, external-api, worker-secrets]
+    protocol: http
+    idempotency: none
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST

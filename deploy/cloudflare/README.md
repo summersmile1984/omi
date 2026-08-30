@@ -661,7 +661,9 @@ PATCH /v1/conversations/{conversationId}/events
 PATCH /v1/conversations/{conversationId}/summary
                               structured event flags and default/app summaries → D1
 DELETE /v1/conversations/{conversationId}/calendar-event
-                              local calendar link removal only; external calendar remains legacy
+POST /v1/conversations/{conversationId}/calendar-event
+POST /v1/conversations/{conversationId}/calendar-event/auto-link
+                              local link/remove and overlap matching → Jobs → D1 + Google Calendar API
 PATCH /v1/conversations/{conversationId}/action-items
 PATCH /v1/conversations/{conversationId}/action-items/{actionItemIdx}
 DELETE /v1/conversations/{conversationId}/action-items
@@ -754,6 +756,7 @@ GET/PUT/DELETE /v1/integrations/google_calendar
 GET  /v1/integrations/google_calendar/oauth-url
 GET  /v2/integrations/google-calendar/callback
 GET  /v1/calendar/google/events
+POST /v1/tools/calendar-events
                               Edge → Jobs → encrypted D1 grant + Google Calendar API
 GET  /v2/apps                  Edge → Python API Core → paginated/grouped public app D1 projection
 GET  /v2/apps/capability/{capability_id}/grouped
@@ -1426,7 +1429,9 @@ vector outbox in the same batch and publishes only a Queue hint afterward.
 Edge applies the released `tools:search` and `tools:mutate` one-hour limits.
 Google Calendar OAuth, connection state, refresh, and event-picker reads run in
 Jobs against D1 and the hosted Calendar API. Calendar-event creation and other
-tool mutations remain legacy-owned.
+conversation links (including auto-link) and the calendar-event tool also run in
+Jobs. The Calendar-only OAuth grant accepts attendee email addresses; contact
+lookup and non-Calendar integrations remain outside this cutover.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC
@@ -1559,8 +1564,11 @@ remain legacy-owned.
 
 `DELETE /v1/conversations/{conversation_id}/calendar-event` clears only the
 local `calendar_event_json` link in the D1 projection. It intentionally does not
-call Google Calendar or mutate the external event; link creation and external
-event mutation remain in the legacy integration service.
+call Google Calendar or mutate the external event. The POST link and auto-link
+routes fetch the event through the encrypted Jobs grant, persist the normalized
+link, and best-effort append the public conversation URL to the Google event.
+`POST /v1/tools/calendar-events` creates a Google Calendar event through the
+same grant and returns the legacy-compatible tool envelope.
 
 `PATCH /v1/conversations/{conversation_id}/action-items` updates indexed
 completion flags in the structured projection and mirrors matching standalone
@@ -1583,7 +1591,9 @@ cleanup remains a separate downstream contract.
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google Calendar OAuth tokens, refresh,
 and event-picker reads are owned by Jobs in separate fenced D1 tables; tokens
-are never returned by either surface. Calendar writes remain legacy-owned. This
+are never returned by either surface. Calendar event links and event creation
+are also Jobs-owned; onboarding flags remain API Core until that projection is
+deliberately folded into the Calendar grant authority. This
 group is staging-only until existing integration rows are backfilled and every
 downstream OAuth reader has cut over to the same authority.
 
