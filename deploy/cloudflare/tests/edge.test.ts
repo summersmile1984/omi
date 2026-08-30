@@ -3063,6 +3063,75 @@ describe("edge gateway", () => {
     }
   });
 
+  it("routes Developer API memory and action-item mutations with the raw bearer and body", async () => {
+    const forwarded: Request[] = [];
+    let authCalls = 0;
+    const rateLimitNames: string[] = [];
+    const env = {
+      AUTH: rawService(() => {
+        authCalls += 1;
+        return Response.json({ status: "unexpected" });
+      }),
+      API_CORE: rawService((request) => {
+        forwarded.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
+    } as never;
+    const cases = [
+      ["POST", "/v1/dev/user/memories", '{"content":"one"}'],
+      ["POST", "/v1/dev/user/memories/batch", '{"memories":[]}'],
+      ["PATCH", "/v1/dev/user/memories/memory-1", '{"content":"two"}'],
+      ["DELETE", "/v1/dev/user/memories/memory-1"],
+      ["POST", "/v1/dev/user/action-items", '{"description":"one"}'],
+      ["POST", "/v1/dev/user/action-items/batch", '{"action_items":[]}'],
+      ["PATCH", "/v1/dev/user/action-items/action-1", '{"completed":true}'],
+      ["DELETE", "/v1/dev/user/action-items/action-1"],
+    ] as const;
+    const bearer = `Bearer omi_dev_${"d".repeat(32)}`;
+
+    for (const [method, path, body] of cases) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: bearer,
+            cookie: "session=must-not-forward",
+            "content-type": "application/json",
+            "x-omi-auth-context": "attacker-context",
+            "x-omi-internal-signature": "attacker-signature",
+          },
+          body,
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    expect(authCalls).toBe(0);
+    expect(forwarded).toHaveLength(cases.length);
+    for (const [index, request] of forwarded.entries()) {
+      expect(request.method).toBe(cases[index][0]);
+      expect(new URL(request.url).pathname).toBe(cases[index][1]);
+      expect(request.headers.get("authorization")).toBe(bearer);
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeNull();
+      expect(request.headers.get("x-omi-internal-signature")).toBeNull();
+      if (cases[index][2]) {
+        await expect(request.text()).resolves.toBe(cases[index][2]);
+      }
+    }
+    expect(rateLimitNames).toHaveLength(cases.length);
+    expect(rateLimitNames).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^memories:create:developer:[0-9a-f]{64}$/),
+        expect.stringMatching(/^memories:batch:developer:[0-9a-f]{64}$/),
+        expect.stringMatching(/^action_items:write:developer:[0-9a-f]{64}$/),
+      ]),
+    );
+    expect(rateLimitNames.join(" ")).not.toContain("d".repeat(32));
+  });
+
   it("routes MCP data tools directly to API Core with only the MCP bearer", async () => {
     const forwarded: Request[] = [];
     let authCalls = 0;

@@ -99,6 +99,9 @@ function creatorPaymentBoundary(
   if (url.endsWith("/v1/dev/user/memories")) {
     return new Response(null, { status: 403 });
   }
+  if (url.endsWith("/v1/dev/user/action-items")) {
+    return new Response(null, { status: 403 });
+  }
   if (
     url.endsWith("/v1/integrations/notification") ||
     url.includes("/v2/integrations/cf-smoke-missing/")
@@ -436,6 +439,8 @@ describe("staging smoke helpers", () => {
       stripeBrowserRefreshBoundary: 403,
       mcpDataInvalidKey: 403,
       developerDataInvalidKey: 403,
+      developerMemoryWriteInvalidKey: 403,
+      developerActionItemWriteInvalidKey: 403,
       unauthenticatedProbe: 401,
       unauthenticatedAnnouncements: 401,
       unauthenticatedAnnouncementsAdmin: 403,
@@ -538,7 +543,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(122);
+    expect(calls).toHaveLength(124);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

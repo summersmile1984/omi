@@ -317,6 +317,40 @@ export async function runSmoke({
     { headers: { authorization: `Bearer omi_dev_${"f".repeat(32)}` } },
   );
   expectStatus("Developer API data invalid key", developerDataInvalidKey, 403);
+  const developerMemoryWriteInvalidKey = await request(
+    fetchImpl,
+    `${base}/v1/dev/user/memories`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer omi_dev_${"f".repeat(32)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ content: "Cloudflare smoke" }),
+    },
+  );
+  expectStatus(
+    "Developer API memory write invalid key",
+    developerMemoryWriteInvalidKey,
+    403,
+  );
+  const developerActionItemWriteInvalidKey = await request(
+    fetchImpl,
+    `${base}/v1/dev/user/action-items`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer omi_dev_${"f".repeat(32)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ description: "Cloudflare smoke" }),
+    },
+  );
+  expectStatus(
+    "Developer API action-item write invalid key",
+    developerActionItemWriteInvalidKey,
+    403,
+  );
 
   const result = {
     edgeHealth: health.status,
@@ -337,6 +371,9 @@ export async function runSmoke({
     stripeBrowserRefreshBoundary: stripeBrowserRefreshBoundary.status,
     mcpDataInvalidKey: mcpDataInvalidKey.status,
     developerDataInvalidKey: developerDataInvalidKey.status,
+    developerMemoryWriteInvalidKey: developerMemoryWriteInvalidKey.status,
+    developerActionItemWriteInvalidKey:
+      developerActionItemWriteInvalidKey.status,
   };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 

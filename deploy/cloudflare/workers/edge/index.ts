@@ -260,15 +260,50 @@ const proxyIntegrationCore = async (
   return withRequestId(response, id);
 };
 
-// Developer API reads use the dedicated omi_dev_ credential family. Keep the
+// Developer API routes use the dedicated omi_dev_ credential family. Keep the
 // raw Authorization header for API Core to verify against the D1 digest while
 // removing cookies and every caller-controlled internal identity assertion.
-const proxyDeveloperCore = proxyIntegrationCore;
+// Valid key-shaped writes are rate-limited by an irreversible digest, never by
+// the raw credential.
+const proxyDeveloperCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const subject = await externalApiKeyRateLimitSubject(
+      c.req.raw.headers.get("authorization"),
+      "dev",
+    );
+    if (subject) {
+      const rateLimitDenial = await enforceEdgeRateLimit(
+        c.env,
+        { uid: `developer:${subject}`, authority: "internal", requestId: id },
+        policy,
+        id,
+      );
+      if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+    }
+  }
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  headers.delete("cookie");
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
 
-async function mcpRateLimitSubject(
+async function externalApiKeyRateLimitSubject(
   authorization: string | null,
+  family: "mcp" | "dev",
 ): Promise<string | null> {
-  const match = /^Bearer omi_mcp_([0-9a-f]{32})$/.exec(authorization || "");
+  const pattern =
+    family === "mcp"
+      ? /^Bearer omi_mcp_([0-9a-f]{32})$/
+      : /^Bearer omi_dev_([0-9a-f]{32})$/;
+  const match = pattern.exec(authorization || "");
   if (!match) return null;
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -288,8 +323,9 @@ const proxyMcpCore = async (
   const id = requestId(c.req.raw);
   const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
   if (policy) {
-    const subject = await mcpRateLimitSubject(
+    const subject = await externalApiKeyRateLimitSubject(
       c.req.raw.headers.get("authorization"),
+      "mcp",
     );
     if (subject) {
       const rateLimitDenial = await enforceEdgeRateLimit(
@@ -378,7 +414,15 @@ app.post("/v2/integrations/:app_id/notification", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/tasks", proxyIntegrationCore);
 app.get("/v1/dev/user/memories/vector/search", proxyDeveloperCore);
 app.get("/v1/dev/user/memories", proxyDeveloperCore);
+app.post("/v1/dev/user/memories/batch", proxyDeveloperCore);
+app.post("/v1/dev/user/memories", proxyDeveloperCore);
+app.patch("/v1/dev/user/memories/:memory_id", proxyDeveloperCore);
+app.delete("/v1/dev/user/memories/:memory_id", proxyDeveloperCore);
 app.get("/v1/dev/user/action-items", proxyDeveloperCore);
+app.post("/v1/dev/user/action-items/batch", proxyDeveloperCore);
+app.post("/v1/dev/user/action-items", proxyDeveloperCore);
+app.patch("/v1/dev/user/action-items/:action_item_id", proxyDeveloperCore);
+app.delete("/v1/dev/user/action-items/:action_item_id", proxyDeveloperCore);
 app.get("/v1/dev/user/folders", proxyDeveloperCore);
 app.get("/v1/dev/user/conversations", proxyDeveloperCore);
 app.get("/v1/dev/user/conversations/:conversationId", proxyDeveloperCore);

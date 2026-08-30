@@ -19,6 +19,16 @@ from developer_routes import (  # noqa: E402
     list_developer_memories,
     search_developer_memories,
 )
+from developer_mutation_routes import (  # noqa: E402
+    create_developer_action_item,
+    create_developer_action_items_batch,
+    create_developer_memories_batch,
+    create_developer_memory,
+    delete_developer_action_item,
+    delete_developer_memory,
+    update_developer_action_item,
+    update_developer_memory,
+)
 
 RAW_SECRET = "0123456789abcdef0123456789abcdef"
 AUTHORIZATION = f"Bearer omi_dev_{RAW_SECRET}"
@@ -52,9 +62,15 @@ class FakeStatement:
         self.connection.commit()
         return {"meta": {"changes": cursor.rowcount}}
 
+    def execute(self):
+        cursor = self.connection.execute(self.sql, self.args)
+        rows = cursor.fetchall() if cursor.description else []
+        return {"results": [dict(row) for row in rows], "meta": {"changes": cursor.rowcount}}
+
 
 class FakeDb:
     def __init__(self):
+        self.batch_calls = []
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
@@ -64,6 +80,17 @@ class FakeDb:
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
+
+    async def batch(self, statements):
+        self.batch_calls.append(len(statements))
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            results = [statement.execute() for statement in statements]
+            self.connection.commit()
+            return results
+        except Exception:
+            self.connection.rollback()
+            raise
 
 
 class Query(dict):
@@ -75,12 +102,16 @@ class Query(dict):
 
 
 class FakeRequest:
-    def __init__(self, env, *, query=None, authorization=AUTHORIZATION):
+    def __init__(self, env, *, query=None, authorization=AUTHORIZATION, body=None):
         self.scope = {"env": env}
         self.headers = {}
         if authorization is not None:
             self.headers["authorization"] = authorization
         self.query_params = Query(query or {})
+        self._body = b"" if body is None else json.dumps(body).encode()
+
+    async def body(self):
+        return self._body
 
 
 class FakeAi:
@@ -89,6 +120,8 @@ class FakeAi:
 
     async def run(self, model, payload):
         self.calls.append((model, payload))
+        if "messages" in payload:
+            return {"response": {"category": "system"}}
         return {"data": [[0.01] * 1024 for _ in payload["text"]]}
 
 
@@ -102,12 +135,22 @@ class FakeVectorIndex:
         return {"count": len(self.matches), "matches": list(self.matches)}
 
 
+class FakeQueue:
+    def __init__(self):
+        self.messages = []
+
+    async def send(self, message):
+        self.messages.append(message)
+
+
 def environment(*, scopes=None, cutover_state="new"):
     database = FakeDb()
     env = SimpleNamespace(
         APP_DB=database,
         AI=FakeAi(),
         MEMORY_VECTORS=FakeVectorIndex(),
+        JOBS=FakeQueue(),
+        WORKERS_AI_INTEGRATION_MODEL="developer-category-test-model",
         WORKERS_AI_VECTOR_MODEL="developer-vector-test-model",
     )
     digest = hashlib.sha256(RAW_SECRET.encode()).hexdigest()
@@ -347,4 +390,160 @@ def test_developer_memory_vector_search_hydrates_active_rows_and_keeps_legacy_tw
 
     missing_query = run(search_developer_memories(FakeRequest(env)))
     assert missing_query.status_code == 422
+    database.connection.close()
+
+
+def test_developer_memory_mutations_use_write_scope_d1_and_vector_outbox():
+    database, env = environment(scopes=READ_SCOPES + ["memories:write"])
+
+    created = run(
+        create_developer_memory(
+            FakeRequest(
+                env,
+                body={
+                    "content": "Cloudflare owns the Developer memory path",
+                    "visibility": "private",
+                    "tags": ["cloudflare"],
+                },
+            )
+        )
+    )
+    assert created["category"] == "system"
+    assert created["manually_added"] is True
+    memory_id = created["id"]
+
+    batch = run(
+        create_developer_memories_batch(
+            FakeRequest(
+                env,
+                body={
+                    "memories": [
+                        {"content": "First batch memory", "category": "manual"},
+                        {"content": "Second batch memory", "category": "interesting"},
+                    ]
+                },
+            )
+        )
+    )
+    assert batch["created_count"] == 2
+    assert {item["category"] for item in batch["memories"]} == {"manual", "interesting"}
+
+    updated = run(
+        update_developer_memory(
+            FakeRequest(
+                env,
+                body={
+                    "content": "Cloudflare owns the updated memory path",
+                    "visibility": "public",
+                    "tags": ["updated"],
+                    "category": "interesting",
+                },
+            ),
+            memory_id,
+        )
+    )
+    assert updated["content"] == "Cloudflare owns the updated memory path"
+    assert updated["visibility"] == "public"
+    assert updated["tags"] == ["updated"]
+    assert updated["edited"] is True
+
+    deleted = run(delete_developer_memory(FakeRequest(env), memory_id))
+    assert deleted == {"success": True}
+    missing = run(delete_developer_memory(FakeRequest(env), memory_id))
+    assert missing.status_code == 404
+    outbox = database.connection.execute(
+        "SELECT operation FROM cf_vector_projection_outbox "
+        "WHERE uid = 'developer-user' AND source_kind = 'memory' AND source_id = ?",
+        (memory_id,),
+    ).fetchone()
+    assert dict(outbox) == {"operation": "delete"}
+    assert len(env.JOBS.messages) == 5
+
+    read_only_database, read_only_env = environment()
+    denied = run(
+        create_developer_memory(FakeRequest(read_only_env, body={"content": "Must not persist", "category": "manual"}))
+    )
+    assert denied.status_code == 403
+    assert read_only_database.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 0
+    read_only_database.connection.close()
+    database.connection.close()
+
+
+def test_developer_action_item_mutations_preserve_projection_lock_and_scope_contracts():
+    database, env = environment(scopes=READ_SCOPES + ["action_items:write"])
+
+    created = run(
+        create_developer_action_item(
+            FakeRequest(
+                env,
+                body={
+                    "description": "Deploy Developer API writes",
+                    "due_at": "2026-09-01T00:00:00Z",
+                },
+            )
+        )
+    )
+    assert created["description"] == "Deploy Developer API writes"
+    assert created["completed"] is False
+    action_item_id = created["id"]
+
+    duplicate = run(create_developer_action_item(FakeRequest(env, body={"description": "Deploy Developer API writes"})))
+    assert duplicate["id"] != action_item_id
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM cf_action_items WHERE description = 'Deploy Developer API writes'"
+        ).fetchone()[0]
+        == 2
+    )
+
+    batch = run(
+        create_developer_action_items_batch(
+            FakeRequest(
+                env,
+                body={
+                    "action_items": [
+                        {"description": "Verify staging"},
+                        {"description": "Record evidence", "completed": True},
+                    ]
+                },
+            )
+        )
+    )
+    assert batch["created_count"] == 2
+    assert [item["completed"] for item in batch["action_items"]] == [False, True]
+    assert database.batch_calls[-1] == 4
+
+    updated = run(
+        update_developer_action_item(
+            FakeRequest(env, body={"description": "Deploy and verify staging", "completed": True}),
+            action_item_id,
+        )
+    )
+    assert updated["description"] == "Deploy and verify staging"
+    assert updated["completed"] is True
+    assert updated["completed_at"] is not None
+
+    database.connection.execute(
+        "INSERT INTO cf_action_items "
+        "(uid, id, description, status, completed, is_locked, created_at, updated_at) "
+        "VALUES ('developer-user', 'locked-action', 'Locked', 'active', 0, 1, 1, 1)"
+    )
+    database.connection.commit()
+    locked = run(delete_developer_action_item(FakeRequest(env), "locked-action"))
+    assert locked.status_code == 402
+
+    deleted = run(delete_developer_action_item(FakeRequest(env), action_item_id))
+    assert deleted == {"success": True}
+    outbox = database.connection.execute(
+        "SELECT operation FROM cf_vector_projection_outbox "
+        "WHERE uid = 'developer-user' AND source_kind = 'action_item' AND source_id = ?",
+        (action_item_id,),
+    ).fetchone()
+    assert dict(outbox) == {"operation": "delete"}
+
+    read_only_database, read_only_env = environment()
+    denied = run(create_developer_action_item(FakeRequest(read_only_env, body={"description": "Must not persist"})))
+    assert denied.status_code == 403
+    assert read_only_database.connection.execute("SELECT COUNT(*) FROM cf_action_items").fetchone()[0] == 0
+    read_only_database.connection.close()
     database.connection.close()

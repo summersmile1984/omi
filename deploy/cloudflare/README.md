@@ -76,8 +76,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 353 already match a
-  Cloudflare staging owner and 224 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 361 already match a
+  Cloudflare staging owner and 216 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -679,6 +679,13 @@ GET  /v1/dev/user/goals
 GET  /v1/dev/user/goals/{goalId}
 GET  /v1/dev/user/goals/{goalId}/history
                               Edge → Python API Core → Developer-key D1/Vectorize reads
+POST /v1/dev/user/memories
+POST /v1/dev/user/memories/batch
+PATCH/DELETE /v1/dev/user/memories/{memoryId}
+POST /v1/dev/user/action-items
+POST /v1/dev/user/action-items/batch
+PATCH/DELETE /v1/dev/user/action-items/{actionItemId}
+                              Edge → Python API Core → D1 + vector outbox writes
 GET  /v1/apps/{appId}/logo/{version}
                               Edge → Jobs → immutable current-logo R2 object
 POST /v1/apps/tester
@@ -1552,8 +1559,10 @@ history verify the credential and per-route scope in Python API Core, require a
 completed destination-bound account cutover, exclude locked/deleted/archived
 rows, and hydrate vector candidates through uid-scoped D1 state. Edge preserves
 only the raw Developer Authorization header and strips cookies and internal
-identity assertions. Developer create/update/delete data routes remain
-legacy-owned until their D1 write semantics and side effects move together.
+identity assertions. Memory and action-item create, batch-create, update, and
+delete routes now write canonical D1 state and the vector projection outbox;
+conversation and goal mutations remain legacy-owned until their D1 write
+semantics and side effects move together.
 
 The MCP REST tools consume either those keys or a request-bound `mcp-oauth`
 context in API Core. Exact API-key parsing, OAuth scope/client bounds, account
