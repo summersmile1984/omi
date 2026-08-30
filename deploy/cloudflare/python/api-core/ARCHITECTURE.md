@@ -57,6 +57,11 @@ paywall and route-specific Edge limits, bounds untrusted prompt inputs, and
 validates structured Workers AI output before returning it. These routes do
 not write D1, call the legacy backend, or require a local model process.
 
+`trend_routes.py` owns the public global `/v1/trends` read. It joins the
+allowlisted category/topic projection in D1, sorts topics by bounded memory
+counts, strips memory identifiers, and returns `503` when the projection is
+unavailable instead of silently falling back to Firestore.
+
 `goal_ai_routes.py` reads the canonical goal, memory, conversation, chat, and
 Vectorize projections to produce goal suggestions and weekly advice through
 Workers AI. Progress extraction evaluates all active goals in one structured

@@ -106,6 +106,57 @@ describe("D1 backfill SQL generator", () => {
     ).toContain("cf_user_calendar_onboarding");
   });
 
+  it("backfills global trend categories and bounded topic counts", () => {
+    const category = normalizeRow("cf_trend_categories", {
+      id: "company-best",
+      category: "company",
+      type: "best",
+      created_at: "2026-08-28T10:00:00Z",
+    });
+    expect(category).toEqual({
+      id: "company-best",
+      category: "company",
+      type: "best",
+      created_at: 1787911200,
+    });
+
+    const topic = normalizeRow("cf_trend_topics", {
+      category_id: "company-best",
+      id: "openai",
+      topic: "OpenAI",
+      memories_count: 7,
+    });
+    expect(topic).toEqual({
+      category_id: "company-best",
+      id: "openai",
+      topic: "OpenAI",
+      memories_count: 7,
+    });
+    expect(
+      renderBackfillSql([
+        { table: "cf_trend_categories", row: category },
+        { table: "cf_trend_topics", row: topic },
+      ]),
+    ).toContain("ON CONFLICT(category_id, id) DO UPDATE SET topic = excluded.topic");
+
+    expect(() =>
+      normalizeRow("cf_trend_categories", {
+        id: "bad",
+        category: "invalid",
+        type: "best",
+        created_at: 1,
+      }),
+    ).toThrow("cf_trend_categories.category is invalid");
+    expect(() =>
+      normalizeRow("cf_trend_topics", {
+        category_id: "company-best",
+        id: "bad",
+        topic: "OpenAI",
+        memories_count: -1,
+      }),
+    ).toThrow("cf_trend_topics.memories_count is invalid");
+  });
+
   it("backfills legacy MCP key metadata without accepting raw key material", () => {
     const normalized = normalizeRow("cf_mcp_api_keys", {
       id: "legacy-key-1",

@@ -412,6 +412,7 @@ describe("edge gateway", () => {
       "/v1/app/proactive-notification-scopes",
       "/v1/app-capabilities",
       "/v1/app/payment-plans",
+      "/v1/trends",
     ]) {
       const response = await edge.fetch(
         new Request(`https://edge.test${path}`),
@@ -424,6 +425,7 @@ describe("edge gateway", () => {
       "/v1/app/proactive-notification-scopes",
       "/v1/app-capabilities",
       "/v1/app/payment-plans",
+      "/v1/trends",
     ]);
   });
 

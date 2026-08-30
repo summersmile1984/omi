@@ -26,6 +26,22 @@ const TABLES = {
       "content_json",
     ],
   },
+  cf_trend_categories: {
+    key_columns: ["id"],
+    required: ["id", "category", "type", "created_at"],
+    columns: ["id", "category", "type", "created_at"],
+    defaults: {},
+    integers: ["created_at"],
+    json: [],
+  },
+  cf_trend_topics: {
+    key_columns: ["category_id", "id"],
+    required: ["category_id", "id", "topic"],
+    columns: ["category_id", "id", "topic", "memories_count"],
+    defaults: { memories_count: 0 },
+    integers: ["memories_count"],
+    json: [],
+  },
   cf_app_catalog: {
     key_columns: ["id"],
     required: ["id", "data_json", "updated_at"],
@@ -873,6 +889,37 @@ export function normalizeRow(table, input) {
       )
     ) {
       fail("cf_x_posts.memory_extraction_status is invalid");
+    }
+  }
+  if (table === "cf_trend_categories") {
+    if (
+      !new Set([
+        "ceo",
+        "company",
+        "software_product",
+        "hardware_product",
+        "ai_product",
+      ]).has(normalized.category)
+    ) {
+      fail("cf_trend_categories.category is invalid");
+    }
+    if (!new Set(["best", "worst"]).has(normalized.type)) {
+      fail("cf_trend_categories.type is invalid");
+    }
+  }
+  if (table === "cf_trend_topics") {
+    if (
+      typeof normalized.topic !== "string" ||
+      normalized.topic.length < 1 ||
+      normalized.topic.length > 512
+    ) {
+      fail("cf_trend_topics.topic is invalid");
+    }
+    if (
+      !Number.isSafeInteger(normalized.memories_count) ||
+      normalized.memories_count < 0
+    ) {
+      fail("cf_trend_topics.memories_count is invalid");
     }
   }
   if (table === "cf_app_catalog") {

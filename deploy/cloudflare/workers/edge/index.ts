@@ -405,6 +405,7 @@ app.get("/v1/announcements/features", proxyPublicCore);
 app.get("/v1/announcements/general", proxyPublicCore);
 app.get("/v1/announcements/all", proxyPublicCore);
 app.get("/v1/announcements/:announcementId", proxyPublicCore);
+app.get("/v1/trends", proxyPublicCore);
 app.post("/v1/announcements", proxyPublicCore);
 app.put("/v1/announcements/:announcementId", proxyPublicCore);
 app.delete("/v1/announcements/:announcementId", proxyPublicCore);

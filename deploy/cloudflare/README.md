@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 439 already match
-  Cloudflare staging owners and 138 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 440 already match
+  Cloudflare staging owners and 137 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -953,6 +953,7 @@ POST /v1/calendar/meetings
 GET  /v1/calendar/meetings
 GET  /v1/calendar/meetings/{meetingId}
                               Edge → Python API Core → D1 calendar metadata projection
+GET  /v1/trends              Edge → Python API Core → D1 global trend projection
 ```
 
 The calendar meeting routes use a uid-scoped natural key
@@ -960,6 +961,12 @@ The calendar meeting routes use a uid-scoped natural key
 They are staging-only until the legacy conversation context reader is migrated
 to the same authority. Jobs separately owns the Google Calendar OAuth grant and
 event discovery; conversation finalization is not migrated by either boundary.
+
+`GET /v1/trends` reads the global category/topic projection from D1. Categories
+are limited to the five released trend families and topics are returned in
+descending `memories_count` order without exposing the underlying memory IDs.
+Use the reviewed D1 backfill generator for the initial Firestore export; the
+request path has no Firestore or per-user dependency.
 
 Only routes explicitly listed as migrated are sent to the partial Worker
 implementations. Authenticated routes that are not yet migrated use

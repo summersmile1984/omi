@@ -509,6 +509,8 @@ export async function runSmoke({
     `${base}/v1/announcements/general`,
   );
   expectStatus("public announcements", announcementsGeneral, 200);
+  const trends = await request(fetchImpl, `${base}/v1/trends`);
+  expectStatus("public trends", trends, 200);
   const sharedDailySummary = await request(
     fetchImpl,
     `${base}/v1/daily-summaries/cf-smoke-missing/shared`,
@@ -668,6 +670,7 @@ export async function runSmoke({
     appleAssociation: appleAssociation.response.status,
     openAiAppsChallenge: openAiAppsChallenge.response.status,
     announcementsGeneral: announcementsGeneral.status,
+    trends: trends.status,
     sharedDailySummary: sharedDailySummary.status,
     appReviews: appReviews.status,
     paymentSuccess: paymentSuccess.status,

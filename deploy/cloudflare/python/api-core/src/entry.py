@@ -43,6 +43,7 @@ from advice_routes import router as advice_router
 from screen_activity_routes import router as screen_activity_router
 from calendar_onboarding_routes import router as calendar_onboarding_router
 from calendar_meeting_routes import router as calendar_meeting_router
+from trend_routes import router as trend_router
 from workstream_routes import router as workstream_router
 from announcement_routes import router as announcement_router
 from conversation_routes import router as conversation_router
@@ -80,6 +81,7 @@ app.include_router(advice_router)
 app.include_router(screen_activity_router)
 app.include_router(calendar_onboarding_router)
 app.include_router(calendar_meeting_router)
+app.include_router(trend_router)
 app.include_router(workstream_router)
 app.include_router(announcement_router)
 app.include_router(conversation_router)
