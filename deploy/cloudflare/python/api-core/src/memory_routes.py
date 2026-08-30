@@ -25,6 +25,8 @@ from account_routes import usage_source_statement
 router = APIRouter()
 
 MAX_REQUEST_BYTES = 256_000
+MAX_BATCH_REQUEST_BYTES = 8_000_000
+MAX_D1_JSON_BIND_BYTES = 1_800_000
 MAX_CONTENT_LENGTH = 50_000
 MAX_ID_LENGTH = 256
 MAX_LIST_LIMIT = 500
@@ -32,6 +34,7 @@ MAX_LIST_OFFSET = 100_000
 MAX_TAGS = 100
 MAX_TAG_LENGTH = 256
 MAX_BATCH_DELETE = 100
+MAX_BATCH_CREATE = 100
 MEMORY_CATEGORIES = frozenset({"interesting", "system", "manual", "workflow"})
 LEGACY_CATEGORY_MAP = {
     "core": "system",
@@ -113,6 +116,12 @@ class MemoryBatchDelete(BaseModel):
         return self
 
 
+class MemoryBatchCreate(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    memories: list[MemoryCreate] = Field(max_length=MAX_BATCH_CREATE)
+
+
 class MemoryReadStatusUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -135,9 +144,9 @@ def _auth_context(request: Request) -> dict[str, object] | None:
     )
 
 
-async def _bounded_json(request: Request) -> object:
+async def _bounded_json(request: Request, max_bytes: int = MAX_REQUEST_BYTES) -> object:
     raw = await request.body()
-    if len(raw) > MAX_REQUEST_BYTES:
+    if len(raw) > max_bytes:
         raise ValueError("request body exceeds size limit")
     return json.loads(raw)
 
@@ -163,6 +172,84 @@ def _json(value: object, fallback: object) -> object:
     except (TypeError, ValueError):
         return fallback
     return parsed
+
+
+def _normalized_tag(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = "_".join(value.strip().lower().replace("-", "_").split())
+    return normalized or None
+
+
+def _is_per_file_local_import(tags: list[str]) -> bool:
+    normalized = {tag for value in tags if (tag := _normalized_tag(value)) is not None}
+    return {"local_files", "onboarding"} <= normalized and bool(
+        normalized.intersection({"projects", "documents", "downloads", "recent_file"})
+    )
+
+
+def _json_bind_chunks(rows: list[dict[str, object]]) -> list[tuple[str, str]]:
+    chunks: list[tuple[str, str]] = []
+    current: list[str] = []
+    current_ids: list[str] = []
+    current_size = 2
+    for row in rows:
+        encoded = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+        encoded_size = len(encoded.encode("utf-8"))
+        if encoded_size + 2 > MAX_D1_JSON_BIND_BYTES:
+            raise ValueError("memory row exceeds D1 bind limit")
+        additional_size = encoded_size + (1 if current else 0)
+        if current and current_size + additional_size > MAX_D1_JSON_BIND_BYTES:
+            chunks.append(
+                (
+                    "[" + ",".join(current) + "]",
+                    json.dumps(current_ids, ensure_ascii=False, separators=(",", ":")),
+                )
+            )
+            current = []
+            current_ids = []
+            current_size = 2
+            additional_size = encoded_size
+        current.append(encoded)
+        current_ids.append(str(row["id"]))
+        current_size += additional_size
+    if current:
+        chunks.append(
+            (
+                "[" + ",".join(current) + "]",
+                json.dumps(current_ids, ensure_ascii=False, separators=(",", ":")),
+            )
+        )
+    return chunks
+
+
+def _batch_row(uid: str, memory_id: str, memory: MemoryCreate, now: int) -> dict[str, object]:
+    manually_added = memory.category == "manual"
+    tier = "long_term" if manually_added or (memory.durability or "").lower() == "long_term" else "short_term"
+    return {
+        "uid": uid,
+        "id": memory_id,
+        "content": memory.content,
+        "category": memory.category,
+        "visibility": memory.visibility,
+        "tags_json": json.dumps(memory.tags, ensure_ascii=False, separators=(",", ":")),
+        "headline": memory.headline,
+        "predicate": memory.predicate,
+        "arguments_json": json.dumps(memory.arguments, ensure_ascii=False, separators=(",", ":")),
+        "subject_entity_id": memory.subject_entity_id,
+        "subject_attribution": memory.subject_attribution,
+        "object_entity_ids_json": json.dumps(memory.object_entity_ids, ensure_ascii=False, separators=(",", ":")),
+        "qualifiers_json": json.dumps(memory.qualifiers, ensure_ascii=False, separators=(",", ":")),
+        "capture_confidence": memory.capture_confidence,
+        "veracity": memory.veracity,
+        "uncertainty_reasons_json": json.dumps(memory.uncertainty_reasons, ensure_ascii=False, separators=(",", ":")),
+        "durability": memory.durability,
+        "manually_added": int(manually_added),
+        "memory_tier": tier,
+        "valid_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
 
 
 def _response(row: dict[str, object]) -> dict[str, object]:
@@ -358,6 +445,73 @@ async def create_memory(request: Request):
     if row is None:
         return JSONResponse({"error": "memory unavailable"}, status_code=503)
     return _response(row)
+
+
+@router.post("/v3/memories/batch")
+async def create_memories_batch(request: Request):
+    """Create up to 100 memories atomically without per-item D1 queries."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        batch = MemoryBatchCreate.model_validate(await _bounded_json(request, MAX_BATCH_REQUEST_BYTES))
+    except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid memory batch"}, status_code=422)
+    accepted = [memory for memory in batch.memories if not _is_per_file_local_import(memory.tags)]
+    if not accepted:
+        return {"memories": [], "created_count": 0}
+
+    uid = str(context["uid"])
+    now = int(time.time())
+    rows = [_batch_row(uid, uuid.uuid4().hex, memory, now) for memory in accepted]
+    try:
+        chunks = _json_bind_chunks(rows)
+    except ValueError:
+        return JSONResponse({"error": "memory batch exceeds the size limit"}, status_code=413)
+
+    env = request.scope["env"]
+    statements: list[object] = []
+    for rows_json, ids_json in chunks:
+        statements.append(
+            env.APP_DB.prepare(
+                "INSERT INTO cf_memories "
+                "(uid, id, content, category, visibility, tags_json, headline, predicate, arguments_json, "
+                "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
+                "veracity, uncertainty_reasons_json, durability, manually_added, memory_tier, valid_at, created_at, "
+                "updated_at) "
+                "SELECT json_extract(value, '$.uid'), json_extract(value, '$.id'), "
+                "json_extract(value, '$.content'), json_extract(value, '$.category'), "
+                "json_extract(value, '$.visibility'), json_extract(value, '$.tags_json'), "
+                "json_extract(value, '$.headline'), json_extract(value, '$.predicate'), "
+                "json_extract(value, '$.arguments_json'), json_extract(value, '$.subject_entity_id'), "
+                "json_extract(value, '$.subject_attribution'), json_extract(value, '$.object_entity_ids_json'), "
+                "json_extract(value, '$.qualifiers_json'), json_extract(value, '$.capture_confidence'), "
+                "json_extract(value, '$.veracity'), json_extract(value, '$.uncertainty_reasons_json'), "
+                "json_extract(value, '$.durability'), CAST(json_extract(value, '$.manually_added') AS INTEGER), "
+                "json_extract(value, '$.memory_tier'), CAST(json_extract(value, '$.valid_at') AS INTEGER), "
+                "CAST(json_extract(value, '$.created_at') AS INTEGER), "
+                "CAST(json_extract(value, '$.updated_at') AS INTEGER) FROM json_each(?)"
+            ).bind(rows_json)
+        )
+        statements.append(
+            env.APP_DB.prepare(
+                "INSERT INTO cf_usage_sources "
+                "(uid, source_kind, source_id, occurred_at, transcription_seconds, words_transcribed, "
+                "insights_gained, memories_created, updated_at) "
+                "SELECT uid, 'memory', id, created_at, 0, 0, 0, 1, updated_at FROM cf_memories "
+                "WHERE uid = ? AND id IN (SELECT CAST(value AS TEXT) FROM json_each(?)) "
+                "ON CONFLICT(uid, source_kind, source_id) DO UPDATE SET "
+                "occurred_at = excluded.occurred_at, transcription_seconds = excluded.transcription_seconds, "
+                "words_transcribed = excluded.words_transcribed, insights_gained = excluded.insights_gained, "
+                "memories_created = excluded.memories_created, updated_at = excluded.updated_at"
+            ).bind(uid, ids_json)
+        )
+    try:
+        await env.APP_DB.batch(statements)
+    except Exception:
+        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    return {"memories": [_response(row) for row in rows], "created_count": len(rows)}
 
 
 @router.delete("/v3/memories/batch")

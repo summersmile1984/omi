@@ -356,6 +356,7 @@ families:
       - action_items:write
       - chat:send_message
       - conversations:search
+      - memories:batch
       - memories:create
       - memories:delete
       - memories:delete_all
@@ -385,6 +386,7 @@ families:
       - PATCH /v3/memories/:memoryId/read
       - PATCH /v3/memories/:memoryId/visibility
       - POST /v3/memories
+      - POST /v3/memories/batch
       - POST /v3/memories/:memoryId/review
   - id: tts-rate-limits
     source_symbols: [check_tts_rate_limit]

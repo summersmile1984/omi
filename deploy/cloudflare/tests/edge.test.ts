@@ -1310,6 +1310,7 @@ describe("edge gateway", () => {
     const cases = [
       ["GET", "/v3/memories?limit=25&offset=0"],
       ["POST", "/v3/memories"],
+      ["POST", "/v3/memories/batch"],
       ["PATCH", "/v3/memories/memory-1?value=edited"],
       ["PATCH", "/v3/memories/memory-1/visibility?value=public"],
       ["PATCH", "/v3/memories/memory-1/read"],
@@ -1338,6 +1339,7 @@ describe("edge gateway", () => {
     ).toEqual([
       "GET /v3/memories",
       "POST /v3/memories",
+      "POST /v3/memories/batch",
       "PATCH /v3/memories/memory-1",
       "PATCH /v3/memories/memory-1/visibility",
       "PATCH /v3/memories/memory-1/read",
@@ -1354,6 +1356,7 @@ describe("edge gateway", () => {
     ).toBe(true);
     expect(rateLimitNames).toEqual([
       "memories:create:user-1",
+      "memories:batch:user-1",
       "memories:modify:user-1",
       "memories:modify:user-1",
       "memories:modify:user-1",

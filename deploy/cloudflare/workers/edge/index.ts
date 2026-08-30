@@ -832,6 +832,7 @@ app.patch("/v1/advice/:adviceId", proxyAuthenticatedCore);
 app.delete("/v1/advice/:adviceId", proxyAuthenticatedCore);
 app.get("/v3/memories", proxyAuthenticatedCore);
 app.post("/v3/memories", proxyAuthenticatedCore);
+app.post("/v3/memories/batch", proxyAuthenticatedCore);
 app.delete("/v3/memories", proxyAuthenticatedCore);
 app.delete("/v3/memories/batch", proxyAuthenticatedCore);
 app.delete("/v3/memories/:memoryId", proxyAuthenticatedCore);

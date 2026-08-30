@@ -31,6 +31,9 @@ boundary and is not implied by a successful D1 mutation.
 accounts created inside the isolated Cloudflare staging profile. It provides
 uid-scoped list/create/edit/review/delete behavior in D1, persists desktop
 read/dismiss state and the baseline flag, and retains deletions as tombstones.
+Batch creation preserves the released 100-memory contract, drops per-file
+onboarding imports, and atomically writes size-bounded JSON chunks plus usage
+sources without per-memory D1 queries.
 State mutations reject locked memories with the legacy paid-plan boundary. It
 has no Firestore fallback or dual write. Production account promotion remains
 forbidden until the account-cutover importer, manifest verification, and

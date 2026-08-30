@@ -64,8 +64,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 322 already match a
-  Cloudflare staging owner and 255 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 323 already match a
+  Cloudflare staging owner and 254 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -537,6 +537,7 @@ POST /v1/advice/mark-all-read
                               uid-scoped D1 proactive coaching CRUD and durable
                               read/dismiss state
 GET/POST/DELETE /v3/memories
+POST  /v3/memories/batch
 PATCH/DELETE /v3/memories/{memoryId}
 PATCH /v3/memories/{memoryId}/visibility
 PATCH /v3/memories/{memoryId}/read

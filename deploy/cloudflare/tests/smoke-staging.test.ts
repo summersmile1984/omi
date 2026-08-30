@@ -22,6 +22,20 @@ function workersAiChatResponse(text = "Cloudflare staging is ready") {
   });
 }
 
+function unauthenticatedMemoryBatchBoundary(
+  url: string,
+  init?: RequestInit,
+): Response | null {
+  if (
+    url.endsWith("/v3/memories/batch") &&
+    init?.method === "POST" &&
+    !new Headers(init.headers).has("authorization")
+  ) {
+    return new Response(null, { status: 401 });
+  }
+  return null;
+}
+
 function creatorPaymentBoundary(
   url: string,
   init?: RequestInit,
@@ -131,6 +145,8 @@ describe("staging smoke helpers", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
+      if (memoryBatch) return memoryBatch;
       if (url.endsWith("/v1/account/cutover/control")) {
         return Response.json({
           state: "new",
@@ -379,6 +395,7 @@ describe("staging smoke helpers", () => {
       unauthenticatedAsyncTranscription: 401,
       unauthenticatedSyncUpload: 401,
       unauthenticatedSyncStatus: 401,
+      unauthenticatedMemoryBatch: 401,
       authenticatedProbe: 200,
       accountCutover: 200,
       appSearch: 200,
@@ -470,7 +487,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(112);
+    expect(calls).toHaveLength(113);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),
@@ -507,6 +524,8 @@ describe("staging smoke helpers", () => {
 
   it("fails when staging authentication is not bound to the Cloudflare data plane", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
+      const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
+      if (memoryBatch) return memoryBatch;
       if (
         url.endsWith("/health") ||
         url.endsWith("/v1/announcements/general") ||
@@ -561,6 +580,8 @@ describe("staging smoke helpers", () => {
 
   it("fails when a user-facing Web API path cannot reach Edge", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
+      const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
+      if (memoryBatch) return memoryBatch;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -614,6 +635,8 @@ describe("staging smoke helpers", () => {
 
   it("can opt into a real native TTS response check", async () => {
     const fetchImpl = async (url: string, init?: RequestInit) => {
+      const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
+      if (memoryBatch) return memoryBatch;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -766,6 +789,8 @@ describe("staging smoke helpers", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
+      if (memoryBatch) return memoryBatch;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }
@@ -835,6 +860,8 @@ describe("staging smoke helpers", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      const memoryBatch = unauthenticatedMemoryBatchBoundary(url, init);
+      if (memoryBatch) return memoryBatch;
       if (url.includes("/v1/users/analytics/memory_summary?")) {
         return Response.json({ has_rating: false });
       }

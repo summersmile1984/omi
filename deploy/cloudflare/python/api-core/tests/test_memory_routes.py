@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from memory_routes import (  # noqa: E402
     create_memory,
+    create_memories_batch,
     delete_memory,
     delete_memories_batch,
     list_memories,
@@ -29,11 +30,13 @@ class FakeDb:
         migration_dir = Path(__file__).parents[3] / "migrations/app"
         for name in ("0032_conversations.sql", "0037_memories.sql", "0046_account_usage.sql"):
             self.connection.executescript((migration_dir / name).read_text())
+        self.batch_statement_counts = []
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
 
     async def batch(self, statements):
+        self.batch_statement_counts.append(len(statements))
         try:
             for statement in statements:
                 self.connection.execute(statement.sql, statement.args)
@@ -154,6 +157,98 @@ def test_memory_create_list_filters_and_preserves_canonical_shape_with_uid_isola
     assert {item["id"] for item in listed} == {manual["id"], automatic["id"]}
     filtered = asyncio.run(list_memories(FakeRequest(env, signed_headers(secret), {"categories": "manual"})))
     assert [item["id"] for item in filtered] == [manual["id"]]
+
+
+def test_memory_batch_create_is_atomic_bounded_and_drops_per_file_imports():
+    secret = "memory-secret"
+    env = make_env(secret)
+    response = asyncio.run(
+        create_memories_batch(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={
+                    "memories": [
+                        {"content": "Manual batch memory", "category": "manual", "tags": ["profile"]},
+                        {"content": "Automatic batch memory", "category": "interesting"},
+                        {
+                            "content": "Per-file import must be dropped",
+                            "category": "system",
+                            "tags": ["local-files", "onboarding", "recent file"],
+                        },
+                    ]
+                },
+            )
+        )
+    )
+    assert response["created_count"] == 2
+    assert [memory["content"] for memory in response["memories"]] == [
+        "Manual batch memory",
+        "Automatic batch memory",
+    ]
+    assert response["memories"][0]["memory_tier"] == "long_term"
+    assert response["memories"][1]["memory_tier"] == "short_term"
+    assert env.APP_DB.batch_statement_counts == [2]
+    assert env.APP_DB.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 2
+    assert env.APP_DB.connection.execute("SELECT COUNT(*) FROM cf_usage_sources").fetchone()[0] == 2
+
+    empty = asyncio.run(create_memories_batch(FakeRequest(env, signed_headers(secret), body={"memories": []})))
+    assert empty == {"memories": [], "created_count": 0}
+    assert env.APP_DB.batch_statement_counts == [2]
+
+    full_env = make_env(secret)
+    full = asyncio.run(
+        create_memories_batch(
+            FakeRequest(
+                full_env,
+                signed_headers(secret),
+                body={"memories": [{"content": f"Memory {index}"} for index in range(100)]},
+            )
+        )
+    )
+    assert full["created_count"] == 100
+    assert full_env.APP_DB.batch_statement_counts == [2]
+
+    chunked_env = make_env(secret)
+    chunked = asyncio.run(
+        create_memories_batch(
+            FakeRequest(
+                chunked_env,
+                signed_headers(secret),
+                body={"memories": [{"content": "x" * 50_000} for _ in range(40)]},
+            )
+        )
+    )
+    assert chunked["created_count"] == 40
+    assert chunked_env.APP_DB.batch_statement_counts == [4]
+
+    oversized = asyncio.run(
+        create_memories_batch(
+            FakeRequest(
+                make_env(secret),
+                signed_headers(secret),
+                body={"memories": [{"content": f"Memory {index}"} for index in range(101)]},
+            )
+        )
+    )
+    assert oversized.status_code == 422
+    missing = asyncio.run(create_memories_batch(FakeRequest(make_env(secret), signed_headers(secret), body={})))
+    assert missing.status_code == 422
+
+    failing_env = make_env(secret)
+    failing_env.APP_DB.connection.execute("DROP TABLE cf_usage_sources")
+    failing_env.APP_DB.connection.commit()
+    failed = asyncio.run(
+        create_memories_batch(
+            FakeRequest(
+                failing_env,
+                signed_headers(secret),
+                body={"memories": [{"content": "Must roll back"}]},
+            )
+        )
+    )
+    assert failed.status_code == 503
+    assert failing_env.APP_DB.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 0
 
 
 def test_memory_edit_visibility_review_and_delete_are_uid_scoped():

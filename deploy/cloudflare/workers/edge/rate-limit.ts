@@ -37,6 +37,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 60,
     windowSeconds: 3600,
   },
+  "memories:batch": {
+    name: "memories:batch",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
   "memories:delete": {
     name: "memories:delete",
     maxRequests: 60,
@@ -87,6 +92,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     EDGE_RATE_LIMIT_POLICIES["conversations:search"],
   ],
   ["POST /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
+  ["POST /v3/memories/batch", EDGE_RATE_LIMIT_POLICIES["memories:batch"]],
   ["POST /v1/mcp/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v1/mcp/action-items", EDGE_RATE_LIMIT_POLICIES["action_items:write"]],
   ["DELETE /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:delete_all"]],

@@ -334,6 +334,16 @@ export async function runSmoke({
     `${base}/v2/sync-local-files/missing`,
   );
   expectStatus("unauthenticated sync status", unauthenticatedSyncStatus, 401);
+  const unauthenticatedMemoryBatch = await request(
+    fetchImpl,
+    `${base}/v3/memories/batch`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ memories: [] }),
+    },
+  );
+  expectStatus("unauthenticated memory batch", unauthenticatedMemoryBatch, 401);
 
   const authHeaders = { authorization: `Bearer ${token}` };
   const probe = await request(fetchImpl, `${base}/v1/cf/probe`, {
@@ -1155,6 +1165,7 @@ export async function runSmoke({
     unauthenticatedAsyncTranscription: unauthenticatedAsyncTranscription.status,
     unauthenticatedSyncUpload: unauthenticatedSyncUpload.status,
     unauthenticatedSyncStatus: unauthenticatedSyncStatus.status,
+    unauthenticatedMemoryBatch: unauthenticatedMemoryBatch.status,
     authenticatedProbe: probe.status,
     accountCutover: accountCutover.status,
     appSearch: appSearch.status,

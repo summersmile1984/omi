@@ -224,6 +224,7 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v2/voice-message/transcribe", "stt:transcribe"],
       ["POST", "/v1/conversations/search", "conversations:search"],
       ["POST", "/v3/memories", "memories:create"],
+      ["POST", "/v3/memories/batch", "memories:batch"],
       ["POST", "/v1/mcp/memories", "memories:create"],
       ["POST", "/v1/mcp/action-items", "action_items:write"],
       ["POST", "/v1/mcp/action-items/action-1/complete", "action_items:write"],
