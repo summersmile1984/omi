@@ -82,7 +82,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
   gate. The current inventory contains 577 backend routes: 434 already match
-  Cloudflare staging owners and 143 remain legacy-owned. Edge directly serves
+  Cloudflare staging owners and 138 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -771,6 +771,7 @@ GET  /v2/integrations/google-calendar/callback
 GET  /v1/calendar/google/events
 POST /v1/tools/calendar-events
                               Edge → Jobs → encrypted D1 grant + Google Calendar API
+DELETE /v1/import/limitless/conversations
 POST /v1/staged-tasks/migrate
 POST /v1/staged-tasks/migrate-conversation-items
 POST /v1/action-items/restore-legacy-conversation-items

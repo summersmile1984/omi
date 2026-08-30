@@ -85,3 +85,20 @@ async def restore_legacy_conversation_items(request: Request):
         "has_more": False,
         "next_cursor": None,
     }
+
+
+@router.delete("/v1/import/limitless/conversations")
+async def delete_limitless_conversations(request: Request):
+    """Preserve the retired Limitless-delete response without touching data.
+
+    The legacy endpoint has never deleted imported conversations: its storage
+    marker was never written, so the implementation is an intentional
+    side-effect-free compatibility response.  Keep that exact envelope while
+    moving the route behind the Better Auth edge boundary.
+    """
+    if denial := _require_auth(request):
+        return denial
+    return {
+        "deleted_count": 0,
+        "message": "Successfully deleted 0 Limitless conversations",
+    }

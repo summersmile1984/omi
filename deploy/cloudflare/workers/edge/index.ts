@@ -1193,6 +1193,7 @@ app.post(
   "/v1/action-items/restore-legacy-conversation-items",
   proxyAuthenticatedCore,
 );
+app.delete("/v1/import/limitless/conversations", proxyAuthenticatedCore);
 app.post("/v1/staged-tasks/migrate", proxyAuthenticatedCore);
 app.post("/v1/staged-tasks/migrate-conversation-items", proxyAuthenticatedCore);
 app.get("/v1/tools/conversations", proxyAuthenticatedCore);

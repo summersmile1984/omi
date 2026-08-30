@@ -969,7 +969,7 @@ describe("edge gateway", () => {
     expect(jobsRequests[0].headers.get("x-omi-auth-context")).toBeNull();
   });
 
-  it("routes retired staged-task compatibility endpoints to API Core", async () => {
+  it("routes retired compatibility endpoints to API Core", async () => {
     const coreRequests: Request[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
@@ -994,10 +994,11 @@ describe("edge gateway", () => {
       "/v1/staged-tasks/migrate",
       "/v1/staged-tasks/migrate-conversation-items?limit=50&cursor=page-1",
       "/v1/action-items/restore-legacy-conversation-items",
+      "/v1/import/limitless/conversations",
     ]) {
       const response = await edge.fetch(
         new Request(`https://edge.test${path}`, {
-          method: "POST",
+          method: path.startsWith("/v1/import/") ? "DELETE" : "POST",
           headers: { authorization: "Bearer opaque-session" },
         }),
         env,
@@ -1005,11 +1006,12 @@ describe("edge gateway", () => {
       expect(response.status, path).toBe(200);
     }
 
-    expect(coreRequests).toHaveLength(3);
+    expect(coreRequests).toHaveLength(4);
     expect(coreRequests.map((request) => new URL(request.url).pathname)).toEqual([
       "/v1/staged-tasks/migrate",
       "/v1/staged-tasks/migrate-conversation-items",
       "/v1/action-items/restore-legacy-conversation-items",
+      "/v1/import/limitless/conversations",
     ]);
     for (const request of coreRequests) {
       expect(request.headers.get("x-omi-auth-context")).toBeTruthy();

@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from retired_compat_routes import (  # noqa: E402
+    delete_limitless_conversations,
     migrate_ai_tasks,
     migrate_conversation_items,
     restore_legacy_conversation_items,
@@ -63,6 +64,10 @@ def test_retired_routes_preserve_inert_response_envelopes():
         "has_more": False,
         "next_cursor": None,
     }
+    assert asyncio.run(delete_limitless_conversations(FakeRequest(env, headers))) == {
+        "deleted_count": 0,
+        "message": "Successfully deleted 0 Limitless conversations",
+    }
 
 
 def test_retired_routes_fail_closed_and_bound_pagination():
@@ -81,3 +86,6 @@ def test_retired_routes_fail_closed_and_bound_pagination():
         restore_legacy_conversation_items(FakeRequest(env, signed_headers(secret), {"cursor": ""}))
     )
     assert invalid_cursor.status_code == 422
+
+    invalid_limitless_auth = asyncio.run(delete_limitless_conversations(FakeRequest(env)))
+    assert invalid_limitless_auth.status_code == 401
