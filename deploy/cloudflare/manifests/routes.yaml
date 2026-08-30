@@ -2894,6 +2894,16 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/conversations/:conversationId/shared
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: DELETE
     path: /v1/conversations/:conversationId
     owner: api-core
@@ -3037,6 +3047,36 @@ routes:
     rollback: edge-route-to-legacy
   - method: PATCH
     path: /v1/conversations/:conversationId/segments/text
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/conversations/:conversationId/segments/:segmentIdx/assign
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/conversations/:conversationId/assign-speaker/:speakerId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /v1/conversations/:conversationId/visibility
     owner: api-core
     runtime: python-worker
     target_runtime: python-worker

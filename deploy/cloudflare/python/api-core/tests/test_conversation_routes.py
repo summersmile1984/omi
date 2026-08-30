@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, urlsplit
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from conversation_routes import (  # noqa: E402
+    assign_conversation_segment,
+    assign_conversation_speaker,
     count_conversations,
     delete_conversation,
     delete_conversation_action_item,
@@ -19,6 +21,7 @@ from conversation_routes import (  # noqa: E402
     get_conversation_audio_urls,
     get_conversation_photos,
     get_conversation_transcripts,
+    get_shared_conversation,
     conversation_has_recording,
     download_conversation_audio,
     list_conversations,
@@ -31,6 +34,7 @@ from conversation_routes import (  # noqa: E402
     patch_conversation_title,
     search_conversations,
     set_conversation_starred,
+    set_conversation_visibility,
     store_conversation_projection,
 )
 
@@ -54,14 +58,22 @@ class FakeDb:
             "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);"
         )
         self.connection.executescript((migration_dir / "0068_vector_projection_outbox.sql").read_text())
+        self.connection.executescript((migration_dir / "0070_conversation_shares.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
 
     async def batch(self, statements):
-        for statement in statements:
-            self.connection.execute(statement.sql, statement.args)
-        self.connection.commit()
+        results = []
+        try:
+            for statement in statements:
+                cursor = self.connection.execute(statement.sql, statement.args)
+                results.append({"meta": {"changes": cursor.rowcount}})
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return results
 
 
 class FakeBucket:
@@ -120,9 +132,10 @@ class FakeStatement:
         return {"results": [dict(row) for row in rows]}
 
     async def run(self):
+        before = self.connection.total_changes
         cursor = self.connection.execute(self.sql, self.args)
         self.connection.commit()
-        return {"meta": {"changes": cursor.rowcount}}
+        return {"meta": {"changes": self.connection.total_changes - before}}
 
 
 class FakeRequest:
@@ -157,6 +170,7 @@ def insert_conversation(
     conversation_id: str,
     created_at: int,
     locked: int = 0,
+    visibility: str = "private",
     photos: list[dict[str, object]] | None = None,
     transcript_segments: list[dict[str, object]] | None = None,
     apps_results: list[dict[str, object]] | None = None,
@@ -178,7 +192,7 @@ def insert_conversation(
             "omi",
             "en",
             "completed",
-            "private",
+            visibility,
             1,
             0,
             locked,
@@ -217,6 +231,34 @@ def insert_conversation(
             (json.dumps(apps_results), uid, conversation_id),
         )
     db.connection.commit()
+
+
+def test_conversation_share_migration_backfills_only_unambiguous_public_ids():
+    migration_dir = Path(__file__).parents[3] / "migrations/app"
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.executescript((migration_dir / "0032_conversations.sql").read_text())
+    connection.executescript(
+        "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
+        "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);"
+    )
+    connection.executemany(
+        "INSERT INTO cf_conversations (uid, id, created_at, updated_at, visibility) VALUES (?, ?, ?, ?, ?)",
+        [
+            ("owner", "unique-public", 1, 2, "public"),
+            ("owner", "private", 1, 2, "private"),
+            ("owner-a", "ambiguous", 1, 2, "shared"),
+            ("owner-b", "ambiguous", 1, 3, "public"),
+        ],
+    )
+    connection.executescript((migration_dir / "0070_conversation_shares.sql").read_text())
+    rows = connection.execute(
+        "SELECT conversation_id, uid, visibility FROM cf_shared_conversation_index ORDER BY conversation_id"
+    ).fetchall()
+    assert [dict(row) for row in rows] == [
+        {"conversation_id": "unique-public", "uid": "owner", "visibility": "public"}
+    ]
 
 
 def test_conversation_projection_lists_filters_and_redacts_list_details():
@@ -1303,6 +1345,214 @@ def test_conversation_projection_write_is_idempotent_and_bounded():
         store_conversation_projection(FakeRequest(env, signed_headers(secret), body={**body, "status": "unknown"}))
     )
     assert invalid.status_code == 400
+
+
+def test_conversation_projection_write_keeps_share_index_in_sync_and_rejects_owner_collision():
+    secret = "conversation-secret"
+    db = FakeDb()
+    env = type("Env", (), {"APP_DB": db, "JOBS": FakeQueue(), "INTERNAL_ASSERTION_SECRET": secret})()
+    body = {
+        "id": "shared-write",
+        "created_at": "2026-08-28T10:00:00Z",
+        "updated_at": "2026-08-28T10:00:00Z",
+        "source": "desktop",
+        "status": "completed",
+        "visibility": "public",
+        "structured": {"title": "Shared"},
+        "transcript_segments": [],
+    }
+
+    stored = asyncio.run(store_conversation_projection(FakeRequest(env, signed_headers(secret), body=body)))
+    assert stored == {"conversation_id": "shared-write", "status": "stored"}
+    indexed = db.connection.execute(
+        "SELECT uid, visibility FROM cf_shared_conversation_index WHERE conversation_id = ?",
+        ("shared-write",),
+    ).fetchone()
+    assert dict(indexed) == {"uid": "conversation-user", "visibility": "public"}
+
+    private = asyncio.run(
+        store_conversation_projection(
+            FakeRequest(env, signed_headers(secret), body={**body, "visibility": "private"})
+        )
+    )
+    assert private == stored
+    assert (
+        db.connection.execute(
+            "SELECT 1 FROM cf_shared_conversation_index WHERE conversation_id = ?",
+            ("shared-write",),
+        ).fetchone()
+        is None
+    )
+
+    asyncio.run(store_conversation_projection(FakeRequest(env, signed_headers(secret), body=body)))
+    collision = asyncio.run(
+        store_conversation_projection(
+            FakeRequest(env, signed_headers(secret, "other-user"), body=body)
+        )
+    )
+    assert collision.status_code == 409
+    assert (
+        db.connection.execute(
+            "SELECT 1 FROM cf_conversations WHERE uid = ? AND id = ?",
+            ("other-user", "shared-write"),
+        ).fetchone()
+        is None
+    )
+
+
+def test_conversation_visibility_and_public_share_are_uid_safe_and_redacted():
+    secret = "conversation-secret"
+    db = FakeDb()
+    segments = [
+        {
+            "id": "segment-1",
+            "text": "hello",
+            "start": 0,
+            "end": 1,
+            "speaker_id": 1,
+            "is_user": False,
+            "person_id": "person-1",
+        }
+    ]
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="share-1",
+        created_at=200,
+        transcript_segments=segments,
+    )
+    insert_conversation(db, uid="other-user", conversation_id="share-1", created_at=300)
+    db.connection.execute(
+        "UPDATE cf_conversations SET geolocation_json = ?, external_data_json = ? WHERE uid = ? AND id = ?",
+        (json.dumps({"latitude": 1}), json.dumps({"merge": "private-id"}), "conversation-user", "share-1"),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_people "
+        "(uid, id, name, speech_samples_json, speech_sample_transcripts_json, speech_samples_version, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("conversation-user", "person-1", "Alice", "[]", '["sample"]', 3, 100, 101),
+    )
+    db.connection.commit()
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    made_public = asyncio.run(
+        set_conversation_visibility(
+            FakeRequest(env, signed_headers(secret), query={"value": "public"}),
+            "share-1",
+        )
+    )
+    assert made_public == {"status": "Ok"}
+    shared = asyncio.run(get_shared_conversation("share-1", FakeRequest(env, {})))
+    assert shared["visibility"] == "public"
+    assert shared["geolocation"] is None
+    assert shared["external_data"] is None
+    assert shared["data_protection_level"] is None
+    assert shared["people"] == [
+        {
+            "id": "person-1",
+            "name": "Alice",
+            "created_at": "1970-01-01T00:01:40+00:00",
+            "updated_at": "1970-01-01T00:01:41+00:00",
+            "speech_samples": [],
+            "speech_sample_transcripts": ["sample"],
+            "speech_samples_version": 3,
+        }
+    ]
+
+    collision = asyncio.run(
+        set_conversation_visibility(
+            FakeRequest(env, signed_headers(secret, "other-user"), query={"value": "shared"}),
+            "share-1",
+        )
+    )
+    assert collision.status_code == 409
+    other_visibility = db.connection.execute(
+        "SELECT visibility FROM cf_conversations WHERE uid = ? AND id = ?",
+        ("other-user", "share-1"),
+    ).fetchone()[0]
+    assert other_visibility == "private"
+
+    made_private = asyncio.run(
+        set_conversation_visibility(
+            FakeRequest(env, signed_headers(secret), query={"value": "private"}),
+            "share-1",
+        )
+    )
+    assert made_private == {"status": "Ok"}
+    assert asyncio.run(get_shared_conversation("share-1", FakeRequest(env, {}))).status_code == 404
+
+
+def test_conversation_speaker_assignments_match_legacy_mutation_contract(capsys):
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="assign-1",
+        created_at=200,
+        transcript_segments=[
+            {"id": "s-1", "text": "one", "speaker_id": 1, "is_user": True},
+            {"id": "s-2", "text": "two", "speaker_id": 1, "is_user": False},
+            {"id": "s-3", "text": "three", "speaker_id": 2, "is_user": False},
+        ],
+    )
+    insert_conversation(db, uid="conversation-user", conversation_id="locked-assign", created_at=100, locked=1)
+    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    one = asyncio.run(
+        assign_conversation_segment(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                query={"assign_type": "person_id", "value": "person-1"},
+            ),
+            "assign-1",
+            0,
+        )
+    )
+    assert one["transcript_segments"][0]["person_id"] == "person-1"
+    assert one["transcript_segments"][0]["is_user"] is False
+
+    speaker = asyncio.run(
+        assign_conversation_speaker(
+            FakeRequest(env, signed_headers(secret), query={"assign_type": "is_user", "value": "true"}),
+            "assign-1",
+            1,
+        )
+    )
+    assert [segment.get("is_user") for segment in speaker["transcript_segments"]] == [True, True, False]
+    assert [segment.get("person_id") for segment in speaker["transcript_segments"][:2]] == [None, None]
+    emitted = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [(event["scope"], event["affected_segment_count"]) for event in emitted] == [
+        ("segment", 1),
+        ("speaker", 2),
+    ]
+    assert all("conversation_id" not in event for event in emitted)
+
+    out_of_range = asyncio.run(
+        assign_conversation_segment(
+            FakeRequest(env, signed_headers(secret), query={"assign_type": "is_user", "value": "true"}),
+            "assign-1",
+            -1,
+        )
+    )
+    assert out_of_range.status_code == 404
+    invalid = asyncio.run(
+        assign_conversation_speaker(
+            FakeRequest(env, signed_headers(secret), query={"assign_type": "invalid"}),
+            "assign-1",
+            1,
+        )
+    )
+    assert invalid.status_code == 400
+    locked = asyncio.run(
+        assign_conversation_segment(
+            FakeRequest(env, signed_headers(secret), query={"assign_type": "is_user", "value": "true"}),
+            "locked-assign",
+            0,
+        )
+    )
+    assert locked.status_code == 402
 
 
 def test_canonical_conversation_metadata_mutations_are_uid_scoped():

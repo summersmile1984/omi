@@ -457,6 +457,136 @@ async def _first_conversation(env: object, uid: str, conversation_id: str) -> di
     return row if isinstance(row, dict) else None
 
 
+def _share_index_statement(
+    env: object,
+    *,
+    uid: str,
+    conversation_id: str,
+    visibility: str,
+    updated_at: int,
+):
+    if visibility == "private":
+        return env.APP_DB.prepare(
+            "DELETE FROM cf_shared_conversation_index WHERE conversation_id = ? AND uid = ?"
+        ).bind(conversation_id, uid)
+    return env.APP_DB.prepare(
+        "INSERT INTO cf_shared_conversation_index (conversation_id, uid, visibility, updated_at) "
+        "VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET "
+        "visibility = excluded.visibility, updated_at = excluded.updated_at "
+        "WHERE cf_shared_conversation_index.uid = excluded.uid"
+    ).bind(conversation_id, uid, visibility, updated_at)
+
+
+def _speaker_assignment(segment: dict[str, object]) -> str:
+    if _bool(segment.get("is_user")):
+        return "self"
+    person_id = segment.get("person_id")
+    if person_id:
+        digest = hashlib.sha256(str(person_id).encode()).hexdigest()[:16]
+        return f"person:{digest}"
+    return "unassigned"
+
+
+def _record_speaker_identity_confirmation(
+    *, scope: str, before: list[str], after: list[str]
+) -> None:
+    """Emit a bounded, PII-free equivalent of the legacy product event."""
+
+    if not after:
+        return
+    kinds = ["person" if value.startswith("person:") else value for value in after]
+    payload: dict[str, object] = {
+        "event": "Speaker Identity Confirmed",
+        "confirmation": "accepted" if before == after else "corrected",
+        "assignment": kinds[0] if len(set(kinds)) == 1 else "mixed",
+        "scope": scope,
+        "affected_segment_count": len(after),
+    }
+    if len(set(after)) == 1 and kinds[0] == "person":
+        payload["assignment_id"] = after[0]
+    print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+
+
+def _apply_speaker_assignment(segment: dict[str, object], assign_type: str, value: str | None) -> None:
+    if assign_type == "is_user":
+        segment["is_user"] = bool(value) if value is not None else False
+        segment["person_id"] = None
+        return
+    segment["is_user"] = False
+    segment["person_id"] = value
+
+
+async def _write_conversation_segments(
+    env: object,
+    *,
+    uid: str,
+    conversation_id: str,
+    existing: dict[str, object],
+    segments: list[object],
+) -> dict[str, object] | JSONResponse:
+    current_updated_at = int(existing.get("updated_at") or 0)
+    next_updated_at = max(int(time.time()), current_updated_at + 1)
+    encoded = _dump_json(segments, "transcript_segments")
+    result = (
+        await env.APP_DB.prepare(
+            "UPDATE cf_conversations SET transcript_segments_json = ?, updated_at = ? "
+            "WHERE uid = ? AND id = ? AND updated_at = ? RETURNING id"
+        )
+        .bind(encoded, next_updated_at, uid, conversation_id, current_updated_at)
+        .first()
+    )
+    if not isinstance(result, dict) or result.get("id") != conversation_id:
+        return JSONResponse({"error": "conversation changed, retry"}, status_code=409)
+    updated = dict(existing)
+    updated["transcript_segments_json"] = encoded
+    updated["updated_at"] = next_updated_at
+    return updated
+
+
+async def _shared_people(env: object, uid: str, segments: list[object]) -> list[dict[str, object]]:
+    person_ids = sorted(
+        {
+            str(segment["person_id"])
+            for segment in segments
+            if isinstance(segment, dict) and segment.get("person_id")
+        }
+    )
+    people: list[dict[str, object]] = []
+    for start in range(0, len(person_ids), 100):
+        chunk = person_ids[start : start + 100]
+        placeholders = ", ".join("?" for _ in chunk)
+        result = (
+            await env.APP_DB.prepare(
+                "SELECT id, name, speech_samples_json, speech_sample_transcripts_json, "
+                "speech_samples_version, created_at, updated_at FROM cf_people "
+                f"WHERE uid = ? AND id IN ({placeholders})"
+            )
+            .bind(uid, *chunk)
+            .all()
+        )
+        rows = result.get("results", []) if isinstance(result, dict) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            people.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "name": str(row.get("name") or ""),
+                    "created_at": _iso(row.get("created_at")),
+                    "updated_at": _iso(row.get("updated_at")),
+                    "speech_samples": _json_list(row.get("speech_samples_json")),
+                    "speech_sample_transcripts": (
+                        _json_list(row.get("speech_sample_transcripts_json"))
+                        if row.get("speech_sample_transcripts_json")
+                        else None
+                    ),
+                    "speech_samples_version": int(row.get("speech_samples_version") or 3),
+                }
+            )
+    people.sort(key=lambda item: str(item["id"]))
+    return people
+
+
 def _audio_signing_secret(env: object) -> str | None:
     value = getattr(env, "AUDIO_URL_SIGNING_SECRET", None) or getattr(env, "INTERNAL_ASSERTION_SECRET", None)
     return value if isinstance(value, str) and len(value) >= 16 else None
@@ -861,8 +991,17 @@ async def store_conversation_projection(request: Request):
             desired_version=updated_at,
             operation="upsert" if projection.status == "completed" and not projection.discarded else "delete",
         )
-        await env.APP_DB.batch([conversation_statement, usage_statement, vector_projection])
-    except Exception:
+        share_index = _share_index_statement(
+            env,
+            uid=uid,
+            conversation_id=projection.id,
+            visibility=projection.visibility,
+            updated_at=updated_at,
+        )
+        await env.APP_DB.batch([conversation_statement, usage_statement, vector_projection, share_index])
+    except Exception as error:
+        if "conversation share id collision" in str(error):
+            return JSONResponse({"error": "conversation share id is already owned"}, status_code=409)
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
     await publish_vector_projection(env, uid=uid, source_kind="conversation", source_id=projection.id)
     return {"conversation_id": projection.id, "status": "stored"}
@@ -1027,6 +1166,9 @@ async def delete_conversation(request: Request, conversation_id: str):
         desired_version = max(int(time.time()), previous_version + 1)
         await env.APP_DB.batch(
             [
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_shared_conversation_index WHERE conversation_id = ? AND uid = ?"
+                ).bind(conversation_id, uid),
                 env.APP_DB.prepare("DELETE FROM cf_conversations WHERE uid = ? AND id = ?").bind(uid, conversation_id),
                 env.APP_DB.prepare(
                     "UPDATE cf_folders SET conversation_count = ("
@@ -1048,6 +1190,180 @@ async def delete_conversation(request: Request, conversation_id: str):
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
     await publish_vector_projection(env, uid=uid, source_kind="conversation", source_id=conversation_id)
     return {"status": "Ok"}
+
+
+@router.get("/v1/conversations/{conversation_id}/shared")
+async def get_shared_conversation(conversation_id: str, request: Request):
+    """Return a public shared projection through its unique D1 owner index."""
+
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    env = request.scope["env"]
+    try:
+        row = await env.APP_DB.prepare(
+            _CONVERSATION_SEARCH_SELECT
+            + "FROM cf_shared_conversation_index i "
+            "JOIN cf_conversations c ON c.uid = i.uid AND c.id = i.conversation_id "
+            "WHERE i.conversation_id = ? AND i.visibility IN ('shared', 'public') "
+            "AND c.visibility IN ('shared', 'public') LIMIT 1"
+        ).bind(conversation_id).first()
+        if not isinstance(row, dict):
+            return JSONResponse({"error": "Conversation is private"}, status_code=404)
+        if _bool(row.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        response = _response(row, detail=True)
+        response["geolocation"] = None
+        response["external_data"] = None
+        response["data_protection_level"] = None
+        response["people"] = await _shared_people(env, str(row["uid"]), response["transcript_segments"])
+        return response
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+
+
+@router.patch("/v1/conversations/{conversation_id}/visibility")
+async def set_conversation_visibility(request: Request, conversation_id: str):
+    """Atomically update the owner row and public D1 owner index."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    visibility = request.query_params.get("value")
+    if visibility not in CONVERSATION_VISIBILITIES:
+        return JSONResponse({"error": "invalid conversation visibility"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        current_updated_at = int(existing.get("updated_at") or 0)
+        next_updated_at = max(int(time.time()), current_updated_at + 1)
+        conversation_update = env.APP_DB.prepare(
+            "UPDATE cf_conversations SET visibility = ?, updated_at = ? WHERE uid = ? AND id = ?"
+        ).bind(visibility, next_updated_at, uid, conversation_id)
+        share_update = _share_index_statement(
+            env,
+            uid=uid,
+            conversation_id=conversation_id,
+            visibility=visibility,
+            updated_at=next_updated_at,
+        )
+        await env.APP_DB.batch([conversation_update, share_update])
+    except Exception as error:
+        if "conversation share id collision" in str(error):
+            return JSONResponse({"error": "conversation share id is already owned"}, status_code=409)
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    return {"status": "Ok"}
+
+
+@router.patch("/v1/conversations/{conversation_id}/segments/{segment_idx}/assign")
+async def assign_conversation_segment(request: Request, conversation_id: str, segment_idx: int):
+    """Assign one bounded transcript segment without the legacy-disabled training path."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        assign_type = request.query_params.get("assign_type")
+        if assign_type not in {"is_user", "person_id"}:
+            return JSONResponse({"error": "Invalid assign type"}, status_code=400)
+        value = request.query_params.get("value")
+        if value == "null":
+            value = None
+        segments = _json_list(existing.get("transcript_segments_json"))
+        if segment_idx < 0 or segment_idx >= len(segments) or not isinstance(segments[segment_idx], dict):
+            return JSONResponse({"error": "Segment not found"}, status_code=404)
+        segment = segments[segment_idx]
+        before = [_speaker_assignment(segment)]
+        _apply_speaker_assignment(segment, assign_type, value)
+        after = [_speaker_assignment(segment)]
+        updated = await _write_conversation_segments(
+            env,
+            uid=uid,
+            conversation_id=conversation_id,
+            existing=existing,
+            segments=segments,
+        )
+        if isinstance(updated, JSONResponse):
+            return updated
+        _record_speaker_identity_confirmation(scope="segment", before=before, after=after)
+        return _response(updated, detail=True)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+
+
+@router.patch("/v1/conversations/{conversation_id}/assign-speaker/{speaker_id}")
+async def assign_conversation_speaker(request: Request, conversation_id: str, speaker_id: int):
+    """Assign every transcript segment owned by one numeric diarization speaker."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not conversation_id or len(conversation_id) > MAX_ID_LENGTH:
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        existing = await _first_conversation(env, uid, conversation_id)
+        if existing is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        if _bool(existing.get("is_locked")):
+            return JSONResponse(
+                {"error": "A paid plan is required to access this conversation."},
+                status_code=402,
+            )
+        assign_type = request.query_params.get("assign_type")
+        if assign_type not in {"is_user", "person_id"}:
+            return JSONResponse({"error": "Invalid assign type"}, status_code=400)
+        value = request.query_params.get("value")
+        if value == "null":
+            value = None
+        segments = _json_list(existing.get("transcript_segments_json"))
+        targets = [
+            segment
+            for segment in segments
+            if isinstance(segment, dict) and segment.get("speaker_id") == speaker_id
+        ]
+        before = [_speaker_assignment(segment) for segment in targets]
+        for segment in targets:
+            _apply_speaker_assignment(segment, assign_type, value)
+        after = [_speaker_assignment(segment) for segment in targets]
+        updated = await _write_conversation_segments(
+            env,
+            uid=uid,
+            conversation_id=conversation_id,
+            existing=existing,
+            segments=segments,
+        )
+        if isinstance(updated, JSONResponse):
+            return updated
+        _record_speaker_identity_confirmation(scope="speaker", before=before, after=after)
+        return _response(updated, detail=True)
+    except Exception:
+        return JSONResponse({"error": "conversations unavailable"}, status_code=503)
 
 
 @router.get("/v1/conversations/{conversation_id}")
@@ -1416,20 +1732,15 @@ async def patch_conversation_segment_text(request: Request, conversation_id: str
         if not found:
             return JSONResponse({"error": "segment not found"}, status_code=404)
 
-        current_updated_at = int(existing.get("updated_at") or 0)
-        next_updated_at = max(int(time.time()), current_updated_at + 1)
-        encoded_segments = _dump_json(segments, "transcript_segments")
-        result = (
-            await env.APP_DB.prepare(
-                "UPDATE cf_conversations SET transcript_segments_json = ?, updated_at = ? "
-                "WHERE uid = ? AND id = ? AND updated_at = ?"
-            )
-            .bind(encoded_segments, next_updated_at, uid, conversation_id, current_updated_at)
-            .run()
+        updated = await _write_conversation_segments(
+            env,
+            uid=uid,
+            conversation_id=conversation_id,
+            existing=existing,
+            segments=segments,
         )
-        changes = result.get("meta", {}).get("changes", 0) if isinstance(result, dict) else 0
-        if int(changes or 0) != 1:
-            return JSONResponse({"error": "conversation changed, retry"}, status_code=409)
+        if isinstance(updated, JSONResponse):
+            return updated
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
     return {"status": "Ok"}

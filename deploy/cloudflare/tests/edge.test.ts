@@ -526,6 +526,7 @@ describe("edge gateway", () => {
     for (const path of [
       "/v1/action-items/shared/public-token",
       "/v2/messages/shared/public-token",
+      "/v1/conversations/shared-conversation/shared",
     ]) {
       const preview = await edge.fetch(
         new Request(`https://edge.test${path}`),
@@ -549,16 +550,18 @@ describe("edge gateway", () => {
     ).toEqual([
       "/v1/action-items/shared/public-token",
       "/v2/messages/shared/public-token",
+      "/v1/conversations/shared-conversation/shared",
       "/v1/action-items/share",
       "/v2/messages/share",
     ]);
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeNull();
     expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeNull();
-    expect(
-      decodeAuthContext(coreRequests[2].headers.get("x-omi-auth-context")),
-    ).toMatchObject({ uid: "user-1", displayName: "Alice" });
+    expect(coreRequests[2].headers.get("x-omi-auth-context")).toBeNull();
     expect(
       decodeAuthContext(coreRequests[3].headers.get("x-omi-auth-context")),
+    ).toMatchObject({ uid: "user-1", displayName: "Alice" });
+    expect(
+      decodeAuthContext(coreRequests[4].headers.get("x-omi-auth-context")),
     ).toMatchObject({ uid: "user-1", displayName: "Alice" });
   });
 
@@ -1393,6 +1396,62 @@ describe("edge gateway", () => {
       "/v1/conversations/conversation-1/segments/text",
     );
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
+  it("guards and routes conversation sharing and speaker mutations through core", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "Ok" });
+      }),
+    };
+    const unauthorized = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/conversations/conversation-1/visibility?value=public",
+        { method: "PATCH" },
+      ),
+      env as never,
+    );
+    expect(unauthorized.status).toBe(401);
+
+    const auth = { authorization: "Bearer opaque-session" };
+    const cases = [
+      "/v1/conversations/conversation-1/segments/0/assign?assign_type=is_user&value=true",
+      "/v1/conversations/conversation-1/assign-speaker/1?assign_type=person_id&value=person-1",
+      "/v1/conversations/conversation-1/visibility?value=public",
+    ];
+    for (const path of cases) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method: "PATCH",
+          headers: auth,
+        }),
+        env as never,
+      );
+      expect(response.status, path).toBe(200);
+    }
+    expect(
+      coreRequests.map(
+        (request) => `${request.method} ${new URL(request.url).pathname}`,
+      ),
+    ).toEqual([
+      "PATCH /v1/conversations/conversation-1/segments/0/assign",
+      "PATCH /v1/conversations/conversation-1/assign-speaker/1",
+      "PATCH /v1/conversations/conversation-1/visibility",
+    ]);
+    expect(
+      coreRequests.every((request) =>
+        Boolean(request.headers.get("x-omi-auth-context")),
+      ),
+    ).toBe(true);
   });
 
   it("routes canonical conversation summary edits to the authenticated core worker", async () => {

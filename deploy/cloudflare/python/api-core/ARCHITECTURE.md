@@ -54,6 +54,13 @@ index. The SQL uid predicate remains authoritative after FTS candidate lookup.
 Default deletion matches the legacy `cascade=false` boundary and updates folder
 counts in the same D1 batch; the Worker rejects cascade deletion until memory
 retraction and audio cleanup have moved to the same authority.
+Visibility writes maintain `cf_shared_conversation_index` in the same D1 batch.
+The index rejects cross-account conversation-id collisions, and public reads
+join back through both uid and id before stripping location, external metadata,
+and encryption-tier fields. Single-index and diarization-speaker assignment
+writes use updated-at compare-and-set; the legacy-disabled speech-training path
+is not revived, while bulk assignment remains legacy-owned because it still
+extracts person speech samples asynchronously.
 
 `chat_routes.py` and `chat_session_routes.py` share the uid-scoped
 `cf_chat_messages`, `cf_chat_sessions`, and `cf_chat_quota_events` authority.

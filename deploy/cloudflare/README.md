@@ -64,8 +64,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 298 already match a
-  Cloudflare staging owner and 279 remain legacy-owned. This guard was added
+  gate. The current inventory contains 577 backend routes: 315 already match a
+  Cloudflare staging owner and 262 remain legacy-owned. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
   the migrated-only route manifest could not prove complete backend coverage.
 
@@ -555,6 +555,9 @@ GET  /v1/conversations/{conversationId}
 DELETE /v1/conversations/{conversationId}
                               canonical read/search projection and non-cascade delete;
                               finalization/merge remain legacy
+GET  /v1/conversations/{conversationId}/shared
+PATCH /v1/conversations/{conversationId}/visibility
+                              public D1 share index and privacy-redacted read
 GET  /v1/conversations/{conversationId}/photos
                               bounded photo projection; locked rows fail closed
 GET  /v1/conversations/{conversationId}/transcripts
@@ -574,6 +577,10 @@ GET  /v1/conversations/{conversationId}/action-items/count
                               standalone D1 action-item projection; locked rows fail closed
 PATCH /v1/conversations/{conversationId}/segments/text
                               bounded D1 transcript edit with updated-at CAS
+PATCH /v1/conversations/{conversationId}/segments/{segmentIdx}/assign
+PATCH /v1/conversations/{conversationId}/assign-speaker/{speakerId}
+                              D1 speaker assignment with updated-at CAS;
+                              speech-training bulk assignment remains legacy
 PATCH /v1/conversations/{conversationId}/events
 PATCH /v1/conversations/{conversationId}/summary
                               structured event flags and default/app summaries → D1
@@ -1218,8 +1225,12 @@ the uid/id key; it does not run LLM enrichment. Canonical GET list/count/detail
 routes now read this projection in staging. List responses never include
 transcript segments, and locked rows redact derived content. Rows can also be
 loaded by the reviewed backfill/import workflow. Title and starred metadata
-mutations update the canonical D1 projection in staging. Visibility remains
-legacy-owned because it also maintains public-share and Redis indexes.
+mutations update the canonical D1 projection in staging. Visibility and
+unauthenticated shared reads use a unique D1 owner index maintained in the same
+batch as the conversation row. A cross-account duplicate conversation id is
+rejected instead of choosing an owner; public responses remove geolocation,
+external integration/merge data, and the encryption tier before resolving only
+the referenced uid-scoped people rows.
 Conversation search uses a D1 FTS5 index maintained by insert/update/delete
 triggers over IDs, titles, summaries, categories, and transcript text. Search
 remains uid-scoped, excludes locked rows, and supports the Web pagination,
@@ -1329,6 +1340,14 @@ per-speaker talk-time, word-count, WPM, and talk-share response from the same
 bounded transcript projection. Person labels are resolved from the uid-scoped
 `cf_people` table; speech-profile extraction and other transcript side effects
 are not part of this read route.
+
+`PATCH /v1/conversations/{conversation_id}/segments/{segment_idx}/assign` and
+`PATCH /v1/conversations/{conversation_id}/assign-speaker/{speaker_id}` update
+the bounded transcript projection with an updated-at compare-and-set and emit a
+PII-free structured confirmation event. They preserve the legacy `is_user` and
+`person_id` mutation rules. The legacy implementation's per-route speech
+training is disabled too; `/segments/assign-bulk` remains legacy-owned because
+that separate route still schedules real person speech-sample extraction.
 
 `PATCH /v1/conversations/{conversation_id}/events` updates the `created` flags
 of indexed events in the structured D1 projection. It preserves the legacy
