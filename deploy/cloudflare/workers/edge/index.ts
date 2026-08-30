@@ -1156,6 +1156,10 @@ app.get("/v1/users/people", proxyAuthenticatedCore);
 app.get("/v1/users/people/:personId", proxyAuthenticatedCore);
 app.patch("/v1/users/people/:personId/name", proxyAuthenticatedCore);
 app.delete("/v1/users/people/:personId", proxyAuthenticatedCore);
+app.delete(
+  "/v1/users/people/:personId/speech-samples/:sampleIndex",
+  proxyAuthenticatedCore,
+);
 app.get("/v1/goals", proxyAuthenticatedCore);
 app.post("/v1/goals", proxyAuthenticatedCore);
 app.get("/v1/goals/all", proxyAuthenticatedCore);

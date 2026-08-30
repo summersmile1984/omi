@@ -2368,6 +2368,50 @@ describe("edge gateway", () => {
     expect(corePaths.at(-1)).toBe("/v1/users/me/llm-usage");
   });
 
+  it("routes person speech-sample deletion to authenticated API Core", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service(() =>
+        Response.json({ uid: "user-1", authority: "better-auth" }),
+      ),
+      API_CORE: service((request) => {
+        forwarded = request;
+        return new Response(null, { status: 204 });
+      }),
+    };
+
+    const unauthenticated = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/users/people/person-1/speech-samples/0",
+        { method: "DELETE" },
+      ),
+      env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
+    expect(forwarded).toBeUndefined();
+
+    const response = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/users/people/person-1/speech-samples/0",
+        {
+          method: "DELETE",
+          headers: { authorization: "Bearer opaque-session" },
+        },
+      ),
+      env as never,
+    );
+    expect(response.status).toBe(204);
+    expect(forwarded?.method).toBe("DELETE");
+    expect(new URL(forwarded?.url ?? "https://invalid.test").pathname).toBe(
+      "/v1/users/people/person-1/speech-samples/0",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(
+      decodeAuthContext(forwarded?.headers.get("x-omi-auth-context") ?? null),
+    ).toMatchObject({ uid: "user-1" });
+  });
+
   it("routes the authenticated fair-use status read to API Core", async () => {
     let forwarded: Request | undefined;
     const env = {

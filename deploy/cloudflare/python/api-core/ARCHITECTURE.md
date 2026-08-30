@@ -93,6 +93,11 @@ bound to the exact object, and downloads support one byte range. Account
 deletion purges and residual-scans this bucket. The legacy best-effort hosted
 speaker-embedding write remains a downstream realtime-identification cutover
 boundary and is not treated as part of the upload success response.
+People rows retain the ordered object-key/transcript pairing in D1. People
+responses replace those keys with the same 60-second playback assertions;
+single-sample deletion removes the exact R2 key before atomically removing its
+aligned D1 entries, and person deletion purges the entire R2 person prefix
+before deleting the row.
 
 Conversation list/detail/search and default deletion share the
 `cf_conversations` authority. D1 FTS5 triggers project only bounded IDs,

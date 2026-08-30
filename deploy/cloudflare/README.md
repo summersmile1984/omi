@@ -77,8 +77,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 403 already match
-  Cloudflare staging owners and 174 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 404 already match
+  Cloudflare staging owners and 173 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1424,6 +1424,10 @@ silent, shorter-than-five-second, and longer-than-two-minute uploads never
 reach storage. Read and sample-delete operations are uid-prefix-bound, and
 playback uses a 60-second HMAC token bound to the exact uid and object key with
 single-range streaming. Account deletion purges and residual-scans the bucket.
+People reads use the same token contract instead of exposing R2 object keys;
+single-sample deletion removes the exact indexed R2 object and its aligned D1
+transcript reference, while person deletion clears the complete uid/person R2
+prefix before removing the D1 row.
 The legacy best-effort hosted speaker-embedding side effect is not part of the
 upload success contract and remains a downstream realtime-identification
 cutover boundary; staging does not run or bundle a local speaker model.
