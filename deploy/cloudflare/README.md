@@ -1617,10 +1617,12 @@ The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google Calendar OAuth tokens, refresh,
 and event-picker reads are owned by Jobs in separate fenced D1 tables; tokens
 are never returned by either surface. Calendar event links and event creation
-are also Jobs-owned; onboarding flags remain API Core until that projection is
-deliberately folded into the Calendar grant authority. This
-group is staging-only until existing integration rows are backfilled and every
-downstream OAuth reader has cut over to the same authority.
+are also Jobs-owned. Jobs synchronizes the connected, access-token, and
+reconnect-required state into the API Core onboarding projection on OAuth
+success, refresh failure, and explicit disconnect, so the browser status stays
+aligned with the grant authority. This group is staging-only until existing
+integration rows are backfilled and every downstream OAuth reader has cut over
+to the same authority.
 
 The announcement routes move public changelogs/features/general reads, the
 authenticated pending/dismissal contract, and secret-gated admin CRUD to D1.
