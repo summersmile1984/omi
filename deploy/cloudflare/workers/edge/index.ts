@@ -400,6 +400,10 @@ app.get(
 app.get("/v2/firmware/stable", proxyPublicFirmware);
 app.get("/v2/firmware/latest", proxyPublicFirmware);
 app.get("/v2/firmware/version", proxyPublicFirmware);
+app.get("/appcast.xml", proxyPublicCore);
+app.get("/updates/latest", proxyPublicCore);
+app.get("/download", proxyPublicCore);
+app.get("/v2/desktop/update-policy", proxyPublicCore);
 app.get("/v1/announcements/changelogs", proxyPublicCore);
 app.get("/v1/announcements/features", proxyPublicCore);
 app.get("/v1/announcements/general", proxyPublicCore);
