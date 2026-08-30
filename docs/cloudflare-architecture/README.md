@@ -50,6 +50,7 @@
 - Chat-first staging 边界已覆盖：`POST /v1/chat-first/blocks/validate` 经 Edge → Python API Core → D1 做 uid、account-generation 和实体能力校验，未认证为 401，合法 task block 返回 retry-stable opaque id，失配/缺失实体 fail-closed。
 - Chat-first live 验证：staging 临时 Better Auth 账号创建 task 后，正确 generation 经真实 Edge → API Core 返回 `200 accepted` 和稳定 `cfb_…` ID；generation `0/2` 均返回 `generation_mismatch`，随后公开删号完成产品/Auth 清理，仅保留预期 tombstone。
 - Chat-first deferral 已接入同一 staging 边界：D1 migration `0083_chat_first_deferrals.sql` 保存 generation/continuity 绑定的 24 小时 receipt，重复提交返回相同 receipt，删除流程纳入该表的 residual purge。
+- Chat-first deferral live 验证：真实 staging 账号创建 task 后，首次提交返回 200 pending receipt，完全重复提交返回相同 `deferral_id`/`due_at`，修改同一 continuity 的问题返回 409；公开删号后 deferral/action-item residual 均为 0，Auth 指定 user/session/account 均为 0，仅保留预期 tombstone。
 - `POST /v2/messages` 当前返回明确的 `503 provider_not_configured`，这是聊天 provider 尚未配置的已知能力缺口，不是路由 404。
 
 ## 发布前必须补齐
