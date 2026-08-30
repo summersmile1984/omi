@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 445 already match
-  Cloudflare staging owners and 131 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 446 already match
+  Cloudflare staging owners and 130 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1502,6 +1502,12 @@ legacy owner until their encryption and batch-write contracts are migrated. A
 live staging check returned 200 for an isolated Better Auth account, 401 without
 auth, and 400 for an invalid target; the smoke account was then deleted and
 verified absent from Auth and the App D1 deletion intent table.
+
+The `/v1/candidates/control` read is also Cloudflare-owned for isolated staging
+accounts. Until the legacy Firestore task-control document has a D1 projection,
+API Core returns the closed shell (`workflow_mode=off`, generation `0`, and
+`chat_first_ui=false`) so released clients cannot accidentally enable a partial
+task-intelligence surface.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC

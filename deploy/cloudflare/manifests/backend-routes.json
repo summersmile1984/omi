@@ -111,7 +111,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/calendar/meetings/{meeting_id}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/calendar/onboarding/status", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/candidates", "protocol": "http", "target_runtime": "legacy"},
-    {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/candidates/control", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/candidates/control", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/candidates/{candidate_id}", "protocol": "http", "target_runtime": "legacy"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/config/api-keys", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations", "protocol": "http", "target_runtime": "python-worker"},
