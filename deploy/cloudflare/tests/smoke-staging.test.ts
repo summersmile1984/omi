@@ -90,6 +90,15 @@ function creatorPaymentBoundary(
   if (url.endsWith("/v1/mcp/memories")) {
     return new Response(null, { status: 403 });
   }
+  if (url.endsWith("/v1/dev/keys/cf-smoke-missing-key")) {
+    return new Response(null, { status: 204 });
+  }
+  if (url.endsWith("/v1/dev/keys")) {
+    return new Response(null, { status: init?.method === "POST" ? 422 : 200 });
+  }
+  if (url.endsWith("/v1/dev/user/memories")) {
+    return new Response(null, { status: 403 });
+  }
   if (
     url.endsWith("/v1/integrations/notification") ||
     url.includes("/v2/integrations/cf-smoke-missing/")
@@ -426,6 +435,7 @@ describe("staging smoke helpers", () => {
       stripeReturnMissing: 404,
       stripeBrowserRefreshBoundary: 403,
       mcpDataInvalidKey: 403,
+      developerDataInvalidKey: 403,
       unauthenticatedProbe: 401,
       unauthenticatedAnnouncements: 401,
       unauthenticatedAnnouncementsAdmin: 403,
@@ -505,6 +515,9 @@ describe("staging smoke helpers", () => {
       mcpApiKeyList: 200,
       mcpApiKeyValidation: 422,
       mcpApiKeyDeleteMissing: 204,
+      developerApiKeyList: 200,
+      developerApiKeyValidation: 422,
+      developerApiKeyDeleteMissing: 204,
       integrationNotificationV1Boundary: 403,
       integrationConversationCreateBoundary: 403,
       integrationMemoryCreateBoundary: 403,
@@ -525,7 +538,7 @@ describe("staging smoke helpers", () => {
       workersAiEmptyAudio: 400,
       voiceMessageEmptyAudio: 400,
     });
-    expect(calls).toHaveLength(118);
+    expect(calls).toHaveLength(122);
     expect(
       calls.find((call) =>
         call.url.includes("/v1/users/analytics/memory_summary?"),

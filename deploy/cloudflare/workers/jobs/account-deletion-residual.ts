@@ -43,6 +43,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_conversations_fts", column: "uid" },
   { table: "cf_shared_conversation_index", column: "uid" },
   { table: "cf_daily_summaries", column: "uid" },
+  { table: "cf_developer_api_keys", column: "uid" },
   { table: "cf_fair_use_events", column: "uid" },
   { table: "cf_fair_use_notification_outbox", column: "uid" },
   { table: "cf_fair_use_states", column: "uid" },

@@ -497,6 +497,128 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v1/dev/keys
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/keys
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/dev/keys/{key_id}
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/memories
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/memories/vector/search
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app, vectorize, workers-ai-binding]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/action-items
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/folders
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/conversations
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/conversations/{conversation_id}
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/goals
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/goals/{goal_id}
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/dev/user/goals/{goal_id}/history
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: developer-api-key
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/integrations/notification
     owner: api-core
     runtime: python-worker

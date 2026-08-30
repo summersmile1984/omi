@@ -260,6 +260,11 @@ const proxyIntegrationCore = async (
   return withRequestId(response, id);
 };
 
+// Developer API reads use the dedicated omi_dev_ credential family. Keep the
+// raw Authorization header for API Core to verify against the D1 digest while
+// removing cookies and every caller-controlled internal identity assertion.
+const proxyDeveloperCore = proxyIntegrationCore;
+
 async function mcpRateLimitSubject(
   authorization: string | null,
 ): Promise<string | null> {
@@ -371,6 +376,15 @@ app.get("/v2/integrations/:app_id/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/search/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/notification", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/tasks", proxyIntegrationCore);
+app.get("/v1/dev/user/memories/vector/search", proxyDeveloperCore);
+app.get("/v1/dev/user/memories", proxyDeveloperCore);
+app.get("/v1/dev/user/action-items", proxyDeveloperCore);
+app.get("/v1/dev/user/folders", proxyDeveloperCore);
+app.get("/v1/dev/user/conversations", proxyDeveloperCore);
+app.get("/v1/dev/user/conversations/:conversationId", proxyDeveloperCore);
+app.get("/v1/dev/user/goals", proxyDeveloperCore);
+app.get("/v1/dev/user/goals/:goal_id/history", proxyDeveloperCore);
+app.get("/v1/dev/user/goals/:goalId", proxyDeveloperCore);
 app.post("/v1/mcp/memories", proxyMcpCore);
 app.delete("/v1/mcp/memories/:memory_id", proxyMcpCore);
 app.patch("/v1/mcp/memories/:memory_id", proxyMcpCore);
@@ -893,6 +907,9 @@ app.delete("/v1/apps/:app_id/keys/:key_id", proxyAuthenticatedJobs);
 app.post("/v1/mcp/keys", proxyAuthenticatedJobs);
 app.get("/v1/mcp/keys", proxyAuthenticatedJobs);
 app.delete("/v1/mcp/keys/:keyId", proxyAuthenticatedJobs);
+app.post("/v1/dev/keys", proxyAuthenticatedJobs);
+app.get("/v1/dev/keys", proxyAuthenticatedJobs);
+app.delete("/v1/dev/keys/:keyId", proxyAuthenticatedJobs);
 app.get("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
 app.delete("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
 app.post("/v1/apps/review", proxyAuthenticatedCore);

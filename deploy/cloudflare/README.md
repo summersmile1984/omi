@@ -76,8 +76,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 341 already match a
-  Cloudflare staging owner and 236 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 353 already match a
+  Cloudflare staging owner and 224 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -666,6 +666,19 @@ DELETE /v1/apps/{appId}/keys/{keyId}
 POST/GET /v1/mcp/keys
 DELETE /v1/mcp/keys/{keyId}
                               Edge → Jobs → uid-scoped one-time MCP API keys in D1
+POST/GET /v1/dev/keys
+DELETE /v1/dev/keys/{keyId}
+                              Edge → Jobs → uid-scoped one-time Developer API keys in D1
+GET  /v1/dev/user/memories
+GET  /v1/dev/user/memories/vector/search
+GET  /v1/dev/user/action-items
+GET  /v1/dev/user/folders
+GET  /v1/dev/user/conversations
+GET  /v1/dev/user/conversations/{conversationId}
+GET  /v1/dev/user/goals
+GET  /v1/dev/user/goals/{goalId}
+GET  /v1/dev/user/goals/{goalId}/history
+                              Edge → Python API Core → Developer-key D1/Vectorize reads
 GET  /v1/apps/{appId}/logo/{version}
                               Edge → Jobs → immutable current-logo R2 object
 POST /v1/apps/tester
@@ -1529,6 +1542,18 @@ authority.
 The prefix constraint uses bounded `substr` checks plus simple GLOB predicates:
 repeated character-class GLOBs accepted by local SQLite exceed D1's deployed
 pattern-complexity limit, so the final-schema regression test forbids them.
+
+Developer API credentials now use the separate `cf_developer_api_keys`
+authority. `POST /v1/dev/keys` returns an `omi_dev_` secret once and stores only
+the SHA-256 digest of its 32-hex payload; list and uid-scoped idempotent delete
+retain the public metadata contract. The nine read routes for memories,
+memory-vector search, action items, folders, conversations, goals, and goal
+history verify the credential and per-route scope in Python API Core, require a
+completed destination-bound account cutover, exclude locked/deleted/archived
+rows, and hydrate vector candidates through uid-scoped D1 state. Edge preserves
+only the raw Developer Authorization header and strips cookies and internal
+identity assertions. Developer create/update/delete data routes remain
+legacy-owned until their D1 write semantics and side effects move together.
 
 The MCP REST tools consume either those keys or a request-bound `mcp-oauth`
 context in API Core. Exact API-key parsing, OAuth scope/client bounds, account

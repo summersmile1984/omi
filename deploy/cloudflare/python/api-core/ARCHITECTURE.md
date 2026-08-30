@@ -139,6 +139,13 @@ durable D1 outbox plus Jobs Queue hints and cron repair. Account deletion remove
 recorded vector IDs before D1 state purge. OAuth grants and hosted transport
 remain explicit downstream cutover boundaries.
 
+`developer_routes.py` authenticates `omi_dev_` credentials only from their
+SHA-256 digests in `cf_developer_api_keys`, then enforces a route-specific
+read scope before touching the same memory, action-item, folder, conversation,
+goal, and Vectorize-backed projections used by first-party clients. The
+account-cutover and deletion fences run on every credential use; raw keys never
+enter D1, logs, or signed internal identity headers.
+
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional
 three-day desktop trial in quota, paywall, and trial reads; it never receives

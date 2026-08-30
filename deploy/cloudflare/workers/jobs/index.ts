@@ -56,6 +56,7 @@ import { registerAppMutationRoutes } from "./app-mutations";
 import { registerAppModerationRoutes } from "./app-moderation";
 import { registerAppApiKeyRoutes } from "./app-api-keys";
 import { registerMcpApiKeyRoutes } from "./mcp-api-keys";
+import { registerDeveloperApiKeyRoutes } from "./developer-api-keys";
 import { drainIntegrationWebhooks } from "./integration-webhooks";
 import {
   processVectorProjectionMessage,
@@ -120,6 +121,7 @@ registerAppDeletionRoutes(app, requestContext);
 registerAppModerationRoutes(app);
 registerAppApiKeyRoutes(app, requestContext);
 registerMcpApiKeyRoutes(app, requestContext);
+registerDeveloperApiKeyRoutes(app, requestContext);
 registerXConnectorRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local

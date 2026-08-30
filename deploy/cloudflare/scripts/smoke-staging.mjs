@@ -311,6 +311,12 @@ export async function runSmoke({
     { headers: { authorization: `Bearer omi_mcp_${"f".repeat(32)}` } },
   );
   expectStatus("MCP data invalid key", mcpDataInvalidKey, 403);
+  const developerDataInvalidKey = await request(
+    fetchImpl,
+    `${base}/v1/dev/user/memories`,
+    { headers: { authorization: `Bearer omi_dev_${"f".repeat(32)}` } },
+  );
+  expectStatus("Developer API data invalid key", developerDataInvalidKey, 403);
 
   const result = {
     edgeHealth: health.status,
@@ -330,6 +336,7 @@ export async function runSmoke({
     stripeReturnMissing: stripeReturnMissing.status,
     stripeBrowserRefreshBoundary: stripeBrowserRefreshBoundary.status,
     mcpDataInvalidKey: mcpDataInvalidKey.status,
+    developerDataInvalidKey: developerDataInvalidKey.status,
   };
   if (!token) return { ...result, authenticatedChecks: "skipped" };
 
@@ -1012,6 +1019,31 @@ export async function runSmoke({
   );
   expectStatus("MCP API key idempotent deletion", mcpApiKeyDeleteMissing, 204);
 
+  const developerApiKeyList = await request(fetchImpl, `${base}/v1/dev/keys`, {
+    headers: authHeaders,
+  });
+  expectStatus("Developer API key list", developerApiKeyList, 200);
+  const developerApiKeyValidation = await request(
+    fetchImpl,
+    `${base}/v1/dev/keys`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name: "   " }),
+    },
+  );
+  expectStatus("Developer API key validation", developerApiKeyValidation, 422);
+  const developerApiKeyDeleteMissing = await request(
+    fetchImpl,
+    `${base}/v1/dev/keys/cf-smoke-missing-key`,
+    { method: "DELETE", headers: authHeaders },
+  );
+  expectStatus(
+    "Developer API key idempotent deletion",
+    developerApiKeyDeleteMissing,
+    204,
+  );
+
   const integrationHeaders = {
     authorization: "Bearer sk_cf-smoke-invalid-integration-key",
     "content-type": "application/json",
@@ -1290,6 +1322,9 @@ export async function runSmoke({
     mcpApiKeyList: mcpApiKeyList.status,
     mcpApiKeyValidation: mcpApiKeyValidation.status,
     mcpApiKeyDeleteMissing: mcpApiKeyDeleteMissing.status,
+    developerApiKeyList: developerApiKeyList.status,
+    developerApiKeyValidation: developerApiKeyValidation.status,
+    developerApiKeyDeleteMissing: developerApiKeyDeleteMissing.status,
     ...integrationBoundaries,
     connectAccountBoundary: connectAccountBoundary.status,
     stripeOnboardingStatus: stripeOnboardingStatus.status,
