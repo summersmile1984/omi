@@ -49,6 +49,9 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     # Chat — 2-6 LLM calls per message
     "chat:send_message": (120, 3600),
     "chat:initial": (60, 3600),
+    # Gemini proxy — short per-user burst window mirrored by the Cloudflare
+    # Edge Durable Object. The API-AI adapter owns the separate daily ledger.
+    "gemini:proxy": (30, 60),
     # Public shared-conversation chat is anonymous at the application layer;
     # Edge keys the first bucket by an opaque client subject and the second
     # bucket globally. Both remain fail-closed around the Workers AI call.
