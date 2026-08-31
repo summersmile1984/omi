@@ -10,7 +10,8 @@ export type JobMessage = {
     | "account_delete"
     | "recording_delete"
     | "app_delete"
-    | "stripe_webhook";
+    | "stripe_webhook"
+    | "conversation_finalize";
   payload: Record<string, unknown>;
 };
 
@@ -25,6 +26,7 @@ export type VectorizeBinding = {
 
 export type JobsEnv = {
   AUTH: Fetcher;
+  API_CORE?: Fetcher;
   APP_DB: D1Database;
   ASSETS: R2Bucket;
   CONVERSATION_RECORDINGS: R2Bucket;

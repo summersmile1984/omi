@@ -626,11 +626,18 @@ def _conversation_insert(
     )
 
 
-def _conversation_complete_update(env: object, *, uid: str, payload: dict[str, object], now: int, claim_json: str):
+def _conversation_complete_update(
+    env: object,
+    *,
+    uid: str,
+    payload: dict[str, object],
+    now: int,
+    claim_json: str | None,
+):
     return env.APP_DB.prepare(
         "UPDATE cf_conversations SET updated_at = ?, status = 'completed', discarded = ?, structured_json = ?, "
         "transcript_segments_json = ?, geolocation_json = ?, external_data_json = ? "
-        "WHERE uid = ? AND id = ? AND status = 'processing' AND external_data_json = ?"
+        "WHERE uid = ? AND id = ? AND status = 'processing' AND external_data_json IS ?"
     ).bind(
         now,
         1 if payload["discarded"] else 0,
@@ -743,6 +750,9 @@ def _developer_webhook_insert(
     ).bind(delivery_id, uid, conversation_id, webhook_url, payload_json, now, now, now)
 
 
+_NO_CONVERSATION_CLAIM = object()
+
+
 async def _persist_completed(
     env: object,
     *,
@@ -751,7 +761,7 @@ async def _persist_completed(
     app_targets: list[tuple[str, str]],
     developer_webhook_url: str | None,
     now: int,
-    claim_json: str | None = None,
+    claim_json: str | None | object = _NO_CONVERSATION_CLAIM,
 ) -> None:
     conversation_id = str(payload["id"])
     structured = payload["structured"] if isinstance(payload["structured"], dict) else {}
@@ -780,7 +790,7 @@ async def _persist_completed(
     statements = [
         (
             _conversation_complete_update(env, uid=uid, payload=payload, now=now, claim_json=claim_json)
-            if claim_json is not None
+            if claim_json is not _NO_CONVERSATION_CLAIM
             else _conversation_insert(env, uid=uid, payload=payload, now=now)
         ),
         usage_source_statement(
@@ -877,15 +887,17 @@ async def _create(
     )
     payload["_memory_contents"] = enrichment["memories"]
     try:
-        await _persist_completed(
-            env,
-            uid=uid,
-            payload=payload,
-            app_targets=app_targets,
-            developer_webhook_url=developer_webhook_url,
-            now=int(time.time()),
-            claim_json=claim_json,
-        )
+        persist_kwargs = {
+            "env": env,
+            "uid": uid,
+            "payload": payload,
+            "app_targets": app_targets,
+            "developer_webhook_url": developer_webhook_url,
+            "now": int(time.time()),
+        }
+        if claim_json is not None:
+            persist_kwargs["claim_json"] = claim_json
+        await _persist_completed(**persist_kwargs)
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
     eligible = _meeting_eligible(

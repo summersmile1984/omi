@@ -26,7 +26,10 @@
   // TODOIST_CLIENT_ID/TODOIST_CLIENT_SECRET, ASANA_CLIENT_ID/ASANA_CLIENT_SECRET,
   // GOOGLE_TASKS_CLIENT_ID/GOOGLE_TASKS_CLIENT_SECRET,
   // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, and optional RAPID_API_HOST/RAPID_API_KEY.
-  "services": [{ "binding": "AUTH", "service": "omi-cf-auth-staging" }],
+  "services": [
+    { "binding": "AUTH", "service": "omi-cf-auth-staging" },
+    { "binding": "API_CORE", "service": "omi-cf-api-core-staging" },
+  ],
   "d1_databases": [
     {
       "binding": "APP_DB",

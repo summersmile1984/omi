@@ -42,6 +42,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_chat_sessions", column: "uid" },
   { table: "cf_chat_shares", column: "sender_uid" },
   { table: "cf_conversations", column: "uid" },
+  { table: "cf_conversation_finalization_jobs", column: "uid" },
   { table: "cf_conversations_fts", column: "uid" },
   { table: "cf_shared_conversation_index", column: "uid" },
   { table: "cf_daily_summaries", column: "uid" },
@@ -156,6 +157,7 @@ const PURGE_PRIORITY = Object.freeze([
   "cf_x_connections.uid",
   "cf_sync_job_files.uid",
   "cf_sync_jobs.uid",
+  "cf_conversation_finalization_jobs.uid",
 ] as const);
 
 const PURGE_PRIORITY_SET = new Set<string>(PURGE_PRIORITY);

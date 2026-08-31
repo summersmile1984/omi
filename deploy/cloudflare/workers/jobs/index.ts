@@ -63,6 +63,10 @@ import {
   processVectorProjectionMessage,
   reconcileVectorProjections,
 } from "./vector-projection";
+import {
+  processConversationFinalizationMessage,
+  reconcileConversationFinalizations,
+} from "./conversation-finalization";
 import { reconcileXConnections, registerXConnectorRoutes } from "./x-connector";
 import {
   cleanupExpiredTaskIntegrationOAuthStates,
@@ -924,6 +928,10 @@ async function processJobMessage(
     await processVectorProjectionMessage(message, env);
     return;
   }
+  if (message.body.kind === "conversation_finalize") {
+    await processConversationFinalizationMessage(message, env);
+    return;
+  }
   const row = await env.APP_DB.prepare(
     "SELECT status, kind, updated_at FROM cf_jobs WHERE job_id = ? AND uid = ?",
   )
@@ -1085,6 +1093,7 @@ export default {
       cleanupExpiredAccountDeletionTombstones(env, now),
       reconcileStripeWebhookEvents(env, now),
       reconcileVectorProjections(env, now),
+      reconcileConversationFinalizations(env, now),
       reconcileXConnections(env, now),
       cleanupExpiredTaskIntegrationOAuthStates(env, now),
       cleanupExpiredGoogleCalendarOAuthStates(env, now),

@@ -43,6 +43,9 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     # cheaper than :create — no Deepgram, just LLM structuring). Used per finished
     # conversation by Parakeet/local-STT users, so a bit more headroom than :create.
     "conversations:from-segments": (30, 3600),
+    # Finalization is an asynchronous, idempotent admission that shares the
+    # same enrichment budget as from-segments.
+    "conversations:finalize": (30, 3600),
     # Chat — 2-6 LLM calls per message
     "chat:send_message": (120, 3600),
     "chat:initial": (60, 3600),

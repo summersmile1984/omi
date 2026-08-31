@@ -264,6 +264,20 @@ Jobs leases and delivers Developer webhooks without exposing response bodies or
 allowing private-network targets. No legacy process, Firestore, Redis, or local
 model participates in this creation boundary.
 
+`conversation_finalization_routes.py` owns the explicit first-party
+`POST /v1/conversations/{conversation_id}/finalize` admission and
+`GET .../finalization` status projection. Admission changes only the D1
+conversation row and its revision-keyed
+`cf_conversation_finalization_jobs` record, then publishes a bounded Jobs
+message. The Jobs Worker leases and retries that record and calls the private
+API Core processor with a request-bound internal assertion. The processor
+reuses the Worker-native enrichment, action-item/memory fan-out, usage, vector
+outbox, and webhook batch used by `from-segments`; terminal state is recorded
+only after that batch commits. BYOK requests, malformed transcripts, changed
+ownership, and exhausted retries fail closed. Reprocess and merge remain
+separate legacy boundaries until their canonical authority can share this
+contract.
+
 The Auth Worker places Better Auth account creation time in the signed internal
 identity context. API Core uses that immutable projection for the optional
 three-day desktop trial in quota, paywall, and trial reads; it never receives
