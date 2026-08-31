@@ -143,7 +143,7 @@ describe("Cloudflare migration manifests", () => {
     ).toThrow("already owned in routes.yaml");
   });
 
-  it("keeps chat compatibility aliases legacy-owned until the replay contract closes", async () => {
+  it("assigns the closed D1/provider chat compatibility group to the Jobs owner", async () => {
     const [routes, backendRoutes] = await Promise.all([
       loadYaml("routes.yaml"),
       readFile(
@@ -163,16 +163,16 @@ describe("Cloudflare migration manifests", () => {
     for (const path of legacyChatPaths) {
       const inventory = inventoryByPath.get(path);
       expect(inventory, path).toMatchObject({
-        migration_state: "legacy-owned",
-        owner: "legacy",
-        target_runtime: "legacy",
+        migration_state: "staging-owned",
+        owner: "jobs",
+        target_runtime: "typescript-worker",
       });
       expect(
         routes.routes.some(
           (route) => route.method === "POST" && route.path === path,
         ),
-        `${path} must not have a Cloudflare owner route`,
-      ).toBe(false);
+        `${path} must have a Cloudflare owner route`,
+      ).toBe(true);
     }
   });
 

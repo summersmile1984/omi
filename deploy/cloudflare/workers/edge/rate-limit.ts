@@ -261,6 +261,10 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     EDGE_RATE_LIMIT_POLICIES["chat:send_message"],
   ],
   [
+    "POST /v2/chat/completions",
+    EDGE_RATE_LIMIT_POLICIES["chat:send_message"],
+  ],
+  [
     "POST /v1/conversations/shared/chat",
     PUBLIC_SHARED_CHAT_PER_IP_RATE_LIMIT,
   ],
