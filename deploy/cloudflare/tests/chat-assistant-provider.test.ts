@@ -196,6 +196,38 @@ describe("Cloudflare OpenAI Assistants continuity adapter", () => {
     expect(provider).toHaveBeenCalledTimes(3);
   });
 
+  it("admits a text-only run without constructing an empty attachment query", async () => {
+    const { env } = environment();
+    const calls: Array<{ url: string; body: Record<string, unknown> | null }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url, body });
+        if (url.endsWith("/threads")) return Response.json({ id: "thread-1" });
+        if (url.endsWith("/messages")) return Response.json({ id: "msg-1" });
+        return Response.json({ id: "run-1", status: "queued" });
+      }),
+    );
+
+    const result = await createAssistantRun(
+      env,
+      "assistant-user",
+      "session-1",
+      "request-text-only",
+      "Just answer this question",
+      [],
+      100,
+    );
+    expect(result).toMatchObject({ created: true, status: "queued" });
+    expect(calls).toHaveLength(3);
+    expect(calls[1].body).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "Just answer this question" }],
+    });
+  });
+
   it("polls a completed run, keeps session ids isolated, and deletes provider/D1 state", async () => {
     const { database, env } = environment();
     const provider = vi.fn(async (input: string | URL, init?: RequestInit) => {

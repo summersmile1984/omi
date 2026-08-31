@@ -232,8 +232,9 @@ type ReadyAttachment = {
 };
 
 async function readyAttachments(env: JobsEnv, uid: string, sessionId: string, fileIds: string[]): Promise<ReadyAttachment[]> {
-  if (!fileIds.length || fileIds.length > MAX_ATTACHMENTS || new Set(fileIds).size !== fileIds.length)
+  if (fileIds.length > MAX_ATTACHMENTS || new Set(fileIds).size !== fileIds.length)
     throw new ChatAssistantProviderError("provider_rejected", "invalid chat attachments");
+  if (fileIds.length === 0) return [];
   const placeholders = fileIds.map(() => "?").join(", ");
   const result = await env.APP_DB.prepare(
     "SELECT sf.file_id, f.provider_file_id, f.mime_type FROM cf_chat_session_files sf JOIN cf_chat_files f ON f.uid = sf.uid AND f.file_id = sf.file_id WHERE sf.uid = ? AND sf.session_id = ? AND f.status = 'ready' AND f.provider_file_id IS NOT NULL AND sf.file_id IN (" +
@@ -350,11 +351,25 @@ export async function createAssistantRun(
   }
   const attachments = await readyAttachments(env, uid, sessionId, fileIds);
   const runId = crypto.randomUUID();
-  const inserted = await env.APP_DB.prepare(
-    "INSERT OR IGNORE INTO cf_chat_assistant_runs (uid, run_id, session_id, provider, idempotency_key, request_fingerprint, provider_message_id, provider_run_id, status, attempts, lease_token, lease_until, next_attempt_at, result_json, last_error, created_at, updated_at) VALUES (?, ?, ?, 'openai-assistants', ?, ?, NULL, NULL, 'staging', 0, NULL, NULL, ?, NULL, NULL, ?, ?)",
-  )
-    .bind(uid, runId, sessionId, idempotencyKey, fingerprint, now, now, now)
-    .run();
+  let inserted: { meta?: { changes?: number } };
+  try {
+    inserted = await env.APP_DB.prepare(
+      "INSERT OR IGNORE INTO cf_chat_assistant_runs (uid, run_id, session_id, provider, idempotency_key, request_fingerprint, provider_message_id, provider_run_id, status, attempts, lease_token, lease_until, next_attempt_at, result_json, last_error, created_at, updated_at) VALUES (?, ?, ?, 'openai-assistants', ?, ?, NULL, NULL, 'staging', 0, NULL, NULL, ?, NULL, NULL, ?, ?)",
+    )
+      .bind(uid, runId, sessionId, idempotencyKey, fingerprint, now, now, now)
+      .run();
+  } catch (error) {
+    if (String(error).includes("account deletion fence"))
+      throw new ChatAssistantProviderError(
+        "provider_rejected",
+        "account deletion fence",
+      );
+    throw new ChatAssistantProviderError(
+      "provider_unavailable",
+      "chat assistant run could not be persisted",
+      true,
+    );
+  }
   if (inserted.meta?.changes !== 1) {
     const winner = await existingRun(env, uid, idempotencyKey);
     if (!winner) throw new ChatAssistantProviderError("provider_unavailable", "chat assistant run could not be persisted");
