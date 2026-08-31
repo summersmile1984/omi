@@ -649,9 +649,10 @@ async function insertConversation(
     action_items: [],
     events: [],
   });
-  const result = await env.APP_DB.prepare(
+  const inserted = await env.APP_DB.prepare(
     "INSERT OR IGNORE INTO cf_conversations (uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, starred, discarded, is_locked, deferred, private_cloud_sync_enabled, structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, apps_results_json, suggested_apps_json) " +
-      "VALUES (?, ?, ?, ?, ?, ?, 'limitless', ?, 'completed', 'private', 0, 0, 0, 0, 0, ?, ?, '[]', '[]', NULL, '[]', '[]')",
+      "VALUES (?, ?, ?, ?, ?, ?, 'limitless', ?, 'completed', 'private', 0, 0, 0, 0, 0, ?, ?, '[]', '[]', NULL, '[]', '[]') " +
+      "RETURNING id",
   )
     .bind(
       uid,
@@ -664,8 +665,8 @@ async function insertConversation(
       structured,
       JSON.stringify(conversation.segments),
     )
-    .run();
-  return result.meta?.changes === 1;
+    .first<{ id: string }>();
+  return inserted?.id === conversation.id;
 }
 
 async function setImportFailed(
