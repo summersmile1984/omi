@@ -371,6 +371,59 @@ describe("Google Calendar Worker routes", () => {
     expect((await app.request("/v1/integrations/whoop", { method: "DELETE" })).status).toBe(404);
   });
 
+  it("supports the canonical Calendar app-key mutation through the generic route", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    const body = JSON.stringify({
+      connected: true,
+      access_token: "generic-calendar-access",
+    });
+
+    expect(
+      (
+        await app.request(
+          "/v1/integrations/google-calendar",
+          { method: "PUT", body },
+          false,
+        )
+      ).status,
+    ).toBe(401);
+
+    const saved = await app.request("/v1/integrations/google-calendar", {
+      method: "PUT",
+      body,
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({
+      status: "ok",
+      app_key: "google_calendar",
+    });
+    expect(
+      database.database
+        .prepare(
+          "SELECT connected, access_token_enc FROM cf_google_calendar_integrations WHERE uid = ?",
+        )
+        .get("calendar-user"),
+    ).toMatchObject({ connected: 1 });
+
+    expect(
+      (
+        await app.request("/v1/integrations/gmail", {
+          method: "PUT",
+          body,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await app.request("/v1/integrations/whoop", {
+          method: "PUT",
+          body,
+        })
+      ).status,
+    ).toBe(404);
+  });
+
   it("uses hashed single-use OAuth state and the Calendar-only scope", async () => {
     const { database, env, calls, fetchImpl } = environment();
     const app = testApp(env, { fetchImpl, now: () => 1_000 });

@@ -1262,6 +1262,7 @@ app.put("/v1/integrations/apple_health", proxyAuthenticatedCore);
 app.delete("/v1/integrations/apple_health", proxyAuthenticatedCore);
 // Keep provider-specific core routes ahead of the generic Calendar alias
 // boundary so Apple Health never gets proxied to Jobs.
+app.put("/v1/integrations/:app_key", proxyAuthenticatedJobs);
 app.delete("/v1/integrations/:app_key", proxyAuthenticatedJobs);
 app.post("/v1/memories/extract", proxyAuthenticatedCore);
 app.post("/v1/connectors/synthesize", proxyAuthenticatedCore);

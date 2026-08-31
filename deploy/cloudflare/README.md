@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 484 already match
-Cloudflare staging owners and 93 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 485 already match
+Cloudflare staging owners and 92 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1083,6 +1083,11 @@ integration keys as disconnected without exposing provider credentials.
 the Google Calendar grant and its `gmail` alias. Unknown providers return a
 bounded `404` until their provider-specific D1 disconnect contract is migrated;
 the route never falls back to the legacy generic Firestore handler.
+
+`PUT /v1/integrations/{app_key}` now accepts the canonical `google_calendar`
+grant (including the hyphenated spelling) through the Jobs Worker. The generic
+boundary rejects other providers with a bounded `404` until a provider-owned D1
+projection exists; credentials are encrypted before they are persisted.
 
 Apple Health is device-pushed rather than OAuth-backed. The iOS sync payload is
 bounded and stored in the uid-scoped `cf_apple_health` D1 projection; the

@@ -12,6 +12,11 @@ const GOOGLE_CALENDAR_OAUTH_ALIASES = new Set([
   "google_contacts",
 ]);
 const GOOGLE_CALENDAR_DELETE_ALIASES = new Set(["google_calendar", "gmail"]);
+// Only the canonical Calendar grant has an equivalent D1 projection for the
+// legacy app-key mutation route. The generic Worker boundary fails closed for
+// other providers instead of persisting an unscoped integration record without
+// an owning projection.
+const GOOGLE_CALENDAR_MUTATION_ALIASES = new Set(["google_calendar"]);
 const TOKEN_SENTINEL = "configured";
 const OAUTH_STATE_TTL_SECONDS = 10 * 60;
 const TOKEN_REFRESH_BUFFER_SECONDS = 5 * 60;
@@ -1446,7 +1451,7 @@ export function registerGoogleCalendarRoutes(
     }
   });
 
-  app.put("/v1/integrations/google_calendar", async (c) => {
+  const saveCalendarIntegration = async (c: JobsContext, appKey: string) => {
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
@@ -1456,10 +1461,22 @@ export function registerGoogleCalendarRoutes(
         await readJsonObject(c),
         nowSeconds(dependencies),
       );
-      return c.json({ status: "ok", app_key: "google_calendar" });
+      return c.json({ status: "ok", app_key: appKey });
     } catch (error) {
       return errorResponse(c, error);
     }
+  };
+
+  app.put("/v1/integrations/google_calendar", (c) =>
+    saveCalendarIntegration(c, "google_calendar"),
+  );
+
+  app.put("/v1/integrations/:appKey", async (c) => {
+    const requested = c.req.param("appKey").trim().toLowerCase().replace(/-/g, "_");
+    if (!GOOGLE_CALENDAR_MUTATION_ALIASES.has(requested)) {
+      return c.json({ detail: "Integration not found" }, 404);
+    }
+    return saveCalendarIntegration(c, requested);
   });
 
   const disconnectCalendar = async (c: JobsContext) => {
