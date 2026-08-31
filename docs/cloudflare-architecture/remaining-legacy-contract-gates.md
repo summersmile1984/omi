@@ -1,6 +1,6 @@
 # Remaining legacy route contract gates
 
-截至 2026-08-31，Cloudflare route inventory 仍有 18 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
+截至 2026-09-01，Cloudflare route inventory 仍有 18 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
 
 ## 结论
 

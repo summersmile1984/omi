@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 18 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。auth/oauth、chat compatibility 和 Persona/MCP 的逐路由准入条件见 [`remaining-legacy-contract-gates.md`](remaining-legacy-contract-gates.md)；Phone、Wrapped、task intelligence 与 Persona PATCH 已切到 staging owner，但仍有 provider/backfill/cutover 门槛。
+截至 2026-09-01，`backend-routes.json` 中还有 18 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。auth/oauth、chat compatibility 和 Persona/MCP 的逐路由准入条件见 [`remaining-legacy-contract-gates.md`](remaining-legacy-contract-gates.md)；Phone、Wrapped、task intelligence 与 Persona PATCH 已切到 staging owner，但仍有 provider/backfill/cutover 门槛。
 
 ## 分组与迁移前置条件
 
@@ -32,7 +32,7 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 
 本轮新增 `GET /metrics` 的 Cloudflare staging boundary：Edge 只转发显式 operational Bearer，不转发 cookie 或内部身份 header；API Core 校验 `METRICS_SECRET`，secret 未配置或 Prometheus scrape authority 未建立时统一返回 `503 metrics_unavailable`，错误凭据返回 `401`。Worker 不生成零值或历史 Prometheus 文本，因此该路由已从 legacy owner 移出，但不宣称指标数据迁移完成；后续需要独立的聚合/保留策略和 scrape authority。
 
-Wrapped 的 `GET /v1/wrapped/{year}` 与 `POST /v1/wrapped/{year}/generate` 仍保持 `legacy-owned`。旧实现从 Firestore `users/{uid}/wrapped/{year}` 读取/写入状态，生成过程聚合 Firestore conversations/action items，调用 `wrapped_analysis` LLM，并通过本机 executor 与通知路径异步完成；当前 Cloudflare 没有 Wrapped D1 result/schema、Queue lease/retry authority、历史数据回放、provider 输出约束或通知 contract。为避免 staging 把 recap 数据和 prompt 送入 legacy，Edge 在 `WRAPPED_STAGING_FAIL_CLOSED=true` 时对两条路径统一返回 `503 wrapped_unavailable` 且不读取请求体/调用 legacy。后续至少需要落 D1 result/job 表与 deletion fence、bounded 聚合/幂等 Queue consumer、Workers AI 或外部 provider 的结构化输出校验，以及通知替代 contract 后，才能做正向迁移。
+Wrapped 的 `GET /v1/wrapped/{year}` 与 `POST /v1/wrapped/{year}/generate` 已由 Jobs staging owner 承载。旧实现从 Firestore `users/{uid}/wrapped/{year}` 读取/写入状态，生成过程聚合 Firestore conversations/action items，调用 `wrapped_analysis` LLM，并通过本机 executor 与通知路径异步完成；Cloudflare 侧现有 `0107` D1 result/job、bounded 聚合、Queue lease/retry、Workers AI structured output 和 notification outbox 只覆盖新 projection。历史 Firestore result/source 回放、真实 provider probe、旧账号 continuity 与 production cutover 仍未闭合；在此之前不得把 staging owner 误记为历史数据 parity。
 
 本轮新增 `POST /v2/chat/generate-reply`：API AI 使用 Workers AI 或已验证的 OpenAI BYOK 生成无状态草稿，历史只作为受限 prompt 输入，不创建聊天 session、不写入消息；D1 仅记录独立的 `v2_chat_generate_reply` 配额事件并在 provider 返回后结算，失败会关闭预留。Edge、manifest 和回归测试已同步更新。
 
