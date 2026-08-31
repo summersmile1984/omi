@@ -445,10 +445,18 @@ describe("edge gateway", () => {
     expect(forwarded[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
-  it("fails closed for legacy staged-task and task-intelligence paths in staging", async () => {
+  it("routes task-intelligence and staged-task paths through API Core", async () => {
+    const coreRequests: Request[] = [];
     const env = {
-      TASK_INTELLIGENCE_STAGING_FAIL_CLOSED: "true",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service(() =>
+        Response.json({ uid: "task-user", authority: "better-auth" }),
+      ),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ status: "ok" });
+      }),
+      RATE_LIMITS: rateLimits(() => allowRateLimit()),
     };
     const legacyFetch = vi
       .spyOn(globalThis, "fetch")
@@ -495,15 +503,12 @@ describe("edge gateway", () => {
           env as never,
         );
 
-        expect(response.status, `${method} ${path}`).toBe(503);
-        await expect(response.json()).resolves.toEqual({
-          error: "task_intelligence_unavailable",
-          detail:
-            "Legacy staged-task and task-intelligence workflows are unavailable on Cloudflare staging.",
-        });
-        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.status, `${method} ${path}`).toBe(200);
+        await expect(response.json()).resolves.toEqual({ status: "ok" });
       }
       expect(legacyFetch).not.toHaveBeenCalled();
+      expect(coreRequests).toHaveLength(requests.length);
+      expect(coreRequests.every((request) => request.headers.get("cookie") === null)).toBe(true);
     } finally {
       legacyFetch.mockRestore();
     }

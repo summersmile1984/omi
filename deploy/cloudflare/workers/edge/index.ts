@@ -1459,49 +1459,23 @@ app.post("/v2/files", legacyChatFilesStagingBoundary);
 app.post("/v2/audio-merge-jobs/run", proxyAuthenticatedJobs);
 app.get("/v1/wrapped/:year", proxyAuthenticatedJobs);
 app.post("/v1/wrapped/:year/generate", proxyAuthenticatedJobs);
-app.delete("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);
-app.delete(
-  "/v1/staged-tasks/:taskId",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.get("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);
-app.patch(
-  "/v1/staged-tasks/batch-scores",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.post("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);
-app.post(
-  "/v1/staged-tasks/promote",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.post(
-  "/v1/staged-tasks/:taskId/promote",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.post(
-  "/v1/task-intelligence/feedback",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.post(
-  "/v1/task-intelligence/interventions",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.post(
-  "/v1/task-intelligence/outcomes",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.post(
-  "/v1/what-matters-now/evaluate",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.put(
-  "/v1/task-intelligence/context-snapshot",
-  legacyTaskIntelligenceStagingBoundary,
-);
-app.put(
-  "/v1/task-intelligence/open-loop-snapshot",
-  legacyTaskIntelligenceStagingBoundary,
-);
+// Task-intelligence and staged-task requests are now authenticated at Edge
+// and owned by the D1/Workers-AI API Core boundary.  The old fail-closed
+// handler remains defined above for rollback diagnostics, but no request or
+// caller-supplied prompt is forwarded to the legacy backend.
+app.delete("/v1/staged-tasks", proxyAuthenticatedCore);
+app.delete("/v1/staged-tasks/:taskId", proxyAuthenticatedCore);
+app.get("/v1/staged-tasks", proxyAuthenticatedCore);
+app.patch("/v1/staged-tasks/batch-scores", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/promote", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/:taskId/promote", proxyAuthenticatedCore);
+app.post("/v1/task-intelligence/feedback", proxyAuthenticatedCore);
+app.post("/v1/task-intelligence/interventions", proxyAuthenticatedCore);
+app.post("/v1/task-intelligence/outcomes", proxyAuthenticatedCore);
+app.post("/v1/what-matters-now/evaluate", proxyAuthenticatedCore);
+app.put("/v1/task-intelligence/context-snapshot", proxyAuthenticatedCore);
+app.put("/v1/task-intelligence/open-loop-snapshot", proxyAuthenticatedCore);
 app.get("/v1/users/stats/chat-messages", proxyAuthenticatedCore);
 app.post("/v2/chat-sessions", proxyAuthenticatedCore);
 app.get("/v2/chat-sessions", proxyAuthenticatedCore);
