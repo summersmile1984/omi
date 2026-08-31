@@ -50,9 +50,9 @@ Gemini adapter（API-AI Worker；Edge 只负责认证、BYOK 校验和 signed co
 
 - 只接受 `models/{model}:{action}`，沿用旧 allowlist；未知模型/action 在
   provider dispatch 前返回 403。
-- 当前实现只允许显式配置的 AI Studio `GEMINI_API_KEY`，仅作为 adapter
-  fixture/staging provider；server-paid Vertex service identity、regional/PT
-  路由没有实现，provider 选择不是 `ai_studio` 时 fail closed。
+- AI Studio branch 只允许显式配置的 `GEMINI_API_KEY`，仅作为 adapter
+  fixture/staging provider；server-paid Vertex service identity 走下方单独的
+  opt-in seam，仍不实现旧 regional/PT 路由，且未知 provider 选择 fail closed。
 - BYOK 只在 Edge 通过 `cf_user_byok_enrollments` fingerprint 校验后进入
   request-local context。发送到 AI Studio 时优先使用 `x-goog-api-key`，不把
   raw key 放 query、日志、D1 或内部 assertion；请求结束即丢弃。
@@ -66,6 +66,38 @@ Gemini adapter（API-AI Worker；Edge 只负责认证、BYOK 校验和 signed co
 - provider 状态必须映射为固定错误 envelope：400/403 为不可重试请求或
   credential 错误，429 带 `Retry-After` 且可重试，408/504 为 timeout，5xx
   为 502 provider unavailable；错误 body 不透传 prompt、key 或上游原文。
+
+### Vertex service-account seam（仅显式 opt-in）
+
+API-AI 现在还提供一个未切 owner 的 Vertex service-account seam：
+`GEMINI_PROXY_PROVIDER=vertex`（或 `vertex_ai`）时，Worker 从 secret
+`GEMINI_VERTEX_SERVICE_ACCOUNT_JSON` 解析 project/client email/PKCS#8 key，
+使用 Workers Web Crypto 的 `RSASSA-PKCS1-v1_5`/SHA-256 签署 OAuth 2.0 JWT
+bearer assertion，再向 `oauth2.googleapis.com/token` 换取短期
+`cloud-platform` access token。access token 只保留在 isolate 内的有界缓存，
+不会写入 D1、日志或内部 assertion；私钥轮换会通过 key digest 使缓存失效。
+
+Vertex endpoint 默认按 `GEMINI_VERTEX_LOCATION`（默认 `us-central1`）构造：
+`https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:{action}`；
+也可以用 `GEMINI_VERTEX_API_BASE_URL` 指定同一 Google `aiplatform.googleapis.com`
+域名下的 `/v1` base。`GEMINI_VERTEX_PROJECT_ID`（若设置）必须与 service
+account 的 `project_id` 一致。当前 seam 支持 `generateContent`、
+`streamGenerateContent` 和单条 `embedContent`（转换成 Vertex `predict` wire）；
+`batchEmbedContents`、请求级 BYOK 和缺失/非法 service identity 会 fail closed。
+`0117_gemini_vertex_provider.sql` 扩展 usage receipt 的 provider check，并保留
+已有 D1 receipt/quota/deletion-fence 数据。
+
+部署前需将完整 service-account JSON 作为 API-AI Worker secret 写入，例如：
+`wrangler secret put GEMINI_VERTEX_SERVICE_ACCOUNT_JSON --config deploy/cloudflare/python/api-ai/wrangler.jsonc`；
+默认 provider 仍是 `ai_studio`，必须显式设置 `GEMINI_PROXY_PROVIDER=vertex_ai`
+（或 `vertex`）后才会尝试 Vertex token exchange。
+
+该 seam 证明的是 Workers→Google OAuth/Vertex 的可部署 provider boundary，
+不是旧桌面代理的 Vertex PT/ADC 路由 parity：仍缺 PT `requestType`/overflow
+ladder、Redis burst/Pro demotion、Firebase principal continuity、真实成本卡及
+authenticated staging positive probe。因此 staging 仍保持
+`GEMINI_PROXY_CLOUDFLARE_ENABLED=false`，不能把配置 seam 或单元测试当作
+legacy owner cutover 证据。
 
 ### Quota 与 usage authority
 

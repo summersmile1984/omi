@@ -8,6 +8,7 @@ service-identity contract is available.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -20,6 +21,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from internal_auth import decode_context
+from vertex_auth import (
+    VertexAuthError,
+    access_token as vertex_access_token,
+    parse_service_account,
+)
 
 try:
     from workers import fetch as worker_fetch
@@ -38,6 +44,12 @@ MAX_INLINE_MEDIA_PARTS = 16
 DEFAULT_DAILY_LIMIT = 1_500
 MAX_OUTPUT_TOKENS = 8_192
 SERVER_PAID_MAX_OUTPUT_TOKENS = 2_048
+VERTEX_DEFAULT_LOCATION = "us-central1"
+VERTEX_LOCATION_PATTERN = re.compile(r"^(?:global|[a-z]{2,16}(?:-[a-z0-9]{1,16}){0,3})$")
+VERTEX_ACTIONS = frozenset({"generateContent", "streamGenerateContent", "embedContent"})
+VERTEX_BASE_HOST_PATTERN = re.compile(r"^[a-z0-9-]+-aiplatform\.googleapis\.com$")
+PROVIDER_TIMEOUT_SECONDS = 75
+STREAM_IDLE_TIMEOUT_SECONDS = 75
 MAX_REQUEST_ID_CHARS = 128
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -80,12 +92,13 @@ def _json_error(
     status_code: int,
     retryable: bool,
     retry_after: int | None = None,
+    provider: str = "ai_studio",
 ) -> JSONResponse:
     headers = {
         "cache-control": "no-store",
         "x-request-id": request_id,
         "x-omi-request-id": request_id,
-        "x-omi-provider": "ai_studio",
+        "x-omi-provider": provider,
         "x-omi-error-class": code,
         "x-omi-retryable": "true" if retryable else "false",
     }
@@ -256,9 +269,7 @@ def _sanitize_payload(
                     retryable=False,
                 )
         configs = [
-            payload[key]
-            for key in ("generation_config", "generationConfig")
-            if isinstance(payload.get(key), dict)
+            payload[key] for key in ("generation_config", "generationConfig") if isinstance(payload.get(key), dict)
         ]
         if not configs:
             payload["generationConfig"] = {"maxOutputTokens": max_output_tokens}
@@ -306,6 +317,156 @@ def _safe_provider_url(base_url: str, path: str, query: str, *, stream: bool) ->
             "",
         )
     )
+
+
+def _vertex_location(env: object) -> str:
+    location = str(getattr(env, "GEMINI_VERTEX_LOCATION", VERTEX_DEFAULT_LOCATION)).strip().lower()
+    if not VERTEX_LOCATION_PATTERN.fullmatch(location):
+        raise GeminiProviderError(
+            "gemini_vertex_unavailable",
+            "Vertex Gemini location is not configured",
+            status_code=503,
+            retryable=True,
+        )
+    return location
+
+
+def _vertex_project(env: object, service_account_json: str) -> str:
+    configured = str(getattr(env, "GEMINI_VERTEX_PROJECT_ID", "")).strip()
+    account = parse_service_account(service_account_json, expected_project_id=configured or None)
+    if account is None:
+        raise GeminiProviderError(
+            "gemini_vertex_unavailable",
+            "Vertex Gemini service identity is not configured",
+            status_code=503,
+            retryable=True,
+        )
+    return account.project_id
+
+
+def _vertex_auth_failure(error: VertexAuthError) -> GeminiProviderError:
+    if error.code == "vertex_auth_timeout":
+        return GeminiProviderError(
+            "gemini_vertex_auth_timeout",
+            "Vertex Gemini credential exchange timed out",
+            status_code=504,
+            retryable=True,
+        )
+    if error.code == "vertex_auth_rate_limited":
+        return GeminiProviderError(
+            "gemini_vertex_auth_rate_limited",
+            "Vertex Gemini credential exchange was rate limited",
+            status_code=429,
+            retryable=True,
+            retry_after=30,
+        )
+    if error.code in {"vertex_auth_rejected", "vertex_auth_invalid_response"}:
+        return GeminiProviderError(
+            "gemini_vertex_auth_rejected",
+            "Vertex Gemini service identity was rejected",
+            status_code=503,
+            retryable=False,
+        )
+    return GeminiProviderError(
+        "gemini_vertex_auth_unavailable",
+        "Vertex Gemini service identity is unavailable",
+        status_code=503,
+        retryable=True,
+    )
+
+
+def _vertex_provider_url(
+    env: object,
+    *,
+    project: str,
+    location: str,
+    model: str,
+    action: str,
+    query: str,
+    stream: bool,
+) -> str:
+    configured = str(getattr(env, "GEMINI_VERTEX_API_BASE_URL", "")).strip()
+    if configured:
+        base_url = configured
+    elif location == "global":
+        base_url = "https://aiplatform.googleapis.com/v1"
+    else:
+        base_url = f"https://{location}-aiplatform.googleapis.com/v1"
+    parsed = urlsplit(base_url)
+    try:
+        hostname = parsed.hostname or ""
+        port = parsed.port
+    except ValueError as error:
+        raise GeminiProviderError(
+            "gemini_vertex_unavailable",
+            "Vertex Gemini endpoint is not configured",
+            status_code=503,
+            retryable=True,
+        ) from error
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or port is not None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path.rstrip("/") != "/v1"
+        or (hostname != "aiplatform.googleapis.com" and not VERTEX_BASE_HOST_PATTERN.fullmatch(hostname))
+    ):
+        raise GeminiProviderError(
+            "gemini_vertex_unavailable",
+            "Vertex Gemini endpoint is not configured",
+            status_code=503,
+            retryable=True,
+        )
+    provider_action = "predict" if action == "embedContent" else action
+    query_items = parse_qsl(query, keep_blank_values=True)
+    if any(key.casefold() in FORBIDDEN_QUERY_KEYS for key, _ in query_items):
+        raise GeminiProviderError(
+            "invalid_request",
+            "Provider credential query parameters are not allowed",
+            status_code=400,
+            retryable=False,
+        )
+    if stream and not any(key == "alt" for key, _ in query_items):
+        query_items.append(("alt", "sse"))
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            f"/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:{provider_action}",
+            urlencode(query_items),
+            "",
+        )
+    )
+
+
+def _vertex_embedding_request(body: bytes) -> bytes:
+    try:
+        payload = json.loads(body)
+        content = payload["content"]
+        text = content["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        raise GeminiProviderError(
+            "invalid_request",
+            "embedContent requires content.parts[0].text",
+            status_code=400,
+            retryable=False,
+        ) from error
+    instance: dict[str, Any] = {"content": text}
+    for source, destination in (("taskType", "task_type"), ("title", "title")):
+        if source in payload:
+            instance[destination] = payload[source]
+    return json.dumps({"instances": [instance]}, separators=(",", ":")).encode()
+
+
+def _vertex_embedding_response(body: bytes) -> bytes:
+    try:
+        values = json.loads(body)["predictions"][0]["embeddings"]["values"]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return body
+    return json.dumps({"embedding": {"values": values}}, separators=(",", ":")).encode()
 
 
 def _response_header(response: object, name: str, default: str = "") -> str:
@@ -418,6 +579,7 @@ async def _reserve_daily(
     model: str,
     action: str,
     credential_source: str,
+    provider: str,
     now: int,
     account_generation: int,
 ) -> str:
@@ -433,7 +595,7 @@ async def _reserve_daily(
         reserve = database.prepare(
             "INSERT OR IGNORE INTO cf_gemini_usage_receipts "
             "(request_id, uid, model, action, credential_source, provider, status, account_generation, created_at) "
-            "SELECT ?, ?, ?, ?, ?, 'ai_studio', 'reserved', ?, ? "
+            "SELECT ?, ?, ?, ?, ?, ?, 'reserved', ?, ? "
             "WHERE NOT EXISTS (SELECT 1 FROM cf_gemini_usage_receipts WHERE request_id = ?) "
             "AND (SELECT request_count FROM cf_gemini_quota_windows "
             "     WHERE uid = ? AND window_kind = 'daily' AND window_start = ?) < ?"
@@ -443,6 +605,7 @@ async def _reserve_daily(
             model,
             action,
             credential_source,
+            provider,
             account_generation,
             now,
             request_id,
@@ -465,8 +628,8 @@ async def _reserve_daily(
             await database.prepare(
                 "INSERT OR IGNORE INTO cf_gemini_usage_receipts "
                 "(request_id, uid, model, action, credential_source, provider, status, account_generation, created_at, last_error) "
-                "VALUES (?, ?, ?, ?, ?, 'ai_studio', 'rejected', ?, ?, 'daily_quota_exceeded')"
-            ).bind(request_id, uid, model, action, credential_source, account_generation, now).run()
+                "VALUES (?, ?, ?, ?, ?, ?, 'rejected', ?, ?, 'daily_quota_exceeded')"
+            ).bind(request_id, uid, model, action, credential_source, provider, account_generation, now).run()
         except Exception as error:
             raise GeminiProviderError("gemini_usage_unavailable", "Gemini usage ledger is unavailable") from error
         raise GeminiProviderError(
@@ -568,7 +731,22 @@ async def _stream_body(
         if callable(reader_factory):
             reader = reader_factory()
             while True:
-                result = await reader.read()
+                try:
+                    async with asyncio.timeout(STREAM_IDLE_TIMEOUT_SECONDS):
+                        result = await reader.read()
+                except TimeoutError:
+                    await _settle(
+                        env,
+                        request_id=request_id,
+                        uid=uid,
+                        status="failed",
+                        usage=None,
+                        now=int(time.time()),
+                        cost_micros=None,
+                        error="stream_timeout",
+                    )
+                    yield _stream_data_event("gemini_stream_timeout", request_id)
+                    return
                 done = getattr(result, "done", None)
                 value = getattr(result, "value", None)
                 if isinstance(result, dict):
@@ -631,14 +809,19 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
             retryable=True,
         )
     provider = str(getattr(env, "GEMINI_PROXY_PROVIDER", "ai_studio")).strip().lower()
-    if provider != "ai_studio":
+    if provider in {"vertex", "vertex_ai"}:
+        provider = "vertex_ai"
+    elif provider == "ai_studio":
+        provider = "ai_studio"
+    else:
         return _json_error(
             request_id,
-            "gemini_vertex_unavailable",
-            "Vertex Gemini provider is not configured for Cloudflare",
+            "gemini_provider_unavailable",
+            "Gemini provider is not configured for Cloudflare",
             status_code=503,
             retryable=True,
         )
+    reserved = False
     try:
         normalized_path, model, action = _parse_path(path)
         if stream_route and action != "streamGenerateContent":
@@ -660,18 +843,60 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
             action=action,
             max_output_tokens=MAX_OUTPUT_TOKENS if byok_key else SERVER_PAID_MAX_OUTPUT_TOKENS,
         )
-        api_key = byok_key or str(getattr(env, "GEMINI_API_KEY", "")).strip()
-        if not api_key:
-            raise GeminiProviderError("gemini_provider_unavailable", "Gemini provider is not configured")
-        base_url = str(getattr(env, "GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"))
-        url = _safe_provider_url(
-            base_url,
-            normalized_path,
-            request.url.query,
-            stream=stream_route or action == "streamGenerateContent",
-        )
-        if worker_fetch is None:
-            raise GeminiProviderError("gemini_provider_unavailable", "Worker fetch is unavailable")
+        if provider == "vertex_ai":
+            if worker_fetch is None:
+                raise GeminiProviderError("gemini_provider_unavailable", "Worker fetch is unavailable")
+            if byok_key:
+                raise GeminiProviderError(
+                    "gemini_vertex_byok_unsupported",
+                    "Vertex Gemini does not accept request BYOK credentials",
+                    status_code=403,
+                    retryable=False,
+                )
+            if action not in VERTEX_ACTIONS or action == "batchEmbedContents":
+                raise GeminiProviderError(
+                    "gemini_vertex_action_unavailable",
+                    "Gemini action is not supported by the configured Vertex provider",
+                    status_code=503,
+                    retryable=True,
+                )
+            service_account_json = str(getattr(env, "GEMINI_VERTEX_SERVICE_ACCOUNT_JSON", ""))
+            project = _vertex_project(env, service_account_json)
+            location = _vertex_location(env)
+            try:
+                token = await vertex_access_token(
+                    service_account_json,
+                    worker_fetch,
+                    expected_project_id=project,
+                )
+            except VertexAuthError as error:
+                raise _vertex_auth_failure(error) from error
+            url = _vertex_provider_url(
+                env,
+                project=project,
+                location=location,
+                model=model,
+                action=action,
+                query=request.url.query,
+                stream=stream_route or action == "streamGenerateContent",
+            )
+            provider_headers = {"authorization": f"Bearer {token}"}
+            if action == "embedContent":
+                sanitized_body = _vertex_embedding_request(sanitized_body)
+        else:
+            api_key = byok_key or str(getattr(env, "GEMINI_API_KEY", "")).strip()
+            if not api_key:
+                raise GeminiProviderError("gemini_provider_unavailable", "Gemini provider is not configured")
+            base_url = str(getattr(env, "GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"))
+            url = _safe_provider_url(
+                base_url,
+                normalized_path,
+                request.url.query,
+                stream=stream_route or action == "streamGenerateContent",
+            )
+            if worker_fetch is None:
+                raise GeminiProviderError("gemini_provider_unavailable", "Worker fetch is unavailable")
+            provider_headers = {"x-goog-api-key": api_key}
         await _reserve_daily(
             env,
             request_id=request_id,
@@ -679,21 +904,63 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
             model=model,
             action=action,
             credential_source=credential_source,
+            provider=provider,
             now=int(time.time()),
             account_generation=int(context.get("accountGeneration") or 0),
         )
-        response = await worker_fetch(
-            url,
-            method="POST",
-            headers={
-                "content-type": "application/json",
-                "accept": (
-                    "text/event-stream" if stream_route or action == "streamGenerateContent" else "application/json"
-                ),
-                "x-goog-api-key": api_key,
-            },
-            body=sanitized_body,
-        )
+        reserved = True
+        try:
+            async with asyncio.timeout(PROVIDER_TIMEOUT_SECONDS):
+                response = await worker_fetch(
+                    url,
+                    method="POST",
+                    headers={
+                        "content-type": "application/json",
+                        "accept": (
+                            "text/event-stream"
+                            if stream_route or action == "streamGenerateContent"
+                            else "application/json"
+                        ),
+                        **provider_headers,
+                    },
+                    body=sanitized_body,
+                )
+        except TimeoutError as error:
+            await _settle(
+                env,
+                request_id=request_id,
+                uid=str(context["uid"]),
+                status="failed",
+                usage=None,
+                now=int(time.time()),
+                cost_micros=None,
+                error="provider_timeout",
+            )
+            reserved = False
+            raise GeminiProviderError(
+                "gemini_provider_timeout",
+                "Gemini provider timed out before returning a response",
+                status_code=504,
+                retryable=False,
+            ) from error
+        except Exception as error:
+            await _settle(
+                env,
+                request_id=request_id,
+                uid=str(context["uid"]),
+                status="failed",
+                usage=None,
+                now=int(time.time()),
+                cost_micros=None,
+                error="provider_transport_error",
+            )
+            reserved = False
+            raise GeminiProviderError(
+                "gemini_provider_unavailable",
+                "Gemini provider is unavailable",
+                status_code=502,
+                retryable=True,
+            ) from error
     except GeminiProviderError as error:
         return _json_error(
             request_id,
@@ -702,10 +969,27 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
             status_code=error.status_code,
             retryable=error.retryable,
             retry_after=getattr(error, "retry_after", None),
+            provider=provider,
         )
     except Exception:
+        if reserved:
+            await _settle(
+                env,
+                request_id=request_id,
+                uid=str(context["uid"]),
+                status="failed",
+                usage=None,
+                now=int(time.time()),
+                cost_micros=None,
+                error="provider_unavailable",
+            )
         return _json_error(
-            request_id, "gemini_provider_unavailable", "Gemini provider is unavailable", status_code=502, retryable=True
+            request_id,
+            "gemini_provider_unavailable",
+            "Gemini provider is unavailable",
+            status_code=502,
+            retryable=True,
+            provider=provider,
         )
 
     status = int(getattr(response, "status", 502))
@@ -713,7 +997,7 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
         "cache-control": "no-store",
         "x-request-id": request_id,
         "x-omi-request-id": request_id,
-        "x-omi-provider": "ai_studio",
+        "x-omi-provider": provider,
     }
     streaming = stream_route or action == "streamGenerateContent"
     if status >= 400:
@@ -729,7 +1013,13 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
             error=code,
         )
         return _json_error(
-            request_id, code, message, status_code=proxy_status, retryable=retryable, retry_after=retry_after
+            request_id,
+            code,
+            message,
+            status_code=proxy_status,
+            retryable=retryable,
+            retry_after=retry_after,
+            provider=provider,
         )
     if streaming:
         headers["content-type"] = _response_header(response, "content-type", "text/event-stream")
@@ -757,11 +1047,18 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
             "Gemini provider response is too large",
             status_code=502,
             retryable=False,
+            provider=provider,
         )
     try:
         payload = json.loads(response_body)
     except (TypeError, ValueError):
         payload = None
+    if provider == "vertex_ai" and action == "embedContent":
+        response_body = _vertex_embedding_response(response_body)
+        try:
+            payload = json.loads(response_body)
+        except (TypeError, ValueError):
+            payload = None
     usage = _usage(payload) if isinstance(payload, dict) else None
     if not await _settle(
         env,
@@ -778,6 +1075,7 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
             "Gemini usage ledger is unavailable",
             status_code=503,
             retryable=True,
+            provider=provider,
         )
     headers["content-type"] = _response_header(response, "content-type", "application/json")
     return Response(content=response_body, status_code=status, headers=headers)

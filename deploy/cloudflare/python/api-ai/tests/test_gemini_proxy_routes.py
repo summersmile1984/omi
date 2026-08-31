@@ -1,19 +1,31 @@
 import asyncio
+import base64
 import json
 import sqlite3
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
-
-import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import gemini_proxy_routes as gemini  # noqa: E402
+import vertex_auth  # noqa: E402
 
 MIGRATION = Path(__file__).parents[3] / "migrations" / "app" / "0114_gemini_proxy.sql"
+VERTEX_MIGRATION = Path(__file__).parents[3] / "migrations" / "app" / "0117_gemini_vertex_provider.sql"
+VERTEX_PRIVATE_KEY = base64.b64encode(b"\x01" * 256).decode()
+VERTEX_SERVICE_ACCOUNT = json.dumps(
+    {
+        "project_id": "project-123",
+        "client_email": "vertex-worker@project-123.iam.gserviceaccount.com",
+        "private_key": f"-----BEGIN PRIVATE KEY-----\n{VERTEX_PRIVATE_KEY}\n-----END PRIVATE KEY-----",
+        "private_key_id": "vertex-key-1",
+    }
+)
 
 
 class FakeStatement:
@@ -79,6 +91,12 @@ class FakeD1:
             "SELECT request_count FROM cf_gemini_quota_windows WHERE uid = ?", (uid,)
         ).fetchone()
         return row[0] if row else 0
+
+
+class FakeVertexD1(FakeD1):
+    def __init__(self):
+        super().__init__()
+        self.connection.executescript(VERTEX_MIGRATION.read_text())
 
 
 class FakeRequest:
@@ -297,6 +315,245 @@ def test_byok_requests_keep_the_historical_8192_token_ceiling(monkeypatch):
     assert sent["generationConfig"]["maxOutputTokens"] == 8192
     assert calls[0]["headers"]["x-goog-api-key"] == "user-gemini-key"
     assert database.receipt("gemini-byok-1")["status"] == "success"
+
+
+def test_vertex_service_account_signing_uses_web_crypto_rs256(monkeypatch):
+    calls = {}
+
+    class FakeSubtle:
+        async def importKey(self, *args):
+            calls["import"] = args
+            return "crypto-key"
+
+        async def sign(self, *args):
+            calls["sign"] = args
+            return b"signature"
+
+    fake_js = types.ModuleType("js")
+    fake_js.crypto = types.SimpleNamespace(subtle=FakeSubtle())
+    monkeypatch.setitem(sys.modules, "js", fake_js)
+
+    signature = asyncio.run(vertex_auth._sign_rs256(b"unsigned", b"private"))
+
+    assert signature == b"signature"
+    assert calls["import"][0] == "pkcs8"
+    assert calls["import"][2] == {"name": "RSASSA-PKCS1-v1_5", "hash": "SHA-256"}
+    assert calls["sign"][0] == "RSASSA-PKCS1-v1_5"
+    assert calls["sign"][2] == b"unsigned"
+
+
+def test_vertex_access_token_sends_bounded_jwt_bearer_and_caches(monkeypatch):
+    vertex_auth.clear_access_token_cache()
+    signed = {}
+
+    async def fake_sign(unsigned, _private_key):
+        signed["unsigned"] = unsigned
+        return b"signature"
+
+    monkeypatch.setattr(vertex_auth, "_sign_rs256", fake_sign)
+    calls = []
+
+    async def fake_fetch(url, **options):
+        calls.append((url, options))
+        return FakeProviderResponse(b'{"access_token":"vertex-access-token","expires_in":3600}')
+
+    first = asyncio.run(
+        vertex_auth.access_token(
+            VERTEX_SERVICE_ACCOUNT,
+            fake_fetch,
+            expected_project_id="project-123",
+            now=1_700_000_000,
+        )
+    )
+    second = asyncio.run(
+        vertex_auth.access_token(
+            VERTEX_SERVICE_ACCOUNT,
+            fake_fetch,
+            expected_project_id="project-123",
+            now=1_700_000_100,
+        )
+    )
+
+    assert first == second == "vertex-access-token"
+    assert len(calls) == 1
+    assert calls[0][0] == vertex_auth.GOOGLE_TOKEN_URL
+    form = parse_qs(calls[0][1]["body"])
+    assert form["grant_type"] == ["urn:ietf:params:oauth:grant-type:jwt-bearer"]
+    assertion = form["assertion"][0]
+    header_raw, claims_raw, _signature = assertion.split(".")
+    header = json.loads(base64.urlsafe_b64decode(header_raw + "=="))
+    claims = json.loads(base64.urlsafe_b64decode(claims_raw + "=="))
+    assert header == {"alg": "RS256", "typ": "JWT", "kid": "vertex-key-1"}
+    assert claims == {
+        "iss": "vertex-worker@project-123.iam.gserviceaccount.com",
+        "scope": vertex_auth.VERTEX_SCOPE,
+        "aud": vertex_auth.GOOGLE_TOKEN_URL,
+        "iat": 1_700_000_000,
+        "exp": 1_700_003_600,
+    }
+    assert VERTEX_PRIVATE_KEY not in calls[0][1]["body"]
+
+
+def test_vertex_generate_content_uses_regional_endpoint_and_bearer_auth(monkeypatch):
+    database = FakeVertexD1()
+    vertex_auth.clear_access_token_cache()
+
+    async def fake_sign(_unsigned, _private_key):
+        return b"signature"
+
+    monkeypatch.setattr(vertex_auth, "_sign_rs256", fake_sign)
+    calls = []
+    provider_body = json.dumps(
+        {
+            "candidates": [{"content": {"parts": [{"text": "vertex hello"}]}}],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3, "totalTokenCount": 8},
+        }
+    ).encode()
+
+    async def fake_fetch(url, **options):
+        calls.append((url, options))
+        if url == vertex_auth.GOOGLE_TOKEN_URL:
+            return FakeProviderResponse(b'{"access_token":"vertex-access-token","expires_in":3600}')
+        return FakeProviderResponse(provider_body)
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(
+            database,
+            GEMINI_PROXY_PROVIDER="vertex",
+            GEMINI_VERTEX_SERVICE_ACCOUNT_JSON=VERTEX_SERVICE_ACCOUNT,
+            GEMINI_VERTEX_PROJECT_ID="project-123",
+            GEMINI_VERTEX_LOCATION="us-central1",
+        ),
+        b'{"contents":[{"parts":[{"text":"hi"}]}]}',
+        path="/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+        headers={"x-omi-request-id": "vertex-generate-1"},
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-2.5-flash:generateContent"))
+
+    assert result.status_code == 200
+    assert result.headers["x-omi-provider"] == "vertex_ai"
+    assert calls[0][0] == vertex_auth.GOOGLE_TOKEN_URL
+    assert calls[1][0] == (
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-123/locations/"
+        "us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+    )
+    assert calls[1][1]["headers"]["authorization"] == "Bearer vertex-access-token"
+    assert "x-goog-api-key" not in calls[1][1]["headers"]
+    sent = json.loads(calls[1][1]["body"])
+    assert sent["generationConfig"] == {"maxOutputTokens": 2048}
+    receipt = database.connection.execute(
+        "SELECT provider, status, prompt_tokens, output_tokens FROM cf_gemini_usage_receipts "
+        "WHERE request_id = 'vertex-generate-1'"
+    ).fetchone()
+    assert tuple(receipt) == ("vertex_ai", "success", 5, 3)
+
+
+def test_vertex_embedding_adapts_predict_wire_shape(monkeypatch):
+    database = FakeVertexD1()
+    vertex_auth.clear_access_token_cache()
+
+    async def fake_sign(_unsigned, _private_key):
+        return b"signature"
+
+    monkeypatch.setattr(vertex_auth, "_sign_rs256", fake_sign)
+    calls = []
+
+    async def fake_fetch(url, **options):
+        calls.append((url, options))
+        if url == vertex_auth.GOOGLE_TOKEN_URL:
+            return FakeProviderResponse(b'{"access_token":"vertex-access-token","expires_in":3600}')
+        return FakeProviderResponse(b'{"predictions":[{"embeddings":{"values":[0.1,0.2]}}]}')
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(
+            database,
+            GEMINI_PROXY_PROVIDER="vertex_ai",
+            GEMINI_VERTEX_SERVICE_ACCOUNT_JSON=VERTEX_SERVICE_ACCOUNT,
+        ),
+        b'{"content":{"parts":[{"text":"embed me"}]},"taskType":"RETRIEVAL_QUERY"}',
+        path="/v1/proxy/gemini/models/gemini-embedding-001:embedContent",
+        headers={"x-omi-request-id": "vertex-embed-1"},
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-embedding-001:embedContent"))
+
+    assert result.status_code == 200
+    assert json.loads(result.body) == {"embedding": {"values": [0.1, 0.2]}}
+    assert calls[1][0].endswith("models/gemini-embedding-001:predict")
+    assert json.loads(calls[1][1]["body"]) == {"instances": [{"content": "embed me", "task_type": "RETRIEVAL_QUERY"}]}
+
+
+def test_vertex_provider_rejects_batch_embeddings_without_dispatch(monkeypatch):
+    database = FakeVertexD1()
+    calls = []
+
+    async def fake_fetch(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("unsupported Vertex action must not dispatch")
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(
+            database,
+            GEMINI_PROXY_PROVIDER="vertex",
+            GEMINI_VERTEX_SERVICE_ACCOUNT_JSON=VERTEX_SERVICE_ACCOUNT,
+        ),
+        b'{"requests":[]}',
+        path="/v1/proxy/gemini/models/gemini-embedding-001:batchEmbedContents",
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-embedding-001:batchEmbedContents"))
+
+    assert result.status_code == 503
+    assert json.loads(result.body)["error"] == "gemini_vertex_action_unavailable"
+    assert calls == []
+    assert database.request_count("user-1") == 0
+
+
+def test_vertex_token_rejection_is_sanitized_and_not_retryable(monkeypatch):
+    database = FakeVertexD1()
+    vertex_auth.clear_access_token_cache()
+
+    async def fake_sign(_unsigned, _private_key):
+        return b"signature"
+
+    monkeypatch.setattr(vertex_auth, "_sign_rs256", fake_sign)
+    calls = []
+
+    async def fake_fetch(url, **options):
+        calls.append((url, options))
+        return FakeProviderResponse(
+            b'{"error":"invalid_grant","error_description":"private key should not leak"}',
+            status=401,
+        )
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(
+            database,
+            GEMINI_PROXY_PROVIDER="vertex",
+            GEMINI_VERTEX_SERVICE_ACCOUNT_JSON=VERTEX_SERVICE_ACCOUNT,
+        ),
+        b'{"contents":[{"parts":[{"text":"secret prompt"}]}]}',
+        path="/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-2.5-flash:generateContent"))
+
+    assert result.status_code == 503
+    body = json.loads(result.body)
+    assert body["error"] == "gemini_vertex_auth_rejected"
+    assert body["retryable"] is False
+    assert "private key should not leak" not in result.body.decode()
+    assert len(calls) == 1
+    assert database.request_count("user-1") == 0
 
 
 def test_provider_secret_is_fail_closed_without_calling_gemini(monkeypatch):
