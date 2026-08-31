@@ -837,7 +837,7 @@ focus sessions/stats                   # D1 uid-scoped event log, duration defau
 screen activity text sync/list/summary # D1 idempotent upsert and bounded aggregate reads; vectors stay legacy → unit verified
 calendar onboarding status/skip/reset # D1 flags plus Worker OAuth token/event reads and callback state; uid-scoped idempotency → unit + staging verified
 calendar meeting metadata CRUD      # D1 natural-key upsert and bounded date reads; legacy conversation reader remains Firestore → unit + staging verified
-conversation D1 projection         # pre-transcribed uid/id upsert + bounded canonical list/count/detail/search/non-cascade-delete/title/starred/folder/task operations with locked-row redaction; finalization/merge/cascade cleanup remain legacy → unit + edge verified
+conversation D1 projection         # pre-transcribed uid/id upsert + bounded canonical list/count/detail/search/non-cascade-delete/title/starred/folder/task operations with locked-row redaction; finalization/reprocess/merge use D1/Queue, cascade cleanup remains legacy → unit + edge verified
 conversation detail filters           # canonical source=omi and include_discarded query parity with uid-scoped D1 reads → unit + staging verified
 web Worker/vinext staging             # 97% vinext check, Next build, Better Auth email client, AUTH service binding, browser canary ready → HTTP/browser staging verified
 desktop realtime session/usage       # provider token mint via workers.fetch; hashed session + token-cost usage in D1 → usage staging verified; provider token mint remains key-gated
