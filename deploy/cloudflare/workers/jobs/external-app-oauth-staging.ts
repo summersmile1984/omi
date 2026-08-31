@@ -251,11 +251,11 @@ function legacyErrorDetail(code: string): string {
   }
 }
 
-async function readBoundedText(
+async function readBoundedBytes(
   body: ReadableStream<Uint8Array> | null,
   limit: number,
-): Promise<string> {
-  if (!body) return "";
+): Promise<Uint8Array> {
+  if (!body) return new Uint8Array();
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -280,6 +280,14 @@ async function readBoundedText(
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return bytes;
+}
+
+async function readBoundedText(
+  body: ReadableStream<Uint8Array> | null,
+  limit: number,
+): Promise<string> {
+  const bytes = await readBoundedBytes(body, limit);
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
@@ -291,18 +299,39 @@ async function requestForm(
   c: JobsContext,
   allowMultipart = false,
 ): Promise<URLSearchParams> {
-  const contentLength = Number(c.req.header("content-length") || "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_FORM_BYTES)
-    throw new ExternalAppOauthError(413, "request_too_large");
+  const declaredLength = c.req.header("content-length");
+  if (declaredLength !== undefined) {
+    const contentLength = Number(declaredLength);
+    if (
+      !Number.isSafeInteger(contentLength) ||
+      contentLength < 0 ||
+      contentLength > MAX_FORM_BYTES
+    )
+      throw new ExternalAppOauthError(413, "request_too_large");
+  }
   const contentType = c.req.header("content-type")?.toLowerCase() || "";
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const raw = await readBoundedText(c.req.raw.body, MAX_FORM_BYTES);
     return new URLSearchParams(raw);
   }
   if (allowMultipart && contentType.includes("multipart/form-data")) {
+    // Incoming browser multipart requests commonly omit Content-Length. Do
+    // not hand such a stream directly to formData(): its parser would buffer
+    // an attacker-controlled body before the field validation below. Read
+    // the raw stream under the same bound first, then parse only the bounded
+    // copy. This also catches a lying Content-Length header.
+    const boundedBody = await readBoundedBytes(
+      c.req.raw.body,
+      MAX_FORM_BYTES,
+    );
     let formData: FormData;
     try {
-      formData = await c.req.raw.formData();
+      const boundedRequest = new Request(c.req.raw.url, {
+        method: "POST",
+        headers: c.req.raw.headers,
+        body: boundedBody as unknown as BodyInit,
+      });
+      formData = await boundedRequest.formData();
     } catch {
       throw new ExternalAppOauthError(422, "invalid_request");
     }

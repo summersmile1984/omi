@@ -307,6 +307,50 @@ describe("namespaced external app OAuth staging seam", () => {
     ).toMatchObject({ uid: "legacy-user", status: "consumed" });
   });
 
+  it("bounds multipart Firebase forms even when Content-Length is absent", async () => {
+    const { env, appId } = environment();
+    env.LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED = "true";
+    env.FIREBASE_API_KEY = "AIza-test-key";
+    env.FIREBASE_PROJECT_ID = "omi-test-project";
+    env.INTERNAL_ASSERTION_SECRET = "internal-secret";
+    const authFetch = vi.fn();
+    env.AUTH = { fetch: authFetch } as unknown as Fetcher;
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerExternalAppOauthRoutes(
+      app,
+      async () => null,
+      { now: () => NOW },
+      { surface: "legacy" },
+    );
+
+    const boundary = "oauth-boundary";
+    const form = [
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="firebase_id_token"',
+      "",
+      "f".repeat(16_000),
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+    const response = await app.request(
+      "https://jobs.test/v1/oauth/token",
+      {
+        method: "POST",
+        headers: {
+          cookie: `omi_oauth_csrf=${"c".repeat(43)}`,
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body: form,
+      },
+      env,
+    );
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      detail: "request_too_large",
+    });
+    expect(authFetch).not.toHaveBeenCalled();
+  });
+
   it("uses hash-only double-submit CSRF and consumes a transaction once", async () => {
     const { env, database, uid, appId } = environment();
     const app = testApp(env, { now: () => NOW }, uid);

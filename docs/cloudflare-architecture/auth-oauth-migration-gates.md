@@ -245,7 +245,10 @@ HttpOnly, Secure, SameSite=Strict cookie and in a form field; token exchange
 requires an exact constant-time match, the authenticated uid, the app id, an
 unexpired pending transaction, and a current app-catalog revision. Duplicate form
 fields, oversized/non-form bodies, unsafe app/setup HTTPS targets, and account
-deletion intents/tombstones fail closed.
+deletion intents/tombstones fail closed. Multipart Firebase forms are bounded
+from the raw request stream before Worker form parsing, including requests that
+omit `Content-Length`; a declared or observed body above the 16 KB limit is
+rejected without invoking the Auth identity verifier.
 
 Token exchange performs setup callback and paid-entitlement checks before the
 uid-scoped enabled-app insert. The install and public install-counter update are
