@@ -54,15 +54,13 @@ END;
 -- generation.
 CREATE TRIGGER IF NOT EXISTS adf_u_hume_task_projections
 BEFORE UPDATE ON cf_hume_task_projections
-WHEN EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid = OLD.uid)
-  OR EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid = NEW.uid)
-  OR EXISTS (SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = OLD.uid)
-  OR EXISTS (SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = NEW.uid)
-  OR 1 = 1
 BEGIN
   -- The unconditional arm preserves immutability; the explicit OLD/NEW
   -- deletion-fence predicates keep this identity surface in the purge
   -- contract if the immutable policy is ever relaxed.
+  SELECT RAISE(ABORT, 'account deletion fence')
+    WHERE EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid = OLD.uid OR uid = NEW.uid)
+       OR EXISTS (SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = OLD.uid OR uid = NEW.uid);
   SELECT RAISE(ABORT, 'hume task projection immutable');
 END;
 
