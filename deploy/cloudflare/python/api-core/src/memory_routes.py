@@ -35,6 +35,10 @@ MAX_TAGS = 100
 MAX_TAG_LENGTH = 256
 MAX_BATCH_DELETE = 100
 MAX_BATCH_CREATE = 100
+MAX_PRODUCT_SEARCH_QUERY = 500
+MAX_PRODUCT_SEARCH_TOKENS = 20
+MAX_PRODUCT_SEARCH_LIMIT = 500
+MAX_PRODUCT_SEARCH_OFFSET = 100_000
 MEMORY_CATEGORIES = frozenset({"interesting", "system", "manual", "workflow"})
 LEGACY_CATEGORY_MAP = {
     "core": "system",
@@ -346,6 +350,155 @@ def _query_bool(request: Request, name: str) -> bool | None:
     if normalized in {"0", "false", "off", "no"}:
         return False
     return None
+
+
+def _product_search_tokens(query: str) -> list[str]:
+    if len(query) > MAX_PRODUCT_SEARCH_QUERY:
+        raise ValueError("query exceeds size limit")
+    tokens = list(
+        dict.fromkeys(token.lower() for token in query.replace(".", " ").replace(",", " ").split() if len(token) > 2)
+    )
+    if len(tokens) > MAX_PRODUCT_SEARCH_TOKENS:
+        raise ValueError("query contains too many terms")
+    return tokens
+
+
+def _escape_like_token(token: str) -> str:
+    return token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _product_search_item(row: dict[str, object]) -> dict[str, object]:
+    updated_at = (
+        _iso(row.get("updated_at"))
+        or _iso(row.get("created_at"))
+        or datetime.fromtimestamp(0, timezone.utc).isoformat()
+    )
+    confidence = row.get("capture_confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        confidence = None
+    return {
+        "memory_id": str(row.get("id") or ""),
+        "memory_layer": "product_memory",
+        "tier": str(row.get("memory_tier") or "long_term"),
+        "content": str(row.get("content") or ""),
+        "lifecycle_status": "active",
+        "processing_state": "processed",
+        "confidence": confidence,
+        "visibility": row.get("visibility"),
+        "visibility_source": "universal_memory_service",
+        "source": row.get("conversation_id") or None,
+        "date": updated_at,
+        "evidence": [],
+        "agent_use": "default_access_memory",
+        "access_reason": "default_memory_allowed",
+        "superseded_by": row.get("superseded_by"),
+    }
+
+
+def _product_search_policy() -> dict[str, object]:
+    return {
+        "consumer": "omi_chat",
+        "app_has_default_memory_grant": True,
+        "archive_capability": False,
+        "raw_provenance_capability": False,
+    }
+
+
+def _product_search_rollout() -> dict[str, object]:
+    capabilities = {
+        "legacy_only": False,
+        "shadow_artifacts_enabled": False,
+        "memory_writes_enabled": True,
+        "memory_reads_enabled": True,
+        "legacy_reads_authoritative": False,
+    }
+    return {
+        "consumer": "omi_chat",
+        "enabled": True,
+        "reason": "cloudflare_d1_authority",
+        "read_decision": "USE_MEMORY",
+        "mode": "read",
+        "memory_reads_enabled": True,
+        "legacy_reads_authoritative": False,
+        "default_memory_grant": True,
+        "archive_default_visible": False,
+        "archive_capability": False,
+        "fallback_reason": None,
+        "capabilities": capabilities,
+        "surface": "product_default_search",
+        "archive_capability_required": False,
+        "archive_capability_granted": False,
+        "explicit_archive_request": False,
+        "app_context": {},
+    }
+
+
+def _product_search_gate() -> dict[str, object]:
+    return {
+        "source_path": "cloudflare:d1:cf_memories",
+        "read_decision": "USE_MEMORY",
+        "fallback_reason": None,
+        "reason": "cloudflare_d1_authority",
+    }
+
+
+@router.get("/memory/search")
+async def search_product_memory(request: Request):
+    """Search default-visible D1 memories for the authenticated product caller."""
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    query = _query_value(request, "query") or ""
+    try:
+        limit = int(_query_value(request, "limit") or "100")
+        offset = int(_query_value(request, "offset") or "0")
+        tokens = _product_search_tokens(query)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid search parameters"}, status_code=400)
+    if limit < 1 or limit > MAX_PRODUCT_SEARCH_LIMIT or offset < 0 or offset > MAX_PRODUCT_SEARCH_OFFSET:
+        return JSONResponse({"error": "invalid pagination"}, status_code=400)
+
+    uid = str(context["uid"])
+    where = (
+        "WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL "
+        "AND memory_tier != 'archive' AND COALESCE(user_review, 1) != 0 AND is_locked = 0"
+    )
+    args: list[object] = [uid]
+    if tokens:
+        clauses = ["LOWER(content) LIKE ? ESCAPE '\\'" for _ in tokens]
+        where += " AND (" + " OR ".join(clauses) + ")"
+        args.extend(f"%{_escape_like_token(token)}%" for token in tokens)
+    env = request.scope["env"]
+    try:
+        count_row = (
+            await env.APP_DB.prepare("SELECT COUNT(*) AS total_count FROM cf_memories " + where).bind(*args).first()
+        )
+        total_count = count_row.get("total_count", 0) if isinstance(count_row, dict) else 0
+        if isinstance(total_count, bool) or not isinstance(total_count, int):
+            total_count = int(total_count or 0)
+        rows_result = (
+            await env.APP_DB.prepare(_SELECT + where + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?")
+            .bind(*args, limit, offset)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    rows = rows_result.get("results", []) if isinstance(rows_result, dict) else []
+    items = [_product_search_item(row) for row in rows if isinstance(row, dict)]
+    return {
+        "uid": uid,
+        "query": query,
+        "items": items,
+        "total_count": total_count,
+        "returned_count": len(items),
+        "limit": limit,
+        "offset": offset,
+        "archive_default_visible": False,
+        "policy": _product_search_policy(),
+        "global_read_gate": _product_search_gate(),
+        "rollout": _product_search_rollout(),
+    }
 
 
 @router.get("/v3/memories")

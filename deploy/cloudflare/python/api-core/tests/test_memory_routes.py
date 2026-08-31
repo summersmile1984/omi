@@ -16,6 +16,7 @@ from memory_routes import (  # noqa: E402
     delete_memories_batch,
     list_memories,
     review_memory,
+    search_product_memory,
     update_memory_baseline,
     update_memory_content,
     update_memory_read_status,
@@ -118,6 +119,88 @@ def test_memory_list_is_authenticated_bounded_and_empty_for_a_new_account():
     assert invalid.status_code == 400
     blank = create(env, secret, content="   ")
     assert blank.status_code == 400
+
+
+def test_product_memory_search_uses_d1_default_visibility_and_contract():
+    secret = "memory-secret"
+    env = make_env(secret)
+    manual = create(env, secret, content="Coffee before software review", category="manual")
+    automatic = create(env, secret, content="Coffee notes from today", category="interesting")
+    archive = create(env, secret, content="Coffee archive record", category="manual")
+    reviewed = create(env, secret, content="Coffee rejected record", category="manual")
+    locked = create(env, secret, content="Coffee locked record", category="manual")
+    create(env, secret, uid="other-user", content="Coffee belongs to another user")
+    env.APP_DB.connection.execute(
+        "UPDATE cf_memories SET memory_tier = 'archive' WHERE uid = ? AND id = ?",
+        ("memory-user", archive["id"]),
+    )
+    env.APP_DB.connection.execute(
+        "UPDATE cf_memories SET user_review = 0 WHERE uid = ? AND id = ?",
+        ("memory-user", reviewed["id"]),
+    )
+    env.APP_DB.connection.execute(
+        "UPDATE cf_memories SET is_locked = 1 WHERE uid = ? AND id = ?",
+        ("memory-user", locked["id"]),
+    )
+    env.APP_DB.connection.commit()
+
+    page = asyncio.run(
+        search_product_memory(
+            FakeRequest(env, signed_headers(secret), {"query": "coffee", "limit": "1", "offset": "0"})
+        )
+    )
+    assert page["uid"] == "memory-user"
+    assert page["query"] == "coffee"
+    assert page["total_count"] == 2
+    assert page["returned_count"] == 1
+    assert page["limit"] == 1
+    assert page["offset"] == 0
+    assert page["archive_default_visible"] is False
+    assert page["policy"] == {
+        "consumer": "omi_chat",
+        "app_has_default_memory_grant": True,
+        "archive_capability": False,
+        "raw_provenance_capability": False,
+    }
+    assert page["global_read_gate"]["read_decision"] == "USE_MEMORY"
+    assert page["rollout"]["surface"] == "product_default_search"
+    assert page["rollout"]["capabilities"]["legacy_reads_authoritative"] is False
+    item = page["items"][0]
+    assert item["memory_id"] in {manual["id"], automatic["id"]}
+    assert item["memory_layer"] == "product_memory"
+    assert item["tier"] in {"long_term", "short_term"}
+    assert item["lifecycle_status"] == "active"
+    assert item["processing_state"] == "processed"
+    assert item["agent_use"] == "default_access_memory"
+    assert item["access_reason"] == "default_memory_allowed"
+    assert isinstance(item["date"], str)
+
+    second_page = asyncio.run(
+        search_product_memory(
+            FakeRequest(env, signed_headers(secret), {"query": "coffee", "limit": "1", "offset": "1"})
+        )
+    )
+    assert second_page["returned_count"] == 1
+    assert {page["items"][0]["memory_id"], second_page["items"][0]["memory_id"]} == {
+        manual["id"],
+        automatic["id"],
+    }
+
+    assert asyncio.run(search_product_memory(FakeRequest(env, {}))).status_code == 401
+    assert (
+        asyncio.run(search_product_memory(FakeRequest(env, signed_headers(secret), {"limit": "0"}))).status_code == 400
+    )
+    assert (
+        asyncio.run(search_product_memory(FakeRequest(env, signed_headers(secret), {"query": "x" * 501}))).status_code
+        == 400
+    )
+
+    env.APP_DB.connection.execute("DROP TABLE cf_memories")
+    env.APP_DB.connection.commit()
+    assert (
+        asyncio.run(search_product_memory(FakeRequest(env, signed_headers(secret), {"query": "coffee"}))).status_code
+        == 503
+    )
 
 
 def test_memory_create_list_filters_and_preserves_canonical_shape_with_uid_isolation():
