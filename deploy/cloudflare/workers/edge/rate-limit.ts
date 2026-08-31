@@ -219,6 +219,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ["POST /v1/tts/synthesize-workers-ai", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v2/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v2/messages", EDGE_RATE_LIMIT_POLICIES["chat:send_message"]],
+  ["POST /v2/voice-messages", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
   ["POST /v2/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
   ["POST /v2/chat/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],

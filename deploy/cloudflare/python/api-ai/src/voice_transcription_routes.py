@@ -11,7 +11,7 @@ import re
 import struct
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from fair_use_meter import content_source_id, record_fair_use_usage, speech_ms_from_transcription
 from fair_use_enforcement import fair_use_restriction, fair_use_restriction_response
@@ -47,6 +47,24 @@ class AudioPart:
     filename: str
     content_type: str
     data: bytes
+
+
+class _DelegatedChatRequest:
+    """Request view that hands a bounded transcript to the native chat route."""
+
+    def __init__(self, request: Request, payload: dict[str, object]):
+        self.scope = request.scope
+        # The delegated body is the small JSON transcript, not the original
+        # multipart upload.  Do not let the upload's content-length trip the
+        # native chat route's 64 KiB JSON guard.
+        self.headers = dict(request.headers)
+        self.headers.pop("content-length", None)
+        self.headers["content-type"] = "application/json"
+        self.query_params = request.query_params
+        self._payload = payload
+
+    async def json(self) -> dict[str, object]:
+        return self._payload
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -373,3 +391,102 @@ async def transcribe_voice_message(request: Request):
     if detected_language:
         response["language"] = detected_language
     return response
+
+
+@router.post("/v2/voice-messages")
+async def create_voice_message_stream(request: Request):
+    """Transcribe a voice message with Workers AI, then stream native chat.
+
+    The legacy endpoint combined local audio decoding, STT, and chat writes in
+    one process. Cloudflare keeps the multipart/SSE boundary by using the
+    bounded native STT parser and delegating the transcript to the D1-backed
+    ``/v2/messages`` implementation. Empty/silent input emits an empty SSE
+    stream, matching the legacy no-answer behavior.
+    """
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    restriction = await fair_use_restriction(request.scope["env"], str(context["uid"]))
+    if restriction:
+        return fair_use_restriction_response(restriction)
+
+    content_type = request.headers.get("content-type", "").strip()
+    if content_type.split(";", 1)[0].strip().lower() != "multipart/form-data":
+        return _invalid_input("Voice messages require multipart/form-data.", status_code=415)
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_MULTIPART_BODY_BYTES:
+                return _invalid_input("The audio body is too large.", status_code=413)
+        except ValueError:
+            return _invalid_input()
+    body = await request.body()
+    if len(body) > MAX_MULTIPART_BODY_BYTES:
+        return _invalid_input("The audio body is too large.", status_code=413)
+
+    try:
+        parts, form_language = _parse_multipart(body, content_type)
+        for part in parts:
+            _validate_audio_part(part)
+        language = _normalize_language(form_language)
+    except OverflowError:
+        return _invalid_input("The audio body is too large.", status_code=413)
+    except (TypeError, ValueError):
+        return _invalid_input()
+
+    env = request.scope["env"]
+    ai = getattr(env, "AI", None)
+    if ai is None:
+        return _failure(
+            503,
+            error="stt_provider_configuration_error",
+            outcome="config_error",
+            retryable=False,
+            message="The transcription provider is temporarily unavailable.",
+        )
+    model = getattr(env, "WORKERS_AI_ASR_MODEL", DEFAULT_WORKERS_AI_ASR_MODEL)
+    try:
+        transcript, _detected_language, speech_ms = await _transcribe_parts(ai, model, parts, language)
+    except Exception:
+        return _failure(
+            502,
+            error="stt_upstream_error",
+            outcome="upstream_error",
+            retryable=True,
+            message="The transcription provider could not complete the request.",
+        )
+
+    try:
+        await record_fair_use_usage(
+            env,
+            uid=str(context["uid"]),
+            source_kind="sync_fresh",
+            source_id=content_source_id(
+                "voice-message-chat",
+                body,
+                request.headers.get("idempotency-key")
+                or (str(context["requestId"]) if isinstance(context.get("requestId"), str) else None),
+            ),
+            speech_ms=speech_ms,
+        )
+    except Exception:
+        return _failure(
+            503,
+            error="stt_meter_unavailable",
+            outcome="dependency_error",
+            retryable=True,
+            message="The transcription usage meter is temporarily unavailable.",
+        )
+
+    if not transcript:
+        return StreamingResponse(iter(()), media_type="text/event-stream")
+
+    # Imported lazily to keep the standalone STT module usable in CPython tests
+    # and to avoid an import cycle during API AI Worker startup.
+    from chat_generation_routes import chat_messages
+
+    return await chat_messages(_DelegatedChatRequest(request, {"text": transcript}))
+
+
+__all__ = ["create_voice_message_stream", "router", "transcribe_voice_message"]

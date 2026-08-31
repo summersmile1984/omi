@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from voice_transcription_routes import (  # noqa: E402
     MAX_AUDIO_BYTES,
+    create_voice_message_stream,
     transcribe_voice_message,
 )
 
@@ -302,3 +303,48 @@ def test_voice_message_returns_stable_configuration_and_provider_failures():
         assert response.status_code == 502
         assert json.loads(response.body)["detail"]["error"] == "stt_upstream_error"
         assert b"sensitive" not in response.body
+
+
+def test_voice_messages_transcribe_then_delegate_transcript_to_native_chat(monkeypatch):
+    import types
+
+    secret = "voice-secret"
+    ai = FakeAi([{"text": "hello from audio", "segments": [{"start": 0, "end": 1, "text": "hello"}]}])
+    database = FakeD1()
+    worker_env = env(secret, ai)
+    worker_env.APP_DB = database
+    body, content_type = multipart([("files", wav(), "audio.wav", "audio/wav")])
+    upload_headers = signed_headers(secret, content_type=content_type)
+    upload_headers["content-length"] = str(MAX_AUDIO_BYTES)
+    seen = {}
+
+    async def fake_chat(request):
+        seen["headers"] = request.headers
+        seen["payload"] = await request.json()
+        return {"status": "chat-delegated"}
+
+    fake_chat_module = types.ModuleType("chat_generation_routes")
+    fake_chat_module.chat_messages = fake_chat
+    monkeypatch.setitem(sys.modules, "chat_generation_routes", fake_chat_module)
+    response = asyncio.run(
+        create_voice_message_stream(
+            FakeRequest(worker_env, upload_headers, body)
+        )
+    )
+
+    assert response == {"status": "chat-delegated"}
+    assert seen["payload"] == {"text": "hello from audio"}
+    assert seen["headers"]["content-type"] == "application/json"
+    assert "content-length" not in seen["headers"]
+    assert database.values[0][0:2] == ("voice-user", "sync_fresh")
+
+
+def test_voice_messages_rejects_non_multipart_before_inference():
+    secret = "voice-secret"
+    ai = FakeAi()
+    headers = signed_headers(secret, content_type="application/octet-stream")
+    response = asyncio.run(create_voice_message_stream(FakeRequest(env(secret, ai), headers, b"\x00\x00")))
+
+    assert response.status_code == 415
+    assert json.loads(response.body)["detail"]["error"] == "stt_invalid_input"
+    assert ai.calls == []

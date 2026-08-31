@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 62 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 61 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -9,7 +9,7 @@
 | Auth / OAuth / social | `/v1/auth/*`、`/v1/oauth/*`、`/v1/apps/mcp/callback`、Twitter ownership | Firebase provider identity、Google/Apple callback、OAuth app consent 仍由 legacy 维护；Better Auth 目前只承接 MCP OAuth 和会话 | 先完成身份连续性与 provider link/import，再迁移 callback/token；不能用 Better Auth session 别名替代 Firebase exchange |
 | Phone / external integrations | `/v1/phone/*`、电话 webhook | Twilio、Redis 状态、号码验证和电话 webhook | 定义 DO/Queue 状态机、签名校验和 provider secret 生命周期后再迁移 |
 | Conversation lifecycle | `/v1/conversations/{id}/finalization`、`finalize`、`reprocess`、`merge` | legacy lifecycle path and fan-out | finalize/status/reprocess/merge now use shared D1 job projections, Jobs leases, and API Core; merge performs bounded R2 artifact copy before atomic source cleanup |
-| Import / files / sync / audio | `/v1/import/*`、`/v1/files`、`/v2/files`、sync/audio jobs | GCS/本机临时文件、multipart、长任务和 R2 residual contract | `POST /v1/sync-local-files` 已复用 D1/R2/Queue sync authority；其余 import/files 仍需先完成 R2 multipart/presigned 与 Queue replay |
+| Import / files / sync / audio | `/v1/import/*`、`/v1/files`、`/v2/files`、sync/audio jobs | GCS/本机临时文件、multipart、长任务和 R2 residual contract | `POST /v1/sync-local-files` 与 `POST /v2/voice-messages` 已复用 D1/R2/Queue 或 Workers AI authority；其余 import/files/audio jobs 仍需先完成 R2 multipart/presigned 与 Queue replay |
 | Task intelligence / staged tasks | `/v1/staged-tasks*`、`/v1/task-intelligence/*`、`/v1/what-matters-now*` | candidate/recommendation store、generation fence、LLM judgment、device snapshot | candidate D1 projection 和 generation contract 完成前保持 fail-closed legacy owner |
 | Persona / apps | `/v1/personas` mutation、`/v1/apps/*` MCP mutation、Twitter ownership | multipart 图片、R2、LLM prompt、Twitter provider identity 与 public app cache | 默认 Persona 和只读 profile 已迁移；通用 Persona mutation/Twitter ownership 需完整 D1/R2/provider contract |
 | Memory admin / Archive | `/memory/admin/*`、`/memory/archive/search` | Archive capability | `/memory/search`、`/memory/vector/search` 与 D1 review queue 已迁移；archive/admin 仍需补齐 capability |
@@ -20,7 +20,7 @@
 ## 当前可执行顺序
 
 1. 让 release pipeline 使用 `.github/scripts/backfill-desktop-release-manifest.py` 回填已迁移的 D1 immutable manifest；Stable/Beta promotion、legacy release bridge 和 `clear-cache` 已由 API Core/D1 承接，完成 Firestore→D1 回放后再注入发布流水线凭据并复验 Beta 晋级。该工具只读 legacy manifest、验证 v1 digest，再向 Cloudflare Edge 的 `/v2/desktop/releases` 做幂等 POST，不改变 channel pointer。
-2. 保持 conversation finalization/reprocess/merge 与 sync-local-files 的 staging residual 监控；下一组迁移优先处理 `/v2/sync-jobs/run` 的内部触发边界和 release pipeline 回填。
+2. 保持 conversation finalization/reprocess/merge、sync-local-files 与 voice-messages 的 staging residual 监控；下一组迁移优先处理 `/v2/sync-jobs/run` 的内部触发边界和 release pipeline 回填。
 3. 完成 candidate/recommendation authority 后，再处理 staged-tasks 与 What Matters Now；在此之前保持现有 404/legacy 边界。
 
 Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生结构化冲突记录；三个 review-queue 端点由 API Core/Edge 承载；每次读取校验来源 `updated_at` revision 与 SHA-256 content hash，来源变化自动 tombstone；accept/reject/correct/timeout 解析具备 D1 原子写入和幂等状态。该阶段的 producer 覆盖 canonical `/v3/memories` 与 `/v3/memories/batch` 写入，手工已确认的 MCP/developer memory 不会重新进入队列。
@@ -31,9 +31,11 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 
 本轮新增 `POST /v1/sync-local-files` 的 Cloudflare owner：旧路径现在由 Edge 转发到 Jobs，与 `/v2/sync-local-files` 共享 multipart staging、R2 对象、D1 content ledger、Queue lane、Workers AI ASR 和清理状态机；响应保留 `Deprecation: true` 与 v2 successor Link。v1 只接受可验证的 fresh capture，历史/无 provenance 的上传会安全返回 `503 backfill_capacity`，客户端应迁移到 v2 并按 job status 轮询；不再执行 legacy inline pipeline。
 
+本轮新增 `POST /v2/voice-messages` 的 Cloudflare owner：API AI Worker 使用有界 multipart parser 与 Workers AI Whisper 完成转写，按 D1 fair-use source 去重计量，再把 transcript 交给 D1-backed `/v2/messages` 生成 SSE。空音频保持空 SSE；不支持的容器、超限和 provider/D1 故障均 fail-closed，不回落到本机临时文件或 legacy inline chat。
+
 ## Staging evidence（2026-08-31）
 
-- 最近一次完整 staging 发布（2026-08-31）的 Worker 版本为：Auth `2a6bb2c4-35b3-4d3a-87e3-e797f300b04b`、Rate Limit `4e1c2ec9-127e-4ad3-b5af-ee7852871205`、API Core `dfe4e2a8-14bb-43df-81f1-a944dbed71fd`、API AI `8d99d3c4-aff4-46bd-9fd7-ffae5b24394d`、Realtime `862624c2-3c58-4e6f-bd95-13e8f5b1b7e5`、Jobs `2a978062-cab4-48e3-88db-4da1a96ab600`、Edge `97acf6aa-ef87-4bdb-87d6-ed2107f53e6d`、Web `d4783d71-09ef-410c-ad6f-40d53c5e04df`。
+- 最近一次完整 staging 发布（2026-08-31）的 Worker 版本为：Auth `501c851c-b566-4f2e-bb0c-b63ed764f871`、Rate Limit `9c37a485-a7fb-4551-8afa-5ef15d773bed`、API Core `bbad2cb5-a5f9-4475-9678-42f44a73f2f5`、API AI `5fe35a6d-1555-4036-8c93-5d4e4451b6a7`、Realtime `12f65143-a75f-48bb-80e5-acd85474c6af`、Jobs `c0ad6a20-8a83-49d7-8f62-d60b6fc3757b`、Edge `f5d71850-731d-4207-b4bb-85cdee154c90`、Web `c84dbce5-6a56-4395-b9b9-f0458c32c60a`。
 - `POST /updates/releases` 和 `PATCH /updates/releases/promote` 通过 Edge 实测返回 `401 Invalid or missing X-Release-Secret header`（不是 404），证明请求已进入 API Core 的新 owner；staging 当前尚未注入 `RELEASE_SECRET`，因此没有执行真实写入探针。
 - `/health` 通过 Edge 实测返回 `200`；`POST /v2/desktop/beta/candidates/reserve`、`POST /v2/desktop/beta/promote-candidate`、`PUT /v2/desktop/beta/admission`、`POST /v2/desktop/beta/breakglass` 在缺少凭据时分别返回 `401`、`401`、`403`、`403`（均非 `404`）。staging 尚未注入 `BETA_PROMOTION_TOKEN`/`GITHUB_TOKEN`，因此没有伪造 Beta 正向 promotion 或 GitHub 证据结果。
 - `npm run smoke:staging` 通过：Edge/v1 health、Apple association、OpenAI Apps challenge、公告、趋势、app reviews、支付边界均符合预期；authenticated checks 因未提供 smoke bearer token 而跳过。Calendar Google events 未认证探针返回 `401`（不是 `404`）。
@@ -46,6 +48,8 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 - Conversation merge 的 `0096_conversation_merge_jobs.sql` 已于 2026-08-31 应用 staging；API Core `9768ac95-9961-4b1f-ab74-05b788d1993c`、Jobs `6cdc9ccc-ba04-4a8a-8e6e-92d851223f0f`、Edge `839c648a-6c0a-4da5-872b-1ae75bcb1483` 已发布。隔离账号实测两个会话创建、merge admission `200/merging`、Queue 完成后结果会话 `completed` 且来源数为 2；随后删号完成，D1 conversation/merge job/action/memory/vector outbox 残留均为 0，仅保留 deletion tombstone。
 - Calendar staging live recheck（2026-08-31）：本次 API Core `bf77c198-590a-4203-a4c3-64ba1122303a`、Jobs `855a508c-2f5c-4b4c-8b58-40a7923d5727`、Edge `47079a0a-d239-4890-8349-2c2c1c29d045` 已发布。隔离 Better Auth 账号经 Edge 完成 onboarding reset/skip/reset、Calendar integration 状态（underscore 与 hyphen alias）、meeting metadata create/list/get；未连接 events 为 400，OAuth URL 因 staging 未配置 client 为 503。Web Settings 点击连接后显示明确环境提示，浏览器控制台未出现 404；异步清理完成后 Auth account、Calendar onboarding/meeting/integration/OAuth state 与 deletion intent 均为 0，仅保留 1 条预期 tombstone。
 - Sync v1 staging live recheck（2026-08-31）：Jobs `2a978062-cab4-48e3-88db-4da1a96ab600` 与 Edge `97acf6aa-ef87-4bdb-87d6-ed2107f53e6d` 发布后，隔离 Better Auth 账号经 Edge 调用 `POST /v1/sync-local-files`；未认证返回 `401`，无 capture provenance 的 multipart 上传安全返回 `503`、`code=backfill_capacity`、`Retry-After=30`，并保留 `Deprecation: true` 与 `/v2/sync-local-files` successor Link。探测账号随后通过 `DELETE /v1/users/delete-account` 返回 `200` 清理。
+- Voice chat staging live evidence（2026-08-31）：API AI `efa4c5c7-85a0-4668-afa0-1c446014725c`、Edge `48fa6e53-fe68-4636-b87f-136784c34f83` 发布修复后，`POST /v2/voice-messages` 已声明 API AI/Workers AI owner；隔离 Better Auth 账号上传已知有声 WAV 返回 `200 text/event-stream`（987 字节 SSE），静音 WAV 按约定为空 SSE（0 字节），未认证返回 `401`。有界 multipart/容器校验、speech fair-use D1 source 去重和 transcript→chat SSE delegation 由 `test_voice_transcription_routes.py` 与 Edge forwarding test 覆盖，未配置或异常 provider 均返回稳定 4xx/5xx，不会启动 legacy pipeline；探针账号已提交删号。
+- Calendar staging final probe（2026-08-31）：最新 Edge 健康 `200`；未认证 Google events 为 `401`，隔离账号 onboarding status 为 `200`，未连接 events 为业务态 `400`，OAuth URL 因 staging 未配置 client 为 `503`，页面不会出现路由 `404`；探针账号已提交删号。
 - Agent tool directory staging live evidence（2026-08-31）：API Core `70bd49eb-f0db-4338-a166-0612af37eda7`、Edge `79ba9a42-e9fc-4819-b5ac-778487a5ee8b` 已发布；未认证 `GET /v1/agent/tools` 与 `POST /v1/agent/execute-tool` 均返回 `401`，Better Auth 认证后目录返回 `200` 与 7 个 Cloudflare-native 工具定义，执行 `get_memories_tool` 返回 D1 结果，未迁移的 `get_calendar_events_tool` 返回 `404`，响应不含 `config`，临时账号已提交删号。
 - Stateless chat generate-reply staging live recheck（2026-08-31）：API AI `0b8636e3-ed1b-4928-8434-ac470110f238`、Edge `af9be7e8-277b-4392-9614-f19f72928ef7` 已发布。隔离 Better Auth 账号经真实 Edge 生成草稿返回 200；未认证、非法 history、缺失 app 分别返回 401/422/404。请求只产生独立 quota event，不写 chat session/message；公开删号完成后 quota/session/message/deletion intent 均清零，仅保留预期 tombstone。
 

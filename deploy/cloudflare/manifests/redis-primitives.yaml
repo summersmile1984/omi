@@ -464,6 +464,7 @@ families:
       - POST /v2/initial-message
       - POST /v2/messages
       - POST /v2/voice-message/transcribe
+      - POST /v2/voice-messages
       - DELETE /v3/memories
       - DELETE /v3/memories/:memoryId
       - DELETE /v3/memories/batch

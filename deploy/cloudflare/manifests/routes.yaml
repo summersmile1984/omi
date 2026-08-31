@@ -2308,6 +2308,18 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v2/voice-messages
+    owner: api-ai
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: stt:transcribe
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v2/realtime/session
     owner: api-ai
     runtime: python-worker

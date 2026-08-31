@@ -1127,6 +1127,7 @@ app.put("/v1/users/preferences/app", proxyAuthenticatedCore);
 app.post("/v2/realtime/session", proxyAuthenticatedAI);
 app.post("/v2/realtime/usage", proxyAuthenticatedAI);
 app.post("/v2/voice-message/transcribe", proxyAuthenticatedAI);
+app.post("/v2/voice-messages", proxyAuthenticatedAI);
 app.post("/v1/stt/transcribe-async", proxyAuthenticatedAsyncTranscription);
 app.get(
   "/v1/stt/transcribe-async/:jobId",

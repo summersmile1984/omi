@@ -3738,6 +3738,50 @@ describe("edge gateway", () => {
     expect(rateLimitNames).toEqual(["stt:transcribe:user-1"]);
   });
 
+  it("routes the voice chat SSE upload to the API AI worker", async () => {
+    let forwarded: Request | undefined;
+    const rateLimitNames: string[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({ error: "wrong owner" }, { status: 500 }),
+      ),
+      API_AI: service((request) => {
+        forwarded = request;
+        return Response.json({ status: "chat-delegated" });
+      }),
+      RATE_LIMITS: rateLimits(allowRateLimit, rateLimitNames),
+    };
+    const body =
+      "--voice\r\ncontent-disposition: form-data; name=files; filename=audio.wav\r\n\r\naudio\r\n--voice--\r\n";
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/voice-messages", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "multipart/form-data; boundary=voice",
+        },
+        body,
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://invalid.test").pathname).toBe(
+      "/v2/voice-messages",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(await forwarded?.text()).toBe(body);
+    expect(rateLimitNames).toEqual(["stt:transcribe:user-1"]);
+  });
+
   it("routes account cutover control to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {
