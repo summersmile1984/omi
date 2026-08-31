@@ -301,6 +301,119 @@ describe("namespaced native auth compatibility seam", () => {
     }
   });
 
+  it("keeps the exact Apple form-post callback and token response compatible", async () => {
+    const providerFetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toBe("https://appleid.apple.com/auth/token");
+        expect(init?.method).toBe("POST");
+        const body = new URLSearchParams(String(init?.body));
+        expect(body.get("client_id")).toBe("apple-client-id");
+        expect(body.get("client_secret")).toBe("apple-client-secret");
+        expect(body.get("redirect_uri")).toBe(
+          `${BASE_URL}/v1/auth/callback/apple`,
+        );
+        return Response.json({
+          id_token: "exact-apple-id-token",
+          // The provider may return a shorter lifetime; the legacy token wire
+          // still exposes its fixed one-hour expires_in value.
+          expires_in: 1_800,
+        });
+      },
+    );
+    const database = new SqliteD1();
+    const app = new Hono<{ Bindings: AuthEnv }>();
+    registerNativeAuthCompatibilityRoutes(
+      app,
+      { fetchImpl: providerFetch, now: () => 1_700_000_000 },
+      { surface: "legacy" },
+    );
+    const env = testEnv(database, {
+      LEGACY_AUTH_EXACT_STAGING_ENABLED: "true",
+      APPLE_CLIENT_ID: "apple-client-id",
+      APPLE_CLIENT_SECRET: "apple-client-secret",
+    });
+    try {
+      const challenge = await pkceChallengeForVerifier(VERIFIER);
+      const authorizeResponse = await app.request(
+        `${BASE_URL}/v1/auth/authorize?${new URLSearchParams({
+          provider: "apple",
+          redirect_uri: REDIRECT_URI,
+          state: "exact-apple-state",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        })}`,
+        {},
+        env,
+      );
+      expect(authorizeResponse.status).toBe(302);
+      const providerUrl = new URL(authorizeResponse.headers.get("location")!);
+      expect(providerUrl.origin).toBe("https://appleid.apple.com");
+      expect(providerUrl.pathname).toBe("/auth/authorize");
+      expect(providerUrl.searchParams.get("response_mode")).toBe("form_post");
+      expect(providerUrl.searchParams.get("redirect_uri")).toBe(
+        `${BASE_URL}/v1/auth/callback/apple`,
+      );
+
+      const callbackResponse = await app.request(
+        `${BASE_URL}/v1/auth/callback/apple`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            code: "exact-apple-code-1234567890",
+            state: providerUrl.searchParams.get("state") || "",
+            user: JSON.stringify({
+              name: { firstName: "Ada", lastName: "Lovelace" },
+            }),
+          }).toString(),
+        },
+        env,
+      );
+      expect(callbackResponse.status).toBe(200);
+      expect(callbackResponse.headers.get("content-security-policy")).toContain(
+        "script-src 'unsafe-inline'",
+      );
+      const callbackHtml = await callbackResponse.text();
+      expect(callbackHtml).toContain("<script>");
+      const href = callbackHtml.match(/href="([^"]+)"/)?.[1];
+      expect(href).toBeTruthy();
+      const redirect = new URL(href!.replaceAll("&amp;", "&"));
+      expect(redirect.protocol).toBe("omi:");
+      expect(redirect.hostname).toBe("auth");
+      expect(redirect.pathname).toBe("/callback");
+      expect(redirect.searchParams.get("state")).toBe("exact-apple-state");
+      const code = redirect.searchParams.get("code");
+      expect(code).toMatch(/^cf-apple-/);
+
+      const tokenResponse = await app.request(
+        `${BASE_URL}/v1/auth/token`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code: code || "",
+            redirect_uri: REDIRECT_URI,
+            code_verifier: VERIFIER,
+          }).toString(),
+        },
+        env,
+      );
+      expect(tokenResponse.status).toBe(200);
+      expect(await tokenResponse.json()).toEqual({
+        provider: "apple",
+        id_token: "exact-apple-id-token",
+        access_token: null,
+        provider_id: "apple.com",
+        token_type: "Bearer",
+        expires_in: 3_600,
+      });
+      expect(providerFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      database.close();
+    }
+  });
+
   it("closes authorize → Google callback → single-use provider token", async () => {
     const providerFetch = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -312,7 +425,9 @@ describe("namespaced native auth compatibility seam", () => {
         return Response.json({
           id_token: "google-id-token-secret",
           access_token: "google-access-token-secret",
-          expires_in: 3_600,
+          // The legacy response is fixed at one hour even when the provider
+          // grants a shorter-lived credential.
+          expires_in: 1_800,
         });
       },
     );

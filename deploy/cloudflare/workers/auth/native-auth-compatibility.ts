@@ -83,6 +83,11 @@ class NativeAuthError extends Error {
 
 const SESSION_TTL_SECONDS = 300;
 const CODE_TTL_SECONDS = 300;
+// The legacy `/v1/auth/token` contract exposes a fixed one-hour client token
+// lifetime, independent of the provider's `expires_in` value. Keep the
+// provider value inside the encrypted transaction only; changing this wire
+// field would break released native clients that assume 3600 seconds.
+const LEGACY_RESPONSE_EXPIRES_IN_SECONDS = 3_600;
 const MAX_CALLBACK_BODY_BYTES = 16_384;
 const MAX_TOKEN_BODY_BYTES = 8_192;
 const MAX_PROVIDER_RESPONSE_BYTES = 256_000;
@@ -973,7 +978,7 @@ async function token(
       access_token: decoded.access_token ?? null,
       provider_id: provider === "google" ? "google.com" : "apple.com",
       token_type: "Bearer",
-      expires_in: expiresIn,
+      expires_in: LEGACY_RESPONSE_EXPIRES_IN_SECONDS,
     };
     if (useCustomToken) {
       if (!c.env.FIREBASE_API_KEY || !c.env.FIREBASE_SERVICE_ACCOUNT_JSON) {

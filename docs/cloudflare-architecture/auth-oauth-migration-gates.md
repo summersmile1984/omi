@@ -163,7 +163,11 @@ parity。
 不是 Edge manifest route，也没有声明真实 Google/Apple 或 Firebase 正向生产
 兼容性；focused coverage 位于
 `tests/native-auth-compatibility.test.ts`（正向 mock provider、redirect/PKCE、
-replay/expiry、provider failure 和 secret gate）。
+replay/expiry、provider failure 和 secret gate）。其中 exact surface 也覆盖了
+Apple 的 `form_post` 首次 `user` name、callback HTML/redirect、一次性 code 以及
+legacy 固定 `expires_in=3600` 的响应约束；这只是无真实 provider secret 的
+response conformance，不等于 Apple client-secret JWT、Firebase bridge 或生产
+provider replay 已闭合。
 
 ### 3. External app OAuth transaction
 
