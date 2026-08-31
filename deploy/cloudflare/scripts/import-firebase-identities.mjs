@@ -537,7 +537,10 @@ async function assertSchema(client) {
   const rows = await client.query(
     `SELECT name FROM sqlite_schema
      WHERE type = 'table'
-       AND name IN ('user', 'account', 'session', 'auth_identity_imports')`,
+       AND name IN (
+         'user', 'account', 'session', 'auth_identity_imports',
+         'cf_firebase_identity_projection', 'cf_auth_deletion_fences'
+       )`,
   );
   const present = new Set(rows.map((row) => row.name));
   const missing = [
@@ -545,11 +548,93 @@ async function assertSchema(client) {
     "account",
     "session",
     "auth_identity_imports",
+    "cf_firebase_identity_projection",
+    "cf_auth_deletion_fences",
   ].filter((table) => !present.has(table));
   if (missing.length) {
     throw new FirebaseIdentityMigrationError(
       `Better Auth D1 schema is missing: ${missing.join(", ")}`,
     );
+  }
+}
+
+function identityBridgeRows(plan) {
+  const providersByUser = new Map();
+  for (const account of plan.accounts) {
+    const providers = providersByUser.get(account.userId) || [];
+    providers.push(account.providerId);
+    providersByUser.set(account.userId, providers);
+  }
+  return plan.users.map((user) => {
+    const providers = [...new Set(providersByUser.get(user.id) || [])].sort();
+    if (!providers.length) {
+      throw new FirebaseIdentityMigrationError(
+        `user ${user.id}: identity projection has no supported providers`,
+      );
+    }
+    const sourceUpdatedAt = Date.parse(user.updatedAt);
+    if (!Number.isSafeInteger(sourceUpdatedAt) || sourceUpdatedAt < 0) {
+      throw new FirebaseIdentityMigrationError(
+        `user ${user.id}: identity projection timestamp is invalid`,
+      );
+    }
+    return {
+      firebaseUid: user.id,
+      betterAuthUserId: user.id,
+      providersJson: JSON.stringify(providers),
+      sourceUpdatedAt,
+    };
+  });
+}
+
+async function readIdentityBridgeRows(client) {
+  const [projections, fences] = await Promise.all([
+    client.query(
+      `SELECT firebaseUid, betterAuthUserId, providersJson, sourceImportId,
+              status, sourceUpdatedAt
+         FROM cf_firebase_identity_projection
+        ORDER BY firebaseUid COLLATE BINARY`,
+    ),
+    client.query(
+      `SELECT uid, generation, status
+         FROM cf_auth_deletion_fences
+        ORDER BY uid COLLATE BINARY`,
+    ),
+  ]);
+  return { projections, fences };
+}
+
+function assertIdentityBridgeRows(actual, plan) {
+  const expected = identityBridgeRows(plan);
+  if (actual.projections.length !== expected.length || actual.fences.length !== expected.length) {
+    throw new FirebaseIdentityMigrationError(
+      "Firebase identity bridge projection/fence count does not match the export",
+    );
+  }
+  const expectedByUid = new Map(expected.map((row) => [row.firebaseUid, row]));
+  for (const row of actual.projections) {
+    const planned = expectedByUid.get(row.firebaseUid);
+    if (
+      !planned ||
+      row.betterAuthUserId !== planned.betterAuthUserId ||
+      row.providersJson !== planned.providersJson ||
+      row.sourceImportId !== IMPORT_LEDGER_ID ||
+      row.status !== "imported" ||
+      Number(row.sourceUpdatedAt) !== planned.sourceUpdatedAt
+    ) {
+      throw new FirebaseIdentityMigrationError(
+        `Firebase identity projection conflicts for ${row.firebaseUid || "<unknown>"}`,
+      );
+    }
+  }
+  const fenceByUid = new Map(actual.fences.map((row) => [row.uid, row]));
+  for (const planned of expected) {
+    const row = fenceByUid.get(planned.firebaseUid);
+    if (!row || Number(row.generation) !== 1 || row.status !== "clear") {
+      throw new FirebaseIdentityMigrationError(
+        `Firebase identity deletion fence is not clear for ${planned.firebaseUid}`,
+      );
+    }
   }
 }
 
@@ -628,6 +713,11 @@ async function verifyIdentityRows(client, plan) {
   return actualSha256;
 }
 
+async function verifyIdentityBridge(client, plan) {
+  const actual = await readIdentityBridgeRows(client);
+  assertIdentityBridgeRows(actual, plan);
+}
+
 async function verifyDatabase(client, plan, sourceSha256) {
   const ledger = await readLedger(client);
   if (!ledger || ledger.status !== "completed") {
@@ -637,6 +727,7 @@ async function verifyDatabase(client, plan, sourceSha256) {
   }
   assertLedgerMatches(ledger, plan, sourceSha256);
   const actualSha256 = await verifyIdentityRows(client, plan);
+  await verifyIdentityBridge(client, plan);
   return {
     status: "verified",
     source_sha256: sourceSha256,
@@ -775,6 +866,29 @@ async function applyDatabase(client, plan, sourceSha256) {
   await insertBatches(client, plan.users, userInsert);
   await insertBatches(client, plan.accounts, accountInsert);
   await verifyIdentityRows(client, plan);
+
+  const bridgeRows = identityBridgeRows(plan);
+  await insertBatches(client, bridgeRows, (row) => ({
+    sql: `INSERT OR IGNORE INTO cf_firebase_identity_projection
+            (firebaseUid, betterAuthUserId, providersJson, sourceImportId,
+             status, sourceUpdatedAt, updatedAt)
+          VALUES (?, ?, ?, ?, 'imported', ?, ?)` ,
+    params: [
+      row.firebaseUid,
+      row.betterAuthUserId,
+      row.providersJson,
+      IMPORT_LEDGER_ID,
+      row.sourceUpdatedAt,
+      row.sourceUpdatedAt,
+    ],
+  }));
+  await insertBatches(client, bridgeRows, (row) => ({
+    sql: `INSERT OR IGNORE INTO cf_auth_deletion_fences
+            (uid, generation, status, startedAt, completedAt)
+          VALUES (?, 1, 'clear', ?, NULL)`,
+    params: [row.firebaseUid, row.sourceUpdatedAt],
+  }));
+  await verifyIdentityBridge(client, plan);
 
   await client.query(
     `UPDATE auth_identity_imports

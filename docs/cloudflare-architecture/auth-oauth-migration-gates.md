@@ -53,10 +53,32 @@ cf_firebase_identity_projection(
 ```
 
 `scripts/import-firebase-identities.mjs` 和 `auth_identity_imports` 已提供受控
-导入/校验基础，但只有 `status=completed`、source/config/canonical checksum
-一致、所有支持的 provider 均配置且没有 conflict/revoked principal，才允许
-该 projection 作为 legacy auth 的身份准入。未出现在 projection 的旧 UID 必须
-返回不可用，而不能创建一个新的 Better Auth 用户或按 email 猜测合并。
+导入/校验基础；现在 `validate → apply → verify` 还会为每个导入用户写入并
+校验该 projection，以及 generation=1、status=`clear` 的
+`cf_auth_deletion_fences`。只有 `status=completed`、source/config/canonical
+checksum 一致、所有支持的 provider 均配置且没有 conflict/revoked principal，
+才允许该 projection 作为 legacy auth 的身份准入。未出现在 projection 的旧 UID
+必须返回不可用，而不能创建一个新的 Better Auth 用户或按 email 猜测合并。
+
+### Firebase custom-token bridge（staging-only）
+
+`workers/auth/firebase-custom-token-bridge.ts` 已实现一个不改变 legacy owner 的
+namespaced bridge。它从 service-account JSON 通过 Workers Web Crypto 的 RSA-SHA256
+签名生成短时（默认 300 秒）Firebase custom token；可选的
+`FIREBASE_API_KEY` 只用于固定的 Identity Toolkit REST
+`accounts:signInWithCustomToken` exchange。token 明文不写入 D1，只保存发行 id 和
+SHA-256 hash。发行前必须同时满足 completed import、imported projection 和明确
+的 clear deletion fence，且 token claims 绑定当前 account generation。
+
+Auth Worker 的 `POST /internal/firebase/custom-token` 仅在
+`FIREBASE_CUSTOM_TOKEN_BRIDGE_STAGING_ENABLED=true` 时出现，并且只接受带
+`audience=auth`、`authority=internal` 的 signed context；uid 由 context 绑定，不能
+由请求体跨账号指定。缺少 service-account/API key、projection、generation 或
+deletion fence 时统一 fail-closed。该 endpoint 仍是内部验证 seam，不是
+`/v1/auth/token` owner，也没有宣称旧 Redis callback/PKCE/provider response parity。
+配置项为 `FIREBASE_SERVICE_ACCOUNT_JSON`、可选 `FIREBASE_PROJECT_ID`、可选
+`FIREBASE_API_KEY` 和 `FIREBASE_CUSTOM_TOKEN_TTL_SECONDS`；默认 wrangler 配置不
+打开 staging gate。
 
 ### 2. Native auth compatibility transaction
 
@@ -116,8 +138,10 @@ cf_external_oauth_transactions(
 所有用户相关的 dormant transaction 都必须先经过同一个删除 fence。Auth D1
 中的 `cf_auth_deletion_fences(uid, generation, status, startedAt, completedAt)`
 只有 `status='clear'` 才允许创建或消费；缺行视为 authority unknown，
-`deleting/deleted` 一律拒绝。这个 fence 目前尚未接入旧账号删除流程，因此它
-是准入条件而不是已经完成的删除闭环。
+`deleting/deleted` 一律拒绝。Auth Worker 的内部 identity deletion 现在会在
+删除 Better Auth/projection rows 前激活该 fence，并在 identity residual 清零后
+标记 `deleted`；Jobs 仍负责跨 App-D1/R2 的 quiescence、清理和最终 tombstone，
+所以这不等于整个账号删除闭环已经完成。
 
 `cf_app_catalog.data_json` 还必须经过 schema-versioned projection，覆盖
 `external_integration.app_home_url`、`private`、`is_paid`、setup callback policy
@@ -128,12 +152,12 @@ cf_external_oauth_transactions(
 
 ## Required fixture matrix
 
-`workers/auth/legacy-compatibility.ts` 目前只提供 dormant adapter seam：它执行
-hash-only transaction、S256/redirect 校验、uid/CSRF 原子消费、Firebase projection
-admission、public-HTTPS setup target 和 deletion-fence gate，但不调用 provider，
-不签发 Firebase custom token，也不执行 app enable/install。对应 fixture 通过
-该生产 adapter seam；在任何 owner 变更前，仍必须补齐 Auth Worker/Edge 的完整
-provider handler replay，不能只检查源代码字符串：
+`workers/auth/legacy-compatibility.ts` 仍提供 dormant transaction/admission seam；
+`firebase-custom-token-bridge.ts` 另外覆盖 service-account signing、D1 issuance
+hash、generation/deletion-fence gate 和可选 Firebase REST exchange，但不执行
+legacy callback 或 app enable/install。对应 fixture 通过这些生产 adapter seam；
+在任何 owner 变更前，仍必须补齐 Auth Worker/Edge 的完整 provider handler replay，
+不能只检查源代码字符串：
 
 1. Identity import：完整 imported UID 正向；missing UID；重复 email；重复
    provider identity；disabled user；phone/custom-claims user；checksum 或
@@ -144,8 +168,10 @@ provider handler replay，不能只检查源代码字符串：
    包含首次 name 与无 name 两种情况。
 3. Native token：正确 redirect + S256 verifier；redirect mismatch；wrong or
    missing verifier；consumed/expired/malformed code；provider credential
-   failure；Firebase bridge unavailable；`use_custom_token=true/false` 的 exact
-   response fixture；旧 UID 未导入时必须 fail-closed。
+   failure；Firebase bridge unavailable；service-account malformed/rotation；
+   account-generation mismatch；deletion fence race；Firebase REST 4xx/5xx 和
+   malformed response；`use_custom_token=true/false` 的 exact response fixture；
+   旧 UID 未导入时必须 fail-closed。
 4. App consent：unknown/disabled/private/paid app；tester vs non-tester；setup
    callback success/timeout/non-JSON/unsafe redirect；missing/mismatched CSRF；
    cross-user transaction；replay；concurrent enable/install counter；account
@@ -161,8 +187,9 @@ provider handler replay，不能只检查源代码字符串：
 1. 在隔离 Auth D1 上运行 Firebase export `validate → apply → verify`，保存
    ledger/checksum 和 row-count 证据；不使用生产 token 或用户数据做本地 fixture。
 2. 配置仅 staging 的 Google/Apple/Firebase bridge secrets，并用 disposable
-   account 做完整 provider callback → token → Firebase sign-in 试验；必须证明
-   UID 与 D1 projection 一致，且旧客户端能解析所有字段。
+   account 做完整 provider callback → namespaced custom-token bridge → Firebase
+   sign-in 试验；必须证明 UID 与 D1 projection/generation 一致，且旧客户端能
+   解析所有字段。当前 service-account/API key 未配置时只允许验证 fail-closed。
 3. 先让 namespaced compatibility endpoint 命中 Auth Worker，验证 callback HTML、
    single-use/PKCE、provider failure 和 deletion fence，再讨论 exact `/v1/auth/*`
    owner；期间不要把 Better Auth session alias 到 Firebase custom token。

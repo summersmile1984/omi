@@ -17,6 +17,11 @@ import {
   upgradeMigratedFirebasePassword,
   verifyPassword,
 } from "./firebase-migration-password";
+import {
+  exchangeFirebaseCustomToken,
+  FirebaseCustomTokenBridgeError,
+  issueFirebaseCustomToken,
+} from "./firebase-custom-token-bridge";
 
 const app = new Hono<{ Bindings: AuthEnv }>();
 const AUTH_BASE_PATH = "/api/better-auth";
@@ -37,6 +42,7 @@ const MCP_OAUTH_SCOPES = [...MCP_SCOPES, "offline_access"];
 const MCP_OAUTH_SCOPE_SET = new Set(MCP_OAUTH_SCOPES);
 const MCP_DATA_SCOPE_SET = new Set<string>(MCP_SCOPES);
 const MAX_MCP_VERIFY_BODY_BYTES = 4_096;
+const MAX_FIREBASE_BRIDGE_BODY_BYTES = 4_096;
 
 type SocialProviderId = "google" | "apple";
 
@@ -617,6 +623,109 @@ app.post("/auth-issue", async (c) => {
   }
 });
 
+// Staging-only internal bridge for imported Firebase principals.  This is
+// intentionally namespaced and does not alter /v1/auth/token: the legacy
+// client still needs its Redis code, callback, and provider wire contract.
+app.post("/internal/firebase/custom-token", async (c) => {
+  if (c.env.FIREBASE_CUSTOM_TOKEN_BRIDGE_STAGING_ENABLED !== "true") {
+    return c.json({ error: "not_found" }, 404);
+  }
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context || context.authority !== "internal") {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const declaredLength = Number(c.req.header("content-length") || "0");
+  if (
+    !Number.isFinite(declaredLength) ||
+    declaredLength < 0 ||
+    declaredLength > MAX_FIREBASE_BRIDGE_BODY_BYTES
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  let body: unknown;
+  try {
+    const raw = await c.req.text();
+    if (
+      new TextEncoder().encode(raw).byteLength > MAX_FIREBASE_BRIDGE_BODY_BYTES
+    ) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    body = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const requestBody = body as Record<string, unknown>;
+  const requestedUid = requestBody.uid;
+  if (requestedUid !== undefined && requestedUid !== context.uid) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const requestedGeneration = requestBody.account_generation;
+  if (
+    requestedGeneration !== undefined &&
+    (typeof requestedGeneration !== "number" ||
+      !Number.isSafeInteger(requestedGeneration) ||
+      requestedGeneration < 1)
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  if (
+    requestBody.exchange !== undefined &&
+    typeof requestBody.exchange !== "boolean"
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+
+  try {
+    const issued = await issueFirebaseCustomToken(
+      c.env.AUTH_DB,
+      context.uid,
+      c.env,
+      Math.floor(Date.now() / 1_000),
+      requestedGeneration as number | undefined,
+    );
+    const response: Record<string, unknown> = {
+      custom_token: issued.token,
+      firebase_uid: issued.firebaseUid,
+      account_generation: issued.accountGeneration,
+      issuance_id: issued.issuanceId,
+      expires_at: issued.expiresAt,
+    };
+    if (requestBody.exchange === true) {
+      const exchanged = await exchangeFirebaseCustomToken(
+        issued.token,
+        c.env,
+      );
+      Object.assign(response, {
+        id_token: exchanged.idToken,
+        refresh_token: exchanged.refreshToken,
+        expires_in: exchanged.expiresIn,
+        local_id: exchanged.localId,
+      });
+    }
+    c.header("cache-control", "no-store");
+    return c.json(response);
+  } catch (error) {
+    const code =
+      error instanceof FirebaseCustomTokenBridgeError
+        ? error.code
+        : "bridge_unavailable";
+    const status =
+      code === "identity_not_admitted" ||
+      code === "deletion_fence_active" ||
+      code === "account_generation_conflict"
+        ? 409
+        : 503;
+    return c.json({ error: code }, status);
+  }
+});
+
 app.post("/internal/verify", async (c) => {
   const expected = c.env.INTERNAL_ASSERTION_SECRET;
   const presentedSecret = c.req.header("x-internal-assertion-secret") || "";
@@ -943,8 +1052,27 @@ app.delete("/internal/users/:uid", async (c) => {
   if (context.uid !== uid) return c.json({ error: "forbidden" }, 403);
 
   try {
+    const deletionStartedAt = Math.floor(Date.now() / 1_000);
+    // Activate the Auth-D1 fence before touching Better Auth rows.  Keeping
+    // the existing generation on conflict prevents an old Firebase token
+    // issuance from being reused for a later account incarnation.
+    await c.env.AUTH_DB.prepare(
+      `INSERT INTO cf_auth_deletion_fences
+         (uid, generation, status, startedAt, completedAt)
+       VALUES (?, 1, 'deleting', ?, NULL)
+       ON CONFLICT(uid) DO UPDATE SET status = 'deleting',
+         startedAt = excluded.startedAt, completedAt = NULL`,
+    )
+      .bind(uid, deletionStartedAt)
+      .run();
     const before = await authIdentityResidual(c.env.AUTH_DB, uid);
     await c.env.AUTH_DB.batch([
+      c.env.AUTH_DB.prepare(
+        "DELETE FROM cf_firebase_bridge_issuances WHERE betterAuthUserId = ?",
+      ).bind(uid),
+      c.env.AUTH_DB.prepare(
+        "DELETE FROM cf_firebase_identity_projection WHERE betterAuthUserId = ?",
+      ).bind(uid),
       c.env.AUTH_DB.prepare("DELETE FROM verification WHERE value = ?").bind(
         uid,
       ),
@@ -968,6 +1096,13 @@ app.delete("/internal/users/:uid", async (c) => {
     if (!identityResidualEmpty(residual)) {
       return c.json({ error: "identity_residual", uid, residual }, 503);
     }
+    await c.env.AUTH_DB.prepare(
+      `UPDATE cf_auth_deletion_fences
+          SET status = 'deleted', completedAt = ?
+        WHERE uid = ?`,
+    )
+      .bind(Math.floor(Date.now() / 1_000), uid)
+      .run();
     return c.json({
       uid,
       status: identityResidualEmpty(before) ? "already_absent" : "deleted",

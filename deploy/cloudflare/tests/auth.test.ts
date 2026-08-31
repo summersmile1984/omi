@@ -131,6 +131,7 @@ function lifecycleEnv(options: { failBatch?: boolean } = {}) {
     oauthRefreshTokens: ["lifecycle-user", "other-user"],
     oauthConsents: ["lifecycle-user", "other-user"],
   };
+  let fenceStatus = "clear";
 
   const statement = (query: string, values: unknown[] = []) => {
     const normalized = query.replace(/\s+/g, " ").trim();
@@ -167,7 +168,21 @@ function lifecycleEnv(options: { failBatch?: boolean } = {}) {
       }),
       run: vi.fn(async () => {
         const uid = String(values[0] || "");
-        if (normalized === "DELETE FROM verification WHERE value = ?") {
+        if (normalized.startsWith("INSERT INTO cf_auth_deletion_fences")) {
+          fenceStatus = "deleting";
+        } else if (normalized.startsWith("UPDATE cf_auth_deletion_fences")) {
+          fenceStatus = "deleted";
+        } else if (
+          normalized ===
+          "DELETE FROM cf_firebase_bridge_issuances WHERE betterAuthUserId = ?"
+        ) {
+          // The fixture has no provider issuance rows.
+        } else if (
+          normalized ===
+          "DELETE FROM cf_firebase_identity_projection WHERE betterAuthUserId = ?"
+        ) {
+          // The fixture has no imported Firebase projection rows.
+        } else if (normalized === "DELETE FROM verification WHERE value = ?") {
           state.deletionVerifications = state.deletionVerifications.filter(
             (value) => value !== uid,
           );
@@ -272,6 +287,52 @@ describe("auth worker Better Auth dev issuer", () => {
       env(),
     );
     expect(response.status).toBe(404);
+  });
+
+  it("keeps the Firebase custom-token bridge hidden unless explicitly enabled", async () => {
+    const response = await auth.fetch(
+      new Request("https://auth.test/internal/firebase/custom-token", {
+        method: "POST",
+        body: "{}",
+      }),
+      env(),
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it("requires a signed internal caller for the Firebase custom-token bridge", async () => {
+    const environment = {
+      ...env(),
+      FIREBASE_CUSTOM_TOKEN_BRIDGE_STAGING_ENABLED: "true",
+    };
+    const unsigned = await auth.fetch(
+      new Request("https://auth.test/internal/firebase/custom-token", {
+        method: "POST",
+        body: "{}",
+      }),
+      environment,
+    );
+    expect(unsigned.status).toBe(401);
+
+    const signed = await createSignedAuthContext(
+      { uid: "bridge-user", authority: "better-auth", requestId: "bridge-1" },
+      "auth",
+      "POST",
+      "/internal/firebase/custom-token",
+      "internal-secret",
+    );
+    const nonInternal = await auth.fetch(
+      new Request("https://auth.test/internal/firebase/custom-token", {
+        method: "POST",
+        headers: {
+          "x-omi-auth-context": signed?.encoded || "",
+          "x-omi-internal-signature": signed?.signature || "",
+        },
+        body: "{}",
+      }),
+      environment,
+    );
+    expect(nonInternal.status).toBe(401);
   });
 
   it("reports readiness only when D1 has an active signing key", async () => {

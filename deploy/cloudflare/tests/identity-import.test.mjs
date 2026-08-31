@@ -63,6 +63,8 @@ function memoryD1(options = {}) {
     ledger: null,
     users: new Map(),
     accounts: new Map(),
+    projections: new Map(),
+    fences: new Map(),
     sessions: options.sessions || 0,
   };
   if (options.extraUser) {
@@ -73,9 +75,14 @@ function memoryD1(options = {}) {
   const query = vi.fn(async (sql, params = []) => {
     const normalized = sql.replace(/\s+/g, " ").trim();
     if (normalized.startsWith("SELECT name FROM sqlite_schema")) {
-      return ["user", "account", "session", "auth_identity_imports"].map(
-        (name) => ({ name }),
-      );
+      return [
+        "user",
+        "account",
+        "session",
+        "auth_identity_imports",
+        "cf_firebase_identity_projection",
+        "cf_auth_deletion_fences",
+      ].map((name) => ({ name }));
     }
     if (normalized.includes("FROM auth_identity_imports")) {
       return state.ledger ? [{ ...state.ledger }] : [];
@@ -119,6 +126,16 @@ function memoryD1(options = {}) {
         left.id.localeCompare(right.id),
       );
     }
+    if (normalized.includes("FROM cf_firebase_identity_projection")) {
+      return [...state.projections.values()].sort((left, right) =>
+        left.firebaseUid.localeCompare(right.firebaseUid),
+      );
+    }
+    if (normalized.includes("FROM cf_auth_deletion_fences")) {
+      return [...state.fences.values()].sort((left, right) =>
+        left.uid.localeCompare(right.uid),
+      );
+    }
     if (normalized === "SELECT COUNT(*) AS count FROM session") {
       return [{ count: state.sessions }];
     }
@@ -155,6 +172,31 @@ function memoryD1(options = {}) {
           updatedAt: params[hasPasswordParameter ? 7 : 6],
         };
         if (!state.accounts.has(row.id)) state.accounts.set(row.id, row);
+      } else if (
+        normalized.startsWith(
+          "INSERT OR IGNORE INTO cf_firebase_identity_projection",
+        )
+      ) {
+        const row = {
+          firebaseUid: params[0],
+          betterAuthUserId: params[1],
+          providersJson: params[2],
+          sourceImportId: params[3],
+          status: "imported",
+          sourceUpdatedAt: Number(params[4]),
+        };
+        if (!state.projections.has(row.firebaseUid)) {
+          state.projections.set(row.firebaseUid, row);
+        }
+      } else if (
+        normalized.startsWith("INSERT OR IGNORE INTO cf_auth_deletion_fences")
+      ) {
+        const row = {
+          uid: params[0],
+          generation: 1,
+          status: "clear",
+        };
+        if (!state.fences.has(row.uid)) state.fences.set(row.uid, row);
       } else {
         throw new Error(`unexpected batch query: ${normalized}`);
       }
@@ -307,6 +349,15 @@ describe("Firebase identity import", () => {
     expect(database.state.ledger.status).toBe("completed");
     expect(database.state.users.size).toBe(1);
     expect(database.state.accounts.size).toBe(3);
+    expect(database.state.projections.get("firebase-uid-1")).toMatchObject({
+      betterAuthUserId: "firebase-uid-1",
+      sourceImportId: "firebase",
+      status: "imported",
+    });
+    expect(database.state.fences.get("firebase-uid-1")).toMatchObject({
+      generation: 1,
+      status: "clear",
+    });
   });
 
   it("resumes the same source after an interrupted committed batch", async () => {
@@ -341,6 +392,8 @@ describe("Firebase identity import", () => {
     ).resolves.toMatchObject({ status: "applied" });
     expect(database.state.ledger.status).toBe("completed");
     expect(database.state.accounts.size).toBe(3);
+    expect(database.state.projections.size).toBe(1);
+    expect(database.state.fences.size).toBe(1);
   });
 
   it("fails closed for target conflicts and missing provider credentials", async () => {
