@@ -48,6 +48,7 @@ from trend_routes import router as trend_router
 from workstream_routes import router as workstream_router
 from announcement_routes import router as announcement_router
 from conversation_routes import router as conversation_router
+from public_shared_chat_routes import router as public_shared_chat_router
 from conversation_finalization_routes import router as conversation_finalization_router
 from conversation_merge_routes import router as conversation_merge_router
 from account_cutover_routes import router as account_cutover_router
@@ -103,6 +104,7 @@ app.include_router(trend_router)
 app.include_router(workstream_router)
 app.include_router(announcement_router)
 app.include_router(conversation_router)
+app.include_router(public_shared_chat_router)
 app.include_router(conversation_finalization_router)
 app.include_router(conversation_merge_router)
 app.include_router(account_cutover_router)

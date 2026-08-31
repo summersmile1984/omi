@@ -49,6 +49,11 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     # Chat — 2-6 LLM calls per message
     "chat:send_message": (120, 3600),
     "chat:initial": (60, 3600),
+    # Public shared-conversation chat is anonymous at the application layer;
+    # Edge keys the first bucket by an opaque client subject and the second
+    # bucket globally. Both remain fail-closed around the Workers AI call.
+    "public_shared_chat:per_ip": (8, 60),
+    "public_shared_chat:global": (120, 60),
     # Voice — Deepgram + LLM
     "voice:transcribe": (60, 3600),
     "voice:transcribe_stream": (60, 3600),

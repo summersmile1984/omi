@@ -10,6 +10,10 @@ import {
 import { createRealtimeTicket } from "../shared/realtime-ticket";
 import { attachAuthContext, stripUntrustedHeaders, verifyBearer } from "./auth";
 import {
+  createPublicChatAssertion,
+  PUBLIC_CHAT_ASSERTION_HEADER,
+} from "../shared/public-chat-assertion";
+import {
   activateByok,
   deactivateByok,
   parseByokActivationPayload,
@@ -28,6 +32,8 @@ import {
 import {
   edgeRateLimitPolicyForRequest,
   enforceEdgeRateLimit,
+  PUBLIC_SHARED_CHAT_GLOBAL_RATE_LIMIT,
+  PUBLIC_SHARED_CHAT_PER_IP_RATE_LIMIT,
   STT_TRANSCRIBE_RATE_LIMIT,
 } from "./rate-limit";
 
@@ -287,6 +293,88 @@ const proxyPublicJobs = async (
   return withRequestId(response, id);
 };
 
+async function publicSharedChatSubject(
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+): Promise<string | null> {
+  const clientIp = c.req.header("cf-connecting-ip")?.trim();
+  const secret = c.env.INTERNAL_ASSERTION_SECRET;
+  if (!clientIp || !secret) return null;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(clientIp),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+const proxyPublicSharedChat = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const subject = await publicSharedChatSubject(c);
+  if (!subject) {
+    return withRequestId(
+      Response.json(
+        { detail: "Public shared conversation chat unavailable" },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+  const rateIdentity = {
+    uid: `public-shared-chat:${subject}`,
+    authority: "internal" as const,
+    requestId: id,
+  };
+  const perIpDenial = await enforceEdgeRateLimit(
+    c.env,
+    rateIdentity,
+    PUBLIC_SHARED_CHAT_PER_IP_RATE_LIMIT,
+    id,
+    { failClosed: true },
+  );
+  if (perIpDenial) return withRequestId(perIpDenial, id);
+  const globalDenial = await enforceEdgeRateLimit(
+    c.env,
+    { ...rateIdentity, uid: "public-shared-chat:all" },
+    PUBLIC_SHARED_CHAT_GLOBAL_RATE_LIMIT,
+    id,
+    { failClosed: true },
+  );
+  if (globalDenial) return withRequestId(globalDenial, id);
+
+  const headers = stripUntrustedHeaders(c.req.raw);
+  const assertion = await createPublicChatAssertion(
+    subject,
+    id,
+    c.req.raw,
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!assertion) {
+    return withRequestId(
+      Response.json(
+        { detail: "Public shared conversation chat unavailable" },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+  headers.set(PUBLIC_CHAT_ASSERTION_HEADER, assertion);
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
 // App integrations authenticate with an app-scoped API key, not a Better Auth
 // session. Preserve only that Authorization header while still stripping all
 // caller-controlled internal identity headers and cookies.
@@ -493,6 +581,7 @@ app.get("/v2/integrations/google-calendar/callback", proxyPublicJobs);
 app.get("/v2/integrations/google_calendar/callback", proxyPublicJobs);
 app.get("/v2/integrations/:app_key/callback", proxyPublicJobs);
 app.get("/v1/apps/:appId/reviews", proxyPublicCore);
+app.post("/v1/conversations/shared/chat", proxyPublicSharedChat);
 app.post("/v1/apps/tester", proxyPublicJobs);
 app.post("/v1/apps/tester/access", proxyPublicJobs);
 app.delete("/v1/apps/tester/access", proxyPublicJobs);

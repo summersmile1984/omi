@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 58 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 57 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -17,7 +17,7 @@
 | Metrics / wrapped / analytics | 3 | `/metrics`、`/v1/wrapped/*`、部分分析端点 | Prometheus/历史分析数据不在当前 D1 authority | 定义聚合与保留策略；不能以空响应冒充迁移完成 |
 | Hume callback / provider webhooks | 1 | `/v1/agents/hume/callback` | 外部 webhook schema、幂等、长处理和重试 | 先落 Queue receipt 与 provider signature contract，再切 webhook owner |
 | Data-protection migration | 3 | `/v1/users/migration/*` | 加密迁移写入、批量请求和 finalize 仍依赖 legacy storage | 先完成加密 payload、迁移 lease 和生产回放，再迁移写入端点 |
-| Chat materialization / compatibility | 4 | `/v1/chat/materialize-prompts`、`/v1/conversations/shared/chat`、`/v2/chat/*` | 旧聊天 provider、session/materialization 和 Firestore continuity | 先明确无状态生成与持久化聊天的 D1 authority，再迁移兼容入口 |
+| Chat materialization / compatibility | 3 | `/v1/chat/materialize-prompts`、`/v2/chat/*` | 旧聊天 provider、session/materialization 和 Firestore continuity | 先明确无状态生成与持久化聊天的 D1 authority，再迁移兼容入口 |
 | Other legacy proxies | 2 | Gemini proxy | provider credentials 与外部应用 owner continuity | 按 provider contract 单独迁移，保持 fail-closed |
 
 ## 当前可执行顺序
@@ -35,6 +35,8 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 本轮新增 `POST /v1/sync-local-files` 的 Cloudflare owner：旧路径现在由 Edge 转发到 Jobs，与 `/v2/sync-local-files` 共享 multipart staging、R2 对象、D1 content ledger、Queue lane、Workers AI ASR 和清理状态机；响应保留 `Deprecation: true` 与 v2 successor Link。v1 只接受可验证的 fresh capture，历史/无 provenance 的上传会安全返回 `503 backfill_capacity`，客户端应迁移到 v2 并按 job status 轮询；不再执行 legacy inline pipeline。
 
 本轮新增 `POST /v2/voice-messages` 的 Cloudflare owner：API AI Worker 使用有界 multipart parser 与 Workers AI Whisper 完成转写，按 D1 fair-use source 去重计量，再把 transcript 交给 D1-backed `/v2/messages` 生成 SSE。空音频保持空 SSE；不支持的容器、超限和 provider/D1 故障均 fail-closed，不回落到本机临时文件或 legacy inline chat。
+
+本轮新增 `POST /v1/conversations/shared/chat` 的 Cloudflare owner：Edge 从 Cloudflare 的 `CF-Connecting-IP` 生成不可逆 subject，仅用于独立的 per-IP/global Durable Object 限流；转发时使用绑定 method/path/audience/TTL 的 signed public assertion，不伪造 Better Auth 用户身份。API Core 只读取 D1 的 shared owner index/conversation projection，并调用 Workers AI；未签名请求、私有/锁定会话、80KiB 超限、D1/AI 故障分别保持 401/404/413/503。该路由目前只完成 staging owner boundary 与 hermetic 验证，尚未部署或进行真实 provider 正向 probe。
 
 ## Staging evidence（2026-08-31）
 

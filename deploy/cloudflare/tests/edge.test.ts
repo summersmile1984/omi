@@ -169,6 +169,78 @@ describe("edge gateway", () => {
     );
   });
 
+  it("routes public shared chat through a signed anonymous assertion and strict limits", async () => {
+    let forwarded: Request | undefined;
+    const rateLimitNames: string[] = [];
+    const body = JSON.stringify({
+      conversation_id: "shared-1",
+      question: "When is the launch?",
+      history: [],
+    });
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      API_CORE: rawService((request) => {
+        forwarded = request;
+        return Response.json({ message: "Friday" });
+      }),
+      RATE_LIMITS: rateLimits((request) => {
+        return Response.json({
+          allowed: true,
+          limit: 8,
+          remaining: 7,
+          retryAfter: 0,
+          resetAt: Date.now() + 60_000,
+          name: new URL(request.url).pathname,
+        });
+      }, rateLimitNames),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/conversations/shared/chat", {
+        method: "POST",
+        headers: {
+          "cf-connecting-ip": "203.0.113.7",
+          "content-type": "application/json",
+          authorization: "Bearer attacker-controlled",
+          cookie: "session=attacker-controlled",
+          "x-omi-uid": "attacker-controlled",
+          "x-omi-public-chat-assertion": "attacker-controlled",
+        },
+        body,
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ message: "Friday" });
+    expect(rateLimitNames[0]).toMatch(
+      /^public_shared_chat:per_ip:public-shared-chat:[0-9a-f]{64}$/,
+    );
+    expect(rateLimitNames[1]).toBe(
+      "public_shared_chat:global:public-shared-chat:all",
+    );
+    expect(new URL(forwarded?.url || "https://invalid.test").pathname).toBe(
+      "/v1/conversations/shared/chat",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
+    const assertion = forwarded?.headers.get("x-omi-public-chat-assertion");
+    expect(assertion).toMatch(/^[^.]+\.[^.]+$/);
+    expect(assertion).not.toContain("attacker-controlled");
+    await expect(forwarded?.text()).resolves.toBe(body);
+
+    const missingIp = await edge.fetch(
+      new Request("https://edge.test/v1/conversations/shared/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+      env as never,
+    );
+    expect(missingIp.status).toBe(503);
+  });
+
   it("serves retired Agent VM tombstones without authentication or dependencies", async () => {
     const calls: string[] = [];
     const env = {

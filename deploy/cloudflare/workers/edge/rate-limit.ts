@@ -37,6 +37,16 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 60,
     windowSeconds: 3600,
   },
+  "public_shared_chat:per_ip": {
+    name: "public_shared_chat:per_ip",
+    maxRequests: 8,
+    windowSeconds: 60,
+  },
+  "public_shared_chat:global": {
+    name: "public_shared_chat:global",
+    maxRequests: 120,
+    windowSeconds: 60,
+  },
   "apps:generate_prompts": {
     name: "apps:generate_prompts",
     maxRequests: 30,
@@ -213,12 +223,20 @@ export const TTS_SYNTHESIZE_RATE_LIMIT =
   EDGE_RATE_LIMIT_POLICIES["tts:synthesize"];
 export const STT_TRANSCRIBE_RATE_LIMIT =
   EDGE_RATE_LIMIT_POLICIES["stt:transcribe"];
+export const PUBLIC_SHARED_CHAT_PER_IP_RATE_LIMIT =
+  EDGE_RATE_LIMIT_POLICIES["public_shared_chat:per_ip"];
+export const PUBLIC_SHARED_CHAT_GLOBAL_RATE_LIMIT =
+  EDGE_RATE_LIMIT_POLICIES["public_shared_chat:global"];
 
 const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ["POST /v1/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v1/tts/synthesize-workers-ai", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v2/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v2/messages", EDGE_RATE_LIMIT_POLICIES["chat:send_message"]],
+  [
+    "POST /v1/conversations/shared/chat",
+    PUBLIC_SHARED_CHAT_PER_IP_RATE_LIMIT,
+  ],
   ["POST /v2/voice-messages", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
   ["POST /v2/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
@@ -465,6 +483,7 @@ export async function enforceEdgeRateLimit(
   auth: AuthContext,
   policy: EdgeRateLimitPolicy,
   requestId: string,
+  options: { failClosed?: boolean } = {},
 ): Promise<Response | null> {
   const maxRequests = effectiveMaxRequests(env.RATE_LIMIT_BOOST, policy);
   try {
@@ -530,6 +549,12 @@ export async function enforceEdgeRateLimit(
       outcome: "degraded",
       requestId,
     });
+    if (options.failClosed) {
+      return Response.json(
+        { detail: "Rate limit service unavailable. Try again shortly." },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      );
+    }
     return null;
   }
 }
