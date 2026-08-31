@@ -1297,6 +1297,14 @@ and page context with typed `409` responses; RAG/tools, BYOK request overrides,
 and provider-streamed token delivery remain separate
 qualification boundaries rather than silently degrading to generic chat.
 
+Historical Firestore chat session/message replay has a separate reviewed
+planner (`npm run chat:reconcile -- --input <manifest.json>`). It accepts only
+de-identified, bounded exports, records source-row/export fingerprints, and
+emits guarded apply/verify SQL. Apply requires a completed `new` account
+cutover with matching generation and `destination_backend_bound=1`; it never
+overwrites an occupied D1 row or imports file/provider state. A zero-row
+verification result is required before treating a replay as complete.
+
 The account read routes use D1 as the isolated staging authority. Conversation
 and memory writes update one idempotent `cf_usage_sources` row in the same D1
 batch as the source projection, and migration `0046_account_usage.sql`

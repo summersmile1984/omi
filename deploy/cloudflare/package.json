@@ -15,6 +15,7 @@
     "identity:import": "node scripts/import-firebase-identities.mjs",
     "identity:dry-run": "node scripts/dry-run-firebase-identity-import.mjs",
     "audio:reconcile": "node scripts/audio-reconcile.mjs",
+    "chat:reconcile": "node scripts/chat-history-reconcile.mjs",
     "persona:reconcile": "node scripts/persona-app-history-reconcile.mjs",
     "phone:reconcile": "node scripts/phone-history-reconcile.mjs",
     "deploy:staging": "npm run validate:backend-routes && npm run validate:manifest && node scripts/deploy.mjs staging",

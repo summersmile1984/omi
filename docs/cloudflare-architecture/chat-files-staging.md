@@ -219,3 +219,35 @@ deletion-fence trigger，并纳入 account-deletion residual scan。该 planner 
 bytes checksum、确认 provider id 属于该 uid，再原子提交 R2 object 与 canonical
 `cf_chat_files` row。历史 Firestore/GCS 回放和旧 `/v1/files`、`/v2/files` owner 切换
 仍未完成。
+
+## Historical chat session/message replay planner（reviewed apply/verify）
+
+为补上 session continuity 的最小可执行面，本轮增加
+`scripts/chat-history-reconcile.mjs` 与 migration
+`0128_chat_history_reconciliation.sql`。它只接收已经去敏的 Firestore 导出清单，
+覆盖 `users/{uid}/chat_sessions` 和 `users/{uid}/messages`；输入必须提供 Cloudflare
+目标 uid、目标 `account_generation`、来源账号指纹和导出 SHA-256。脚本会拒绝凭据、
+Firebase uid/token、OpenAI provider credential 等字段，限制清单 8 MiB/5,000 个实体，
+校验 session/message 归属、`message_count`、app id 和消息结构。带有 `files_id` 的消息
+会被整体阻塞，直到独立的 chat-file 回放先验证出 canonical `cf_chat_files` rows，
+不会制造指向不存在文件的历史消息。
+
+命令输出 reviewed plan、apply SQL 和 verify SQL，不连接 Firestore、GCS、D1 或 provider：
+
+```bash
+npm run chat:reconcile -- --input /path/to/chat-history-manifest.json \
+  [--fenced-uid <uid>]
+```
+
+apply SQL 只对 `cf_account_cutover` 中同时满足 `state='new'`、
+`checkpoint_phase='completed'`、`destination_backend_bound=1` 且 generation 完全相同的
+账号生效，并再次检查 deletion intent/tombstone。session/message 目标行带有来源行指纹、
+导出指纹和 generation 标记；插入使用 `ON CONFLICT DO NOTHING`，已有目标行不会被覆盖。
+ledger 以 uid+entity 的唯一键阻止同一历史实体被不同导出静默替换；重复执行同一 plan
+保持幂等。apply 后执行输出的 verify SQL，必须返回零行；它会同时发现 ledger 未完成、
+目标 marker 缺失/不一致和 generation 冲突。
+
+这是可审计的历史文本 session/message 回放切片，不是自动远端导入，也不等价于旧
+Assistants thread/file_search、GCS thumbnail/provider object 或 `/v2/messages` 的完整
+wire parity。真实 Firestore export、账号 cutover marker 和独立文件/provider 验证完成前，
+不得把该 planner 视作 production owner switch 证据。
