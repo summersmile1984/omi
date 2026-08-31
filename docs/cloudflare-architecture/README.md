@@ -33,7 +33,7 @@
 
 ## 本轮验证证据
 
-- Cloudflare TypeScript：48 个测试文件、390 个测试通过；类型检查和生产依赖审计通过。
+- Cloudflare TypeScript：48 个测试文件、391 个测试通过；类型检查和生产依赖审计通过。
 - `api-core`：303 个测试通过；`api-ai`：83 个测试通过。
 - Web：8 个测试文件、38 个测试通过；vinext staging build 与 Worker dry-run 通过。
 - manifest：509 条 Cloudflare 路由、577 条完整 backend 路由和 22 个 staging 资源通过校验；89 条 legacy-owned 路由成为可量化迁移队列。
