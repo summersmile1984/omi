@@ -139,6 +139,28 @@ class BackfillDesktopReleaseManifestTests(unittest.TestCase):
                 opener=opener,
             )
 
+    def test_requires_explicit_success_acknowledgement_from_both_endpoints(self) -> None:
+        release = manifest()
+        opener = Opener([{"manifest": release}])
+
+        with self.assertRaisesRegex(backfill.ManifestBackfillError, "acknowledge success"):
+            backfill.fetch_legacy_manifest(
+                release["release_id"],
+                legacy_base_url="https://legacy.example",
+                admin_key="secret",
+                opener=opener,
+            )
+
+        opener = Opener([{"success": True, "manifest": release}, {"manifest": release}])
+        with self.assertRaisesRegex(backfill.ManifestBackfillError, "acknowledge success"):
+            backfill.backfill_manifest(
+                release["release_id"],
+                legacy_base_url="https://legacy.example",
+                target_base_url="https://edge.example",
+                admin_key="secret",
+                opener=opener,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

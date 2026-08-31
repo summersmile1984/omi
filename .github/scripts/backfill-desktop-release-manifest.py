@@ -75,6 +75,11 @@ def _manifest_digest(manifest: dict[str, Any]) -> str:
     return _CONTRACT.manifest_digest(manifest).removeprefix("sha256:")
 
 
+def _require_success(payload: dict[str, Any], *, context: str) -> None:
+    if payload.get("success") is not True:
+        raise ManifestBackfillError(f"{context} did not acknowledge success")
+
+
 def fetch_legacy_manifest(
     release_id: str,
     *,
@@ -93,6 +98,7 @@ def fetch_legacy_manifest(
         method="GET",
     )
     payload = _request_json(request, opener=opener, error_context="legacy desktop manifest read")
+    _require_success(payload, context="legacy desktop manifest read")
     manifest = payload.get("manifest")
     if not isinstance(manifest, dict):
         raise ManifestBackfillError("legacy desktop manifest response is missing manifest")
@@ -136,6 +142,7 @@ def publish_cloudflare_manifest(
         method="POST",
     )
     payload = _request_json(request, opener=opener, error_context="Cloudflare desktop manifest registration")
+    _require_success(payload, context="Cloudflare desktop manifest registration")
     returned = payload.get("manifest")
     if returned != validated:
         raise ManifestBackfillError("Cloudflare desktop manifest response differs from the immutable source")
