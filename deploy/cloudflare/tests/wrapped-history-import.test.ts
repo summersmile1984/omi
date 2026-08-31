@@ -10,6 +10,7 @@ import { registerWrappedHistoryImportRoutes } from "../workers/jobs/wrapped-hist
 
 class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
+  private batchTail = Promise.resolve();
 
   constructor() {
     const directory = path.resolve(
@@ -44,6 +45,13 @@ class SqliteD1 {
   }
 
   async batch(statements: Array<ReturnType<SqliteD1["prepare"]>>) {
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prior = this.batchTail;
+    this.batchTail = next;
+    await prior;
     this.database.exec("BEGIN");
     try {
       const results = [];
@@ -56,6 +64,8 @@ class SqliteD1 {
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
+    } finally {
+      release();
     }
   }
 
@@ -251,6 +261,41 @@ describe("Cloudflare reviewed Wrapped history executor", () => {
       expect(
         database.database
           .prepare("SELECT COUNT(*) AS count FROM cf_wrapped_jobs")
+          .get(),
+      ).toMatchObject({ count: 1 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps concurrent applies idempotent", async () => {
+    const { app, database, env } = environment();
+    try {
+      const reviewed = await app.request(
+        "/internal/wrapped-history/reviews",
+        {
+          method: "POST",
+          headers: adminHeaders(),
+          body: JSON.stringify(plan()),
+        },
+        env,
+      );
+      const reviewId = ((await reviewed.json()) as { review_id: string })
+        .review_id;
+      const [left, right] = await Promise.all([
+        app.request(`/internal/wrapped-history/reviews/${reviewId}/apply`, {
+          method: "POST",
+          headers: { "secret-key": "wrapped-history-admin" },
+        }, env),
+        app.request(`/internal/wrapped-history/reviews/${reviewId}/apply`, {
+          method: "POST",
+          headers: { "secret-key": "wrapped-history-admin" },
+        }, env),
+      ]);
+      expect([left.status, right.status].sort()).toEqual([200, 200]);
+      expect(
+        database.database
+          .prepare("SELECT COUNT(*) AS count FROM cf_wrapped_history_applies")
           .get(),
       ).toMatchObject({ count: 1 });
     } finally {

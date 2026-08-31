@@ -7,6 +7,8 @@ const MAX_ENTRIES = 40;
 const REVIEW_TTL_SECONDS = 60 * 60;
 const MAX_RESULT_BYTES = 256 * 1024;
 const MAX_NESTED_OBJECT_BYTES = 32 * 1024;
+const MAX_JSON_DEPTH = 16;
+const MAX_JSON_NODES = 2_048;
 const SUPPORTED_YEAR = 2025;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UID = /^[^/\u0000\u0001-\u001f\u007f]{1,256}$/;
@@ -124,6 +126,14 @@ function stableJson(value: unknown): string {
   return encoded;
 }
 
+function validJsonShape(value: unknown, depth = 0, state = { nodes: 0 }): boolean {
+  state.nodes += 1;
+  if (depth > MAX_JSON_DEPTH || state.nodes > MAX_JSON_NODES) return false;
+  if (!value || typeof value !== "object") return true;
+  if (Array.isArray(value)) return value.every((item) => validJsonShape(item, depth + 1, state));
+  return Object.values(value as Record<string, unknown>).every((nested) => validJsonShape(nested, depth + 1, state));
+}
+
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -219,7 +229,7 @@ function parseResult(value: unknown): { json: string; sha256: string } | null {
     return null;
   }
   const object = objectValue(parsed);
-  if (!object || sensitiveField(object)) return null;
+  if (!object || !validJsonShape(object) || sensitiveField(object)) return null;
   let json: string;
   try {
     json = stableJson(object);
@@ -266,11 +276,19 @@ async function normalizePlan(value: unknown): Promise<ReviewPlan | null> {
     plan.blocked !== 0
   )
     return null;
+  const planAllowed = new Set([
+    "mode", "schema_version", "source", "manifest_sha256", "max_rows", "total", "stage", "blocked", "entries",
+  ]);
+  if (Object.keys(plan).some((key) => !planAllowed.has(key))) return null;
+  const sourceAllowed = new Set(["kind", "collection", "export_sha256", "exported_at"]);
+  if (Object.keys(source).some((key) => !sourceAllowed.has(key))) return null;
+  if (source.exported_at !== undefined && (typeof source.exported_at !== "string" || new TextEncoder().encode(source.exported_at).byteLength > 128)) return null;
   const entries: ReviewEntry[] = [];
   let previousKey = "";
   for (const raw of plan.entries) {
     const entry = objectValue(raw);
     if (!entry) return null;
+    if (!validJsonShape(entry)) return null;
     const allowed = new Set([
       "uid",
       "year",
@@ -399,23 +417,25 @@ async function normalizePlan(value: unknown): Promise<ReviewPlan | null> {
   };
 }
 
-async function accountReady(
+async function readyAccounts(
   c: JobsContext,
-  entry: ReviewEntry,
-  now: number,
-): Promise<boolean> {
-  const fenced = await c.env.APP_DB.prepare(
-    "SELECT 1 AS blocked FROM cf_account_deletion_intents WHERE uid = ? UNION ALL SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = ? AND expires_at > ? LIMIT 1",
-  )
-    .bind(entry.uid, entry.uid, now)
-    .first<{ blocked?: number }>();
-  if (fenced) return false;
-  const cutover = await c.env.APP_DB.prepare(
-    "SELECT 1 AS ready FROM cf_account_cutover WHERE uid = ? AND state = 'new' AND checkpoint_phase = 'completed' AND destination_backend_bound = 1 AND account_generation = ? LIMIT 1",
-  )
-    .bind(entry.uid, entry.accountGeneration)
-    .first<{ ready?: number }>();
-  return Number(cutover?.ready) === 1;
+  entries: ReviewEntry[],
+): Promise<Map<string, boolean>> {
+  const uids = [...new Set(entries.map((entry) => entry.uid))];
+  const [fenceRows, cutoverRows] = await Promise.all([
+    c.env.APP_DB.prepare(
+      `SELECT uid FROM cf_account_deletion_intents WHERE uid IN (${uids.map(() => "?").join(",")}) UNION SELECT uid FROM cf_account_deletion_tombstones WHERE uid IN (${uids.map(() => "?").join(",")})`,
+    ).bind(...uids, ...uids).all<{ uid: string }>(),
+    c.env.APP_DB.prepare(
+      `SELECT uid, account_generation FROM cf_account_cutover WHERE uid IN (${uids.map(() => "?").join(",")}) AND state = 'new' AND checkpoint_phase = 'completed' AND destination_backend_bound = 1`,
+    ).bind(...uids).all<{ uid: string; account_generation: number }>(),
+  ]);
+  const fenced = new Set((fenceRows.results || []).map((row) => row.uid));
+  const generations = new Map((cutoverRows.results || []).map((row) => [row.uid, Number(row.account_generation)]));
+  return new Map(entries.map((entry) => [
+    `${entry.uid}\0${entry.year}`,
+    !fenced.has(entry.uid) && generations.get(entry.uid) === entry.accountGeneration,
+  ]));
 }
 
 function sqlEntry(entry: ReviewEntry, reviewId: string, now: number) {
@@ -443,14 +463,9 @@ async function review(c: JobsContext): Promise<Response> {
       noStoreHeaders(),
     );
   const now = Math.floor(Date.now() / 1_000);
-  for (const entry of plan.entries) {
-    if (!(await accountReady(c, entry, now)))
-      return c.json(
-        { error: "wrapped_history_account_not_ready" },
-        409,
-        noStoreHeaders(),
-      );
-  }
+  const accountState = await readyAccounts(c, plan.entries);
+  if (plan.entries.some((entry) => !accountState.get(`${entry.uid}\0${entry.year}`)))
+    return c.json({ error: "wrapped_history_account_not_ready" }, 409, noStoreHeaders());
   const reviewId = crypto.randomUUID();
   try {
     const statements = [
@@ -569,34 +584,29 @@ async function apply(c: JobsContext): Promise<Response> {
       sourceRowSha256: row.source_row_sha256,
       planHash: row.plan_hash,
     }));
-    const existing = await Promise.all(
-      entries.map((entry) =>
-        c.env.APP_DB.prepare(
-          "SELECT uid, year, job_id, request_fingerprint, source_fingerprint, account_generation, status, result_json FROM cf_wrapped_jobs WHERE uid = ? AND year = ? LIMIT 1",
-        )
-          .bind(entry.uid, entry.year)
-          .first<ExistingJob>(),
-      ),
-    );
-    const markers = await Promise.all(
-      entries.map((entry) =>
-        c.env.APP_DB.prepare(
-          "SELECT uid, year, review_id, job_id, source_row_sha256, plan_hash, account_generation, status FROM cf_wrapped_history_applies WHERE uid = ? AND year = ? LIMIT 1",
-        )
-          .bind(entry.uid, entry.year)
-          .first<ExistingApply>(),
-      ),
-    );
+    const pairPredicates = entries.map(() => "(uid = ? AND year = ?)").join(" OR ");
+    const pairBindings = entries.flatMap((entry) => [entry.uid, entry.year]);
+    const [existingRows, markerRows] = await Promise.all([
+      c.env.APP_DB.prepare(
+        `SELECT uid, year, job_id, request_fingerprint, source_fingerprint, account_generation, status, result_json FROM cf_wrapped_jobs WHERE ${pairPredicates}`,
+      ).bind(...pairBindings).all<ExistingJob>(),
+      c.env.APP_DB.prepare(
+        `SELECT uid, year, review_id, job_id, source_row_sha256, plan_hash, account_generation, status FROM cf_wrapped_history_applies WHERE ${pairPredicates}`,
+      ).bind(...pairBindings).all<ExistingApply>(),
+    ]);
+    const existingByKey = new Map((existingRows.results || []).map((row) => [`${row.uid}\0${row.year}`, row]));
+    const markerByKey = new Map((markerRows.results || []).map((row) => [`${row.uid}\0${row.year}`, row]));
+    const accountState = await readyAccounts(c, entries);
     let alreadyApplied = 0;
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index];
-      if (!(await accountReady(c, entry, now)))
+      if (!accountState.get(`${entry.uid}\0${entry.year}`))
         return c.json(
           { error: "account_deletion_or_generation_fence" },
           409,
           noStoreHeaders(),
         );
-      const job = existing[index];
+      const job = existingByKey.get(`${entry.uid}\0${entry.year}`);
       if (
         job &&
         (job.job_id !== entry.jobId ||
@@ -611,7 +621,7 @@ async function apply(c: JobsContext): Promise<Response> {
           409,
           noStoreHeaders(),
         );
-      const marker = markers[index];
+      const marker = markerByKey.get(`${entry.uid}\0${entry.year}`);
       if (marker) {
         if (
           marker.review_id !== reviewId ||
@@ -629,7 +639,7 @@ async function apply(c: JobsContext): Promise<Response> {
         alreadyApplied += 1;
       }
     }
-    const pending = entries.filter((_, index) => !markers[index]);
+    const pending = entries.filter((entry) => !markerByKey.has(`${entry.uid}\0${entry.year}`));
     const statements = pending.flatMap((entry) => {
       const values = sqlEntry(entry, reviewId, now).values;
       return [
@@ -637,7 +647,7 @@ async function apply(c: JobsContext): Promise<Response> {
           "INSERT INTO cf_wrapped_jobs (uid, year, job_id, request_fingerprint, source_fingerprint, account_generation, status, attempts, next_attempt_at, result_json, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'completed', 0, ?, ?, NULL, ?, ?) ON CONFLICT(uid, year) DO NOTHING",
         ).bind(...values.slice(0, 6), now, values[6], values[7], values[8]),
         c.env.APP_DB.prepare(
-          "INSERT INTO cf_wrapped_history_applies (uid, year, review_id, job_id, source_row_sha256, plan_hash, account_generation, status, applied_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?)",
+          "INSERT INTO cf_wrapped_history_applies (uid, year, review_id, job_id, source_row_sha256, plan_hash, account_generation, status, applied_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?) ON CONFLICT(uid, year) DO NOTHING",
         ).bind(
           entry.uid,
           entry.year,
