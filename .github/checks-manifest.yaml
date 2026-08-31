@@ -530,7 +530,7 @@ checks:
     reason: "#9843 Ticket 02: macOS-only manifest checks must have an executable CI route"
   - id: desktop-manifest-cloudflare-backfill
     command: ["python3", ".github/scripts/test_backfill_desktop_release_manifest.py"]
-    triggers: [".github/scripts/backfill-desktop-release-manifest.py", ".github/scripts/test_backfill_desktop_release_manifest.py", "deploy/cloudflare/python/api-core/src/desktop_release_routes.py", "deploy/cloudflare/manifests/routes.yaml", ".github/checks-manifest.yaml"]
+    triggers: [".github/scripts/backfill-desktop-release-manifest.py", ".github/scripts/desktop_release_manifest.py", ".github/schemas/desktop-release-manifest-v1.schema.json", ".github/scripts/test_backfill_desktop_release_manifest.py", "deploy/cloudflare/python/api-core/src/desktop_release_routes.py", "deploy/cloudflare/manifests/routes.yaml", ".github/checks-manifest.yaml"]
     lanes: ["local", "ci"]
     reason: "desktop release backfill must verify the immutable Firestore manifest before registering the exact object in Cloudflare D1"
   - id: desktop-app-icon-bundle
