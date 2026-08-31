@@ -15,7 +15,7 @@
 | Chat compatibility | 3 | 阻塞 | prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract 与 D1 chat session 不是同一语义 |
 | Persona / MCP mutation | 5 | 部分 staging owner | `PATCH /v1/personas/{persona_id}` 已对 D1-owned projection 提供 bounded CAS/R2/deletion-fence update；历史 Firestore prompt/image/cache continuity、Twitter provider identity 和 MCP OAuth token/discovery 仍未迁移 |
 | Staged tasks / task intelligence | 0 | staging owner，生产阻塞 | API Core/D1 已建立 candidate/recommendation authority、device/open-loop snapshot、LLM receipt、promotion transaction 和 Jobs Queue retry consumer；仍缺 Firestore 历史回放、provider 正向账号探针、旧客户端 continuity 和 production cutover |
-| Gemini proxy | 2 | 阻塞 | Gemini/Vertex route、BYOK、Redis quota、SSE/usage/error 以及 cost accounting 尚未闭合 |
+| Gemini proxy | 2 | 部分准备，owner 阻塞 | Cloudflare AI Studio adapter、Edge burst 和 D1 daily ledger 已落地但仅 staging opt-in；Firebase identity continuity、Vertex ADC/PT、完整 BYOK/Redis quota、SSE/usage/error/cost parity 尚未闭合 |
 | Files | 2 | 部分准备 | Worker chat-file adapter 已有 D1/R2/provider contract，但 Assistants/session continuity、旧数据回填和下游 reader 仍未完成 |
 
 上表合计 18 条。`GET /v1/apps/mcp/callback` 计入 Persona/MCP mutation，而不是 Auth / social；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口不计入本表。Task intelligence 的 13 条路径已是 staging owner，因此不再计入 legacy 队列，但其生产门槛仍保留在表内。

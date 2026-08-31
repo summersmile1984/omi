@@ -2,6 +2,8 @@
 
 截至 2026-08-31，Cloudflare 只承接显式的 staging-only `/v1/cf/chat-files`，并没有切换 legacy `/v1/files` 或 `/v2/files`。
 
+本轮发布同时应用了 `0113_chat_assistant_provider.sql` 与 `0114_gemini_proxy.sql`，API-AI `15a48911-bc8a-41f1-bd40-7a671f5d24e5`、Jobs `969c6d84-1cd3-4c8f-8781-914c44366349`、Edge `261cf422-4a28-4841-b316-cea5711f9d7a` 已上线。Assistant continuity adapter 仍由 `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED` 显式开启；当前未配置 OpenAI provider secret，临时 Better Auth 账号命中关闭开关时返回 `404 legacy_route_disabled`，因此不代表 legacy owner 已切换。
+
 ## Session attachment staging evidence（2026-08-31）
 
 远端 App D1 已应用 `0111_chat_session_files.sql`。API Core `c4305fe3-aea6-450d-ac52-b0be2fcd340c`、Jobs `a5d71c63-8c1f-4b68-a614-5f344b785bba`、Edge `02680195-2ab7-43fe-ae8f-de93ef354ffd` 已发布。隔离 Better Auth 账号创建 chat session 返回 `200`；`GET /v2/cf/chat-sessions/{session_id}/files` 返回 `200 []`，不存在或跨账号 file id 的 attach/detach 返回 `404`，未配置 OpenAI Files provider 时上传返回 `503 provider_unavailable`。公开删号请求返回 `200`，session-file 关联没有残留；本次即时检查仍看到 deletion intent，最终 tombstone 交由异步 residual sweep 完成。
