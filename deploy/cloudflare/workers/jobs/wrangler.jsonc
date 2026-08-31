@@ -30,6 +30,7 @@
     "CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED": "false",
     "CHAT_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "WRAPPED_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "DLQ_REPLAY_STAGING_ENABLED": "false",
     "LEGACY_CHAT_FILES_STAGING_ENABLED": "true",
     "WORKERS_AI_CHAT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
@@ -50,6 +51,9 @@
   // WRAPPED_HISTORY_IMPORT_STAGING_ENABLED remains false by default; the
   // reviewed Wrapped history apply route uses ADMIN_KEY and never reads a
   // Firestore export or invokes a provider.
+  // DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED remains false by default;
+  // the reviewed apply route only calls API Core's immutable manifest contract
+  // after an operator-approved plan.
   // CHAT_HISTORY_IMPORT_SIGNING_SECRET is required together with the explicit
   // chat-history apply staging gate; it must be at least 32 bytes.
   // DLQ_REPLAY_SIGNING_SECRET is required together with the explicit DLQ

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import unittest
@@ -150,6 +151,63 @@ class BackfillDesktopReleaseManifestTests(unittest.TestCase):
                 admin_key="secret",
                 opener=opener,
             )
+
+    def test_builds_a_content_bound_dry_run_plan_without_target_writes(self) -> None:
+        release = manifest()
+        plan = backfill.build_dry_run_plan(
+            release,
+            legacy_endpoint="https://legacy.example/v2/desktop/releases/v1.2.3%2B10203-macos",
+        )
+
+        self.assertEqual(plan["mode"], "dry-run")
+        self.assertEqual(plan["manifest"], release)
+        self.assertEqual(plan["manifest_sha256"], backfill._manifest_digest(release))
+        self.assertEqual(plan["source"]["manifest_sha256"], plan["manifest_sha256"])
+        expected_plan_hash = hashlib.sha256(
+            backfill._stable_json(
+                {
+                    "schema_version": 1,
+                    "source": plan["source"],
+                    "manifest_sha256": plan["manifest_sha256"],
+                }
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(plan["plan_hash"], expected_plan_hash)
+
+    def test_apply_reviewed_plan_uses_the_gated_executor_and_never_prints_the_key(self) -> None:
+        release = manifest()
+        plan = backfill.build_dry_run_plan(
+            release,
+            legacy_endpoint="https://legacy.example/v2/desktop/releases/v1.2.3%2B10203-macos",
+        )
+        opener = Opener(
+            [
+                {"review_id": "00000000-0000-4000-8000-000000000000"},
+                {
+                    "status": "applied",
+                    "release_id": release["release_id"],
+                    "manifest_sha256": plan["manifest_sha256"],
+                    "applied_count": 1,
+                    "already_applied_count": 0,
+                },
+            ]
+        )
+
+        result = backfill.apply_reviewed_plan(
+            plan,
+            target_base_url="https://edge.example",
+            admin_key="secret",
+            opener=opener,
+        )
+
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(len(opener.requests), 2)
+        review_request, apply_request = (entry[0] for entry in opener.requests)
+        self.assertEqual(review_request.full_url, "https://edge.example/internal/desktop-release-history/reviews")
+        self.assertIn("/00000000-0000-4000-8000-000000000000/apply", apply_request.full_url)
+        self.assertEqual(review_request.get_header("Secret-key"), "secret")
+        self.assertEqual(json.loads(review_request.data), plan)
+        self.assertNotIn("secret", json.dumps(plan))
 
         opener = Opener([{"success": True, "manifest": release}, {"manifest": release}])
         with self.assertRaisesRegex(backfill.ManifestBackfillError, "acknowledge success"):

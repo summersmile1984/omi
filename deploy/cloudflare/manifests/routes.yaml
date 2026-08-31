@@ -4717,6 +4717,28 @@ routes:
     idempotency: required
     rollout: staging-only
     rollback: disabled
+  - method: POST
+    path: /internal/desktop-release-history/reviews
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, jobs, worker-secrets]
+    protocol: http
+    idempotency: plan-hash
+    rollout: staging-only
+    rollback: disabled
+  - method: POST
+    path: /internal/desktop-release-history/reviews/{review_id}/apply
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, api-core, worker-secrets]
+    protocol: http
+    idempotency: release-id
+    rollout: staging-only
+    rollback: disabled
   - method: GET
     path: /memory/vector/search
     owner: api-core

@@ -11,6 +11,7 @@ never writes a channel pointer and it never sends a raw credential to output.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -73,6 +74,35 @@ def _manifest_digest(manifest: dict[str, Any]) -> str:
     # The public v2 response historically exposes the detached digest without
     # the ``sha256:`` artifact prefix used by the manifest's internal fields.
     return _CONTRACT.manifest_digest(manifest).removeprefix("sha256:")
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def build_dry_run_plan(manifest: dict[str, Any], *, legacy_endpoint: str) -> dict[str, Any]:
+    """Build a content-bound review plan without contacting Cloudflare."""
+    validated = _CONTRACT.validate_manifest(manifest)
+    digest = _manifest_digest(validated)
+    source = {
+        "kind": "legacy-api",
+        "endpoint": _base_url(legacy_endpoint, label="legacy_endpoint"),
+        "release_id": validated["release_id"],
+        "manifest_sha256": digest,
+    }
+    plan_hash = hashlib.sha256(
+        _stable_json({"schema_version": 1, "source": source, "manifest_sha256": digest}).encode("utf-8")
+    ).hexdigest()
+    return {
+        "mode": "dry-run",
+        "schema_version": 1,
+        "source": source,
+        "manifest": validated,
+        "manifest_sha256": digest,
+        "plan_hash": plan_hash,
+        "action": "stage",
+        "status": "planned",
+    }
 
 
 def _require_success(payload: dict[str, Any], *, context: str) -> None:
@@ -180,9 +210,70 @@ def backfill_manifest(
     }
 
 
+def apply_reviewed_plan(
+    plan: dict[str, Any],
+    *,
+    target_base_url: str,
+    admin_key: str,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+) -> dict[str, Any]:
+    """Submit a reviewed plan to the gated executor and apply its receipt."""
+    if not isinstance(plan, dict) or plan.get("mode") != "dry-run":
+        raise ManifestBackfillError("plan must be a dry-run plan")
+    if not admin_key:
+        raise ManifestBackfillError("admin key is not configured")
+    base = _base_url(target_base_url, label="target_base_url")
+    review_endpoint = f"{base}/internal/desktop-release-history/reviews"
+    body = _stable_json(plan).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Content-Length": str(len(body)),
+        "secret-key": admin_key,
+    }
+    reviewed = _request_json(
+        urllib.request.Request(review_endpoint, data=body, headers=headers, method="POST"),
+        opener=opener,
+        error_context="Cloudflare desktop history review",
+    )
+    review_id = reviewed.get("review_id")
+    if not isinstance(review_id, str) or not review_id:
+        raise ManifestBackfillError("Cloudflare desktop history review did not return a review id")
+    applied = _request_json(
+        urllib.request.Request(
+            f"{review_endpoint}/{urllib.parse.quote(review_id, safe='')}/apply",
+            headers={"Accept": "application/json", "secret-key": admin_key},
+            method="POST",
+        ),
+        opener=opener,
+        error_context="Cloudflare desktop history apply",
+    )
+    if applied.get("status") != "applied":
+        raise ManifestBackfillError("Cloudflare desktop history apply did not acknowledge success")
+    return {
+        "review_id": review_id,
+        "status": "applied",
+        "release_id": applied.get("release_id", plan.get("source", {}).get("release_id")),
+        "manifest_sha256": applied.get("manifest_sha256", plan.get("manifest_sha256")),
+        "applied_count": applied.get("applied_count"),
+        "already_applied_count": applied.get("already_applied_count"),
+    }
+
+
+def _read_plan(filename: str) -> dict[str, Any]:
+    try:
+        raw = Path(filename).read_bytes()
+        plan = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ManifestBackfillError("plan is not readable JSON") from error
+    if not isinstance(plan, dict):
+        raise ManifestBackfillError("plan must be a JSON object")
+    return plan
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release-id", required=True, help="exact v<version>+<build>-macos release id")
+    parser.add_argument("--release-id", help="exact v<version>+<build>-macos release id")
     parser.add_argument(
         "--legacy-base-url",
         default=os.getenv("DESKTOP_LEGACY_API_BASE_URL", "https://api.omi.me"),
@@ -190,9 +281,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--target-base-url",
-        required=True,
-        help="Cloudflare Edge base URL; required to prevent accidental production writes",
+        help="Cloudflare Edge base URL; required with --apply to prevent accidental production writes",
     )
+    parser.add_argument(
+        "--plan",
+        help="reviewed dry-run plan to apply; without --apply the fetched plan is printed only",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="submit the reviewed plan to the explicitly gated Cloudflare executor",
+    )
+    parser.add_argument("--output", help="write the plan/result to this owner-only JSON file")
     parser.add_argument(
         "--admin-key-env",
         default="ADMIN_KEY",
@@ -201,15 +301,39 @@ def main() -> int:
     args = parser.parse_args()
     admin_key = os.getenv(args.admin_key_env, "")
     try:
-        result = backfill_manifest(
-            args.release_id,
-            legacy_base_url=args.legacy_base_url,
-            target_base_url=args.target_base_url,
-            admin_key=admin_key,
-        )
+        if args.plan:
+            plan = _read_plan(args.plan)
+        else:
+            if not args.release_id:
+                raise ManifestBackfillError("--release-id is required when --plan is absent")
+            legacy_endpoint = (
+                f"{_base_url(args.legacy_base_url, label='legacy_base_url')}/v2/desktop/releases/"
+                f"{urllib.parse.quote(args.release_id, safe='')}"
+            )
+            manifest = fetch_legacy_manifest(
+                args.release_id,
+                legacy_base_url=args.legacy_base_url,
+                admin_key=admin_key,
+            )
+            plan = build_dry_run_plan(manifest, legacy_endpoint=legacy_endpoint)
+        result: dict[str, Any] = {"plan": plan}
+        if args.apply:
+            if not args.target_base_url:
+                raise ManifestBackfillError("--target-base-url is required with --apply")
+            result["apply"] = apply_reviewed_plan(
+                plan,
+                target_base_url=args.target_base_url,
+                admin_key=admin_key,
+            )
     except (ManifestBackfillError, ValueError, OSError) as error:
         raise SystemExit(f"FAIL: {error}") from error
-    print(json.dumps(result, sort_keys=True))
+    output = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        output_path = Path(args.output)
+        output_path.write_text(output, encoding="utf-8")
+        output_path.chmod(0o600)
+    else:
+        print(output, end="")
     return 0
 
 

@@ -125,6 +125,7 @@ import { registerPhoneTwilioRoutes } from "./phone-twilio";
 import { registerPhoneHistoryImportRoutes } from "./phone-history-import";
 import { registerChatHistoryImportRoutes } from "./chat-history-import";
 import { registerWrappedHistoryImportRoutes } from "./wrapped-history-import";
+import { registerDesktopReleaseHistoryImportRoutes } from "./desktop-release-history-import";
 import {
   processTaskIntelligenceMessage,
   reconcileTaskIntelligenceJobs,
@@ -218,6 +219,7 @@ registerPhoneTwilioRoutes(app, requestContext);
 registerPhoneHistoryImportRoutes(app);
 registerChatHistoryImportRoutes(app);
 registerWrappedHistoryImportRoutes(app);
+registerDesktopReleaseHistoryImportRoutes(app);
 registerDlqReplayRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local

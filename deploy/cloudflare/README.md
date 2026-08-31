@@ -246,18 +246,29 @@ The desktop release manifest projection is intentionally one-way while
 production promotion remains Firestore-owned. The legacy `/updates/releases`
 bridge is also D1-backed in isolated staging (using `RELEASE_SECRET`), but the
 production workflow remains on its Firestore bridge until the release pipeline
-cutover. To replay one retained production manifest into the staging D1 table,
-provide the staging Edge URL and an admin key on a protected runner:
+cutover. Historical replay first emits a read-only, content-bound plan; after
+manual review, the explicit `--apply` path uses the default-off Jobs executor
+and its D1 receipt. See
+[`desktop-release-history-reconcile.md`](../../docs/cloudflare-architecture/desktop-release-history-reconcile.md).
+
+To replay one retained production manifest into the staging D1 table, provide
+the staging Edge URL and an admin key on a protected runner:
 
 ```bash
 ADMIN_KEY='…' python3 .github/scripts/backfill-desktop-release-manifest.py \
   --release-id v1.2.3+10203-macos \
-  --target-base-url https://omi-cf-edge-staging.<account>.workers.dev
+  --output /tmp/desktop-release-plan.json
+
+ADMIN_KEY='…' python3 .github/scripts/backfill-desktop-release-manifest.py \
+  --plan /tmp/desktop-release-plan.json \
+  --target-base-url https://omi-cf-edge-staging.<account>.workers.dev \
+  --apply
 ```
 
-The command reads the exact manifest from `https://api.omi.me`, validates its
-canonical digest, registers it through Edge/API Core, and verifies the returned
-manifest. Stable promotion and the four macOS Beta control endpoints are
+The dry run reads the exact manifest from `https://api.omi.me` and validates its
+canonical digest. Apply submits the reviewed plan through Edge/Jobs and calls
+API Core's existing immutable registration contract. It never writes a channel
+pointer. Stable promotion and the four macOS Beta control endpoints are
 API Core/D1 CAS operations in staging. Production release-pipeline cutover
 remains legacy-owned until its Firestore authority is projected and replayed.
 

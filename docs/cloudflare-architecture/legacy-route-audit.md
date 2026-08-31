@@ -22,7 +22,7 @@
 
 ## 当前可执行顺序
 
-1. 让 release pipeline 使用 `.github/scripts/backfill-desktop-release-manifest.py` 回填已迁移的 D1 immutable manifest；Stable/Beta promotion、legacy release bridge 和 `clear-cache` 已由 API Core/D1 承接，完成 Firestore→D1 回放后再注入发布流水线凭据并复验 Beta 晋级。该工具只读 legacy manifest、验证 v1 digest，再向 Cloudflare Edge 的 `/v2/desktop/releases` 做幂等 POST，不改变 channel pointer。
+1. 让 release pipeline 使用 `.github/scripts/backfill-desktop-release-manifest.py` 先生成并人工审阅 dry-run plan，再通过默认关闭的 `desktop-release-history` reviewed apply executor 回填已迁移的 D1 immutable manifest；Stable/Beta promotion、legacy release bridge 和 `clear-cache` 已由 API Core/D1 承接，完成 Firestore→D1 回放后再注入发布流水线凭据并复验 Beta 晋级。该工具只读 legacy manifest、验证 v1 digest；apply 由 Jobs 记录 content-bound receipt，并调用 API Core 的既有 immutable manifest contract，不改变 channel pointer。详见 [`desktop-release-history-reconcile.md`](desktop-release-history-reconcile.md)。
 2. 保持 conversation finalization/reprocess/merge/finalization run、sync-local-files、voice-messages、sync-jobs run 与 account-deletion run 的 staging residual 监控；下一组迁移优先处理 release pipeline 回填。
 3. 保持 task-intelligence 的 Cloudflare owner 在新账号上运行并补历史 staged-task 回放；evaluate 的 provider 正向探针、旧客户端 wire continuity 与生产切换仍需单独门槛。
 
