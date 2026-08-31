@@ -33,6 +33,39 @@ Workers AI replaces the old `wrapped_analysis` executor.  Historical Firestore
 Wrapped result backfill is intentionally not inferred: only accounts with a
 completed destination-bound D1 cutover can use this owner.
 
+## Historical result replay planner (default dry-run)
+
+`scripts/wrapped-history-reconcile.mjs` provides the smallest safe historical
+slice: replaying an already completed Firestore result into the Cloudflare
+`cf_wrapped_jobs` authority. It does not rerun the legacy provider, read
+Firestore/GCS, or claim that conversations and action items have been replayed.
+
+The input is a bounded schema-v1 manifest with a Firestore collection marker,
+an export SHA-256, and at most 5,000 rows. Every row must be the supported
+`2025` completed state and carry an independently computed source snapshot
+SHA-256, destination account generation, timestamps, and the bounded result
+shape already accepted by the Worker. The planner emits a manifest SHA-256 and
+per-row SHA-256, deduplicates identical `(uid, year)` rows, and blocks
+conflicting duplicates. Results containing credential/token fields are
+rejected; there is no plaintext-secret import or implicit encryption fallback.
+
+The generated SQL is guarded by a completed, destination-bound
+`cf_account_cutover` generation and both deletion fences. It only inserts a
+completed snapshot with `ON CONFLICT DO NOTHING`; it never queues a provider
+generation and cannot overwrite an existing result. No D1/R2/Firestore network
+write occurs during planning:
+
+```bash
+node deploy/cloudflare/scripts/wrapped-history-reconcile.mjs \
+  --input /path/to/wrapped-manifest.json
+```
+
+After an operator obtains a bounded D1 row export, `--verify --input plan.json
+--actual rows.json` checks status, request/source/result checksums, account
+generation, duplicate rows, and deletion-fenced absence. Missing source
+attestation, destination generation, or provider-side parity remains a blocked
+row rather than a fabricated import.
+
 ## Verification
 
 `tests/wrapped.test.ts` covers D1 aggregation and structured result publication,
