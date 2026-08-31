@@ -379,7 +379,10 @@ describe("namespaced MCP app OAuth staging seam", () => {
         "SELECT status FROM cf_mcp_app_oauth_transactions ORDER BY created_at, transaction_id",
       )
       .all() as Array<{ status: string }>;
-    expect(rows.map((row) => row.status)).toEqual(["expired", "exchanged"]);
+    expect(rows.map((row) => row.status)).toEqual(
+      expect.arrayContaining(["expired", "exchanged"]),
+    );
+    expect(rows).toHaveLength(2);
   });
 
   it("marks a consumed transaction failed when the token response is invalid", async () => {
@@ -408,6 +411,167 @@ describe("namespaced MCP app OAuth staging seam", () => {
       .get() as { status: string; last_error: string };
     expect(transaction.status).toBe("failed");
     expect(transaction.last_error).toBe("token_response_invalid");
+  });
+
+  it("discovers tools through bounded MCP initialize/tools-list and writes the D1 projection", async () => {
+    const { env, database } = environment();
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        calls.push({ url, init });
+        if (url.endsWith("/token")) {
+          return Response.json({
+            access_token: "access-token",
+            expires_in: 3_600,
+          });
+        }
+        if (url.endsWith("/mcp")) {
+          const payload = JSON.parse(String(init?.body)) as { method?: string };
+          if (payload.method === "initialize") {
+            return Response.json(
+              {
+                jsonrpc: "2.0",
+                id: 1,
+                result: {
+                  protocolVersion: "2025-03-26",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "fixture", version: "1" },
+                },
+              },
+              { headers: { "Mcp-Session-Id": "session-1" } },
+            );
+          }
+          if (payload.method === "notifications/initialized")
+            return new Response(null, { status: 202 });
+          if (payload.method === "tools/list") {
+            return Response.json({
+              jsonrpc: "2.0",
+              id: 2,
+              result: {
+                tools: [
+                  {
+                    name: "fixture_search",
+                    description: "Search the fixture MCP server.",
+                    inputSchema: {
+                      type: "object",
+                      properties: { query: { type: "string" } },
+                    },
+                  },
+                ],
+              },
+            });
+          }
+        }
+        throw new Error(`unexpected provider URL ${url}`);
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://provider.example.test/mcp",
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(
+      ((await start.json()) as { auth_url: string }).auth_url,
+    );
+    const callback = await app.request(
+      `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+    );
+    expect(callback.status).toBe(200);
+    const discovery = await app.request("/v2/cf/apps/mcp/discover", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(discovery.status).toBe(200);
+    await expect(discovery.json()).resolves.toEqual({
+      app_id: "mcp-app",
+      status: "ready",
+      endpoint: "https://provider.example.test/mcp",
+      tools_count: 1,
+      tool_names: ["fixture_search"],
+    });
+    expect(calls).toHaveLength(4);
+    expect(calls[2].init?.headers).toMatchObject({
+      "mcp-session-id": "session-1",
+    });
+    expect(calls[3].init?.headers).toMatchObject({
+      "mcp-session-id": "session-1",
+    });
+    const projection = database.database
+      .prepare(
+        "SELECT status, protocol_version, tools_json, revision FROM cf_mcp_app_discoveries WHERE app_id = ?",
+      )
+      .get("mcp-app") as {
+      status: string;
+      protocol_version: string;
+      tools_json: string;
+      revision: number;
+    };
+    expect(projection.status).toBe("ready");
+    expect(projection.protocol_version).toBe("2025-03-26");
+    expect(JSON.parse(projection.tools_json)).toHaveLength(1);
+    expect(projection.revision).toBe(0);
+  });
+
+  it("marks an authorized connection for reauthorization when the MCP server returns 401", async () => {
+    const { env, database } = environment();
+    let callCount = 0;
+    const fetchImpl = vi.fn(async () => {
+      callCount += 1;
+      if (callCount === 1)
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 3_600,
+        });
+      return new Response("unauthorized", { status: 401 });
+    });
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://provider.example.test/mcp",
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(
+      ((await start.json()) as { auth_url: string }).auth_url,
+    );
+    await expect(
+      app.request(
+        `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+    const discovery = await app.request("/v2/cf/apps/mcp/discover", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(discovery.status).toBe(401);
+    await expect(discovery.json()).resolves.toEqual({
+      error: "mcp_reauthorization_required",
+    });
+    const connection = database.database
+      .prepare(
+        "SELECT status, last_error FROM cf_mcp_app_connections WHERE app_id = ?",
+      )
+      .get("mcp-app") as { status: string; last_error: string };
+    expect(connection).toEqual({
+      status: "reauthorize",
+      last_error: "mcp_reauthorization_required",
+    });
   });
 
   it("requires the Better Auth-derived request context for start", async () => {

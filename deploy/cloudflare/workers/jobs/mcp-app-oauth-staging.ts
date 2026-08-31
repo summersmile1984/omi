@@ -42,6 +42,9 @@ const MAX_PROVIDER_RESPONSE_BYTES = 256_000;
 const MAX_METADATA_BYTES = 100_000;
 const MAX_CREDENTIAL_BYTES = 8_192;
 const MAX_SCOPES = 64;
+const MAX_TOOLS = 256;
+const MAX_TOOL_NAME_BYTES = 256;
+const MAX_TOOL_DESCRIPTION_BYTES = 8_192;
 const STATE_TTL_SECONDS = 600;
 const MAX_ENDPOINT_LENGTH = 2_048;
 const OPAQUE_RE = /^[A-Za-z0-9._~-]{16,512}$/;
@@ -291,7 +294,7 @@ function normalizeScopes(value: unknown): string[] {
 function validatedCredential(
   value: unknown,
   code: string,
-  status: 422 | 502,
+  status: 401 | 422 | 502,
   required = false,
 ): string | null {
   if (value === undefined || value === null) {
@@ -348,6 +351,51 @@ async function boundedJson(
   return parsed;
 }
 
+function parseSseJson(raw: string): JsonObject | null {
+  let last: JsonObject | null = null;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const value = line.slice(5).trim();
+    if (!value || value === "[DONE]") continue;
+    try {
+      const parsed = objectValue(JSON.parse(value));
+      if (parsed) last = parsed;
+    } catch {
+      // Ignore non-JSON SSE keepalives and continue to the bounded final event.
+    }
+  }
+  return last;
+}
+
+async function boundedRpcJson(
+  response: Response,
+  unavailableCode: string,
+): Promise<JsonObject> {
+  const contentLength = Number(response.headers.get("content-length") || "0");
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_PROVIDER_RESPONSE_BYTES
+  )
+    throw new McpAppOauthError(502, unavailableCode);
+  const raw = await readBoundedText(
+    response.body,
+    MAX_PROVIDER_RESPONSE_BYTES,
+    unavailableCode,
+  );
+  const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+  let payload: JsonObject | null = null;
+  if (contentType.includes("text/event-stream")) payload = parseSseJson(raw);
+  if (!payload) {
+    try {
+      payload = objectValue(JSON.parse(raw));
+    } catch {
+      payload = null;
+    }
+  }
+  if (!payload) throw new McpAppOauthError(502, unavailableCode);
+  return payload;
+}
+
 async function readBoundedText(
   body: ReadableStream<Uint8Array> | null,
   limit: number,
@@ -392,6 +440,44 @@ function errorResponse(c: JobsContext, error: unknown): Response {
   if (error instanceof McpAppOauthError)
     return c.json({ error: error.code }, error.status);
   return c.json({ error: "mcp_app_oauth_unavailable" }, 503);
+}
+
+function validateMcpTools(value: unknown): JsonObject[] {
+  if (!Array.isArray(value) || value.length > MAX_TOOLS)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  const tools: JsonObject[] = [];
+  for (const rawTool of value) {
+    const tool = objectValue(rawTool);
+    const name = tool?.name;
+    if (
+      !tool ||
+      typeof name !== "string" ||
+      !name.trim() ||
+      utf8Bytes(name) > MAX_TOOL_NAME_BYTES ||
+      /[\u0000-\u001f\u007f]/.test(name)
+    )
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    const description = tool.description;
+    if (
+      description !== undefined &&
+      (typeof description !== "string" ||
+        utf8Bytes(description) > MAX_TOOL_DESCRIPTION_BYTES)
+    )
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    if (tool.inputSchema !== undefined && !objectValue(tool.inputSchema))
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    tools.push({
+      name: name.trim(),
+      ...(typeof description === "string" ? { description } : {}),
+      ...(tool.inputSchema !== undefined
+        ? { inputSchema: tool.inputSchema }
+        : {}),
+    });
+  }
+  const serialized = JSON.stringify(tools);
+  if (utf8Bytes(serialized) > 2_000_000)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  return tools;
 }
 
 function callbackHtml(title: string, message: string): string {
@@ -829,6 +915,207 @@ async function callback(
   }
 }
 
+async function discover(
+  c: JobsContext,
+  context: SignedAuthContext,
+  dependencies: McpAppOauthDependencies,
+): Promise<Response> {
+  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+    throw new McpAppOauthError(404, "not_found");
+  const body = parseBody(await requestText(c));
+  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  if (!appId || appId.length > 256)
+    throw new McpAppOauthError(422, "invalid_request");
+  const connection = await c.env.APP_DB.prepare(
+    `SELECT app_id, owner_uid, server_url, resolved_endpoint, status,
+            credential_envelope_enc
+       FROM cf_mcp_app_connections
+      WHERE app_id = ? AND owner_uid = ?
+      LIMIT 1`,
+  )
+    .bind(appId, context.uid)
+    .first<{
+      app_id?: string;
+      owner_uid?: string;
+      server_url?: string;
+      resolved_endpoint?: string | null;
+      status?: string;
+      credential_envelope_enc?: string | null;
+    }>();
+  if (
+    !connection?.app_id ||
+    !connection.owner_uid ||
+    connection.status !== "authorized" ||
+    !connection.credential_envelope_enc
+  )
+    throw new McpAppOauthError(409, "mcp_authorization_required");
+  const endpoint = connection.resolved_endpoint || connection.server_url || "";
+  if (!publicHttps(endpoint))
+    throw new McpAppOauthError(409, "mcp_endpoint_unavailable");
+  const now = nowSeconds(dependencies);
+  if (!now) throw new McpAppOauthError(503, "clock_unavailable");
+  try {
+    const credentials = await decrypt(
+      c.env,
+      "connection",
+      connection.owner_uid,
+      connection.app_id,
+      connection.credential_envelope_enc,
+    );
+    const accessToken = validatedCredential(
+      credentials.access_token,
+      "mcp_authorization_required",
+      401,
+      true,
+    ) as string;
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+    };
+    const initialize = await providerFetch(dependencies, endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "Omi", version: "1.0" },
+        },
+      }),
+    });
+    if (initialize.status === 401)
+      throw new McpAppOauthError(401, "mcp_reauthorization_required");
+    if (!initialize.ok)
+      throw new McpAppOauthError(502, "discovery_unavailable");
+    const initializePayload = await boundedRpcJson(
+      initialize,
+      "discovery_response_invalid",
+    );
+    if (
+      initializePayload.jsonrpc !== "2.0" ||
+      Number(initializePayload.id) !== 1 ||
+      !objectValue(initializePayload.result)
+    )
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    const sessionId = initialize.headers.get("mcp-session-id");
+    const notification = await providerFetch(dependencies, endpoint, {
+      method: "POST",
+      headers: {
+        ...headers,
+        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+      }),
+    });
+    if (
+      !notification.ok &&
+      notification.status !== 202 &&
+      notification.status !== 204
+    )
+      throw new McpAppOauthError(502, "discovery_unavailable");
+    const toolsResponse = await providerFetch(dependencies, endpoint, {
+      method: "POST",
+      headers: {
+        ...headers,
+        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/list",
+        params: {},
+      }),
+    });
+    if (toolsResponse.status === 401)
+      throw new McpAppOauthError(401, "mcp_reauthorization_required");
+    if (!toolsResponse.ok)
+      throw new McpAppOauthError(502, "discovery_unavailable");
+    const toolsPayload = await boundedRpcJson(
+      toolsResponse,
+      "discovery_response_invalid",
+    );
+    if (toolsPayload.jsonrpc !== "2.0" || Number(toolsPayload.id) !== 2)
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    const toolsResult = objectValue(toolsPayload.result);
+    const tools = validateMcpTools(toolsResult?.tools);
+    if (!tools.length) throw new McpAppOauthError(422, "no_tools_found");
+    const protocolVersion = String(
+      objectValue(initializePayload.result)?.protocolVersion || "",
+    );
+    if (!protocolVersion || utf8Bytes(protocolVersion) > 64)
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    const toolsJson = JSON.stringify(tools);
+    const writes = await c.env.APP_DB.batch([
+      c.env.APP_DB.prepare(
+        `INSERT INTO cf_mcp_app_discoveries
+           (app_id, owner_uid, endpoint, protocol_version, tools_json,
+            provider_etag, provider_session_id_enc, status, revision,
+            last_error, fetched_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, 'ready', 0, NULL, ?, ?)
+         ON CONFLICT(app_id) DO UPDATE SET
+           endpoint = excluded.endpoint,
+           protocol_version = excluded.protocol_version,
+           tools_json = excluded.tools_json,
+           provider_etag = excluded.provider_etag,
+           status = 'ready',
+           revision = cf_mcp_app_discoveries.revision + 1,
+           last_error = NULL,
+           fetched_at = excluded.fetched_at,
+           updated_at = excluded.updated_at
+         WHERE cf_mcp_app_discoveries.owner_uid = excluded.owner_uid`,
+      ).bind(
+        appId,
+        context.uid,
+        endpoint,
+        protocolVersion,
+        toolsJson,
+        toolsResponse.headers.get("etag"),
+        now,
+        now,
+      ),
+      c.env.APP_DB.prepare(
+        `UPDATE cf_mcp_app_connections
+            SET resolved_endpoint = ?, revision = revision + 1, updated_at = ?
+          WHERE app_id = ? AND owner_uid = ? AND status = 'authorized'`,
+      ).bind(endpoint, now, appId, context.uid),
+    ]);
+    if (Number(writes[1]?.meta?.changes) !== 1)
+      throw new McpAppOauthError(409, "app_connection_changed");
+    return c.json(
+      {
+        app_id: appId,
+        status: "ready",
+        endpoint,
+        tools_count: tools.length,
+        tool_names: tools.map((tool) => String(tool.name)),
+      },
+      200,
+      { "cache-control": "no-store" },
+    );
+  } catch (error) {
+    if (error instanceof McpAppOauthError && error.status === 401) {
+      try {
+        await c.env.APP_DB.prepare(
+          `UPDATE cf_mcp_app_connections
+              SET status = 'reauthorize', last_error = ?, updated_at = ?
+            WHERE app_id = ? AND owner_uid = ? AND status = 'authorized'`,
+        )
+          .bind(error.code, now, appId, context.uid)
+          .run();
+      } catch {
+        // Account-deletion fences intentionally reject this status update.
+      }
+    }
+    throw error;
+  }
+}
+
 export function registerMcpAppOauthRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: RequestContext,
@@ -839,6 +1126,15 @@ export function registerMcpAppOauthRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return await start(c, context, dependencies);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+  app.post("/v2/cf/apps/mcp/discover", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      return await discover(c, context, dependencies);
     } catch (error) {
       return errorResponse(c, error);
     }
