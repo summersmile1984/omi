@@ -543,6 +543,38 @@ describe("Google Calendar Worker routes", () => {
     ).toEqual({ connected: 1 });
   });
 
+  it("routes generic Calendar capability callbacks through the D1 grant", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    const authUrl = new URL(
+      (
+        await (await app.request("/v1/integrations/gmail/oauth-url")).json<{
+          auth_url: string;
+        }>()
+      ).auth_url,
+    );
+    const callback = await app.request(
+      `/v2/integrations/gmail/callback?code=calendar-code&state=${encodeURIComponent(authUrl.searchParams.get("state")!)}`,
+      {},
+      false,
+    );
+    expect(callback.status).toBe(200);
+    expect(await callback.text()).toContain("Authentication successful");
+    expect(
+      database.database
+        .prepare("SELECT connected FROM cf_google_calendar_integrations WHERE uid = ?")
+        .get("calendar-user"),
+    ).toEqual({ connected: 1 });
+
+    const unknown = await app.request(
+      "/v2/integrations/whoop/callback?code=calendar-code&state=unused",
+      {},
+      false,
+    );
+    expect(unknown.status).toBe(200);
+    expect(await unknown.text()).toContain("Google Calendar is not configured");
+  });
+
   it("keeps Google-derived integration OAuth aliases on the Worker grant", async () => {
     const { database, env, fetchImpl } = environment();
     const app = testApp(env, { fetchImpl, now: () => 1_000 });

@@ -1119,6 +1119,22 @@ describe("edge gateway", () => {
     expect(jobRequests[1].headers.get("authorization")).toBeNull();
     expect(jobRequests[1].headers.get("x-omi-auth-context")).toBeNull();
 
+    const genericCallback = await edge.fetch(
+      new Request(
+        "https://edge.test/v2/integrations/gmail/callback?code=c&state=s",
+        {
+          headers: {
+            authorization: "Bearer untrusted-client-header",
+            "x-omi-auth-context": "untrusted-context",
+          },
+        },
+      ),
+      env as never,
+    );
+    expect(genericCallback.status).toBe(200);
+    expect(jobRequests[2].headers.get("authorization")).toBeNull();
+    expect(jobRequests[2].headers.get("x-omi-auth-context")).toBeNull();
+
     for (const [method, path] of [
       ["GET", "/v1/integrations/google_calendar"],
       ["PUT", "/v1/integrations/google_calendar"],
@@ -1143,8 +1159,8 @@ describe("edge gateway", () => {
       expect(response.status, `${method} ${path}`).toBe(200);
     }
 
-    expect(jobRequests).toHaveLength(11);
-    for (const request of jobRequests.slice(2)) {
+    expect(jobRequests).toHaveLength(12);
+    for (const request of jobRequests.slice(3)) {
       expect(
         decodeAuthContext(request.headers.get("x-omi-auth-context")),
       ).toMatchObject({ uid: "calendar-user", audience: "jobs" });

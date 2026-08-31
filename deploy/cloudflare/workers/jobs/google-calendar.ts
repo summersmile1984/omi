@@ -81,6 +81,10 @@ function objectValue(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function normalizeCalendarAlias(value: string) {
+  return value.trim().toLowerCase().replace(/-/g, "_");
+}
+
 function base64Url(bytes: Uint8Array) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -1385,6 +1389,13 @@ export function registerGoogleCalendarRoutes(
   app.get("/v2/integrations/google_calendar/callback", (c) =>
     oauthCallback(c, dependencies),
   );
+  app.get("/v2/integrations/:appKey/callback", (c) => {
+    const requested = normalizeCalendarAlias(c.req.param("appKey"));
+    if (!GOOGLE_CALENDAR_OAUTH_ALIASES.has(requested)) {
+      return oauthResponse(false, "config_error");
+    }
+    return oauthCallback(c, dependencies);
+  });
 
   const issueOAuthUrl = async (
     c: JobsContext,
@@ -1392,10 +1403,7 @@ export function registerGoogleCalendarRoutes(
   ) => {
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
-    const normalizedAppKey = requestedAppKey
-      .trim()
-      .toLowerCase()
-      .replace(/-/g, "_");
+    const normalizedAppKey = normalizeCalendarAlias(requestedAppKey);
     if (!GOOGLE_CALENDAR_OAUTH_ALIASES.has(normalizedAppKey)) {
       return c.json(
         { detail: `Unsupported integration: ${requestedAppKey}` },
@@ -1478,7 +1486,7 @@ export function registerGoogleCalendarRoutes(
   );
 
   app.put("/v1/integrations/:appKey", async (c) => {
-    const requested = c.req.param("appKey").trim().toLowerCase().replace(/-/g, "_");
+    const requested = normalizeCalendarAlias(c.req.param("appKey"));
     if (!GOOGLE_CALENDAR_MUTATION_ALIASES.has(requested)) {
       return c.json({ detail: "Integration not found" }, 404);
     }
@@ -1516,7 +1524,7 @@ export function registerGoogleCalendarRoutes(
 
   app.delete("/v1/integrations/google_calendar", disconnectCalendar);
   app.delete("/v1/integrations/:appKey", async (c) => {
-    const requested = c.req.param("appKey").trim().toLowerCase().replace(/-/g, "_");
+    const requested = normalizeCalendarAlias(c.req.param("appKey"));
     if (!GOOGLE_CALENDAR_DELETE_ALIASES.has(requested)) {
       return c.json({ detail: "Integration not found" }, 404);
     }

@@ -286,7 +286,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/integrations/{app_id}/conversations", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/integrations/{app_id}/memories", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/integrations/{app_id}/tasks", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/integrations/{app_key}/callback", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "jobs", "path": "/v2/integrations/{app_key}/callback", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/messages", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/messages/shared/{token}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "jobs", "path": "/v2/sync-local-files/{job_id}", "protocol": "http", "target_runtime": "typescript-worker"},

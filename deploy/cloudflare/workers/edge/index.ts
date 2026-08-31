@@ -481,6 +481,7 @@ app.get("/v2/integrations/google-tasks/callback", proxyPublicJobs);
 app.get("/v2/integrations/clickup/callback", proxyPublicJobs);
 app.get("/v2/integrations/google-calendar/callback", proxyPublicJobs);
 app.get("/v2/integrations/google_calendar/callback", proxyPublicJobs);
+app.get("/v2/integrations/:app_key/callback", proxyPublicJobs);
 app.get("/v1/apps/:appId/reviews", proxyPublicCore);
 app.post("/v1/apps/tester", proxyPublicJobs);
 app.post("/v1/apps/tester/access", proxyPublicJobs);
