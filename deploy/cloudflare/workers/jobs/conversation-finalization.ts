@@ -1,4 +1,5 @@
 import type { Message } from "@cloudflare/workers-types";
+import type { Context, Hono } from "hono";
 import { createSignedAuthContext } from "../shared/auth-context";
 import { recordFallback } from "../shared/fallback";
 import type { JobMessage, JobsEnv } from "./env";
@@ -8,6 +9,11 @@ const RETRY_DELAY_SECONDS = 10;
 const RECONCILE_BATCH_SIZE = 50;
 const MAX_ATTEMPTS = 3;
 const PROCESSOR_PATH = "/internal/conversations/finalize";
+const MAX_RUN_REQUEST_BYTES = 4_096;
+const RUN_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+type JobsContext = Context<{ Bindings: JobsEnv }>;
+type FinalizationAuthContext = { uid: string; authority?: string };
 
 type FinalizationJobRow = {
   uid: string;
@@ -85,12 +91,15 @@ function parseJobRow(value: unknown): FinalizationJobRow | null {
   if (leaseUntil !== null && (!Number.isSafeInteger(leaseUntil) || leaseUntil < 0)) {
     return null;
   }
+  if (row.operation !== "finalize" && row.operation !== "reprocess") {
+    return null;
+  }
   return {
     uid: row.uid,
     conversation_id: row.conversation_id,
     job_id: row.job_id,
     finalization_revision: revision,
-    operation: row.operation === "reprocess" ? "reprocess" : "finalize",
+    operation: row.operation,
     language_code: typeof row.language_code === "string" ? row.language_code : null,
     app_id: typeof row.app_id === "string" ? row.app_id : null,
     status: row.status,
@@ -112,6 +121,122 @@ function jobMessage(job: FinalizationJobRow): JobMessage {
       ...(job.app_id ? { appId: job.app_id } : {}),
     },
   };
+}
+
+async function readBoundedRunBody(request: Request): Promise<unknown> {
+  const declaredLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RUN_REQUEST_BYTES) {
+    throw new Error("request_too_large");
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > MAX_RUN_REQUEST_BYTES) {
+    throw new Error("request_too_large");
+  }
+  if (!bytes.byteLength) throw new Error("invalid_request");
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error("invalid_request");
+  }
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Rebind the legacy Cloud Tasks HTTP entrypoint to the durable D1/Queue
+ * owner. The caller supplies only a job id; D1 remains authoritative for the
+ * principal, operation and conversation payload.
+ */
+export function registerConversationFinalizationRoutes(
+  app: Hono<{ Bindings: JobsEnv }>,
+  requestContext: (
+    c: JobsContext,
+  ) => Promise<FinalizationAuthContext | null>,
+): void {
+  app.post("/v1/conversation-finalization-jobs/run", async (c) => {
+    const context = await requestContext(c);
+    if (!context || context.authority !== "better-auth") {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+
+    let body: unknown;
+    try {
+      body = await readBoundedRunBody(c.req.raw);
+    } catch (error) {
+      return c.json(
+        {
+          code: error instanceof Error && error.message === "request_too_large"
+            ? "request_too_large"
+            : "invalid_request",
+          detail: "Finalization run request must be a small JSON object",
+        },
+        error instanceof Error && error.message === "request_too_large" ? 413 : 400,
+      );
+    }
+
+    const payload = objectValue(body);
+    const keys = payload ? Object.keys(payload) : [];
+    if (!payload || keys.length !== 1 || keys[0] !== "job_id") {
+      return c.json(
+        {
+          code: "invalid_request",
+          detail: "Only job_id is accepted; uid and conversation payload are not caller-controlled",
+        },
+        400,
+      );
+    }
+    const jobId = typeof payload.job_id === "string" ? payload.job_id.trim() : "";
+    if (!RUN_JOB_ID.test(jobId)) {
+      return c.json({ code: "invalid_job_id", detail: "Invalid finalization job id" }, 400);
+    }
+
+    let job: FinalizationJobRow | null;
+    try {
+      const row = await c.env.APP_DB.prepare(
+        "SELECT uid, conversation_id, job_id, finalization_revision, operation, language_code, app_id, status, attempts, lease_until, next_attempt_at " +
+          "FROM cf_conversation_finalization_jobs WHERE job_id = ? AND uid = ?",
+      )
+        .bind(jobId, context.uid)
+        .first();
+      job = parseJobRow(row);
+    } catch {
+      return c.json({ status: "retry", reason: "finalization_job_unavailable" }, 503);
+    }
+
+    // Do not reveal whether a job id belongs to another account.
+    if (!job) return c.json({ status: "dropped", reason: "unknown_job" });
+    if (job.status === "completed" || job.status === "failed") {
+      return c.json({ status: "acked", job_status: job.status });
+    }
+    if (job.status !== "queued" && job.status !== "running") {
+      return c.json({ status: "dropped", reason: "unknown_job" });
+    }
+
+    const now = Math.floor(Date.now() / 1_000);
+    if (job.status === "running") {
+      if (job.lease_until === null) {
+        return c.json({ status: "dropped", reason: "invalid_job" });
+      }
+      if (job.lease_until > now) {
+        return c.json({ status: "locked" }, 409, { "Retry-After": "10" });
+      }
+    }
+
+    try {
+      await c.env.JOBS.send(jobMessage(job));
+    } catch {
+      return c.json({ status: "retry", reason: "queue_unavailable" }, 503);
+    }
+    return c.json({
+      status: "queued",
+      job_id: job.job_id,
+      operation: job.operation,
+    });
+  });
 }
 
 function retryableProcessorStatus(status: number): boolean {

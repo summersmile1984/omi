@@ -410,7 +410,7 @@
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/chat/deferrals", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/chat/materialize-prompts", "protocol": "http", "target_runtime": "legacy"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/connectors/synthesize", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/conversation-finalization-jobs/run", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/conversation-finalization-jobs/run", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/from-segments", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/conversations/merge", "protocol": "http", "target_runtime": "python-worker"},

@@ -2,11 +2,13 @@ import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { JobMessage, JobsEnv } from "../workers/jobs/env";
 import {
   processConversationFinalizationMessage,
   reconcileConversationFinalizations,
+  registerConversationFinalizationRoutes,
 } from "../workers/jobs/conversation-finalization";
 
 class SqliteD1 {
@@ -122,11 +124,157 @@ function message(env: JobsEnv): Message<JobMessage> {
   } as unknown as Message<JobMessage>;
 }
 
+function finalizationRunApp(authority = "better-auth") {
+  const app = new Hono<{ Bindings: JobsEnv }>();
+  registerConversationFinalizationRoutes(app, async () => ({
+    uid: "job-user",
+    authority,
+  }));
+  return app;
+}
+
+function runRequest(body: unknown): Request {
+  return new Request("https://jobs.test/v1/conversation-finalization-jobs/run", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
 describe("conversation finalization jobs", () => {
+  it("requeues only the authenticated account's queued finalization job", async () => {
+    const { env, sent } = environment();
+    const response = await finalizationRunApp().fetch(
+      runRequest({ job_id: "job-1" }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "queued",
+      job_id: "job-1",
+      operation: "finalize",
+    });
+    expect(sent).toEqual([
+      {
+        jobId: "job-1",
+        uid: "job-user",
+        kind: "conversation_finalize",
+        payload: { conversationId: "conversation-1", revision: 100 },
+      },
+    ]);
+  });
+
+  it("drops unknown or cross-account finalization job ids without disclosure", async () => {
+    const { env, sent } = environment();
+    const crossAccountApp = new Hono<{ Bindings: JobsEnv }>();
+    registerConversationFinalizationRoutes(crossAccountApp, async () => ({
+      uid: "other-user",
+      authority: "better-auth",
+    }));
+
+    for (const jobId of ["job-1", "missing-job"]) {
+      const response = await crossAccountApp.fetch(runRequest({ job_id: jobId }), env);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        status: "dropped",
+        reason: "unknown_job",
+      });
+    }
+    expect(sent).toHaveLength(0);
+  });
+
+  it("acks terminal jobs and locks active leases", async () => {
+    const state = environment();
+    const app = finalizationRunApp();
+    state.database.database
+      .prepare("UPDATE cf_conversation_finalization_jobs SET status = 'completed' WHERE job_id = 'job-1'")
+      .run();
+    const terminal = await app.fetch(runRequest({ job_id: "job-1" }), state.env);
+    expect(terminal.status).toBe(200);
+    await expect(terminal.json()).resolves.toEqual({
+      status: "acked",
+      job_status: "completed",
+    });
+
+    state.database.database
+      .prepare(
+        "UPDATE cf_conversation_finalization_jobs SET status = 'running', lease_until = ? WHERE job_id = 'job-1'",
+      )
+      .run(Math.floor(Date.now() / 1_000) + 300);
+    const locked = await app.fetch(runRequest({ job_id: "job-1" }), state.env);
+    expect(locked.status).toBe(409);
+    expect(locked.headers.get("retry-after")).toBe("10");
+    await expect(locked.json()).resolves.toEqual({ status: "locked" });
+  });
+
+  it("requeues expired reprocess jobs with their operation parameters", async () => {
+    const { database, env, sent } = environment();
+    database.database
+      .prepare(
+        "UPDATE cf_conversation_finalization_jobs SET status = 'running', lease_until = 0, operation = 'reprocess', language_code = 'fr', app_id = 'calendar-app' WHERE job_id = 'job-1'",
+      )
+      .run();
+    const response = await finalizationRunApp().fetch(
+      runRequest({ job_id: "job-1" }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "queued",
+      job_id: "job-1",
+      operation: "reprocess",
+    });
+    expect(sent[0]).toMatchObject({
+      jobId: "job-1",
+      uid: "job-user",
+      kind: "conversation_reprocess",
+      payload: {
+        conversationId: "conversation-1",
+        revision: 100,
+        languageCode: "fr",
+        appId: "calendar-app",
+      },
+    });
+  });
+
+  it("returns 503 when the finalization queue is unavailable", async () => {
+    const { env } = environment();
+    env.JOBS.send = vi.fn(async () => {
+      throw new Error("queue unavailable");
+    });
+    const response = await finalizationRunApp().fetch(
+      runRequest({ job_id: "job-1" }),
+      env,
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      status: "retry",
+      reason: "queue_unavailable",
+    });
+  });
+
+  it("requires a Better Auth principal and a single bounded job_id", async () => {
+    const { env } = environment();
+    const firebase = await finalizationRunApp("firebase").fetch(
+      runRequest({ job_id: "job-1" }),
+      env,
+    );
+    expect(firebase.status).toBe(401);
+
+    const invalid = await finalizationRunApp().fetch(
+      runRequest({ job_id: "job-1", uid: "job-user" }),
+      env,
+    );
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toMatchObject({ code: "invalid_request" });
+  });
+
   it("claims a queued job and calls API Core with a signed assertion", async () => {
     const { database, env } = environment();
     const queued = message(env);

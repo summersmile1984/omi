@@ -66,6 +66,7 @@ import {
 import {
   processConversationFinalizationMessage,
   reconcileConversationFinalizations,
+  registerConversationFinalizationRoutes,
 } from "./conversation-finalization";
 import {
   processConversationMergeMessage,
@@ -131,6 +132,7 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
 }
 
 registerSyncRoutes(app, requestContext);
+registerConversationFinalizationRoutes(app, requestContext);
 registerAccountDeletionRoutes(app, requestContext);
 registerRecordingDeletionRoutes(app, requestContext);
 registerStripeBillingRoutes(app, requestContext);
