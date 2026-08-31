@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import jobs from "../workers/jobs/index";
 import {
+  cleanupExpiredHumeWebhookEvents,
+  parseHumeWebhookPredictions,
   processHumeWebhookMessage,
   verifyHumeWebhookSignature,
 } from "../workers/jobs/hume-webhook";
@@ -239,12 +241,40 @@ describe("Hume webhook boundary", () => {
     }
   });
 
-  it("does not claim Hume processing parity in the queue consumer", async () => {
+  it("normalizes a bounded COMPLETED result without guessing task identity", async () => {
     const state = testEnvironment();
     try {
       const body = JSON.stringify({
         job_id: "batch_job_789",
         status: "COMPLETED",
+        predictions: [
+          {
+            results: {
+              predictions: [
+                {
+                  models: {
+                    prosody: {
+                      grouped_predictions: [
+                        {
+                          predictions: [
+                            {
+                              time: { begin: 1.25, end: 2.5 },
+                              emotions: [
+                                { name: "Joy", score: 0.91 },
+                                { name: "invalid", score: 2 },
+                                { name: "missing" },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
       });
       await jobs.fetch(signedRequest(body), state.env);
       const ack = vi.fn();
@@ -258,14 +288,220 @@ describe("Hume webhook boundary", () => {
       );
       expect(ack).toHaveBeenCalledOnce();
       expect(
-        state.database.row<{ status: string; last_error: string }>(
+        state.database.row<{
+          callback_status: string;
+          mapping_status: string;
+          processing_status: string;
+          prediction_count: number;
+          predictions_json: string;
+          result_json: string;
+        }>(
+          "SELECT callback_status, mapping_status, processing_status, prediction_count, predictions_json, result_json " +
+            "FROM cf_hume_webhook_results WHERE event_id = ?",
+          "hume:batch_job_789",
+        ),
+      ).toMatchObject({
+        callback_status: "COMPLETED",
+        mapping_status: "unmapped",
+        processing_status: "completed",
+        prediction_count: 1,
+        predictions_json: JSON.stringify([
+          {
+            start: 1.25,
+            end: 2.5,
+            emotions: [{ name: "Joy", score: 0.91 }],
+          },
+        ]),
+      });
+      expect(
+        state.database.row<{ status: string; last_error: string | null }>(
           "SELECT status, last_error FROM cf_hume_webhook_events WHERE event_id = ?",
           "hume:batch_job_789",
         ),
       ).toEqual({
-        status: "failed",
-        last_error: "hume processing unavailable",
+        status: "queued",
+        last_error: null,
       });
+      const result = state.database.row<{ result_json: string }>(
+        "SELECT result_json FROM cf_hume_webhook_results WHERE event_id = ?",
+        "hume:batch_job_789",
+      );
+      expect(JSON.parse(result?.result_json ?? "{}")).toMatchObject({
+        schema_version: 1,
+        provider: "hume",
+        job_id: "batch_job_789",
+        status: "COMPLETED",
+        mapping_status: "unmapped",
+        prediction_count: 1,
+      });
+
+      // The old callback would only reach Firestore after resolving a task;
+      // an un-attested Hume job must not create a synthetic conversation row.
+      expect(
+        state.database.row("SELECT COUNT(*) AS count FROM cf_conversations"),
+      ).toEqual({ count: 0 });
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("settles FAILED callbacks and duplicate queue deliveries exactly once", async () => {
+    const state = testEnvironment();
+    try {
+      const body = JSON.stringify({
+        job_id: "batch_job_failed",
+        status: "FAILED",
+        predictions: [{ ignored: true }],
+      });
+      await jobs.fetch(signedRequest(body), state.env);
+      const first = {
+        body: state.sent[0],
+        ack: vi.fn(),
+        retry: vi.fn(),
+      } as unknown as Message<JobMessage>;
+      await processHumeWebhookMessage(first, state.env);
+      await processHumeWebhookMessage(
+        {
+          body: state.sent[0],
+          ack: vi.fn(),
+          retry: vi.fn(),
+        } as unknown as Message<JobMessage>,
+        state.env,
+      );
+      expect(
+        state.database.row<{
+          callback_status: string;
+          processing_status: string;
+          prediction_count: number;
+          result_json: string;
+        }>(
+          "SELECT callback_status, processing_status, prediction_count, result_json " +
+            "FROM cf_hume_webhook_results WHERE event_id = ?",
+          "hume:batch_job_failed",
+        ),
+      ).toMatchObject({
+        callback_status: "FAILED",
+        processing_status: "completed",
+        prediction_count: 0,
+      });
+      expect(
+        JSON.parse(
+          state.database.row<{ result_json: string }>(
+            "SELECT result_json FROM cf_hume_webhook_results WHERE event_id = ?",
+            "hume:batch_job_failed",
+          )?.result_json ?? "{}",
+        ),
+      ).toMatchObject({ status: "FAILED", predictions: [] });
+      expect(first.retry).not.toHaveBeenCalled();
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("drops malformed nested predictions while retaining a valid interval", () => {
+    expect(
+      parseHumeWebhookPredictions({
+        predictions: [
+          {
+            results: {
+              predictions: [
+                {
+                  models: {
+                    prosody: {
+                      grouped_predictions: [
+                        {
+                          predictions: [
+                            { time: { begin: -1, end: 2 }, emotions: [] },
+                            { time: { begin: 2, end: 1 }, emotions: [] },
+                            { time: { begin: 2, end: 3 }, emotions: [] },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toEqual([{ start: 2, end: 3, emotions: [] }]);
+  });
+
+  it("settles a queued pre-result receipt explicitly and never invents an owner", async () => {
+    const state = testEnvironment();
+    try {
+      state.database.database
+        .prepare(
+          "INSERT INTO cf_hume_webhook_events " +
+            "(event_id, job_id, callback_status, payload_sha256, status, created_at, updated_at) " +
+            "VALUES (?, ?, 'COMPLETED', ?, 'queued', ?, ?)",
+        )
+        .run(
+          "hume:legacy_missing_result",
+          "legacy_missing_result",
+          "a".repeat(64),
+          1,
+          1,
+        );
+      const ack = vi.fn();
+      await processHumeWebhookMessage(
+        {
+          body: {
+            jobId: "hume:legacy_missing_result",
+            uid: "hume-webhook",
+            kind: "hume_webhook",
+            payload: { event_id: "hume:legacy_missing_result" },
+          },
+          ack,
+          retry: vi.fn(),
+        } as unknown as Message<JobMessage>,
+        state.env,
+      );
+      expect(ack).toHaveBeenCalledOnce();
+      expect(
+        state.database.row<{ status: string; last_error: string }>(
+          "SELECT status, last_error FROM cf_hume_webhook_events WHERE event_id = ?",
+          "hume:legacy_missing_result",
+        ),
+      ).toEqual({ status: "failed", last_error: "hume result unavailable" });
+      expect(
+        state.database.row("SELECT COUNT(*) AS count FROM cf_conversations"),
+      ).toEqual({ count: 0 });
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("cleans results with their event receipt and leaves no orphan retention rows", async () => {
+    const state = testEnvironment();
+    try {
+      const body = JSON.stringify({
+        job_id: "batch_job_retention",
+        status: "FAILED",
+      });
+      await jobs.fetch(signedRequest(body), state.env);
+      state.database.database
+        .prepare(
+          "UPDATE cf_hume_webhook_events SET updated_at = 1 WHERE event_id = ?",
+        )
+        .run("hume:batch_job_retention");
+      state.database.database
+        .prepare(
+          "UPDATE cf_hume_webhook_results SET updated_at = 1 WHERE event_id = ?",
+        )
+        .run("hume:batch_job_retention");
+      await cleanupExpiredHumeWebhookEvents(state.env, 30 * 24 * 60 * 60 + 2);
+      expect(
+        state.database.row(
+          "SELECT COUNT(*) AS count FROM cf_hume_webhook_events",
+        ),
+      ).toEqual({ count: 0 });
+      expect(
+        state.database.row(
+          "SELECT COUNT(*) AS count FROM cf_hume_webhook_results",
+        ),
+      ).toEqual({ count: 0 });
     } finally {
       state.database.close();
     }

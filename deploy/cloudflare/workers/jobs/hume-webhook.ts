@@ -4,10 +4,14 @@ import type { JobMessage, JobsEnv } from "./env";
 const MAX_HUME_WEBHOOK_BYTES = 2 * 1024 * 1024;
 const HUME_TIMESTAMP_TOLERANCE_SECONDS = 5 * 60;
 const HUME_WEBHOOK_RETRY_ERROR = "queue admission failed";
-const HUME_WEBHOOK_PROCESSING_ERROR = "hume processing unavailable";
+const HUME_WEBHOOK_RESULT_UNAVAILABLE_ERROR = "hume result unavailable";
 const HUME_JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const HUME_STATUS = /^[A-Za-z0-9._:-]{1,64}$/;
 const HUME_CALLBACK_STATUSES = new Set(["COMPLETED", "FAILED"]);
+const MAX_HUME_PREDICTIONS = 2_000;
+const MAX_HUME_EMOTIONS_PER_PREDICTION = 128;
+const MAX_HUME_TIME_SECONDS = 24 * 60 * 60;
+const MAX_HUME_PREDICTIONS_JSON_BYTES = 512 * 1024;
 
 type HumeWebhookRow = {
   event_id: string;
@@ -17,10 +21,113 @@ type HumeWebhookRow = {
   last_error: string | null;
 };
 
+type HumeWebhookResultRow = {
+  event_id: string;
+  job_id: string;
+  callback_status: "COMPLETED" | "FAILED";
+  mapping_status: "unmapped" | "attested";
+  processing_status: "pending" | "completed" | "failed";
+  prediction_count: number;
+  predictions_json: string;
+  result_json: string | null;
+  last_error: string | null;
+};
+
+type HumeEmotion = { name: string; score: number };
+type HumePrediction = { start: number; end: number; emotions: HumeEmotion[] };
+
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function finiteSeconds(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 0 || value > MAX_HUME_TIME_SECONDS) return null;
+  return value;
+}
+
+function boundedPredictionsJson(predictions: HumePrediction[]) {
+  // Keep the persisted normalized result below the D1 CHECK even when a
+  // provider sends the maximum number of nested predictions/emotions. The
+  // order is provider order; truncating from the tail is deterministic and
+  // never changes an earlier interval's values.
+  let bounded = predictions;
+  let json = JSON.stringify(bounded);
+  while (
+    new TextEncoder().encode(json).byteLength >
+      MAX_HUME_PREDICTIONS_JSON_BYTES &&
+    bounded.length > 0
+  ) {
+    bounded = bounded.slice(0, -1);
+    json = JSON.stringify(bounded);
+  }
+  return { predictions: bounded, json };
+}
+
+/**
+ * Normalize only the bounded prosody shape used by the legacy parser.
+ * Unknown/malformed nested entries are ignored; no caller-controlled uid or
+ * conversation id is inferred from provider data.
+ */
+export function parseHumeWebhookPredictions(
+  body: Record<string, unknown>,
+): HumePrediction[] {
+  if (!Array.isArray(body.predictions) || body.predictions.length === 0) {
+    return [];
+  }
+  const firstResult = objectValue(body.predictions[0]);
+  const results = objectValue(firstResult?.results);
+  const rawPredictions = results?.predictions;
+  if (!Array.isArray(rawPredictions)) return [];
+
+  const normalized: HumePrediction[] = [];
+  for (const rawPrediction of rawPredictions) {
+    if (normalized.length >= MAX_HUME_PREDICTIONS) break;
+    const prediction = objectValue(rawPrediction);
+    const models = objectValue(prediction?.models);
+    const prosody = objectValue(models?.prosody);
+    const grouped = prosody?.grouped_predictions;
+    if (!Array.isArray(grouped)) continue;
+    for (const rawGroup of grouped) {
+      if (normalized.length >= MAX_HUME_PREDICTIONS) break;
+      const group = objectValue(rawGroup);
+      if (!Array.isArray(group?.predictions)) continue;
+      for (const rawSegment of group.predictions) {
+        if (normalized.length >= MAX_HUME_PREDICTIONS) break;
+        const segment = objectValue(rawSegment);
+        const time = objectValue(segment?.time);
+        const start = finiteSeconds(time?.begin);
+        const end = finiteSeconds(time?.end);
+        if (start === null || end === null || end < start) continue;
+        const emotions: HumeEmotion[] = [];
+        if (Array.isArray(segment?.emotions)) {
+          for (const rawEmotion of segment.emotions) {
+            if (emotions.length >= MAX_HUME_EMOTIONS_PER_PREDICTION) break;
+            const emotion = objectValue(rawEmotion);
+            const name =
+              typeof emotion?.name === "string" ? emotion.name.trim() : "";
+            const score = emotion?.score;
+            if (
+              !name ||
+              name.length > 128 ||
+              typeof score !== "number" ||
+              !Number.isFinite(score)
+            ) {
+              continue;
+            }
+            // Hume emotion scores are probabilities. Rejecting out-of-range
+            // values keeps downstream aggregation numeric and bounded.
+            if (score < 0 || score > 1) continue;
+            emotions.push({ name, score });
+          }
+        }
+        normalized.push({ start, end, emotions });
+      }
+    }
+  }
+  return normalized;
 }
 
 function ownedArrayBuffer(value: Uint8Array): ArrayBuffer {
@@ -139,6 +246,16 @@ async function webhookRow(env: JobsEnv, eventId: string) {
     .first<HumeWebhookRow>();
 }
 
+async function webhookResultRow(env: JobsEnv, eventId: string) {
+  return env.APP_DB.prepare(
+    "SELECT event_id, job_id, callback_status, mapping_status, processing_status, " +
+      "prediction_count, predictions_json, result_json, last_error " +
+      "FROM cf_hume_webhook_results WHERE event_id = ?",
+  )
+    .bind(eventId)
+    .first<HumeWebhookResultRow>();
+}
+
 function accepted(jobId: string) {
   return Response.json(
     { status: "accepted", job_id: jobId },
@@ -188,6 +305,7 @@ export function registerHumeWebhookRoutes(app: Hono<{ Bindings: JobsEnv }>) {
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
+    if (!body) return c.json({ error: "invalid_request" }, 400);
     const jobId = typeof body?.job_id === "string" ? body.job_id : "";
     const callbackStatus = typeof body?.status === "string" ? body.status : "";
     if (
@@ -200,6 +318,11 @@ export function registerHumeWebhookRoutes(app: Hono<{ Bindings: JobsEnv }>) {
 
     const eventId = `hume:${jobId}`;
     const payloadSha256 = await sha256Hex(rawBody);
+    const parsedPredictions =
+      callbackStatus === "COMPLETED" ? parseHumeWebhookPredictions(body) : [];
+    const bounded = boundedPredictionsJson(parsedPredictions);
+    const predictions = bounded.predictions;
+    const predictionsJson = bounded.json;
     const now = Math.floor(Date.now() / 1_000);
     try {
       await c.env.APP_DB.prepare(
@@ -214,6 +337,22 @@ export function registerHumeWebhookRoutes(app: Hono<{ Bindings: JobsEnv }>) {
       if (existing.payload_sha256 !== payloadSha256) {
         return c.json({ error: "hume_payload_mismatch" }, 409);
       }
+      await c.env.APP_DB.prepare(
+        "INSERT OR IGNORE INTO cf_hume_webhook_results " +
+          "(event_id, job_id, callback_status, mapping_status, processing_status, " +
+          "prediction_count, predictions_json, created_at, updated_at) " +
+          "VALUES (?, ?, ?, 'unmapped', 'pending', ?, ?, ?, ?)",
+      )
+        .bind(
+          eventId,
+          jobId,
+          callbackStatus,
+          predictions.length,
+          predictionsJson,
+          now,
+          now,
+        )
+        .run();
       if (existing.status === "queued") return accepted(jobId);
       if (
         existing.status === "failed" &&
@@ -269,15 +408,50 @@ export async function processHumeWebhookMessage(
     message.ack();
     return;
   }
-  await env.APP_DB.prepare(
-    "UPDATE cf_hume_webhook_events SET status = 'failed', attempts = attempts + 1, " +
-      "last_error = ?, updated_at = ? WHERE event_id = ? AND status = 'queued'",
-  )
-    .bind(
-      HUME_WEBHOOK_PROCESSING_ERROR,
-      Math.floor(Date.now() / 1_000),
-      eventId,
+  const result = await webhookResultRow(env, eventId);
+  const now = Math.floor(Date.now() / 1_000);
+  if (!result) {
+    // This can only happen for an event admitted before the result migration
+    // (or after manual data loss). Keep the old receipt auditable and settle
+    // explicitly; never infer a task/conversation from job_id alone.
+    await env.APP_DB.prepare(
+      "UPDATE cf_hume_webhook_events SET status = 'failed', attempts = attempts + 1, " +
+        "last_error = ?, updated_at = ? WHERE event_id = ? AND status = 'queued'",
     )
+      .bind(HUME_WEBHOOK_RESULT_UNAVAILABLE_ERROR, now, eventId)
+      .run();
+    message.ack();
+    return;
+  }
+  if (result.processing_status !== "pending") {
+    message.ack();
+    return;
+  }
+  const resultJson = JSON.stringify({
+    schema_version: 1,
+    provider: "hume",
+    job_id: result.job_id,
+    status: result.callback_status,
+    mapping_status: result.mapping_status,
+    prediction_count: result.prediction_count,
+    predictions: JSON.parse(result.predictions_json),
+  });
+  const settled = await env.APP_DB.prepare(
+    "UPDATE cf_hume_webhook_results SET processing_status = 'completed', result_json = ?, " +
+      "last_error = NULL, processed_at = ?, updated_at = ? " +
+      "WHERE event_id = ? AND processing_status = 'pending'",
+  )
+    .bind(resultJson, now, now, eventId)
+    .run();
+  if (settled.meta?.changes !== 1) {
+    message.ack();
+    return;
+  }
+  await env.APP_DB.prepare(
+    "UPDATE cf_hume_webhook_events SET attempts = attempts + 1, last_error = NULL, updated_at = ? " +
+      "WHERE event_id = ? AND status = 'queued'",
+  )
+    .bind(now, eventId)
     .run();
   message.ack();
 }
@@ -286,9 +460,15 @@ export async function cleanupExpiredHumeWebhookEvents(
   env: JobsEnv,
   now = Math.floor(Date.now() / 1_000),
 ): Promise<void> {
+  const cutoff = now - 30 * 24 * 60 * 60;
+  await env.APP_DB.prepare(
+    "DELETE FROM cf_hume_webhook_results WHERE updated_at < ?",
+  )
+    .bind(cutoff)
+    .run();
   await env.APP_DB.prepare(
     "DELETE FROM cf_hume_webhook_events WHERE updated_at < ?",
   )
-    .bind(now - 30 * 24 * 60 * 60)
+    .bind(cutoff)
     .run();
 }
