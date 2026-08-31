@@ -2712,6 +2712,47 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes default Persona creation to the authenticated core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return Response.json({ id: "cf_persona_user-1", capabilities: ["persona"] });
+      }),
+    };
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/user/persona", { method: "POST" }),
+      env,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/user/persona", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "better-auth.session_token=secret",
+        },
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ id: "cf_persona_user-1", capabilities: ["persona"] });
+    expect(coreRequests).toHaveLength(1);
+    expect(coreRequests[0].method).toBe("POST");
+    expect(new URL(coreRequests[0].url).pathname).toBe("/v1/user/persona");
+    expect(coreRequests[0].headers.get("authorization")).toBeNull();
+    expect(coreRequests[0].headers.get("cookie")).toBeNull();
+    expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes canonical conversation recording existence to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {

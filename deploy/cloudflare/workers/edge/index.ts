@@ -900,6 +900,7 @@ const proxyAuthenticatedCore = async (
 };
 
 app.get("/v1/personas", proxyAuthenticatedCore);
+app.post("/v1/user/persona", proxyAuthenticatedCore);
 app.get("/v1/personas/twitter/initial-message", proxyAuthenticatedCore);
 app.get("/v1/personas/:personaId", proxyPublicCore);
 app.delete("/v1/personas/:personaId", proxyPublicCore);

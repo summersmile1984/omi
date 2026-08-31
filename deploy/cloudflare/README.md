@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 490 already match
-Cloudflare staging owners and 87 remain legacy-owned. Edge directly serves
+gate. The current inventory contains 577 backend routes: 491 already match
+Cloudflare staging owners and 86 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1778,7 +1778,8 @@ identifiers, credentials, and prompts. `GET /v1/apps/enabled`,
 uid/app-id relationship into `cf_user_enabled_apps` and maintain the catalog
 install counter for idempotent retries. Paid installs fail closed unless
 `cf_app_subscriptions` is active/trialing and its current period has not ended;
-the enabled-app read applies the same check. Persona mutation, external setup
+the enabled-app read applies the same check. Default Persona creation is now
+Cloudflare-owned through `POST /v1/user/persona`; image-backed Persona mutation, external setup
 callbacks, and CIMD remain separate migration surfaces; no production cutover
 is implied.
 
@@ -1811,7 +1812,7 @@ rows are backfilled. Review/reply push notifications remain an external API
 boundary. App tester membership/access and moderation now use D1 plus an
 independent `APPS_ADMIN_KEY`; approve/reject verifies the catalog owner before
 atomically changing approval state and publishing to the shared leased FCM
-outbox. Persona mutation, setup callbacks, and CIMD remain separate migration
+outbox. Image-backed Persona mutation, setup callbacks, and CIMD remain separate migration
 work.
 
 `POST /v1/app/thumbnails` now stores the bounded multipart image directly in

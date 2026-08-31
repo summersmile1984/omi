@@ -492,7 +492,7 @@
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/tools/conversations/search-chunks", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/tools/memories/search", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v1/tts/synthesize", "protocol": "http", "target_runtime": "external-api"},
-    {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/user/persona", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/user/persona", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/users/account-deletion-wipes/run", "protocol": "http", "target_runtime": "legacy"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/ai-profile/synthesize", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/analytics/chat_message", "protocol": "http", "target_runtime": "python-worker"},
