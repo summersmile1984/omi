@@ -39,6 +39,18 @@ has no Firestore fallback or dual write. Production account promotion remains
 forbidden until the account-cutover importer, manifest verification, and
 destination binding described by `INV-CUTOVER-1` exist.
 
+The same module owns the staging-only `GET /memory/archive/search` read
+boundary. Archive rows live in the separate D1 `cf_memory_archive_items`
+projection, and the request must find both the operator global read gate and a
+uid-bound `cf_memory_control` row emitted by the cutover projection. The query
+requires an explicit Archive flag, the current account generation, active and
+processed source rows, valid evidence/label arrays, and no lock, tombstone, or
+restricted sensitivity label. Missing or malformed control state denies the
+read; the request never creates capability rows or falls back to Firestore.
+The projection and control tables share the account-deletion mutation fence
+and residual purge surface. No production backfill or control-writer endpoint
+is implied by this read route.
+
 `memory_review_routes.py` owns the D1 `cf_memory_review_queue` projection for
 canonical memory conflicts. The `/v3/memories/review-queue*` endpoints are
 uid-scoped behind Edge Better Auth, and canonical memory create/batch writes

@@ -43,6 +43,20 @@ MAX_PRODUCT_SEARCH_LIMIT = 500
 MAX_PRODUCT_SEARCH_OFFSET = 100_000
 MAX_VECTOR_SEARCH_LIMIT = 100
 VECTOR_SEARCH_OVERFETCH_FACTOR = 4
+ARCHIVE_CONTROL_SOURCE = "cloudflare_cutover_projection"
+ARCHIVE_GLOBAL_GATE_SOURCE = "cloudflare_operator"
+ARCHIVE_GLOBAL_GATE_PATH = "cloudflare:d1:cf_memory_global_read_gate"
+ARCHIVE_RESTRICTED_SENSITIVITY_LABELS = (
+    "credential",
+    "secret",
+    "financial",
+    "health",
+    "intimate",
+    "minor",
+    "minors",
+    "workplace_confidential",
+    "identity_authentication",
+)
 MEMORY_CATEGORIES = frozenset({"interesting", "system", "manual", "workflow"})
 LEGACY_CATEGORY_MAP = {
     "core": "system",
@@ -461,6 +475,131 @@ def _product_search_gate() -> dict[str, object]:
     }
 
 
+def _strict_d1_bool(value: object, field: str) -> bool:
+    """Decode a D1 boolean without treating arbitrary values as enabled."""
+
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    if type(value) is bool:
+        return value
+    raise ValueError(f"invalid {field}")
+
+
+def _archive_denial(reason: str, *, gate_decision: str = "DENY_MEMORY") -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "archive memory unavailable",
+            "reason": reason,
+            "archive_default_visible": False,
+            "archive_capability_required": True,
+            "archive_capability_granted": False,
+            "global_read_gate": {
+                "source_path": ARCHIVE_GLOBAL_GATE_PATH,
+                "read_decision": gate_decision,
+                "fallback_reason": reason,
+                "reason": reason,
+            },
+        },
+        status_code=403,
+    )
+
+
+async def _read_archive_authority(env: object, uid: str) -> dict[str, object] | JSONResponse:
+    """Read server-owned Archive gate and capability state from D1.
+
+    Neither table is initialized by a request.  This is intentional: an
+    account must arrive through an approved cutover projection before Archive
+    can be exposed, and a missing or malformed projection fails closed.
+    """
+
+    try:
+        gate = await env.APP_DB.prepare(
+            "SELECT id, schema_version, source, memory_reads_enabled, kill_switch_active "
+            "FROM cf_memory_global_read_gate WHERE id = 1"
+        ).first()
+        if not isinstance(gate, dict):
+            return _archive_denial("missing_global_read_gate")
+        if gate.get("id") != 1 or gate.get("schema_version") != 1 or gate.get("source") != ARCHIVE_GLOBAL_GATE_SOURCE:
+            return _archive_denial("malformed_global_read_gate")
+        global_reads_enabled = _strict_d1_bool(gate.get("memory_reads_enabled"), "memory_reads_enabled")
+        kill_switch_active = _strict_d1_bool(gate.get("kill_switch_active"), "kill_switch_active")
+        if kill_switch_active:
+            return _archive_denial("global_memory_read_kill_switch_active")
+        if not global_reads_enabled:
+            return _archive_denial("global_memory_reads_disabled")
+
+        control = (
+            await env.APP_DB.prepare(
+                "SELECT uid, schema_version, source, memory_reads_enabled, default_memory_grant, "
+                "archive_capability, account_generation, source_revision "
+                "FROM cf_memory_control WHERE uid = ?"
+            )
+            .bind(uid)
+            .first()
+        )
+        if not isinstance(control, dict) or control.get("uid") != uid:
+            return _archive_denial("missing_memory_control")
+        if control.get("schema_version") != 1 or control.get("source") != ARCHIVE_CONTROL_SOURCE:
+            return _archive_denial("malformed_memory_control")
+        if not isinstance(control.get("source_revision"), str) or not control["source_revision"].strip():
+            return _archive_denial("malformed_memory_control")
+        account_generation = control.get("account_generation")
+        memory_reads_enabled = _strict_d1_bool(control.get("memory_reads_enabled"), "memory_reads_enabled")
+        default_memory_grant = _strict_d1_bool(control.get("default_memory_grant"), "default_memory_grant")
+        archive_capability = _strict_d1_bool(control.get("archive_capability"), "archive_capability")
+        if type(account_generation) is not int or account_generation < 0:
+            return _archive_denial("malformed_memory_control")
+        if not memory_reads_enabled:
+            return _archive_denial("memory_reads_disabled")
+        if not default_memory_grant:
+            return _archive_denial("missing_default_memory_grant")
+        if not archive_capability:
+            return _archive_denial("missing_archive_capability")
+    except ValueError:
+        return _archive_denial("malformed_memory_control")
+    except Exception:
+        return JSONResponse({"error": "archive memory unavailable"}, status_code=503)
+
+    return {
+        "uid": uid,
+        "account_generation": account_generation,
+        "source_revision": control["source_revision"],
+        "global_read_gate": {
+            "source_path": ARCHIVE_GLOBAL_GATE_PATH,
+            "read_decision": "USE_MEMORY",
+            "fallback_reason": None,
+            "reason": "cloudflare_d1_authority",
+        },
+    }
+
+
+def _archive_search_item(row: dict[str, object]) -> dict[str, object]:
+    confidence = row.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        confidence = None
+    evidence = _json(row.get("evidence_json"), [])
+    if not isinstance(evidence, list):
+        evidence = []
+    updated_at = _iso(row.get("updated_at")) or _iso(row.get("created_at"))
+    return {
+        "memory_id": str(row.get("memory_id") or ""),
+        "memory_layer": "product_memory",
+        "tier": "archive",
+        "content": str(row.get("content") or ""),
+        "lifecycle_status": str(row.get("status") or "active"),
+        "processing_state": str(row.get("processing_state") or "processed"),
+        "confidence": confidence,
+        "visibility": row.get("visibility"),
+        "visibility_source": "memory_item.visibility",
+        "source": row.get("source_id") or None,
+        "date": updated_at or datetime.fromtimestamp(0, timezone.utc).isoformat(),
+        "evidence": evidence,
+        "agent_use": "explicit_archive_memory",
+        "access_reason": "archive_explicit_allowed",
+        "superseded_by": row.get("superseded_by"),
+    }
+
+
 @router.get("/memory/search")
 async def search_product_memory(request: Request):
     """Search default-visible D1 memories for the authenticated product caller."""
@@ -517,6 +656,127 @@ async def search_product_memory(request: Request):
         "policy": _product_search_policy(),
         "global_read_gate": _product_search_gate(),
         "rollout": _product_search_rollout(),
+    }
+
+
+@router.get("/memory/archive/search")
+async def search_archive_memory(request: Request):
+    """Search the D1 Archive projection with an explicit server-owned grant.
+
+    The projection is deliberately separate from ``cf_memories``.  That table
+    is the staging default-memory authority, while this table carries the
+    canonical Archive read fields and generation fence.  No legacy Firestore
+    fallback exists here.
+    """
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    raw_include_archive = _query_value(request, "include_archive")
+    if raw_include_archive is None:
+        return _archive_denial("missing_explicit_archive_request")
+    include_archive = _query_bool(request, "include_archive")
+    if include_archive is None:
+        return JSONResponse({"error": "invalid archive request"}, status_code=400)
+    if not include_archive:
+        return _archive_denial("missing_explicit_archive_request")
+
+    query = _query_value(request, "query") or ""
+    try:
+        limit = int(_query_value(request, "limit") or "100")
+        offset = int(_query_value(request, "offset") or "0")
+        tokens = _product_search_tokens(query)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid search parameters"}, status_code=400)
+    if limit < 1 or limit > MAX_PRODUCT_SEARCH_LIMIT or offset < 0 or offset > MAX_PRODUCT_SEARCH_OFFSET:
+        return JSONResponse({"error": "invalid pagination"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    authority = await _read_archive_authority(env, uid)
+    if isinstance(authority, JSONResponse):
+        return authority
+
+    restricted_placeholders = ",".join("?" for _ in ARCHIVE_RESTRICTED_SENSITIVITY_LABELS)
+    where = (
+        "FROM cf_memory_archive_items "
+        "WHERE uid = ? AND account_generation = ? AND memory_tier = 'archive' "
+        "AND status = 'active' AND processing_state = 'processed' AND source_state = 'active' "
+        "AND visibility IN ('private', 'public', 'shared') AND is_locked = 0 AND deleted_at IS NULL "
+        "AND json_valid(sensitivity_labels_json) = 1 AND json_type(sensitivity_labels_json) = 'array' "
+        "AND json_valid(evidence_json) = 1 AND json_type(evidence_json) = 'array' "
+        "AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(sensitivity_labels_json) = 1 "
+        "AND json_type(sensitivity_labels_json) = 'array' THEN sensitivity_labels_json ELSE '[]' END) AS labels "
+        f"WHERE lower(trim(CAST(labels.value AS TEXT))) IN ({restricted_placeholders}))"
+    )
+    args: list[object] = [uid, authority["account_generation"], *ARCHIVE_RESTRICTED_SENSITIVITY_LABELS]
+    if tokens:
+        where += " AND (" + " OR ".join("LOWER(content) LIKE ? ESCAPE '\\'" for _ in tokens) + ")"
+        args.extend(f"%{_escape_like_token(token)}%" for token in tokens)
+    try:
+        count_row = await env.APP_DB.prepare("SELECT COUNT(*) AS total_count " + where).bind(*args).first()
+        total_count = count_row.get("total_count", 0) if isinstance(count_row, dict) else 0
+        if isinstance(total_count, bool) or not isinstance(total_count, int):
+            total_count = int(total_count or 0)
+        rows_result = (
+            await env.APP_DB.prepare(
+                "SELECT uid, memory_id, content, status, processing_state, visibility, updated_at, "
+                "source_id, evidence_json, confidence, superseded_by, created_at "
+                + where
+                + " ORDER BY updated_at DESC, memory_id DESC LIMIT ? OFFSET ?"
+            )
+            .bind(*args, limit, offset)
+            .all()
+        )
+    except Exception:
+        return JSONResponse({"error": "archive memories unavailable"}, status_code=503)
+
+    rows = rows_result.get("results", []) if isinstance(rows_result, dict) else []
+    items = [_archive_search_item(row) for row in rows if isinstance(row, dict)]
+    return {
+        "uid": uid,
+        "query": query,
+        "items": items,
+        "total_count": total_count,
+        "returned_count": len(items),
+        "limit": limit,
+        "offset": offset,
+        "archive_default_visible": False,
+        "archive_capability_required": True,
+        "archive_capability_granted": True,
+        "policy": {
+            "consumer": "omi_chat",
+            "app_has_default_memory_grant": True,
+            "archive_capability": True,
+            "raw_provenance_capability": False,
+        },
+        "global_read_gate": authority["global_read_gate"],
+        "rollout": {
+            "consumer": "omi_chat",
+            "enabled": True,
+            "reason": "cloudflare_d1_archive_authority",
+            "read_decision": "USE_MEMORY",
+            "mode": "read",
+            "memory_reads_enabled": True,
+            "legacy_reads_authoritative": False,
+            "default_memory_grant": True,
+            "archive_default_visible": False,
+            "archive_capability": True,
+            "fallback_reason": None,
+            "capabilities": {
+                "legacy_only": False,
+                "shadow_artifacts_enabled": False,
+                "memory_writes_enabled": True,
+                "memory_reads_enabled": True,
+                "legacy_reads_authoritative": False,
+            },
+            "surface": "product_archive_search",
+            "archive_capability_required": True,
+            "archive_capability_granted": True,
+            "explicit_archive_request": True,
+            "app_context": {"source_revision": authority["source_revision"]},
+        },
     }
 
 

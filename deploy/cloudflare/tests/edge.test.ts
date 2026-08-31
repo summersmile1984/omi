@@ -123,6 +123,66 @@ describe("edge gateway", () => {
     expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: rawService((request) => {
+        coreRequests.push(request);
+        if (new URL(request.url).pathname === "/v1/account/cutover/control") {
+          return Response.json({
+            state: "new",
+            client_action: "none",
+            product_traffic_allowed: true,
+            migration: { destination_backend_bound: true },
+          });
+        }
+        return Response.json({
+          uid: "user-1",
+          items: [],
+          total_count: 0,
+          returned_count: 0,
+          archive_capability_required: true,
+          archive_capability_granted: false,
+        });
+      }),
+    };
+
+    const response = await edge.fetch(
+      new Request(
+        "https://edge.test/memory/archive/search?include_archive=true&query=coffee",
+        {
+          headers: {
+            authorization: "Bearer opaque-session",
+            cookie: "session=must-not-forward",
+          },
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(coreRequests).toHaveLength(2);
+    expect(new URL(coreRequests[0].url).pathname).toBe(
+      "/v1/account/cutover/control",
+    );
+    expect(new URL(coreRequests[1].url).pathname).toBe(
+      "/memory/archive/search",
+    );
+    expect(new URL(coreRequests[1].url).search).toContain(
+      "include_archive=true",
+    );
+    expect(coreRequests[1].headers.get("authorization")).toBeNull();
+    expect(coreRequests[1].headers.get("cookie")).toBeNull();
+    expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("serves public legacy compatibility routes without dependencies", async () => {
     const v1Health = await edge.fetch(
       new Request("https://edge.test/v1/health"),

@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 57 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 56 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -12,7 +12,7 @@
 | Import / files / sync / audio | 8 | `/v1/import/*`、`/v1/files`、`/v2/files`、sync/audio jobs | GCS/本机临时文件、multipart、长任务和 R2 residual contract | `POST /v1/sync-local-files` 与 `POST /v2/voice-messages` 已复用 D1/R2/Queue 或 Workers AI authority；其余 import/files/audio jobs 仍需先完成 R2 multipart/presigned 与 Queue replay |
 | Task intelligence / staged tasks | 15 | `/v1/staged-tasks*`、`/v1/task-intelligence/*`、`/v1/what-matters-now*` | candidate/recommendation store、generation fence、LLM judgment、device snapshot | candidate D1 projection 和 generation contract 完成前保持 fail-closed legacy owner |
 | Persona / apps | 6 | `/v1/personas` mutation、`/v1/apps/*` MCP mutation、Twitter ownership | multipart 图片、R2、LLM prompt、Twitter provider identity 与 public app cache | 默认 Persona 和只读 profile 已迁移；通用 Persona mutation/Twitter ownership 需完整 D1/R2/provider contract |
-| Memory admin / Archive | 3 | `/memory/admin/*`、`/memory/archive/search` | Archive capability | `/memory/search`、`/memory/vector/search` 与 D1 review queue 已迁移；archive/admin 仍需补齐 capability |
+| Memory admin / Archive | 2 | `/memory/admin/*` | admin authority、生产 capability/backfill | `/memory/search`、`/memory/vector/search` 与 D1 review queue 已迁移；`/memory/archive/search` 已有 staging-only D1 control/projection 边界，但没有 control writer、legacy backfill 或生产 owner/cutover 证据；admin 仍需单独迁移 |
 | Desktop release mutation/manifest | 0（路由已迁移，回填未完成） | release pipeline 回填和生产 Firestore→D1 回放 | 发布流水线凭据、历史 manifest 回放和生产切换审计 | immutable manifest、macOS Stable/Beta channel pointer、Beta admission/promotion/breakglass、legacy release bridge（`/updates/releases` POST/PATCH）和 cache-invalidation contract 已进入 D1；所有相关 endpoint 在 staging 由 API Core 提供，下一步回填发布流水线并复验 Beta 晋级族 |
 | Metrics / wrapped / analytics | 3 | `/metrics`、`/v1/wrapped/*`、部分分析端点 | Prometheus/历史分析数据不在当前 D1 authority | 定义聚合与保留策略；不能以空响应冒充迁移完成 |
 | Hume callback / provider webhooks | 1 | `/v1/agents/hume/callback` | 外部 webhook schema、幂等、长处理和重试 | 先落 Queue receipt 与 provider signature contract，再切 webhook owner |
@@ -75,7 +75,9 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
   | `POST /v1/files`、`POST /v2/files` | 两个 endpoint 都写本机 temp；`FileChatTool` 依赖 Pillow thumbnail、OpenAI Files/Assistants/vision、Firestore `users/{uid}/files`/chat session，缩略图再写 GCS public object | `cf_asset_objects` 只有通用 content-addressed bytes；没有 chat-file metadata、OpenAI provider id、Assistants thread/assistant contract，也没有 `CHAT_FILES` R2 binding | 先选择 direct OpenAI REST 或其他 provider；D1 `cf_chat_files`（uid/file id/provider id/mime/size/checksum/thumbnail state）+ R2 私有对象、bounded multipart/presigned upload、图片缩略图实现、provider cleanup 和 account deletion residual，再成组迁移 v1/v2 |
   | `POST /v2/audio-merge-jobs/run` | Cloud Tasks OIDC payload；legacy `sync_executor`/pydub 从 GCS/Firestore conversation 读取 chunks，生成 MP3 并写回 playback/conversation metadata，依靠 legacy distributed run lock | Jobs 的 `legacy_audio_rebuild` 只处理 R2 中历史 chunk → WAV/readiness；没有该 endpoint 的 Cloud Tasks payload、MP3/generic codec、D1 merge-job 表和完整旧 GCS 回放 | 先决定 WAV 还是 MP3 的新 output contract；D1 audio-merge job + lease/fingerprint/terminal states、专用 Queue admission、R2 source inventory 与 atomic artifact commit；或明确调用外部 merge API，不能把现有 rebuild job 冒充 parity |
 
-  现有 `/v1/cf/assets` 只能证明通用 R2 bytes 的读写和清理可用，不能证明 chat-file metadata/provider 兼容；现有 `legacy_audio_rebuild` 也只对应 `/v1/sync/audio/:conversationId/precache` 的窄 readiness/rebuild 流程，不是 `/v2/audio-merge-jobs/run` 的通用 Cloud Tasks handler。因此本轮没有改 manifest、没有新增兼容 alias，也没有部署生产。
+  现有 `/v1/cf/assets` 只能证明通用 R2 bytes 的读写和清理可用，不能证明 chat-file metadata/provider 兼容；现有 `legacy_audio_rebuild` 也只对应 `/v1/sync/audio/:conversationId/precache` 的窄 readiness/rebuild 流程，不是 `/v2/audio-merge-jobs/run` 的通用 Cloud Tasks handler。因此本轮没有改 import/files/audio 的 owner、没有新增兼容 alias，也没有部署生产。
+
+- Archive 第一阶段边界已落地但不等同于历史数据迁移：`0097_memory_archive_authority.sql` 新增 global read gate、uid-scoped `cf_memory_control` 和 `cf_memory_archive_items` canonical projection，均带 account-deletion mutation fence；API Core 的 `GET /memory/archive/search` 只读取显式 Archive 请求、当前 uid/current generation、active+processed+active-source、未锁定且无 restricted sensitivity 的行。缺失或 malformed control/gate 返回 403，D1 故障返回 503，绝不读取 legacy Firestore 或自动补 capability。Edge forwarding、backend route inventory、routes manifest 和 residual surface 已同步并由定向回归覆盖；当前没有 projection writer、Firestore backfill、operator gate management endpoint 或 production/live positive archive dataset，因此后续仍需先完成 server-owned projection/backfill contract 与 staging live probe，再考虑 production owner/cutover。
 
 - 这 8 条路由的共同迁移顺序应是：先落 authority/schema 和 deletion fence，再做单一 Worker admission/Queue consumer，再补正向、重试、跨 uid、provider failure、残留清理测试，最后才把 legacy route owner 改为 `staging-owned`。尤其不能先迁移三个 import status/cancel/delete 只读/管理 endpoint：没有 D1 job creation/backfill，它们会对新数据返回空集合、对旧 Firestore job 返回 404，从而产生静默数据分叉。
 - `POST/PATCH /v1/personas*` 仍不能切到 Worker：创建/更新同时依赖图片上传、作者资料、用户名唯一化、Workers/legacy LLM prompt、以及公开目录缓存失效；当前 `cf_app_catalog` 仅是投影，直接写入会绕过这些约束。

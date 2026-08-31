@@ -62,7 +62,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/download", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "edge", "path": "/health", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/memory/admin/users/{uid}/non-active-route-report", "protocol": "http", "target_runtime": "legacy"},
-    {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/memory/archive/search", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/memory/archive/search", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/memory/search", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/memory/vector/search", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/metrics", "protocol": "http", "target_runtime": "legacy"},
