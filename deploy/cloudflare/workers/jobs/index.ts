@@ -125,6 +125,7 @@ import { registerPhoneTwilioRoutes } from "./phone-twilio";
 import { registerPhoneHistoryImportRoutes } from "./phone-history-import";
 import { registerChatHistoryImportRoutes } from "./chat-history-import";
 import { registerWrappedHistoryImportRoutes } from "./wrapped-history-import";
+import { registerMemoryArchiveImportRoutes } from "./memory-archive-import";
 import { registerDesktopReleaseHistoryImportRoutes } from "./desktop-release-history-import";
 import {
   processTaskIntelligenceMessage,
@@ -221,6 +222,7 @@ registerPhoneTwilioRoutes(app, requestContext);
 registerPhoneHistoryImportRoutes(app);
 registerChatHistoryImportRoutes(app);
 registerWrappedHistoryImportRoutes(app);
+registerMemoryArchiveImportRoutes(app);
 registerDesktopReleaseHistoryImportRoutes(app);
 registerDlqReplayRoutes(app);
 

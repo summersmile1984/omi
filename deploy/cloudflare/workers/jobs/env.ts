@@ -179,6 +179,10 @@ export type JobsEnv = {
   CHAT_HISTORY_IMPORT_SIGNING_SECRET?: string;
   /** Explicit operator gate for reviewed historical Wrapped result promotion. */
   WRAPPED_HISTORY_IMPORT_STAGING_ENABLED?: string;
+  /** Explicit operator gate for reviewed Firestore Archive projection import. */
+  MEMORY_ARCHIVE_IMPORT_STAGING_ENABLED?: string;
+  /** HMAC secret for content-bound reviewed Archive projection plans. */
+  MEMORY_ARCHIVE_IMPORT_SIGNING_SECRET?: string;
   /** Explicit operator gate for reviewed historical desktop manifest promotion. */
   DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED?: string;
   /** Explicit operator gate for the D1-indexed Queue DLQ replay boundary. */
