@@ -148,6 +148,7 @@
 - Hume task projection staging 发布（2026-09-01）：远端 App D1 已应用 `0135_hume_task_projection.sql`；Jobs `bac1cbaf-ad67-4314-b7d6-5e77ee8bf7a1`、Edge `4ac2f1ae-9b49-4eca-b320-7bfddc92c061` 已发布，默认 `HUME_TASK_PROJECTION_STAGING_ENABLED=false`。受保护的 `/internal/hume-task-projections/apply` 只接受 reviewed、content-bound 的 Firestore task projection；真实 source export、Firebase/provider identity continuity 和 production cutover 仍未执行。
 
 - Memory Archive reviewed projection seam（2026-09-01，默认关闭）：Jobs 提供 POST /internal/memory-archive/reviews 与 POST /internal/memory-archive/reviews/:reviewId/apply，仅接受外部人工审阅的 Firestore memory plan；每行重算 source-row/import/plan hash，签名绑定 manifest，写入 cf_memory_archive_items 与 cf_memory_archive_applies，重复 apply 幂等，并在 review/apply 两阶段复核 global gate、memory control、cutover generation 和 account-deletion fence。该 seam 不读取 Firestore/GCS/provider、不生成 legacy 数据，远端 backfill、真实 export、历史账号连续性和 production cutover 仍未完成。
+- Memory Archive executor staging 发布（2026-09-01）：远端 App D1 已应用 `0135_memory_archive_executor.sql` 与 Hume trigger cleanup `0136_hume_task_projection_trigger_cleanup.sql`；Jobs `79aa75a4-1e36-4dc7-bb41-bd9132583bd9` 已发布，`/ready` 依赖检查仍为 200。`MEMORY_ARCHIVE_IMPORT_STAGING_ENABLED=false` 保持默认关闭，因此未执行真实 Firestore export/apply；验证覆盖 92 个 Worker 文件、686 个测试、typecheck 与 manifest，真实 backfill、历史账号连续性和 production cutover 仍是 blocker。
 
 ## 发布前必须补齐
 
