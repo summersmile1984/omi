@@ -45,6 +45,25 @@ type AssistantRunRow = {
   last_error: string | null;
   created_at: number;
   updated_at: number;
+  human_message_id?: string | null;
+  assistant_message_id?: string | null;
+  human_status?: "pending" | "ready" | null;
+  assistant_status?: "pending" | "ready" | null;
+};
+
+type AssistantMessageProjectionRow = {
+  uid: string;
+  run_id: string;
+  session_id: string;
+  human_message_id: string;
+  assistant_message_id: string;
+  request_text: string;
+  file_ids_json: string;
+  human_status: "pending" | "ready";
+  assistant_status: "pending" | "ready";
+  created_at: number;
+  updated_at: number;
+  last_error: string | null;
 };
 
 export class ChatAssistantProviderError extends Error {
@@ -255,6 +274,221 @@ async function readyAttachments(env: JobsEnv, uid: string, sessionId: string, fi
   });
 }
 
+async function messageProjection(
+  env: JobsEnv,
+  uid: string,
+  runId: string,
+): Promise<AssistantMessageProjectionRow | null> {
+  return env.APP_DB.prepare(
+    "SELECT * FROM cf_chat_assistant_message_projections WHERE uid = ? AND run_id = ?",
+  )
+    .bind(uid, runId)
+    .first<AssistantMessageProjectionRow>();
+}
+
+function projectionFileIds(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length > MAX_ATTACHMENTS ||
+      parsed.some((item) => typeof item !== "string" || !validSegment(item, 128))
+    )
+      return [];
+    return parsed as string[];
+  } catch {
+    return [];
+  }
+}
+
+type MessageFileProjection = {
+  id: string;
+  name: string;
+  mime_type: string;
+  size: number;
+  openai_file_id: string | null;
+  created_at: string;
+  thumbnail: null;
+  thumb_name: null;
+};
+
+async function messageFileProjections(
+  env: JobsEnv,
+  uid: string,
+  sessionId: string,
+  fileIds: string[],
+): Promise<MessageFileProjection[]> {
+  if (!fileIds.length) return [];
+  const placeholders = fileIds.map(() => "?").join(", ");
+  const rows = await env.APP_DB.prepare(
+    "SELECT sf.file_id, f.name, f.mime_type, f.size, f.provider_file_id, f.created_at " +
+      "FROM cf_chat_session_files sf JOIN cf_chat_files f ON f.uid = sf.uid AND f.file_id = sf.file_id " +
+      "WHERE sf.uid = ? AND sf.session_id = ? AND f.status = 'ready' AND sf.file_id IN (" +
+      placeholders +
+      ")",
+  )
+    .bind(uid, sessionId, ...fileIds)
+    .all<{
+      file_id: string;
+      name: string;
+      mime_type: string;
+      size: number;
+      provider_file_id: string | null;
+      created_at: number;
+    }>();
+  const byId = new Map(
+    (rows.results || []).map((row) => [
+      row.file_id,
+      {
+        id: row.file_id,
+        name: row.name,
+        mime_type: row.mime_type,
+        size: Math.max(0, Number(row.size || 0)),
+        openai_file_id: row.provider_file_id,
+        created_at: new Date(Number(row.created_at || 0) * 1000).toISOString(),
+        thumbnail: null,
+        thumb_name: null,
+      } satisfies MessageFileProjection,
+    ]),
+  );
+  return fileIds.flatMap((fileId) => {
+    const row = byId.get(fileId);
+    return row ? [row] : [];
+  });
+}
+
+function chatMessage(
+  id: string,
+  text: string,
+  sender: "human" | "ai",
+  sessionId: string,
+  createdAt: number,
+  fileIds: string[],
+  files: MessageFileProjection[],
+): Record<string, unknown> {
+  return {
+    id,
+    text,
+    created_at: new Date(createdAt * 1000).toISOString(),
+    sender,
+    app_id: null,
+    plugin_id: null,
+    from_external_integration: false,
+    type: "text",
+    memories_id: [],
+    memories: [],
+    reported: false,
+    report_reason: null,
+    files_id: fileIds,
+    files,
+    chat_session_id: sessionId,
+    session_id: sessionId,
+    data_protection_level: null,
+    langsmith_run_id: null,
+    prompt_name: null,
+    prompt_commit: null,
+    rating: null,
+    metadata: null,
+    content_blocks: [],
+    client_message_id: null,
+    message_source: "cloudflare_assistants",
+    journal_revision: null,
+    chart_data: null,
+  };
+}
+
+function resultText(row: AssistantRunRow): string | null {
+  if (!row.result_json) return null;
+  try {
+    const value: unknown = JSON.parse(row.result_json);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const text = (value as Record<string, unknown>).text;
+    return typeof text === "string" && text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+async function persistAssistantMessageProjection(
+  env: JobsEnv,
+  uid: string,
+  run: AssistantRunRow,
+  answer: string | null,
+  now: number,
+): Promise<void> {
+  const projection = await messageProjection(env, uid, run.run_id);
+  if (!projection) return;
+  const fileIds = projectionFileIds(projection.file_ids_json);
+  const files = await messageFileProjections(
+    env,
+    uid,
+    projection.session_id,
+    fileIds,
+  );
+  const human = chatMessage(
+    projection.human_message_id,
+    projection.request_text,
+    "human",
+    projection.session_id,
+    projection.created_at,
+    fileIds,
+    files,
+  );
+  const statements = [
+    env.APP_DB.prepare(
+      "INSERT OR IGNORE INTO cf_chat_messages (uid, id, app_id, created_at, message_json) VALUES (?, ?, NULL, ?, ?)",
+    ).bind(
+      uid,
+      projection.human_message_id,
+      projection.created_at,
+      JSON.stringify(human),
+    ),
+    env.APP_DB.prepare(
+      "UPDATE cf_chat_assistant_message_projections SET human_status = 'ready', updated_at = ?, last_error = NULL WHERE uid = ? AND run_id = ?",
+    ).bind(now, uid, run.run_id),
+  ];
+  if (answer !== null && run.status === "completed") {
+    const assistant = chatMessage(
+      projection.assistant_message_id,
+      answer,
+      "ai",
+      projection.session_id,
+      now,
+      [],
+      [],
+    );
+    statements.push(
+      env.APP_DB.prepare(
+        "INSERT OR IGNORE INTO cf_chat_messages (uid, id, app_id, created_at, message_json) VALUES (?, ?, NULL, ?, ?)",
+      ).bind(
+        uid,
+        projection.assistant_message_id,
+        now,
+        JSON.stringify(assistant),
+      ),
+      env.APP_DB.prepare(
+        "UPDATE cf_chat_assistant_message_projections SET assistant_status = 'ready', updated_at = ?, last_error = NULL WHERE uid = ? AND run_id = ?",
+      ).bind(now, uid, run.run_id),
+    );
+  }
+  // Recompute rather than increment the count: INSERT OR IGNORE makes retries
+  // safe even when a Queue delivery races a client poll.
+  statements.push(
+    env.APP_DB.prepare(
+      "UPDATE cf_chat_sessions SET message_count = (SELECT COUNT(*) FROM cf_chat_messages WHERE uid = ? AND COALESCE(NULLIF(json_extract(message_json, '$.chat_session_id'), ''), NULLIF(json_extract(message_json, '$.session_id'), '')) = ?), updated_at = ?, preview = CASE WHEN ? IS NULL THEN preview ELSE ? END WHERE uid = ? AND id = ?",
+    ).bind(
+      uid,
+      projection.session_id,
+      now,
+      answer,
+      answer,
+      uid,
+      projection.session_id,
+    ),
+  );
+  await env.APP_DB.batch(statements);
+}
+
 function assistantMessage(text: string, attachments: ReadyAttachment[]): Record<string, unknown> {
   const content: Record<string, unknown>[] = [{ type: "text", text }];
   const fileAttachments: Record<string, unknown>[] = [];
@@ -274,7 +508,9 @@ function assistantMessage(text: string, attachments: ReadyAttachment[]): Record<
 
 async function existingRun(env: JobsEnv, uid: string, idempotencyKey: string): Promise<AssistantRunRow | null> {
   return env.APP_DB.prepare(
-    "SELECT * FROM cf_chat_assistant_runs WHERE uid = ? AND idempotency_key = ?",
+    "SELECT r.*, p.human_message_id, p.assistant_message_id, p.human_status, p.assistant_status " +
+      "FROM cf_chat_assistant_runs r LEFT JOIN cf_chat_assistant_message_projections p " +
+      "ON p.uid = r.uid AND p.run_id = r.run_id WHERE r.uid = ? AND r.idempotency_key = ?",
   )
     .bind(uid, idempotencyKey)
     .first<AssistantRunRow>();
@@ -282,7 +518,9 @@ async function existingRun(env: JobsEnv, uid: string, idempotencyKey: string): P
 
 async function runRow(env: JobsEnv, uid: string, runId: string): Promise<AssistantRunRow | null> {
   return env.APP_DB.prepare(
-    "SELECT * FROM cf_chat_assistant_runs WHERE uid = ? AND run_id = ?",
+    "SELECT r.*, p.human_message_id, p.assistant_message_id, p.human_status, p.assistant_status " +
+      "FROM cf_chat_assistant_runs r LEFT JOIN cf_chat_assistant_message_projections p " +
+      "ON p.uid = r.uid AND p.run_id = r.run_id WHERE r.uid = ? AND r.run_id = ?",
   )
     .bind(uid, runId)
     .first<AssistantRunRow>();
@@ -295,7 +533,10 @@ async function runRowForSession(
   runId: string,
 ): Promise<AssistantRunRow | null> {
   return env.APP_DB.prepare(
-    "SELECT * FROM cf_chat_assistant_runs WHERE uid = ? AND session_id = ? AND run_id = ?",
+    "SELECT r.*, p.human_message_id, p.assistant_message_id, p.human_status, p.assistant_status " +
+      "FROM cf_chat_assistant_runs r LEFT JOIN cf_chat_assistant_message_projections p " +
+      "ON p.uid = r.uid AND p.run_id = r.run_id " +
+      "WHERE r.uid = ? AND r.session_id = ? AND r.run_id = ?",
   )
     .bind(uid, sessionId, runId)
     .first<AssistantRunRow>();
@@ -317,6 +558,16 @@ function publicRun(row: AssistantRunRow): Record<string, unknown> {
     attempts: row.attempts,
     ...(row.provider_run_id ? { provider_run_id: row.provider_run_id } : {}),
     ...(result === undefined ? {} : { result }),
+    ...(row.human_message_id
+      ? {
+          human_message_id: row.human_message_id,
+          assistant_message_id: row.assistant_message_id,
+          message_projection: {
+            human_status: row.human_status,
+            assistant_status: row.assistant_status,
+          },
+        }
+      : {}),
     last_error: row.last_error,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -378,6 +629,48 @@ export async function createAssistantRun(
     return { ...publicRun(winner), created: false };
   }
 
+  const humanMessageId = `chat-human-${runId}`;
+  const assistantMessageId = `chat-assistant-${runId}`;
+  try {
+    const projection = await env.APP_DB.prepare(
+      "INSERT INTO cf_chat_assistant_message_projections (uid, run_id, session_id, human_message_id, assistant_message_id, request_text, file_ids_json, human_status, assistant_status, created_at, updated_at, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, NULL) ON CONFLICT(uid, run_id) DO NOTHING",
+    )
+      .bind(
+        uid,
+        runId,
+        sessionId,
+        humanMessageId,
+        assistantMessageId,
+        text,
+        JSON.stringify(fileIds),
+        now,
+        now,
+      )
+      .run();
+    if (projection.meta?.changes !== 1) {
+      const existingProjection = await messageProjection(env, uid, runId);
+      if (!existingProjection) {
+        throw new Error("chat message projection could not be persisted");
+      }
+    }
+  } catch (error) {
+    await env.APP_DB.prepare(
+      "UPDATE cf_chat_assistant_runs SET status = 'failed', last_error = ?, updated_at = ? WHERE uid = ? AND run_id = ?",
+    )
+      .bind(
+        String(error).slice(0, 2048),
+        now,
+        uid,
+        runId,
+      )
+      .run();
+    throw new ChatAssistantProviderError(
+      "provider_unavailable",
+      "chat message projection could not be persisted",
+      true,
+    );
+  }
+
   const leaseToken = crypto.randomUUID();
   const claimed = await env.APP_DB.prepare(
     "UPDATE cf_chat_assistant_runs SET attempts = attempts + 1, lease_token = ?, lease_until = ?, updated_at = ? WHERE uid = ? AND run_id = ? AND status = 'staging'",
@@ -416,6 +709,15 @@ export async function createAssistantRun(
       .run();
     const saved = await runRow(env, uid, runId);
     if (!saved) throw new ChatAssistantProviderError("provider_unavailable", "chat assistant run disappeared");
+    // Persist the human turn as part of the canonical D1 chat history.  A
+    // projection failure must not orphan the already-created provider run;
+    // the Queue poller will retry this same idempotent projection.
+    try {
+      await persistAssistantMessageProjection(env, uid, saved, null, now);
+    } catch {
+      // Keep the durable run available for GET/poller recovery.  The provider
+      // thread/run is never sent back through the legacy chat path.
+    }
     return { ...publicRun(saved), created: true };
   } catch (error) {
     const providerError = error instanceof ChatAssistantProviderError ? error : new ChatAssistantProviderError("provider_unavailable", "chat assistant provider unavailable", true);
@@ -455,9 +757,25 @@ export async function pollAssistantRun(
     throw new ChatAssistantProviderError("provider_rejected", "invalid chat session");
   const row = await runRowForSession(env, uid, sessionId, runId);
   if (!row) throw new ChatAssistantProviderError("provider_rejected", "chat assistant run not found");
-  if (!row.provider_run_id || row.status === "completed" || row.status === "failed" || row.status === "cancelled") return publicRun(row);
+  if (!row.provider_run_id || row.status === "failed" || row.status === "cancelled") {
+    return publicRun(row);
+  }
+  if (row.status === "completed") {
+    try {
+      await persistAssistantMessageProjection(env, uid, row, resultText(row), now);
+    } catch {
+      throw new ChatAssistantProviderError(
+        "provider_unavailable",
+        "chat message projection is temporarily unavailable",
+        true,
+      );
+    }
+    const projected = await runRow(env, uid, runId);
+    return publicRun(projected || row);
+  }
   const session = await existingSession(env, uid, row.session_id);
   if (!session || session.status !== "active") throw new ChatAssistantProviderError("provider_rejected", "chat assistant session not found");
+  let answer: string | null = null;
   try {
     const providerRun = await providerJson(
       env,
@@ -472,8 +790,8 @@ export async function pollAssistantRun(
         `/threads/${encodeURIComponent(session.thread_id)}/messages?limit=20`,
         { method: "GET" },
       );
-      const text = assistantText(messages);
-      resultJson = JSON.stringify(text ? { text } : {});
+      answer = assistantText(messages);
+      resultJson = JSON.stringify(answer ? { text: answer } : {});
     }
     await env.APP_DB.prepare(
       "UPDATE cf_chat_assistant_runs SET status = ?, result_json = ?, last_error = NULL, lease_token = NULL, lease_until = NULL, updated_at = ? WHERE uid = ? AND run_id = ?",
@@ -491,7 +809,21 @@ export async function pollAssistantRun(
   }
   const updated = await runRow(env, uid, runId);
   if (!updated) throw new ChatAssistantProviderError("provider_unavailable", "chat assistant run disappeared");
-  return publicRun(updated);
+  try {
+    await persistAssistantMessageProjection(env, uid, updated, answer, now);
+  } catch {
+    // The provider status is durable; ask the Queue to retry the projection
+    // instead of acknowledging a completed run whose D1 chat history is stale.
+    if (updated.status === "completed") {
+      throw new ChatAssistantProviderError(
+        "provider_unavailable",
+        "chat message projection is temporarily unavailable",
+        true,
+      );
+    }
+  }
+  const projected = await runRow(env, uid, runId);
+  return publicRun(projected || updated);
 }
 
 type AssistantPollPayload = {
@@ -534,7 +866,14 @@ export async function processChatAssistantRunMessage(
     payload.sessionId,
     payload.runId,
   );
-  if (!row || ["completed", "failed", "cancelled"].includes(row.status)) {
+  const projectionReady =
+    row?.human_status === "ready" && row?.assistant_status === "ready";
+  if (
+    !row ||
+    row.status === "failed" ||
+    row.status === "cancelled" ||
+    (row.status === "completed" && projectionReady)
+  ) {
     message.ack();
     return;
   }

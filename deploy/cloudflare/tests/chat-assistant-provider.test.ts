@@ -149,6 +149,32 @@ describe("Cloudflare OpenAI Assistants continuity adapter", () => {
       provider_run_id: "run-1",
       attempts: 1,
     });
+    expect(
+      database.database
+        .prepare(
+          "SELECT human_status, assistant_status, request_text, file_ids_json FROM cf_chat_assistant_message_projections",
+        )
+        .get(),
+    ).toMatchObject({
+      human_status: "ready",
+      assistant_status: "pending",
+      request_text: "Summarize these files",
+      file_ids_json: '["file-text","file-image"]',
+    });
+    const projectedHuman = database.database
+      .prepare("SELECT message_json FROM cf_chat_messages WHERE uid = 'assistant-user'")
+      .get() as { message_json: string };
+    expect(JSON.parse(projectedHuman.message_json)).toMatchObject({
+      sender: "human",
+      text: "Summarize these files",
+      files_id: ["file-text", "file-image"],
+      files: [
+        { id: "file-text", openai_file_id: "file-text-1" },
+        { id: "file-image", openai_file_id: "file-image-1" },
+      ],
+      chat_session_id: "session-1",
+      message_source: "cloudflare_assistants",
+    });
   });
 
   it("returns exact idempotent retries without re-calling the provider and rejects payload reuse", async () => {
@@ -284,6 +310,26 @@ describe("Cloudflare OpenAI Assistants continuity adapter", () => {
       101,
     );
     expect(completed).toMatchObject({ status: "completed", result: { text: "answer" } });
+    expect(
+      database.database
+        .prepare(
+          "SELECT human_status, assistant_status FROM cf_chat_assistant_message_projections WHERE uid = 'assistant-user' AND run_id = ?",
+        )
+        .get(String(created.run_id)),
+    ).toEqual({ human_status: "ready", assistant_status: "ready" });
+    const projectedMessages = database.database
+      .prepare(
+        "SELECT message_json FROM cf_chat_messages WHERE uid = 'assistant-user' ORDER BY created_at, id",
+      )
+      .all() as Array<{ message_json: string }>;
+    expect(projectedMessages).toHaveLength(2);
+    expect(JSON.parse(projectedMessages[1].message_json)).toMatchObject({
+      sender: "ai",
+      text: "answer",
+      files_id: [],
+      chat_session_id: "session-1",
+      message_source: "cloudflare_assistants",
+    });
 
     await deleteAssistantSession(env, "assistant-user", "session-1");
     expect(
