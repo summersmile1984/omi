@@ -61,6 +61,7 @@ class FakeDb:
             "0010_user_assistant_profiles.sql",
             "0032_conversations.sql",
             "0035_app_catalog.sql",
+            "0036_app_installations.sql",
             "0037_memories.sql",
             "0042_chat_messages.sql",
             "0046_account_usage.sql",
@@ -73,6 +74,7 @@ class FakeDb:
             "ALTER TABLE cf_app_catalog ADD COLUMN owner_uid TEXT;"
             "CREATE TABLE cf_app_testers (uid TEXT PRIMARY KEY, added_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);"
         )
+        self.connection.executescript((migration_dir / "0112_mcp_app_authority.sql").read_text())
         self.fail_batch = fail_batch
         self.fail_quota_run = fail_quota_run
 
@@ -167,6 +169,31 @@ def stored(uid: str, message_id: str, created_at: int, sender: str, text: str, s
             }
         ),
     )
+
+
+def add_mcp_tool_projection(db, app_id: str = "mcp-app", uid: str = "chat-user"):
+    db.connection.execute(
+        "INSERT INTO cf_app_catalog (id, owner_uid, approved, disabled, data_json, updated_at) "
+        "VALUES (?, ?, 1, 0, ?, 1)",
+        (app_id, uid, json.dumps({"id": app_id, "name": "Remote MCP"})),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_user_enabled_apps (uid, app_id, created_at) VALUES (?, ?, 1)",
+        (uid, app_id),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_mcp_app_connections "
+        "(app_id, owner_uid, server_url, status, created_at, updated_at) "
+        "VALUES (?, ?, 'https://provider.example/mcp', 'authorized', 1, 1)",
+        (app_id, uid),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_mcp_app_discoveries "
+        "(app_id, owner_uid, endpoint, protocol_version, tools_json, status, revision, fetched_at, updated_at) "
+        "VALUES (?, ?, 'https://provider.example/mcp', '2025-03-26', ?, 'ready', 2, 1, 1)",
+        (app_id, uid, json.dumps([{"name": "lookup"}, {"name": "create_note"}])),
+    )
+    db.connection.commit()
 
 
 def test_default_text_chat_uses_workers_ai_persists_one_exchange_and_emits_legacy_sse():
@@ -952,3 +979,64 @@ def test_cloudflare_completion_rejects_legacy_tool_shape_before_provider():
     assert json.loads(response.body)["error"]["type"] == "invalid_request_error"
     assert ai.calls == []
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+
+
+def test_cloudflare_completion_reads_ready_mcp_projection_and_rejects_execution_before_mutation():
+    secret = "chat-secret"
+    db = FakeDb()
+    add_mcp_tool_projection(db)
+    ai = FakeAi()
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    response = asyncio.run(
+        cloudflare_chat_completions(
+            FakeRequest(
+                env,
+                {**signed_headers(secret), "idempotency-key": "mcp-tool-turn-1"},
+                body={
+                    "model": "workers-ai",
+                    "app_id": "mcp-app",
+                    "messages": [{"role": "user", "content": "Look this up"}],
+                    "tools": [{"type": "function", "function": {"name": "lookup"}}],
+                },
+            )
+        )
+    )
+
+    assert response.status_code == 409
+    assert json.loads(response.body) == {
+        "error": "mcp tool execution is not migrated",
+        "reason": "mcp_tool_execution_not_migrated",
+        "app_id": "mcp-app",
+        "available_tool_names": ["lookup", "create_note"],
+    }
+    assert ai.calls == []
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_quota_events").fetchone()[0] == 0
+
+
+def test_cloudflare_completion_rejects_missing_mcp_projection_without_provider_call():
+    secret = "chat-secret"
+    db = FakeDb()
+    ai = FakeAi()
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    response = asyncio.run(
+        cloudflare_chat_completions(
+            FakeRequest(
+                env,
+                {**signed_headers(secret), "idempotency-key": "mcp-tool-turn-missing"},
+                body={
+                    "model": "workers-ai",
+                    "app_id": "missing-app",
+                    "messages": [{"role": "user", "content": "Look this up"}],
+                    "tools": [{"type": "function", "function": {"name": "lookup"}}],
+                },
+            )
+        )
+    )
+
+    assert response.status_code == 404
+    assert json.loads(response.body)["reason"] == "mcp_tool_projection_unavailable"
+    assert ai.calls == []
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_quota_events").fetchone()[0] == 0

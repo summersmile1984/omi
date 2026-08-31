@@ -78,6 +78,12 @@ MAX_COMPAT_CHAT_TEXT_CHARS = 16_000
 MAX_COMPAT_CHAT_SESSION_ID_CHARS = 256
 MAX_COMPAT_CHAT_TOKENS = 4_096
 MAX_COMPAT_CHAT_BODY_BYTES = 128_000
+MAX_COMPAT_CHAT_APP_ID_CHARS = 256
+MAX_COMPAT_CHAT_TOOLS = 128
+MAX_COMPAT_MCP_TOOL_COUNT = 256
+MAX_COMPAT_MCP_TOOL_NAME_BYTES = 256
+MAX_COMPAT_MCP_PROJECTION_BYTES = 2_000_000
+MCP_TOOL_CONTROL_CHARACTERS = re.compile(r"[\u0000-\u001f\u007f]")
 
 
 class CompatChatMessage(BaseModel):
@@ -99,6 +105,12 @@ class CompatChatCompletionRequest(BaseModel):
     max_completion_tokens: int | None = Field(default=None, ge=1, le=MAX_COMPAT_CHAT_TOKENS)
     temperature: float | None = Field(default=None, ge=0, le=2)
     session_id: str | None = Field(default=None, min_length=1, max_length=MAX_COMPAT_CHAT_SESSION_ID_CHARS)
+    # App/tool fields are an explicit preflight only.  The Cloudflare text
+    # provider cannot execute remote MCP calls, so the handler reads the
+    # owner-scoped D1 projection and returns a stable 409 before quota/provider
+    # mutation rather than silently dropping a tool request.
+    app_id: str | None = Field(default=None, min_length=1, max_length=MAX_COMPAT_CHAT_APP_ID_CHARS)
+    tools: list[dict[str, object]] | None = Field(default=None, max_length=MAX_COMPAT_CHAT_TOOLS)
 
 
 def _compat_error(message: str, status_code: int = 400) -> JSONResponse:
@@ -141,6 +153,56 @@ def _compat_prompt(messages: list[CompatChatMessage]) -> list[dict[str, str]]:
     """Convert validated text-only messages to the Workers AI request shape."""
 
     return [{"role": message.role, "content": message.content} for message in messages]
+
+
+async def _compat_mcp_tool_names(env: object, uid: str, app_id: str) -> list[str] | None:
+    """Read only the installed, ready MCP tool names for a chat preflight.
+
+    The API-AI Worker owns the completion provider call, so this narrow query
+    intentionally duplicates no provider credentials or endpoint data.  The
+    full owner-scoped tool directory remains exposed by API Core's
+    ``/v2/cf/apps/mcp/tools`` route; this helper only proves that a requested
+    app has a valid D1 projection before returning the execution boundary.
+    """
+
+    row = await env.APP_DB.prepare(
+        "SELECT d.tools_json "
+        "FROM cf_user_enabled_apps u "
+        "JOIN cf_app_catalog a ON a.id = u.app_id "
+        "JOIN cf_mcp_app_connections c ON c.app_id = u.app_id "
+        "JOIN cf_mcp_app_discoveries d ON d.app_id = u.app_id "
+        "WHERE u.uid = ? AND u.app_id = ? AND c.owner_uid = ? AND d.owner_uid = ? "
+        "AND c.status = 'authorized' AND d.status = 'ready' AND a.disabled = 0 "
+        "LIMIT 1"
+    ).bind(uid, app_id, uid, uid).first()
+    if not isinstance(row, dict):
+        return None
+    raw_tools = row.get("tools_json")
+    if not isinstance(raw_tools, str) or len(raw_tools.encode("utf-8")) > MAX_COMPAT_MCP_PROJECTION_BYTES:
+        raise ValueError("invalid MCP tools projection")
+    try:
+        tools = json.loads(raw_tools)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("invalid MCP tools projection") from error
+    if not isinstance(tools, list) or not tools or len(tools) > MAX_COMPAT_MCP_TOOL_COUNT:
+        raise ValueError("invalid MCP tools projection")
+    names: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            raise ValueError("invalid MCP tool")
+        name = tool.get("name")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name.encode("utf-8")) > MAX_COMPAT_MCP_TOOL_NAME_BYTES
+            or MCP_TOOL_CONTROL_CHARACTERS.search(name)
+        ):
+            raise ValueError("invalid MCP tool name")
+        canonical_name = name.strip()
+        if canonical_name in names:
+            raise ValueError("duplicate MCP tool name")
+        names.append(canonical_name)
+    return names
 
 
 def _compat_response(
@@ -1239,6 +1301,43 @@ async def cloudflare_chat_completions(request: Request):
     env = request.scope["env"]
     if getattr(env, "APP_DB", None) is None:
         return JSONResponse({"error": "chat history is not configured"}, status_code=503)
+    if payload.app_id is not None or payload.tools is not None:
+        app_id = payload.app_id.strip() if isinstance(payload.app_id, str) else ""
+        if not app_id or not payload.tools:
+            return _compat_error(
+                "MCP tools require a non-empty app_id and tool list",
+            )
+        uid = str(context["uid"])
+        try:
+            available_tool_names = await _compat_mcp_tool_names(env, uid, app_id)
+        except ValueError:
+            return JSONResponse(
+                {"error": "mcp tool projection unavailable", "reason": "mcp_tool_projection_unavailable"},
+                status_code=503,
+                headers={"cache-control": "no-store"},
+            )
+        except Exception:
+            return JSONResponse(
+                {"error": "mcp tool projection unavailable", "reason": "mcp_tool_projection_unavailable"},
+                status_code=503,
+                headers={"cache-control": "no-store"},
+            )
+        if available_tool_names is None:
+            return JSONResponse(
+                {"error": "mcp app tool projection not found", "reason": "mcp_tool_projection_unavailable"},
+                status_code=404,
+                headers={"cache-control": "no-store"},
+            )
+        return JSONResponse(
+            {
+                "error": "mcp tool execution is not migrated",
+                "reason": "mcp_tool_execution_not_migrated",
+                "app_id": app_id,
+                "available_tool_names": available_tool_names,
+            },
+            status_code=409,
+            headers={"cache-control": "no-store", "x-omi-chat-contract": "cf-v1"},
+        )
     byok_openai_key, byok_error = _byok_openai_key(request, context)
     if byok_error:
         return JSONResponse({"detail": byok_error}, status_code=403)

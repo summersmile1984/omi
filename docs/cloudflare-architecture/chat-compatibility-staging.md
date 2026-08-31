@@ -26,6 +26,22 @@ Python Worker 内完成：
 tool calls、image blocks、server-side web search、旧模型 alias 和不匹配的
 token 参数会在 provider/D1 写入前拒绝。
 
+## MCP tool projection boundary
+
+Cloudflare 现在允许该显式 seam 接收 `app_id` + 非空 `tools` 作为 MCP
+preflight。API-AI 会按 Better Auth uid 查询 D1 中已安装、`authorized` 且
+discovery=`ready` 的 projection（与 API Core 的
+`GET /v2/cf/apps/mcp/tools` 使用同一组 owner/status 条件），只返回安全的
+tool name 列表并以 `409 mcp_tool_execution_not_migrated` 明确拒绝执行；缺少
+projection 返回 `404`，损坏或不可读的 projection 返回 `503`。该分支发生在
+quota reservation、Workers AI/OpenAI BYOK provider 调用和 chat message 写入
+之前，因此不会产生计费或伪造 assistant 回复。
+
+这只是把已安装 MCP tool authority 接入 chat 的可验证拒绝边界，不是 MCP
+runtime。完整 tool schema、上游 credential/session、JSON-RPC `tools/call`、
+结果回写、重试和旧桌面 tool/SSE parity 仍未完成；`/v2/chat/completions`
+以及两个 legacy materialization route 的 owner 不变。
+
 ## 为什么旧入口仍未切换
 
 旧 `/v2/chat/completions` 的请求者依赖 Anthropic model alias、client/server
