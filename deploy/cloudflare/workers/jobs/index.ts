@@ -89,6 +89,7 @@ import {
   registerLimitlessImportRoutes,
 } from "./limitless-import";
 import { registerChatFileRoutes } from "./chat-file-routes";
+import { registerPersonaMutationRoutes } from "./persona-mutations";
 import {
   processAudioMergeJobMessage,
   registerAudioMergeRoutes,
@@ -169,6 +170,7 @@ registerAdminNotificationRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
 registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
+registerPersonaMutationRoutes(app, requestContext);
 registerAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);
 registerHumeWebhookRoutes(app);

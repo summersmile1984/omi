@@ -1073,6 +1073,7 @@ app.put("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
 app.delete("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
 app.get("/v1/integrations/google_calendar/oauth-url", proxyAuthenticatedJobs);
 app.post("/v1/app/thumbnails", proxyAuthenticatedJobs);
+app.post("/v1/personas", proxyAuthenticatedJobs);
 app.get("/v1/integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
 app.get("/v1/calendar/google/events", proxyAuthenticatedJobs);
 app.get("/v1/personas/twitter/profile", proxyAuthenticatedJobs);

@@ -300,6 +300,16 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/personas
+    owner: jobs
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, worker-secrets, workers-ai-binding]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/personas/twitter/initial-message
     owner: api-core
