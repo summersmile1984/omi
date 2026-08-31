@@ -1240,13 +1240,6 @@ app.post(
 app.delete("/v1/import/limitless/conversations", proxyAuthenticatedCore);
 app.post("/v1/staged-tasks/migrate", proxyAuthenticatedCore);
 app.post("/v1/staged-tasks/migrate-conversation-items", proxyAuthenticatedCore);
-app.delete("/v1/staged-tasks", proxyAuthenticatedCore);
-app.delete("/v1/staged-tasks/:task_id", proxyAuthenticatedCore);
-app.get("/v1/staged-tasks", proxyAuthenticatedCore);
-app.patch("/v1/staged-tasks/batch-scores", proxyAuthenticatedCore);
-app.post("/v1/staged-tasks", proxyAuthenticatedCore);
-app.post("/v1/staged-tasks/promote", proxyAuthenticatedCore);
-app.post("/v1/staged-tasks/:task_id/promote", proxyAuthenticatedCore);
 app.post("/v1/chat-first/blocks/validate", proxyAuthenticatedCore);
 app.post("/v1/chat/deferrals", proxyAuthenticatedCore);
 app.get("/v1/tools/conversations", proxyAuthenticatedCore);

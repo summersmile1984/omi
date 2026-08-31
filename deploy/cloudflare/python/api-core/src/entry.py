@@ -80,7 +80,6 @@ from crisp_routes import router as crisp_router
 from migration_routes import router as migration_router
 from candidate_control_routes import router as candidate_control_router
 from candidate_compat_routes import router as candidate_compat_router
-from staged_task_compat_routes import router as staged_task_compat_router
 from desktop_release_routes import router as desktop_release_router
 from followup_routes import router as followup_router
 from persona_routes import router as persona_router
@@ -130,7 +129,6 @@ app.include_router(crisp_router)
 app.include_router(migration_router)
 app.include_router(candidate_control_router)
 app.include_router(candidate_compat_router)
-app.include_router(staged_task_compat_router)
 app.include_router(desktop_release_router)
 app.include_router(followup_router)
 app.include_router(persona_router)
