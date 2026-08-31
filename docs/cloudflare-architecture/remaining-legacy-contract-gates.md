@@ -1,6 +1,6 @@
 # Remaining legacy route contract gates
 
-截至 2026-08-31，Cloudflare route inventory 仍有 40 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
+截至 2026-08-31，Cloudflare route inventory 仍有 32 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
 
 ## 结论
 
@@ -10,15 +10,15 @@
 | --- | ---: | --- | --- |
 | Auth / social | 4 | 阻塞 | Firebase provider identity、Redis auth session/auth code、移动端 HTML callback、Firebase custom-token exchange 尚未由 Better Auth/D1 证明等价替代 |
 | External App OAuth | 2 | 阻塞 | legacy Firestore app catalog、CSRF/state、app enable/payment/setup 检查和 `uid + redirect_url + state` 响应仍无同一 D1 authority |
-| Phone / Twilio | 6 | 阻塞 | caller-ID 验证状态、Twilio API/token/webhook contract、quota 和删除清理没有 D1/DO/Queue authority |
-| Wrapped | 2 | 阻塞 | Firestore recap 聚合、`wrapped_analysis` provider 输出、本机 executor、通知和 job/result 状态没有 Cloudflare 闭环 |
+| Phone / Twilio | 0 | staging owner，生产阻塞 | Jobs 已闭合 caller-ID 验证状态、Twilio API/token/webhook contract、quota 和删除清理；仍缺真实 provider 验证、历史回填和 production cutover |
+| Wrapped | 0 | staging owner，生产阻塞 | Jobs 已闭合 D1 recap 聚合、Workers AI structured output、通知和 job/result 状态；仍缺历史 Firestore 回填、真实 provider probe 和 production cutover |
 | Chat compatibility | 3 | 阻塞 | prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract 与 D1 chat session 不是同一语义 |
 | Persona / MCP mutation | 6 | 阻塞 | Firestore persona/app continuity、MCP OAuth token/discovery 和 public cache invalidation 尚未迁移 |
 | Staged tasks / task intelligence | 13 | 阻塞 | candidate/recommendation authority、device/open-loop snapshot、LLM evaluation receipt 和 promotion transaction 尚未建立 |
 | Gemini proxy | 2 | 阻塞 | Gemini/Vertex route、BYOK、Redis quota、SSE/usage/error 以及 cost accounting 尚未闭合 |
 | Files | 2 | 部分准备 | Worker chat-file adapter 已有 D1/R2/provider contract，但 Assistants/session continuity、旧数据回填和下游 reader 仍未完成 |
 
-上表合计 40 条。`GET /v1/apps/mcp/callback` 计入 Persona/MCP mutation，而不是 Auth / social；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口不计入本表。
+上表合计 32 条。`GET /v1/apps/mcp/callback` 计入 Persona/MCP mutation，而不是 Auth / social；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口不计入本表。
 
 ## Auth / social：不能用 Better Auth session 别名替代
 
@@ -62,13 +62,13 @@ Legacy 实现位于 [`backend/routers/phone_calls.py`](../../backend/routers/pho
 - token 要求 primary verified number，并生成 Twilio access token。
 - TwiML webhook 读取有界 form、构造 canonical URL、校验 `X-Twilio-Signature`，再查询 uid 的 verified caller ID。
 
-Workers 的 `fetch` 可以承载 Twilio REST 请求，但这不自动提供迁移。正向 owner 至少需要 `cf_phone_numbers`、pending verification 的唯一约束/TTL、account-generation/deletion fence、Twilio secret lifecycle、原子 quota reservation、webhook timestamp/replay protection、Queue retry/terminal state 和 token response tests。缺少其中任一项时，不能把 Twilio API 代理当成 phone migration。
+Workers 的 `fetch` 可以承载 Twilio REST 请求，但这不自动提供生产迁移。当前 Jobs owner 已落地 `0108_phone_twilio.sql`、pending verification 唯一约束/TTL、account-generation/deletion fence、Twilio secret lifecycle、原子 quota reservation、CallId/CallSid 幂等、签名 webhook 和 Voice token tests。仍需真实 staging Twilio credentials/号码验证、历史 Firestore 回填和 production cutover；在这些门槛完成前不能声称完整 production parity。
 
 ## Wrapped：必须先定义结果 authority 和可重放 job
 
 Legacy 实现位于 [`backend/routers/wrapped.py`](../../backend/routers/wrapped.py) 以及 `backend/utils/wrapped_analysis.py`：读取 Firestore `users/{uid}/wrapped/{year}`，生成时聚合 conversations/action items，调用 `wrapped_analysis`，通过本机 `llm_executor` 和通知路径异步落结果。
 
-当前 Cloudflare 没有 Wrapped-specific result/job 表、历史 conversation/action-item replay contract、结构化 provider schema、Queue lease/retry 或通知 authority。可以调用 Workers AI/外部 LLM，但必须先定义输入上限、year 计算范围、provider JSON schema/version、partial/failure 状态、幂等键、删除 fence 和旧客户端 poll/response shape；否则空结果、同步 503 或“已完成但没有 recap”都不是 parity。
+当前 Jobs 已有 Wrapped-specific `cf_wrapped_jobs` result/job 表、bounded conversation/action-item D1 projection、结构化 Workers AI schema、Queue lease/retry、notification outbox、幂等键、删除 fence 和旧客户端 poll/response shape。仍需历史 Firestore result/source 回填、真实 staging provider probe 和 production cutover；仅对 completed destination-bound D1 projection 账号开放，不能把该 staging owner 误记为历史数据 parity。
 
 ## Chat compatibility：现有新 API 不能替换旧桌面协议
 
