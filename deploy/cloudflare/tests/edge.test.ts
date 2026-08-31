@@ -123,42 +123,6 @@ describe("edge gateway", () => {
     expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
-  it("forwards only the operational metrics bearer to API Core and preserves fail-closed status", async () => {
-    let forwarded: Request | undefined;
-    const env = {
-      API_CORE: rawService((request) => {
-        forwarded = request;
-        return Response.json(
-          { error: "metrics_unavailable" },
-          { status: 503, headers: { "cache-control": "no-store" } },
-        );
-      }),
-    };
-
-    const response = await edge.fetch(
-      new Request("https://edge.test/metrics", {
-        headers: {
-          authorization: "Bearer metrics-secret",
-          cookie: "session=must-not-forward",
-          "x-omi-uid": "caller-controlled",
-          "x-omi-auth-context": "caller-controlled",
-        },
-      }),
-      env as never,
-    );
-
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({
-      error: "metrics_unavailable",
-    });
-    expect(forwarded?.headers.get("authorization")).toBe(
-      "Bearer metrics-secret",
-    );
-    expect(forwarded?.headers.get("cookie")).toBeNull();
-    expect(forwarded?.headers.get("x-omi-uid")).toBeNull();
-    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
-  });
-
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {
@@ -1869,6 +1833,37 @@ describe("edge gateway", () => {
       "/v1/apps/tester/check",
       "/v1/apps/summary-app",
     ]);
+  });
+
+  it("routes memory non-active admin reports to API Core without stripping the admin key", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ status: "green", evidence: [] });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request(
+        "https://edge.test/memory/admin/users/report-user/non-active-route-report?run_id=run-1",
+        {
+          headers: {
+            "secret-key": "admin-secret",
+            authorization: "Bearer untrusted",
+            cookie: "session=untrusted",
+          },
+        },
+      ),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://missing").pathname).toBe(
+      "/memory/admin/users/report-user/non-active-route-report",
+    );
+    expect(forwarded?.headers.get("secret-key")).toBe("admin-secret");
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
   });
 
   it("preserves the independent app admin key while stripping caller auth", async () => {

@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 50 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 51 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -29,8 +29,6 @@
 Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生结构化冲突记录；三个 review-queue 端点由 API Core/Edge 承载；每次读取校验来源 `updated_at` revision 与 SHA-256 content hash，来源变化自动 tombstone；accept/reject/correct/timeout 解析具备 D1 原子写入和幂等状态。该阶段的 producer 覆盖 canonical `/v3/memories` 与 `/v3/memories/batch` 写入，手工已确认的 MCP/developer memory 不会重新进入队列。
 
 本轮新增 `GET/POST /v1/agent/*`：API Core 只返回并执行已由 D1/Workers 实现的对话、记忆和任务工具，动态第三方 App 与未迁移的 provider 工具继续 fail-closed，避免把未实现的能力暴露给模型。每一组迁移都必须同时更新 route manifest、Edge owner、回归测试、删除/残留清理和 staging live evidence；不能仅添加同路径 alias 来降低 legacy 计数。
-
-本轮新增 `GET /metrics` 的 Cloudflare staging boundary：Edge 只转发显式 operational Bearer，不转发 cookie 或内部身份 header；API Core 校验 `METRICS_SECRET`，secret 未配置或 Prometheus scrape authority 未建立时统一返回 `503 metrics_unavailable`，错误凭据返回 `401`。Worker 不生成零值或历史 Prometheus 文本，因此该路由已从 legacy owner 移出，但不宣称指标数据迁移完成；后续需要独立的聚合/保留策略和 scrape authority。
 
 本轮新增 `POST /v2/chat/generate-reply`：API AI 使用 Workers AI 或已验证的 OpenAI BYOK 生成无状态草稿，历史只作为受限 prompt 输入，不创建聊天 session、不写入消息；D1 仅记录独立的 `v2_chat_generate_reply` 配额事件并在 provider 返回后结算，失败会关闭预留。Edge、manifest 和回归测试已同步更新。
 

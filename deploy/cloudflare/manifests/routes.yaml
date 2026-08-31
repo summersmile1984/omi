@@ -51,16 +51,6 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
-    path: /metrics
-    owner: api-core
-    runtime: python-worker
-    target_runtime: python-worker
-    auth_authority: metrics-secret
-    dependencies: [worker-secrets]
-    protocol: http
-    rollout: staging-only
-    rollback: edge-route-to-legacy
-  - method: GET
     path: /updates/latest
     owner: api-core
     runtime: python-worker
@@ -4102,6 +4092,16 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /memory/admin/users/{uid}/non-active-route-report
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-key
     dependencies: [d1-app]
     protocol: http
     rollout: staging-only

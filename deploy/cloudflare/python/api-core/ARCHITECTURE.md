@@ -51,6 +51,18 @@ The projection and control tables share the account-deletion mutation fence
 and residual purge surface. No production backfill or control-writer endpoint
 is implied by this read route.
 
+`memory_admin_routes.py` owns the staging-only
+`GET /memory/admin/users/{uid}/non-active-route-report` read boundary. It
+reads the generation-bound `cf_memory_non_active_routes` projection only after
+validating the server-owned `ADMIN_KEY`, completed destination-bound cutover,
+and account-deletion fence. The route preserves the legacy six-outcome audit
+shape and red flags for duplicate, missing, or default-visible outcomes, but
+it never reads Firestore or creates capability rows. The paired
+`POST /memory/admin/users/{uid}/short-term-lifecycle/run` remains legacy-owned:
+its runner still reads Firestore memory items and writes Firestore transition
+records, so no Cloudflare owner is declared until a D1 transition authority,
+lease/idempotency contract, Queue consumer, and backfill exist.
+
 `memory_review_routes.py` owns the D1 `cf_memory_review_queue` projection for
 canonical memory conflicts. The `/v3/memories/review-queue*` endpoints are
 uid-scoped behind Edge Better Auth, and canonical memory create/batch writes
