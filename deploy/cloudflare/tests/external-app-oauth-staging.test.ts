@@ -307,6 +307,29 @@ describe("namespaced external app OAuth staging seam", () => {
     ).toMatchObject({ uid: "legacy-user", status: "consumed" });
   });
 
+  it("marks legacy OAuth configuration errors as non-cacheable", async () => {
+    const { env, appId } = environment();
+    env.LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED = "true";
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerExternalAppOauthRoutes(
+      app,
+      async () => null,
+      { now: () => NOW },
+      { surface: "legacy" },
+    );
+
+    const response = await app.request(
+      `https://jobs.test/v1/oauth/authorize?app_id=${appId}`,
+      {},
+      env,
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      detail: "Firebase sign-in is not configured for this environment.",
+    });
+  });
+
   it("bounds multipart Firebase forms even when Content-Length is absent", async () => {
     const { env, appId } = environment();
     env.LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED = "true";

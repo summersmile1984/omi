@@ -207,14 +207,23 @@ function escapeHtml(value: string): string {
 }
 
 function errorResponse(c: JobsContext, error: unknown): Response {
+  const legacyPath = new URL(c.req.url).pathname.startsWith("/v1/oauth/");
   if (error instanceof ExternalAppOauthError) {
-    if (new URL(c.req.url).pathname.startsWith("/v1/oauth/")) {
-      return c.json({ detail: legacyErrorDetail(error.code) }, error.status);
+    if (legacyPath) {
+      return c.json(
+        { detail: legacyErrorDetail(error.code) },
+        error.status,
+        { "cache-control": "no-store" },
+      );
     }
     return c.json({ error: error.code }, error.status);
   }
-  return new URL(c.req.url).pathname.startsWith("/v1/oauth/")
-    ? c.json({ detail: "External app authorization is unavailable." }, 503)
+  return legacyPath
+    ? c.json(
+        { detail: "External app authorization is unavailable." },
+        503,
+        { "cache-control": "no-store" },
+      )
     : c.json({ error: "external_app_oauth_unavailable" }, 503);
 }
 
