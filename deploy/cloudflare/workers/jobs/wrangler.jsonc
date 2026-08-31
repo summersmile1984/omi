@@ -28,6 +28,7 @@
     "PHONE_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED": "false",
     "CHAT_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "WRAPPED_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "LEGACY_CHAT_FILES_STAGING_ENABLED": "true",
     "WORKERS_AI_CHAT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "FREE_CHAT_QUESTIONS_PER_MONTH": "30",
@@ -44,6 +45,9 @@
   // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, HUME_WEBHOOK_SIGNING_KEY,
   // optional OPENAI_API_KEY and CHAT_FILE_THUMBNAIL_SECRET for the chat-file
   // provider/thumbnail boundary, and optional RAPID_API_HOST/RAPID_API_KEY.
+  // WRAPPED_HISTORY_IMPORT_STAGING_ENABLED remains false by default; the
+  // reviewed Wrapped history apply route uses ADMIN_KEY and never reads a
+  // Firestore export or invokes a provider.
   // CHAT_HISTORY_IMPORT_SIGNING_SECRET is required together with the explicit
   // chat-history apply staging gate; it must be at least 32 bytes.
   // MCP_APP_TOKEN_ENCRYPTION_SECRET is required when either the namespaced

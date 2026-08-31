@@ -175,4 +175,6 @@ export type JobsEnv = {
   CHAT_HISTORY_IMPORT_STAGING_ENABLED?: string;
   /** HMAC secret for content-bound chat-history apply plans. */
   CHAT_HISTORY_IMPORT_SIGNING_SECRET?: string;
+  /** Explicit operator gate for reviewed historical Wrapped result promotion. */
+  WRAPPED_HISTORY_IMPORT_STAGING_ENABLED?: string;
 };
