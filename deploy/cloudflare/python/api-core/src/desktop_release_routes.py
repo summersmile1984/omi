@@ -1465,6 +1465,25 @@ async def register_desktop_release_manifest(
     return {"success": True, "manifest": manifest}
 
 
+@router.post("/v2/desktop/clear-cache")
+async def clear_desktop_cache(request: Request):
+    """Retain the admin cache-invalidation contract for the D1 projection.
+
+    Cloudflare desktop feeds read immutable manifests and channel pointers from
+    D1, so there is no Redis/GitHub response cache to purge. Keeping this
+    endpoint in API Core lets existing release automation safely retry the
+    invalidation step without reaching the legacy backend or mutating release
+    state.
+    """
+    if not _release_manifest_key_valid(request):
+        raise HTTPException(status_code=403, detail="You are not authorized to perform this action")
+    return {
+        "success": True,
+        "message": "Desktop releases cache cleared successfully",
+        "projection": "d1",
+    }
+
+
 @router.get("/v2/desktop/releases/{release_id}")
 async def get_desktop_release_manifest(
     request: Request,

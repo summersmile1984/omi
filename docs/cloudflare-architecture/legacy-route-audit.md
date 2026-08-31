@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 82 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 81 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -13,13 +13,13 @@
 | Task intelligence / staged tasks | `/v1/staged-tasks*`、`/v1/task-intelligence/*`、`/v1/what-matters-now*` | candidate/recommendation store、generation fence、LLM judgment、device snapshot | candidate D1 projection 和 generation contract 完成前保持 fail-closed legacy owner |
 | Persona / apps | `/v1/personas` mutation、`/v1/apps/*` MCP mutation、Twitter ownership | multipart 图片、R2、LLM prompt、Twitter provider identity 与 public app cache | 默认 Persona 和只读 profile 已迁移；通用 Persona mutation/Twitter ownership 需完整 D1/R2/provider contract |
 | Memory admin / Archive / Vector / review | `/memory/admin/*`、`/memory/archive/search`、`/memory/vector/search`、`/v3/memories/review-queue*` | Archive capability、Vectorize hydrate、Firestore review-conflict authority | `/memory/search` 已迁移；其余路线分别补齐 capability、projection 和 review producer 后再切换 |
-| Desktop release mutation/manifest | beta admission/promotion、breakglass | beta admission/promotion CAS、release pipeline 回填和生产 Firestore→D1 回放 | immutable manifest 与 macOS Stable channel pointer 已进入 D1；manifest GET/POST、Stable promotion 在 staging 由 API Core 提供，下一步回填发布流水线并复验 Beta 晋级族 |
+| Desktop release mutation/manifest | beta admission/promotion、breakglass | beta admission/promotion CAS、release pipeline 回填和生产 Firestore→D1 回放 | immutable manifest、macOS Stable channel pointer 和 cache-invalidation contract 已进入 D1；manifest GET/POST、Stable promotion、`clear-cache` 在 staging 由 API Core 提供，下一步回填发布流水线并复验 Beta 晋级族 |
 | Metrics / wrapped / analytics | `/metrics`、`/v1/wrapped/*`、部分分析端点 | Prometheus/历史分析数据不在当前 D1 authority | 定义聚合与保留策略；不能以空响应冒充迁移完成 |
 | Hume callback / provider webhooks | `/v1/agents/hume/callback` | 外部 webhook schema、幂等、长处理和重试 | 先落 Queue receipt 与 provider signature contract，再切 webhook owner |
 
 ## 当前可执行顺序
 
-1. 让 release pipeline 使用 `.github/scripts/backfill-desktop-release-manifest.py` 回填已迁移的 D1 immutable manifest；Stable promotion 已由 API Core/D1 的 generation CAS 承接，完成 Firestore→D1 回放后再迁移 beta admission/promotion 与 breakglass。该工具只读 legacy manifest、验证 v1 digest，再向 Cloudflare Edge 的 `/v2/desktop/releases` 做幂等 POST，不改变 channel pointer。
+1. 让 release pipeline 使用 `.github/scripts/backfill-desktop-release-manifest.py` 回填已迁移的 D1 immutable manifest；Stable promotion 和 `clear-cache` 已由 API Core/D1 承接，完成 Firestore→D1 回放后再迁移 beta admission/promotion 与 breakglass。该工具只读 legacy manifest、验证 v1 digest，再向 Cloudflare Edge 的 `/v2/desktop/releases` 做幂等 POST，不改变 channel pointer。
 2. 设计并落地 memory review-conflict D1 表及 producer，随后迁移 review queue 的三个端点。
 3. 建立 conversation finalization 的 Jobs/D1 lease projection，成组迁移 status、finalize、reprocess 和 merge。
 4. 完成 candidate/recommendation authority 后，再处理 staged-tasks 与 What Matters Now；在此之前保持现有 404/legacy 边界。

@@ -535,7 +535,7 @@
     {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/desktop/beta/candidates/reserve", "protocol": "http", "target_runtime": "legacy"},
     {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/desktop/beta/promote-candidate", "protocol": "http", "target_runtime": "legacy"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/desktop/channels/promote", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/desktop/clear-cache", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/desktop/clear-cache", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/desktop/messages", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/desktop/previews/publish", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/desktop/releases", "protocol": "http", "target_runtime": "python-worker"},

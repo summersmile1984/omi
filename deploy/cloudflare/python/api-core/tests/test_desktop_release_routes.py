@@ -29,6 +29,7 @@ from desktop_release_routes import (  # noqa: E402
     promote_desktop_channel,
     publish_desktop_preview,
     register_desktop_release_manifest,
+    clear_desktop_cache,
 )
 
 
@@ -575,6 +576,20 @@ def test_desktop_release_manifest_requires_admin_key_and_rejects_immutable_confl
         asyncio.run(register_desktop_release_manifest(request, desktop_manifest_payload(notes="changed")))
     assert conflict.value.status_code == 409
     assert "immutable metadata" in str(conflict.value.detail)
+
+
+def test_desktop_cache_invalidation_is_admin_only_and_d1_is_already_uncached():
+    env = make_env()
+    with pytest.raises(HTTPException) as unauthorized:
+        asyncio.run(clear_desktop_cache(FakeRequest(env)))
+    assert unauthorized.value.status_code == 403
+
+    result = asyncio.run(clear_desktop_cache(FakeRequest(env, {"secret-key": "admin-secret"})))
+    assert result == {
+        "success": True,
+        "message": "Desktop releases cache cleared successfully",
+        "projection": "d1",
+    }
 
 
 def test_desktop_release_manifest_fails_closed_for_missing_or_corrupt_projection():

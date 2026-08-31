@@ -200,6 +200,16 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/desktop/clear-cache
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/personas
     owner: api-core
