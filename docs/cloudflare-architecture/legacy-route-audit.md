@@ -28,8 +28,7 @@
 
 ## Staging evidence（2026-08-31）
 
-- API Core `omi-cf-api-core-staging` deployed version: `9a5a3f8a-52ce-4b09-a43b-cf85f85751c8`。
-- Edge `omi-cf-edge-staging` deployed version: `18d392cb-497d-4a3b-aca2-71529b5c1153`。
+- 最近一次完整 staging 发布（2026-08-31）的 Worker 版本为：Auth `70d200b0-5782-45f5-b580-47972f5eaf6c`、Rate Limit `9e07450b-71b6-40cd-bc20-6dce852bd354`、API Core `50fb07d7-f464-43aa-a6ea-9560360c4280`、API AI `0cb00547-0ab3-4480-a7ef-3735fecd0a6e`、Realtime `50476c78-b356-4e7e-86b4-d8e3a569a192`、Jobs `f7e2f73b-4409-4def-96ff-18d3bb4366a9`、Edge `a991ab93-8013-40b9-8172-4a2049ffe5e9`、Web `055963c1-bfd3-4d6d-bf2c-f02114df2f3f`。
 - `POST /updates/releases` 和 `PATCH /updates/releases/promote` 通过 Edge 实测返回 `401 Invalid or missing X-Release-Secret header`（不是 404），证明请求已进入 API Core 的新 owner；staging 当前尚未注入 `RELEASE_SECRET`，因此没有执行真实写入探针。
 - `/health` 通过 Edge 实测返回 `200`；`POST /v2/desktop/beta/candidates/reserve`、`POST /v2/desktop/beta/promote-candidate`、`PUT /v2/desktop/beta/admission`、`POST /v2/desktop/beta/breakglass` 在缺少凭据时分别返回 `401`、`401`、`403`、`403`（均非 `404`）。staging 尚未注入 `BETA_PROMOTION_TOKEN`/`GITHUB_TOKEN`，因此没有伪造 Beta 正向 promotion 或 GitHub 证据结果。
 - `npm run smoke:staging` 通过：Edge/v1 health、Apple association、OpenAI Apps challenge、公告、趋势、app reviews、支付边界均符合预期；authenticated checks 因未提供 smoke bearer token 而跳过。Calendar Google events 未认证探针返回 `401`（不是 `404`）。
