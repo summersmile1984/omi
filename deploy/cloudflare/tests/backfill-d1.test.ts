@@ -185,7 +185,7 @@ describe("D1 backfill SQL generator", () => {
       normalizeRow("cf_chat_sessions", {
         uid: "user-1",
         id: "session-2",
-        title: "bad\n title",
+        title: "bad\0 title",
         created_at: 1,
         updated_at: 1,
       }),

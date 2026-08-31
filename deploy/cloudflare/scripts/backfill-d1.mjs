@@ -924,7 +924,10 @@ function validateChatText(value, column, { min = 0, max = 500 } = {}) {
   if (typeof value !== "string" || value.length < min || value.length > max) {
     fail(`${column} is invalid`);
   }
-  if (/[\u0000-\u001f\u007f]/.test(value)) fail(`${column} contains control characters`);
+  // Firestore chat titles/previews historically allowed line breaks.  Keep
+  // that wire behavior while refusing NUL, which cannot safely cross D1/JSON
+  // tooling boundaries.
+  if (value.includes("\0")) fail(`${column} contains control characters`);
 }
 
 function normalizeTimestamp(value) {
