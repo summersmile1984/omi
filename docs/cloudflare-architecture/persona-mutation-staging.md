@@ -17,4 +17,4 @@
 
 ## 验证
 
-`deploy/cloudflare/tests/persona-mutations.test.ts` 覆盖认证、图片校验、D1/R2 创建、Workers AI 描述调用和重复 multipart 幂等；manifest 与 Edge/Jobs route registration 同步更新。部署 staging 前还需按统一发布流程应用已有 App migrations，并做一次隔离 Better Auth 账号的正向创建及删号残留扫描。
+`deploy/cloudflare/tests/persona-mutations.test.ts` 覆盖认证、图片校验、D1/R2 创建、Workers AI 描述调用和重复 multipart 幂等；manifest 与 Edge/Jobs route registration 同步更新。2026-08-31 staging 实测 `POST /v1/personas` 返回 200，完全重复 multipart 返回相同 `app_id`，账号随后通过公开删号清理。
