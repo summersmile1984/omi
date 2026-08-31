@@ -928,7 +928,10 @@ async function processJobMessage(
     await processVectorProjectionMessage(message, env);
     return;
   }
-  if (message.body.kind === "conversation_finalize") {
+  if (
+    message.body.kind === "conversation_finalize" ||
+    message.body.kind === "conversation_reprocess"
+  ) {
     await processConversationFinalizationMessage(message, env);
     return;
   }

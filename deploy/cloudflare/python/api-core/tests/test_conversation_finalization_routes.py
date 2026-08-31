@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from conversation_finalization_routes import (  # noqa: E402
     finalize_conversation,
     get_conversation_finalization_status,
+    process_conversation_finalization,
+    reprocess_conversation,
 )
 
 SECRET = "conversation-finalization-test-secret"
@@ -33,6 +35,9 @@ class FakeStatement:
     async def first(self):
         row = self.connection.execute(self.sql, self.args).fetchone()
         return dict(row) if row is not None else None
+
+    async def all(self):
+        return {"results": [dict(row) for row in self.connection.execute(self.sql, self.args).fetchall()]}
 
     async def run(self):
         cursor = self.connection.execute(self.sql, self.args)
@@ -76,9 +81,10 @@ class FakeQueue:
 
 
 class FakeRequest:
-    def __init__(self, env, *, headers=None, body=None):
+    def __init__(self, env, *, headers=None, body=None, query_params=None):
         self.scope = {"env": env}
         self.headers = headers or {}
+        self.query_params = query_params or {}
         self._body = json.dumps(body or {}).encode()
 
     async def body(self):
@@ -156,3 +162,160 @@ def test_finalize_is_idempotent_for_completed_conversation():
     response = asyncio.run(finalize_conversation(FakeRequest(env, headers=auth_headers()), CONVERSATION_ID))
     assert response["conversation"]["status"] == "completed"
     assert queue.messages == []
+
+
+def test_reprocess_admits_parameterized_job_and_preserves_conversation_wire_shape():
+    env, queue = environment()
+    env.APP_DB.connection.execute(
+        "UPDATE cf_conversations SET status = 'completed', finished_at = 120, discarded = 1 WHERE uid = ? AND id = ?",
+        (UID, CONVERSATION_ID),
+    )
+    env.APP_DB.connection.commit()
+    response = asyncio.run(
+        reprocess_conversation(
+            FakeRequest(
+                env,
+                headers=auth_headers(),
+                query_params={"language_code": "fr", "app_id": "calendar-app"},
+            ),
+            CONVERSATION_ID,
+        )
+    )
+
+    assert response["id"] == CONVERSATION_ID
+    assert response["status"] == "processing"
+    assert len(queue.messages) == 1
+    assert queue.messages[0] == {
+        "jobId": queue.messages[0]["jobId"],
+        "uid": UID,
+        "kind": "conversation_reprocess",
+        "payload": {
+            "conversationId": CONVERSATION_ID,
+            "revision": queue.messages[0]["payload"]["revision"],
+            "languageCode": "fr",
+            "appId": "calendar-app",
+        },
+    }
+    job = env.APP_DB.connection.execute(
+        "SELECT operation, language_code, app_id, status FROM cf_conversation_finalization_jobs"
+    ).fetchone()
+    assert tuple(job) == ("reprocess", "fr", "calendar-app", "queued")
+
+
+def test_reprocess_is_idempotent_while_job_is_processing():
+    env, queue = environment()
+    first = asyncio.run(reprocess_conversation(FakeRequest(env, headers=auth_headers()), CONVERSATION_ID))
+    second = asyncio.run(reprocess_conversation(FakeRequest(env, headers=auth_headers()), CONVERSATION_ID))
+
+    assert first["id"] == second["id"] == CONVERSATION_ID
+    assert first["status"] == second["status"] == "processing"
+    assert len(queue.messages) == 1
+
+
+def test_reprocess_returns_not_found_for_missing_d1_conversation():
+    env, queue = environment()
+    env.APP_DB.connection.execute("DELETE FROM cf_conversations WHERE uid = ? AND id = ?", (UID, CONVERSATION_ID))
+    env.APP_DB.connection.commit()
+    response = asyncio.run(reprocess_conversation(FakeRequest(env, headers=auth_headers()), CONVERSATION_ID))
+
+    assert response.status_code == 404
+    assert queue.messages == []
+
+
+def test_reprocess_processor_replaces_derived_rows_and_restores_external_data(monkeypatch):
+    env, queue = environment()
+    env.APP_DB.connection.execute(
+        "UPDATE cf_conversations SET status = 'completed', finished_at = 120, discarded = 1, "
+        "external_data_json = '{\"calendar_event_id\":\"event-1\"}' WHERE uid = ? AND id = ?",
+        (UID, CONVERSATION_ID),
+    )
+    env.APP_DB.connection.commit()
+    asyncio.run(reprocess_conversation(FakeRequest(env, headers=auth_headers()), CONVERSATION_ID))
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_action_items (uid, id, description, status, source, provenance_json, conversation_id, created_at, updated_at) "
+        "VALUES (?, 'old-action', 'old action', 'active', 'developer', '[]', ?, 100, 100)",
+        (UID, CONVERSATION_ID),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_memories (uid, id, content, memory_tier, valid_at, conversation_id, created_at, updated_at) "
+        "VALUES (?, 'old-memory', 'old memory', 'short_term', 100, ?, 100, 100)",
+        (UID, CONVERSATION_ID),
+    )
+    env.APP_DB.connection.commit()
+
+    async def fake_targets(_env, _uid):
+        return [], None
+
+    async def fake_enrichment(_env, _transcript, _language):
+        return {
+            "structured": {
+                "title": "Reprocessed",
+                "overview": "Updated summary",
+                "emoji": "🧠",
+                "category": "work",
+                "action_items": [{"description": "new action"}],
+                "events": [],
+            },
+            "memories": ["new memory"],
+            "discarded": False,
+        }
+
+    async def fake_publish(_env, *, uid, source_kind, source_id):
+        return None
+
+    monkeypatch.setattr("conversation_finalization_routes._fanout_targets", fake_targets)
+    monkeypatch.setattr("conversation_finalization_routes._enrichment", fake_enrichment)
+    monkeypatch.setattr("developer_conversation_create_routes.publish_vector_projection", fake_publish)
+    job = env.APP_DB.connection.execute(
+        "SELECT job_id, finalization_revision FROM cf_conversation_finalization_jobs WHERE operation = 'reprocess'"
+    ).fetchone()
+    response = asyncio.run(
+        process_conversation_finalization(
+            FakeRequest(
+                env,
+                headers=auth_headers(authority="internal"),
+                body={
+                    "job_id": job[0],
+                    "conversation_id": CONVERSATION_ID,
+                    "revision": job[1],
+                    "operation": "reprocess",
+                    "language_code": "en",
+                },
+            )
+        )
+    )
+
+    assert response["operation"] == "reprocess"
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT COUNT(*) FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND id = 'old-action'",
+            (UID, CONVERSATION_ID),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT COUNT(*) FROM cf_memories WHERE uid = ? AND conversation_id = ? AND id = 'old-memory'",
+            (UID, CONVERSATION_ID),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT COUNT(*) FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND description = 'new action'",
+            (UID, CONVERSATION_ID),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT COUNT(*) FROM cf_memories WHERE uid = ? AND conversation_id = ? AND content = 'new memory'",
+            (UID, CONVERSATION_ID),
+        ).fetchone()[0]
+        == 1
+    )
+    conversation = env.APP_DB.connection.execute(
+        "SELECT status, discarded, external_data_json FROM cf_conversations WHERE uid = ? AND id = ?",
+        (UID, CONVERSATION_ID),
+    ).fetchone()
+    assert tuple(conversation) == ("completed", 0, '{"calendar_event_id":"event-1"}')

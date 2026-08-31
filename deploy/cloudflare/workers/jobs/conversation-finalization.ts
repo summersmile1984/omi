@@ -14,6 +14,9 @@ type FinalizationJobRow = {
   conversation_id: string;
   job_id: string;
   finalization_revision: number;
+  operation: "finalize" | "reprocess";
+  language_code: string | null;
+  app_id: string | null;
   status: "queued" | "running" | "completed" | "failed";
   attempts: number;
   lease_until: number | null;
@@ -24,7 +27,12 @@ function validString(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength;
 }
 
-function parsePayload(value: unknown): { conversationId: string; revision: number } | null {
+function parsePayload(value: unknown): {
+  conversationId: string;
+  revision: number;
+  languageCode: string | null;
+  appId: string | null;
+} | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const payload = value as Record<string, unknown>;
   const conversationId = payload.conversationId;
@@ -32,7 +40,16 @@ function parsePayload(value: unknown): { conversationId: string; revision: numbe
   if (!validString(conversationId, 256)) return null;
   const parsedRevision = typeof revision === "number" ? revision : Number(revision);
   if (!Number.isSafeInteger(parsedRevision) || parsedRevision < 0) return null;
-  return { conversationId, revision: parsedRevision };
+  const languageCode = payload.languageCode;
+  const appId = payload.appId;
+  if (languageCode !== undefined && (typeof languageCode !== "string" || languageCode.length > 32)) return null;
+  if (appId !== undefined && (typeof appId !== "string" || appId.length > 256)) return null;
+  return {
+    conversationId,
+    revision: parsedRevision,
+    languageCode: typeof languageCode === "string" ? languageCode : null,
+    appId: typeof appId === "string" ? appId : null,
+  };
 }
 
 function parseJobRow(value: unknown): FinalizationJobRow | null {
@@ -73,6 +90,9 @@ function parseJobRow(value: unknown): FinalizationJobRow | null {
     conversation_id: row.conversation_id,
     job_id: row.job_id,
     finalization_revision: revision,
+    operation: row.operation === "reprocess" ? "reprocess" : "finalize",
+    language_code: typeof row.language_code === "string" ? row.language_code : null,
+    app_id: typeof row.app_id === "string" ? row.app_id : null,
     status: row.status,
     attempts,
     lease_until: leaseUntil,
@@ -84,10 +104,12 @@ function jobMessage(job: FinalizationJobRow): JobMessage {
   return {
     jobId: job.job_id,
     uid: job.uid,
-    kind: "conversation_finalize",
+    kind: job.operation === "reprocess" ? "conversation_reprocess" : "conversation_finalize",
     payload: {
       conversationId: job.conversation_id,
       revision: job.finalization_revision,
+      ...(job.language_code ? { languageCode: job.language_code } : {}),
+      ...(job.app_id ? { appId: job.app_id } : {}),
     },
   };
 }
@@ -153,6 +175,9 @@ async function callProcessor(
         job_id: job.job_id,
         conversation_id: job.conversation_id,
         revision: job.finalization_revision,
+        operation: job.operation,
+        ...(job.language_code ? { language_code: job.language_code } : {}),
+        ...(job.app_id ? { app_id: job.app_id } : {}),
       }),
     }),
   );
@@ -164,7 +189,7 @@ export async function processConversationFinalizationMessage(
 ): Promise<void> {
   const payload = parsePayload(message.body.payload);
   if (
-    message.body.kind !== "conversation_finalize" ||
+    (message.body.kind !== "conversation_finalize" && message.body.kind !== "conversation_reprocess") ||
     !validString(message.body.uid, 256) ||
     !validString(message.body.jobId, 128) ||
     !payload
@@ -174,7 +199,7 @@ export async function processConversationFinalizationMessage(
   }
   const now = Math.floor(Date.now() / 1_000);
   const raw = await env.APP_DB.prepare(
-    "SELECT uid, conversation_id, job_id, finalization_revision, status, attempts, lease_until, next_attempt_at " +
+    "SELECT uid, conversation_id, job_id, finalization_revision, operation, language_code, app_id, status, attempts, lease_until, next_attempt_at " +
       "FROM cf_conversation_finalization_jobs WHERE uid = ? AND job_id = ?",
   )
     .bind(message.body.uid, message.body.jobId)
@@ -183,7 +208,10 @@ export async function processConversationFinalizationMessage(
   if (
     !existing ||
     existing.conversation_id !== payload.conversationId ||
-    existing.finalization_revision !== payload.revision
+    existing.finalization_revision !== payload.revision ||
+    (existing.operation === "reprocess") !== (message.body.kind === "conversation_reprocess") ||
+    (existing.operation === "reprocess" &&
+      (existing.language_code !== payload.languageCode || existing.app_id !== payload.appId))
   ) {
     message.ack();
     return;
@@ -249,7 +277,7 @@ export async function reconcileConversationFinalizations(
   now: number,
 ): Promise<void> {
   const result = await env.APP_DB.prepare(
-    "SELECT uid, conversation_id, job_id, finalization_revision, status, attempts, lease_until, next_attempt_at " +
+    "SELECT uid, conversation_id, job_id, finalization_revision, operation, language_code, app_id, status, attempts, lease_until, next_attempt_at " +
       "FROM cf_conversation_finalization_jobs WHERE (status = 'queued' AND next_attempt_at <= ?) " +
       "OR (status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?) " +
       "ORDER BY next_attempt_at, updated_at LIMIT ?",
@@ -274,7 +302,7 @@ export async function reconcileConversationFinalizations(
         "UPDATE cf_conversation_finalization_jobs SET next_attempt_at = ?, last_error = ?, updated_at = ? " +
           "WHERE uid = ? AND job_id = ? AND status = 'queued'",
       )
-        .bind(now + RETRY_DELAY_SECONDS, "conversation finalization queue unavailable", now, job.uid, job.job_id)
+        .bind(now + RETRY_DELAY_SECONDS, "conversation processor queue unavailable", now, job.uid, job.job_id)
         .run();
       recordFallback({
         component: "other",

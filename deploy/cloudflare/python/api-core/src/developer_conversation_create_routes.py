@@ -688,20 +688,12 @@ def _memory_usage_insert(env: object, uid: str, rows: list[dict[str, object]]):
 def _vector_insert(env: object, uid: str, rows: list[dict[str, object]], now: int):
     projections = [
         {
-            "kind": "conversation",
-            "id": rows[0]["conversation_id"] if rows else "",
-            "operation": rows[0].get("operation", "upsert") if rows else "upsert",
-        },
-        *(
-            {"kind": "action_item", "id": row["id"], "operation": "upsert"}
-            for row in rows
-            if row.get("row_kind") == "action_item"
-        ),
-        *(
-            {"kind": "memory", "id": row["id"], "operation": "upsert"}
-            for row in rows
-            if row.get("row_kind") == "memory"
-        ),
+            "kind": row.get("row_kind") or "conversation",
+            "id": row.get("id") or row.get("conversation_id") or "",
+            "operation": row.get("operation", "upsert"),
+        }
+        for row in rows
+        if (row.get("id") or row.get("conversation_id"))
     ]
     return env.APP_DB.prepare(
         "INSERT INTO cf_vector_projection_outbox "
@@ -762,6 +754,7 @@ async def _persist_completed(
     developer_webhook_url: str | None,
     now: int,
     claim_json: str | None | object = _NO_CONVERSATION_CLAIM,
+    replace_derived: bool = False,
 ) -> None:
     conversation_id = str(payload["id"])
     structured = payload["structured"] if isinstance(payload["structured"], dict) else {}
@@ -778,9 +771,57 @@ async def _persist_completed(
     memory_contents = [] if discarded else list(payload.pop("_memory_contents", []))
     action_rows = _action_rows(uid, conversation_id, descriptions, now)
     memory_rows = _memory_rows(uid, conversation_id, memory_contents, now)
-    projection_rows: list[dict[str, object]] = [
-        {"conversation_id": conversation_id, "operation": "delete" if discarded else "upsert"}
-    ]
+    projection_rows: list[dict[str, object]] = []
+    cleanup_statements = []
+    if replace_derived:
+        old_actions = (
+            await env.APP_DB.prepare(
+                "SELECT id FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND deleted = 0 "
+                "AND source IN ('developer', 'legacy')"
+            )
+            .bind(uid, conversation_id)
+            .all()
+        )
+        old_memories = (
+            await env.APP_DB.prepare(
+                "SELECT id FROM cf_memories WHERE uid = ? AND conversation_id = ? AND deleted_at IS NULL "
+                "AND manually_added = 0"
+            )
+            .bind(uid, conversation_id)
+            .all()
+        )
+        old_action_ids = [
+            str(row["id"]) for row in (old_actions.get("results", []) if isinstance(old_actions, dict) else [])
+        ]
+        old_memory_ids = [
+            str(row["id"]) for row in (old_memories.get("results", []) if isinstance(old_memories, dict) else [])
+        ]
+        projection_rows.extend(
+            {"row_kind": "action_item", "id": item_id, "operation": "delete"} for item_id in old_action_ids
+        )
+        projection_rows.extend(
+            {"row_kind": "memory", "id": memory_id, "operation": "delete"} for memory_id in old_memory_ids
+        )
+        cleanup_statements.extend(
+            [
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND deleted = 0 "
+                    "AND source IN ('developer', 'legacy')"
+                ).bind(uid, conversation_id),
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_memories WHERE uid = ? AND conversation_id = ? AND deleted_at IS NULL "
+                    "AND manually_added = 0"
+                ).bind(uid, conversation_id),
+            ]
+        )
+        if old_memory_ids:
+            cleanup_statements.append(
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_usage_sources WHERE uid = ? AND source_kind = 'memory' "
+                    "AND source_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))"
+                ).bind(uid, _json(old_memory_ids))
+            )
+    projection_rows.append({"conversation_id": conversation_id, "operation": "delete" if discarded else "upsert"})
     projection_rows.extend({**row, "row_kind": "action_item"} for row in action_rows)
     projection_rows.extend({**row, "row_kind": "memory"} for row in memory_rows)
     fanout_json = _json(payload)
@@ -788,6 +829,7 @@ async def _persist_completed(
     finished = int(datetime.fromisoformat(str(payload["finished_at"])).timestamp())
     segments = payload["transcript_segments"] if isinstance(payload["transcript_segments"], list) else []
     statements = [
+        *cleanup_statements,
         (
             _conversation_complete_update(env, uid=uid, payload=payload, now=now, claim_json=claim_json)
             if claim_json is not _NO_CONVERSATION_CLAIM

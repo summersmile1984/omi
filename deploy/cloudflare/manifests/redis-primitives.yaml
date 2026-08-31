@@ -369,6 +369,7 @@ families:
       - chat:send_message
       - conversations:from-segments
       - conversations:finalize
+      - conversations:reprocess
       - conversations:search
       - dev:conversations
       - dev:goals_write
@@ -402,6 +403,7 @@ families:
       - GET /v1/knowledge-graph/canonical
       - POST /v1/conversations/from-segments
       - POST /v1/conversations/:conversationId/finalize
+      - POST /v1/conversations/:conversationId/reprocess
       - POST /v1/conversations/search
       - POST /v3/memory-imports/batch
       - GET /v3/memories/review-queue

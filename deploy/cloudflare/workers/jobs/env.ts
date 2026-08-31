@@ -11,7 +11,8 @@ export type JobMessage = {
     | "recording_delete"
     | "app_delete"
     | "stripe_webhook"
-    | "conversation_finalize";
+    | "conversation_finalize"
+    | "conversation_reprocess";
   payload: Record<string, unknown>;
 };
 

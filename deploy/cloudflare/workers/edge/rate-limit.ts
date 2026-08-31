@@ -77,6 +77,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 30,
     windowSeconds: 3600,
   },
+  "conversations:reprocess": {
+    name: "conversations:reprocess",
+    maxRequests: 3,
+    windowSeconds: 3600,
+  },
   "dev:conversations": {
     name: "dev:conversations",
     maxRequests: 25,
@@ -251,6 +256,10 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     "POST /v1/conversations/:conversationId/finalize",
     EDGE_RATE_LIMIT_POLICIES["conversations:finalize"],
   ],
+  [
+    "POST /v1/conversations/:conversationId/reprocess",
+    EDGE_RATE_LIMIT_POLICIES["conversations:reprocess"],
+  ],
   ["POST /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v3/memories/batch", EDGE_RATE_LIMIT_POLICIES["memories:batch"]],
   [
@@ -344,6 +353,12 @@ export function edgeRateLimitPolicyForRequest(
     /^\/v1\/conversations\/[^/]+\/finalize$/.test(path)
   ) {
     return EDGE_RATE_LIMIT_POLICIES["conversations:finalize"];
+  }
+  if (
+    normalizedMethod === "POST" &&
+    /^\/v1\/conversations\/[^/]+\/reprocess$/.test(path)
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["conversations:reprocess"];
   }
 
   if (normalizedMethod === "DELETE" && /^\/v3\/memories\/[^/]+$/.test(path)) {

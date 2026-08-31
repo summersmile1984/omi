@@ -254,9 +254,9 @@ environment_shared:
             version: latest
         env:
           # The conversation summary pipeline runs in two services: backend-listen
-          # finalizes a live conversation, and this one runs process_conversation
-          # inline for POST /v1/conversations/{id}/reprocess. Declaring the rollout
-          # flags on only one of them makes regenerate disagree with live capture.
+          # finalizes a live conversation, while Cloudflare API Core/Jobs owns the
+          # asynchronous POST /v1/conversations/{id}/reprocess lifecycle. Declaring
+          # the rollout flags on only one of them makes regenerate disagree with capture.
           CONVERSATION_NOTES_V2_ENABLED:
             value: 'false'
             category: rollout

@@ -170,4 +170,37 @@ describe("conversation finalization jobs", () => {
       kind: "conversation_finalize",
     });
   });
+
+  it("preserves reprocess operation parameters when dispatching to API Core", async () => {
+    const { database, env } = environment();
+    database.database
+      .prepare(
+        "UPDATE cf_conversation_finalization_jobs SET operation = 'reprocess', language_code = 'fr', app_id = 'calendar-app' " +
+          "WHERE job_id = 'job-1'",
+      )
+      .run();
+    const queued = {
+      ...message(env),
+      body: {
+        ...message(env).body,
+        kind: "conversation_reprocess" as const,
+        payload: {
+          conversationId: "conversation-1",
+          revision: 100,
+          languageCode: "fr",
+          appId: "calendar-app",
+        },
+      },
+    } as unknown as Message<JobMessage>;
+
+    await processConversationFinalizationMessage(queued, env);
+
+    expect(queued.ack).toHaveBeenCalledOnce();
+    const request = (env.API_CORE?.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as Request;
+    await expect(request.json()).resolves.toMatchObject({
+      operation: "reprocess",
+      language_code: "fr",
+      app_id: "calendar-app",
+    });
+  });
 });
