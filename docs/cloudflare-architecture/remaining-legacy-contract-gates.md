@@ -90,7 +90,11 @@ Cloudflare 侧现已提供 `deploy/cloudflare/scripts/backfill-d1.mjs` 的 sessi
 
 Cloudflare 当前 `POST /v1/apps/{app_id}/refresh-manifest` 只针对 D1 中的 `chat_tools_manifest_url` 做 bounded HTTPS JSON fetch；Jobs app mutation 明确拒绝 `mcp_server_url` / `mcp_oauth_tokens` 写入，避免把 provider secrets 当普通 catalog JSON 存储。两个 endpoint 的输入、认证、token refresh、discovery、错误和返回 shape 不同，不能只做路径 alias。要迁移需要专门的加密/provider-token authority、MCP discovery adapter、CAS/cache invalidation、secret deletion 和 OAuth callback 回放。
 
-`POST /v1/apps/mcp`、`GET /v1/apps/mcp/callback` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已具备 dynamic registration/PKCE、加密 credential、provider discovery、CAS 和 deletion fence 的 staging contract；仍缺真实 provider secret、Firebase identity bridge、历史 Firestore app catalog 回放和 production cutover。`POST /v1/apps/migrate-owner` 仍依赖 Firebase anonymous identity proof 与 legacy memory re-encryption，因此保持 legacy owner。
+`POST /v1/apps/mcp`、`GET /v1/apps/mcp/callback` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已具备 dynamic registration/PKCE、加密 credential、provider discovery、CAS 和 deletion fence 的 staging contract；仍缺真实 provider secret、Firebase identity bridge、历史 Firestore app catalog 回放和 production cutover。
+
+为 owner migration 补了一个独立的 namespaced identity projection seam：`POST /v2/cf/apps/migrate-owner/identity-projection` 由 Jobs 调用 Auth 的 Identity Toolkit 验证，Auth 只返回 HMAC 派生的 `source_ref/source_uid_hash/source_proof_hash`，Jobs 在 D1 `0123_firebase_anonymous_identity_projection.sql` 中绑定目标 Better Auth generation、过期时间和删除 fence。它不保存 Firebase token，也不把 raw Firebase UID 写入 App D1；`FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED=false` 时保持 503。这个 seam 只完成 source-proof admission，尚未实现 Firestore app/persona/memory 回放、memory re-encryption 或 exact owner cutover。
+
+`POST /v1/apps/migrate-owner` 仍依赖 Firebase anonymous identity proof 与 legacy memory re-encryption，因此保持 legacy owner。
 
 ## 可执行的迁移准入证据
 

@@ -1339,6 +1339,10 @@ app.get(
   proxyAuthenticatedJobs,
 );
 app.post("/v2/cf/apps/migrate-owner", proxyAuthenticatedJobs);
+app.post(
+  "/v2/cf/apps/migrate-owner/identity-projection",
+  proxyAuthenticatedJobs,
+);
 app.get("/v2/cf/apps/migrate-owner/:jobId", proxyAuthenticatedJobs);
 // External app-consent OAuth is a Better Auth + App D1 namespaced seam. Keep
 // legacy /v1/oauth/* on its independent boundary until provider replay parity.

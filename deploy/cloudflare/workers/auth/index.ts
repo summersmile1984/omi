@@ -23,6 +23,10 @@ import {
   issueFirebaseCustomToken,
   verifyFirebaseIdToken,
 } from "./firebase-custom-token-bridge";
+import {
+  attestFirebaseAnonymousIdentity,
+  FirebaseAnonymousIdentityError,
+} from "./firebase-anonymous-identity";
 import { registerNativeAuthCompatibilityRoutes } from "./native-auth-compatibility";
 
 const app = new Hono<{ Bindings: AuthEnv }>();
@@ -45,6 +49,7 @@ const MCP_OAUTH_SCOPE_SET = new Set(MCP_OAUTH_SCOPES);
 const MCP_DATA_SCOPE_SET = new Set<string>(MCP_SCOPES);
 const MAX_MCP_VERIFY_BODY_BYTES = 4_096;
 const MAX_FIREBASE_BRIDGE_BODY_BYTES = 4_096;
+const MAX_FIREBASE_ANONYMOUS_BRIDGE_BODY_BYTES = 512;
 const MAX_FIREBASE_ID_TOKEN_BYTES = 8_192;
 
 // Keep the namespaced seam beside the Auth Worker while the exact legacy
@@ -765,6 +770,87 @@ app.post("/internal/firebase/custom-token", async (c) => {
         ? 409
         : 503;
     return c.json({ error: code }, status);
+  }
+});
+
+// Internal-only projection bridge for an anonymous Firebase account that is
+// being linked to the authenticated Better Auth target. Identity Toolkit
+// validates the bearer token first; App D1 receives only keyed hashes.
+app.post("/internal/firebase/anonymous-identity", async (c) => {
+  if (
+    c.env.FIREBASE_ANONYMOUS_IDENTITY_BRIDGE_STAGING_ENABLED !== "true"
+  ) {
+    return c.json({ error: "not_found" }, 404);
+  }
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context || context.authority !== "internal") {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const token = firebaseBearerToken(c.req.raw);
+  if (!token) return c.json({ error: "source_identity_rejected" }, 403);
+  const declaredLength = Number(c.req.header("content-length") || "0");
+  if (
+    !Number.isFinite(declaredLength) ||
+    declaredLength < 0 ||
+    declaredLength > MAX_FIREBASE_ANONYMOUS_BRIDGE_BODY_BYTES
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  let body: unknown;
+  try {
+    const raw = await c.req.text();
+    if (
+      new TextEncoder().encode(raw).byteLength >
+      MAX_FIREBASE_ANONYMOUS_BRIDGE_BODY_BYTES
+    ) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    body = JSON.parse(raw);
+  } catch {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const expectedUid =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as { expected_source_uid?: unknown }).expected_source_uid
+      : null;
+  if (
+    typeof expectedUid !== "string" ||
+    !expectedUid ||
+    new TextEncoder().encode(expectedUid).byteLength > 256
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  try {
+    const attestation = await attestFirebaseAnonymousIdentity(
+      token,
+      expectedUid,
+      c.env,
+    );
+    c.header("cache-control", "no-store");
+    return c.json({
+      target_uid: context.uid,
+      source_ref: attestation.sourceRef,
+      source_uid_hash: attestation.sourceUidHash,
+      source_proof_hash: attestation.sourceProofHash,
+      source_credential_generation: attestation.sourceCredentialGeneration,
+      source_projection_revision: attestation.sourceProjectionRevision,
+      attested_at: attestation.attestedAt,
+      expires_at: attestation.expiresAt,
+    });
+  } catch (error) {
+    const code =
+      error instanceof FirebaseAnonymousIdentityError
+        ? error.code
+        : "bridge_unavailable";
+    return c.json(
+      { error: code },
+      code === "bridge_unavailable" ? 503 : 403,
+      { "cache-control": "no-store" },
+    );
   }
 });
 

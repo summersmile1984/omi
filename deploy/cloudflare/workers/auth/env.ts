@@ -26,6 +26,10 @@ export type AuthEnv = {
   FIREBASE_API_KEY?: string;
   /** Optional assertion that the configured service account belongs to this project. */
   FIREBASE_PROJECT_ID?: string;
+  /** HMAC key for non-reversible Firebase identity evidence shared with no client. */
+  FIREBASE_IDENTITY_PROJECTION_SECRET?: string;
+  /** Explicit gate for the anonymous-source identity projection bridge. */
+  FIREBASE_ANONYMOUS_IDENTITY_BRIDGE_STAGING_ENABLED?: string;
   /** Explicit staging gate; exact legacy auth routes remain untouched. */
   FIREBASE_CUSTOM_TOKEN_BRIDGE_STAGING_ENABLED?: string;
   /** Optional 60..3600-second custom-token lifetime (default 300). */

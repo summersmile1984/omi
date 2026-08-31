@@ -53,10 +53,14 @@ class SqliteD1 {
 const databases: SqliteD1[] = [];
 const SECRET = "app-owner-migration-secret";
 const PROOF_HASH = "a".repeat(64);
+const SOURCE_UID_HASH = "b".repeat(64);
+const SOURCE_REF = `fb-anon-${SOURCE_UID_HASH}`;
+const SOURCE_REVISION = "c".repeat(64);
 
 function environment(
   processor: (request: Request) => Promise<Response> = async () =>
     new Response(null, { status: 503 }),
+  options: { seedSource?: boolean; auth?: (request: Request) => Promise<Response> } = {},
 ) {
   const database = new SqliteD1();
   databases.push(database);
@@ -69,20 +73,35 @@ function environment(
       }),
     },
     API_CORE: { fetch: vi.fn(processor) },
+    AUTH: {
+      fetch: vi.fn(
+        options.auth ||
+          (async () =>
+            Response.json({ error: "not_configured" }, { status: 503 })),
+      ),
+    },
     INTERNAL_ASSERTION_SECRET: SECRET,
     APP_OWNER_MIGRATION_STAGING_ENABLED: "true",
     APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED: "true",
+    FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED: "true",
   } as unknown as JobsEnv;
   database.database
     .prepare(
       "INSERT INTO cf_account_cutover (uid, state, account_generation, checkpoint_phase, destination_backend_bound, updated_at) VALUES (?, 'new', ?, 'completed', 1, ?)",
     )
     .run("target-user", 7, 1000);
-  database.database
-    .prepare(
-      "INSERT INTO cf_app_owner_migration_sources (source_uid, source_provider, source_proof_hash, source_projection_revision, projection_status, app_projection_count, memory_projection_count, imported_at, updated_at) VALUES (?, 'firebase-anonymous', ?, 'source-rev-1', 'imported', 2, 3, 1000, 1000)",
-    )
-    .run("anonymous-source", PROOF_HASH);
+  if (options.seedSource !== false) {
+    database.database
+      .prepare(
+        "INSERT INTO cf_app_owner_migration_sources " +
+          "(source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
+          "projection_status, app_projection_count, memory_projection_count, target_uid, " +
+          "target_account_generation, source_credential_generation, attestation_expires_at, " +
+          "imported_at, updated_at) VALUES (?, ?, 'firebase-anonymous', ?, ?, 'imported', 2, 3, " +
+          "'target-user', 7, 100, 4000000000, 1000, 1000)",
+      )
+      .run(SOURCE_REF, SOURCE_UID_HASH, PROOF_HASH, SOURCE_REVISION);
+  }
   return { database, env, sent };
 }
 
@@ -115,11 +134,42 @@ function migrationRequest(idempotencyKey = "migration-1", proof = PROOF_HASH) {
         "idempotency-key": idempotencyKey,
       },
       body: JSON.stringify({
-        source_uid: "anonymous-source",
+        source_uid: SOURCE_REF,
         source_proof_hash: proof,
       }),
     },
   );
+}
+
+function projectionRequest(
+  sourceUid = "firebase-anonymous-source",
+  sourceToken = "firebase-anonymous-id-token",
+) {
+  return new Request(
+    `https://jobs.test${appOwnerMigrationConstants.identityProjectionPath}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source_uid: sourceUid, source_token: sourceToken }),
+    },
+  );
+}
+
+function attestation(
+  overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  const now = Math.floor(Date.now() / 1_000);
+  return {
+    target_uid: "target-user",
+    source_ref: SOURCE_REF,
+    source_uid_hash: SOURCE_UID_HASH,
+    source_proof_hash: PROOF_HASH,
+    source_credential_generation: 100,
+    source_projection_revision: SOURCE_REVISION,
+    attested_at: now,
+    expires_at: now + 3_000,
+    ...overrides,
+  };
 }
 
 function queuedMessage(jobId: string, uid = "target-user"): Message<JobMessage> {
@@ -129,9 +179,9 @@ function queuedMessage(jobId: string, uid = "target-user"): Message<JobMessage> 
       uid,
       kind: "app_owner_migration",
       payload: {
-        sourceUid: "anonymous-source",
+        sourceUid: SOURCE_REF,
         targetAccountGeneration: 7,
-        sourceProjectionRevision: "source-rev-1",
+        sourceProjectionRevision: SOURCE_REVISION,
       },
     },
     attempts: 1,
@@ -145,6 +195,115 @@ afterEach(() => {
 });
 
 describe("dormant app owner migration seam", () => {
+  it("projects verified anonymous evidence without persisting the Firebase uid or token", async () => {
+    const auth = vi.fn(async (request: Request) => {
+      expect(request.headers.get("authorization")).toBe(
+        "Bearer firebase-anonymous-id-token",
+      );
+      expect(await request.json()).toEqual({
+        expected_source_uid: "firebase-anonymous-source",
+      });
+      return Response.json(attestation());
+    });
+    const { env, database } = environment(undefined, {
+      seedSource: false,
+      auth,
+    });
+    const app = appFor();
+    const first = await app.fetch(projectionRequest(), env);
+    expect(first.status).toBe(201);
+    expect(await first.json()).toMatchObject({
+      source_ref: SOURCE_REF,
+      source_proof_hash: PROOF_HASH,
+      target_account_generation: 7,
+      status: "imported",
+    });
+    const replay = await app.fetch(projectionRequest(), env);
+    expect(replay.status).toBe(200);
+    expect(auth).toHaveBeenCalledTimes(2);
+    const row = database.database
+      .prepare("SELECT * FROM cf_app_owner_migration_sources")
+      .get() as Record<string, unknown>;
+    expect(row).toMatchObject({
+      source_uid: SOURCE_REF,
+      source_uid_hash: SOURCE_UID_HASH,
+      target_uid: "target-user",
+      target_account_generation: 7,
+      projection_status: "imported",
+    });
+    expect(JSON.stringify(row)).not.toContain("firebase-anonymous-source");
+    expect(JSON.stringify(row)).not.toContain("firebase-anonymous-id-token");
+  });
+
+  it("marks changed proof evidence as conflict and rejects revoked credentials", async () => {
+    let changed = false;
+    const auth = vi.fn(async () =>
+      changed
+        ? Response.json(
+            attestation({
+              source_proof_hash: "d".repeat(64),
+              source_projection_revision: "e".repeat(64),
+              source_credential_generation: 101,
+            }),
+          )
+        : Response.json(attestation()),
+    );
+    const { env, database } = environment(undefined, {
+      seedSource: false,
+      auth,
+    });
+    const app = appFor();
+    expect((await app.fetch(projectionRequest(), env)).status).toBe(201);
+    changed = true;
+    const conflict = await app.fetch(projectionRequest(), env);
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({
+      error: "firebase_identity_projection_conflict",
+    });
+    expect(
+      database.database
+        .prepare(
+          "SELECT projection_status FROM cf_app_owner_migration_sources",
+        )
+        .get(),
+    ).toEqual({ projection_status: "conflict" });
+
+    const revoked = environment(undefined, {
+      seedSource: false,
+      auth: async () =>
+        Response.json(
+          { error: "source_identity_revoked" },
+          { status: 403 },
+        ),
+    });
+    const rejected = await app.fetch(projectionRequest(), revoked.env);
+    expect(rejected.status).toBe(403);
+    expect(await rejected.json()).toEqual({
+      error: "source_identity_revoked",
+    });
+    expect(
+      revoked.database.database
+        .prepare("SELECT COUNT(*) AS count FROM cf_app_owner_migration_sources")
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("checks the target deletion fence before sending the Firebase credential", async () => {
+    const auth = vi.fn(async () => Response.json(attestation()));
+    const { env, database } = environment(undefined, {
+      seedSource: false,
+      auth,
+    });
+    database.database
+      .prepare(
+        "INSERT INTO cf_account_deletion_intents (uid, job_id, status, phase, next_attempt_at, created_at, updated_at) VALUES (?, ?, 'pending', 'quiescing', 1000, 1000, 1000)",
+      )
+      .run("target-user", "delete-projection-target");
+    const response = await appFor().fetch(projectionRequest(), env);
+    expect(response.status).toBe(409);
+    expect(auth).not.toHaveBeenCalled();
+  });
+
   it("fails closed without the feature gate or imported anonymous proof", async () => {
     const { env } = environment();
     env.APP_OWNER_MIGRATION_STAGING_ENABLED = "false";
@@ -181,7 +340,7 @@ describe("dormant app owner migration seam", () => {
         .get(),
     ).toMatchObject({
       status: "queued",
-      source_uid: "anonymous-source",
+      source_uid: SOURCE_REF,
       target_uid: "target-user",
       attempts: 0,
     });

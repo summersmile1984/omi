@@ -531,7 +531,7 @@ describe("edge gateway", () => {
     expect(jobsRequests[4].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
-  it("routes dormant Persona/app migration seams to Jobs without forwarding credentials", async () => {
+  it("routes dormant Persona/app migration seams to Jobs without forwarding session credentials", async () => {
     const jobsRequests: Request[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
@@ -580,6 +580,25 @@ describe("edge gateway", () => {
       env as never,
     );
     expect(migrate.status).toBe(404);
+    const projection = await edge.fetch(
+      new Request(
+        "https://edge.test/v2/cf/apps/migrate-owner/identity-projection",
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer opaque-session",
+            cookie: "must-not-forward",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            source_uid: "firebase-anonymous-source",
+            source_token: "firebase-source-proof",
+          }),
+        },
+      ),
+      env as never,
+    );
+    expect(projection.status).toBe(404);
     const status = await edge.fetch(
       new Request("https://edge.test/v2/cf/apps/migrate-owner/job-1", {
         headers: {
@@ -590,7 +609,7 @@ describe("edge gateway", () => {
       env as never,
     );
     expect(status.status).toBe(404);
-    expect(jobsRequests).toHaveLength(3);
+    expect(jobsRequests).toHaveLength(4);
     for (const request of jobsRequests) {
       expect(request.headers.get("authorization")).toBeNull();
       expect(request.headers.get("cookie")).toBeNull();
@@ -604,6 +623,9 @@ describe("edge gateway", () => {
       "/v2/cf/apps/migrate-owner",
     );
     expect(new URL(jobsRequests[2].url).pathname).toBe(
+      "/v2/cf/apps/migrate-owner/identity-projection",
+    );
+    expect(new URL(jobsRequests[3].url).pathname).toBe(
       "/v2/cf/apps/migrate-owner/job-1",
     );
   });

@@ -1,6 +1,10 @@
 import type { Message } from "@cloudflare/workers-types";
 import type { Context, Hono } from "hono";
-import { createSignedAuthContext } from "../shared/auth-context";
+import {
+  AUTH_CONTEXT_HEADER,
+  AUTH_SIGNATURE_HEADER,
+  createSignedAuthContext,
+} from "../shared/auth-context";
 import type { SignedAuthContext } from "../shared/auth-context";
 import type { JobMessage, JobsEnv } from "./env";
 
@@ -19,6 +23,9 @@ import type { JobMessage, JobsEnv } from "./env";
  */
 
 const ROUTE_PATH = "/v2/cf/apps/migrate-owner";
+const IDENTITY_PROJECTION_PATH = `${ROUTE_PATH}/identity-projection`;
+const AUTH_IDENTITY_PROJECTION_PATH =
+  "/internal/firebase/anonymous-identity";
 const PROCESSOR_PATH = "/internal/apps/migrate-owner";
 const MAX_BODY_BYTES = 16_000;
 const MAX_UID_LENGTH = 256;
@@ -53,18 +60,39 @@ export type AppOwnerMigrationJobRow = {
 
 type AppOwnerMigrationSource = {
   source_uid: string;
+  source_uid_hash: string;
   source_provider: "firebase-anonymous";
   source_proof_hash: string;
   source_projection_revision: string;
   projection_status: "imported" | "revoked" | "conflict";
   app_projection_count: number;
   memory_projection_count: number;
+  target_uid: string;
+  target_account_generation: number;
+  source_credential_generation: number;
+  attestation_expires_at: number;
 };
 
 type MigrationRequest = {
   sourceUid: string;
   sourceProofHash: string;
   idempotencyKey: string;
+};
+
+type IdentityProjectionRequest = {
+  sourceUid: string;
+  sourceToken: string;
+};
+
+type AnonymousIdentityAttestation = {
+  target_uid: string;
+  source_ref: string;
+  source_uid_hash: string;
+  source_proof_hash: string;
+  source_credential_generation: number;
+  source_projection_revision: string;
+  attested_at: number;
+  expires_at: number;
 };
 
 function validText(value: unknown, maximum: number): value is string {
@@ -159,8 +187,14 @@ function parseSource(value: unknown): AppOwnerMigrationSource | null {
   const row = value as Partial<AppOwnerMigrationSource>;
   const appCount = integer(row.app_projection_count);
   const memoryCount = integer(row.memory_projection_count);
+  const targetGeneration = integer(row.target_account_generation);
+  const sourceGeneration = integer(row.source_credential_generation);
+  const expiresAt = integer(row.attestation_expires_at);
   if (
     !validText(row.source_uid, MAX_UID_LENGTH) ||
+    !row.source_uid.startsWith("fb-anon-") ||
+    !validHash(row.source_uid_hash) ||
+    row.source_uid !== `fb-anon-${row.source_uid_hash}` ||
     row.source_provider !== "firebase-anonymous" ||
     !validHash(row.source_proof_hash) ||
     !validText(row.source_projection_revision, MAX_REVISION_LENGTH) ||
@@ -168,18 +202,27 @@ function parseSource(value: unknown): AppOwnerMigrationSource | null {
       row.projection_status !== "revoked" &&
       row.projection_status !== "conflict") ||
     appCount === null ||
-    memoryCount === null
+    memoryCount === null ||
+    !validText(row.target_uid, MAX_UID_LENGTH) ||
+    targetGeneration === null ||
+    sourceGeneration === null ||
+    expiresAt === null
   ) {
     return null;
   }
   return {
     source_uid: row.source_uid,
+    source_uid_hash: row.source_uid_hash,
     source_provider: row.source_provider,
     source_proof_hash: row.source_proof_hash,
     source_projection_revision: row.source_projection_revision,
     projection_status: row.projection_status,
     app_projection_count: appCount,
     memory_projection_count: memoryCount,
+    target_uid: row.target_uid,
+    target_account_generation: targetGeneration,
+    source_credential_generation: sourceGeneration,
+    attestation_expires_at: expiresAt,
   };
 }
 
@@ -290,6 +333,59 @@ function parseRequest(value: unknown, idempotencyKey: string | null): MigrationR
   };
 }
 
+function parseIdentityProjectionRequest(
+  value: unknown,
+): IdentityProjectionRequest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  if (
+    !validText(body.source_uid, MAX_UID_LENGTH) ||
+    typeof body.source_token !== "string" ||
+    body.source_token.length < 1 ||
+    new TextEncoder().encode(body.source_token).byteLength > 8_192 ||
+    /[\u0000-\u001f\u007f]/.test(body.source_token) ||
+    "source_proof_hash" in body ||
+    "source_uid_hash" in body ||
+    "target_uid" in body
+  ) {
+    return null;
+  }
+  return { sourceUid: body.source_uid, sourceToken: body.source_token };
+}
+
+function parseAttestation(value: unknown): AnonymousIdentityAttestation | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Partial<AnonymousIdentityAttestation>;
+  const sourceGeneration = integer(row.source_credential_generation);
+  const attestedAt = integer(row.attested_at);
+  const expiresAt = integer(row.expires_at);
+  if (
+    !validText(row.target_uid, MAX_UID_LENGTH) ||
+    !validText(row.source_ref, MAX_UID_LENGTH) ||
+    !row.source_ref.startsWith("fb-anon-") ||
+    !validHash(row.source_uid_hash) ||
+    row.source_ref !== `fb-anon-${row.source_uid_hash}` ||
+    !validHash(row.source_proof_hash) ||
+    !validHash(row.source_projection_revision) ||
+    sourceGeneration === null ||
+    attestedAt === null ||
+    expiresAt === null ||
+    expiresAt <= attestedAt
+  ) {
+    return null;
+  }
+  return {
+    target_uid: row.target_uid,
+    source_ref: row.source_ref,
+    source_uid_hash: row.source_uid_hash,
+    source_proof_hash: row.source_proof_hash,
+    source_credential_generation: sourceGeneration,
+    source_projection_revision: row.source_projection_revision,
+    attested_at: attestedAt,
+    expires_at: expiresAt,
+  };
+}
+
 async function deletionFence(env: JobsEnv, uid: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1_000);
   const row = await env.APP_DB.prepare(
@@ -333,13 +429,257 @@ async function sourceProjection(
   sourceUid: string,
 ): Promise<AppOwnerMigrationSource | null> {
   const row = await env.APP_DB.prepare(
-    "SELECT source_uid, source_provider, source_proof_hash, source_projection_revision, " +
-      "projection_status, app_projection_count, memory_projection_count " +
+    "SELECT source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
+      "projection_status, app_projection_count, memory_projection_count, target_uid, " +
+      "target_account_generation, source_credential_generation, attestation_expires_at " +
       "FROM cf_app_owner_migration_sources WHERE source_uid = ? LIMIT 1",
   )
     .bind(sourceUid)
     .first();
   return parseSource(row);
+}
+
+async function sourceProjectionByHash(
+  env: JobsEnv,
+  sourceUidHash: string,
+): Promise<AppOwnerMigrationSource | null> {
+  const row = await env.APP_DB.prepare(
+    "SELECT source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
+      "projection_status, app_projection_count, memory_projection_count, target_uid, " +
+      "target_account_generation, source_credential_generation, attestation_expires_at " +
+      "FROM cf_app_owner_migration_sources WHERE source_uid_hash = ? LIMIT 1",
+  )
+    .bind(sourceUidHash)
+    .first();
+  return parseSource(row);
+}
+
+async function verifyAnonymousSource(
+  env: JobsEnv,
+  context: SignedAuthContext,
+  request: IdentityProjectionRequest,
+): Promise<AnonymousIdentityAttestation> {
+  const signed = await createSignedAuthContext(
+    {
+      uid: context.uid,
+      authority: "internal",
+      requestId: context.requestId,
+    },
+    "auth",
+    "POST",
+    AUTH_IDENTITY_PROJECTION_PATH,
+    env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!signed) throw new Error("identity bridge unavailable");
+  const response = await env.AUTH.fetch(
+    new Request(`https://auth.internal${AUTH_IDENTITY_PROJECTION_PATH}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${request.sourceToken}`,
+        "content-type": "application/json",
+        [AUTH_CONTEXT_HEADER]: signed.encoded,
+        [AUTH_SIGNATURE_HEADER]: signed.signature,
+        "x-request-id": context.requestId,
+      },
+      body: JSON.stringify({ expected_source_uid: request.sourceUid }),
+    }),
+  );
+  let body: unknown;
+  try {
+    const raw = await response.text();
+    if (new TextEncoder().encode(raw).byteLength > 16_384) {
+      throw new Error("identity response too large");
+    }
+    body = JSON.parse(raw);
+  } catch {
+    throw new Error("identity bridge unavailable");
+  }
+  if (!response.ok) {
+    const error =
+      body && typeof body === "object" && !Array.isArray(body)
+        ? (body as { error?: unknown }).error
+        : null;
+    if (
+      response.status === 403 &&
+      (error === "source_identity_rejected" ||
+        error === "source_identity_mismatch" ||
+        error === "source_identity_revoked")
+    ) {
+      throw new Error(String(error));
+    }
+    throw new Error("identity bridge unavailable");
+  }
+  const attestation = parseAttestation(body);
+  if (!attestation || attestation.target_uid !== context.uid) {
+    throw new Error("identity bridge unavailable");
+  }
+  return attestation;
+}
+
+async function projectAnonymousIdentity(
+  c: JobsContext,
+  context: SignedAuthContext,
+): Promise<Response> {
+  if (c.env.FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED !== "true") {
+    return c.json(
+      { error: "firebase_identity_projection_unavailable" },
+      503,
+      noStoreHeaders(),
+    );
+  }
+  if (context.authority !== "better-auth") {
+    return c.json({ error: "better_auth_required" }, 403, noStoreHeaders());
+  }
+  let body: unknown;
+  try {
+    body = await readBoundedJson(c.req.raw);
+  } catch {
+    return c.json({ error: "invalid_request" }, 400, noStoreHeaders());
+  }
+  const request = parseIdentityProjectionRequest(body);
+  if (!request || request.sourceUid === context.uid) {
+    return c.json({ error: "invalid_request" }, 422, noStoreHeaders());
+  }
+  try {
+    if (await deletionFence(c.env, context.uid)) {
+      return c.json(
+        { error: "account_deletion_in_progress" },
+        409,
+        noStoreHeaders(),
+      );
+    }
+    const generation = await targetGeneration(c.env, context.uid);
+    if (generation === null) {
+      return c.json(
+        {
+          error: "firebase_identity_projection_unavailable",
+          reason: "target_not_admitted",
+        },
+        503,
+        noStoreHeaders(),
+      );
+    }
+    const attestation = await verifyAnonymousSource(c.env, context, request);
+    const now = Math.floor(Date.now() / 1_000);
+    if (
+      attestation.attested_at < now - 120 ||
+      attestation.attested_at > now + 5 ||
+      attestation.expires_at <= now ||
+      (await deletionFence(c.env, context.uid)) ||
+      (await targetGeneration(c.env, context.uid)) !== generation
+    ) {
+      return c.json(
+        { error: "firebase_identity_projection_unavailable" },
+        503,
+        noStoreHeaders(),
+      );
+    }
+    const existing = await sourceProjectionByHash(
+      c.env,
+      attestation.source_uid_hash,
+    );
+    if (existing) {
+      if (
+        existing.target_uid !== context.uid ||
+        existing.target_account_generation !== generation
+      ) {
+        return c.json(
+          { error: "firebase_identity_projection_conflict" },
+          409,
+          noStoreHeaders(),
+        );
+      }
+      if (
+        existing.projection_status === "imported" &&
+        existing.source_proof_hash === attestation.source_proof_hash &&
+        existing.source_projection_revision ===
+          attestation.source_projection_revision &&
+        existing.source_credential_generation ===
+          attestation.source_credential_generation
+      ) {
+        return c.json(
+          {
+            source_ref: existing.source_uid,
+            source_proof_hash: existing.source_proof_hash,
+            source_projection_revision:
+              existing.source_projection_revision,
+            target_account_generation: generation,
+            status: "imported",
+          },
+          200,
+          noStoreHeaders(),
+        );
+      }
+      await c.env.APP_DB.prepare(
+        "UPDATE cf_app_owner_migration_sources SET projection_status = 'conflict', updated_at = ? " +
+          "WHERE source_uid_hash = ? AND target_uid = ? AND target_account_generation = ? " +
+          "AND projection_status = 'imported'",
+      )
+        .bind(now, attestation.source_uid_hash, context.uid, generation)
+        .run();
+      return c.json(
+        { error: "firebase_identity_projection_conflict" },
+        409,
+        noStoreHeaders(),
+      );
+    }
+    const inserted = await c.env.APP_DB.prepare(
+      "INSERT INTO cf_app_owner_migration_sources " +
+        "(source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
+        "projection_status, app_projection_count, memory_projection_count, target_uid, " +
+        "target_account_generation, source_credential_generation, attestation_expires_at, " +
+        "imported_at, updated_at) VALUES (?, ?, 'firebase-anonymous', ?, ?, 'imported', 0, 0, ?, ?, ?, ?, ?, ?)",
+    )
+      .bind(
+        attestation.source_ref,
+        attestation.source_uid_hash,
+        attestation.source_proof_hash,
+        attestation.source_projection_revision,
+        context.uid,
+        generation,
+        attestation.source_credential_generation,
+        attestation.expires_at,
+        now,
+        now,
+      )
+      .run();
+    if (Number(inserted.meta?.changes || 0) !== 1) {
+      return c.json(
+        { error: "firebase_identity_projection_conflict" },
+        409,
+        noStoreHeaders(),
+      );
+    }
+    return c.json(
+      {
+        source_ref: attestation.source_ref,
+        source_proof_hash: attestation.source_proof_hash,
+        source_projection_revision: attestation.source_projection_revision,
+        target_account_generation: generation,
+        status: "imported",
+      },
+      201,
+      noStoreHeaders(),
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message === "source_identity_rejected" ||
+        error.message === "source_identity_mismatch" ||
+        error.message === "source_identity_revoked")
+    ) {
+      return c.json(
+        { error: error.message },
+        403,
+        noStoreHeaders(),
+      );
+    }
+    return c.json(
+      { error: "firebase_identity_projection_unavailable" },
+      503,
+      noStoreHeaders(),
+    );
+  }
 }
 
 async function jobById(
@@ -451,10 +791,7 @@ async function admit(c: JobsContext, context: SignedAuthContext): Promise<Respon
     return c.json({ error: "invalid_migration_request" }, 422, noStoreHeaders());
   }
   try {
-    if (
-      (await deletionFence(c.env, context.uid)) ||
-      (await deletionFence(c.env, request.sourceUid))
-    ) {
+    if (await deletionFence(c.env, context.uid)) {
       return c.json({ error: "account_deletion_in_progress" }, 409, noStoreHeaders());
     }
     const generation = await targetGeneration(c.env, context.uid);
@@ -466,10 +803,23 @@ async function admit(c: JobsContext, context: SignedAuthContext): Promise<Respon
       );
     }
     const source = await sourceProjection(c.env, request.sourceUid);
+    const now = Math.floor(Date.now() / 1_000);
+    if (
+      source &&
+      (source.target_uid !== context.uid ||
+        source.target_account_generation !== generation)
+    ) {
+      return c.json(
+        { error: "migration_request_conflict" },
+        409,
+        noStoreHeaders(),
+      );
+    }
     if (
       !source ||
       source.projection_status !== "imported" ||
-      source.source_proof_hash !== request.sourceProofHash
+      source.source_proof_hash !== request.sourceProofHash ||
+      source.attestation_expires_at <= now
     ) {
       return c.json(
         { error: "app_owner_migration_unavailable", reason: "source_proof_not_admitted" },
@@ -499,7 +849,6 @@ async function admit(c: JobsContext, context: SignedAuthContext): Promise<Respon
       }
       return c.json(responseForJob(existing), 200, noStoreHeaders());
     }
-    const now = Math.floor(Date.now() / 1_000);
     const jobId = `app-owner-migration-${fingerprint.slice(0, 48)}`;
     const inserted = await c.env.APP_DB.prepare(
       "INSERT INTO cf_app_owner_migration_jobs " +
@@ -702,6 +1051,9 @@ export async function processAppOwnerMigrationMessage(
     source.projection_status !== "imported" ||
     source.source_proof_hash !== leased.source_proof_hash ||
     source.source_projection_revision !== leased.source_projection_revision ||
+    source.target_uid !== leased.target_uid ||
+    source.target_account_generation !== leased.target_account_generation ||
+    source.attestation_expires_at <= now ||
     generation !== leased.target_account_generation
   ) {
     await updateFailed(env, leased, "migration authority changed", now);
@@ -807,6 +1159,12 @@ export function registerAppOwnerMigrationRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: RequestContext,
 ): void {
+  app.post(IDENTITY_PROJECTION_PATH, async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
+    return projectAnonymousIdentity(c, context);
+  });
+
   app.post(ROUTE_PATH, async (c) => {
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
@@ -838,6 +1196,7 @@ export function registerAppOwnerMigrationRoutes(
 
 export const appOwnerMigrationConstants = Object.freeze({
   routePath: ROUTE_PATH,
+  identityProjectionPath: IDENTITY_PROJECTION_PATH,
   processorPath: PROCESSOR_PATH,
   leaseSeconds: LEASE_SECONDS,
   maxAttempts: MAX_ATTEMPTS,
