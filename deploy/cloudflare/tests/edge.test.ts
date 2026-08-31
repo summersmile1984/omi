@@ -1049,6 +1049,7 @@ describe("edge gateway", () => {
     for (const [method, path] of [
       ["GET", "/v1/integrations/google_calendar"],
       ["PUT", "/v1/integrations/google_calendar"],
+      ["PUT", "/v1/integrations/google-calendar"],
       ["DELETE", "/v1/integrations/google_calendar"],
       ["GET", "/v1/integrations/google_calendar/oauth-url"],
       ["GET", "/v1/calendar/google/events?max_results=20"],
@@ -1069,7 +1070,7 @@ describe("edge gateway", () => {
       expect(response.status, `${method} ${path}`).toBe(200);
     }
 
-    expect(jobRequests).toHaveLength(9);
+    expect(jobRequests).toHaveLength(10);
     for (const request of jobRequests.slice(1)) {
       expect(
         decodeAuthContext(request.headers.get("x-omi-auth-context")),
