@@ -265,6 +265,35 @@ const TABLES = {
     integers: ["size", "created_at", "updated_at"],
     json: [],
   },
+  // Chat history is imported only after the Firestore export has been
+  // verified.  The payload stays in one bounded JSON column so the Worker
+  // can preserve the legacy wire shape without accepting provider secrets.
+  cf_chat_sessions: {
+    key_columns: ["uid", "id"],
+    required: ["uid", "id", "title", "created_at", "updated_at"],
+    columns: [
+      "uid",
+      "id",
+      "title",
+      "preview",
+      "created_at",
+      "updated_at",
+      "app_id",
+      "message_count",
+      "starred",
+    ],
+    defaults: { preview: null, app_id: null, message_count: 0, starred: 0 },
+    integers: ["created_at", "updated_at", "message_count"],
+    json: [],
+  },
+  cf_chat_messages: {
+    key_columns: ["uid", "id"],
+    required: ["uid", "id", "created_at", "message_json"],
+    columns: ["uid", "id", "app_id", "created_at", "message_json"],
+    defaults: { app_id: null },
+    integers: ["created_at"],
+    json: ["message_json"],
+  },
   cf_conversations: {
     key_columns: ["uid", "id"],
     required: ["uid", "id", "created_at"],
@@ -816,6 +845,88 @@ function jsonValue(value, column) {
   }
 }
 
+const CHAT_MESSAGE_FORBIDDEN_KEYS = new Set([
+  "access_token",
+  "api_key",
+  "authorization",
+  "custom_token",
+  "firebase_id_token",
+  "gemini_api_key",
+  "id_token",
+  "openai_api_key",
+  "password",
+  "private_key",
+  "refresh_token",
+  "secret",
+  "secret_key",
+]);
+const MAX_CHAT_MESSAGE_JSON_BYTES = 256 * 1024;
+const MAX_CHAT_MESSAGE_NODES = 1_024;
+
+function validateChatMessageJson(value, messageId) {
+  if (typeof value !== "string") fail("cf_chat_messages.message_json must be JSON");
+  if (new TextEncoder().encode(value).byteLength > MAX_CHAT_MESSAGE_JSON_BYTES) {
+    fail("cf_chat_messages.message_json exceeds 256KiB");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    fail("cf_chat_messages.message_json must contain valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    fail("cf_chat_messages.message_json must be an object");
+  }
+
+  let nodes = 0;
+  const visit = (current, depth) => {
+    if (++nodes > MAX_CHAT_MESSAGE_NODES || depth > 16) {
+      fail("cf_chat_messages.message_json is too deeply nested");
+    }
+    if (!current || typeof current !== "object") return;
+    for (const [key, child] of Object.entries(current)) {
+      if (CHAT_MESSAGE_FORBIDDEN_KEYS.has(key.toLowerCase())) {
+        fail(`cf_chat_messages.message_json contains forbidden field ${key}`);
+      }
+      visit(child, depth + 1);
+    }
+  };
+  visit(parsed, 0);
+
+  const message = parsed;
+  if (message.id !== undefined && message.id !== messageId) {
+    fail("cf_chat_messages.message_json.id must match id");
+  }
+  message.id = messageId;
+  if (typeof message.text !== "string" || message.text.length > 200_000) {
+    fail("cf_chat_messages.message_json.text is invalid");
+  }
+  if (!new Set(["human", "ai"]).has(message.sender)) {
+    fail("cf_chat_messages.message_json.sender is invalid");
+  }
+  if (!new Set(["text", "day_summary"]).has(message.type)) {
+    fail("cf_chat_messages.message_json.type is invalid");
+  }
+  const sessionId = message.chat_session_id ?? message.session_id;
+  if (sessionId !== undefined && sessionId !== null && sessionId !== "") {
+    if (typeof sessionId !== "string" || sessionId.length > 256) {
+      fail("cf_chat_messages.message_json session id is invalid");
+    }
+  }
+  const normalized = JSON.stringify(message);
+  if (new TextEncoder().encode(normalized).byteLength > MAX_CHAT_MESSAGE_JSON_BYTES) {
+    fail("cf_chat_messages.message_json exceeds 256KiB");
+  }
+  return normalized;
+}
+
+function validateChatText(value, column, { min = 0, max = 500 } = {}) {
+  if (typeof value !== "string" || value.length < min || value.length > max) {
+    fail(`${column} is invalid`);
+  }
+  if (/[\u0000-\u001f\u007f]/.test(value)) fail(`${column} contains control characters`);
+}
+
 function normalizeTimestamp(value) {
   const parsed = new Date(
     String(value).replace(" ", "T").replace(/Z$/, "+00:00"),
@@ -950,6 +1061,31 @@ export function normalizeRow(table, input) {
     else if (column === "timestamp") value = normalizeTimestamp(value);
     else if (typeof value !== "string" && value !== null) value = String(value);
     normalized[column] = value;
+  }
+  if (table === "cf_chat_sessions") {
+    validateChatText(normalized.title, "cf_chat_sessions.title", { min: 1, max: 500 });
+    if (normalized.preview !== null && normalized.preview !== undefined) {
+      validateChatText(normalized.preview, "cf_chat_sessions.preview", { max: 1_000 });
+    }
+    for (const column of ["app_id"]) {
+      if (normalized[column] !== null && normalized[column] !== undefined) {
+        validateChatText(normalized[column], `cf_chat_sessions.${column}`, { min: 1, max: 256 });
+      }
+    }
+    if (
+      !Number.isSafeInteger(normalized.message_count) ||
+      normalized.message_count < 0 ||
+      normalized.message_count > 1_000_000
+    ) {
+      fail("cf_chat_sessions.message_count is invalid");
+    }
+    if (![0, 1].includes(normalized.starred)) fail("cf_chat_sessions.starred is invalid");
+  }
+  if (table === "cf_chat_messages") {
+    normalized.message_json = validateChatMessageJson(normalized.message_json, normalized.id);
+    if (normalized.app_id !== null && normalized.app_id !== undefined) {
+      validateChatText(normalized.app_id, "cf_chat_messages.app_id", { min: 1, max: 256 });
+    }
   }
   if (table === "cf_action_items") {
     const completed = normalized.completed === 1;

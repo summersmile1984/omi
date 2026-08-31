@@ -12,7 +12,7 @@ Auth/social 与 External App OAuth 已切换到 Cloudflare staging owner；本�
 | External App OAuth | 0 | staging owner，生产阻塞 | staging Jobs handler 已覆盖 Firebase-context gate、CSRF transaction、app admission/install CAS；仍需真实 Firebase token、旧客户端 response、provider/历史 catalog continuity 和删除回放 |
 | Phone / Twilio | 0 | staging owner，生产阻塞 | Jobs 已闭合 caller-ID 验证状态、Twilio API/token/webhook contract、quota 和删除清理；仍缺真实 provider 验证、历史回填和 production cutover |
 | Wrapped | 0 | staging owner，生产阻塞 | Jobs 已闭合 D1 recap 聚合、Workers AI structured output、通知和 job/result 状态；仍缺历史 Firestore 回填、真实 provider probe 和 production cutover |
-| Chat compatibility | 0 | staging owner，生产阻塞 | Jobs/API-AI 已承载 bounded exact routes；仍需 prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract 与历史 D1 chat session parity |
+| Chat compatibility | 0 | staging owner，生产阻塞 | Jobs/API-AI 已承载 bounded exact routes；`backfill-d1.mjs` 现已支持有界、去敏的 `cf_chat_sessions`/`cf_chat_messages` 回放输入，但仍需实际 Firestore export 回放、prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract |
 | Persona / MCP mutation | 2 | 部分 staging owner | MCP registration/callback/refresh 已由 Jobs exact boundary 承载；Twitter provider identity、Firebase owner migration、历史 Firestore prompt/image/cache continuity 仍未迁移 |
 | Staged tasks / task intelligence | 0 | staging owner，生产阻塞 | API Core/D1 已建立 candidate/recommendation authority、device/open-loop snapshot、LLM receipt、promotion transaction 和 Jobs Queue retry consumer；仍缺 Firestore 历史回放、provider 正向账号探针、旧客户端 continuity 和 production cutover |
 | Gemini proxy | 0 | staging owner，生产阻塞 | API-AI 已承载 bounded JSON/SSE、BYOK enrollment、burst/quota 和 provider alias；Firebase identity continuity、Vertex ADC/PT、完整 Redis quota、SSE/usage/error/cost parity 尚未闭合 |
@@ -80,7 +80,7 @@ Legacy 入口为：
 
 这些入口的历史语义依赖旧 Firebase 身份、Firestore chat/materialization continuity，以及桌面端 provider、BYOK、Redis quota、tools、流式 SSE/usage/error 语义。当前 Cloudflare Jobs/API-AI 已提供 exact staging owner，但 D1 `cf_chat_sessions`、`/v2/chat-sessions` 与无状态 `/v2/chat/generate-reply` 仍是受限新 contract：后者不创建 chat session/message，也不提供旧 completions 的完整流式 wire parity。
 
-要完成 production cutover 必须补齐 session/message reader 与历史回填，再锁定 provider selection/BYOK/quota/tool invocation/SSE schema 的 conformance fixtures；materialization 还需明确 D1 prompt authority、proactive intent 和跨设备幂等。当前 staging owner 只证明 bounded boundary，不等于旧桌面协议 parity。
+Cloudflare 侧现已提供 `deploy/cloudflare/scripts/backfill-d1.mjs` 的 session/message 输入校验：只允许白名单列、256KiB 以内 JSON、`human/ai` 消息类型、uid/session 绑定和幂等 upsert，并拒绝 token、密钥和授权字段。要完成 production cutover 仍必须实际回放并核验 session/message reader，再锁定 provider selection/BYOK/quota/tool invocation/SSE schema 的 conformance fixtures；materialization 还需明确 D1 prompt authority、proactive intent 和跨设备幂等。当前 staging owner 只证明 bounded boundary，不等于旧桌面协议 parity。
 
 ## Persona / MCP mutation：已有 manifest refresh 不是 legacy refresh
 

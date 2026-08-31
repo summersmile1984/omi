@@ -111,6 +111,87 @@ describe("D1 backfill SQL generator", () => {
     ).toThrow("provider_file_id is invalid");
   });
 
+  it("backfills bounded chat sessions and messages without importing provider secrets", () => {
+    const session = normalizeRow("cf_chat_sessions", {
+      uid: "user-1",
+      id: "session-1",
+      title: "Imported chat",
+      preview: "hello",
+      app_id: "mcp-api",
+      message_count: 2,
+      starred: true,
+      created_at: "2026-08-28T10:00:00Z",
+      updated_at: "2026-08-28T10:01:00Z",
+    });
+    expect(session).toMatchObject({
+      uid: "user-1",
+      id: "session-1",
+      message_count: 2,
+      starred: 1,
+    });
+
+    const message = normalizeRow("cf_chat_messages", {
+      uid: "user-1",
+      id: "message-1",
+      app_id: "mcp-api",
+      created_at: "2026-08-28T10:00:01Z",
+      message_json: {
+        text: "hello",
+        sender: "human",
+        type: "text",
+        chat_session_id: "session-1",
+      },
+    });
+    expect(JSON.parse(String(message.message_json))).toMatchObject({
+      id: "message-1",
+      text: "hello",
+      sender: "human",
+    });
+
+    const sql = renderBackfillSql([
+      { table: "cf_chat_sessions", row: session },
+      { table: "cf_chat_messages", row: message },
+    ]);
+    expect(sql).toContain("ON CONFLICT(uid, id) DO UPDATE SET title = excluded.title");
+    expect(sql).toContain("message_json");
+
+    expect(() =>
+      normalizeRow("cf_chat_messages", {
+        uid: "user-1",
+        id: "message-2",
+        created_at: 2,
+        message_json: {
+          text: "hello",
+          sender: "human",
+          type: "text",
+          access_token: "must-not-land",
+        },
+      }),
+    ).toThrow("forbidden field access_token");
+    expect(() =>
+      normalizeRow("cf_chat_messages", {
+        uid: "user-1",
+        id: "message-3",
+        created_at: 3,
+        message_json: {
+          id: "different-id",
+          text: "hello",
+          sender: "human",
+          type: "text",
+        },
+      }),
+    ).toThrow("message_json.id must match id");
+    expect(() =>
+      normalizeRow("cf_chat_sessions", {
+        uid: "user-1",
+        id: "session-2",
+        title: "bad\n title",
+        created_at: 1,
+        updated_at: 1,
+      }),
+    ).toThrow("control characters");
+  });
+
   it("supports typed aliases while rejecting unsupported tables and malformed identities", () => {
     expect(
       normalizeRow("cf_goals", {
