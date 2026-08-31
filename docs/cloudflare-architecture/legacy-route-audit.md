@@ -6,18 +6,19 @@
 
 | 路由分组 | 当前 legacy 条数 | 代表路径 | 主要缺口 | 下一步 |
 | --- | ---: | --- | --- | --- |
-| Auth / OAuth / social | 9 | `/v1/auth/*`、`/v1/oauth/*`、`/v1/apps/mcp/callback`、Twitter ownership | Firebase provider identity、Google/Apple callback、OAuth app consent 仍由 legacy 维护；Better Auth 目前只承接 MCP OAuth 和会话 | 先完成身份连续性与 provider link/import，再迁移 callback/token；不能用 Better Auth session 别名替代 Firebase exchange |
+| Auth / OAuth / social | 7 | `/v1/auth/*`、`/v1/oauth/*`、`/v1/apps/mcp/callback` | Firebase provider identity、Google/Apple callback、OAuth app consent 仍由 legacy 维护；Better Auth 目前只承接 MCP OAuth 和会话 | 先完成身份连续性与 provider link/import，再迁移 callback/token；不能用 Better Auth session 别名替代 Firebase exchange |
 | Phone / external integrations | 6 | `/v1/phone/*`、电话 webhook | Twilio、Redis 状态、号码验证和电话 webhook | 定义 DO/Queue 状态机、签名校验和 provider secret 生命周期后再迁移 |
 | Conversation lifecycle | 0 | `/v1/conversations/{id}/finalization`、`finalize`、`reprocess`、`merge`、finalization run | legacy lifecycle path and fan-out | finalize/status/reprocess/merge/finalization run now use shared D1 job projections, Jobs leases, and API Core; merge performs bounded R2 artifact copy before atomic source cleanup |
 | Import / files / sync / audio | 8 | `/v1/import/*`、`/v1/files`、`/v2/files`、sync/audio jobs | GCS/本机临时文件、multipart、长任务和 R2 residual contract | `POST /v1/sync-local-files` 与 `POST /v2/voice-messages` 已复用 D1/R2/Queue 或 Workers AI authority；其余 import/files/audio jobs 仍需先完成 R2 multipart/presigned 与 Queue replay |
 | Task intelligence / staged tasks | 15 | `/v1/staged-tasks*`、`/v1/task-intelligence/*`、`/v1/what-matters-now*` | candidate/recommendation store、generation fence、LLM judgment、device snapshot | candidate D1 projection 和 generation contract 完成前保持 fail-closed legacy owner |
-| Persona / apps | 4 | `/v1/personas` mutation、`/v1/apps/*` MCP mutation、Twitter ownership | multipart 图片、R2、LLM prompt、Twitter provider identity 与 public app cache | 默认 Persona 和只读 profile 已迁移；通用 Persona mutation/Twitter ownership 需完整 D1/R2/provider contract |
+| Persona / apps | 6 | `/v1/personas` mutation、`/v1/apps/*` MCP mutation、Twitter ownership | multipart 图片、R2、LLM prompt、Twitter provider identity 与 public app cache | 默认 Persona 和只读 profile 已迁移；通用 Persona mutation/Twitter ownership 需完整 D1/R2/provider contract |
 | Memory admin / Archive | 3 | `/memory/admin/*`、`/memory/archive/search` | Archive capability | `/memory/search`、`/memory/vector/search` 与 D1 review queue 已迁移；archive/admin 仍需补齐 capability |
 | Desktop release mutation/manifest | 0（路由已迁移，回填未完成） | release pipeline 回填和生产 Firestore→D1 回放 | 发布流水线凭据、历史 manifest 回放和生产切换审计 | immutable manifest、macOS Stable/Beta channel pointer、Beta admission/promotion/breakglass、legacy release bridge（`/updates/releases` POST/PATCH）和 cache-invalidation contract 已进入 D1；所有相关 endpoint 在 staging 由 API Core 提供，下一步回填发布流水线并复验 Beta 晋级族 |
 | Metrics / wrapped / analytics | 3 | `/metrics`、`/v1/wrapped/*`、部分分析端点 | Prometheus/历史分析数据不在当前 D1 authority | 定义聚合与保留策略；不能以空响应冒充迁移完成 |
 | Hume callback / provider webhooks | 1 | `/v1/agents/hume/callback` | 外部 webhook schema、幂等、长处理和重试 | 先落 Queue receipt 与 provider signature contract，再切 webhook owner |
 | Data-protection migration | 3 | `/v1/users/migration/*` | 加密迁移写入、批量请求和 finalize 仍依赖 legacy storage | 先完成加密 payload、迁移 lease 和生产回放，再迁移写入端点 |
-| Other legacy proxies | 3 | Gemini proxy、MCP owner migration 等 | provider credentials 与外部应用 owner continuity | 按 provider contract 单独迁移，保持 fail-closed |
+| Chat materialization / compatibility | 4 | `/v1/chat/materialize-prompts`、`/v1/conversations/shared/chat`、`/v2/chat/*` | 旧聊天 provider、session/materialization 和 Firestore continuity | 先明确无状态生成与持久化聊天的 D1 authority，再迁移兼容入口 |
+| Other legacy proxies | 2 | Gemini proxy | provider credentials 与外部应用 owner continuity | 按 provider contract 单独迁移，保持 fail-closed |
 
 ## 当前可执行顺序
 
