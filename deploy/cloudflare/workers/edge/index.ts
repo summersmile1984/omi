@@ -508,6 +508,8 @@ app.get("/v1/payments/cancel", proxyPublicCore);
 app.get("/v1/payments/portal-return", proxyPublicCore);
 app.post("/v1/stripe/webhook", proxyPublicJobs);
 app.post("/v1/stripe/connect/webhook", proxyPublicJobs);
+app.post("/v1/webhooks/sentry", proxyPublicCore);
+app.post("/v1/webhooks/sentry/poll", proxyPublicCore);
 app.get("/v1/stripe/supported-countries", proxyPublicJobs);
 app.get("/v1/stripe/refresh/:accountId", proxyPublicJobs);
 app.get("/v1/stripe/return/:accountId", proxyPublicJobs);

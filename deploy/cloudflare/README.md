@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 482 already match
-Cloudflare staging owners and 95 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 484 already match
+Cloudflare staging owners and 93 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1705,6 +1705,15 @@ description entries from the structured projection and standalone D1 action-item
 rows in one batch. The legacy `completed` field is accepted for wire
 compatibility but does not alter the description identity; reminder/export
 cleanup remains a separate downstream contract.
+
+The Sentry feedback webhook and poller are now API Core-owned. Sentry signatures
+are verified at the Worker boundary, feedback issue IDs are stored as
+uid-scoped D1 action items with `sentry-feedback:<issue_id>` idempotency keys,
+and provider failures retain the legacy `skipped` response envelope. Event
+details are fetched through the Worker fetch API; the route does not connect to
+Firestore or a local process. Configure `SENTRY_WEBHOOK_SECRET`,
+`SENTRY_ADMIN_UID`, and `SENTRY_AUTH_TOKEN` in the staging Worker secret set
+before enabling Sentry delivery.
 
 The calendar onboarding routes expose only a uid-scoped D1 projection of the
 connected/skipped/re-auth-required flags. Google Calendar OAuth tokens, refresh,
