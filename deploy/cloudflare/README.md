@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 485 already match
-Cloudflare staging owners and 92 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 488 already match
+Cloudflare staging owners and 89 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -180,8 +180,11 @@ and never receives browser cookies. Web recording exchanges the cookie at
 that ticket as its first WebSocket message, and the isolated Durable Object
 claims it once, so the Realtime Worker never receives a long-lived Better Auth
 session token or an Auth service binding. MCP OAuth discovery, login
-continuation, and consent stay on the same Web origin. The consent page sends
-only Better Auth's signed authorization query, and MCP access tokens terminate
+continuation, and consent stay on the same Web origin. The historical root
+`GET/POST /authorize` and `POST /token` paths are aliases to Better Auth's
+`/api/better-auth/oauth2/*` provider, so older MCP clients use the same D1
+client/consent/token authority instead of the legacy Firebase-backed handler.
+The consent page sends only Better Auth's signed authorization query, and MCP access tokens terminate
 at Edge; API Core receives a request-bound signed principal instead of the
 bearer token. Root and Better Auth-suffixed authorization-server discovery are
 served by both Edge and Web, including bodyless `HEAD`. MCP grant listing and

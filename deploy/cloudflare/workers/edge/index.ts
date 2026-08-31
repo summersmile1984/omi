@@ -208,6 +208,50 @@ app.on(
   },
 );
 
+// Keep the historical MCP OAuth paths as aliases for Better Auth's OAuth
+// provider. The public discovery document already advertises the canonical
+// `/api/better-auth/oauth2/*` endpoints; these aliases let older clients
+// upgrade without sending authorization codes or cookies to the legacy API.
+const proxyLegacyMcpOAuth = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+  endpoint: "authorize" | "token",
+) => {
+  const id = requestId(c.req.raw);
+  const target = new URL(
+    `/api/better-auth/oauth2/${endpoint}`,
+    "https://auth.internal",
+  );
+  target.search = new URL(c.req.url).search;
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  const init: RequestInit & { duplex?: "half" } = {
+    method: c.req.method,
+    headers,
+  };
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    init.body = c.req.raw.body;
+    init.duplex = "half";
+  }
+  try {
+    const response = await c.env.AUTH.fetch(new Request(target, init));
+    return withRequestId(response, id);
+  } catch {
+    return withRequestId(
+      Response.json(
+        { error: "authorization_server_unavailable" },
+        { status: 503 },
+      ),
+      id,
+    );
+  }
+};
+
+app.on(["GET", "POST"], "/authorize", (c) =>
+  proxyLegacyMcpOAuth(c, "authorize"),
+);
+app.post("/token", (c) => proxyLegacyMcpOAuth(c, "token"));
+
 app.get("/v1/mcp/sse/info", (c) =>
   c.json({
     transport: "streamable-http",

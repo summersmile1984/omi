@@ -11,6 +11,36 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /authorize
+    owner: auth
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: [d1-auth, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /authorize
+    owner: auth
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: [d1-auth, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /token
+    owner: auth
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: [d1-auth, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /appcast.xml
     owner: api-core
     runtime: python-worker

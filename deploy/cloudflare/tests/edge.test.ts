@@ -370,6 +370,63 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("aliases legacy MCP OAuth authorize and token paths to Better Auth", async () => {
+    const requests: Array<{ request: Request; body: string }> = [];
+    const env = {
+      AUTH: rawService(async (request) => {
+        requests.push({ request, body: await request.text() });
+        return Response.json({ ok: true });
+      }),
+    };
+
+    const authorizeGet = await edge.fetch(
+      new Request(
+        "https://edge.test/authorize?client_id=client-1&redirect_uri=https%3A%2F%2Fclient.test%2Fcallback",
+        {
+          headers: {
+            authorization: "Basic client-secret",
+            cookie: "better-auth.session=opaque",
+            "x-omi-auth-context": "untrusted",
+          },
+        },
+      ),
+      env as never,
+    );
+    const authorizePost = await edge.fetch(
+      new Request("https://edge.test/authorize", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "client_id=client-1&selected=true",
+      }),
+      env as never,
+    );
+    const tokenPost = await edge.fetch(
+      new Request("https://edge.test/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "grant_type=authorization_code&code=opaque",
+      }),
+      env as never,
+    );
+
+    expect([authorizeGet.status, authorizePost.status, tokenPost.status]).toEqual([
+      200,
+      200,
+      200,
+    ]);
+    expect(requests.map(({ request }) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      "GET /api/better-auth/oauth2/authorize",
+      "POST /api/better-auth/oauth2/authorize",
+      "POST /api/better-auth/oauth2/token",
+    ]);
+    expect(new URL(requests[0].request.url).searchParams.get("client_id")).toBe("client-1");
+    expect(requests[0].request.headers.get("authorization")).toBe("Basic client-secret");
+    expect(requests[0].request.headers.get("cookie")).toBe("better-auth.session=opaque");
+    expect(requests[0].request.headers.get("x-omi-auth-context")).toBeNull();
+    expect(requests[1].body).toBe("client_id=client-1&selected=true");
+    expect(requests[2].body).toBe("grant_type=authorization_code&code=opaque");
+  });
+
   it("keeps MCP grant management beside Better Auth and outside product cutover", async () => {
     const grantRequests: Request[] = [];
     const env = {
