@@ -222,6 +222,7 @@ enum ConnectorImportOperations {
   @MainActor
   static func importCalendar(progress: ConnectorImportRunner.ProgressSink) async -> Outcome {
     do {
+      try await ensureGoogleCalendarConnected(progress: progress)
       let events = try await CalendarReaderService.shared.readEvents(
         daysBack: 365,
         daysForward: 30,
@@ -246,6 +247,46 @@ enum ConnectorImportOperations {
         message: error.localizedDescription,
         failureClass: IntegrationConnectTelemetry.ErrorClass.fromMessage(error.localizedDescription))
     }
+  }
+
+  /// Starts the Worker-owned Google OAuth flow when no Calendar grant exists,
+  /// then waits for the callback to persist the grant. Polling is intentional:
+  /// the callback page may be opened by a browser that cannot activate a named
+  /// dev bundle, while the authenticated Worker state remains authoritative.
+  @MainActor
+  static func ensureGoogleCalendarConnected(
+    progress: ConnectorImportRunner.ProgressSink? = nil
+  ) async throws {
+    do {
+      if try await APIClient.shared.googleCalendarConnectionStatus().connected {
+        return
+      }
+    } catch {
+      throw CalendarReaderService.mapWorkerError(error)
+    }
+
+    let redirect = "\(appURLScheme())://google_calendar/callback"
+    let auth: GoogleCalendarOAuthURLResponse
+    do {
+      auth = try await APIClient.shared.googleCalendarOAuthURL(successRedirectURL: redirect)
+    } catch {
+      throw CalendarReaderService.mapWorkerError(error)
+    }
+    guard let url = URL(string: auth.authURL), NSWorkspace.shared.open(url) else {
+      throw CalendarReaderError.configurationError("Couldn't open the Google authorization page")
+    }
+
+    progress?.update(
+      title: "Waiting for Google Calendar authorization",
+      detail: "Approve access in your browser. This window updates automatically."
+    )
+    for _ in 0..<60 {
+      try? await Task.sleep(for: .seconds(2))
+      if let status = try? await APIClient.shared.googleCalendarConnectionStatus(), status.connected {
+        return
+      }
+    }
+    throw CalendarReaderError.notSignedIn
   }
 
   @MainActor

@@ -251,7 +251,7 @@ extension SettingsContentView {
                 .scaledFont(size: OmiType.body)
                 .foregroundColor(Ink.secondary)
             } else {
-              Text("Reads Google Calendar using browser cookies — no OAuth needed")
+              Text("Connects Google Calendar securely through Omi's Cloudflare Worker")
                 .scaledFont(size: OmiType.body)
                 .foregroundColor(Ink.secondary)
             }
@@ -320,6 +320,7 @@ extension SettingsContentView {
     calendarMemoriesCreated = 0
     calendarTasksCreated = 0
     do {
+      try await ConnectorImportOperations.ensureGoogleCalendarConnected()
       let events = try await CalendarReaderService.shared.readEvents(
         daysBack: 30,
         daysForward: 14,

@@ -54,10 +54,9 @@ enum CalendarReaderError: LocalizedError, Equatable {
     case .noBrowserFound:
       return "No supported browser found. Open Google Calendar in Chrome, Arc, Brave, or Edge, then try again."
     case .notSignedIn:
-      return
-        "Not signed into Google in any browser. Open calendar.google.com in Chrome, Arc, Brave, or Edge, sign in, then try again."
+      return "Google Calendar isn't connected. Choose Connect Calendar to authorize it, then try again."
     case .sessionExpired:
-      return "Your Google session expired. Reload calendar.google.com in your browser to refresh it, then try again."
+      return "Google Calendar authorization expired. Choose Connect Calendar to authorize it again."
     case .cookieDecryptionFailed(let msg):
       return "Couldn't read your browser session: \(msg)"
     case .networkError(let msg):
@@ -222,10 +221,10 @@ enum CalendarOutcomeParser {
 actor CalendarReaderService {
   static let shared = CalendarReaderService()
 
-  /// Read calendar events using browser cookies + SAPISID auth.
-  /// Tries Arc, Chrome, Brave, and Edge across all Chromium profiles.
-  /// Fetches events from `daysBack` days ago to `daysForward` days from now.
-  /// Browser Keychain consent is only eligible for an explicitly requested read.
+  /// Read events through the Cloudflare Worker, which owns the Google OAuth
+  /// grant and token refresh. A browser-cookie implementation remains available
+  /// only when `OMI_CALENDAR_COOKIE_FALLBACK=1` is explicitly set for legacy
+  /// development builds; it is never used by default.
   func readEvents(
     daysBack: Int = 90,
     daysForward: Int = 14,
@@ -234,17 +233,27 @@ actor CalendarReaderService {
   ) async throws
     -> [CalendarEvent]
   {
-    if userInitiated {
-      BrowserKeychainCache.shared.beginUserInitiatedOperation()
+    do {
+      let events = try await fetchCalendarViaWorker(
+        daysBack: daysBack,
+        daysForward: daysForward,
+        maxResults: maxResults
+      )
+      return events.sorted { $0.startTime > $1.startTime }
+    } catch {
+      guard Self.cookieFallbackEnabled else { throw error }
+      if userInitiated {
+        BrowserKeychainCache.shared.beginUserInitiatedOperation()
+      }
+      await APIKeyService.shared.waitForKeys()
+      let events = try fetchCalendarViaCookies(
+        daysBack: daysBack,
+        daysForward: daysForward,
+        maxResults: maxResults,
+        userInitiated: userInitiated
+      )
+      return events.sorted { $0.startTime > $1.startTime }
     }
-    await APIKeyService.shared.waitForKeys()
-    let events = try fetchCalendarViaCookies(
-      daysBack: daysBack,
-      daysForward: daysForward,
-      maxResults: maxResults,
-      userInitiated: userInitiated
-    )
-    return events.sorted { $0.startTime > $1.startTime }
   }
 
   /// Lightweight functional probe — does the integration actually work right now?
@@ -253,14 +262,10 @@ actor CalendarReaderService {
   /// recently against the real surface," never a stored latch. Callers use this
   /// to render honest status and to drive self-healing, rather than trusting a
   /// one-time success. It runs the same real fetch path over a tiny window so a
-  /// green result guarantees the whole chain (cookies → auth → API) works.
+  /// green result guarantees the whole Worker OAuth → API chain works.
   func verifyConnection(userInitiated: Bool = false) async -> CalendarConnectionStatus {
-    if userInitiated {
-      BrowserKeychainCache.shared.beginUserInitiatedOperation()
-    }
     do {
-      await APIKeyService.shared.waitForKeys()
-      _ = try fetchCalendarViaCookies(
+      _ = try await readEvents(
         daysBack: 1,
         daysForward: 1,
         maxResults: 1,
@@ -278,6 +283,49 @@ actor CalendarReaderService {
       }
     } catch {
       return .error(message: error.localizedDescription)
+    }
+  }
+
+  private static var cookieFallbackEnabled: Bool {
+    ProcessInfo.processInfo.environment["OMI_CALENDAR_COOKIE_FALLBACK"] == "1"
+  }
+
+  private func fetchCalendarViaWorker(
+    daysBack: Int,
+    daysForward: Int,
+    maxResults: Int
+  ) async throws -> [CalendarEvent] {
+    do {
+      let responses = try await APIClient.shared.listGoogleCalendarEvents(
+        daysBack: daysBack,
+        daysForward: daysForward,
+        maxResults: maxResults
+      )
+      return responses.map { $0.calendarEvent() }
+    } catch {
+      throw Self.mapWorkerError(error)
+    }
+  }
+
+  nonisolated static func mapWorkerError(_ error: Error) -> CalendarReaderError {
+    if let error = error as? CalendarReaderError { return error }
+    switch error {
+    case APIError.unauthorized:
+      return .notSignedIn
+    case APIError.httpError(let statusCode, let detail):
+      let message = detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+      switch statusCode {
+      case 400 where message?.localizedCaseInsensitiveContains("not connected") == true:
+        return .notSignedIn
+      case 401:
+        return .sessionExpired
+      case 503:
+        return .configurationError(message ?? "Calendar Worker is unavailable")
+      default:
+        return .networkError(message ?? "Calendar Worker request failed (HTTP \(statusCode))")
+      }
+    default:
+      return .networkError(error.localizedDescription)
     }
   }
 

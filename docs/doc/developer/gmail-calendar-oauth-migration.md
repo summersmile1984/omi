@@ -1,6 +1,6 @@
 # Gmail + Calendar: cookie-scraping → Google OAuth (migration plan)
 
-Status: **planned** · Scope: desktop onboarding "connect your context" import.
+Status: **Calendar Phase 0 implemented on `codex/cloudflare-adaptation`; live OAuth verification pending staging credentials** · Scope: desktop onboarding "connect your context" import.
 
 Ponytail note: this plan is deliberately reuse-first. It builds almost nothing new —
 it wires the desktop to OAuth infra the backend already ships. Sections marked
@@ -84,6 +84,20 @@ the Google API: `backend/utils/retrieval/tools/calendar_tools.py:290` calls
   onboarding step when not yet connected; reuse `AuthService` loopback callback.
 - Reuse `calendar_onboarding.py` status/skip/reset as-is.
 - Result: Calendar import needs no Keychain prompt. Days, not weeks.
+
+Implementation note (Cloudflare adaptation):
+
+- `deploy/cloudflare/workers/jobs/google-calendar.ts` owns the Google OAuth
+  state, encrypted token, refresh, and Calendar API calls.
+- `deploy/cloudflare/workers/edge/index.ts` proxies the authenticated Calendar
+  routes; the desktop calls `GET /v1/calendar/google/events` through the normal
+  API client.
+- Desktop Calendar reads now use the Worker path by default. The old cookie
+  reader is available only with the explicit `OMI_CALENDAR_COOKIE_FALLBACK=1`
+  development switch.
+- OAuth authorize requests carry a state-bound bundle deep link
+  (`<bundle-scheme>://google_calendar/callback`) so named macOS builds return to
+  the correct app.
 
 ### Phase 1 — Gmail backend (bigger)
 - Add `gmail.readonly` to a Google connector (clone the X/Calendar callback +

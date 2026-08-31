@@ -500,6 +500,42 @@ describe("Google Calendar Worker routes", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("binds OAuth completion to a validated desktop deep link", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    const redirect = "omi-computer-dev://google_calendar/callback";
+    const oauth = await app.request(
+      `/v1/integrations/google_calendar/oauth-url?success_redirect_url=${encodeURIComponent(redirect)}`,
+    );
+    expect(oauth.status).toBe(200);
+    const authURL = new URL((await oauth.json<{ auth_url: string }>()).auth_url);
+    const state = authURL.searchParams.get("state");
+    expect(
+      database.database
+        .prepare("SELECT success_redirect_url FROM cf_google_calendar_oauth_states")
+        .get(),
+    ).toEqual({ success_redirect_url: redirect });
+
+    const callback = await app.request(
+      `/v2/integrations/google-calendar/callback?code=calendar-code&state=${encodeURIComponent(state!)}`,
+      {},
+      false,
+    );
+    expect(callback.status).toBe(200);
+    const html = await callback.text();
+    expect(html).toContain("omi-computer-dev://google_calendar/callback?success=true");
+  });
+
+  it("rejects open redirect targets for Calendar OAuth", async () => {
+    const { env } = environment();
+    const app = testApp(env, {});
+    const response = await app.request(
+      `/v1/integrations/google_calendar/oauth-url?success_redirect_url=${encodeURIComponent("https://attacker.example/callback")}`,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ detail: "Invalid success_redirect_url" });
+  });
+
   it("reuses the shared Better Auth Google OAuth client when no Calendar override exists", async () => {
     const { env } = environment(false, true);
     const app = testApp(env, { now: () => 1_000 });

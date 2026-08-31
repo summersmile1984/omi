@@ -238,7 +238,7 @@ final class CalendarOutcomeParserTests: XCTestCase {
     )
   }
 
-  func testCalendarReadsWaitForBackendServedAPIKeys() throws {
+  func testCalendarReadsUseWorkerPathByDefault() throws {
     let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     let sourceURL =
       testsURL
@@ -247,17 +247,50 @@ final class CalendarOutcomeParserTests: XCTestCase {
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
     guard let readRange = source.range(of: "func readEvents("),
-      let keyWaitRange = source.range(
-        of: "await APIKeyService.shared.waitForKeys()", range: readRange.upperBound..<source.endIndex),
-      let fetchRange = source.range(of: "fetchCalendarViaCookies(", range: readRange.upperBound..<source.endIndex)
+      let workerFetchRange = source.range(
+        of: "fetchCalendarViaWorker(", range: readRange.upperBound..<source.endIndex),
+      let fallbackRange = source.range(
+        of: "cookieFallbackEnabled", range: readRange.upperBound..<source.endIndex)
     else {
-      return XCTFail("Calendar reads must wait for backend-served API keys before fetching")
+      return XCTFail("Calendar reads must use the Worker path with an explicit cookie fallback")
     }
 
     XCTAssertLessThan(
-      keyWaitRange.lowerBound,
-      fetchRange.lowerBound,
-      "Calendar reads must not hit Google before GOOGLE_CALENDAR_API_KEY has loaded"
+      workerFetchRange.lowerBound,
+      fallbackRange.lowerBound,
+      "Calendar reads must try the Worker before considering the legacy cookie fallback"
+    )
+  }
+
+  func testWorkerEventResponseMapsToDesktopCalendarEvent() throws {
+    let data = Data(
+      #"{"event_id":"event-1","title":"Workers review","attendees":["Guest"],"attendee_emails":["guest@example.test"],"start_time":"2026-09-01T01:00:00.000Z","end_time":"2026-09-01T02:00:00.000Z","html_link":"https://calendar.google.com/event"}"#
+        .utf8
+    )
+    let response = try JSONDecoder().decode(GoogleCalendarEventResponse.self, from: data)
+    let event = response.calendarEvent()
+    XCTAssertEqual(event.id, "event-1")
+    XCTAssertEqual(event.summary, "Workers review")
+    XCTAssertEqual(event.attendees, ["Guest"])
+    XCTAssertFalse(event.isAllDay)
+  }
+
+  func testWorkerErrorsClassifyDisconnectedAndExpiredGrants() {
+    XCTAssertEqual(
+      CalendarReaderService.mapWorkerError(
+        APIError.httpError(statusCode: 400, detail: "Google Calendar not connected")
+      ),
+      .notSignedIn
+    )
+    XCTAssertEqual(
+      CalendarReaderService.mapWorkerError(APIError.httpError(statusCode: 401)),
+      .sessionExpired
+    )
+    XCTAssertEqual(
+      CalendarReaderService.mapWorkerError(
+        APIError.httpError(statusCode: 503, detail: "Google Calendar is not configured")
+      ),
+      .configurationError("Google Calendar is not configured")
     )
   }
 }

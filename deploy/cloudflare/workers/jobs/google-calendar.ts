@@ -32,6 +32,8 @@ const MAX_ATTENDEES = 50;
 const MIN_OVERLAP_SECONDS = 10;
 const MIN_OVERLAP_PERCENTAGE = 0.5;
 const DEFAULT_SHARE_BASE_URL = "https://h.omi.me";
+const DEFAULT_CALENDAR_SUCCESS_REDIRECT = "omi://google_calendar/callback";
+const CALENDAR_SUCCESS_REDIRECT_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]{0,63}$/;
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type RequestContext = (c: JobsContext) => Promise<SignedAuthContext | null>;
@@ -731,8 +733,38 @@ async function requestCalendar(
   );
 }
 
-function deepLink(success: boolean, error?: string) {
-  const url = new URL("omi://google_calendar/callback");
+function calendarSuccessRedirect(value: string | undefined) {
+  if (!value) return DEFAULT_CALENDAR_SUCCESS_REDIRECT;
+  try {
+    const url = new URL(value.trim());
+    const scheme = url.protocol.slice(0, -1);
+    if (
+      !CALENDAR_SUCCESS_REDIRECT_SCHEME.test(scheme) ||
+      url.hostname !== "google_calendar" ||
+      url.pathname !== "/callback" ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.search ||
+      url.hash
+    ) {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function deepLink(
+  successRedirectURL: string | undefined,
+  success: boolean,
+  error?: string,
+) {
+  const url = new URL(
+    calendarSuccessRedirect(successRedirectURL) ||
+      DEFAULT_CALENDAR_SUCCESS_REDIRECT,
+  );
   if (success) url.searchParams.set("success", "true");
   else url.searchParams.set("error", error || "server_error");
   return url.toString();
@@ -747,8 +779,12 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#39;");
 }
 
-function oauthResponse(success: boolean, error?: string) {
-  const destination = deepLink(success, error);
+function oauthResponse(
+  success: boolean,
+  error?: string,
+  successRedirectURL?: string,
+) {
+  const destination = deepLink(successRedirectURL, success, error);
   const title = success ? "Authentication successful" : "Authentication error";
   const detail = success
     ? "Returning to Omi…"
@@ -790,10 +826,14 @@ async function oauthCallback(
     return oauthResponse(false, "config_error");
   }
   const stateRow = await c.env.APP_DB.prepare(
-    "DELETE FROM cf_google_calendar_oauth_states WHERE state_hash = ? RETURNING uid, expires_at",
+    "DELETE FROM cf_google_calendar_oauth_states WHERE state_hash = ? RETURNING uid, expires_at, success_redirect_url",
   )
     .bind(await sha256Hex(state))
-    .first<{ uid: string; expires_at: number }>();
+    .first<{
+      uid: string;
+      expires_at: number;
+      success_redirect_url: string | null;
+    }>();
   if (!stateRow || stateRow.expires_at <= nowSeconds(dependencies)) {
     return oauthResponse(false, "invalid_state");
   }
@@ -804,9 +844,13 @@ async function oauthCallback(
       await exchangeGoogleCode(c.env, code, dependencies),
       dependencies,
     );
-    return oauthResponse(true);
+    return oauthResponse(true, undefined, stateRow.success_redirect_url || undefined);
   } catch {
-    return oauthResponse(false, "token_exchange_failed");
+    return oauthResponse(
+      false,
+      "token_exchange_failed",
+      stateRow.success_redirect_url || undefined,
+    );
   }
 }
 
@@ -1410,6 +1454,11 @@ export function registerGoogleCalendarRoutes(
         400,
       );
     }
+    const requestedRedirect = c.req.query("success_redirect_url");
+    const successRedirectURL = calendarSuccessRedirect(requestedRedirect);
+    if (!successRedirectURL) {
+      return c.json({ detail: "Invalid success_redirect_url" }, 400);
+    }
     try {
       const configuration = googleConfiguration(c.env);
       const state = randomToken(32);
@@ -1419,12 +1468,13 @@ export function registerGoogleCalendarRoutes(
           "DELETE FROM cf_google_calendar_oauth_states WHERE expires_at <= ?",
         ).bind(now),
         c.env.APP_DB.prepare(
-          "INSERT INTO cf_google_calendar_oauth_states (state_hash, uid, expires_at, created_at) VALUES (?, ?, ?, ?)",
+          "INSERT INTO cf_google_calendar_oauth_states (state_hash, uid, expires_at, created_at, success_redirect_url) VALUES (?, ?, ?, ?, ?)",
         ).bind(
           await sha256Hex(state),
           context.uid,
           now + OAUTH_STATE_TTL_SECONDS,
           now,
+          successRedirectURL,
         ),
       ]);
       return c.json({
