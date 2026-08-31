@@ -93,6 +93,7 @@
 - Sync v1 staging live recheck（2026-08-31）：Jobs `2a978062-cab4-48e3-88db-4da1a96ab600` 与 Edge `97acf6aa-ef87-4bdb-87d6-ed2107f53e6d` 发布后，未认证 `POST /v1/sync-local-files` 返回 `401`；无 capture provenance 的 multipart 上传安全返回 `503 backfill_capacity`、`Retry-After: 30`，并保留 `Deprecation: true` 与 v2 successor Link。探测账号随后通过公开删号清理。
 - Voice chat staging live evidence（2026-08-31）：API AI `efa4c5c7-85a0-4668-afa0-1c446014725c`、Edge `48fa6e53-fe68-4636-b87f-136784c34f83` 发布修复后，隔离 Better Auth 账号上传已知有声 WAV 返回 `200 text/event-stream`（987 字节 SSE），静音 WAV 按约定为空 SSE（0 字节），未认证仍为 `401`。multipart 解析、音频大小/容器校验、D1 speech metering 和 transcript→chat SSE delegation 均有 Python/Edge 回归覆盖，旧 legacy owner 保留为显式 rollback；探针账号已提交删号。
 - Calendar staging final probe（2026-08-31）：最新 Edge 健康 `200`；未认证 Google events 为 `401`，隔离账号 onboarding status 为 `200`，未连接 events 为业务态 `400`，OAuth URL 因 staging 未配置 client 为 `503`；不会出现页面路由 `404`，探针账号已提交删号。
+- Account-deletion run staging live recheck（2026-08-31）：Jobs `a919224e-2a57-4b9a-b491-6b3f53aab206` 与 Edge `0628bff6-3b50-47a9-9660-a58755d546b7` 发布后，未认证 run 返回 `401`，认证未知 job 返回 `200 dropped/unknown_job`；显式 staging cutover fixture 的公开删号返回 `200`，run boundary 返回 `200 queued`，Queue 完成后 Auth user/session/account、App intent/cutover/conversation/chat residual 均为 `0`，仅保留预期 tombstone。非 Cloudflare-owned 账号仍按设计返回 `503 account_deletion_unavailable`，旧 Cloud Tasks/OIDC production dispatcher 尚未切换。
 
 ## 发布前必须补齐
 
