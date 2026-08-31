@@ -57,5 +57,10 @@ owner. `scripts/phone-history-reconcile.mjs` accepts only a reviewed manifest
 containing Cloudflare AES-GCM ciphertext, a hash-only E.164 proof, and the
 destination account generation. It emits dry-run SQL for
 `cf_phone_number_import_ledger`; it never decrypts Firestore, calls Twilio, or
-writes D1. See [the historical reconciliation contract](phone-history-reconcile.md)
-for the required proof, collision, and deletion-fence checks.
+writes D1. The gated Jobs-only review/apply seam in migration
+`0129_phone_number_import_executor.sql` can promote those planned rows after
+an operator review; it only accepts the manifest/plan hashes recorded in the
+ledger, re-checks generation and deletion fences, and writes encrypted rows
+plus idempotent apply markers. It never decrypts the number or calls Twilio.
+See [the historical reconciliation contract](phone-history-reconcile.md) for
+the required proof, collision, and deletion-fence checks.

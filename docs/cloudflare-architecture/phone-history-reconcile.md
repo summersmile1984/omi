@@ -4,9 +4,8 @@
 historical Phone slice. It is a permanent dry-run planner only: it does not
 read Firestore or GCS, decrypt an export, call Twilio, or write Cloudflare.
 The output is reviewable SQL for `cf_phone_number_import_ledger`, plus a
-verification query. A future executor must re-check the account fence and
-promote a reviewed ledger row into `cf_phone_numbers`; this planner never
-promotes it itself.
+verification query. The separate Jobs executor can promote a reviewed ledger
+row into `cf_phone_numbers`; this planner never promotes it itself.
 
 ## Required manifest
 
@@ -94,6 +93,29 @@ node deploy/cloudflare/scripts/phone-history-reconcile.mjs \
 plaintext/pending/missing-proof rejection, duplicate and hash/SID collision
 blocking, SQL idempotency, generation admission, and deletion-fence absence.
 The test suite is hermetic and never calls Twilio or a storage service.
+
+## Reviewed apply (Jobs Worker)
+
+Migration `0129_phone_number_import_executor.sql` adds a short-lived review
+receipt and an immutable apply marker. It also records the planner's
+`manifest_sha256` in each newly generated ledger row. The operator workflow is
+deliberately two-step and uses the Jobs Worker directly with the `ADMIN_KEY`
+`secret-key` header:
+
+1. Apply the generated ledger SQL and inspect the bounded ledger export.
+2. `POST /internal/phone-history/reviews` with
+   `{ "manifest_sha256": "...", "entries": [{ "uid": "...", "import_id": "...", "plan_hash": "..." }] }`.
+3. Review the returned opaque `review_id`, then
+   `POST /internal/phone-history/reviews/{review_id}/apply`.
+
+The `PHONE_HISTORY_IMPORT_STAGING_ENABLED` gate defaults to `false`. Review
+requires every requested row to still be `stage`/`planned`, have the exact
+manifest and plan hash, and contain only the bounded AES-GCM ciphertext shape.
+Apply re-checks the destination-bound account generation and deletion fence,
+rejects global hash/SID collisions or changed existing rows, and uses an
+atomic D1 batch to insert `cf_phone_numbers` plus its apply marker. Repeating
+the same review is idempotent. The executor never decrypts a number, returns
+plaintext, reads Firestore/GCS, or calls Twilio.
 
 This planner does not prove historical Firestore account identity continuity,
 Twilio's current caller-ID state, data-protection key rotation, or exact

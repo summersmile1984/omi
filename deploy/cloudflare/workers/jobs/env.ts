@@ -158,6 +158,8 @@ export type JobsEnv = {
   FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED?: string;
   /** Explicit executor gate; no API Core migration executor is enabled by default. */
   APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED?: string;
+  /** Reviewed source app/memory projection attestation gate; disabled by default. */
+  APP_OWNER_MIGRATION_DATA_ATTESTATION_STAGING_ENABLED?: string;
   HUME_WEBHOOK_SIGNING_KEY?: string;
   /** Twilio REST credentials and Voice SDK token configuration. */
   TWILIO_ACCOUNT_SID?: string;
@@ -167,4 +169,6 @@ export type JobsEnv = {
   TWILIO_TWIML_APP_SID?: string;
   /** AES-GCM key material for caller-ID numbers retained in D1. */
   PHONE_DATA_ENCRYPTION_SECRET?: string;
+  /** Explicit operator gate for reviewed historical phone-number promotion. */
+  PHONE_HISTORY_IMPORT_STAGING_ENABLED?: string;
 };
