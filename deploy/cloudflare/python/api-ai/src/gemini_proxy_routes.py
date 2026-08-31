@@ -1,0 +1,734 @@
+"""Cloudflare-owned Gemini REST adapter with bounded D1/DO admission.
+
+This is intentionally a provider-specific route.  The generic ``/v1/ai``
+proxy is OpenAI-compatible and must not be used as a Gemini wire adapter.
+Vertex ADC/PT remains a separate, fail-closed provider until a Cloudflare
+service-identity contract is available.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+import uuid
+from collections.abc import AsyncIterator, Mapping
+from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from internal_auth import decode_context
+
+try:
+    from workers import fetch as worker_fetch
+except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodide's ``js`` module.
+    if error.name != "js":
+        raise
+    worker_fetch = None  # type: ignore[assignment]
+
+router = APIRouter()
+
+MAX_BODY_BYTES = 5 * 1024 * 1024
+MAX_RESPONSE_BYTES = 12 * 1024 * 1024
+MAX_CONTENT_ITEMS = 128
+MAX_CONTENT_PARTS = 512
+MAX_INLINE_MEDIA_PARTS = 16
+DEFAULT_DAILY_LIMIT = 1_500
+MAX_REQUEST_ID_CHARS = 128
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+ALLOWED_ACTIONS = frozenset({"generateContent", "streamGenerateContent", "embedContent", "batchEmbedContents"})
+ALLOWED_MODELS = frozenset(
+    {
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-3.1-flash-lite",
+        "gemini-embedding-001",
+    }
+)
+FORBIDDEN_QUERY_KEYS = frozenset({"key", "access_token", "oauth_token"})
+
+
+class GeminiProviderError(Exception):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status_code: int = 503,
+        retryable: bool = True,
+        retry_after: int | None = None,
+    ):
+        super().__init__(code)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def _json_error(
+    request_id: str,
+    code: str,
+    message: str,
+    *,
+    status_code: int,
+    retryable: bool,
+    retry_after: int | None = None,
+) -> JSONResponse:
+    headers = {
+        "cache-control": "no-store",
+        "x-request-id": request_id,
+        "x-omi-request-id": request_id,
+        "x-omi-provider": "ai_studio",
+        "x-omi-error-class": code,
+        "x-omi-retryable": "true" if retryable else "false",
+    }
+    if retry_after is not None:
+        headers["retry-after"] = str(max(1, retry_after))
+    return JSONResponse(
+        {
+            "error": code,
+            "message": message,
+            "request_id": request_id,
+            "retryable": retryable,
+        },
+        status_code=status_code,
+        headers=headers,
+    )
+
+
+def _request_id(request: Request, context: Mapping[str, Any]) -> str:
+    for name in ("x-omi-request-id", "x-request-id", "idempotency-key"):
+        candidate = request.headers.get(name, "").strip()
+        if candidate and REQUEST_ID_PATTERN.fullmatch(candidate):
+            return candidate[:MAX_REQUEST_ID_CHARS]
+    candidate = context.get("requestId")
+    if isinstance(candidate, str) and REQUEST_ID_PATTERN.fullmatch(candidate):
+        return candidate[:MAX_REQUEST_ID_CHARS]
+    return uuid.uuid4().hex
+
+
+def _context(request: Request) -> dict[str, Any] | None:
+    state = getattr(request, "state", None)
+    context = getattr(state, "auth_context", None)
+    if isinstance(context, dict) and isinstance(context.get("uid"), str):
+        return context
+    env = request.scope.get("env")
+    secret = getattr(env, "INTERNAL_ASSERTION_SECRET", None)
+    return decode_context(
+        request.headers.get("x-omi-auth-context"),
+        request.headers.get("x-omi-internal-signature"),
+        secret,
+    )
+
+
+def _parse_path(path: str) -> tuple[str, str, str]:
+    original = path
+    if original.startswith("models/"):
+        model_action = original[7:]
+    else:
+        model_action = ""
+    model_part, separator, action = model_action.partition(":")
+    if model_part == "gemini-3-flash-preview":
+        model_part = "gemini-2.5-flash"
+        original = original.replace("gemini-3-flash-preview", model_part, 1)
+    if not separator or model_part not in ALLOWED_MODELS or action not in ALLOWED_ACTIONS:
+        raise GeminiProviderError(
+            "gemini_model_or_action_not_allowed",
+            "Gemini model or action is not allowed",
+            status_code=403,
+            retryable=False,
+        )
+    return original, model_part, action
+
+
+def _body_shape(payload: Mapping[str, Any], size: int) -> None:
+    contents = payload.get("contents")
+    if not isinstance(contents, list):
+        return
+    if len(contents) > MAX_CONTENT_ITEMS:
+        raise GeminiProviderError(
+            "gemini_request_too_large", "Gemini request has too many content items", status_code=413, retryable=False
+        )
+    part_count = 0
+    inline_media_count = 0
+    for content in contents:
+        if not isinstance(content, dict) or not isinstance(content.get("parts"), list):
+            continue
+        part_count += len(content["parts"])
+        for part in content["parts"]:
+            if isinstance(part, dict) and ("inlineData" in part or "inline_data" in part):
+                inline_media_count += 1
+    if part_count > MAX_CONTENT_PARTS:
+        raise GeminiProviderError(
+            "gemini_request_too_large", "Gemini request has too many content parts", status_code=413, retryable=False
+        )
+    if inline_media_count > MAX_INLINE_MEDIA_PARTS:
+        raise GeminiProviderError(
+            "gemini_request_too_large",
+            "Gemini request has too many inline media parts",
+            status_code=413,
+            retryable=False,
+        )
+    if size > MAX_BODY_BYTES:
+        raise GeminiProviderError(
+            "gemini_request_too_large", "Gemini request body is too large", status_code=413, retryable=False
+        )
+
+
+def _sanitize_payload(body: bytes) -> tuple[bytes, dict[str, Any]]:
+    if len(body) > MAX_BODY_BYTES:
+        raise GeminiProviderError(
+            "gemini_request_too_large", "Gemini request body is too large", status_code=413, retryable=False
+        )
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError) as error:
+        raise GeminiProviderError(
+            "invalid_request", "Request body must be valid JSON", status_code=400, retryable=False
+        ) from error
+    if not isinstance(payload, dict):
+        raise GeminiProviderError(
+            "invalid_request", "Request body must be a JSON object", status_code=400, retryable=False
+        )
+    _body_shape(payload, len(body))
+    # Match the desktop proxy's safety boundary.  These fields are provider
+    # policy inputs owned by the server, not caller-controlled routing knobs.
+    for key in ("safety_settings", "safetySettings", "cached_content", "cachedContent"):
+        payload.pop(key, None)
+    contents = payload.get("contents")
+    if isinstance(contents, list):
+        system_parts: list[Any] = []
+        remaining: list[Any] = []
+        for content in contents:
+            if not isinstance(content, dict):
+                remaining.append(content)
+                continue
+            role = content.setdefault("role", "user")
+            if role == "system":
+                if isinstance(content.get("parts"), list):
+                    system_parts.extend(content["parts"])
+            else:
+                remaining.append(content)
+        payload["contents"] = remaining
+        if system_parts:
+            instruction = payload.get("systemInstruction") or payload.get("system_instruction")
+            if isinstance(instruction, dict) and isinstance(instruction.get("parts"), list):
+                instruction["parts"].extend(system_parts)
+            else:
+                payload["systemInstruction"] = {"parts": system_parts}
+    return json.dumps(payload, separators=(",", ":")).encode(), payload
+
+
+def _safe_provider_url(base_url: str, path: str, query: str, *, stream: bool) -> str:
+    parsed = urlsplit(base_url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise GeminiProviderError(
+            "gemini_provider_unavailable", "Gemini provider URL is not configured", retryable=True
+        )
+    query_items = parse_qsl(query, keep_blank_values=True)
+    if any(key.casefold() in FORBIDDEN_QUERY_KEYS for key, _ in query_items):
+        raise GeminiProviderError(
+            "invalid_request", "Provider credential query parameters are not allowed", status_code=400, retryable=False
+        )
+    if stream and not any(key == "alt" for key, _ in query_items):
+        query_items.append(("alt", "sse"))
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            f"{parsed.path.rstrip('/')}/{path.lstrip('/')}",
+            urlencode(query_items),
+            "",
+        )
+    )
+
+
+def _response_header(response: object, name: str, default: str = "") -> str:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return default
+    value = headers.get(name) if hasattr(headers, "get") else None
+    return value if isinstance(value, str) and value else default
+
+
+def _bytes(value: object) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    to_py = getattr(value, "to_py", None)
+    if callable(to_py):
+        converted = to_py()
+        if converted is not value:
+            return _bytes(converted)
+    try:
+        return bytes(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return b""
+
+
+async def _array_buffer(response: object) -> bytes:
+    method = getattr(response, "arrayBuffer", None)
+    if not callable(method):
+        return b""
+    return _bytes(await method())
+
+
+def _usage(payload: Mapping[str, Any]) -> dict[str, int | str] | None:
+    raw = payload.get("usageMetadata")
+    if not isinstance(raw, dict):
+        return None
+    names = {
+        "prompt_tokens": ("promptTokenCount",),
+        "output_tokens": ("candidatesTokenCount",),
+        "total_tokens": ("totalTokenCount",),
+        "cached_input_tokens": ("cachedContentTokenCount",),
+        "reasoning_tokens": ("thoughtsTokenCount",),
+        "traffic_type": ("trafficType",),
+    }
+    result: dict[str, int | str] = {}
+    for destination, candidates in names.items():
+        for source in candidates:
+            value = raw.get(source)
+            if destination == "traffic_type":
+                if isinstance(value, str) and value in {"PROVISIONED_THROUGHPUT", "ON_DEMAND"}:
+                    result[destination] = value
+                break
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int) and value >= 0:
+                result[destination] = value
+                break
+    return result or None
+
+
+def _sse_usage(body: bytes) -> dict[str, int | str] | None:
+    latest: dict[str, int | str] | None = None
+    normalized = body.replace(b"\r\n", b"\n")
+    for event in normalized.split(b"\n\n"):
+        data = [line[5:].lstrip() for line in event.splitlines() if line.startswith(b"data:")]
+        if not data:
+            continue
+        try:
+            payload = json.loads(b"\n".join(data))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            current = _usage(payload)
+            if current:
+                latest = current
+    return latest
+
+
+def _cost_micros(env: object, usage: Mapping[str, int | str] | None) -> int | None:
+    if not usage:
+        return None
+    prompt = usage.get("prompt_tokens")
+    output = usage.get("output_tokens")
+    if not isinstance(prompt, int) or not isinstance(output, int):
+        return None
+    try:
+        input_rate = float(getattr(env, "GEMINI_INPUT_USD_PER_MILLION", ""))
+        output_rate = float(getattr(env, "GEMINI_OUTPUT_USD_PER_MILLION", ""))
+    except (TypeError, ValueError):
+        return None
+    if input_rate < 0 or output_rate < 0:
+        return None
+    return max(0, round((prompt * input_rate + output * output_rate) * 1_000_000 / 1_000_000))
+
+
+def _daily_limit(env: object) -> int:
+    try:
+        value = int(getattr(env, "GEMINI_DAILY_LIMIT", DEFAULT_DAILY_LIMIT))
+    except (TypeError, ValueError):
+        return DEFAULT_DAILY_LIMIT
+    return value if 1 <= value <= 100_000 else DEFAULT_DAILY_LIMIT
+
+
+async def _reserve_daily(
+    env: object,
+    *,
+    request_id: str,
+    uid: str,
+    model: str,
+    action: str,
+    credential_source: str,
+    now: int,
+    account_generation: int,
+) -> str:
+    database = getattr(env, "APP_DB", None)
+    if database is None:
+        raise GeminiProviderError("gemini_usage_unavailable", "Gemini usage ledger is unavailable")
+    window_start = (now // 86_400) * 86_400
+    try:
+        initialize = database.prepare(
+            "INSERT OR IGNORE INTO cf_gemini_quota_windows "
+            "(uid, window_kind, window_start, request_count, updated_at) VALUES (?, 'daily', ?, 0, ?)"
+        ).bind(uid, window_start, now)
+        reserve = database.prepare(
+            "INSERT OR IGNORE INTO cf_gemini_usage_receipts "
+            "(request_id, uid, model, action, credential_source, provider, status, account_generation, created_at) "
+            "SELECT ?, ?, ?, ?, ?, 'ai_studio', 'reserved', ?, ? "
+            "WHERE NOT EXISTS (SELECT 1 FROM cf_gemini_usage_receipts WHERE request_id = ?) "
+            "AND (SELECT request_count FROM cf_gemini_quota_windows "
+            "     WHERE uid = ? AND window_kind = 'daily' AND window_start = ?) < ?"
+        ).bind(
+            request_id,
+            uid,
+            model,
+            action,
+            credential_source,
+            account_generation,
+            now,
+            request_id,
+            uid,
+            window_start,
+            _daily_limit(env),
+        )
+        await database.batch([initialize, reserve])
+        row = (
+            await database.prepare("SELECT uid, status FROM cf_gemini_usage_receipts WHERE request_id = ?")
+            .bind(request_id)
+            .first()
+        )
+    except GeminiProviderError:
+        raise
+    except Exception as error:
+        raise GeminiProviderError("gemini_usage_unavailable", "Gemini usage ledger is unavailable") from error
+    if not isinstance(row, dict):
+        try:
+            await database.prepare(
+                "INSERT OR IGNORE INTO cf_gemini_usage_receipts "
+                "(request_id, uid, model, action, credential_source, provider, status, account_generation, created_at, last_error) "
+                "VALUES (?, ?, ?, ?, ?, 'ai_studio', 'rejected', ?, ?, 'daily_quota_exceeded')"
+            ).bind(request_id, uid, model, action, credential_source, account_generation, now).run()
+        except Exception as error:
+            raise GeminiProviderError("gemini_usage_unavailable", "Gemini usage ledger is unavailable") from error
+        raise GeminiProviderError(
+            "gemini_daily_quota_exceeded",
+            "Gemini daily request limit exceeded",
+            status_code=429,
+            retryable=False,
+            retry_after=max(1, 86_400 - (now - window_start)),
+        )
+    if row.get("uid") != uid:
+        raise GeminiProviderError(
+            "gemini_request_conflict", "Gemini request id belongs to another account", status_code=409, retryable=False
+        )
+    status = row.get("status")
+    if status == "reserved":
+        return "reserved"
+    if status == "rejected":
+        raise GeminiProviderError(
+            "gemini_daily_quota_exceeded", "Gemini daily request limit exceeded", status_code=429, retryable=False
+        )
+    raise GeminiProviderError(
+        "gemini_request_replayed",
+        "Gemini request id has already reached a terminal state",
+        status_code=409,
+        retryable=False,
+    )
+
+
+async def _settle(
+    env: object,
+    *,
+    request_id: str,
+    uid: str,
+    status: str,
+    usage: Mapping[str, int | str] | None,
+    now: int,
+    cost_micros: int | None,
+    error: str | None = None,
+) -> bool:
+    database = getattr(env, "APP_DB", None)
+    if database is None:
+        return False
+    try:
+        await database.prepare(
+            "UPDATE cf_gemini_usage_receipts SET status = ?, prompt_tokens = ?, output_tokens = ?, "
+            "total_tokens = ?, cached_input_tokens = ?, reasoning_tokens = ?, traffic_type = ?, "
+            "estimated_cost_micros = ?, completed_at = ?, last_error = ? "
+            "WHERE request_id = ? AND uid = ? AND status = 'reserved'"
+        ).bind(
+            status,
+            usage.get("prompt_tokens") if usage else None,
+            usage.get("output_tokens") if usage else None,
+            usage.get("total_tokens") if usage else None,
+            usage.get("cached_input_tokens") if usage else None,
+            usage.get("reasoning_tokens") if usage else None,
+            usage.get("traffic_type") if usage else None,
+            cost_micros,
+            now,
+            error,
+            request_id,
+            uid,
+        ).run()
+        return True
+    except Exception:
+        return False
+
+
+def _provider_error(status: int) -> tuple[int, str, str, bool, int | None]:
+    if status == 429:
+        return 429, "gemini_provider_rate_limited", "Gemini provider rate limited the request", True, 30
+    if status in {408, 504}:
+        return (
+            504,
+            "gemini_provider_timeout",
+            "Gemini provider timed out before returning a terminal response",
+            False,
+            None,
+        )
+    if status >= 500:
+        return 502, "gemini_provider_unavailable", "Gemini provider returned an unavailable response", True, 5
+    return status, "gemini_provider_rejected", "Gemini provider rejected the request", False, None
+
+
+def _stream_data_event(code: str, request_id: str) -> bytes:
+    return f"data: {json.dumps({'error': code, 'request_id': request_id, 'retryable': False}, separators=(',', ':'))}\n\n".encode()
+
+
+async def _stream_body(
+    response: object,
+    *,
+    env: object,
+    uid: str,
+    request_id: str,
+) -> AsyncIterator[bytes]:
+    chunks = bytearray()
+    body = getattr(response, "body", None)
+    reader_factory = getattr(body, "getReader", None)
+    try:
+        if callable(reader_factory):
+            reader = reader_factory()
+            while True:
+                result = await reader.read()
+                done = getattr(result, "done", None)
+                value = getattr(result, "value", None)
+                if isinstance(result, dict):
+                    done = result.get("done")
+                    value = result.get("value")
+                if done:
+                    break
+                chunk = _bytes(value)
+                if not chunk:
+                    continue
+                if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
+                    yield _stream_data_event("gemini_response_too_large", request_id)
+                    return
+                chunks.extend(chunk)
+                yield chunk
+        else:
+            chunk = await _array_buffer(response)
+            if len(chunk) > MAX_RESPONSE_BYTES:
+                yield _stream_data_event("gemini_response_too_large", request_id)
+                return
+            chunks.extend(chunk)
+            if chunk:
+                yield chunk
+        usage = _sse_usage(bytes(chunks))
+        await _settle(
+            env,
+            request_id=request_id,
+            uid=uid,
+            status="success",
+            usage=usage,
+            now=int(time.time()),
+            cost_micros=_cost_micros(env, usage),
+        )
+    except Exception:
+        await _settle(
+            env,
+            request_id=request_id,
+            uid=uid,
+            status="failed",
+            usage=None,
+            now=int(time.time()),
+            cost_micros=None,
+            error="stream_transport_error",
+        )
+        yield _stream_data_event("gemini_stream_unavailable", request_id)
+
+
+async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response:
+    context = _context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    request_id = _request_id(request, context)
+    env = request.scope["env"]
+    if str(getattr(env, "GEMINI_PROXY_ENABLED", "false")).lower() != "true":
+        return _json_error(
+            request_id,
+            "gemini_proxy_unavailable",
+            "Cloudflare Gemini proxy is not enabled",
+            status_code=503,
+            retryable=True,
+        )
+    provider = str(getattr(env, "GEMINI_PROXY_PROVIDER", "ai_studio")).strip().lower()
+    if provider != "ai_studio":
+        return _json_error(
+            request_id,
+            "gemini_vertex_unavailable",
+            "Vertex Gemini provider is not configured for Cloudflare",
+            status_code=503,
+            retryable=True,
+        )
+    try:
+        normalized_path, model, action = _parse_path(path)
+        if stream_route and action != "streamGenerateContent":
+            raise GeminiProviderError(
+                "invalid_request",
+                "Gemini stream route requires streamGenerateContent",
+                status_code=400,
+                retryable=False,
+            )
+        body = await request.body()
+        sanitized_body, _ = _sanitize_payload(body)
+        byok_key = request.headers.get("x-byok-gemini")
+        if context.get("byokActive") is True and not byok_key:
+            raise GeminiProviderError(
+                "gemini_byok_unavailable", "Gemini BYOK key is unavailable", status_code=403, retryable=False
+            )
+        credential_source = "byok" if byok_key else "server"
+        api_key = byok_key or str(getattr(env, "GEMINI_API_KEY", "")).strip()
+        if not api_key:
+            raise GeminiProviderError("gemini_provider_unavailable", "Gemini provider is not configured")
+        base_url = str(getattr(env, "GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"))
+        url = _safe_provider_url(
+            base_url,
+            normalized_path,
+            request.url.query,
+            stream=stream_route or action == "streamGenerateContent",
+        )
+        if worker_fetch is None:
+            raise GeminiProviderError("gemini_provider_unavailable", "Worker fetch is unavailable")
+        await _reserve_daily(
+            env,
+            request_id=request_id,
+            uid=str(context["uid"]),
+            model=model,
+            action=action,
+            credential_source=credential_source,
+            now=int(time.time()),
+            account_generation=int(context.get("accountGeneration") or 0),
+        )
+        response = await worker_fetch(
+            url,
+            method="POST",
+            headers={
+                "content-type": "application/json",
+                "accept": (
+                    "text/event-stream" if stream_route or action == "streamGenerateContent" else "application/json"
+                ),
+                "x-goog-api-key": api_key,
+            },
+            body=sanitized_body,
+        )
+    except GeminiProviderError as error:
+        return _json_error(
+            request_id,
+            error.code,
+            error.message,
+            status_code=error.status_code,
+            retryable=error.retryable,
+            retry_after=getattr(error, "retry_after", None),
+        )
+    except Exception:
+        return _json_error(
+            request_id, "gemini_provider_unavailable", "Gemini provider is unavailable", status_code=502, retryable=True
+        )
+
+    status = int(getattr(response, "status", 502))
+    headers = {
+        "cache-control": "no-store",
+        "x-request-id": request_id,
+        "x-omi-request-id": request_id,
+        "x-omi-provider": "ai_studio",
+    }
+    streaming = stream_route or action == "streamGenerateContent"
+    if status >= 400:
+        proxy_status, code, message, retryable, retry_after = _provider_error(status)
+        await _settle(
+            env,
+            request_id=request_id,
+            uid=str(context["uid"]),
+            status="failed",
+            usage=None,
+            now=int(time.time()),
+            cost_micros=None,
+            error=code,
+        )
+        return _json_error(
+            request_id, code, message, status_code=proxy_status, retryable=retryable, retry_after=retry_after
+        )
+    if streaming:
+        headers["content-type"] = _response_header(response, "content-type", "text/event-stream")
+        return StreamingResponse(
+            _stream_body(response, env=env, uid=str(context["uid"]), request_id=request_id),
+            status_code=status,
+            headers=headers,
+            media_type=None,
+        )
+    response_body = await _array_buffer(response)
+    if len(response_body) > MAX_RESPONSE_BYTES:
+        await _settle(
+            env,
+            request_id=request_id,
+            uid=str(context["uid"]),
+            status="failed",
+            usage=None,
+            now=int(time.time()),
+            cost_micros=None,
+            error="response_too_large",
+        )
+        return _json_error(
+            request_id,
+            "gemini_response_too_large",
+            "Gemini provider response is too large",
+            status_code=502,
+            retryable=False,
+        )
+    try:
+        payload = json.loads(response_body)
+    except (TypeError, ValueError):
+        payload = None
+    usage = _usage(payload) if isinstance(payload, dict) else None
+    if not await _settle(
+        env,
+        request_id=request_id,
+        uid=str(context["uid"]),
+        status="success",
+        usage=usage,
+        now=int(time.time()),
+        cost_micros=_cost_micros(env, usage),
+    ):
+        return _json_error(
+            request_id,
+            "gemini_usage_unavailable",
+            "Gemini usage ledger is unavailable",
+            status_code=503,
+            retryable=True,
+        )
+    headers["content-type"] = _response_header(response, "content-type", "application/json")
+    return Response(content=response_body, status_code=status, headers=headers)
+
+
+@router.post("/v1/proxy/gemini")
+@router.post("/v1/proxy/gemini/{path:path}")
+async def gemini_proxy(request: Request, path: str = "") -> Response:
+    return await _proxy(request, path, stream_route=False)
+
+
+@router.post("/v1/proxy/gemini-stream")
+@router.post("/v1/proxy/gemini-stream/{path:path}")
+async def gemini_stream_proxy(request: Request, path: str = "") -> Response:
+    return await _proxy(request, path, stream_route=True)
+
+
+__all__ = ["gemini_proxy", "gemini_stream_proxy", "router"]

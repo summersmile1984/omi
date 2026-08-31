@@ -23,6 +23,8 @@ export type EdgeEnv = {
   PHONE_TWILIO_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for the legacy Gemini desktop proxy paths. */
   GEMINI_PROXY_STAGING_FAIL_CLOSED?: string;
+  /** Explicit opt-in for the Cloudflare-owned AI Studio Gemini adapter. */
+  GEMINI_PROXY_CLOUDFLARE_ENABLED?: string;
   /** Staging-only deny switch for legacy chat completion/materialization paths. */
   CHAT_COMPAT_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for legacy staged-task/task-intelligence paths. */

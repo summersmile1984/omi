@@ -339,6 +339,8 @@ describe("SharedRateLimitDurableObject", () => {
       ["POST", "/v1/tts/synthesize", "tts:synthesize"],
       ["POST", "/v1/tts/synthesize-workers-ai", "tts:synthesize"],
       ["POST", "/v2/tts/synthesize", "tts:synthesize"],
+      ["POST", "/v1/proxy/gemini/models/gemini-2.5-flash:generateContent", "gemini:proxy"],
+      ["POST", "/v1/proxy/gemini-stream/models/gemini-2.5-flash:streamGenerateContent", "gemini:proxy"],
     ] as const;
 
     for (const [method, path, policy] of cases) {

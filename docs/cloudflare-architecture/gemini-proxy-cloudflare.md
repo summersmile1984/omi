@@ -23,30 +23,36 @@ Gemini surface 可以使用 Better Auth session、Edge signed context 和 D1。
    `GEMINI_API_KEY` 不能替代现有 Vertex PT、地域和 `trafficType` 语义；把
    `/v1/ai/*` 的固定 OpenAI-compatible proxy 当 Gemini adapter 也会改变协议。
 3. 旧 Redis burst（30/60 秒）和 daily hard limit（1500/24 小时）的原子
-   admission、Pro 降级、失败/重放计费及 cost accounting。现有 Edge rate-limit
-   policy 是产品通用小时窗口，不是这两个 Gemini quota。
+   admission、Pro 降级、失败/重放计费及 cost accounting。现在的 guarded
+   adapter 已有 Edge DO 30/60 policy 和 D1 daily ledger，但这不等于旧 Redis
+   的完整语义或生产配额迁移。
 4. `x-byok-gemini` 的请求级密钥 authority、未入日志的 provider header、旧
-   客户端对模型/action 白名单和错误头的依赖。现有 BYOK 表存 fingerprint，
-   不等于 Gemini provider route 已经存在。
+   客户端对模型/action 白名单和错误头的依赖。现在已有仅供 Cloudflare
+   adapter 使用的 AI Studio provider route；它仍不是 Firebase/Vertex 兼容
+   的公开 owner。
 5. 非流式 JSON、Gemini SSE 分块、`usageMetadata`、Vertex `trafficType`、
    `X-Omi-*` 错误头和 timeout/retry 语义的旧客户端 conformance fixture。
 
-因此 staging 继续由 `GEMINI_PROXY_STAGING_FAIL_CLOSED=true` 保护：两个
+因此 staging 继续由 `GEMINI_PROXY_STAGING_FAIL_CLOSED=true` 保护，且
+`GEMINI_PROXY_CLOUDFLARE_ENABLED=false`：两个
 入口返回 `503 gemini_proxy_unavailable`、`cache-control: no-store`，不读取
 body、不把 prompt、cookie、Firebase token 或 BYOK key 发给 legacy。该保护
 不是 owner migration，也不减少 manifest 中的两条 `legacy-owned`。
 
-## 建议的最小 Cloudflare 设计（尚未应用）
+## 已落地但未切 owner 的最小 Cloudflare 设计
 
 ### Provider adapter
 
-新增唯一的 Gemini adapter（建议放在 API-AI Worker；Edge 只负责认证、BYOK
-校验和 signed context），而不是扩大通用 `/v1/ai/{path}`：
+`deploy/cloudflare/python/api-ai/src/gemini_proxy_routes.py` 新增了唯一的
+Gemini adapter（API-AI Worker；Edge 只负责认证、BYOK 校验和 signed context），
+而不是扩大通用 `/v1/ai/{path}`。它默认不由 Edge public route 调用，必须显式
+打开 `GEMINI_PROXY_CLOUDFLARE_ENABLED` 才能做隔离验证：
 
 - 只接受 `models/{model}:{action}`，沿用旧 allowlist；未知模型/action 在
   provider dispatch 前返回 403。
-- server-paid Gemini 只走经过验证的 Vertex service identity，并按模型选择
-  regional 或 multi-region endpoint；没有 project/identity 时 fail closed。
+- 当前实现只允许显式配置的 AI Studio `GEMINI_API_KEY`，仅作为 adapter
+  fixture/staging provider；server-paid Vertex service identity、regional/PT
+  路由没有实现，provider 选择不是 `ai_studio` 时 fail closed。
 - BYOK 只在 Edge 通过 `cf_user_byok_enrollments` fingerprint 校验后进入
   request-local context。发送到 AI Studio 时优先使用 `x-goog-api-key`，不把
   raw key 放 query、日志、D1 或内部 assertion；请求结束即丢弃。
@@ -59,10 +65,10 @@ body、不把 prompt、cookie、Firebase token 或 BYOK key 发给 legacy。该�
 
 ### Quota 与 usage authority
 
-Burst 应由 Durable Object（对象名 `gemini:burst:<uid>`）串行执行，保持
-30 requests / 60 seconds；daily hard limit 和 usage receipt 由同一 D1
-transaction 维护。最小 schema 草案如下，实际迁移前必须通过 schema review
-并接入 account-deletion residual inventory：
+guarded adapter 的 burst 由现有 Edge Durable Object 串行执行，保持 30 requests /
+60 seconds；daily hard limit 和 usage receipt 由 `0114_gemini_proxy.sql` 的
+D1 transaction 维护，并已接入 account-deletion residual inventory。当前 schema
+如下：
 
 ```sql
 CREATE TABLE cf_gemini_quota_windows (
@@ -80,7 +86,7 @@ CREATE TABLE cf_gemini_usage_receipts (
   model TEXT NOT NULL,
   action TEXT NOT NULL,
   credential_source TEXT NOT NULL CHECK (credential_source IN ('byok', 'server')),
-  provider TEXT NOT NULL CHECK (provider IN ('vertex', 'ai_studio')),
+  provider TEXT NOT NULL CHECK (provider = 'ai_studio'),
   status TEXT NOT NULL CHECK (status IN ('reserved', 'success', 'rejected', 'failed')),
   prompt_tokens INTEGER,
   output_tokens INTEGER,
@@ -111,8 +117,11 @@ the old account as not eligible for the new owner.
 
 ## Required fixture and test contract
 
-The implementation PR must add fixtures under a Gemini-specific fixture namespace
-and exercise production seams, not source-string assertions:
+The adapter test set adds fixtures under a Gemini-specific test module and exercises
+production seams, not source-string assertions. It currently covers direct JSON
+provider dispatch/usage, missing-secret fail-closed behavior, D1 daily reservation,
+stream-route action validation, credential-query rejection, and query forwarding.
+The following are still required before any owner change:
 
 - **Auth:** Better Auth session success; missing/expired session; an unmigrated
   Firebase bearer principal; wrong signed audience; and account-generation/deletion

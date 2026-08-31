@@ -37,6 +37,14 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 60,
     windowSeconds: 3600,
   },
+  // Gemini's legacy contract is a per-user 30 requests / 60 seconds burst
+  // window.  The API-AI D1 ledger owns the daily admission limit; this DO
+  // policy owns only the short-lived edge burst window.
+  "gemini:proxy": {
+    name: "gemini:proxy",
+    maxRequests: 30,
+    windowSeconds: 60,
+  },
   "public_shared_chat:per_ip": {
     name: "public_shared_chat:per_ip",
     maxRequests: 8,
@@ -397,6 +405,13 @@ export function edgeRateLimitPolicyForRequest(
   const normalizedMethod = method.toUpperCase();
   const exact = EXACT_ROUTE_POLICIES.get(`${normalizedMethod} ${path}`);
   if (exact) return exact;
+
+  if (
+    normalizedMethod === "POST" &&
+    /^\/v1\/proxy\/gemini(?:-stream)?(?:\/|$)/.test(path)
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["gemini:proxy"];
+  }
 
   if (normalizedMethod === "GET" && /^\/v1\/goals\/[^/]+\/advice$/.test(path)) {
     return EDGE_RATE_LIMIT_POLICIES["goals:advice"];

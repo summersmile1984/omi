@@ -38,5 +38,8 @@
     "WORKERS_AI_ASR_MODEL": "@cf/openai/whisper-large-v3-turbo",
     "WORKERS_AI_TRANSLATION_MODEL": "@cf/meta/m2m100-1.2b",
     "WORKERS_AI_TTS_MODEL": "@cf/deepgram/aura-1",
+    "GEMINI_PROXY_ENABLED": "true",
+    "GEMINI_PROXY_PROVIDER": "ai_studio",
+    "GEMINI_DAILY_LIMIT": "1500",
   },
 }

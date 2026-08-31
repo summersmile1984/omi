@@ -619,6 +619,18 @@ const legacyGeminiProxyStagingBoundary = async (
   );
 };
 
+// AI Studio Gemini is now available behind the API-AI Python Worker.  Keep an
+// explicit switch so a deployment without GEMINI_API_KEY can fail closed at
+// the provider boundary rather than accidentally forwarding to legacy.
+async function cloudflareGeminiProxyBoundary(
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+): Promise<Response> {
+  if (c.env.GEMINI_PROXY_CLOUDFLARE_ENABLED === "true") {
+    return proxyAuthenticatedAI(c);
+  }
+  return legacyGeminiProxyStagingBoundary(c);
+}
+
 // The desktop completion and Chat-first materialization endpoints still carry
 // the legacy provider/session contract. Their released callers use Firebase
 // continuity and Firestore-backed materialization, neither of which is
@@ -805,10 +817,10 @@ app.delete("/v1/summary-app-ids/:appId", proxyPublicJobs);
 app.post("/v1/integrations/notification", proxyIntegrationCore);
 app.post("/v1/notification", proxyPublicJobs);
 app.post("/v1/agents/hume/callback", proxyHumeWebhook);
-app.post("/v1/proxy/gemini", legacyGeminiProxyStagingBoundary);
-app.post("/v1/proxy/gemini/*", legacyGeminiProxyStagingBoundary);
-app.post("/v1/proxy/gemini-stream", legacyGeminiProxyStagingBoundary);
-app.post("/v1/proxy/gemini-stream/*", legacyGeminiProxyStagingBoundary);
+app.post("/v1/proxy/gemini", cloudflareGeminiProxyBoundary);
+app.post("/v1/proxy/gemini/*", cloudflareGeminiProxyBoundary);
+app.post("/v1/proxy/gemini-stream", cloudflareGeminiProxyBoundary);
+app.post("/v1/proxy/gemini-stream/*", cloudflareGeminiProxyBoundary);
 app.get(
   "/v1/personas/twitter/verify-ownership",
   legacyPersonaAppsStagingBoundary,

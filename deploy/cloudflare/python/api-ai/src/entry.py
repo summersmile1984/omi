@@ -26,6 +26,7 @@ from chat_generation_routes import chat_messages, router as chat_generation_rout
 from fallback import record_fallback
 from realtime_routes import router as realtime_router
 from voice_transcription_routes import router as voice_transcription_router
+from gemini_proxy_routes import router as gemini_proxy_router
 
 app = FastAPI(title="Omi Cloudflare AI API", version="0.1.0")
 app.include_router(auto_model_router)
@@ -33,6 +34,7 @@ app.include_router(app_generation_router)
 app.include_router(chat_generation_router)
 app.include_router(realtime_router)
 app.include_router(voice_transcription_router)
+app.include_router(gemini_proxy_router)
 
 MAX_TRANSCRIPTION_BODY_BYTES = 25_000_000
 MAX_WORKERS_AI_AUDIO_BYTES = 5_000_000
