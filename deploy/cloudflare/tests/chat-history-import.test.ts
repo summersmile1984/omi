@@ -44,6 +44,11 @@ class SqliteD1 {
         (this.database.prepare(sql).get(...args.map(sqliteValue)) as
           | T
           | undefined) ?? null,
+      all: async <T>() => ({
+        success: true as const,
+        results: this.database.prepare(sql).all(...args.map(sqliteValue)) as T[],
+        meta: { changes: 0 },
+      }),
       execute: () => {
         const statement = this.database.prepare(sql);
         if (/^SELECT\b/i.test(sql.trimStart())) {
@@ -181,8 +186,31 @@ function batchId(plan: Record<string, unknown>): string {
 function signedHeaders(plan: Record<string, unknown>, body: Record<string, unknown>) {
   const id = batchId(plan);
   const manifestHash = String(body.manifestHash);
+  const ordered = [...(plan.entries as Array<Record<string, unknown>>)].sort((left, right) =>
+    `${left.uid}\0${left.entityKind}\0${left.entityId}`.localeCompare(
+      `${right.uid}\0${right.entityKind}\0${right.entityId}`,
+    ),
+  );
+  const signaturePayload = stableJson({
+    batch_id: id,
+    manifest_sha256: manifestHash,
+    entries: ordered.map((entry) => ({
+      uid: entry.uid,
+      entity_kind: entry.entityKind,
+      entity_id: entry.entityId,
+      account_generation: entry.accountGeneration,
+      source_fingerprint: entry.sourceFingerprint,
+      source_export_sha256: entry.sourceExportSha256,
+      source_row_sha256: entry.sourceRowSha256,
+      import_id: entry.importId,
+      plan_hash: entry.planHash,
+      action: "stage",
+      status: "planned",
+      last_error: null,
+    })),
+  });
   const signature = createHmac("sha256", SIGNING_SECRET)
-    .update(`${id}\0${manifestHash}`)
+    .update(signaturePayload)
     .digest("base64url");
   return {
     "content-type": "application/json",
@@ -268,6 +296,23 @@ describe("Cloudflare chat-history apply executor", () => {
       applied_count: 0,
       already_applied_count: 2,
     });
+  });
+
+  it("keeps concurrent identical submissions idempotent", async () => {
+    const { database, env } = environment();
+    const plan = planChatHistoryReconciliation(manifest());
+    const body = { ...plan, batch_id: batchId(plan) };
+    const request = requestApp(env);
+    const [left, right] = await Promise.all([
+      request(JSON.stringify(body), signedHeaders(plan, body)),
+      request(JSON.stringify(body), signedHeaders(plan, body)),
+    ]);
+    expect([left.status, right.status].sort()).toEqual([200, 200]);
+    expect(
+      database.database
+        .prepare("SELECT COUNT(*) AS count FROM cf_chat_history_apply_receipts")
+        .get()?.count,
+    ).toBe(2);
   });
 
   it("rejects a deletion-fenced apply before writing any ledger row", async () => {

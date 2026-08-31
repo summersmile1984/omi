@@ -9,6 +9,8 @@ const MAX_ENTRIES = 20;
 const MAX_ROW_BYTES = 256 * 1024;
 const MAX_TEXT_BYTES = 200_000;
 const MAX_ID_LENGTH = 256;
+const MAX_JSON_DEPTH = 16;
+const MAX_JSON_NODES = 2_048;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UID = /^[^/\\\u0000-\u001f\u007f]{1,256}$/;
 const SENSITIVE_KEYS = new Set([
@@ -123,6 +125,23 @@ function sensitiveField(value: unknown, path = ""): string | null {
   return null;
 }
 
+function assertJsonShape(value: unknown, depth = 0, state = { nodes: 0 }): void {
+  state.nodes += 1;
+  if (state.nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH) fail("JSON structure is too deep or large");
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) assertJsonShape(item, depth + 1, state);
+    return;
+  }
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    assertJsonShape(nested, depth + 1, state);
+  }
+}
+
+function allowedKeys(value: Record<string, unknown>, allowed: Set<string>, field: string): void {
+  if (Object.keys(value).some((key) => !allowed.has(key))) fail(`${field} contains unsupported fields`);
+}
+
 function requiredHash(value: unknown, field: string): string {
   if (typeof value !== "string" || !SHA256.test(value)) fail(`${field} is invalid`);
   return value;
@@ -151,6 +170,7 @@ function normalizedSource(value: unknown, fallbackExport: unknown): Record<strin
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("source is invalid");
   const source = value as Record<string, unknown>;
+  assertJsonShape(source);
   const sensitive = sensitiveField(source);
   if (sensitive) fail(`source contains sensitive field ${sensitive}`);
   const allowed = new Set(["kind", "collections", "export_sha256", "exported_at"]);
@@ -188,7 +208,7 @@ function text(value: unknown, field: string, maximum: number, minimum = 0): stri
 
 function normalizedSession(row: Record<string, unknown>, entry: Entry): Record<string, unknown> {
   const allowed = new Set(["uid", "id", "title", "preview", "created_at", "updated_at", "app_id", "message_count", "starred"]);
-  if (Object.keys(row).some((key) => !allowed.has(key))) fail("session row contains unsupported fields");
+  allowedKeys(row, allowed, "session row");
   const uid = requiredId(row.uid, "session.uid");
   const id = requiredId(row.id, "session.id");
   if (uid !== entry.uid || id !== entry.entity_id) fail("session identity does not match entry");
@@ -210,7 +230,7 @@ function normalizedSession(row: Record<string, unknown>, entry: Entry): Record<s
 
 function normalizedMessage(row: Record<string, unknown>, entry: Entry): Record<string, unknown> {
   const allowed = new Set(["uid", "id", "app_id", "created_at", "message_json"]);
-  if (Object.keys(row).some((key) => !allowed.has(key))) fail("message row contains unsupported fields");
+  allowedKeys(row, allowed, "message row");
   const uid = requiredId(row.uid, "message.uid");
   const id = requiredId(row.id, "message.id");
   if (uid !== entry.uid || id !== entry.entity_id) fail("message identity does not match entry");
@@ -223,6 +243,7 @@ function normalizedMessage(row: Record<string, unknown>, entry: Entry): Record<s
   } catch {
     fail("message_json is invalid JSON");
   }
+  assertJsonShape(message);
   const sensitive = sensitiveField(message);
   if (sensitive) fail(`message_json contains sensitive field ${sensitive}`);
   if (!message || typeof message !== "object" || Array.isArray(message)) fail("message_json must be an object");
@@ -250,10 +271,24 @@ function normalizedMessage(row: Record<string, unknown>, entry: Entry): Record<s
 async function normalizeEntry(value: unknown, index: number): Promise<NormalizedEntry> {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail(`entry ${index + 1} is invalid`);
   const raw = value as Record<string, unknown>;
+  assertJsonShape(raw);
+  allowedKeys(
+    raw,
+    new Set([
+      "uid", "entityKind", "entity_kind", "entityId", "entity_id", "accountGeneration", "account_generation",
+      "sourceFingerprint", "source_fingerprint", "sourceExportSha256", "source_export_sha256",
+      "sourceRowSha256", "source_row_sha256", "importId", "import_id", "row", "fileIds", "file_ids",
+      "action", "status", "lastError", "last_error", "planHash", "plan_hash",
+    ]),
+    `entry ${index + 1}`,
+  );
   const sensitive = sensitiveField(raw);
   if (sensitive) fail(`entry ${index + 1} contains sensitive field ${sensitive}`);
   if (raw.action !== "stage" || (raw.last_error !== null && raw.last_error !== undefined) || (raw.lastError !== null && raw.lastError !== undefined)) fail(`entry ${index + 1} is not staged`);
-  if (raw.status !== undefined && raw.status !== "planned") fail(`entry ${index + 1} is not planned`);
+  if (raw.status !== "planned") fail(`entry ${index + 1} is not planned`);
+  if (raw.lastError !== null && raw.last_error !== null) fail(`entry ${index + 1} has duplicate last_error fields`);
+  const fileIds = raw.fileIds ?? raw.file_ids;
+  if (!Array.isArray(fileIds) || fileIds.length !== 0) fail(`entry ${index + 1} contains file references`);
   const field = (snake: string, camel: string): unknown => raw[snake] ?? raw[camel];
   const entityKind = field("entity_kind", "entityKind");
   if (entityKind !== "session" && entityKind !== "message") fail(`entry ${index + 1}.entity_kind is invalid`);
@@ -326,14 +361,39 @@ function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-async function validPlanSignature(c: JobsContext, batchId: string, manifestSha256: string): Promise<boolean> {
+async function validPlanSignature(c: JobsContext, payload: string): Promise<boolean> {
   const secret = String(c.env.CHAT_HISTORY_IMPORT_SIGNING_SECRET || "");
   const encoded = c.req.header("x-chat-history-plan-signature") || "";
   if (secret.length < 32 || !encoded) return false;
   const signature = decodeBase64Url(encoded);
   if (!signature) return false;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
-  return crypto.subtle.verify("HMAC", key, asArrayBuffer(signature), new TextEncoder().encode(`${batchId}\0${manifestSha256}`));
+  return crypto.subtle.verify("HMAC", key, asArrayBuffer(signature), new TextEncoder().encode(payload));
+}
+
+function planSignaturePayload(
+  batchId: string,
+  manifestSha256: string,
+  entries: NormalizedEntry[],
+): string {
+  return stableJson({
+    batch_id: batchId,
+    manifest_sha256: manifestSha256,
+    entries: entries.map((entry) => ({
+      uid: entry.uid,
+      entity_kind: entry.entity_kind,
+      entity_id: entry.entity_id,
+      account_generation: entry.account_generation,
+      source_fingerprint: entry.source_fingerprint,
+      source_export_sha256: entry.source_export_sha256,
+      source_row_sha256: entry.expectedSourceRowSha256,
+      import_id: entry.expectedImportId,
+      plan_hash: entry.expectedPlanHash,
+      action: "stage",
+      status: "planned",
+      last_error: null,
+    })),
+  });
 }
 
 async function apply(c: JobsContext): Promise<Response> {
@@ -346,6 +406,21 @@ async function apply(c: JobsContext): Promise<Response> {
   let sourceExport: string;
   let entries: NormalizedEntry[];
   try {
+    assertJsonShape(body);
+    allowedKeys(
+      body,
+      new Set([
+        "mode", "schema_version", "schemaVersion", "source", "manifest_sha256", "manifestHash",
+        "source_export_sha256", "sourceExportSha256", "batch_id", "batchId", "total", "stage", "blocked", "entries",
+      ]),
+      "plan",
+    );
+    if (body.mode !== "reviewed-plan") fail("plan mode is invalid");
+    const schemaVersion = body.schema_version ?? body.schemaVersion;
+    if (requiredInteger(schemaVersion, "schema_version", 1) !== 1) fail("schema_version is invalid");
+    if (requiredInteger(body.total, "total", MAX_ENTRIES) !== body.entries.length) fail("plan total is invalid");
+    if (requiredInteger(body.stage, "stage", MAX_ENTRIES) !== body.entries.length) fail("plan stage is invalid");
+    if (requiredInteger(body.blocked, "blocked", MAX_ENTRIES) !== 0) fail("plan contains blocked entries");
     manifest = requiredHash(body.manifest_sha256 ?? body.manifestHash, "manifest_sha256");
     const sourceObject = body.source;
     source = normalizedSource(
@@ -377,31 +452,38 @@ async function apply(c: JobsContext): Promise<Response> {
   if (manifest !== expectedManifest) return c.json({ error: "manifest_mismatch" }, 409, noStoreHeaders());
   const batchId = await sha256(`${manifest}\0${ordered.map((entry) => entry.import_id).join("\0")}`);
   if (body.batch_id !== batchId && body.batchId !== batchId) return c.json({ error: "batch_id_mismatch" }, 409, noStoreHeaders());
-  if (!(await validPlanSignature(c, batchId, manifest))) return c.json({ error: "plan_signature_invalid" }, 403, noStoreHeaders());
+  if (!(await validPlanSignature(c, planSignaturePayload(batchId, manifest, ordered)))) return c.json({ error: "plan_signature_invalid" }, 403, noStoreHeaders());
 
   const now = Math.floor(Date.now() / 1_000);
   try {
-    const existing = await Promise.all(ordered.map((entry) => c.env.APP_DB.prepare(
-      "SELECT batch_id, manifest_sha256, account_generation, source_row_sha256, plan_hash, status FROM cf_chat_history_apply_receipts WHERE uid = ? AND import_id = ? LIMIT 1",
-    ).bind(entry.uid, entry.import_id).first<Record<string, unknown>>()));
+    const receiptPredicates = ordered.map(() => "(uid = ? AND import_id = ?)").join(" OR ");
+    const receiptRows = await c.env.APP_DB.prepare(
+      `SELECT batch_id, manifest_sha256, uid, import_id, account_generation, source_row_sha256, plan_hash, status FROM cf_chat_history_apply_receipts WHERE ${receiptPredicates}`,
+    ).bind(...ordered.flatMap((entry) => [entry.uid, entry.import_id])).all<Record<string, unknown>>();
+    const receiptByKey = new Map(
+      (receiptRows.results || []).map((receipt) => [`${receipt.uid}\0${receipt.import_id}`, receipt]),
+    );
     const alreadyApplied = new Set<number>();
-    existing.forEach((receipt, index) => {
+    ordered.forEach((entry, index) => {
+      const receipt = receiptByKey.get(`${entry.uid}\0${entry.import_id}`);
       if (!receipt) return;
-      const entry = ordered[index];
       if (receipt.batch_id !== batchId || receipt.manifest_sha256 !== manifest || Number(receipt.account_generation) !== entry.account_generation || receipt.source_row_sha256 !== entry.expectedSourceRowSha256 || receipt.plan_hash !== entry.expectedPlanHash || receipt.status !== "applied") {
         throw new Error("chat history apply receipt conflict");
       }
       alreadyApplied.add(index);
     });
-    const accountChecks = await Promise.all(ordered.map((entry) => c.env.APP_DB.prepare(
-      "SELECT state, checkpoint_phase, destination_backend_bound, account_generation FROM cf_account_cutover WHERE uid = ? LIMIT 1",
-    ).bind(entry.uid).first<Record<string, unknown>>()));
-    const fences = await Promise.all(ordered.map((entry) => c.env.APP_DB.prepare(
-      "SELECT 1 AS fenced FROM cf_account_deletion_intents WHERE uid = ? UNION ALL SELECT 1 AS fenced FROM cf_account_deletion_tombstones WHERE uid = ? LIMIT 1",
-    ).bind(entry.uid, entry.uid).first<Record<string, unknown>>()));
+    const uids = [...new Set(ordered.map((entry) => entry.uid))];
+    const accountRows = await c.env.APP_DB.prepare(
+      `SELECT uid, state, checkpoint_phase, destination_backend_bound, account_generation FROM cf_account_cutover WHERE uid IN (${uids.map(() => "?").join(",")})`,
+    ).bind(...uids).all<Record<string, unknown>>();
+    const accountByUid = new Map((accountRows.results || []).map((row) => [String(row.uid), row]));
+    const fenceRows = await c.env.APP_DB.prepare(
+      `SELECT uid FROM cf_account_deletion_intents WHERE uid IN (${uids.map(() => "?").join(",")}) UNION SELECT uid FROM cf_account_deletion_tombstones WHERE uid IN (${uids.map(() => "?").join(",")})`,
+    ).bind(...uids, ...uids).all<Record<string, unknown>>();
+    const fencedUids = new Set((fenceRows.results || []).map((row) => String(row.uid)));
     if (ordered.some((entry, index) => {
-      const account = accountChecks[index];
-      return Boolean(fences[index]) || !account || account.state !== "new" || account.checkpoint_phase !== "completed" || Number(account.destination_backend_bound) !== 1 || Number(account.account_generation) !== entry.account_generation;
+      const account = accountByUid.get(entry.uid);
+      return fencedUids.has(entry.uid) || !account || account.state !== "new" || account.checkpoint_phase !== "completed" || Number(account.destination_backend_bound) !== 1 || Number(account.account_generation) !== entry.account_generation;
     })) return c.json({ error: "chat_history_authority_changed" }, 409, noStoreHeaders());
     const active = ordered.filter((_entry, index) => !alreadyApplied.has(index));
 
@@ -416,12 +498,19 @@ async function apply(c: JobsContext): Promise<Response> {
         (JSON.parse(String(entry.normalizedRow.message_json)) as Record<string, unknown>).session_id;
       return !stagedSessions.has(`${entry.uid}\0${String(sessionId)}`);
     });
-    const sessionChecks = await Promise.all(messagesNeedingSession.map((entry) => {
+    const requiredSessions = messagesNeedingSession.map((entry) => {
       const message = JSON.parse(String(entry.normalizedRow.message_json)) as Record<string, unknown>;
-      const sessionId = String(message.chat_session_id ?? message.session_id);
-      return c.env.APP_DB.prepare("SELECT 1 AS present FROM cf_chat_sessions WHERE uid = ? AND id = ? LIMIT 1").bind(entry.uid, sessionId).first<Record<string, unknown>>();
-    }));
-    if (sessionChecks.some((row) => !row || Number(row.present) !== 1)) {
+      return { uid: entry.uid, id: String(message.chat_session_id ?? message.session_id) };
+    });
+    const sessionByKey = new Map<string, Record<string, unknown>>();
+    if (requiredSessions.length) {
+      const sessionPredicates = requiredSessions.map(() => "(uid = ? AND id = ?)").join(" OR ");
+      const sessionRows = await c.env.APP_DB.prepare(
+        `SELECT uid, id FROM cf_chat_sessions WHERE ${sessionPredicates}`,
+      ).bind(...requiredSessions.flatMap((session) => [session.uid, session.id])).all<Record<string, unknown>>();
+      for (const row of sessionRows.results || []) sessionByKey.set(`${row.uid}\0${row.id}`, row);
+    }
+    if (requiredSessions.some((session) => !sessionByKey.has(`${session.uid}\0${session.id}`))) {
       return c.json({ error: "chat_history_session_missing" }, 409, noStoreHeaders());
     }
 
@@ -438,7 +527,7 @@ async function apply(c: JobsContext): Promise<Response> {
         "UPDATE cf_chat_history_import_ledger SET status = CASE WHEN EXISTS (SELECT 1 FROM cf_chat_sessions WHERE uid = ? AND id = ? AND history_import_id = ? AND history_source_row_sha256 = ? AND history_account_generation = ?) THEN 'applied' ELSE 'failed' END, last_error = CASE WHEN EXISTS (SELECT 1 FROM cf_chat_sessions WHERE uid = ? AND id = ? AND history_import_id = ? AND history_source_row_sha256 = ? AND history_account_generation = ?) THEN NULL ELSE 'destination_conflict_or_generation_mismatch' END, updated_at = ? WHERE uid = ? AND import_id = ? AND status = 'planned'",
       ).bind(entry.uid, entry.entity_id, entry.import_id, entry.expectedSourceRowSha256, entry.account_generation, entry.uid, entry.entity_id, entry.import_id, entry.expectedSourceRowSha256, entry.account_generation, now, entry.uid, entry.import_id));
       statements.push(c.env.APP_DB.prepare(
-        "INSERT INTO cf_chat_history_apply_receipts (batch_id, manifest_sha256, uid, import_id, entity_kind, entity_id, account_generation, source_row_sha256, plan_hash, status, applied_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?)",
+        "INSERT INTO cf_chat_history_apply_receipts (batch_id, manifest_sha256, uid, import_id, entity_kind, entity_id, account_generation, source_row_sha256, plan_hash, status, applied_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?) ON CONFLICT(uid, import_id) DO NOTHING",
       ).bind(batchId, manifest, entry.uid, entry.import_id, entry.entity_kind, entry.entity_id, entry.account_generation, entry.expectedSourceRowSha256, entry.expectedPlanHash, now, now));
     }
     for (const entry of active.filter((item) => item.entity_kind === "message")) {
@@ -453,7 +542,7 @@ async function apply(c: JobsContext): Promise<Response> {
         "UPDATE cf_chat_history_import_ledger SET status = CASE WHEN EXISTS (SELECT 1 FROM cf_chat_messages WHERE uid = ? AND id = ? AND history_import_id = ? AND history_source_row_sha256 = ? AND history_account_generation = ?) THEN 'applied' ELSE 'failed' END, last_error = CASE WHEN EXISTS (SELECT 1 FROM cf_chat_messages WHERE uid = ? AND id = ? AND history_import_id = ? AND history_source_row_sha256 = ? AND history_account_generation = ?) THEN NULL ELSE 'destination_conflict_or_generation_mismatch' END, updated_at = ? WHERE uid = ? AND import_id = ? AND status = 'planned'",
       ).bind(entry.uid, entry.entity_id, entry.import_id, entry.expectedSourceRowSha256, entry.account_generation, entry.uid, entry.entity_id, entry.import_id, entry.expectedSourceRowSha256, entry.account_generation, now, entry.uid, entry.import_id));
       statements.push(c.env.APP_DB.prepare(
-        "INSERT INTO cf_chat_history_apply_receipts (batch_id, manifest_sha256, uid, import_id, entity_kind, entity_id, account_generation, source_row_sha256, plan_hash, status, applied_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?)",
+        "INSERT INTO cf_chat_history_apply_receipts (batch_id, manifest_sha256, uid, import_id, entity_kind, entity_id, account_generation, source_row_sha256, plan_hash, status, applied_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?) ON CONFLICT(uid, import_id) DO NOTHING",
       ).bind(batchId, manifest, entry.uid, entry.import_id, entry.entity_kind, entry.entity_id, entry.account_generation, entry.expectedSourceRowSha256, entry.expectedPlanHash, now, now));
     }
     if (statements.length) await c.env.APP_DB.batch(statements);

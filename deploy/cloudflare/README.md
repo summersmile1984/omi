@@ -1309,8 +1309,9 @@ The Jobs Worker also exposes a separately gated operator apply seam at
 `POST /internal/chat-history/apply`. It is disabled unless
 `CHAT_HISTORY_IMPORT_STAGING_ENABLED=true`, requires `secret-key: ADMIN_KEY`,
 and requires an HMAC-SHA256 signature from the at-least-32-byte
-`CHAT_HISTORY_IMPORT_SIGNING_SECRET` over `<batch_id>\0<manifest_hash>` in
-`x-chat-history-plan-signature`. The body is bounded to 1 MiB/20 entries and
+`CHAT_HISTORY_IMPORT_SIGNING_SECRET` over a canonical payload containing the
+batch id, manifest hash, and sorted entry uid/entity/generation/source/import/
+plan hashes in `x-chat-history-plan-signature`. The body is bounded to 1 MiB/20 entries and
 must be the reviewed planner output; the Worker recomputes source-row,
 import, plan, manifest, and batch hashes, rejects sensitive fields and file
 references, and applies sessions before messages in one D1 batch. Migration

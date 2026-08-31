@@ -260,7 +260,8 @@ wire parity。真实 Firestore export、账号 cutover marker 和独立文件/pr
 请求体必须是上面 planner 的 reviewed JSON（可使用 `manifestHash`/`batch_id`），并以
 `CHAT_HISTORY_IMPORT_SIGNING_SECRET`（至少 32 字节）的 HMAC-SHA256 对
 `<batch_id>\0<manifest_hash>` 生成 URL-safe Base64 签名，放入
-`x-chat-history-plan-signature`。body 上限 1 MiB、每批最多 20 个实体，Worker 会再次
+`x-chat-history-plan-signature`。签名覆盖排序后的 batch、manifest 以及每个 entry 的
+uid/entity/generation/source/import/plan hash 元数据；body 上限 1 MiB、每批最多 20 个实体，Worker 会再次
 校验来源集合、行字段、所有 SHA-256、session/message 结构和 source-row hash，不接受
 凭据、Firebase/Provider token、邮箱或文件引用。
 
