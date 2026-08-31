@@ -8,7 +8,7 @@
 
 Phone 中最接近闭环的是 `POST /v1/phone/token`：Workers 可以用 Web Crypto 生成 Twilio Voice Access Token，且不需要调用 Twilio API。但它仍必须先读取“该 uid 是否有 verified caller ID”的权威数据；现在这份数据在 Firestore，Cloudflare 没有 phone schema、历史回填或删号残留 fence。因此只迁移 token 签发会把没有历史号码的用户误判为未配置，或者为了返回成功而绕过 caller-ID 检查，二者都不是 parity。
 
-Auth/OAuth 不能用 Better Auth session 直接替换。Better Auth 已在 D1 上承载新会话、Google/Apple social sign-in 和 MCP OAuth，但 desktop/CLI 的 legacy `/v1/auth/token` 合约返回 Firebase custom token，并由客户端继续向 Firebase mint ID/refresh token；legacy app OAuth 还依赖 Firestore app 文档、启用/付费状态和外部 setup callback。两个身份系统目前没有可验证的 Firebase UID ↔ Better Auth user link/import authority。
+Auth/OAuth 不能用 Better Auth session 直接替换。Better Auth 官方支持 Cloudflare Workers/Hono 与 D1，并且当前 Auth Worker 已在 D1 上承载新会话、Google/Apple social sign-in 和 MCP OAuth；这证明新 auth surface 可以运行在 Workers，但不证明它与 legacy wire contract 等价。仓库已有 `scripts/import-firebase-identities.mjs`、`auth_identity_imports` ledger 和保留 Firebase UID 的确定性导入路径，不过尚未有 staging 全量回放、旧 principal 覆盖和冲突/撤销审计证据。desktop/CLI 的 legacy `/v1/auth/token` 合约仍返回 Firebase custom token，并由客户端继续向 Firebase mint ID/refresh token；legacy app OAuth 还依赖 Firestore app 文档、启用/付费状态和外部 setup callback。
 
 因此本轮只记录可执行的迁移边界，不减少 `legacy-owned` 计数，也不把现有 staging fail-closed 保护称为迁移完成。
 
@@ -55,7 +55,7 @@ Cloudflare 现有 `workers/auth/index.ts` 的 Better Auth 已具备 D1 session�
 
 ### Auth/OAuth 切换前置条件
 
-1. 建立不可歧义的 Firebase UID 与 Better Auth user ID link/import 表，包含 provider、首次/最近登录、冲突处理、撤销和 account deletion fence；未经回填的旧 principal 必须 fail-closed。
+1. 完成 `import-firebase-identities.mjs` 对生产导出的受控回放，并用 `auth_identity_imports` ledger 验证 source/config/canonical checksum、Firebase UID 保留、provider 冲突/撤销和 account deletion fence；未经回填的旧 principal 必须 fail-closed。现有导入工具是可复用的 authority 建立步骤，不是已完成的生产回放证明。
 2. 选定客户端迁移契约：要么所有 CLI/desktop/mobile 改为 Better Auth token/session，要么在 auth Worker 中实现经过审核的 Firebase custom-token bridge。后者需要 auth worker 的 Firebase service-account/API secrets、JWT signing/rotation、Firebase account lookup 和重复登录/绑定语义，不能只转发 session cookie。
 3. 为 app OAuth 建立 D1 app authority（external integration、private/paid/setup 状态、owner CAS、public cache invalidation）及 bounded external callback state；MCP app 还需 R2 logo/provider secret 生命周期、tool manifest 规范和历史 app 回填。
 4. 补齐 callback/token 的 redirect/PKCE/state replay、provider error、cross-user app、deletion、provider timeout/retry 和 exact response/html tests；通过 authenticated staging positive flow 后，才可改 Edge 和 route manifest owner。

@@ -28,7 +28,7 @@ Legacy 实现位于 [`backend/routers/auth.py`](../../backend/routers/auth.py)�
 - `GET /v1/auth/callback/google` 和 `POST /v1/auth/callback/apple` 从 Redis 取一次性 session，交换 provider code，写一次性 auth code，并返回带有 `code/state/redirect_uri` 的 HTML 页面。Apple 首次授权的 `user` form 字段还要进入 auth-code payload。
 - `POST /v1/auth/token` 一次性消费 auth code，校验 redirect URI/PKCE，并按客户端选项返回 OAuth credentials 和可选 Firebase custom token；已有客户端把这个 exchange 当作 Firebase 登录入口。
 
-Cloudflare Auth Worker 目前的 `/api/better-auth/*` 使用 Better Auth D1/session/social provider contract，能证明新会话 authority，但没有证明以下兼容关系：
+Cloudflare Auth Worker 目前的 `/api/better-auth/*` 使用 Better Auth D1/session/social provider contract；Better Auth 官方提供 Cloudflare Workers/Hono 与 D1 集成，因此这条新 surface 的运行时选择是可行的，但它仍没有证明以下 legacy 兼容关系。仓库已有 `scripts/import-firebase-identities.mjs` 和 `auth_identity_imports` ledger，可保留 Firebase UID 并导入 password/Google/Apple account；当前缺的是对真实生产导出的全量回放、冲突/撤销审计和旧 principal 覆盖证据：
 
 1. Firebase UID 与 Better Auth user/account 的双向、可回滚 identity link/import；
 2. Google/Apple provider callback 后的 legacy HTML/loopback/mobile redirect；
