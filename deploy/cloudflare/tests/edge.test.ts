@@ -531,6 +531,83 @@ describe("edge gateway", () => {
     expect(jobsRequests[4].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes dormant Persona/app migration seams to Jobs without forwarding credentials", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "migration-owner", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({
+          state: "new",
+          client_action: "none",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        }),
+      ),
+      JOBS: rawService((request) => {
+        jobsRequests.push(request);
+        return Response.json({ error: "dormant" }, { status: 404 });
+      }),
+    };
+    const twitter = await edge.fetch(
+      new Request(
+        "https://edge.test/v2/cf/personas/twitter/verify-ownership?username=alice&handle=omi",
+        {
+          headers: {
+            authorization: "Bearer opaque-session",
+            cookie: "must-not-forward",
+          },
+        },
+      ),
+      env as never,
+    );
+    expect(twitter.status).toBe(404);
+    const migrate = await edge.fetch(
+      new Request("https://edge.test/v2/cf/apps/migrate-owner", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "must-not-forward",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ source_uid: "anonymous-source", source_proof_hash: "a".repeat(64) }),
+      }),
+      env as never,
+    );
+    expect(migrate.status).toBe(404);
+    const status = await edge.fetch(
+      new Request("https://edge.test/v2/cf/apps/migrate-owner/job-1", {
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "must-not-forward",
+        },
+      }),
+      env as never,
+    );
+    expect(status.status).toBe(404);
+    expect(jobsRequests).toHaveLength(3);
+    for (const request of jobsRequests) {
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeTruthy();
+      expect(request.headers.get("x-omi-internal-signature")).toBeTruthy();
+    }
+    expect(new URL(jobsRequests[0].url).pathname).toBe(
+      "/v2/cf/personas/twitter/verify-ownership",
+    );
+    expect(new URL(jobsRequests[1].url).pathname).toBe(
+      "/v2/cf/apps/migrate-owner",
+    );
+    expect(new URL(jobsRequests[2].url).pathname).toBe(
+      "/v2/cf/apps/migrate-owner/job-1",
+    );
+  });
+
   it("routes exact legacy MCP app paths to Jobs only behind their explicit owner gate", async () => {
     const jobsRequests: Request[] = [];
     const env = {

@@ -1330,6 +1330,16 @@ app.post("/v2/cf/apps/mcp/refresh", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/tools/:appId/call", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/install", proxyAuthenticatedJobs);
 app.get("/v2/cf/apps/mcp/callback", proxyPublicJobs);
+// Dormant Persona/app migration seams. Jobs keeps both feature-gated until
+// Firebase identity and historical Firestore projections are imported; Edge
+// wiring makes the namespaced contracts reachable without changing exact
+// legacy ownership.
+app.get(
+  "/v2/cf/personas/twitter/verify-ownership",
+  proxyAuthenticatedJobs,
+);
+app.post("/v2/cf/apps/migrate-owner", proxyAuthenticatedJobs);
+app.get("/v2/cf/apps/migrate-owner/:jobId", proxyAuthenticatedJobs);
 // External app-consent OAuth is a Better Auth + App D1 namespaced seam. Keep
 // legacy /v1/oauth/* on its independent boundary until provider replay parity.
 app.get("/v2/cf/oauth/authorize", proxyAuthenticatedJobs);

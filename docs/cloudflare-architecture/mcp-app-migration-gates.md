@@ -10,7 +10,7 @@
 | `POST /v1/apps/migrate-owner` | Firebase anonymous source token 证明旧 owner，再把旧 owner 的 Firestore app 迁到目标 uid | 保持 legacy；Better Auth uid 不能证明 Firebase anonymous identity |
 | `GET /v1/personas/twitter/verify-ownership` | RapidAPI timeline 最新 tweet 验证；按 Firebase provider 决定新建 Persona 或关联已有 Persona | 保持 legacy；Twitter verification 与已有 X OAuth connection 不是同一 authority |
 
-`migrate-owner` 现在有一个未接入 Edge/manifest 的 Jobs dormant seam：
+`migrate-owner` 现在有一个不加入 legacy manifest 的 Edge→Jobs dormant seam：
 `0122_app_owner_migration.sql` 保存已由可信导入流程核验的
 `firebase-anonymous` source projection 和 hash-only proof，并以
 `cf_app_owner_migration_jobs` 记录 source/target、target account generation、

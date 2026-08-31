@@ -27,7 +27,8 @@ request fingerprint 支持 replay 幂等，D1 INSERT/UPDATE triggers 和 residua
 inventory 覆盖删号竞态。它只记录外部 provider evidence，不读取或伪造
 Firebase provider data，也不创建/更新 Persona、Memory 或公开目录。
 
-该 seam 未加入 route manifest，Edge exact
+该 seam 使用独立的 `/v2/cf/personas/twitter/verify-ownership` namespaced
+Edge→Jobs 路径，但不加入 legacy backend route manifest。Edge exact
 `GET /v1/personas/twitter/verify-ownership` 仍由
 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 保护并保持 legacy owner；RapidAPI
 secret、Firebase provider identity、Persona/Memory side effects、历史
