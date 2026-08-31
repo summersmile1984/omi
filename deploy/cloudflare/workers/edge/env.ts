@@ -23,6 +23,8 @@ export type EdgeEnv = {
   PHONE_TWILIO_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for the legacy Gemini desktop proxy paths. */
   GEMINI_PROXY_STAGING_FAIL_CLOSED?: string;
+  /** Staging-only deny switch for legacy chat completion/materialization paths. */
+  CHAT_COMPAT_STAGING_FAIL_CLOSED?: string;
   BYOK_FINGERPRINT_PEPPER?: string;
   ALLOWED_ORIGINS?: string;
 };

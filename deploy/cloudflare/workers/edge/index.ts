@@ -619,6 +619,33 @@ const legacyGeminiProxyStagingBoundary = async (
   );
 };
 
+// The desktop completion and Chat-first materialization endpoints still carry
+// the legacy provider/session contract. Their released callers use Firebase
+// continuity and Firestore-backed materialization, neither of which is
+// represented by the Cloudflare chat D1 projection. In isolated staging,
+// reject these paths before any credential or prompt reaches legacy. The
+// switch remains opt-in so non-staging deployments preserve the existing
+// compatibility route until a complete replacement is ready.
+const legacyChatCompatibilityStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.CHAT_COMPAT_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "chat_compatibility_unavailable",
+        detail:
+          "Legacy chat completion and prompt materialization are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 // The cloud Agent VM was retired, but released desktop clients still call
@@ -1307,6 +1334,15 @@ app.post("/v2/initial-message", proxyAuthenticatedAI);
 app.post("/v2/chat/initial-message", proxyAuthenticatedAI);
 app.post("/v2/chat/generate-title", proxyAuthenticatedAI);
 app.post("/v2/chat/generate-reply", proxyAuthenticatedAI);
+app.post(
+  "/v1/chat/materialize-prompts",
+  legacyChatCompatibilityStagingBoundary,
+);
+app.post(
+  "/v2/chat/materialize-prompts",
+  legacyChatCompatibilityStagingBoundary,
+);
+app.post("/v2/chat/completions", legacyChatCompatibilityStagingBoundary);
 app.get("/v1/users/stats/chat-messages", proxyAuthenticatedCore);
 app.post("/v2/chat-sessions", proxyAuthenticatedCore);
 app.get("/v2/chat-sessions", proxyAuthenticatedCore);

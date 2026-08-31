@@ -310,6 +310,55 @@ describe("edge gateway", () => {
     }
   });
 
+  it("fails closed for legacy chat compatibility paths in staging", async () => {
+    const env = {
+      CHAT_COMPAT_STAGING_FAIL_CLOSED: "true",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    const requests = [
+      ["POST", "/v1/chat/materialize-prompts"],
+      ["POST", "/v2/chat/materialize-prompts"],
+      ["POST", "/v2/chat/completions"],
+    ] as const;
+
+    try {
+      for (const [method, path] of requests) {
+        const response = await edge.fetch(
+          new Request(`https://edge.test${path}`, {
+            method,
+            headers: {
+              authorization: "Bearer opaque-session",
+              cookie: "session=opaque",
+              "content-type": "application/json",
+              "x-omi-auth-context": "caller-controlled",
+            },
+            body: JSON.stringify({
+              text: "opaque prompt",
+              messages: [{ sender: "human", text: "opaque prompt" }],
+            }),
+          }),
+          env as never,
+        );
+
+        expect(response.status, `${method} ${path}`).toBe(503);
+        await expect(response.json()).resolves.toEqual({
+          error: "chat_compatibility_unavailable",
+          detail:
+            "Legacy chat completion and prompt materialization are unavailable on Cloudflare staging.",
+        });
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {
