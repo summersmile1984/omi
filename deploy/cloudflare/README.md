@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-gate. The current inventory contains 577 backend routes: 494 already match
-Cloudflare staging owners and 83 remain legacy-owned. Edge directly serves
+gate. The current inventory contains 577 backend routes: 495 already match
+Cloudflare staging owners and 82 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -255,8 +255,10 @@ ADMIN_KEY='…' python3 .github/scripts/backfill-desktop-release-manifest.py \
 
 The command reads the exact manifest from `https://api.omi.me`, validates its
 canonical digest, registers it through Edge/API Core, and verifies the returned
-manifest. It does not advance Beta or Stable pointers; those mutations remain a
-separate, guarded migration step.
+manifest. Stable promotion is now a separate API Core/D1 CAS operation at
+`POST /v2/desktop/channels/promote`; Beta admission/promotion and the production
+release-pipeline cutover remain legacy-owned until their Firestore authority is
+projected and replayed.
 
 Before applying D1 migrations, the release resolves each exact staging
 database name through `wrangler d1 list --json` and writes a mode-`0600`

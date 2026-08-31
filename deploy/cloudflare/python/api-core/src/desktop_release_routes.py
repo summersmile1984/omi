@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import re
+import time
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -36,6 +37,7 @@ DESKTOP_SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DESKTOP_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 DESKTOP_EVIDENCE_RE = re.compile(r"^qualification-evidence-[^/]+\.json$")
 DESKTOP_ENVIRONMENT_RE = re.compile(r"^desktop-backend-env-v[1-9][0-9]*$")
+DESKTOP_BETA_TAG_RE = re.compile(r"^v(?P<version>[0-9]+\.[0-9]+(?:\.[0-9]+)?)\+(?P<build>[1-9][0-9]*)-macos$")
 DESKTOP_MANIFEST_FIELDS = frozenset(
     {
         "schema_version",
@@ -542,6 +544,59 @@ def _manifest_sha256(manifest: dict[str, object]) -> str:
     return hashlib.sha256(_manifest_canonical_bytes(manifest)).hexdigest()
 
 
+def _release_id_parts(release_id: object) -> tuple[str, str, int]:
+    if not isinstance(release_id, str):
+        raise ValueError("release_id must use v<version>+<build>-macos form")
+    match = DESKTOP_BETA_TAG_RE.fullmatch(release_id)
+    if match is None:
+        raise ValueError("release_id must use v<version>+<build>-macos form")
+    version_text = match.group("version")
+    return release_id, version_text, int(match.group("build"))
+
+
+def _pointer_from_row(row: object, *, platform: str, channel: str) -> dict[str, object] | None:
+    if not isinstance(row, dict):
+        return None
+    if row.get("platform") != platform or row.get("channel") != channel:
+        return None
+    release_id, version_text, build = _release_id_parts(row.get("release_id"))
+    if row.get("version") != version_text or row.get("build_number") != build:
+        return None
+    generation = row.get("generation")
+    updated_at = row.get("updated_at")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        return None
+    if not isinstance(updated_at, int) or isinstance(updated_at, bool) or updated_at <= 0:
+        return None
+    return {
+        "platform": platform,
+        "channel": channel,
+        "release_id": release_id,
+        "version": version_text,
+        "build_number": build,
+        "generation": generation,
+        "updated_at": updated_at,
+    }
+
+
+def _accepted_pointer_manifest(manifest: dict[str, object]) -> None:
+    if (manifest.get("qualification_tier"), manifest.get("qualification_passed")) not in {
+        ("T2", True),
+        ("signed-smoke", False),
+    }:
+        raise ValueError("release manifest qualification is missing accepted normal-path evidence")
+
+
+def _changes(result: object) -> int:
+    if not isinstance(result, dict):
+        return 0
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+        return 0
+    value = meta.get("changes")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _manifest_from_row(row: object, release_id: str) -> tuple[dict[str, object], str] | None:
     if not isinstance(row, dict):
         return None
@@ -602,6 +657,119 @@ async def _register_release_manifest(request: Request, payload: dict[str, object
     return manifest
 
 
+async def _promote_stable_pointer(request: Request, payload: dict[str, object]) -> dict[str, object]:
+    """Advance the D1 macOS Stable pointer with explicit CAS preconditions.
+
+    The immutable manifest must already be projected.  A pointer write never
+    copies caller-supplied metadata and therefore cannot publish an artifact
+    that was not validated by the manifest contract first.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("request must be a JSON object")
+    allowed = {
+        "platform",
+        "channel",
+        "release_id",
+        "expected_generation",
+        "expected_current_release_id",
+        "operation",
+    }
+    if set(payload) - allowed:
+        raise ValueError("request contains unknown fields")
+    platform = payload.get("platform")
+    channel = payload.get("channel")
+    release_id = payload.get("release_id")
+    operation = payload.get("operation", "promote")
+    if platform != "macos" or channel != "stable":
+        raise ValueError("generic channel promotion is macos stable-only")
+    if not isinstance(release_id, str):
+        raise ValueError("release_id is required")
+    release_id = release_id.strip()
+    _, version_text, build = _release_id_parts(release_id)
+    if operation not in {"promote", "repoint"}:
+        raise ValueError("invalid pointer operation")
+    expected_generation = payload.get("expected_generation")
+    if expected_generation is not None and (
+        not isinstance(expected_generation, int) or isinstance(expected_generation, bool) or expected_generation < 0
+    ):
+        raise ValueError("expected_generation must be a non-negative integer")
+    expected_current = payload.get("expected_current_release_id")
+    if expected_current is not None and not isinstance(expected_current, str):
+        raise ValueError("expected_current_release_id must be a string")
+    if operation == "repoint" and (expected_generation is None or expected_current is None):
+        raise ValueError("repoint requires expected_current_release_id and expected_generation")
+
+    db = request.scope["env"].APP_DB
+    manifest_row = await (
+        db.prepare(
+            "SELECT release_id, manifest_json, manifest_sha256 FROM cf_desktop_release_manifests "
+            "WHERE release_id = ? LIMIT 1"
+        )
+        .bind(release_id)
+        .first()
+    )
+    parsed_manifest = _manifest_from_row(manifest_row, release_id)
+    if parsed_manifest is None:
+        raise ValueError("release manifest does not exist or is invalid")
+    manifest, _ = parsed_manifest
+    _accepted_pointer_manifest(manifest)
+    if manifest["version"] != version_text or manifest["build_number"] != build:
+        raise ValueError("release_id does not match the retained manifest")
+
+    current_row = await db.prepare(
+        "SELECT platform, channel, release_id, version, build_number, generation, updated_at "
+        "FROM cf_desktop_channel_pointers WHERE platform = 'macos' AND channel = 'stable' LIMIT 1"
+    ).first()
+    current = _pointer_from_row(current_row, platform="macos", channel="stable") if current_row else None
+    if current_row is not None and current is None:
+        raise ValueError("stable channel pointer projection is invalid")
+    if current is not None and current["release_id"] == release_id:
+        return {"success": True, "pointer": current, "idempotent": True}
+    current_generation = int(current["generation"]) if current is not None else 0
+    if expected_generation is not None and expected_generation != current_generation:
+        raise ValueError(f"generation mismatch: expected {expected_generation}, current {current_generation}")
+    if operation == "repoint" and current is not None and current["release_id"] != expected_current:
+        raise ValueError(f"current release mismatch: expected {expected_current}, current {current['release_id']}")
+    if operation == "repoint" and current is None and expected_current:
+        raise ValueError("current release mismatch: expected existing stable pointer")
+    if operation == "promote" and current is not None and build <= int(current["build_number"]):
+        raise ValueError("channel pointers are roll-forward only")
+
+    now = int(time.time())
+    pointer = {
+        "platform": "macos",
+        "channel": "stable",
+        "release_id": release_id,
+        "version": version_text,
+        "build_number": build,
+        "generation": current_generation + 1,
+        "updated_at": now,
+    }
+    if current is None:
+        result = (
+            await db.prepare(
+                "INSERT INTO cf_desktop_channel_pointers "
+                "(platform, channel, release_id, version, build_number, generation, updated_at) "
+                "SELECT 'macos', 'stable', ?, ?, ?, 1, ? WHERE NOT EXISTS "
+                "(SELECT 1 FROM cf_desktop_channel_pointers WHERE platform = 'macos' AND channel = 'stable')"
+            )
+            .bind(release_id, version_text, build, now)
+            .run()
+        )
+    else:
+        result = (
+            await db.prepare(
+                "UPDATE cf_desktop_channel_pointers SET release_id = ?, version = ?, build_number = ?, "
+                "generation = ?, updated_at = ? WHERE platform = 'macos' AND channel = 'stable' AND generation = ?"
+            )
+            .bind(release_id, version_text, build, current_generation + 1, now, current_generation)
+            .run()
+        )
+    if _changes(result) != 1:
+        raise ValueError("stable channel pointer changed during promotion")
+    return {"success": True, "pointer": pointer, "idempotent": False}
+
+
 async def _live_releases(request: Request) -> list[dict[str, object]]:
     rows = (
         await request.scope["env"]
@@ -613,7 +781,68 @@ async def _live_releases(request: Request) -> list[dict[str, object]]:
         .all()
     )
     raw_rows = rows.get("results", []) if isinstance(rows, dict) else []
-    return [release for row in raw_rows if isinstance(row, dict) and (release := _release(row)) is not None]
+    legacy_releases = [release for row in raw_rows if isinstance(row, dict) and (release := _release(row)) is not None]
+
+    # Once a channel pointer exists, it is the authoritative macOS release for
+    # that channel.  Keep the older release projection as a compatibility
+    # fallback until the first pointer is backfilled.
+    pointer_rows = (
+        await request.scope["env"]
+        .APP_DB.prepare(
+            "SELECT platform, channel, release_id, version, build_number, generation, updated_at "
+            "FROM cf_desktop_channel_pointers WHERE platform = 'macos' AND channel IN ('beta', 'stable')"
+        )
+        .all()
+    )
+    projected: list[dict[str, object]] = []
+    for pointer_row in (pointer_rows.get("results", []) if isinstance(pointer_rows, dict) else []):
+        if not isinstance(pointer_row, dict):
+            continue
+        channel = pointer_row.get("channel")
+        pointer = (
+            _pointer_from_row(pointer_row, platform="macos", channel=str(channel))
+            if channel in {"beta", "stable"}
+            else None
+        )
+        if pointer is None:
+            raise ValueError("desktop channel pointer projection is invalid")
+        manifest_row = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                "SELECT release_id, manifest_json, manifest_sha256 FROM cf_desktop_release_manifests WHERE release_id = ? LIMIT 1"
+            )
+            .bind(pointer["release_id"])
+            .first()
+        )
+        parsed = _manifest_from_row(manifest_row, str(pointer["release_id"]))
+        if parsed is None:
+            raise ValueError("desktop channel pointer references an invalid manifest")
+        manifest, _ = parsed
+        if (
+            manifest["platform"] != "macos"
+            or manifest["version"] != pointer["version"]
+            or manifest["build_number"] != pointer["build_number"]
+        ):
+            raise ValueError("desktop channel pointer does not match its manifest")
+        projected.append(
+            {
+                "version": manifest["version"],
+                "build_number": manifest["build_number"],
+                "download_url": manifest["zip_url"],
+                "manual_download_url": manifest["dmg_url"],
+                "ed_signature": manifest["ed_signature"],
+                "published_at": manifest.get("published_at") or manifest["created_at"],
+                "changelog": list(manifest.get("changelog") or []),
+                "is_live": True,
+                "is_critical": bool(manifest.get("mandatory", False)),
+                "channel": channel,
+                "windows_feed_url": None,
+            }
+        )
+    if not projected:
+        return legacy_releases
+    projected_channels = {str(release["channel"]) for release in projected}
+    return [release for release in legacy_releases if str(release["channel"]) not in projected_channels] + projected
 
 
 def _default_policy() -> dict[str, object]:
@@ -1266,3 +1495,20 @@ async def get_desktop_release_manifest(
         raise HTTPException(status_code=503, detail="Desktop release manifest projection is invalid")
     manifest, digest = parsed
     return {"success": True, "manifest": manifest, "manifest_sha256": digest}
+
+
+@router.post("/v2/desktop/channels/promote")
+async def promote_desktop_channel(
+    request: Request,
+    payload: dict[str, object],
+    secret_key: str | None = Header(default=None),
+):
+    """Advance the macOS Stable pointer after an immutable manifest is retained."""
+    if not _release_manifest_key_valid(request):
+        raise HTTPException(status_code=403, detail="You are not authorized to promote desktop channels")
+    try:
+        return await _promote_stable_pointer(request, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Desktop channel pointer projection unavailable") from exc

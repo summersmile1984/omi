@@ -26,6 +26,7 @@ from desktop_release_routes import (  # noqa: E402
     DesktopPreviewPublishRequest,
     delist_desktop_preview,
     get_desktop_release_manifest,
+    promote_desktop_channel,
     publish_desktop_preview,
     register_desktop_release_manifest,
 )
@@ -64,6 +65,7 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0085_desktop_windows_update_feed.sql").read_text())
         self.connection.executescript((migration_dir / "0086_desktop_preview_projections.sql").read_text())
         self.connection.executescript((migration_dir / "0089_desktop_release_manifests.sql").read_text())
+        self.connection.executescript((migration_dir / "0090_desktop_channel_pointers.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -596,3 +598,109 @@ def test_desktop_release_manifest_fails_closed_for_missing_or_corrupt_projection
     with pytest.raises(HTTPException) as malformed_id:
         asyncio.run(get_desktop_release_manifest(request, "not-a-release"))
     assert malformed_id.value.status_code == 404
+
+
+def test_stable_channel_promotion_requires_retained_manifest_and_uses_generation_cas():
+    env = make_env()
+    payload = desktop_manifest_payload()
+    request = FakeRequest(env, {"secret-key": "admin-secret"})
+
+    assert asyncio.run(register_desktop_release_manifest(request, payload))["success"] is True
+    promoted = asyncio.run(
+        promote_desktop_channel(
+            request,
+            {"platform": "macos", "channel": "stable", "release_id": payload["release_id"]},
+        )
+    )
+    assert promoted["pointer"]["generation"] == 1
+    assert promoted["idempotent"] is False
+
+    # An exact retry is idempotent even when a caller repeats stale CAS inputs.
+    retry = asyncio.run(
+        promote_desktop_channel(
+            request,
+            {
+                "platform": "macos",
+                "channel": "stable",
+                "release_id": payload["release_id"],
+                "expected_generation": 99,
+            },
+        )
+    )
+    assert retry["idempotent"] is True
+
+    newer = desktop_manifest_payload(release_id="v0.12.65+12065-macos")
+    asyncio.run(register_desktop_release_manifest(request, newer))
+    with pytest.raises(HTTPException) as stale:
+        asyncio.run(
+            promote_desktop_channel(
+                request,
+                {
+                    "platform": "macos",
+                    "channel": "stable",
+                    "release_id": newer["release_id"],
+                    "expected_generation": 0,
+                },
+            )
+        )
+    assert stale.value.status_code == 409
+    assert "generation mismatch" in str(stale.value.detail)
+
+    advanced = asyncio.run(
+        promote_desktop_channel(
+            request,
+            {
+                "platform": "macos",
+                "channel": "stable",
+                "release_id": newer["release_id"],
+                "expected_generation": 1,
+                "expected_current_release_id": payload["release_id"],
+            },
+        )
+    )
+    assert advanced["pointer"]["release_id"] == newer["release_id"]
+    assert advanced["pointer"]["generation"] == 2
+
+
+def test_stable_channel_promotion_fails_closed_for_missing_manifest_and_invalid_scope():
+    env = make_env()
+    request = FakeRequest(env, {"secret-key": "admin-secret"})
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(
+            promote_desktop_channel(
+                request,
+                {"platform": "macos", "channel": "stable", "release_id": "v0.12.99+1299-macos"},
+            )
+        )
+    assert missing.value.status_code == 409
+
+    with pytest.raises(HTTPException) as invalid_scope:
+        asyncio.run(
+            promote_desktop_channel(
+                request,
+                {"platform": "windows", "channel": "stable", "release_id": "v0.12.99+1299-macos"},
+            )
+        )
+    assert invalid_scope.value.status_code == 409
+
+
+def test_stable_pointer_becomes_authority_for_mac_release_feeds():
+    env = make_env()
+    request = FakeRequest(env, {"secret-key": "admin-secret"})
+    manifest = desktop_manifest_payload(release_id="v0.12.70+12070-macos")
+    asyncio.run(register_desktop_release_manifest(request, manifest))
+    # A stale legacy row must not win once the explicit Stable pointer exists.
+    insert_release(env, release_id="legacy", version="0.1.0", build_number=1, channel="stable")
+    asyncio.run(
+        promote_desktop_channel(
+            request,
+            {"platform": "macos", "channel": "stable", "release_id": manifest["release_id"]},
+        )
+    )
+
+    latest = asyncio.run(get_latest_version(FakeRequest(env)))
+    assert latest["version"] == manifest["version"]
+    assert latest["build_number"] == manifest["build_number"]
+    assert latest["download_url"] == manifest["zip_url"]
+    redirect = asyncio.run(download_redirect(FakeRequest(env)))
+    assert redirect.headers["location"] == manifest["dmg_url"]

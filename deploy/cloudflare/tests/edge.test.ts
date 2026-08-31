@@ -631,6 +631,34 @@ describe("edge gateway", () => {
     await expect(forwarded[1].json()).resolves.toEqual(payload);
   });
 
+  it("preserves the stable promotion admin key while stripping bearer and cookies", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ success: true, pointer: { generation: 1 } });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/desktop/channels/promote", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer promotion-secret",
+          cookie: "better-auth-session=untrusted",
+          "secret-key": "admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ platform: "macos", channel: "stable", release_id: "v0.12.64+12064-macos" }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(forwarded?.headers.get("secret-key")).toBe("admin-secret");
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
+  });
+
   it("routes admin Persona reads and deletes to the core worker", async () => {
     const paths: string[] = [];
     const env = {
