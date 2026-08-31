@@ -31,8 +31,9 @@ cookie 或 JWT 放进该字段不能算 wire compatibility。
 
 ## Required D1 authority design
 
-下面是实现前必须评审的 schema 形状。它们是设计约束，不应在没有回放和
-fixture 的情况下直接创建并切 owner。
+下面是实现前必须评审的 schema 形状。迁移 `auth/0007_legacy_compatibility_authority.sql`
+现在以 dormant 形式声明这些表，但没有任何 exact legacy route 读取它们，也没有
+改变 route owner；只有下面的 adapter/fixture 和真实 provider replay 全部通过后才可启用。
 
 ### 1. Firebase identity continuity
 
@@ -41,13 +42,13 @@ fixture 的情况下直接创建并切 owner。
 
 ```sql
 cf_firebase_identity_projection(
-  firebase_uid TEXT PRIMARY KEY,
-  better_auth_user_id TEXT NOT NULL UNIQUE REFERENCES user(id),
-  providers_json TEXT NOT NULL,
-  source_import_id TEXT NOT NULL REFERENCES auth_identity_imports(id),
+  firebaseUid TEXT PRIMARY KEY,
+  betterAuthUserId TEXT NOT NULL UNIQUE REFERENCES user(id),
+  providersJson TEXT NOT NULL, -- JSON array; provider account ids remain imported data
+  sourceImportId TEXT NOT NULL REFERENCES auth_identity_imports(id),
   status TEXT NOT NULL CHECK (status IN ('imported', 'revoked', 'conflict')),
-  source_updated_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  sourceUpdatedAt INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL
 )
 ```
 
@@ -68,20 +69,21 @@ cf_legacy_auth_transactions(
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('session', 'code')),
   provider TEXT NOT NULL CHECK (provider IN ('google', 'apple')),
-  state_hash TEXT NOT NULL UNIQUE,
-  redirect_uri TEXT NOT NULL,
-  state_value TEXT,
-  code_challenge TEXT NOT NULL,
-  code_challenge_method TEXT NOT NULL CHECK (code_challenge_method = 'S256'),
-  encrypted_payload TEXT,
+  lookupHash TEXT NOT NULL UNIQUE, -- hash(state) for session; hash(code) for code
+  stateHash TEXT NOT NULL,         -- binds a code transaction to its auth session
+  redirectUri TEXT NOT NULL,
+  codeChallenge TEXT NOT NULL,
+  codeChallengeMethod TEXT NOT NULL CHECK (codeChallengeMethod = 'S256'),
+  encryptedPayload TEXT,
   status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'failed')),
-  expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  consumed_at INTEGER
+  expiresAt INTEGER NOT NULL,
+  createdAt INTEGER NOT NULL,
+  consumedAt INTEGER
 )
 ```
 
-`state_hash`/auth-code hash 必须以 provider、redirect URI 和 transaction id 绑定；
+`lookupHash`/`stateHash` 必须以 provider、redirect URI 和 transaction id 绑定；
+raw state、raw auth code、raw CSRF 和 provider token 都不能写入 D1；
 消费使用 `DELETE ... RETURNING` 或等价的原子状态转移。回调 HTML、Apple
 form-post、redirect scheme allowlist 和 PKCE verifier 都必须保持旧客户端可观察
 的行为。这个表本身不能解决 Firebase custom-token 签发，它只解决 Redis
@@ -96,17 +98,26 @@ Omi server”，而这里是“用户授权 Omi app 并触发 app install”：
 ```sql
 cf_external_oauth_transactions(
   id TEXT PRIMARY KEY,
-  app_id TEXT NOT NULL REFERENCES cf_app_catalog(id),
+  appId TEXT NOT NULL, -- app catalog lives in App D1; cross-DB revision is required
   uid TEXT NOT NULL,
-  csrf_hash TEXT NOT NULL,
-  state_value TEXT,
-  redirect_url TEXT NOT NULL,
+  stateHash TEXT NOT NULL UNIQUE,
+  csrfHash TEXT NOT NULL UNIQUE,
+  redirectUrl TEXT NOT NULL,
+  appCatalogRevision INTEGER NOT NULL,
+  appPolicyJson TEXT NOT NULL,
+  setupTargetHash TEXT,
   status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'failed')),
-  expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  consumed_at INTEGER
+  expiresAt INTEGER NOT NULL,
+  createdAt INTEGER NOT NULL,
+  consumedAt INTEGER
 )
 ```
+
+所有用户相关的 dormant transaction 都必须先经过同一个删除 fence。Auth D1
+中的 `cf_auth_deletion_fences(uid, generation, status, startedAt, completedAt)`
+只有 `status='clear'` 才允许创建或消费；缺行视为 authority unknown，
+`deleting/deleted` 一律拒绝。这个 fence 目前尚未接入旧账号删除流程，因此它
+是准入条件而不是已经完成的删除闭环。
 
 `cf_app_catalog.data_json` 还必须经过 schema-versioned projection，覆盖
 `external_integration.app_home_url`、`private`、`is_paid`、setup callback policy
@@ -117,8 +128,12 @@ cf_external_oauth_transactions(
 
 ## Required fixture matrix
 
-在任何 owner 变更前，fixture 必须通过 Auth Worker/Edge 的真实 handler seam，
-不能只检查源代码字符串：
+`workers/auth/legacy-compatibility.ts` 目前只提供 dormant adapter seam：它执行
+hash-only transaction、S256/redirect 校验、uid/CSRF 原子消费、Firebase projection
+admission、public-HTTPS setup target 和 deletion-fence gate，但不调用 provider，
+不签发 Firebase custom token，也不执行 app enable/install。对应 fixture 通过
+该生产 adapter seam；在任何 owner 变更前，仍必须补齐 Auth Worker/Edge 的完整
+provider handler replay，不能只检查源代码字符串：
 
 1. Identity import：完整 imported UID 正向；missing UID；重复 email；重复
    provider identity；disabled user；phone/custom-claims user；checksum 或
