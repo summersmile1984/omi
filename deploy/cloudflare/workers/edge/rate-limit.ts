@@ -74,7 +74,7 @@ export const EDGE_RATE_LIMIT_POLICIES = {
   },
   "conversations:create": {
     name: "conversations:create",
-    maxRequests: 30,
+    maxRequests: 10,
     windowSeconds: 3600,
   },
   "conversations:finalize": {
