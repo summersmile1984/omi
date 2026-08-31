@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 75 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 74 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -12,7 +12,7 @@
 | Import / files / sync / audio | `/v1/import/*`、`/v1/files`、`/v2/files`、sync/audio jobs | GCS/本机临时文件、multipart、长任务和 R2 residual contract | 先完成 R2 multipart/presigned 与 Queue replay；单独迁移只读状态不能闭合上传语义 |
 | Task intelligence / staged tasks | `/v1/staged-tasks*`、`/v1/task-intelligence/*`、`/v1/what-matters-now*` | candidate/recommendation store、generation fence、LLM judgment、device snapshot | candidate D1 projection 和 generation contract 完成前保持 fail-closed legacy owner |
 | Persona / apps | `/v1/personas` mutation、`/v1/apps/*` MCP mutation、Twitter ownership | multipart 图片、R2、LLM prompt、Twitter provider identity 与 public app cache | 默认 Persona 和只读 profile 已迁移；通用 Persona mutation/Twitter ownership 需完整 D1/R2/provider contract |
-| Memory admin / Archive / Vector / review | `/memory/admin/*`、`/memory/archive/search`、`/memory/vector/search`、`/v3/memories/review-queue*` | Archive capability、Vectorize hydrate、Firestore review-conflict authority | `/memory/search` 已迁移；其余路线分别补齐 capability、projection 和 review producer 后再切换 |
+| Memory admin / Archive / review | `/memory/admin/*`、`/memory/archive/search`、`/v3/memories/review-queue*` | Archive capability、Firestore review-conflict authority | `/memory/search` 与 `/memory/vector/search` 已迁移；其余路线分别补齐 capability、projection 和 review producer 后再切换 |
 | Desktop release mutation/manifest | release pipeline 回填和生产 Firestore→D1 回放 | 发布流水线凭据、历史 manifest 回放和生产切换审计 | immutable manifest、macOS Stable/Beta channel pointer、Beta admission/promotion/breakglass、legacy release bridge（`/updates/releases` POST/PATCH）和 cache-invalidation contract 已进入 D1；所有相关 endpoint 在 staging 由 API Core 提供，下一步回填发布流水线并复验 Beta 晋级族 |
 | Metrics / wrapped / analytics | `/metrics`、`/v1/wrapped/*`、部分分析端点 | Prometheus/历史分析数据不在当前 D1 authority | 定义聚合与保留策略；不能以空响应冒充迁移完成 |
 | Hume callback / provider webhooks | `/v1/agents/hume/callback` | 外部 webhook schema、幂等、长处理和重试 | 先落 Queue receipt 与 provider signature contract，再切 webhook owner |
@@ -33,6 +33,7 @@
 - `POST /updates/releases` 和 `PATCH /updates/releases/promote` 通过 Edge 实测返回 `401 Invalid or missing X-Release-Secret header`（不是 404），证明请求已进入 API Core 的新 owner；staging 当前尚未注入 `RELEASE_SECRET`，因此没有执行真实写入探针。
 - `/health` 通过 Edge 实测返回 `200`；`POST /v2/desktop/beta/candidates/reserve`、`POST /v2/desktop/beta/promote-candidate`、`PUT /v2/desktop/beta/admission`、`POST /v2/desktop/beta/breakglass` 在缺少凭据时分别返回 `401`、`401`、`403`、`403`（均非 `404`）。staging 尚未注入 `BETA_PROMOTION_TOKEN`/`GITHUB_TOKEN`，因此没有伪造 Beta 正向 promotion 或 GitHub 证据结果。
 - `npm run smoke:staging` 通过：Edge/v1 health、Apple association、OpenAI Apps challenge、公告、趋势、app reviews、支付边界均符合预期；authenticated checks 因未提供 smoke bearer token 而跳过。Calendar Google events 未认证探针返回 `401`（不是 `404`）。
+- `/memory/vector/search?query=coffee&limit=3` 通过专用合成账号实测：未认证返回 `401`，Better Auth 认证后空 D1/Vectorize 结果返回 `200` 且 `search_status=ok`、`items=[]`；账号随后通过 `DELETE /v1/users/delete-account` 清理。此次发布版本为 API Core `50fb07d7-f464-43aa-a6ea-9560360c4280`、Edge `a991ab93-8013-40b9-8172-4a2049ffe5e9`。
 
 ## 本轮 authority 核对（2026-08-31）
 

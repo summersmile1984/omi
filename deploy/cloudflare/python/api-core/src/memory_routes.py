@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from internal_auth import decode_context
 from account_routes import usage_source_statement
+from vector_search import embed_query, hydrate_candidate_ids, query_vector_ids
 
 router = APIRouter()
 
@@ -39,6 +40,8 @@ MAX_PRODUCT_SEARCH_QUERY = 500
 MAX_PRODUCT_SEARCH_TOKENS = 20
 MAX_PRODUCT_SEARCH_LIMIT = 500
 MAX_PRODUCT_SEARCH_OFFSET = 100_000
+MAX_VECTOR_SEARCH_LIMIT = 100
+VECTOR_SEARCH_OVERFETCH_FACTOR = 4
 MEMORY_CATEGORIES = frozenset({"interesting", "system", "manual", "workflow"})
 LEGACY_CATEGORY_MAP = {
     "core": "system",
@@ -433,6 +436,21 @@ def _product_search_rollout() -> dict[str, object]:
     }
 
 
+def _vector_search_rollout() -> dict[str, object]:
+    rollout = _product_search_rollout()
+    rollout.update(
+        {
+            "surface": "product_vector_search",
+            "archive_capability_required": False,
+            "archive_capability_granted": False,
+            "explicit_archive_request": False,
+            "app_context": {},
+            "vector_repair_outbox_enabled": False,
+        }
+    )
+    return rollout
+
+
 def _product_search_gate() -> dict[str, object]:
     return {
         "source_path": "cloudflare:d1:cf_memories",
@@ -498,6 +516,133 @@ async def search_product_memory(request: Request):
         "policy": _product_search_policy(),
         "global_read_gate": _product_search_gate(),
         "rollout": _product_search_rollout(),
+    }
+
+
+@router.get("/memory/vector/search")
+async def search_vector_memory(request: Request):
+    """Search default-visible memories through Vectorize candidates and D1 hydration.
+
+    Vectorize is deliberately non-authoritative: candidate IDs are tenant
+    namespaced, mapped through ``cf_vector_projection_state`` and hydrated from
+    the uid-scoped D1 memory table before they enter the response.
+    """
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    query = _query_value(request, "query") or ""
+    try:
+        limit = int(_query_value(request, "limit") or "10")
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid search parameters"}, status_code=400)
+    if not query.strip() or len(query) > 4_096 or limit < 1 or limit > MAX_VECTOR_SEARCH_LIMIT:
+        return JSONResponse({"error": "invalid search parameters"}, status_code=400)
+
+    uid = str(context["uid"])
+    env = request.scope["env"]
+    try:
+        vector = await embed_query(env, query)
+        candidate_limit = min(100, max(limit, limit * VECTOR_SEARCH_OVERFETCH_FACTOR))
+        candidates = await query_vector_ids(
+            env,
+            "MEMORY_VECTORS",
+            uid,
+            vector,
+            top_k=candidate_limit,
+        )
+        hydrated = await hydrate_candidate_ids(env, uid, "memory", candidates)
+        ordered_ids = [source_id for source_id, _ in hydrated[:limit]]
+        rows: list[dict[str, object]] = []
+        if ordered_ids:
+            placeholders = ",".join("?" for _ in ordered_ids)
+            result = (
+                await env.APP_DB.prepare(
+                    _SELECT
+                    + "WHERE uid = ? AND id IN ("
+                    + placeholders
+                    + ") AND deleted_at IS NULL AND invalid_at IS NULL "
+                    + "AND memory_tier != 'archive' AND COALESCE(user_review, 1) != 0 AND is_locked = 0"
+                )
+                .bind(uid, *ordered_ids)
+                .all()
+            )
+            raw_rows = result.get("results", []) if isinstance(result, dict) else []
+            by_id = {
+                str(row["id"]): row for row in raw_rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+            }
+            rows = [by_id[memory_id] for memory_id in ordered_ids if memory_id in by_id]
+    except ValueError:
+        return JSONResponse({"error": "invalid search parameters"}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "memory vector search unavailable"}, status_code=503)
+
+    scores = {source_id: score for source_id, score in hydrated if source_id in {str(row["id"]) for row in rows}}
+    source_versions: dict[str, str] = {}
+    if scores:
+        placeholders = ",".join("?" for _ in scores)
+        try:
+            state_result = (
+                await env.APP_DB.prepare(
+                    "SELECT source_id, source_version FROM cf_vector_projection_state "
+                    "WHERE uid = ? AND projection_kind = 'memory' AND source_id IN (" + placeholders + ")"
+                )
+                .bind(uid, *scores.keys())
+                .all()
+            )
+            state_rows = state_result.get("results", []) if isinstance(state_result, dict) else []
+            source_versions = {
+                str(row["source_id"]): str(row.get("source_version"))
+                for row in state_rows
+                if isinstance(row, dict) and isinstance(row.get("source_id"), str)
+            }
+        except Exception:
+            return JSONResponse({"error": "memory vector search unavailable"}, status_code=503)
+
+    items = [_response(row) for row in rows]
+    rejected = max(0, len(candidates) - len(hydrated))
+    return {
+        "uid": uid,
+        "query": query,
+        "items": items,
+        "scores_by_memory_id": {str(row["id"]): scores[str(row["id"])] for row in rows},
+        "projection_commit_ids_by_memory_id": {
+            str(row["id"]): source_versions[str(row["id"])] for row in rows if str(row["id"]) in source_versions
+        },
+        "decisions": {str(row["id"]): "USE_MEMORY" for row in rows},
+        "total_count": len(items),
+        "returned_count": len(items),
+        "limit": limit,
+        "overfetch_factor": VECTOR_SEARCH_OVERFETCH_FACTOR,
+        "candidate_budget": candidate_limit,
+        "max_vector_queries": 1,
+        "max_candidate_hydration_reads": candidate_limit,
+        "timeout_seconds": None,
+        "candidate_request_limit": candidate_limit,
+        "candidate_budget_exhausted": len(candidates) >= candidate_limit,
+        "vector_query_budget_exhausted": False,
+        "hydration_read_budget_exhausted": False,
+        "timeout_exhausted": False,
+        "search_status": "ok",
+        "legacy_fallback_used": False,
+        "vector_query_count": 1,
+        "queried_candidate_count": len(candidates),
+        "hydrated_candidate_count": len(items),
+        "candidate_hydration_read_count": len(hydrated),
+        "hydration_rejected_missing_count": rejected,
+        "hydration_rejected_stale_projection_count": 0,
+        "hydration_rejected_stale_vector_count": 0,
+        "hydration_rejected_access_denied_count": max(0, len(hydrated) - len(items)),
+        "vector_rejected_count": 0,
+        "repair_purge_candidate_count": 0,
+        "repair_purge_candidates": [],
+        "repair_purge_outbox_record_count": 0,
+        "repair_purge_outbox_records": [],
+        "archive_default_visible": False,
+        "telemetry": {"source": "cloudflare_vectorize", "projection_kind": "memory"},
+        "policy": _product_search_policy(),
+        "global_read_gate": _product_search_gate(),
+        "rollout": _vector_search_rollout(),
     }
 
 

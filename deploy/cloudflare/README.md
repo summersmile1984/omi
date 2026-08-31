@@ -82,7 +82,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
 gate. The current inventory contains 577 backend routes: 502 already match
-Cloudflare staging owners and 75 remain legacy-owned. Edge directly serves
+Cloudflare staging owners and 74 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1856,6 +1856,14 @@ authority.
 The prefix constraint uses bounded `substr` checks plus simple GLOB predicates:
 repeated character-class GLOBs accepted by local SQLite exceed D1's deployed
 pattern-complexity limit, so the final-schema regression test forbids them.
+
+`GET /memory/vector/search` now runs in API Core for the isolated staging
+profile. Workers AI creates the query embedding, Vectorize returns only
+tenant-namespaced candidates, and `cf_vector_projection_state` maps those
+candidates back to uid-scoped D1 memories before locked, deleted, invalid, or
+archived rows are filtered. The route preserves the legacy vector response
+fields and never falls back to Firestore; unavailable AI/Vectorize/D1
+dependencies return `503`.
 
 Developer API credentials now use the separate `cf_developer_api_keys`
 authority. `POST /v1/dev/keys` returns an `omi_dev_` secret once and stores only

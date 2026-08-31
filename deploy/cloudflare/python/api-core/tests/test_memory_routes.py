@@ -17,6 +17,7 @@ from memory_routes import (  # noqa: E402
     list_memories,
     review_memory,
     search_product_memory,
+    search_vector_memory,
     update_memory_baseline,
     update_memory_content,
     update_memory_read_status,
@@ -97,6 +98,23 @@ def signed_headers(secret: str, uid: str = "memory-user"):
 
 def make_env(secret: str):
     return type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+
+
+class FakeVectorIndex:
+    def __init__(self, matches=None):
+        self.matches = matches or []
+        self.calls = []
+
+    async def query(self, vector, options):
+        self.calls.append((vector, options))
+        return {"matches": self.matches}
+
+
+class FakeVectorAi:
+    async def run(self, model, payload):
+        assert model == "test-vector-model"
+        assert payload["text"] == ["coffee"]
+        return {"data": [[0.1] * 1024]}
 
 
 def create(env, secret: str, *, uid: str = "memory-user", **body):
@@ -201,6 +219,56 @@ def test_product_memory_search_uses_d1_default_visibility_and_contract():
         asyncio.run(search_product_memory(FakeRequest(env, signed_headers(secret), {"query": "coffee"}))).status_code
         == 503
     )
+
+
+def test_vector_memory_search_uses_vectorize_candidates_and_d1_hydration():
+    secret = "memory-secret"
+    env = make_env(secret)
+    env.AI = FakeVectorAi()
+    vector_id = "a" * 64
+    env.MEMORY_VECTORS = FakeVectorIndex([{"id": vector_id, "score": 0.91}])
+    env.WORKERS_AI_VECTOR_MODEL = "test-vector-model"
+    env.APP_DB.connection.execute(
+        "CREATE TABLE cf_vector_projection_state ("
+        "uid TEXT NOT NULL, projection_kind TEXT NOT NULL, source_id TEXT NOT NULL, sub_id TEXT NOT NULL, "
+        "vector_id TEXT NOT NULL, source_version INTEGER NOT NULL, model TEXT NOT NULL, updated_at INTEGER NOT NULL)"
+    )
+    env.APP_DB.connection.commit()
+
+    memory = create(env, secret, content="Coffee before vector search", category="manual")
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_vector_projection_state "
+        "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
+        "VALUES (?, 'memory', ?, '', ?, 7, 'test-vector-model', 1)",
+        ("memory-user", memory["id"], vector_id),
+    )
+    env.APP_DB.connection.commit()
+
+    response = asyncio.run(
+        search_vector_memory(FakeRequest(env, signed_headers(secret), {"query": "coffee", "limit": "1"}))
+    )
+    assert response["uid"] == "memory-user"
+    assert response["query"] == "coffee"
+    assert response["returned_count"] == 1
+    assert response["items"][0]["id"] == memory["id"]
+    assert response["scores_by_memory_id"] == {memory["id"]: 0.91}
+    assert response["projection_commit_ids_by_memory_id"] == {memory["id"]: "7"}
+    assert response["legacy_fallback_used"] is False
+    assert response["rollout"]["surface"] == "product_vector_search"
+    assert env.MEMORY_VECTORS.calls[0][1]["namespace"]
+
+    env.APP_DB.connection.execute(
+        "UPDATE cf_memories SET is_locked = 1 WHERE uid = ? AND id = ?", ("memory-user", memory["id"])
+    )
+    env.APP_DB.connection.commit()
+    locked = asyncio.run(
+        search_vector_memory(FakeRequest(env, signed_headers(secret), {"query": "coffee", "limit": "1"}))
+    )
+    assert locked["items"] == []
+    assert locked["hydration_rejected_access_denied_count"] == 1
+
+    assert asyncio.run(search_vector_memory(FakeRequest(env, {}))).status_code == 401
+    assert asyncio.run(search_vector_memory(FakeRequest(env, signed_headers(secret), {"query": ""}))).status_code == 400
 
 
 def test_memory_create_list_filters_and_preserves_canonical_shape_with_uid_isolation():

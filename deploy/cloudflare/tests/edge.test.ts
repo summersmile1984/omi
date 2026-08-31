@@ -85,6 +85,44 @@ describe("edge gateway", () => {
     expect(requests[0].headers.get("x-omi-auth-context")).toBeNull();
   });
 
+  it("routes vector memory search through the authenticated API Core boundary", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: rawService((request) => {
+        coreRequests.push(request);
+        if (new URL(request.url).pathname === "/v1/account/cutover/control") {
+          return Response.json({
+            state: "new",
+            client_action: "none",
+            product_traffic_allowed: true,
+            migration: { destination_backend_bound: true },
+          });
+        }
+        return Response.json({ uid: "user-1", items: [], returned_count: 0 });
+      }),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/memory/vector/search?query=coffee&limit=5", {
+        headers: { authorization: "Bearer opaque-session" },
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(coreRequests).toHaveLength(2);
+    expect(new URL(coreRequests[1].url).pathname).toBe("/memory/vector/search");
+    expect(coreRequests[1].headers.get("authorization")).toBeNull();
+    expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("serves public legacy compatibility routes without dependencies", async () => {
     const v1Health = await edge.fetch(
       new Request("https://edge.test/v1/health"),
