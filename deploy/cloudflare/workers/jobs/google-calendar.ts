@@ -1379,6 +1379,12 @@ export function registerGoogleCalendarRoutes(
   app.get("/v2/integrations/google-calendar/callback", (c) =>
     oauthCallback(c, dependencies),
   );
+  // Older clients used the provider key with an underscore. Keep that
+  // callback on the same Calendar-owned D1 state/token path while the
+  // hyphenated URI remains the canonical OAuth redirect.
+  app.get("/v2/integrations/google_calendar/callback", (c) =>
+    oauthCallback(c, dependencies),
+  );
 
   const issueOAuthUrl = async (
     c: JobsContext,

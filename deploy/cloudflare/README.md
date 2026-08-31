@@ -1526,7 +1526,9 @@ create/update calls the canonical action-item D1 authority, which records its
 vector outbox in the same batch and publishes only a Queue hint afterward.
 Edge applies the released `tools:search` and `tools:mutate` one-hour limits.
 Google Calendar OAuth, connection state, refresh, and event-picker reads run in
-Jobs against D1 and the hosted Calendar API. Calendar-event creation and other
+Jobs against D1 and the hosted Calendar API. The canonical hyphenated callback
+and the legacy underscore callback alias share the same single-use D1 state and
+encrypted-token authority. Calendar-event creation and other
 conversation links (including auto-link) and the calendar-event tool also run in
 Jobs. The Calendar-only OAuth grant accepts attendee email addresses; contact
 lookup and non-Calendar integrations remain outside this cutover.

@@ -518,6 +518,31 @@ describe("Google Calendar Worker routes", () => {
     );
   });
 
+  it("accepts the legacy underscore Calendar callback alias", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    const authUrl = new URL(
+      (
+        await (
+          await app.request("/v1/integrations/google_calendar/oauth-url")
+        ).json<{ auth_url: string }>()
+      ).auth_url,
+    );
+    const state = authUrl.searchParams.get("state");
+    const callback = await app.request(
+      `/v2/integrations/google_calendar/callback?code=calendar-code&state=${encodeURIComponent(state!)}`,
+      {},
+      false,
+    );
+    expect(callback.status).toBe(200);
+    expect(await callback.text()).toContain("Authentication successful");
+    expect(
+      database.database
+        .prepare("SELECT connected FROM cf_google_calendar_integrations WHERE uid = ?")
+        .get("calendar-user"),
+    ).toEqual({ connected: 1 });
+  });
+
   it("keeps Google-derived integration OAuth aliases on the Worker grant", async () => {
     const { database, env, fetchImpl } = environment();
     const app = testApp(env, { fetchImpl, now: () => 1_000 });
