@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 32 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。auth/oauth、chat compatibility 和 Persona/MCP 的逐路由准入条件见 [`remaining-legacy-contract-gates.md`](remaining-legacy-contract-gates.md)；Phone 与 Wrapped 已切到 staging Jobs owner，但仍有 provider/backfill/cutover 门槛。
+截至 2026-08-31，`backend-routes.json` 中还有 19 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。auth/oauth、chat compatibility 和 Persona/MCP 的逐路由准入条件见 [`remaining-legacy-contract-gates.md`](remaining-legacy-contract-gates.md)；Phone、Wrapped 与 task intelligence 已切到 staging owner，但仍有 provider/backfill/cutover 门槛。
 
 ## 分组与迁移前置条件
 
@@ -24,7 +24,7 @@
 
 1. 让 release pipeline 使用 `.github/scripts/backfill-desktop-release-manifest.py` 回填已迁移的 D1 immutable manifest；Stable/Beta promotion、legacy release bridge 和 `clear-cache` 已由 API Core/D1 承接，完成 Firestore→D1 回放后再注入发布流水线凭据并复验 Beta 晋级。该工具只读 legacy manifest、验证 v1 digest，再向 Cloudflare Edge 的 `/v2/desktop/releases` 做幂等 POST，不改变 channel pointer。
 2. 保持 conversation finalization/reprocess/merge/finalization run、sync-local-files、voice-messages、sync-jobs run 与 account-deletion run 的 staging residual 监控；下一组迁移优先处理 release pipeline 回填。
-3. 保持 task-intelligence 的 Cloudflare owner 在新账号上运行并补历史 staged-task 回放；真实 Queue worker drain、旧客户端 wire continuity 与生产切换仍需单独门槛。
+3. 保持 task-intelligence 的 Cloudflare owner 在新账号上运行并补历史 staged-task 回放；evaluate 的真正 Queue worker drain、旧客户端 wire continuity、provider 正向探针与生产切换仍需单独门槛。
 
 Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生结构化冲突记录；三个 review-queue 端点由 API Core/Edge 承载；每次读取校验来源 `updated_at` revision 与 SHA-256 content hash，来源变化自动 tombstone；accept/reject/correct/timeout 解析具备 D1 原子写入和幂等状态。该阶段的 producer 覆盖 canonical `/v3/memories` 与 `/v3/memories/batch` 写入，手工已确认的 MCP/developer memory 不会重新进入队列。
 
@@ -92,8 +92,8 @@ Chat compatibility 的三个 legacy 入口（`POST /v1/chat/materialize-prompts`
 
 - Short-term lifecycle 的 Cloudflare authority 已补齐 `0102_memory_short_term_lifecycle.sql` + `0104_memory_lifecycle_projection.sql` 与 Jobs 路由：D1 control row 从 completed destination-bound cutover generation-bound 初始化，run row 以 `(uid, run_id, request_fingerprint)` 幂等登记；Jobs policy reader 使用 `min(expires_at, captured_at + 48h)`，仅处理 active/processed/short_term/未删除未失效 rows，source tombstoned/purged 写 `source_tombstoned`，其余到期 rows 写 `remain_short_term` + `requires_lifecycle_decision` audit。transition writer 对每个 idempotency key `ON CONFLICT DO NOTHING`，同步 admission 在可行时返回 legacy response envelope，Queue consumer 在 D1 lease 下执行并对 transient D1 error 重新入队，达到上限后 terminal-fail；Edge 与 backend route inventory 已切 staging owner。远端 migration 已应用，未认证 admin boundary 已实测；带 admin key 的正向/retry/delete probe、历史 Firestore backfill 与 production cutover 尚未做。
 
-- Task intelligence / staged-tasks staging owner（2026-08-31）：13 条 staged-task/task-intelligence 路径已由 Edge → API Core 承载。`0109_task_intelligence.sql` 提供 D1 candidate identity、account-generation/device scope、LLM receipt、promotion/outcome transaction、evaluation lease 和 account-deletion purge inventory；provider 失败返回 503 且不调用 legacy。该 owner 仅适用于 completed destination-bound Better Auth 账号；Firestores staged-task 历史回放、真正 Queue worker drain 和生产切换仍未完成，详见 `task-intelligence-staging.md`。
-- Task intelligence/Wrapped recheck（2026-08-31）：13 条 task-intelligence/staged-task 入口仍由 Edge fail-closed，返回 `503 task_intelligence_unavailable` 且不调用 legacy。Wrapped 两条路径已改为 Edge→Jobs staging owner；本地 D1/Queue/Workers AI 聚合、retry、notification idempotency、deletion fence 测试通过。由于 staging 尚未注入 Wrapped provider fixture，真实 positive Queue drain 与历史 Firestore backfill 仍未验证。
+- Task intelligence / staged-tasks staging owner（2026-08-31）：13 条 staged-task/task-intelligence 路径已由 Edge → API Core 承载。`0109_task_intelligence.sql` 已应用到 staging，API Core `6137e882-e95c-4cf5-83e2-28b2ea9a9373`、Edge `b4ac3f71-0921-4578-adea-7bce605fe9cd` 已发布；未认证边界为 `401`，provider 失败返回 503 且不调用 legacy。该 owner 仅适用于 completed destination-bound Better Auth 账号；Firestore staged-task 历史回放、真正 Queue worker drain、provider 正向账号探针和生产切换仍未完成，详见 `task-intelligence-staging.md`。
+- Task intelligence/Wrapped recheck（2026-08-31）：13 条 task-intelligence/staged-task 入口已由 Edge → API Core 承载；未认证请求返回 `401`，认证但未完成 destination-bound cutover 的账号保持 `task_intelligence_unavailable`，不调用 legacy。Wrapped 两条路径已改为 Edge→Jobs staging owner；本地 D1/Queue/Workers AI 聚合、retry、notification idempotency、deletion fence 测试通过。由于 staging 尚未注入 task/Wrapped provider fixture，真实 positive Queue drain 与历史 Firestore backfill 仍未验证。
 - Persona/apps fail-closed live probe（2026-08-31）：同一 Edge 版本对 PATCH Persona、Twitter ownership、MCP app/callback/refresh 和 owner migration 入口均返回 `503 persona_apps_unavailable` 且带 `cache-control: no-store`，不会读取或转发请求体；`POST /v1/personas` 的已迁移正向 owner 不受该开关影响。
 
 - Data-protection migration 的三个写入入口（single、batch、finalize）已接入 Edge/API Core 的 staging fail-closed boundary。缺少 completed cutover 或加密 executor 时稳定返回 503，不调用 legacy、不创建伪造 receipt；真正的加密 payload、Queue executor、lease 和生产回放仍未完成。

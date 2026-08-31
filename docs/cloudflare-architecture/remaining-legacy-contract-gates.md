@@ -1,6 +1,6 @@
 # Remaining legacy route contract gates
 
-截至 2026-08-31，Cloudflare route inventory 仍有 32 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
+截至 2026-08-31，Cloudflare route inventory 仍有 19 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
 
 ## 结论
 
@@ -14,11 +14,11 @@
 | Wrapped | 0 | staging owner，生产阻塞 | Jobs 已闭合 D1 recap 聚合、Workers AI structured output、通知和 job/result 状态；仍缺历史 Firestore 回填、真实 provider probe 和 production cutover |
 | Chat compatibility | 3 | 阻塞 | prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract 与 D1 chat session 不是同一语义 |
 | Persona / MCP mutation | 6 | 阻塞 | Firestore persona/app continuity、MCP OAuth token/discovery 和 public cache invalidation 尚未迁移 |
-| Staged tasks / task intelligence | 13 | 阻塞 | candidate/recommendation authority、device/open-loop snapshot、LLM evaluation receipt 和 promotion transaction 尚未建立 |
+| Staged tasks / task intelligence | 0 | staging owner，生产阻塞 | API Core/D1 已建立 candidate/recommendation authority、device/open-loop snapshot、LLM receipt 和 promotion transaction；仍缺 Firestore 历史回放、真正 Queue drain、provider 正向账号探针、旧客户端 continuity 和 production cutover |
 | Gemini proxy | 2 | 阻塞 | Gemini/Vertex route、BYOK、Redis quota、SSE/usage/error 以及 cost accounting 尚未闭合 |
 | Files | 2 | 部分准备 | Worker chat-file adapter 已有 D1/R2/provider contract，但 Assistants/session continuity、旧数据回填和下游 reader 仍未完成 |
 
-上表合计 32 条。`GET /v1/apps/mcp/callback` 计入 Persona/MCP mutation，而不是 Auth / social；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口不计入本表。
+上表合计 19 条。`GET /v1/apps/mcp/callback` 计入 Persona/MCP mutation，而不是 Auth / social；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口不计入本表。Task intelligence 的 13 条路径已是 staging owner，因此不再计入 legacy 队列，但其生产门槛仍保留在表内。
 
 ## Auth / social：不能用 Better Auth session 别名替代
 
