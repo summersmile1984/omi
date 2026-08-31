@@ -57,6 +57,7 @@ from app_projection_routes import router as app_projection_router
 from app_install_routes import router as app_install_router
 from app_catalog_v2_routes import router as app_catalog_v2_router
 from memory_routes import router as memory_router
+from metrics_routes import router as metrics_router
 from memory_review_routes import router as memory_review_router
 from memory_import_routes import router as memory_import_router
 from limitless_import_routes import router as limitless_import_router
@@ -114,6 +115,7 @@ app.include_router(app_install_router)
 app.include_router(app_projection_router)
 app.include_router(app_catalog_v2_router)
 app.include_router(memory_router)
+app.include_router(metrics_router)
 app.include_router(memory_review_router)
 app.include_router(memory_import_router)
 app.include_router(limitless_import_router)
