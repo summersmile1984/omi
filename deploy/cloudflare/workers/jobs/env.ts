@@ -130,6 +130,8 @@ export type JobsEnv = {
   MCP_APP_OAUTH_STAGING_ENABLED?: string;
   /** AES-GCM key material for external MCP app OAuth envelopes. */
   MCP_APP_TOKEN_ENCRYPTION_SECRET?: string;
+  /** Explicit staging gate for the Better Auth app-consent OAuth seam. */
+  EXTERNAL_APP_OAUTH_STAGING_ENABLED?: string;
   HUME_WEBHOOK_SIGNING_KEY?: string;
   /** Twilio REST credentials and Voice SDK token configuration. */
   TWILIO_ACCOUNT_SID?: string;

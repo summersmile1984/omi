@@ -1256,6 +1256,10 @@ app.post("/v2/cf/apps/mcp/refresh", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/tools/:appId/call", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/install", proxyAuthenticatedJobs);
 app.get("/v2/cf/apps/mcp/callback", proxyPublicJobs);
+// External app-consent OAuth is a Better Auth + App D1 namespaced seam. Keep
+// legacy /v1/oauth/* on its independent boundary until provider replay parity.
+app.get("/v2/cf/oauth/authorize", proxyAuthenticatedJobs);
+app.post("/v2/cf/oauth/token", proxyAuthenticatedJobs);
 app.post("/v1/payments/checkout-session", proxyAuthenticatedJobs);
 app.post("/v1/payments/customer-portal", proxyAuthenticatedJobs);
 app.post("/v1/payments/upgrade-subscription", proxyAuthenticatedJobs);

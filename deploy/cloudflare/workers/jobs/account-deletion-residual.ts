@@ -30,6 +30,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_mcp_app_connections", column: "owner_uid" },
   { table: "cf_mcp_app_discoveries", column: "owner_uid" },
   { table: "cf_mcp_app_oauth_transactions", column: "owner_uid" },
+  { table: "cf_external_app_oauth_transactions", column: "uid" },
   { table: "cf_app_payment_links", column: "owner_uid" },
   { table: "cf_app_reviews", column: "reviewer_uid" },
   { table: "cf_app_subscriptions", column: "uid" },

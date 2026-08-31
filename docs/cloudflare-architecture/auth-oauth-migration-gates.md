@@ -195,6 +195,32 @@ cf_external_oauth_transactions(
 只能经过现有 SSRF-safe public HTTPS policy，并且 provider timeout/failure 不能
 留下已启用 app 或递增 installs 的半成品。
 
+### Namespaced external-app consent seam (staging-only)
+
+`workers/jobs/external-app-oauth-staging.ts` now provides the independently gated
+`GET /v2/cf/oauth/authorize` and `POST /v2/cf/oauth/token` seam. The Edge route
+requires a Better Auth bearer context and forwards it to Jobs; the Jobs route is
+served only when `EXTERNAL_APP_OAUTH_STAGING_ENABLED=true`. It does not alias or
+change the owner of `/v1/oauth/authorize` or `/v1/oauth/token`.
+
+The authorize response creates a ten-minute D1 transaction in
+`cf_external_app_oauth_transactions`. Only SHA-256 hashes of the random state and
+CSRF values are persisted. The browser receives the same CSRF value in an
+HttpOnly, Secure, SameSite=Strict cookie and in a form field; token exchange
+requires an exact constant-time match, the authenticated uid, the app id, an
+unexpired pending transaction, and a current app-catalog revision. Duplicate form
+fields, oversized/non-form bodies, unsafe app/setup HTTPS targets, and account
+deletion intents/tombstones fail closed.
+
+Token exchange performs setup callback and paid-entitlement checks before the
+uid-scoped enabled-app insert. The install and public install-counter update are
+revision-checked; a stale catalog or deletion fence cannot be used to authorize a
+new install. The result is the namespaced `{uid, redirect_url, state}` response,
+not a Firebase credential, and therefore is not legacy response parity. Focused
+coverage is in `tests/external-app-oauth-staging.test.ts`; a disposable Better Auth
+account, real setup callback, subscription fixture, and concurrent install probe
+are still required before any exact-route owner change.
+
 ## Required fixture matrix
 
 `workers/auth/legacy-compatibility.ts` 仍提供 dormant transaction/admission seam；
