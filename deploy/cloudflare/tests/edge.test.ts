@@ -123,6 +123,42 @@ describe("edge gateway", () => {
     expect(coreRequests[1].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("forwards only the operational metrics bearer to API Core and preserves fail-closed status", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      API_CORE: rawService((request) => {
+        forwarded = request;
+        return Response.json(
+          { error: "metrics_unavailable" },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      }),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/metrics", {
+        headers: {
+          authorization: "Bearer metrics-secret",
+          cookie: "session=must-not-forward",
+          "x-omi-uid": "caller-controlled",
+          "x-omi-auth-context": "caller-controlled",
+        },
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "metrics_unavailable",
+    });
+    expect(forwarded?.headers.get("authorization")).toBe(
+      "Bearer metrics-secret",
+    );
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-uid")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
+  });
+
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {

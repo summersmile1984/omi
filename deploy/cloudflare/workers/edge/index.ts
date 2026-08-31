@@ -293,6 +293,22 @@ const proxyPublicJobs = async (
   return withRequestId(response, id);
 };
 
+const proxyMetricsCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  // /metrics uses an operational bearer secret rather than a Better Auth
+  // session. Forward only that explicit credential; cookies and all internal
+  // identity headers must never cross this public boundary.
+  const headers = new Headers();
+  const authorization = c.req.header("authorization");
+  if (authorization) headers.set("authorization", authorization);
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
 async function publicSharedChatSubject(
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ): Promise<string | null> {
@@ -556,6 +572,7 @@ app.post("/v2/desktop/beta/breakglass", proxyPublicCore);
 app.post("/v2/desktop/channels/promote", proxyPublicCore);
 app.post("/v2/desktop/clear-cache", proxyPublicCore);
 app.get("/v2/desktop/update-policy", proxyPublicCore);
+app.get("/metrics", proxyMetricsCore);
 app.get("/v1/announcements/changelogs", proxyPublicCore);
 app.get("/v1/announcements/features", proxyPublicCore);
 app.get("/v1/announcements/general", proxyPublicCore);
