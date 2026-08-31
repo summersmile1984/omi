@@ -16,6 +16,7 @@ export type JobMessage = {
     | "conversation_merge"
     | "audio_merge"
     | "audio_merge_legacy"
+    | "wrapped_generate"
     | "hume_webhook"
     | "limitless_import"
     | "memory_short_term_lifecycle";
@@ -93,6 +94,7 @@ export type JobsEnv = {
   WORKERS_AI_FAIR_USE_MODEL?: string;
   WORKERS_AI_VECTOR_MODEL?: string;
   WORKERS_AI_X_MEMORY_MODEL?: string;
+  WORKERS_AI_WRAPPED_MODEL?: string;
   FIREBASE_SERVICE_ACCOUNT_JSON?: string;
   ADMIN_KEY?: string;
   APPS_ADMIN_KEY?: string;

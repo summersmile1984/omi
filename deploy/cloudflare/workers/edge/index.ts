@@ -714,33 +714,14 @@ const legacyPersonaAppsStagingBoundary = async (
   );
 };
 
-// Wrapped currently reads and writes Firestore users/{uid}/wrapped/{year},
-// aggregates legacy Firestore conversations/action items, invokes the
-// wrapped-analysis provider, and emits a legacy notification from a local
-// executor. The Cloudflare D1 conversation projection and Workers AI do not
-// yet provide the result schema, durable job/lease state, historical data
-// backfill, or notification contract needed for parity. In isolated staging,
-// fail closed before a Wrapped request can reach legacy. The switch remains
-// opt-in so non-staging deployments preserve the existing compatibility path.
+// Wrapped is now a Jobs-owned D1/Queue workflow.  The Jobs handler enforces a
+// completed account cutover, bounded D1 aggregation, structured Workers AI
+// output, lease/retry, and the shared notification outbox before it publishes
+// a result.  Keep this alias name so the route declaration remains adjacent to
+// the other legacy-compatible paths while the owner is being rolled out.
 const legacyWrappedStagingBoundary = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
-) => {
-  const id = requestId(c.req.raw);
-  if (c.env.WRAPPED_STAGING_FAIL_CLOSED !== "true") {
-    return proxyLegacyBackend(c);
-  }
-  return withRequestId(
-    Response.json(
-      {
-        error: "wrapped_unavailable",
-        detail:
-          "Legacy Wrapped generation and retrieval are unavailable on Cloudflare staging.",
-      },
-      { status: 503, headers: { "cache-control": "no-store" } },
-    ),
-    id,
-  );
-};
+) => proxyAuthenticatedJobs(c);
 
 const proxyPublicFirmware = proxyPublicCore;
 

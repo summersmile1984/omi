@@ -543,51 +543,45 @@ describe("edge gateway", () => {
     }
   });
 
-  it("fails closed for legacy Wrapped paths in staging", async () => {
+  it("routes Wrapped status and generation through the authenticated Jobs owner", async () => {
+    const requests: Request[] = [];
     const env = {
-      WRAPPED_STAGING_FAIL_CLOSED: "true",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({
+        state: "new",
+        client_action: "none",
+        product_traffic_allowed: true,
+        migration: { destination_backend_bound: true },
+      })),
+      JOBS: rawService((request) => {
+        requests.push(request);
+        return Response.json({ status: "processing", message: "queued" });
+      }),
     };
-    const legacyFetch = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async () => {
-        throw new Error("legacy backend must not be called");
-      });
-    const requests = [
+    for (const [method, path] of [
       ["GET", "/v1/wrapped/2025"],
       ["POST", "/v1/wrapped/2025/generate"],
-    ] as const;
-
-    try {
-      for (const [method, path] of requests) {
-        const response = await edge.fetch(
-          new Request(`https://edge.test${path}`, {
-            method,
-            headers: {
-              authorization: "Bearer opaque-session",
-              cookie: "session=opaque",
-              "content-type": "application/json",
-              "x-omi-auth-context": "caller-controlled",
-            },
-            ...(method === "POST"
-              ? { body: JSON.stringify({ prompt: "opaque wrapped input" }) }
-              : {}),
-          }),
-          env as never,
-        );
-
-        expect(response.status, `${method} ${path}`).toBe(503);
-        await expect(response.json()).resolves.toEqual({
-          error: "wrapped_unavailable",
-          detail:
-            "Legacy Wrapped generation and retrieval are unavailable on Cloudflare staging.",
-        });
-        expect(response.headers.get("cache-control")).toBe("no-store");
-      }
-      expect(legacyFetch).not.toHaveBeenCalled();
-    } finally {
-      legacyFetch.mockRestore();
+    ] as const) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: { authorization: "Bearer opaque-session" },
+        }),
+        env as never,
+      );
+      expect(response.status, `${method} ${path}`).toBe(200);
     }
+    expect(requests).toHaveLength(2);
+    expect(new URL(requests[0].url).pathname).toBe("/v1/wrapped/2025");
+    expect(new URL(requests[1].url).pathname).toBe("/v1/wrapped/2025/generate");
+    expect(requests[0].headers.get("authorization")).toBeNull();
+    expect(requests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {

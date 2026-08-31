@@ -107,6 +107,10 @@ import {
   processHumeWebhookMessage,
   registerHumeWebhookRoutes,
 } from "./hume-webhook";
+import {
+  processWrappedJobMessage,
+  registerWrappedRoutes,
+} from "./wrapped";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -179,6 +183,7 @@ registerAudioMergeRoutes(app, requestContext);
 registerLegacyAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);
 registerHumeWebhookRoutes(app);
+registerWrappedRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -959,6 +964,10 @@ async function processJobMessage(
   }
   if (message.body.kind === "hume_webhook") {
     await processHumeWebhookMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "wrapped_generate") {
+    await processWrappedJobMessage(message, env);
     return;
   }
   if (message.body.kind === "limitless_import") {

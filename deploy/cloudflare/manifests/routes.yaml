@@ -3113,6 +3113,27 @@ routes:
     idempotency: payload-fingerprint
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/wrapped/{year}
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/wrapped/{year}/generate
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, queue-jobs, workers-ai-binding, worker-secrets]
+    protocol: http
+    idempotency: uid-year
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: DELETE
     path: /v1/joan/:memoryId/followup-question
     owner: api-core
