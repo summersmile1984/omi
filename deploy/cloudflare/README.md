@@ -243,9 +243,11 @@ staging migrations must therefore remain backward-compatible with the captured
 Worker versions. The current migrations are additive.
 
 The desktop release manifest projection is intentionally one-way while
-production promotion remains Firestore-owned. To replay one retained production
-manifest into the staging D1 table, provide the staging Edge URL and an admin key
-on a protected runner:
+production promotion remains Firestore-owned. The legacy `/updates/releases`
+bridge is also D1-backed in isolated staging (using `RELEASE_SECRET`), but the
+production workflow remains on its Firestore bridge until the release pipeline
+cutover. To replay one retained production manifest into the staging D1 table,
+provide the staging Edge URL and an admin key on a protected runner:
 
 ```bash
 ADMIN_KEY='…' python3 .github/scripts/backfill-desktop-release-manifest.py \
