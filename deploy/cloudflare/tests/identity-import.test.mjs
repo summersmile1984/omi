@@ -448,6 +448,40 @@ describe("Firebase identity import", () => {
     ).rejects.toThrow(/GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET/);
   });
 
+  it("does not relink a provider account when a replay changes its source identity", async () => {
+    const config = parseFirebaseImportScryptConfig(FIREBASE_SAMPLE.config);
+    const originalPlan = planFirebaseIdentityImport(source(), config);
+    const changed = source();
+    changed.users[0].providerUserInfo[0].rawId = "google-sub-replaced";
+    const changedPlan = planFirebaseIdentityImport(changed, config);
+    expect(changedPlan.canonicalSha256).not.toBe(originalPlan.canonicalSha256);
+
+    const database = memoryD1();
+    await expect(
+      runIdentityImport(
+        "apply",
+        originalPlan,
+        "e".repeat(64),
+        database.client,
+        providerEnv,
+      ),
+    ).resolves.toMatchObject({ status: "applied" });
+    await expect(
+      runIdentityImport(
+        "apply",
+        changedPlan,
+        "f".repeat(64),
+        database.client,
+        providerEnv,
+      ),
+    ).rejects.toThrow(/identity import ledger does not match/);
+    expect(
+      [...database.state.accounts.values()].find(
+        (account) => account.providerId === "google",
+      ).accountId,
+    ).toBe("google-sub-1");
+  });
+
   it("fails closed when a previously imported projection has a conflicting provenance digest", async () => {
     const plan = planFirebaseIdentityImport(
       source(),

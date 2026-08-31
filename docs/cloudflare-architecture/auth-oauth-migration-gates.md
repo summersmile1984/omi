@@ -240,8 +240,9 @@ legacy callback 或 app enable/install。对应 fixture 通过这些生产 adapt
 不能只检查源代码字符串：
 
 1. Identity import：完整 imported UID 正向；missing UID；重复 email；重复
-   provider identity；disabled user；phone/custom-claims user；checksum 或
-   provider configuration mismatch；revoked/conflict principal。
+   provider identity；provider account relink on replay；disabled user；
+   phone/custom-claims user；checksum 或 provider configuration mismatch；
+   revoked/conflict principal。
 2. Native authorize/callback：Google 和 Apple 正向；unsupported provider；
    redirect scheme/host 越界；missing/malformed PKCE；provider denial/error；
    expired/unknown/replayed state；Google GET callback；Apple POST callback，

@@ -546,6 +546,70 @@ describe("namespaced native auth compatibility seam", () => {
     }
   });
 
+  it("rejects a provider credential whose imported identity is linked to another provider", async () => {
+    const providerFetch = vi.fn(
+      async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://oauth2.googleapis.com/token") {
+          return Response.json({
+            id_token: "google-id-token-secret",
+            access_token: "google-access-token-secret",
+            expires_in: 3_600,
+          });
+        }
+        expect(url).toBe(
+          "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=AIza-test-key",
+        );
+        return Response.json({
+          localId: "firebase-user",
+          idToken: "firebase-id-token",
+          refreshToken: "firebase-refresh-token",
+          expiresIn: "3600",
+        });
+      },
+    );
+    const fixture = harness(providerFetch, {
+      FIREBASE_API_KEY: "AIza-test-key",
+      ...(await firebaseServiceAccount()),
+    });
+    fixture.database.database.exec(`
+      INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+      VALUES ('better-user', 'Better User', 'better@example.test', 1, 1, 1);
+      INSERT INTO auth_identity_imports
+        (id, sourceSha256, configFingerprint, canonicalSha256, userCount,
+         accountCount, status, startedAt, completedAt)
+      VALUES ('firebase', '${"a".repeat(64)}', 'config', '${"b".repeat(64)}', 1,
+         1, 'completed', 1, 2);
+      INSERT INTO cf_firebase_identity_projection
+        (firebaseUid, betterAuthUserId, providersJson, sourceImportId, status,
+         sourceUpdatedAt, updatedAt, sourceRecordSha256)
+      VALUES ('firebase-user', 'better-user', '["credential"]', 'firebase',
+         'imported', 1, 1, '${"c".repeat(64)}');
+      INSERT INTO cf_auth_deletion_fences
+        (uid, generation, status, startedAt, completedAt)
+      VALUES ('better-user', 1, 'clear', 1, NULL);
+    `);
+    try {
+      const providerState = await authorize(fixture);
+      const code = await callbackAndCode(fixture, providerState);
+      const response = await tokenRequest(fixture, code, {
+        use_custom_token: "true",
+      });
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        error: "provider_identity_mismatch",
+      });
+      expect(providerFetch).toHaveBeenCalledTimes(2);
+      expect(
+        fixture.database.database
+          .prepare("SELECT COUNT(*) AS count FROM cf_firebase_bridge_issuances")
+          .get(),
+      ).toEqual({ count: 0 });
+    } finally {
+      fixture.database.close();
+    }
+  });
+
   it("consumes denied/provider-failed callbacks and blocks replay", async () => {
     const providerFetch = vi.fn(
       async () =>
