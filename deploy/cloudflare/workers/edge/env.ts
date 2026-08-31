@@ -17,6 +17,8 @@ export type EdgeEnv = {
   MCP_RESOURCE_URL?: string;
   MCP_AUTHORIZATION_SERVER_URL?: string;
   INTERNAL_ASSERTION_SECRET?: string;
+  /** Staging-only deny switch for legacy Firebase/OAuth compatibility paths. */
+  AUTH_OAUTH_STAGING_FAIL_CLOSED?: string;
   BYOK_FINGERPRINT_PEPPER?: string;
   ALLOWED_ORIGINS?: string;
 };

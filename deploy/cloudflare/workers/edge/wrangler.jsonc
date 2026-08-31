@@ -38,5 +38,6 @@
     "MCP_AUTHORIZATION_SERVER_URL": "https://omi-web-app-staging.summersmile1984.workers.dev/api/better-auth",
     "RATE_LIMIT_BOOST": "1.0",
     "RATE_LIMIT_SHADOW_MODE": "false",
+    "AUTH_OAUTH_STAGING_FAIL_CLOSED": "true",
   },
 }

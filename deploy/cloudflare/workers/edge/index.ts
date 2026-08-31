@@ -541,6 +541,31 @@ const proxyLegacyBackend = async (
   return withRequestId(response, id);
 };
 
+// Firebase provider exchange and legacy app-consent OAuth are not Better Auth
+// contracts. In isolated staging, stop these paths before they can send
+// credentials, auth codes, or app-consent state to the legacy backend. When
+// the switch is absent (for a non-staging deployment), preserve the existing
+// legacy route behavior until a complete replacement is ready.
+const legacyAuthOAuthStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.AUTH_OAUTH_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "auth_oauth_unavailable",
+        detail:
+          "Legacy Firebase and app-consent OAuth are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 // The cloud Agent VM was retired, but released desktop clients still call
@@ -632,6 +657,12 @@ app.delete("/v1/summary-app-ids/:appId", proxyPublicJobs);
 app.post("/v1/integrations/notification", proxyIntegrationCore);
 app.post("/v1/notification", proxyPublicJobs);
 app.post("/v1/agents/hume/callback", proxyHumeWebhook);
+app.get("/v1/auth/authorize", legacyAuthOAuthStagingBoundary);
+app.get("/v1/auth/callback/google", legacyAuthOAuthStagingBoundary);
+app.post("/v1/auth/callback/apple", legacyAuthOAuthStagingBoundary);
+app.post("/v1/auth/token", legacyAuthOAuthStagingBoundary);
+app.get("/v1/oauth/authorize", legacyAuthOAuthStagingBoundary);
+app.post("/v1/oauth/token", legacyAuthOAuthStagingBoundary);
 app.post("/v2/integrations/:app_id/user/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/user/memories", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/memories", proxyIntegrationCore);

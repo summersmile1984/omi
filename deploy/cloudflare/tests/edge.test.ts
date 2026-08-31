@@ -159,6 +159,60 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
   });
 
+  it("fails closed for legacy Firebase and app-consent OAuth paths in staging", async () => {
+    const env = {
+      AUTH_OAUTH_STAGING_FAIL_CLOSED: "true",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    const requests = [
+      [
+        "GET",
+        "/v1/auth/authorize?provider=google&redirect_uri=omi%3A%2F%2Fauth%2Fcallback",
+      ],
+      ["GET", "/v1/auth/callback/google?code=opaque&state=opaque"],
+      ["POST", "/v1/auth/callback/apple"],
+      ["POST", "/v1/auth/token"],
+      ["GET", "/v1/oauth/authorize?app_id=app&state=opaque"],
+      ["POST", "/v1/oauth/token"],
+    ] as const;
+
+    try {
+      for (const [method, path] of requests) {
+        const response = await edge.fetch(
+          new Request(`https://edge.test${path}`, {
+            method,
+            headers: {
+              authorization: "Bearer opaque-credential",
+              cookie: "session=opaque",
+              "content-type": "application/x-www-form-urlencoded",
+              "x-omi-auth-context": "caller-controlled",
+            },
+            ...(method === "POST"
+              ? { body: "firebase_id_token=opaque&code=opaque" }
+              : {}),
+          }),
+          env as never,
+        );
+
+        expect(response.status, `${method} ${path}`).toBe(503);
+        await expect(response.json()).resolves.toEqual({
+          error: "auth_oauth_unavailable",
+          detail:
+            "Legacy Firebase and app-consent OAuth are unavailable on Cloudflare staging.",
+        });
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {
