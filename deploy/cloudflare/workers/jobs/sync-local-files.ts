@@ -41,6 +41,8 @@ const CONTENT_LEDGER_RETENTION_SECONDS = 45 * 24 * 60 * 60;
 const CONTENT_CLAIM_STALE_SECONDS = 2 * 24 * 60 * 60;
 const JOB_RETENTION_SECONDS = 24 * 60 * 60;
 const JOB_LEASE_SECONDS = 15 * 60;
+const MAX_SYNC_RUN_REQUEST_BYTES = 4_096;
+const SYNC_RUN_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_PROVIDER_ATTEMPTS = 3;
 const QUEUE_RETRY_SECONDS = 15;
 const BACKFILL_USER_DAILY_MS = 4 * 60 * 60 * 1000;
@@ -57,6 +59,7 @@ const PLAYBACK_INTENT_STALE_SECONDS = 60 * 60;
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type Lane = "fresh" | "backfill";
 type CaptureTrust = "device_bound" | "legacy" | "untrusted";
+type SyncAuthContext = { uid: string; authority?: string };
 
 type ManifestClaim = { name: string; sha256: string };
 
@@ -747,6 +750,44 @@ function startResponse(
 async function queueSyncJob(env: JobsEnv, message: JobMessage, lane: Lane) {
   const queue = lane === "fresh" ? env.SYNC_FRESH : env.SYNC_BACKFILL;
   await queue.send(message);
+}
+
+async function readBoundedSyncRunBody(request: Request): Promise<unknown> {
+  const declaredLength = Number(request.headers.get("content-length"));
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_SYNC_RUN_REQUEST_BYTES
+  ) {
+    throw new SyncHttpError(
+      413,
+      "request_too_large",
+      "Sync run request is too large",
+    );
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > MAX_SYNC_RUN_REQUEST_BYTES) {
+    throw new SyncHttpError(
+      413,
+      "request_too_large",
+      "Sync run request is too large",
+    );
+  }
+  if (!bytes.byteLength) {
+    throw new SyncHttpError(
+      400,
+      "invalid_request",
+      "Sync run request must be JSON",
+    );
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new SyncHttpError(
+      400,
+      "invalid_request",
+      "Sync run request must be valid JSON",
+    );
+  }
 }
 
 async function insertCompletedReplayJob(
@@ -2311,7 +2352,7 @@ export async function cleanupOrphanPlaybackObjects(
 
 export function registerSyncRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
-  authContext: (c: JobsContext) => Promise<{ uid: string } | null>,
+  authContext: (c: JobsContext) => Promise<SyncAuthContext | null>,
 ): void {
   app.post("/v2/sync-capture-manifest", async (c) => {
     const context = await authContext(c);
@@ -2570,6 +2611,107 @@ export function registerSyncRoutes(
 
   app.post("/v1/sync-local-files", deprecatedSyncLocalFilesHandler);
   app.post("/v2/sync-local-files", (c) => syncLocalFilesHandler(c));
+
+  // The old Cloud Tasks dispatcher may still call this path during the
+  // migration window. Rebind it to the durable D1 job and the existing
+  // sync_local_files queues. The request is deliberately not allowed to
+  // carry a caller-selected uid or staged blob paths: D1 is authoritative
+  // for both ownership and the staged-file ledger.
+  app.post("/v2/sync-jobs/run", async (c) => {
+    const context = await authContext(c);
+    if (!context || context.authority !== "better-auth") {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+
+    let body: unknown;
+    try {
+      body = await readBoundedSyncRunBody(c.req.raw);
+    } catch (error) {
+      if (error instanceof SyncHttpError) {
+        return c.json(
+          { code: error.code, detail: error.message },
+          error.status as 400,
+        );
+      }
+      return c.json(
+        { code: "invalid_request", detail: "Invalid sync run request" },
+        400,
+      );
+    }
+    const payload = objectValue(body);
+    const keys = payload ? Object.keys(payload) : [];
+    if (!payload || keys.length !== 1 || keys[0] !== "job_id") {
+      return c.json(
+        {
+          code: "invalid_request",
+          detail:
+            "Only job_id is accepted; uid and raw_blob_paths are not caller-controlled",
+        },
+        400,
+      );
+    }
+    const jobId =
+      typeof payload.job_id === "string" ? payload.job_id.trim() : "";
+    if (!SYNC_RUN_JOB_ID.test(jobId)) {
+      return c.json(
+        { code: "invalid_job_id", detail: "Invalid sync job id" },
+        400,
+      );
+    }
+
+    let job: {
+      job_id: string;
+      uid: string;
+      status: string;
+      lane: string;
+      lease_until: number | null;
+    } | null;
+    try {
+      job = await c.env.APP_DB.prepare(
+        "SELECT job_id, uid, status, lane, lease_until FROM cf_sync_jobs WHERE job_id = ? AND uid = ?",
+      )
+        .bind(jobId, context.uid)
+        .first();
+    } catch {
+      return c.json({ status: "retry", reason: "sync_job_unavailable" }, 503);
+    }
+    if (!job) {
+      // Do not reveal whether this id belongs to another account.
+      return c.json({ status: "dropped", reason: "unknown_job" });
+    }
+    if (["completed", "partial_failure", "failed"].includes(job.status)) {
+      return c.json({ status: "acked", job_status: job.status });
+    }
+    if (job.status !== "queued" && job.status !== "running") {
+      return c.json({ status: "dropped", reason: "unknown_job" });
+    }
+    if (job.lane !== "fresh" && job.lane !== "backfill") {
+      return c.json({ status: "dropped", reason: "invalid_job" });
+    }
+    const now = Math.floor(Date.now() / 1_000);
+    if (
+      job.status === "running" &&
+      job.lease_until !== null &&
+      Number(job.lease_until) > now
+    ) {
+      return c.json({ status: "locked" }, 409, { "Retry-After": "10" });
+    }
+    try {
+      await queueSyncJob(
+        c.env,
+        {
+          jobId: job.job_id,
+          uid: context.uid,
+          kind: "sync_local_files",
+          payload: { lane: job.lane },
+        },
+        job.lane,
+      );
+    } catch {
+      return c.json({ status: "retry", reason: "queue_unavailable" }, 503);
+    }
+    return c.json({ status: "queued", job_id: job.job_id, lane: job.lane });
+  });
 
   app.get("/v2/sync-local-files/:jobId", async (c) => {
     const context = await authContext(c);

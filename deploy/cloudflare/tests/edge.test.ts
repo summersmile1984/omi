@@ -357,6 +357,48 @@ describe("edge gateway", () => {
     expect(unauthenticated.status).toBe(401);
   });
 
+  it("routes the sync job run boundary to Jobs with only signed Better Auth context", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "sync-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      JOBS: service((request) => {
+        forwarded = request;
+        return Response.json({ status: "acked" });
+      }),
+    };
+    const body = JSON.stringify({ job_id: "sync-job-1" });
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/sync-jobs/run", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+          "x-omi-auth-context": "attacker-context",
+        },
+        body,
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://invalid.test").pathname).toBe(
+      "/v2/sync-jobs/run",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(
+      decodeAuthContext(forwarded?.headers.get("x-omi-auth-context") ?? null),
+    ).toMatchObject({ uid: "sync-user", authority: "better-auth", audience: "jobs" });
+    await expect(forwarded?.text()).resolves.toBe(body);
+  });
+
   it("forwards the canonical Better Auth path and browser credentials", async () => {
     let forwarded: Request | undefined;
     const response = await edge.fetch(

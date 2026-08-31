@@ -502,6 +502,245 @@ describe("sync-local-files queue processing", () => {
 });
 
 describe("sync-local-files route compatibility", () => {
+  function syncRunHarness(
+    row: {
+      job_id: string;
+      uid: string;
+      status: string;
+      lane: "fresh" | "backfill";
+      lease_until: number | null;
+    } | null,
+    queueFails = false,
+  ) {
+    const messages: JobMessage[] = [];
+    const database = {
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          first: async () => {
+            if (
+              !sql.startsWith("SELECT job_id, uid, status, lane, lease_until")
+            )
+              return null;
+            if (
+              !row ||
+              args[0] !== row.job_id ||
+              args[1] !== "user-1" ||
+              row.uid !== args[1]
+            )
+              return null;
+            return { ...row };
+          },
+        }),
+      }),
+    };
+    const env = {
+      APP_DB: database,
+      SYNC_FRESH: {
+        send: async (message: JobMessage) => {
+          if (queueFails) throw new Error("queue unavailable");
+          messages.push(message);
+        },
+      },
+      SYNC_BACKFILL: {
+        send: async (message: JobMessage) => {
+          if (queueFails) throw new Error("queue unavailable");
+          messages.push(message);
+        },
+      },
+    };
+    return { env, messages };
+  }
+
+  it("rebinds the legacy run boundary to D1 and the existing sync queue", async () => {
+    const harness = syncRunHarness({
+      job_id: "sync-job-1",
+      uid: "user-1",
+      status: "queued",
+      lane: "backfill",
+      lease_until: null,
+    });
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerSyncRoutes(app, async () => ({
+      uid: "user-1",
+      authority: "better-auth",
+    }));
+
+    const response = await app.fetch(
+      new Request("https://jobs.test/v2/sync-jobs/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ job_id: "sync-job-1" }),
+      }),
+      harness.env as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "queued",
+      job_id: "sync-job-1",
+      lane: "backfill",
+    });
+    expect(harness.messages).toEqual([
+      {
+        jobId: "sync-job-1",
+        uid: "user-1",
+        kind: "sync_local_files",
+        payload: { lane: "backfill" },
+      },
+    ]);
+  });
+
+  it("does not accept caller uid or raw staged paths and requires Better Auth", async () => {
+    const harness = syncRunHarness({
+      job_id: "sync-job-1",
+      uid: "user-1",
+      status: "queued",
+      lane: "fresh",
+      lease_until: null,
+    });
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerSyncRoutes(app, async () => ({ uid: "user-1" }));
+
+    const unauthenticated = await app.fetch(
+      new Request("https://jobs.test/v2/sync-jobs/run", {
+        method: "POST",
+        body: JSON.stringify({ job_id: "sync-job-1" }),
+      }),
+      harness.env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const authorizedApp = new Hono<{ Bindings: JobsEnv }>();
+    registerSyncRoutes(authorizedApp, async () => ({
+      uid: "user-1",
+      authority: "better-auth",
+    }));
+    const forged = await authorizedApp.fetch(
+      new Request("https://jobs.test/v2/sync-jobs/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          job_id: "sync-job-1",
+          uid: "user-1",
+          raw_blob_paths: ["gs://attacker/staged.wav"],
+        }),
+      }),
+      harness.env as never,
+    );
+    expect(forged.status).toBe(400);
+    expect(harness.messages).toHaveLength(0);
+  });
+
+  it("drops unknown or cross-account jobs without revealing ownership", async () => {
+    const harness = syncRunHarness({
+      job_id: "sync-job-1",
+      uid: "other-user",
+      status: "queued",
+      lane: "fresh",
+      lease_until: null,
+    });
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerSyncRoutes(app, async () => ({
+      uid: "user-1",
+      authority: "better-auth",
+    }));
+    const response = await app.fetch(
+      new Request("https://jobs.test/v2/sync-jobs/run", {
+        method: "POST",
+        body: JSON.stringify({ job_id: "sync-job-1" }),
+      }),
+      harness.env as never,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "dropped",
+      reason: "unknown_job",
+    });
+    expect(harness.messages).toHaveLength(0);
+  });
+
+  it("acks terminal jobs, locks active leases, and requeues expired leases", async () => {
+    const now = Math.floor(Date.now() / 1_000);
+    const cases = [
+      {
+        status: "completed",
+        lease_until: null,
+        expectedStatus: 200,
+        expectedBody: { status: "acked", job_status: "completed" },
+      },
+      {
+        status: "running",
+        lease_until: now + 60,
+        expectedStatus: 409,
+        expectedBody: { status: "locked" },
+      },
+      {
+        status: "running",
+        lease_until: now - 60,
+        expectedStatus: 200,
+        expectedBody: { status: "queued", job_id: "sync-job-1", lane: "fresh" },
+      },
+    ] as const;
+    for (const testCase of cases) {
+      const harness = syncRunHarness({
+        job_id: "sync-job-1",
+        uid: "user-1",
+        status: testCase.status,
+        lane: "fresh",
+        lease_until: testCase.lease_until,
+      });
+      const app = new Hono<{ Bindings: JobsEnv }>();
+      registerSyncRoutes(app, async () => ({
+        uid: "user-1",
+        authority: "better-auth",
+      }));
+      const response = await app.fetch(
+        new Request("https://jobs.test/v2/sync-jobs/run", {
+          method: "POST",
+          body: JSON.stringify({ job_id: "sync-job-1" }),
+        }),
+        harness.env as never,
+      );
+      expect(response.status).toBe(testCase.expectedStatus);
+      await expect(response.json()).resolves.toEqual(testCase.expectedBody);
+      expect(harness.messages).toHaveLength(
+        testCase.status === "running" && (testCase.lease_until ?? 0) <= now
+          ? 1
+          : 0,
+      );
+    }
+  });
+
+  it("returns 503 when the target sync queue cannot accept a requeue", async () => {
+    const harness = syncRunHarness(
+      {
+        job_id: "sync-job-1",
+        uid: "user-1",
+        status: "queued",
+        lane: "fresh",
+        lease_until: null,
+      },
+      true,
+    );
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerSyncRoutes(app, async () => ({
+      uid: "user-1",
+      authority: "better-auth",
+    }));
+    const response = await app.fetch(
+      new Request("https://jobs.test/v2/sync-jobs/run", {
+        method: "POST",
+        body: JSON.stringify({ job_id: "sync-job-1" }),
+      }),
+      harness.env as never,
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      status: "retry",
+      reason: "queue_unavailable",
+    });
+  });
+
   it("keeps the v1 upload path on the queue-backed implementation and marks it deprecated", async () => {
     const app = new Hono<{ Bindings: JobsEnv }>();
     registerSyncRoutes(app, async () => null);

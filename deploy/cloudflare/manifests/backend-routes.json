@@ -551,7 +551,7 @@
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v2/realtime/session", "protocol": "http", "target_runtime": "external-api"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v2/realtime/usage", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v2/sync-capture-manifest", "protocol": "http", "target_runtime": "typescript-worker"},
-    {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/sync-jobs/run", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v2/sync-jobs/run", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v2/sync-local-files", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v2/tts/synthesize", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v2/voice-message/transcribe", "protocol": "http", "target_runtime": "python-worker"},

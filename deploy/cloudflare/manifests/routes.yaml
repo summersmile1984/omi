@@ -2387,6 +2387,17 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v2/sync-jobs/run
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, queue-sync-fresh, queue-sync-backfill]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/sync-local-files
     owner: jobs
     runtime: edge-worker
