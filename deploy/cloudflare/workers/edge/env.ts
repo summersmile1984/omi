@@ -19,6 +19,8 @@ export type EdgeEnv = {
   INTERNAL_ASSERTION_SECRET?: string;
   /** Staging-only deny switch for legacy Firebase/OAuth compatibility paths. */
   AUTH_OAUTH_STAGING_FAIL_CLOSED?: string;
+  /** Explicit opt-in for the exact native Firebase auth routes in Auth Worker. */
+  AUTH_EXACT_NATIVE_STAGING_ENABLED?: string;
   /** Staging-only deny switch for legacy Twilio phone-call paths. */
   PHONE_TWILIO_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for the legacy Gemini desktop proxy paths. */

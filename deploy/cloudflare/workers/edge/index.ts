@@ -542,14 +542,49 @@ const proxyLegacyBackend = async (
 };
 
 // Firebase provider exchange and legacy app-consent OAuth are not Better Auth
-// contracts. In isolated staging, stop these paths before they can send
-// credentials, auth codes, or app-consent state to the legacy backend. When
-// the switch is absent (for a non-staging deployment), preserve the existing
-// legacy route behavior until a complete replacement is ready.
+// contracts. The native-auth transaction seam now has an exact /v1/auth/*
+// handler in the Auth Worker, but it is independently gated while provider
+// credentials and Firebase identity replay are verified. App-consent OAuth
+// remains fail-closed until its D1 catalog/consent authority is complete.
+const proxyExactNativeAuth = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const target = new URL(c.req.url);
+  target.protocol = "https:";
+  target.host = "auth.internal";
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  const init: RequestInit & { duplex?: "half" } = {
+    method: c.req.method,
+    headers,
+  };
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    init.body = c.req.raw.body;
+    init.duplex = "half";
+  }
+  try {
+    const response = await c.env.AUTH.fetch(new Request(target, init));
+    return withRequestId(response, id);
+  } catch {
+    return withRequestId(
+      Response.json(
+        { error: "auth_unavailable" },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+};
+
 const legacyAuthOAuthStagingBoundary = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
   const id = requestId(c.req.raw);
+  if (c.env.AUTH_EXACT_NATIVE_STAGING_ENABLED === "true") {
+    return proxyExactNativeAuth(c);
+  }
   if (c.env.AUTH_OAUTH_STAGING_FAIL_CLOSED !== "true") {
     return proxyLegacyBackend(c);
   }

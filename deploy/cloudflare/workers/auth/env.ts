@@ -29,6 +29,8 @@ export type AuthEnv = {
   AUTH_DEV_ISSUER_SECRET?: string;
   /** Explicit gate for the namespaced native-auth compatibility seam. */
   LEGACY_AUTH_COMPAT_STAGING_ENABLED?: string;
+  /** Explicit gate for the exact /v1/auth/* staging owner. */
+  LEGACY_AUTH_EXACT_STAGING_ENABLED?: string;
   /** Secret used to derive the AES-GCM key for native-auth transaction envelopes. */
   LEGACY_AUTH_TRANSACTION_ENCRYPTION_SECRET?: string;
   /** Public HTTPS origin used to construct provider callback URLs. */

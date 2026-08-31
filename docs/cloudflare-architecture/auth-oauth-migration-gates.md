@@ -140,6 +140,14 @@ token admission 时执行最多 100 行的有界过期清理：过期的 pending
 放宽认证校验或阻止当前请求；它只会留下下一次 admission 可回收的 maintenance
 残留。provider credential 仍只存在于 AES-GCM envelope，清理不会把其明文读出。
 
+Auth Worker 现在也注册了 exact `/v1/auth/authorize`、Google/Apple callback 和
+`/v1/auth/token` handler；它们与 namespaced seam 共用同一套 D1 transaction
+authority，但由 `LEGACY_AUTH_EXACT_STAGING_ENABLED` 独立 gate。Edge 只有在
+`AUTH_EXACT_NATIVE_STAGING_ENABLED=true` 时才会把 exact 请求转给 Auth Worker，
+否则继续沿用原有 fail-closed/legacy rollback 路径。该 wiring 已覆盖 route-level
+回归测试，但没有改变 manifest owner，也没有宣称 Firebase/provider production
+parity。
+
 `use_custom_token=true` 当前始终 fail-closed：即使 Firebase secret 存在，也必须
 先完成 Firebase localId → Better Auth uid 的 identity projection/link authority，
 不能从 provider token 猜测或伪造 Firebase uid。该 seam 不是 `/v1/auth/*` owner、

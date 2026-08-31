@@ -1,12 +1,12 @@
 /**
  * Namespaced native-auth compatibility seam.
  *
- * This module deliberately does not own `/v1/auth/*`.  It is a staging-only
- * replay surface for the Firebase/native OAuth lifecycle while the provider
- * and identity bridges are being verified.  Provider credentials are returned
- * to the native client only after the D1 code transaction is atomically
- * consumed; D1 stores only secret-derived AES-GCM envelopes and SHA-256
- * lookups.
+ * This module provides a namespaced replay surface and an independently gated
+ * exact `/v1/auth/*` surface for the Firebase/native OAuth lifecycle while the
+ * provider and identity bridges are being verified. Provider credentials are
+ * returned to the native client only after the D1 code transaction is
+ * atomically consumed; D1 stores only secret-derived AES-GCM envelopes and
+ * SHA-256 lookups.
  */
 
 import type { Context, Hono } from "hono";
@@ -33,6 +33,15 @@ type FetchLike = (
   input: RequestInfo | URL,
   init?: RequestInit,
 ) => Promise<Response>;
+
+export type NativeAuthCompatibilityOptions = Readonly<{
+  /**
+   * The namespaced route is the default migration seam.  The legacy prefix is
+   * registered only when Edge has explicitly enabled its staging owner; it
+   * never changes the default gate or production route inventory by itself.
+   */
+  surface?: "namespaced" | "legacy";
+}>;
 
 export type NativeAuthCompatibilityDependencies = Readonly<{
   fetchImpl?: FetchLike;
@@ -260,6 +269,7 @@ function publicBaseUrl(env: AuthEnv): URL {
 function providerConfiguration(
   env: AuthEnv,
   provider: LegacyAuthProvider,
+  surface: NativeAuthCompatibilityOptions["surface"] = "namespaced",
 ): ProviderConfiguration {
   const clientId =
     provider === "google" ? env.GOOGLE_CLIENT_ID : env.APPLE_CLIENT_ID;
@@ -270,7 +280,7 @@ function providerConfiguration(
   }
   const base = publicBaseUrl(env);
   const callbackUri = new URL(
-    `/v2/cf/auth/callback/${provider}`,
+    `${surface === "legacy" ? "/v1/auth/callback" : "/v2/cf/auth/callback"}/${provider}`,
     `${base.toString().replace(/\/$/, "")}/`,
   ).toString();
   return {
@@ -520,8 +530,13 @@ function queryString(value: string | undefined | null): string | null {
 async function authorize(
   c: NativeAuthContext,
   dependencies: NativeAuthCompatibilityDependencies,
+  surface: NativeAuthCompatibilityOptions["surface"],
 ): Promise<Response> {
-  if (c.env.LEGACY_AUTH_COMPAT_STAGING_ENABLED !== "true") {
+  const enabled =
+    surface === "legacy"
+      ? c.env.LEGACY_AUTH_EXACT_STAGING_ENABLED === "true"
+      : c.env.LEGACY_AUTH_COMPAT_STAGING_ENABLED === "true";
+  if (!enabled) {
     return responseError(c, new NativeAuthError(404, "not_found"));
   }
   const providerValue = c.req.query("provider");
@@ -549,7 +564,7 @@ async function authorize(
   await bestEffortPruneTransactions(c.env.AUTH_DB, now);
 
   try {
-    const configuration = providerConfiguration(c.env, provider);
+    const configuration = providerConfiguration(c.env, provider, surface);
     transactionSecret(c.env);
     const transactionId = crypto.randomUUID();
     const stateSecret = randomOpaqueSecret();
@@ -591,6 +606,7 @@ async function callback(
   c: NativeAuthContext,
   provider: LegacyAuthProvider,
   dependencies: NativeAuthCompatibilityDependencies,
+  surface: NativeAuthCompatibilityOptions["surface"],
   values: {
     code: string | null;
     state: string | null;
@@ -598,7 +614,11 @@ async function callback(
     user: string | null;
   },
 ): Promise<Response> {
-  if (c.env.LEGACY_AUTH_COMPAT_STAGING_ENABLED !== "true") {
+  const enabled =
+    surface === "legacy"
+      ? c.env.LEGACY_AUTH_EXACT_STAGING_ENABLED === "true"
+      : c.env.LEGACY_AUTH_COMPAT_STAGING_ENABLED === "true";
+  if (!enabled) {
     return responseError(c, new NativeAuthError(404, "not_found"));
   }
   if (!values.state || !isValidLegacyOpaqueSecret(values.state)) {
@@ -622,7 +642,7 @@ async function callback(
   await bestEffortPruneTransactions(c.env.AUTH_DB, now);
   let configuration: ProviderConfiguration;
   try {
-    configuration = providerConfiguration(c.env, provider);
+    configuration = providerConfiguration(c.env, provider, surface);
     transactionSecret(c.env);
   } catch (error) {
     return callbackResponse(
@@ -785,8 +805,13 @@ async function callback(
 async function token(
   c: NativeAuthContext,
   dependencies: NativeAuthCompatibilityDependencies,
+  surface: NativeAuthCompatibilityOptions["surface"],
 ): Promise<Response> {
-  if (c.env.LEGACY_AUTH_COMPAT_STAGING_ENABLED !== "true") {
+  const enabled =
+    surface === "legacy"
+      ? c.env.LEGACY_AUTH_EXACT_STAGING_ENABLED === "true"
+      : c.env.LEGACY_AUTH_COMPAT_STAGING_ENABLED === "true";
+  if (!enabled) {
     return responseError(c, new NativeAuthError(404, "not_found"));
   }
   const contentType = c.req.header("content-type") || "";
@@ -954,17 +979,20 @@ async function token(
 export function registerNativeAuthCompatibilityRoutes(
   app: NativeAuthApp,
   dependencies: NativeAuthCompatibilityDependencies = {},
+  options: NativeAuthCompatibilityOptions = {},
 ): void {
-  app.get("/v2/cf/auth/authorize", (c) => authorize(c, dependencies));
-  app.get("/v2/cf/auth/callback/google", (c) =>
-    callback(c, "google", dependencies, {
+  const surface = options.surface || "namespaced";
+  const prefix = surface === "legacy" ? "/v1/auth" : "/v2/cf/auth";
+  app.get(`${prefix}/authorize`, (c) => authorize(c, dependencies, surface));
+  app.get(`${prefix}/callback/google`, (c) =>
+    callback(c, "google", dependencies, surface, {
       code: queryString(c.req.query("code")),
       state: queryString(c.req.query("state")),
       error: queryString(c.req.query("error")),
       user: null,
     }),
   );
-  app.post("/v2/cf/auth/callback/apple", async (c) => {
+  app.post(`${prefix}/callback/apple`, async (c) => {
     const form = await readBoundedForm(c.req.raw, MAX_CALLBACK_BODY_BYTES);
     if (!form) {
       return callbackResponse(
@@ -975,12 +1003,12 @@ export function registerNativeAuthCompatibilityRoutes(
         400,
       );
     }
-    return callback(c, "apple", dependencies, {
+    return callback(c, "apple", dependencies, surface, {
       code: queryString(form.get("code")),
       state: queryString(form.get("state")),
       error: queryString(form.get("error")),
       user: queryString(form.get("user")),
     });
   });
-  app.post("/v2/cf/auth/token", (c) => token(c, dependencies));
+  app.post(`${prefix}/token`, (c) => token(c, dependencies, surface));
 }

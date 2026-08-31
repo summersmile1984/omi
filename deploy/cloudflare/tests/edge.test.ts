@@ -213,6 +213,53 @@ describe("edge gateway", () => {
     }
   });
 
+  it("forwards exact native auth paths to Auth only with the explicit staging owner", async () => {
+    const forwarded: Request[] = [];
+    const env = {
+      AUTH_EXACT_NATIVE_STAGING_ENABLED: "true",
+      AUTH_OAUTH_STAGING_FAIL_CLOSED: "true",
+      AUTH: rawService((request) => {
+        forwarded.push(request);
+        return Response.redirect(
+          "https://accounts.google.com/o/oauth2/v2/auth?state=opaque",
+          302,
+        );
+      }),
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    try {
+      const response = await edge.fetch(
+        new Request(
+          "https://edge.test/v1/auth/authorize?provider=google&redirect_uri=omi%3A%2F%2Fauth%2Fcallback",
+          {
+            headers: {
+              authorization: "Bearer native-session",
+              cookie: "session=native",
+              "x-omi-auth-context": "caller-controlled",
+            },
+          },
+        ),
+        env as never,
+      );
+      expect(response.status).toBe(302);
+      expect(forwarded).toHaveLength(1);
+      expect(new URL(forwarded[0].url).pathname).toBe("/v1/auth/authorize");
+      expect(forwarded[0].headers.get("authorization")).toBe(
+        "Bearer native-session",
+      );
+      expect(forwarded[0].headers.get("cookie")).toBe("session=native");
+      expect(forwarded[0].headers.get("x-omi-auth-context")).toBeNull();
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
   it("forwards authenticated Phone routes to Jobs and preserves the Twilio webhook", async () => {
     const forwarded: Request[] = [];
     const env = {

@@ -45,10 +45,14 @@ const MCP_DATA_SCOPE_SET = new Set<string>(MCP_SCOPES);
 const MAX_MCP_VERIFY_BODY_BYTES = 4_096;
 const MAX_FIREBASE_BRIDGE_BODY_BYTES = 4_096;
 
-// Keep this namespaced seam beside the Auth Worker while the exact legacy
-// `/v1/auth/*` contract remains owned by the Python service.  The seam is
-// disabled unless staging explicitly supplies its gate and provider secrets.
+// Keep the namespaced seam beside the Auth Worker while the exact legacy
+// `/v1/auth/*` registration remains independently gated. Neither surface is
+// enabled unless staging explicitly supplies its gate and provider secrets.
 registerNativeAuthCompatibilityRoutes(app);
+// The exact native-auth prefix is wired to the same Cloudflare transaction
+// authority, but remains independently gated until Edge enables the staging
+// owner and provider/identity replay has been verified.
+registerNativeAuthCompatibilityRoutes(app, {}, { surface: "legacy" });
 
 type SocialProviderId = "google" | "apple";
 
@@ -629,9 +633,9 @@ app.post("/auth-issue", async (c) => {
   }
 });
 
-// Staging-only internal bridge for imported Firebase principals.  This is
-// intentionally namespaced and does not alter /v1/auth/token: the legacy
-// client still needs its Redis code, callback, and provider wire contract.
+// Staging-only internal bridge for imported Firebase principals.  The exact
+// native-auth route is still independently gated and only issues a custom
+// token after this identity projection has admitted the Firebase principal.
 app.post("/internal/firebase/custom-token", async (c) => {
   if (c.env.FIREBASE_CUSTOM_TOKEN_BRIDGE_STAGING_ENABLED !== "true") {
     return c.json({ error: "not_found" }, 404);

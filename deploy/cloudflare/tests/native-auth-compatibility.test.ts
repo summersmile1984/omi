@@ -188,6 +188,81 @@ function tokenRequest(
 }
 
 describe("namespaced native auth compatibility seam", () => {
+  it("serves the exact native auth prefix only with its independent staging gate", async () => {
+    const providerFetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toBe("https://oauth2.googleapis.com/token");
+        expect(new URLSearchParams(String(init?.body)).get("redirect_uri")).toBe(
+          `${BASE_URL}/v1/auth/callback/google`,
+        );
+        return Response.json({
+          id_token: "exact-google-id-token",
+          access_token: "exact-google-access-token",
+          expires_in: 3_600,
+        });
+      },
+    );
+    const database = new SqliteD1();
+    const app = new Hono<{ Bindings: AuthEnv }>();
+    registerNativeAuthCompatibilityRoutes(
+      app,
+      { fetchImpl: providerFetch, now: () => 1_700_000_000 },
+      { surface: "legacy" },
+    );
+    const env = testEnv(database, { LEGACY_AUTH_EXACT_STAGING_ENABLED: "true" });
+    try {
+      const challenge = await pkceChallengeForVerifier(VERIFIER);
+      const authorizeResponse = await app.request(
+        `${BASE_URL}/v1/auth/authorize?${new URLSearchParams({
+          provider: "google",
+          redirect_uri: REDIRECT_URI,
+          state: "exact-client-state",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+        })}`,
+        {},
+        env,
+      );
+      expect(authorizeResponse.status).toBe(302);
+      const providerUrl = new URL(authorizeResponse.headers.get("location")!);
+      const callbackResponse = await app.request(
+        `${BASE_URL}/v1/auth/callback/google?${new URLSearchParams({
+          code: "provider-code-exact-1234567890",
+          state: providerUrl.searchParams.get("state") || "",
+        })}`,
+        {},
+        env,
+      );
+      expect(callbackResponse.status).toBe(200);
+      const callbackHtml = await callbackResponse.text();
+      const redirect = new URL(
+        callbackHtml.match(/href="([^"]+)"/)![1].replaceAll("&amp;", "&"),
+      );
+      const tokenResponse = await app.request(
+        `${BASE_URL}/v1/auth/token`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code: redirect.searchParams.get("code") || "",
+            redirect_uri: REDIRECT_URI,
+            code_verifier: VERIFIER,
+          }).toString(),
+        },
+        env,
+      );
+      expect(tokenResponse.status).toBe(200);
+      expect(await tokenResponse.json()).toMatchObject({
+        provider: "google",
+        provider_id: "google.com",
+      });
+      expect(providerFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      database.close();
+    }
+  });
+
   it("closes authorize → Google callback → single-use provider token", async () => {
     const providerFetch = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
