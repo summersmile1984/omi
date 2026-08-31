@@ -27,8 +27,9 @@ import type { JobMessage, JobsEnv } from "./env";
 
 const ROUTE_PATH = "/v2/cf/apps/migrate-owner";
 const IDENTITY_PROJECTION_PATH = `${ROUTE_PATH}/identity-projection`;
-const AUTH_IDENTITY_PROJECTION_PATH =
-  "/internal/firebase/anonymous-identity";
+const DATA_PROJECTION_ATTESTATION_PATH =
+  "/v2/cf/apps/migrate-owner/data-projection";
+const AUTH_IDENTITY_PROJECTION_PATH = "/internal/firebase/anonymous-identity";
 // Retained as a stable constant for callers that record the retired API Core
 // processor boundary; the staging executor now performs the D1 projection in
 // the Jobs worker itself.
@@ -43,6 +44,7 @@ const RETRY_DELAY_SECONDS = 10;
 const MAX_ATTEMPTS = 3;
 const RECONCILE_BATCH_SIZE = 50;
 const MAX_APP_PROJECTION_ROWS = 500;
+const MAX_MEMORY_PROJECTION_ROWS = 1_000_000;
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type RequestContext = (c: JobsContext) => Promise<SignedAuthContext | null>;
@@ -74,6 +76,10 @@ type AppOwnerMigrationSource = {
   projection_status: "imported" | "revoked" | "conflict";
   app_projection_count: number;
   memory_projection_count: number;
+  data_projection_status: "unverified" | "verified";
+  data_projection_revision: string | null;
+  memory_reencryption_status: "unverified" | "completed" | "not_required";
+  memory_reencryption_revision: string | null;
   target_uid: string;
   target_account_generation: number;
   source_credential_generation: number;
@@ -89,6 +95,20 @@ type MigrationRequest = {
 type IdentityProjectionRequest = {
   sourceUid: string;
   sourceToken: string;
+};
+
+type DataProjectionAttestation = {
+  source_uid: string;
+  source_uid_hash: string;
+  source_proof_hash: string;
+  source_projection_revision: string;
+  target_uid: string;
+  target_account_generation: number;
+  data_projection_revision: string;
+  app_projection_count: number;
+  memory_projection_count: number;
+  memory_reencryption_status: "completed" | "not_required";
+  memory_reencryption_revision: string | null;
 };
 
 type AnonymousIdentityAttestation = {
@@ -108,7 +128,6 @@ type AppCatalogOwnerRow = {
   owner_account_generation: number | null;
   owner_migration_job_id: string | null;
 };
-
 
 function validText(value: unknown, maximum: number): value is string {
   return (
@@ -205,6 +224,16 @@ function parseSource(value: unknown): AppOwnerMigrationSource | null {
   const targetGeneration = integer(row.target_account_generation);
   const sourceGeneration = integer(row.source_credential_generation);
   const expiresAt = integer(row.attestation_expires_at);
+  const dataProjectionRevision =
+    row.data_projection_revision === null ||
+    row.data_projection_revision === undefined
+      ? null
+      : row.data_projection_revision;
+  const memoryReencryptionRevision =
+    row.memory_reencryption_revision === null ||
+    row.memory_reencryption_revision === undefined
+      ? null
+      : row.memory_reencryption_revision;
   if (
     !validText(row.source_uid, MAX_UID_LENGTH) ||
     !row.source_uid.startsWith("fb-anon-") ||
@@ -218,6 +247,14 @@ function parseSource(value: unknown): AppOwnerMigrationSource | null {
       row.projection_status !== "conflict") ||
     appCount === null ||
     memoryCount === null ||
+    (row.data_projection_status !== "unverified" &&
+      row.data_projection_status !== "verified") ||
+    (dataProjectionRevision !== null && !validHash(dataProjectionRevision)) ||
+    (row.memory_reencryption_status !== "unverified" &&
+      row.memory_reencryption_status !== "completed" &&
+      row.memory_reencryption_status !== "not_required") ||
+    (memoryReencryptionRevision !== null &&
+      !validHash(memoryReencryptionRevision)) ||
     !validText(row.target_uid, MAX_UID_LENGTH) ||
     targetGeneration === null ||
     sourceGeneration === null ||
@@ -234,6 +271,10 @@ function parseSource(value: unknown): AppOwnerMigrationSource | null {
     projection_status: row.projection_status,
     app_projection_count: appCount,
     memory_projection_count: memoryCount,
+    data_projection_status: row.data_projection_status,
+    data_projection_revision: dataProjectionRevision,
+    memory_reencryption_status: row.memory_reencryption_status,
+    memory_reencryption_revision: memoryReencryptionRevision,
     target_uid: row.target_uid,
     target_account_generation: targetGeneration,
     source_credential_generation: sourceGeneration,
@@ -243,6 +284,107 @@ function parseSource(value: unknown): AppOwnerMigrationSource | null {
 
 function noStoreHeaders(): Record<string, string> {
   return { "cache-control": "no-store" };
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  let difference = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    difference |= (leftBytes[index] || 0) ^ (rightBytes[index] || 0);
+  }
+  return difference === 0;
+}
+
+function adminAuthorized(c: JobsContext): boolean {
+  const expected = c.env.APPS_ADMIN_KEY;
+  const provided = c.req.header("secret-key");
+  return Boolean(expected && provided && constantTimeEqual(provided, expected));
+}
+
+function parseDataProjectionAttestation(
+  value: unknown,
+): DataProjectionAttestation | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  if (
+    "source_token" in body ||
+    "firebase_id_token" in body ||
+    "firebase_uid" in body ||
+    "old_id" in body
+  ) {
+    return null;
+  }
+  const appCount = integer(body.app_projection_count);
+  const memoryCount = integer(body.memory_projection_count);
+  const targetGeneration = integer(body.target_account_generation);
+  const memoryStatus = body.memory_reencryption_status;
+  const memoryRevision =
+    body.memory_reencryption_revision === null ||
+    body.memory_reencryption_revision === undefined
+      ? null
+      : typeof body.memory_reencryption_revision === "string"
+        ? body.memory_reencryption_revision
+        : null;
+  if (
+    !validText(body.source_uid, MAX_UID_LENGTH) ||
+    !body.source_uid.startsWith("fb-anon-") ||
+    !validHash(body.source_uid_hash) ||
+    body.source_uid !== `fb-anon-${body.source_uid_hash}` ||
+    !validHash(body.source_proof_hash) ||
+    !validHash(body.source_projection_revision) ||
+    !validText(body.target_uid, MAX_UID_LENGTH) ||
+    body.source_uid === body.target_uid ||
+    targetGeneration === null ||
+    !validHash(body.data_projection_revision) ||
+    appCount === null ||
+    appCount > MAX_APP_PROJECTION_ROWS ||
+    memoryCount === null ||
+    memoryCount > MAX_MEMORY_PROJECTION_ROWS ||
+    (memoryStatus !== "completed" && memoryStatus !== "not_required") ||
+    (memoryStatus === "not_required" && memoryCount !== 0) ||
+    (memoryStatus === "completed" && !validHash(memoryRevision)) ||
+    (memoryStatus === "not_required" && memoryRevision !== null)
+  ) {
+    return null;
+  }
+  return {
+    source_uid: body.source_uid,
+    source_uid_hash: body.source_uid_hash,
+    source_proof_hash: body.source_proof_hash,
+    source_projection_revision: body.source_projection_revision,
+    target_uid: body.target_uid,
+    target_account_generation: targetGeneration,
+    data_projection_revision: body.data_projection_revision,
+    app_projection_count: appCount,
+    memory_projection_count: memoryCount,
+    memory_reencryption_status: memoryStatus,
+    memory_reencryption_revision: memoryRevision,
+  };
+}
+
+function sameDataProjection(
+  source: AppOwnerMigrationSource,
+  attestation: DataProjectionAttestation,
+): boolean {
+  return (
+    source.data_projection_status === "verified" &&
+    source.source_uid === attestation.source_uid &&
+    source.source_uid_hash === attestation.source_uid_hash &&
+    source.source_proof_hash === attestation.source_proof_hash &&
+    source.source_projection_revision ===
+      attestation.source_projection_revision &&
+    source.target_uid === attestation.target_uid &&
+    source.target_account_generation === attestation.target_account_generation &&
+    source.data_projection_revision === attestation.data_projection_revision &&
+    source.app_projection_count === attestation.app_projection_count &&
+    source.memory_projection_count === attestation.memory_projection_count &&
+    source.memory_reencryption_status ===
+      attestation.memory_reencryption_status &&
+    source.memory_reencryption_revision ===
+      attestation.memory_reencryption_revision
+  );
 }
 
 function responseForJob(job: AppOwnerMigrationJobRow): Record<string, unknown> {
@@ -299,7 +441,10 @@ export async function appOwnerMigrationFingerprint(
 
 async function readBoundedJson(request: Request): Promise<unknown> {
   const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && (declared < 0 || declared > MAX_BODY_BYTES)) {
+  if (
+    Number.isFinite(declared) &&
+    (declared < 0 || declared > MAX_BODY_BYTES)
+  ) {
     throw new Error("request body is too large");
   }
   if (!request.body) return {};
@@ -326,7 +471,10 @@ async function readBoundedJson(request: Request): Promise<unknown> {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
-function parseRequest(value: unknown, idempotencyKey: string | null): MigrationRequest | null {
+function parseRequest(
+  value: unknown,
+  idempotencyKey: string | null,
+): MigrationRequest | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const body = value as Record<string, unknown>;
   if (
@@ -416,7 +564,10 @@ async function deletionFence(env: JobsEnv, uid: string): Promise<boolean> {
   return row?.lifecycle === "deleting" || row?.lifecycle === "deleted";
 }
 
-async function targetGeneration(env: JobsEnv, uid: string): Promise<number | null> {
+async function targetGeneration(
+  env: JobsEnv,
+  uid: string,
+): Promise<number | null> {
   const row = await env.APP_DB.prepare(
     "SELECT uid, state, checkpoint_phase, destination_backend_bound, account_generation " +
       "FROM cf_account_cutover WHERE uid = ? LIMIT 1",
@@ -447,7 +598,9 @@ async function sourceProjection(
 ): Promise<AppOwnerMigrationSource | null> {
   const row = await env.APP_DB.prepare(
     "SELECT source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
-      "projection_status, app_projection_count, memory_projection_count, target_uid, " +
+      "projection_status, app_projection_count, memory_projection_count, " +
+      "data_projection_status, data_projection_revision, memory_reencryption_status, " +
+      "memory_reencryption_revision, target_uid, " +
       "target_account_generation, source_credential_generation, attestation_expires_at " +
       "FROM cf_app_owner_migration_sources WHERE source_uid = ? LIMIT 1",
   )
@@ -460,9 +613,14 @@ async function appCatalogRows(
   env: JobsEnv,
   source: AppOwnerMigrationSource,
   job: AppOwnerMigrationJobRow,
-): Promise<{ sourceRows: AppCatalogOwnerRow[]; migratedRows: AppCatalogOwnerRow[] }> {
+): Promise<{
+  sourceRows: AppCatalogOwnerRow[];
+  migratedRows: AppCatalogOwnerRow[];
+}> {
   if (source.app_projection_count > MAX_APP_PROJECTION_ROWS) {
-    throw new AppOwnerMigrationAuthorityError("app projection exceeds executor limit");
+    throw new AppOwnerMigrationAuthorityError(
+      "app projection exceeds executor limit",
+    );
   }
   const sourceResult = await env.APP_DB.prepare(
     "SELECT id, owner_uid, owner_account_generation, owner_migration_job_id " +
@@ -474,7 +632,8 @@ async function appCatalogRows(
     id: row.id,
     owner_uid: row.owner_uid ?? null,
     owner_account_generation:
-      row.owner_account_generation === null || row.owner_account_generation === undefined
+      row.owner_account_generation === null ||
+      row.owner_account_generation === undefined
         ? null
         : integer(row.owner_account_generation),
     owner_migration_job_id: row.owner_migration_job_id ?? null,
@@ -489,7 +648,8 @@ async function appCatalogRows(
     id: row.id,
     owner_uid: row.owner_uid ?? null,
     owner_account_generation:
-      row.owner_account_generation === null || row.owner_account_generation === undefined
+      row.owner_account_generation === null ||
+      row.owner_account_generation === undefined
         ? null
         : integer(row.owner_account_generation),
     owner_migration_job_id: row.owner_migration_job_id ?? null,
@@ -518,14 +678,34 @@ async function appCatalogRows(
     throw new AppOwnerMigrationAuthorityError("app catalog migration overlap");
   }
   if (sourceRows.length + migratedRows.length !== source.app_projection_count) {
-    throw new AppOwnerMigrationAuthorityError("app catalog projection incomplete");
+    throw new AppOwnerMigrationAuthorityError(
+      "app catalog projection incomplete",
+    );
   }
   return { sourceRows, migratedRows };
 }
 
+function sourceDataProjectionReady(source: AppOwnerMigrationSource): boolean {
+  if (
+    source.data_projection_status !== "verified" ||
+    source.data_projection_revision === null
+  ) {
+    return false;
+  }
+  if (source.memory_projection_count === 0) {
+    return source.memory_reencryption_status === "not_required";
+  }
+  return (
+    source.memory_reencryption_status === "completed" &&
+    source.memory_reencryption_revision !== null
+  );
+}
+
 function appIdList(ids: string[]): string {
   if (ids.length === 0 || ids.length > MAX_APP_PROJECTION_ROWS) {
-    throw new AppOwnerMigrationAuthorityError("app catalog projection is invalid");
+    throw new AppOwnerMigrationAuthorityError(
+      "app catalog projection is invalid",
+    );
   }
   return ids.map(() => "?").join(", ");
 }
@@ -536,21 +716,32 @@ async function executeAppOwnerD1Projection(
   source: AppOwnerMigrationSource,
   now: number,
 ): Promise<Record<string, unknown>> {
-  if (await deletionFence(env, source.source_uid) || await deletionFence(env, job.target_uid)) {
+  if (
+    (await deletionFence(env, source.source_uid)) ||
+    (await deletionFence(env, job.target_uid))
+  ) {
     throw new AppOwnerMigrationAuthorityError("account deletion fence");
+  }
+  if (!sourceDataProjectionReady(source)) {
+    throw new AppOwnerMigrationAuthorityError(
+      "source data projection or memory re-encryption not attested",
+    );
   }
   const generation = await targetGeneration(env, job.target_uid);
   if (generation !== job.target_account_generation) {
     throw new AppOwnerMigrationAuthorityError("target generation changed");
   }
   const { sourceRows, migratedRows } = await appCatalogRows(env, source, job);
-  const appIds = [...new Set([...sourceRows, ...migratedRows].map((row) => row.id))];
+  const appIds = [
+    ...new Set([...sourceRows, ...migratedRows].map((row) => row.id)),
+  ];
   if (appIds.length === 0) {
     return {
       status: "completed",
       app_count: 0,
       memory_count: source.memory_projection_count,
-      memory_reencryption: "not_migrated",
+      memory_reencryption: source.memory_reencryption_status,
+      memory_reencryption_revision: source.memory_reencryption_revision,
       account_generation: job.target_account_generation,
     };
   }
@@ -595,7 +786,8 @@ async function executeAppOwnerD1Projection(
     app_count: appIds.length,
     app_ids: appIds,
     memory_count: source.memory_projection_count,
-    memory_reencryption: "not_migrated",
+    memory_reencryption: source.memory_reencryption_status,
+    memory_reencryption_revision: source.memory_reencryption_revision,
     account_generation: job.target_account_generation,
   };
 }
@@ -606,13 +798,155 @@ async function sourceProjectionByHash(
 ): Promise<AppOwnerMigrationSource | null> {
   const row = await env.APP_DB.prepare(
     "SELECT source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
-      "projection_status, app_projection_count, memory_projection_count, target_uid, " +
+      "projection_status, app_projection_count, memory_projection_count, " +
+      "data_projection_status, data_projection_revision, memory_reencryption_status, " +
+      "memory_reencryption_revision, target_uid, " +
       "target_account_generation, source_credential_generation, attestation_expires_at " +
       "FROM cf_app_owner_migration_sources WHERE source_uid_hash = ? LIMIT 1",
   )
     .bind(sourceUidHash)
     .first();
   return parseSource(row);
+}
+
+async function attestDataProjection(c: JobsContext): Promise<Response> {
+  if (
+    c.env.APP_OWNER_MIGRATION_DATA_ATTESTATION_STAGING_ENABLED !== "true"
+  ) {
+    return c.json(
+      { error: "app_owner_data_attestation_unavailable" },
+      503,
+      noStoreHeaders(),
+    );
+  }
+  if (!adminAuthorized(c)) {
+    return c.json({ error: "forbidden" }, 403, noStoreHeaders());
+  }
+  let body: unknown;
+  try {
+    body = await readBoundedJson(c.req.raw);
+  } catch {
+    return c.json({ error: "invalid_request" }, 400, noStoreHeaders());
+  }
+  const attestation = parseDataProjectionAttestation(body);
+  if (!attestation) {
+    return c.json({ error: "invalid_data_projection_attestation" }, 422, noStoreHeaders());
+  }
+  const now = Math.floor(Date.now() / 1_000);
+  try {
+    if (
+      (await deletionFence(c.env, attestation.source_uid)) ||
+      (await deletionFence(c.env, attestation.target_uid))
+    ) {
+      return c.json({ error: "account_deletion_in_progress" }, 409, noStoreHeaders());
+    }
+    const generation = await targetGeneration(c.env, attestation.target_uid);
+    if (generation === null || generation !== attestation.target_account_generation) {
+      return c.json(
+        { error: "target_generation_conflict" },
+        409,
+        noStoreHeaders(),
+      );
+    }
+    const source = await sourceProjection(c.env, attestation.source_uid);
+    if (!source) {
+      return c.json({ error: "source_projection_not_found" }, 404, noStoreHeaders());
+    }
+    if (
+      source.projection_status !== "imported" ||
+      source.source_uid_hash !== attestation.source_uid_hash ||
+      source.source_proof_hash !== attestation.source_proof_hash ||
+      source.source_projection_revision !== attestation.source_projection_revision ||
+      source.target_uid !== attestation.target_uid ||
+      source.target_account_generation !== attestation.target_account_generation
+    ) {
+      return c.json({ error: "source_projection_conflict" }, 409, noStoreHeaders());
+    }
+    if (source.attestation_expires_at <= now) {
+      return c.json(
+        { error: "source_projection_expired" },
+        409,
+        noStoreHeaders(),
+      );
+    }
+    if (source.data_projection_status === "verified") {
+      return sameDataProjection(source, attestation)
+        ? c.json(
+            {
+              source_uid: source.source_uid,
+              status: "already_attested",
+              data_projection_revision: source.data_projection_revision,
+            },
+            200,
+            noStoreHeaders(),
+          )
+        : c.json({ error: "source_projection_conflict" }, 409, noStoreHeaders());
+    }
+    if (
+      (source.app_projection_count !== 0 &&
+        source.app_projection_count !== attestation.app_projection_count) ||
+      (source.memory_projection_count !== 0 &&
+        source.memory_projection_count !== attestation.memory_projection_count)
+    ) {
+      return c.json({ error: "source_projection_count_conflict" }, 409, noStoreHeaders());
+    }
+    const updated = await c.env.APP_DB.prepare(
+      "UPDATE cf_app_owner_migration_sources SET app_projection_count = ?, " +
+        "memory_projection_count = ?, data_projection_status = 'verified', " +
+        "data_projection_revision = ?, memory_reencryption_status = ?, " +
+        "memory_reencryption_revision = ?, updated_at = ? WHERE source_uid = ? " +
+        "AND source_uid_hash = ? AND source_proof_hash = ? AND " +
+        "source_projection_revision = ? AND target_uid = ? AND " +
+        "target_account_generation = ? AND projection_status = 'imported' " +
+        "AND data_projection_status = 'unverified'",
+    )
+      .bind(
+        attestation.app_projection_count,
+        attestation.memory_projection_count,
+        attestation.data_projection_revision,
+        attestation.memory_reencryption_status,
+        attestation.memory_reencryption_revision,
+        now,
+        attestation.source_uid,
+        attestation.source_uid_hash,
+        attestation.source_proof_hash,
+        attestation.source_projection_revision,
+        attestation.target_uid,
+        attestation.target_account_generation,
+      )
+      .run();
+    if (Number(updated.meta?.changes || 0) !== 1) {
+      const raced = await sourceProjection(c.env, attestation.source_uid);
+      if (raced && sameDataProjection(raced, attestation)) {
+        return c.json(
+          {
+            source_uid: raced.source_uid,
+            status: "already_attested",
+            data_projection_revision: raced.data_projection_revision,
+          },
+          200,
+          noStoreHeaders(),
+        );
+      }
+      return c.json({ error: "source_projection_conflict" }, 409, noStoreHeaders());
+    }
+    return c.json(
+      {
+        source_uid: attestation.source_uid,
+        status: "attested",
+        data_projection_revision: attestation.data_projection_revision,
+        memory_reencryption_status: attestation.memory_reencryption_status,
+      },
+      201,
+      noStoreHeaders(),
+    );
+  } catch {
+    return c.json(
+      { error: "app_owner_data_attestation_unavailable" },
+      503,
+      noStoreHeaders(),
+    );
+  }
 }
 
 async function verifyAnonymousSource(
@@ -762,8 +1096,7 @@ async function projectAnonymousIdentity(
           {
             source_ref: existing.source_uid,
             source_proof_hash: existing.source_proof_hash,
-            source_projection_revision:
-              existing.source_projection_revision,
+            source_projection_revision: existing.source_projection_revision,
             target_account_generation: generation,
             status: "imported",
           },
@@ -787,9 +1120,12 @@ async function projectAnonymousIdentity(
     const inserted = await c.env.APP_DB.prepare(
       "INSERT INTO cf_app_owner_migration_sources " +
         "(source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
-        "projection_status, app_projection_count, memory_projection_count, target_uid, " +
+        "projection_status, app_projection_count, memory_projection_count, " +
+        "data_projection_status, data_projection_revision, memory_reencryption_status, " +
+        "memory_reencryption_revision, target_uid, " +
         "target_account_generation, source_credential_generation, attestation_expires_at, " +
-        "imported_at, updated_at) VALUES (?, ?, 'firebase-anonymous', ?, ?, 'imported', 0, 0, ?, ?, ?, ?, ?, ?)",
+        "imported_at, updated_at) VALUES (?, ?, 'firebase-anonymous', ?, ?, 'imported', 0, 0, " +
+        "'unverified', NULL, 'unverified', NULL, ?, ?, ?, ?, ?, ?)",
     )
       .bind(
         attestation.source_ref,
@@ -829,11 +1165,7 @@ async function projectAnonymousIdentity(
         error.message === "source_identity_mismatch" ||
         error.message === "source_identity_revoked")
     ) {
-      return c.json(
-        { error: error.message },
-        403,
-        noStoreHeaders(),
-      );
+      return c.json({ error: error.message }, 403, noStoreHeaders());
     }
     return c.json(
       { error: "firebase_identity_projection_unavailable" },
@@ -930,12 +1262,19 @@ async function markQueueUnavailable(
     .run();
 }
 
-async function admit(c: JobsContext, context: SignedAuthContext): Promise<Response> {
+async function admit(
+  c: JobsContext,
+  context: SignedAuthContext,
+): Promise<Response> {
   if (
     c.env.APP_OWNER_MIGRATION_STAGING_ENABLED !== "true" ||
     c.env.APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED !== "true"
   ) {
-    return c.json({ error: "app_owner_migration_unavailable" }, 503, noStoreHeaders());
+    return c.json(
+      { error: "app_owner_migration_unavailable" },
+      503,
+      noStoreHeaders(),
+    );
   }
   if (context.authority !== "better-auth") {
     return c.json({ error: "better_auth_required" }, 403, noStoreHeaders());
@@ -949,16 +1288,27 @@ async function admit(c: JobsContext, context: SignedAuthContext): Promise<Respon
   const idempotencyKey = c.req.header("idempotency-key") || null;
   const request = parseRequest(parsed, idempotencyKey);
   if (!request || request.sourceUid === context.uid) {
-    return c.json({ error: "invalid_migration_request" }, 422, noStoreHeaders());
+    return c.json(
+      { error: "invalid_migration_request" },
+      422,
+      noStoreHeaders(),
+    );
   }
   try {
     if (await deletionFence(c.env, context.uid)) {
-      return c.json({ error: "account_deletion_in_progress" }, 409, noStoreHeaders());
+      return c.json(
+        { error: "account_deletion_in_progress" },
+        409,
+        noStoreHeaders(),
+      );
     }
     const generation = await targetGeneration(c.env, context.uid);
     if (generation === null) {
       return c.json(
-        { error: "app_owner_migration_unavailable", reason: "target_not_admitted" },
+        {
+          error: "app_owner_migration_unavailable",
+          reason: "target_not_admitted",
+        },
         503,
         noStoreHeaders(),
       );
@@ -983,7 +1333,20 @@ async function admit(c: JobsContext, context: SignedAuthContext): Promise<Respon
       source.attestation_expires_at <= now
     ) {
       return c.json(
-        { error: "app_owner_migration_unavailable", reason: "source_proof_not_admitted" },
+        {
+          error: "app_owner_migration_unavailable",
+          reason: "source_proof_not_admitted",
+        },
+        503,
+        noStoreHeaders(),
+      );
+    }
+    if (!sourceDataProjectionReady(source)) {
+      return c.json(
+        {
+          error: "app_owner_migration_unavailable",
+          reason: "source_data_projection_not_admitted",
+        },
         503,
         noStoreHeaders(),
       );
@@ -1006,7 +1369,11 @@ async function admit(c: JobsContext, context: SignedAuthContext): Promise<Respon
         existing.source_proof_hash !== request.sourceProofHash ||
         existing.request_fingerprint !== fingerprint
       ) {
-        return c.json({ error: "migration_request_conflict" }, 409, noStoreHeaders());
+        return c.json(
+          { error: "migration_request_conflict" },
+          409,
+          noStoreHeaders(),
+        );
       }
       return c.json(responseForJob(existing), 200, noStoreHeaders());
     }
@@ -1050,17 +1417,37 @@ async function admit(c: JobsContext, context: SignedAuthContext): Promise<Respon
       return c.json(responseForJob(raced), 200, noStoreHeaders());
     }
     const row = await jobById(c.env, context.uid, jobId);
-    if (!row) return c.json({ error: "app_owner_migration_unavailable" }, 503, noStoreHeaders());
+    if (!row)
+      return c.json(
+        { error: "app_owner_migration_unavailable" },
+        503,
+        noStoreHeaders(),
+      );
     if (!(await publish(c.env, row))) {
       await markQueueUnavailable(c.env, row, now);
-      return c.json({ error: "app_owner_migration_unavailable" }, 503, noStoreHeaders());
+      return c.json(
+        { error: "app_owner_migration_unavailable" },
+        503,
+        noStoreHeaders(),
+      );
     }
     return c.json(responseForJob(row), 202, noStoreHeaders());
   } catch (error) {
-    if (error instanceof Error && error.message === "migration identity conflict") {
-      return c.json({ error: "migration_request_conflict" }, 409, noStoreHeaders());
+    if (
+      error instanceof Error &&
+      error.message === "migration identity conflict"
+    ) {
+      return c.json(
+        { error: "migration_request_conflict" },
+        409,
+        noStoreHeaders(),
+      );
     }
-    return c.json({ error: "app_owner_migration_unavailable" }, 503, noStoreHeaders());
+    return c.json(
+      { error: "app_owner_migration_unavailable" },
+      503,
+      noStoreHeaders(),
+    );
   }
 }
 
@@ -1076,7 +1463,13 @@ async function updateFailed(
         "lease_until = NULL, last_error = ?, updated_at = ? " +
         "WHERE target_uid = ? AND job_id = ? AND status = 'running' AND lease_token = ?",
     )
-      .bind(reason.slice(0, 2_048), now, job.target_uid, job.job_id, job.lease_token)
+      .bind(
+        reason.slice(0, 2_048),
+        now,
+        job.target_uid,
+        job.job_id,
+        job.lease_token,
+      )
       .run();
   } catch {
     // A deletion trigger may intentionally reject this write.  The deletion
@@ -1122,7 +1515,13 @@ async function updateCompleted(
       "lease_until = NULL, result_json = ?, last_error = NULL, updated_at = ? " +
       "WHERE target_uid = ? AND job_id = ? AND status = 'running' AND lease_token = ?",
   )
-    .bind(resultJson.slice(0, 65_536), now, job.target_uid, job.job_id, job.lease_token)
+    .bind(
+      resultJson.slice(0, 65_536),
+      now,
+      job.target_uid,
+      job.job_id,
+      job.lease_token,
+    )
     .run();
 }
 
@@ -1148,7 +1547,11 @@ export async function processAppOwnerMigrationMessage(
     message.retry({ delaySeconds: Math.max(1, job.next_attempt_at - now) });
     return;
   }
-  if (job.status === "running" && job.lease_until !== null && job.lease_until > now) {
+  if (
+    job.status === "running" &&
+    job.lease_until !== null &&
+    job.lease_until > now
+  ) {
     message.retry({ delaySeconds: Math.max(1, job.lease_until - now) });
     return;
   }
@@ -1165,14 +1568,26 @@ export async function processAppOwnerMigrationMessage(
       "lease_token = ?, lease_until = ?, updated_at = ? WHERE target_uid = ? AND job_id = ? AND " +
       "((status = 'queued' AND next_attempt_at <= ?) OR (status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?))",
   )
-    .bind(leaseToken, now + LEASE_SECONDS, now, job.target_uid, job.job_id, now, now)
+    .bind(
+      leaseToken,
+      now + LEASE_SECONDS,
+      now,
+      job.target_uid,
+      job.job_id,
+      now,
+      now,
+    )
     .run();
   if (Number(claimed.meta?.changes || 0) !== 1) {
     message.retry({ delaySeconds: RETRY_DELAY_SECONDS });
     return;
   }
   const leased = await jobById(env, job.target_uid, job.job_id);
-  if (!leased || leased.status !== "running" || leased.lease_token !== leaseToken) {
+  if (
+    !leased ||
+    leased.status !== "running" ||
+    leased.lease_token !== leaseToken
+  ) {
     message.ack();
     return;
   }
@@ -1206,7 +1621,10 @@ export async function processAppOwnerMigrationMessage(
       message.ack();
       return;
     }
-    if (leased.attempts >= MAX_ATTEMPTS || !(await updateRetry(env, leased, now))) {
+    if (
+      leased.attempts >= MAX_ATTEMPTS ||
+      !(await updateRetry(env, leased, now))
+    ) {
       await updateFailed(env, leased, "migration executor unavailable", now);
       message.ack();
       return;
@@ -1235,7 +1653,11 @@ export async function reconcileAppOwnerMigrationJobs(
     .all();
   for (const raw of result.results || []) {
     const job = parseJob(raw);
-    if (!job || (await deletionFence(env, job.source_uid)) || (await deletionFence(env, job.target_uid))) {
+    if (
+      !job ||
+      (await deletionFence(env, job.source_uid)) ||
+      (await deletionFence(env, job.target_uid))
+    ) {
       continue;
     }
     const repaired = await env.APP_DB.prepare(
@@ -1260,7 +1682,13 @@ export async function reconcileAppOwnerMigrationJobs(
           "UPDATE cf_app_owner_migration_jobs SET next_attempt_at = ?, last_error = ?, updated_at = ? " +
             "WHERE target_uid = ? AND job_id = ? AND status = 'queued'",
         )
-          .bind(now + RETRY_DELAY_SECONDS, "queue unavailable", now, job.target_uid, job.job_id)
+          .bind(
+            now + RETRY_DELAY_SECONDS,
+            "queue unavailable",
+            now,
+            job.target_uid,
+            job.job_id,
+          )
           .run();
       } catch {
         // The next scheduled reconciliation remains the recovery path.
@@ -1273,15 +1701,20 @@ export function registerAppOwnerMigrationRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: RequestContext,
 ): void {
+  app.post(DATA_PROJECTION_ATTESTATION_PATH, (c) =>
+    attestDataProjection(c),
+  );
   app.post(IDENTITY_PROJECTION_PATH, async (c) => {
     const context = await requestContext(c);
-    if (!context) return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
+    if (!context)
+      return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
     return projectAnonymousIdentity(c, context);
   });
 
   app.post(ROUTE_PATH, async (c) => {
     const context = await requestContext(c);
-    if (!context) return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
+    if (!context)
+      return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
     return admit(c, context);
   });
 
@@ -1290,10 +1723,15 @@ export function registerAppOwnerMigrationRoutes(
       c.env.APP_OWNER_MIGRATION_STAGING_ENABLED !== "true" ||
       c.env.APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED !== "true"
     ) {
-      return c.json({ error: "app_owner_migration_unavailable" }, 503, noStoreHeaders());
+      return c.json(
+        { error: "app_owner_migration_unavailable" },
+        503,
+        noStoreHeaders(),
+      );
     }
     const context = await requestContext(c);
-    if (!context) return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
+    if (!context)
+      return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
     const jobId = c.req.param("jobId");
     if (!validText(jobId, MAX_JOB_ID_LENGTH)) {
       return c.json({ error: "invalid_request" }, 400, noStoreHeaders());
@@ -1303,7 +1741,11 @@ export function registerAppOwnerMigrationRoutes(
       if (!job) return c.json({ error: "not_found" }, 404, noStoreHeaders());
       return c.json(responseForJob(job), 200, noStoreHeaders());
     } catch {
-      return c.json({ error: "app_owner_migration_unavailable" }, 503, noStoreHeaders());
+      return c.json(
+        { error: "app_owner_migration_unavailable" },
+        503,
+        noStoreHeaders(),
+      );
     }
   });
 }
@@ -1311,6 +1753,7 @@ export function registerAppOwnerMigrationRoutes(
 export const appOwnerMigrationConstants = Object.freeze({
   routePath: ROUTE_PATH,
   identityProjectionPath: IDENTITY_PROJECTION_PATH,
+  dataProjectionAttestationPath: DATA_PROJECTION_ATTESTATION_PATH,
   processorPath: PROCESSOR_PATH,
   leaseSeconds: LEASE_SECONDS,
   maxAttempts: MAX_ATTEMPTS,

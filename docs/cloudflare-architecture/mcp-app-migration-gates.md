@@ -22,15 +22,35 @@ generation 和双方删除 fence，并将 D1 投影结果纳入同一 lease/retr
 默认 gate 仍关闭，因此这不代表 exact legacy owner 已切换或已完成
 Firestore app/memory re-encryption。
 
-当两个 gate 显式开启时，Jobs executor 只迁移已完成投影且
+0127 又把 Firebase identity proof 与 source data projection 分开：身份投影默认只写
+`data_projection_status=unverified`，不能直接作为 app-owner migration 的数据准入。
+只有经过审阅的 Firestore export/import workflow 写入 content-bound
+`data_projection_revision` 后，Jobs 才会接受该 source；`memory_projection_count=0`
+必须明确标记 `memory_reencryption_status=not_required`，非零 memory 则必须有独立的
+`memory_reencryption_revision` 和 `completed` 状态。缺少这些证据时 admission 返回
+`503 source_data_projection_not_admitted`，不会创建 Queue job 或修改 D1 app owner。
+
+审阅后的投影证据通过独立的 `POST /v2/cf/apps/migrate-owner/data-projection`
+写入。该 writer 只接受受限的 hash-only source proof、content-bound revision、行数和
+memory re-encryption 结果，使用 `APPS_ADMIN_KEY` 对应的 `secret-key`，并受独立的
+`APP_OWNER_MIGRATION_DATA_ATTESTATION_STAGING_ENABLED` gate 保护（默认关闭）。它不
+接受 Firebase token、raw Firebase UID 或 Better Auth session，也不是面向普通用户的
+迁移入口；写入使用 source/proof/target generation CAS，完成后的 revision 不可改写。
+因此 Persona/Chat planner 或 Firestore export/import operator 必须先产出并审阅这些
+content-bound revisions，再调用 writer；当前仓库没有把 planner 结果自动提升为 attestation
+的内部 CLI，未完成该流程时 exact route 仍保持 legacy。
+
+当两个 gate 显式开启时，Jobs executor 只迁移已完成数据投影且
 `cf_app_catalog.owner_uid` 等于 hash-only `fb-anon-<sha256>` source reference
 的 D1 app rows。每个 row 写入 target account generation 和 migration job marker，
 并以 owner/source/job CAS 防止重复或跨账号转移；已知 MCP connection、discovery、
 pending OAuth transaction 和 app payment projection 会按 app id 同步转移（pending
 OAuth transaction 会失效），账号删除 fence 由 D1 trigger 和执行前检查共同保护。
 source projection 的 `app_projection_count` 必须与 D1 catalog 行数完全一致，否则
-任务终止并保留 fail-closed 状态。memory projection 只在结果中标记
-`memory_reencryption=not_migrated`，绝不伪造 Firestore re-encryption。
+任务终止并保留 fail-closed 状态。数据投影与 memory re-encryption 证明在执行前和
+执行时都会重复校验；旧 source 证明一旦完成不可被重写。没有通过独立
+re-encryption 证明时，任务会 fail-closed，绝不伪造 Firestore re-encryption；通过后
+结果只报告 `completed` 或 `not_required`，并带上对应 revision。
 
 ## Foundation schema and route authority
 

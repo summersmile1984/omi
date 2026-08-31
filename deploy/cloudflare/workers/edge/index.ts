@@ -1352,6 +1352,12 @@ app.post(
   "/v2/cf/apps/migrate-owner/identity-projection",
   proxyAuthenticatedJobs,
 );
+// Reviewed app/memory projection attestation is an admin-key-only Jobs seam;
+// it intentionally does not accept a Better Auth or Firebase credential.
+app.post(
+  "/v2/cf/apps/migrate-owner/data-projection",
+  proxyPublicJobs,
+);
 app.get("/v2/cf/apps/migrate-owner/:jobId", proxyAuthenticatedJobs);
 // External app-consent OAuth is a Better Auth + App D1 namespaced seam. Keep
 // legacy /v1/oauth/* on its independent boundary until provider replay parity.

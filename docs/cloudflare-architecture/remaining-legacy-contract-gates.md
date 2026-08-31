@@ -93,6 +93,7 @@ Cloudflare 当前 `POST /v1/apps/{app_id}/refresh-manifest` 只针对 D1 中的 
 `POST /v1/apps/mcp`、`GET /v1/apps/mcp/callback` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已具备 dynamic registration/PKCE、加密 credential、provider discovery、CAS 和 deletion fence 的 staging contract；仍缺真实 provider secret、Firebase identity bridge、历史 Firestore app catalog 回放和 production cutover。
 
 为 owner migration 补了一个独立的 namespaced identity projection seam：`POST /v2/cf/apps/migrate-owner/identity-projection` 由 Jobs 调用 Auth 的 Identity Toolkit 验证，Auth 只返回 HMAC 派生的 `source_ref/source_uid_hash/source_proof_hash`，Jobs 在 D1 `0123_firebase_anonymous_identity_projection.sql` 中绑定目标 Better Auth generation、过期时间和删除 fence。它不保存 Firebase token，也不把 raw Firebase UID 写入 App D1；`FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED=false` 时保持 503。这个 seam 只完成 source-proof admission，尚未实现 Firestore app/persona/memory 回放、memory re-encryption 或 exact owner cutover。
+`0127_app_owner_data_projection_attestation.sql` 进一步要求独立的 content-bound data projection revision；身份投影本身保持 `unverified`，不会创建 owner migration job。memory 数量为零时必须显式声明 `not_required`，否则必须提供 re-encryption revision 和 `completed` 证明，缺证据时返回 `source_data_projection_not_admitted`。
 
 `POST /v1/apps/migrate-owner` 仍依赖 Firebase anonymous identity proof 与 legacy memory re-encryption，因此保持 legacy owner。Twitter exact route 的 D1 metadata projection 不等同于该 owner migration，也不提供 Firebase provider continuity。
 

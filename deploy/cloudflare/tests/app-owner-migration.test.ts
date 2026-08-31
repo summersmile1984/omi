@@ -34,8 +34,8 @@ class SqliteD1 {
       __args: args,
       bind: (...values: unknown[]) => build(values),
       first: async <T>() =>
-        (this.database.prepare(sql).get(...(args as never[])) as T | undefined) ??
-        null,
+        (this.database.prepare(sql).get(...(args as never[])) as
+          T | undefined) ?? null,
       all: async <T>() => ({
         results: this.database.prepare(sql).all(...(args as never[])) as T[],
       }),
@@ -71,15 +71,20 @@ class SqliteD1 {
 
 const databases: SqliteD1[] = [];
 const SECRET = "app-owner-migration-secret";
+const ADMIN_KEY = "app-owner-migration-admin";
 const PROOF_HASH = "a".repeat(64);
 const SOURCE_UID_HASH = "b".repeat(64);
 const SOURCE_REF = `fb-anon-${SOURCE_UID_HASH}`;
 const SOURCE_REVISION = "c".repeat(64);
+const DATA_PROJECTION_REVISION = "d".repeat(64);
 
 function environment(
   processor: (request: Request) => Promise<Response> = async () =>
     new Response(null, { status: 503 }),
-  options: { seedSource?: boolean; auth?: (request: Request) => Promise<Response> } = {},
+  options: {
+    seedSource?: boolean;
+    auth?: (request: Request) => Promise<Response>;
+  } = {},
 ) {
   const database = new SqliteD1();
   databases.push(database);
@@ -100,8 +105,10 @@ function environment(
       ),
     },
     INTERNAL_ASSERTION_SECRET: SECRET,
+    APPS_ADMIN_KEY: ADMIN_KEY,
     APP_OWNER_MIGRATION_STAGING_ENABLED: "true",
     APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED: "true",
+    APP_OWNER_MIGRATION_DATA_ATTESTATION_STAGING_ENABLED: "true",
     FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED: "true",
   } as unknown as JobsEnv;
   database.database
@@ -114,31 +121,41 @@ function environment(
       .prepare(
         "INSERT INTO cf_app_owner_migration_sources " +
           "(source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
-          "projection_status, app_projection_count, memory_projection_count, target_uid, " +
-          "target_account_generation, source_credential_generation, attestation_expires_at, " +
-          "imported_at, updated_at) VALUES (?, ?, 'firebase-anonymous', ?, ?, 'imported', 2, 3, " +
-          "'target-user', 7, 100, 4000000000, 1000, 1000)",
+          "projection_status, app_projection_count, memory_projection_count, " +
+          "data_projection_status, data_projection_revision, memory_reencryption_status, " +
+          "memory_reencryption_revision, target_uid, target_account_generation, " +
+          "source_credential_generation, attestation_expires_at, imported_at, updated_at) " +
+          "VALUES (?, ?, 'firebase-anonymous', ?, ?, 'imported', 2, 0, 'verified', ?, " +
+          "'not_required', NULL, 'target-user', 7, 100, 4000000000, 1000, 1000)",
       )
-      .run(SOURCE_REF, SOURCE_UID_HASH, PROOF_HASH, SOURCE_REVISION);
+      .run(
+        SOURCE_REF,
+        SOURCE_UID_HASH,
+        PROOF_HASH,
+        SOURCE_REVISION,
+        DATA_PROJECTION_REVISION,
+      );
   }
   return { database, env, sent };
 }
 
 function appFor(uid = "target-user") {
   const app = new Hono<{ Bindings: JobsEnv }>();
-  registerAppOwnerMigrationRoutes(app, async () =>
-    ({
-      uid,
-      authority: "better-auth",
-      requestId: "migration-test",
-      version: 1,
-      audience: "jobs",
-      assertionId: "assertion",
-      issuedAt: 1,
-      expiresAt: 2,
-      method: "POST",
-      path: appOwnerMigrationConstants.routePath,
-    }) as never,
+  registerAppOwnerMigrationRoutes(
+    app,
+    async () =>
+      ({
+        uid,
+        authority: "better-auth",
+        requestId: "migration-test",
+        version: 1,
+        audience: "jobs",
+        assertionId: "assertion",
+        issuedAt: 1,
+        expiresAt: 2,
+        method: "POST",
+        path: appOwnerMigrationConstants.routePath,
+      }) as never,
   );
   return app;
 }
@@ -160,6 +177,36 @@ function migrationRequest(idempotencyKey = "migration-1", proof = PROOF_HASH) {
   );
 }
 
+function dataProjectionAttestationRequest(
+  overrides: Partial<Record<string, unknown>> = {},
+  secret = ADMIN_KEY,
+) {
+  return new Request(
+    `https://jobs.test${appOwnerMigrationConstants.dataProjectionAttestationPath}`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "secret-key": secret,
+      },
+      body: JSON.stringify({
+        source_uid: SOURCE_REF,
+        source_uid_hash: SOURCE_UID_HASH,
+        source_proof_hash: PROOF_HASH,
+        source_projection_revision: SOURCE_REVISION,
+        target_uid: "target-user",
+        target_account_generation: 7,
+        data_projection_revision: DATA_PROJECTION_REVISION,
+        app_projection_count: 0,
+        memory_projection_count: 0,
+        memory_reencryption_status: "not_required",
+        memory_reencryption_revision: null,
+        ...overrides,
+      }),
+    },
+  );
+}
+
 function projectionRequest(
   sourceUid = "firebase-anonymous-source",
   sourceToken = "firebase-anonymous-id-token",
@@ -169,7 +216,10 @@ function projectionRequest(
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ source_uid: sourceUid, source_token: sourceToken }),
+      body: JSON.stringify({
+        source_uid: sourceUid,
+        source_token: sourceToken,
+      }),
     },
   );
 }
@@ -191,7 +241,10 @@ function attestation(
   };
 }
 
-function queuedMessage(jobId: string, uid = "target-user"): Message<JobMessage> {
+function queuedMessage(
+  jobId: string,
+  uid = "target-user",
+): Message<JobMessage> {
   return {
     body: {
       jobId,
@@ -281,19 +334,14 @@ describe("dormant app owner migration seam", () => {
     });
     expect(
       database.database
-        .prepare(
-          "SELECT projection_status FROM cf_app_owner_migration_sources",
-        )
+        .prepare("SELECT projection_status FROM cf_app_owner_migration_sources")
         .get(),
     ).toEqual({ projection_status: "conflict" });
 
     const revoked = environment(undefined, {
       seedSource: false,
       auth: async () =>
-        Response.json(
-          { error: "source_identity_revoked" },
-          { status: 403 },
-        ),
+        Response.json({ error: "source_identity_revoked" }, { status: 403 }),
     });
     const rejected = await app.fetch(projectionRequest(), revoked.env);
     expect(rejected.status).toBe(403);
@@ -339,6 +387,136 @@ describe("dormant app owner migration seam", () => {
     expect((await missingProof.json()) as { reason?: string }).toMatchObject({
       reason: "source_proof_not_admitted",
     });
+  });
+
+  it("does not admit identity-only evidence as a data migration", async () => {
+    const auth = vi.fn(async () => Response.json(attestation()));
+    const { env, sent } = environment(undefined, {
+      seedSource: false,
+      auth,
+    });
+    const app = appFor();
+    expect((await app.fetch(projectionRequest(), env)).status).toBe(201);
+
+    const response = await app.fetch(
+      migrationRequest("identity-only-migration"),
+      env,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "app_owner_migration_unavailable",
+      reason: "source_data_projection_not_admitted",
+    });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("writes a reviewed data attestation once and rejects conflicting replay", async () => {
+    const auth = vi.fn(async () => Response.json(attestation()));
+    const { env, database } = environment(undefined, {
+      seedSource: false,
+      auth,
+    });
+    const app = appFor();
+    expect((await app.fetch(projectionRequest(), env)).status).toBe(201);
+
+    const first = await app.fetch(
+      dataProjectionAttestationRequest({ app_projection_count: 2 }),
+      env,
+    );
+    expect(first.status).toBe(201);
+    expect(await first.json()).toMatchObject({
+      source_uid: SOURCE_REF,
+      status: "attested",
+      memory_reencryption_status: "not_required",
+    });
+    expect(
+      database.database
+        .prepare(
+          "SELECT app_projection_count, data_projection_status, data_projection_revision, " +
+            "memory_reencryption_status FROM cf_app_owner_migration_sources",
+        )
+        .get(),
+    ).toEqual({
+      app_projection_count: 2,
+      data_projection_status: "verified",
+      data_projection_revision: DATA_PROJECTION_REVISION,
+      memory_reencryption_status: "not_required",
+    });
+
+    const replay = await app.fetch(
+      dataProjectionAttestationRequest({ app_projection_count: 2 }),
+      env,
+    );
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ status: "already_attested" });
+
+    const conflict = await app.fetch(
+      dataProjectionAttestationRequest({
+        app_projection_count: 1,
+        data_projection_revision: "e".repeat(64),
+      }),
+      env,
+    );
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "source_projection_conflict" });
+  });
+
+  it("keeps the attestation writer admin-only, gated, and memory-safe", async () => {
+    const { env } = environment();
+    const app = appFor();
+    const forbidden = await app.fetch(
+      dataProjectionAttestationRequest({}, "wrong-admin-key"),
+      env,
+    );
+    expect(forbidden.status).toBe(403);
+
+    const invalidMemory = await app.fetch(
+      dataProjectionAttestationRequest({
+        memory_projection_count: 1,
+      }),
+      env,
+    );
+    expect(invalidMemory.status).toBe(422);
+
+    env.APP_OWNER_MIGRATION_DATA_ATTESTATION_STAGING_ENABLED = "false";
+    const unavailable = await app.fetch(
+      dataProjectionAttestationRequest(),
+      env,
+    );
+    expect(unavailable.status).toBe(503);
+  });
+
+  it("blocks a source with memories until re-encryption evidence is attested", async () => {
+    const { env, database, sent } = environment(undefined, {
+      seedSource: false,
+    });
+    database.database
+      .prepare(
+        "INSERT INTO cf_app_owner_migration_sources " +
+          "(source_uid, source_uid_hash, source_provider, source_proof_hash, source_projection_revision, " +
+          "projection_status, app_projection_count, memory_projection_count, data_projection_status, " +
+          "data_projection_revision, memory_reencryption_status, memory_reencryption_revision, target_uid, " +
+          "target_account_generation, source_credential_generation, attestation_expires_at, imported_at, updated_at) " +
+          "VALUES (?, ?, 'firebase-anonymous', ?, ?, 'imported', 0, 1, 'verified', ?, " +
+          "'unverified', NULL, 'target-user', 7, 100, 4000000000, 1000, 1000)",
+      )
+      .run(
+        SOURCE_REF,
+        SOURCE_UID_HASH,
+        PROOF_HASH,
+        SOURCE_REVISION,
+        DATA_PROJECTION_REVISION,
+      );
+    const response = await appFor().fetch(
+      migrationRequest("memory-pending"),
+      env,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "app_owner_migration_unavailable",
+      reason: "source_data_projection_not_admitted",
+    });
+    expect(sent).toHaveLength(0);
   });
 
   it("admits one D1 job and returns the same row on replay", async () => {
