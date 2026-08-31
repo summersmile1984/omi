@@ -18,10 +18,19 @@
 显式 staging gate、目标 D1 cutover 已完成、source projection=`imported` 且
 proof hash 匹配时才会入队；source proof 不接收 Firebase token，也不从
 `old_id` 推断身份。Jobs consumer 会在执行前重复校验 source revision、目标
-generation 和双方删除 fence，并将未来 API Core executor 的结果纳入同一
-lease/retry 生命周期。当前 executor 未实现，两个 gate 默认关闭，因此这
-只是可回放的迁移 admission seam，不代表 exact legacy owner 已切换或已
-完成 Firestore app/memory re-encryption。
+generation 和双方删除 fence，并将 D1 投影结果纳入同一 lease/retry 生命周期。
+默认 gate 仍关闭，因此这不代表 exact legacy owner 已切换或已完成
+Firestore app/memory re-encryption。
+
+当两个 gate 显式开启时，Jobs executor 只迁移已完成投影且
+`cf_app_catalog.owner_uid` 等于 hash-only `fb-anon-<sha256>` source reference
+的 D1 app rows。每个 row 写入 target account generation 和 migration job marker，
+并以 owner/source/job CAS 防止重复或跨账号转移；已知 MCP connection、discovery、
+pending OAuth transaction 和 app payment projection 会按 app id 同步转移（pending
+OAuth transaction 会失效），账号删除 fence 由 D1 trigger 和执行前检查共同保护。
+source projection 的 `app_projection_count` 必须与 D1 catalog 行数完全一致，否则
+任务终止并保留 fail-closed 状态。memory projection 只在结果中标记
+`memory_reencryption=not_migrated`，绝不伪造 Firestore re-encryption。
 
 ## Foundation schema and route authority
 

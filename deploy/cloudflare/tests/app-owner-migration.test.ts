@@ -30,6 +30,8 @@ class SqliteD1 {
 
   prepare(sql: string) {
     const build = (args: unknown[] = []) => ({
+      __sql: sql,
+      __args: args,
       bind: (...values: unknown[]) => build(values),
       first: async <T>() =>
         (this.database.prepare(sql).get(...(args as never[])) as T | undefined) ??
@@ -43,6 +45,23 @@ class SqliteD1 {
       },
     });
     return build();
+  }
+
+  async batch(statements: Array<{ __sql?: string; __args?: unknown[] }>) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const results = statements.map((statement) => {
+        const result = this.database
+          .prepare(statement.__sql || "")
+          .run(...((statement.__args || []) as never[]));
+        return { meta: { changes: Number(result.changes) } };
+      });
+      this.database.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   close() {
@@ -382,27 +401,55 @@ describe("dormant app owner migration seam", () => {
     ).toMatchObject({ count: 0 });
   });
 
-  it("claims a lease and retries a transient executor failure", async () => {
+  it("claims a lease and atomically transfers projected D1 app ownership", async () => {
     const { env, sent, database } = environment();
+    for (const appId of ["projected-app-1", "projected-app-2"]) {
+      database.database
+        .prepare(
+          "INSERT INTO cf_app_catalog (id, approved, status, disabled, data_json, updated_at, owner_uid) VALUES (?, 1, 'approved', 0, ?, 1000, ?)",
+        )
+        .run(appId, JSON.stringify({ id: appId, name: appId }), SOURCE_REF);
+    }
     const app = appFor();
     const response = await app.fetch(migrationRequest(), env);
     const body = (await response.json()) as { job_id: string };
     const message = queuedMessage(body.job_id);
     await processAppOwnerMigrationMessage(message, env);
-    expect(message.retry).toHaveBeenCalledOnce();
-    expect(message.ack).not.toHaveBeenCalled();
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
     expect(sent).toHaveLength(1);
     expect(
       database.database
         .prepare(
-          "SELECT status, attempts, lease_token, next_attempt_at, last_error FROM cf_app_owner_migration_jobs",
+          "SELECT status, attempts, lease_token, next_attempt_at, last_error, result_json FROM cf_app_owner_migration_jobs",
         )
         .get(),
     ).toMatchObject({
-      status: "queued",
+      status: "completed",
       attempts: 1,
       lease_token: null,
-      last_error: "app owner migration executor unavailable",
+      last_error: null,
     });
+    expect(
+      database.database
+        .prepare(
+          "SELECT id, owner_uid, owner_account_generation, owner_migration_job_id FROM cf_app_catalog ORDER BY id",
+        )
+        .all(),
+    ).toEqual([
+      {
+        id: "projected-app-1",
+        owner_uid: "target-user",
+        owner_account_generation: 7,
+        owner_migration_job_id: body.job_id,
+      },
+      {
+        id: "projected-app-2",
+        owner_uid: "target-user",
+        owner_account_generation: 7,
+        owner_migration_job_id: body.job_id,
+      },
+    ]);
+    expect(env.API_CORE?.fetch).not.toHaveBeenCalled();
   });
 });

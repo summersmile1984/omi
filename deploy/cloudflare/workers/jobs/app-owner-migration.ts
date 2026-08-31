@@ -1,4 +1,4 @@
-import type { Message } from "@cloudflare/workers-types";
+import type { D1PreparedStatement, Message } from "@cloudflare/workers-types";
 import type { Context, Hono } from "hono";
 import {
   AUTH_CONTEXT_HEADER,
@@ -15,17 +15,23 @@ import type { JobMessage, JobsEnv } from "./env";
  * Firestore ownership plus memory re-encryption side effects.  This module
  * accepts only a hash-only proof that a trusted import workflow has already
  * verified and projected.  It intentionally does not verify Firebase tokens
- * or mutate the app catalog: the future API Core executor owns that contract.
+ * The staging executor below owns only the already-projected D1 app catalog
+ * rows.  It does not claim to replay Firestore apps/personas or re-encrypt
+ * legacy memories; those residuals remain an explicit production gate.
  *
- * There is no Edge route for this path yet.  Registering the namespaced Jobs
- * route keeps the lifecycle testable while APP_OWNER_MIGRATION_STAGING_ENABLED
- * and APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED remain off by default.
+ * The exact legacy route remains protected by the Persona/apps boundary.  The
+ * namespaced Jobs route is independently feature-gated while
+ * APP_OWNER_MIGRATION_STAGING_ENABLED and
+ * APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED remain off by default.
  */
 
 const ROUTE_PATH = "/v2/cf/apps/migrate-owner";
 const IDENTITY_PROJECTION_PATH = `${ROUTE_PATH}/identity-projection`;
 const AUTH_IDENTITY_PROJECTION_PATH =
   "/internal/firebase/anonymous-identity";
+// Retained as a stable constant for callers that record the retired API Core
+// processor boundary; the staging executor now performs the D1 projection in
+// the Jobs worker itself.
 const PROCESSOR_PATH = "/internal/apps/migrate-owner";
 const MAX_BODY_BYTES = 16_000;
 const MAX_UID_LENGTH = 256;
@@ -36,6 +42,7 @@ const LEASE_SECONDS = 15 * 60;
 const RETRY_DELAY_SECONDS = 10;
 const MAX_ATTEMPTS = 3;
 const RECONCILE_BATCH_SIZE = 50;
+const MAX_APP_PROJECTION_ROWS = 500;
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type RequestContext = (c: JobsContext) => Promise<SignedAuthContext | null>;
@@ -94,6 +101,14 @@ type AnonymousIdentityAttestation = {
   attested_at: number;
   expires_at: number;
 };
+
+type AppCatalogOwnerRow = {
+  id: string;
+  owner_uid: string | null;
+  owner_account_generation: number | null;
+  owner_migration_job_id: string | null;
+};
+
 
 function validText(value: unknown, maximum: number): value is string {
   return (
@@ -257,6 +272,8 @@ function queueMessage(job: AppOwnerMigrationJobRow): JobMessage {
 function retryDelay(attempts: number): number {
   return RETRY_DELAY_SECONDS * 2 ** Math.min(Math.max(0, attempts - 1), 5);
 }
+
+class AppOwnerMigrationAuthorityError extends Error {}
 
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -437,6 +454,150 @@ async function sourceProjection(
     .bind(sourceUid)
     .first();
   return parseSource(row);
+}
+
+async function appCatalogRows(
+  env: JobsEnv,
+  source: AppOwnerMigrationSource,
+  job: AppOwnerMigrationJobRow,
+): Promise<{ sourceRows: AppCatalogOwnerRow[]; migratedRows: AppCatalogOwnerRow[] }> {
+  if (source.app_projection_count > MAX_APP_PROJECTION_ROWS) {
+    throw new AppOwnerMigrationAuthorityError("app projection exceeds executor limit");
+  }
+  const sourceResult = await env.APP_DB.prepare(
+    "SELECT id, owner_uid, owner_account_generation, owner_migration_job_id " +
+      "FROM cf_app_catalog WHERE owner_uid = ? ORDER BY id LIMIT ?",
+  )
+    .bind(source.source_uid, MAX_APP_PROJECTION_ROWS + 1)
+    .all<AppCatalogOwnerRow>();
+  const sourceRows = (sourceResult.results || []).map((row) => ({
+    id: row.id,
+    owner_uid: row.owner_uid ?? null,
+    owner_account_generation:
+      row.owner_account_generation === null || row.owner_account_generation === undefined
+        ? null
+        : integer(row.owner_account_generation),
+    owner_migration_job_id: row.owner_migration_job_id ?? null,
+  }));
+  const migratedResult = await env.APP_DB.prepare(
+    "SELECT id, owner_uid, owner_account_generation, owner_migration_job_id " +
+      "FROM cf_app_catalog WHERE owner_migration_job_id = ? ORDER BY id LIMIT ?",
+  )
+    .bind(job.job_id, MAX_APP_PROJECTION_ROWS + 1)
+    .all<AppCatalogOwnerRow>();
+  const migratedRows = (migratedResult.results || []).map((row) => ({
+    id: row.id,
+    owner_uid: row.owner_uid ?? null,
+    owner_account_generation:
+      row.owner_account_generation === null || row.owner_account_generation === undefined
+        ? null
+        : integer(row.owner_account_generation),
+    owner_migration_job_id: row.owner_migration_job_id ?? null,
+  }));
+  if (
+    sourceRows.length > MAX_APP_PROJECTION_ROWS ||
+    migratedRows.length > MAX_APP_PROJECTION_ROWS ||
+    sourceRows.some(
+      (row) =>
+        row.owner_migration_job_id !== null ||
+        row.owner_account_generation !== null ||
+        row.owner_uid !== source.source_uid,
+    ) ||
+    migratedRows.some(
+      (row) =>
+        row.owner_uid !== job.target_uid ||
+        row.owner_account_generation !== job.target_account_generation ||
+        row.owner_migration_job_id !== job.job_id,
+    )
+  ) {
+    throw new AppOwnerMigrationAuthorityError("app catalog authority changed");
+  }
+  const sourceIds = new Set(sourceRows.map((row) => row.id));
+  const migratedIds = new Set(migratedRows.map((row) => row.id));
+  if ([...sourceIds].some((id) => migratedIds.has(id))) {
+    throw new AppOwnerMigrationAuthorityError("app catalog migration overlap");
+  }
+  if (sourceRows.length + migratedRows.length !== source.app_projection_count) {
+    throw new AppOwnerMigrationAuthorityError("app catalog projection incomplete");
+  }
+  return { sourceRows, migratedRows };
+}
+
+function appIdList(ids: string[]): string {
+  if (ids.length === 0 || ids.length > MAX_APP_PROJECTION_ROWS) {
+    throw new AppOwnerMigrationAuthorityError("app catalog projection is invalid");
+  }
+  return ids.map(() => "?").join(", ");
+}
+
+async function executeAppOwnerD1Projection(
+  env: JobsEnv,
+  job: AppOwnerMigrationJobRow,
+  source: AppOwnerMigrationSource,
+  now: number,
+): Promise<Record<string, unknown>> {
+  if (await deletionFence(env, source.source_uid) || await deletionFence(env, job.target_uid)) {
+    throw new AppOwnerMigrationAuthorityError("account deletion fence");
+  }
+  const generation = await targetGeneration(env, job.target_uid);
+  if (generation !== job.target_account_generation) {
+    throw new AppOwnerMigrationAuthorityError("target generation changed");
+  }
+  const { sourceRows, migratedRows } = await appCatalogRows(env, source, job);
+  const appIds = [...new Set([...sourceRows, ...migratedRows].map((row) => row.id))];
+  if (appIds.length === 0) {
+    return {
+      status: "completed",
+      app_count: 0,
+      memory_count: source.memory_projection_count,
+      memory_reencryption: "not_migrated",
+      account_generation: job.target_account_generation,
+    };
+  }
+  const placeholders = appIdList(appIds);
+  const statements: D1PreparedStatement[] = sourceRows.map((row) =>
+    env.APP_DB.prepare(
+      "UPDATE cf_app_catalog SET owner_uid = ?, owner_account_generation = ?, " +
+        "owner_migration_job_id = ?, updated_at = ? WHERE id = ? AND owner_uid = ? " +
+        "AND owner_account_generation IS NULL AND owner_migration_job_id IS NULL",
+    ).bind(
+      job.target_uid,
+      job.target_account_generation,
+      job.job_id,
+      now,
+      row.id,
+      source.source_uid,
+    ),
+  );
+  statements.push(
+    env.APP_DB.prepare(
+      `UPDATE cf_mcp_app_connections SET owner_uid = ?, revision = revision + 1, updated_at = ? WHERE owner_uid = ? AND app_id IN (${placeholders})`,
+    ).bind(job.target_uid, now, source.source_uid, ...appIds),
+    env.APP_DB.prepare(
+      `UPDATE cf_mcp_app_discoveries SET owner_uid = ?, revision = revision + 1, updated_at = ? WHERE owner_uid = ? AND app_id IN (${placeholders})`,
+    ).bind(job.target_uid, now, source.source_uid, ...appIds),
+    env.APP_DB.prepare(
+      `UPDATE cf_mcp_app_oauth_transactions SET owner_uid = ?, status = CASE WHEN status = 'pending' THEN 'failed' ELSE status END, last_error = CASE WHEN status = 'pending' THEN 'owner migrated' ELSE last_error END, updated_at = ? WHERE owner_uid = ? AND app_id IN (${placeholders})`,
+    ).bind(job.target_uid, now, source.source_uid, ...appIds),
+    env.APP_DB.prepare(
+      `UPDATE cf_app_payment_links SET owner_uid = ?, updated_at = ? WHERE owner_uid = ? AND app_id IN (${placeholders})`,
+    ).bind(job.target_uid, now, source.source_uid, ...appIds),
+  );
+  const results = await env.APP_DB.batch(statements);
+  const catalogResults = results.slice(0, sourceRows.length);
+  if (
+    catalogResults.some((result) => Number(result.meta?.changes || 0) !== 1)
+  ) {
+    throw new AppOwnerMigrationAuthorityError("app catalog CAS lost");
+  }
+  return {
+    status: "completed",
+    app_count: appIds.length,
+    app_ids: appIds,
+    memory_count: source.memory_projection_count,
+    memory_reencryption: "not_migrated",
+    account_generation: job.target_account_generation,
+  };
 }
 
 async function sourceProjectionByHash(
@@ -903,35 +1064,6 @@ async function admit(c: JobsContext, context: SignedAuthContext): Promise<Respon
   }
 }
 
-async function callProcessor(env: JobsEnv, job: AppOwnerMigrationJobRow): Promise<Response> {
-  if (!env.API_CORE) throw new Error("api core service unavailable");
-  const signed = await createSignedAuthContext(
-    { uid: job.target_uid, authority: "internal", requestId: `app-owner-migration:${job.job_id}` },
-    "api-core",
-    "POST",
-    PROCESSOR_PATH,
-    env.INTERNAL_ASSERTION_SECRET,
-  );
-  if (!signed) throw new Error("internal assertion unavailable");
-  return env.API_CORE.fetch(
-    new Request(`https://api-core.internal${PROCESSOR_PATH}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-omi-auth-context": signed.encoded,
-        "x-omi-internal-signature": signed.signature,
-      },
-      body: JSON.stringify({
-        job_id: job.job_id,
-        source_uid: job.source_uid,
-        target_uid: job.target_uid,
-        source_projection_revision: job.source_projection_revision,
-        target_account_generation: job.target_account_generation,
-      }),
-    }),
-  );
-}
-
 async function updateFailed(
   env: JobsEnv,
   job: AppOwnerMigrationJobRow,
@@ -1065,10 +1197,15 @@ export async function processAppOwnerMigrationMessage(
     message.ack();
     return;
   }
-  let response: Response;
+  let result: Record<string, unknown>;
   try {
-    response = await callProcessor(env, leased);
-  } catch {
+    result = await executeAppOwnerD1Projection(env, leased, source, now);
+  } catch (error) {
+    if (error instanceof AppOwnerMigrationAuthorityError) {
+      await updateFailed(env, leased, error.message, now);
+      message.ack();
+      return;
+    }
     if (leased.attempts >= MAX_ATTEMPTS || !(await updateRetry(env, leased, now))) {
       await updateFailed(env, leased, "migration executor unavailable", now);
       message.ack();
@@ -1077,31 +1214,8 @@ export async function processAppOwnerMigrationMessage(
     message.retry({ delaySeconds: retryDelay(leased.attempts) });
     return;
   }
-  if (response.ok) {
-    let result: unknown = { status: "completed" };
-    try {
-      const raw = await response.text();
-      if (raw) result = JSON.parse(raw);
-    } catch {
-      await updateFailed(env, leased, "migration executor returned invalid result", now);
-      message.ack();
-      return;
-    }
-    await updateCompleted(env, leased, result, now);
-    message.ack();
-    return;
-  }
-  if (response.status === 400 || response.status === 404 || response.status === 409) {
-    await updateFailed(env, leased, `migration executor rejected (${response.status})`, now);
-    message.ack();
-    return;
-  }
-  if (leased.attempts >= MAX_ATTEMPTS || !(await updateRetry(env, leased, now))) {
-    await updateFailed(env, leased, "migration executor unavailable", now);
-    message.ack();
-    return;
-  }
-  message.retry({ delaySeconds: retryDelay(leased.attempts) });
+  await updateCompleted(env, leased, result, now);
+  message.ack();
 }
 
 export async function reconcileAppOwnerMigrationJobs(
