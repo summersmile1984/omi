@@ -2032,6 +2032,7 @@ async function discover(
       credentials.access_token,
       "mcp_authorization_required",
       401,
+      surface !== "legacy",
     ) || "";
     const discovery = await discoverEndpoint(
       dependencies,
@@ -2464,7 +2465,8 @@ async function callTool(
     credentials.access_token,
     "mcp_reauthorization_required",
     401,
-  ) || "";
+    true,
+  ) as string;
   let result: JsonObject | null;
   try {
     result = await callStreamableHttp(
