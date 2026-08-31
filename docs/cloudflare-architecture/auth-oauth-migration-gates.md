@@ -48,7 +48,8 @@ cf_firebase_identity_projection(
   sourceImportId TEXT NOT NULL REFERENCES auth_identity_imports(id),
   status TEXT NOT NULL CHECK (status IN ('imported', 'revoked', 'conflict')),
   sourceUpdatedAt INTEGER NOT NULL,
-  updatedAt INTEGER NOT NULL
+  updatedAt INTEGER NOT NULL,
+  sourceRecordSha256 TEXT -- nullable only for rows created before migration 0010
 )
 ```
 
@@ -59,6 +60,14 @@ cf_firebase_identity_projection(
 checksum 一致、所有支持的 provider 均配置且没有 conflict/revoked principal，
 才允许该 projection 作为 legacy auth 的身份准入。未出现在 projection 的旧 UID
 必须返回不可用，而不能创建一个新的 Better Auth 用户或按 email 猜测合并。
+
+Migration `0010_firebase_identity_provenance.sql` additionally records a
+deterministic SHA-256 digest for each imported user plus its Better Auth account
+rows. The digest contains no Firebase export data and is checked during
+`apply`/`verify`; pre-0010 rows remain nullable only so the same-source import
+can backfill them after the full user/account checksum has passed. A conflicting
+non-null digest is never overwritten. The custom-token bridge requires a valid
+per-row digest, so an unverified projection fails closed until it is reconciled.
 
 ### Firebase custom-token bridge（staging-only）
 

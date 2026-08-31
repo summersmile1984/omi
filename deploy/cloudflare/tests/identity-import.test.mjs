@@ -139,6 +139,23 @@ function memoryD1(options = {}) {
     if (normalized === "SELECT COUNT(*) AS count FROM session") {
       return [{ count: state.sessions }];
     }
+    if (
+      normalized.startsWith(
+        "UPDATE cf_firebase_identity_projection SET sourceRecordSha256",
+      )
+    ) {
+      const [digest, firebaseUid, sourceImportId] = params;
+      const row = state.projections.get(firebaseUid);
+      if (
+        row &&
+        row.sourceImportId === sourceImportId &&
+        row.status === "imported" &&
+        row.sourceRecordSha256 == null
+      ) {
+        row.sourceRecordSha256 = digest;
+      }
+      return [];
+    }
     throw new Error(`unexpected query: ${normalized}`);
   });
 
@@ -184,6 +201,7 @@ function memoryD1(options = {}) {
           sourceImportId: params[3],
           status: "imported",
           sourceUpdatedAt: Number(params[4]),
+          sourceRecordSha256: params[6] ?? null,
         };
         if (!state.projections.has(row.firebaseUid)) {
           state.projections.set(row.firebaseUid, row);
@@ -353,6 +371,7 @@ describe("Firebase identity import", () => {
       betterAuthUserId: "firebase-uid-1",
       sourceImportId: "firebase",
       status: "imported",
+      sourceRecordSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(database.state.fences.get("firebase-uid-1")).toMatchObject({
       generation: 1,
@@ -427,6 +446,32 @@ describe("Firebase identity import", () => {
         GOOGLE_CLIENT_ID: "partial",
       }),
     ).rejects.toThrow(/GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET/);
+  });
+
+  it("fails closed when a previously imported projection has a conflicting provenance digest", async () => {
+    const plan = planFirebaseIdentityImport(
+      source(),
+      parseFirebaseImportScryptConfig(FIREBASE_SAMPLE.config),
+    );
+    const database = memoryD1();
+    await runIdentityImport(
+      "apply",
+      plan,
+      "d".repeat(64),
+      database.client,
+      providerEnv,
+    );
+    database.state.projections.get("firebase-uid-1").sourceRecordSha256 =
+      "f".repeat(64);
+    await expect(
+      runIdentityImport(
+        "verify",
+        plan,
+        "d".repeat(64),
+        database.client,
+        providerEnv,
+      ),
+    ).rejects.toThrow(/projection conflicts/);
   });
 
   it("uses parameterized Cloudflare D1 API requests and sanitizes failures", async () => {

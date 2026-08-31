@@ -508,9 +508,9 @@ describe("namespaced native auth compatibility seam", () => {
          1, 'completed', 1, 2);
       INSERT INTO cf_firebase_identity_projection
         (firebaseUid, betterAuthUserId, providersJson, sourceImportId, status,
-         sourceUpdatedAt, updatedAt)
+         sourceUpdatedAt, updatedAt, sourceRecordSha256)
       VALUES ('firebase-user', 'better-user', '["google.com"]', 'firebase',
-         'imported', 1, 1);
+         'imported', 1, 1, '${"c".repeat(64)}');
       INSERT INTO cf_auth_deletion_fences
         (uid, generation, status, startedAt, completedAt)
       VALUES ('better-user', 1, 'clear', 1, NULL);

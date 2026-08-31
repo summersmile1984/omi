@@ -20,6 +20,7 @@ const MAX_SERVICE_ACCOUNT_BYTES = 32_000;
 const MAX_API_KEY_BYTES = 512;
 const MAX_UID_BYTES = 256;
 const MAX_ERROR_BYTES = 128;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 export type FirebaseCustomTokenBridgeEnv = {
   FIREBASE_API_KEY?: string;
@@ -39,6 +40,7 @@ export type FirebaseIdentityBridgeRow = {
   firebaseUid: string;
   betterAuthUserId: string;
   providers: string[];
+  sourceRecordSha256: string;
   importStatus: "completed" | "applying";
   projectionStatus: "imported" | "revoked" | "conflict";
   generation: number;
@@ -171,6 +173,10 @@ function validUid(value: unknown): value is string {
   );
 }
 
+function validSha256(value: unknown): value is string {
+  return typeof value === "string" && SHA256.test(value);
+}
+
 function validApiKey(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -286,11 +292,13 @@ function normalizedIdentityRow(
   const firebaseUid = row.firebaseUid;
   const betterAuthUserId = row.betterAuthUserId;
   const providers = parseProviders(row.providersJson);
+  const sourceRecordSha256 = row.sourceRecordSha256;
   const generation = strictInteger(row.generation);
   if (
     !validUid(firebaseUid) ||
     !validUid(betterAuthUserId) ||
     !providers ||
+    !validSha256(sourceRecordSha256) ||
     row.importStatus !== "completed" ||
     row.projectionStatus !== "imported" ||
     !generation ||
@@ -305,6 +313,7 @@ function normalizedIdentityRow(
     firebaseUid,
     betterAuthUserId,
     providers,
+    sourceRecordSha256,
     importStatus: row.importStatus,
     projectionStatus: row.projectionStatus,
     generation,
@@ -325,6 +334,7 @@ export async function resolveFirebaseIdentityBridge(
     row = await database
       .prepare(
         `SELECT p.firebaseUid, p.betterAuthUserId, p.providersJson,
+                p.sourceRecordSha256,
                 p.status AS projectionStatus, i.status AS importStatus,
                 f.generation, f.status AS fenceStatus
            FROM cf_firebase_identity_projection AS p
@@ -363,6 +373,7 @@ export async function resolveFirebaseIdentityByFirebaseUid(
     row = await database
       .prepare(
         `SELECT p.firebaseUid, p.betterAuthUserId, p.providersJson,
+                p.sourceRecordSha256,
                 p.status AS projectionStatus, i.status AS importStatus,
                 f.generation, f.status AS fenceStatus
            FROM cf_firebase_identity_projection AS p

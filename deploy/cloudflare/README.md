@@ -439,6 +439,13 @@ transient D1 write failure preserves the verified envelope, emits bounded
 fallback telemetry without identity or password data, and retries at the next
 login. All new and reset passwords use Better Auth's native algorithm.
 
+Migration `0010_firebase_identity_provenance.sql` also stores a per-user
+`sourceRecordSha256` digest (user plus imported account rows, never the source
+data itself). The bridge requires this digest to be present and well-formed;
+when upgrading an existing projection, rerun the same-source `apply` command
+after the complete identity checksum has passed so nullable pre-0010 rows are
+backfilled. A conflicting existing digest fails closed.
+
 Both input files must be regular, non-symlinked files with mode `0600` or
 stricter. Validate without network access first:
 

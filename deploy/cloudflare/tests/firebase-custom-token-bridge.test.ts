@@ -100,9 +100,9 @@ function databaseWithIdentity() {
        1, 'completed', 1, 2);
     INSERT INTO cf_firebase_identity_projection
       (firebaseUid, betterAuthUserId, providersJson, sourceImportId, status,
-       sourceUpdatedAt, updatedAt)
+       sourceUpdatedAt, updatedAt, sourceRecordSha256)
     VALUES ('firebase-user', 'better-user', '["credential"]', 'firebase',
-       'imported', 1, 1);
+       'imported', 1, 1, '${"c".repeat(64)}');
     INSERT INTO cf_auth_deletion_fences
       (uid, generation, status, startedAt, completedAt)
     VALUES ('better-user', 4, 'clear', 1, NULL);
@@ -217,6 +217,15 @@ describe("Firebase custom-token bridge", () => {
     const database = databaseWithIdentity();
     try {
       const env = await serviceAccount();
+      database.database.exec(
+        "UPDATE cf_firebase_identity_projection SET sourceRecordSha256 = NULL",
+      );
+      await expect(
+        issueFirebaseCustomToken(database, "better-user", env, 1_700_000_000),
+      ).rejects.toMatchObject({ code: "identity_not_admitted" });
+      database.database.exec(
+        `UPDATE cf_firebase_identity_projection SET sourceRecordSha256 = '${"c".repeat(64)}'`,
+      );
       await expect(
         issueFirebaseCustomToken(
           database,

@@ -560,10 +560,14 @@ async function assertSchema(client) {
 
 function identityBridgeRows(plan) {
   const providersByUser = new Map();
+  const accountsByUser = new Map();
   for (const account of plan.accounts) {
     const providers = providersByUser.get(account.userId) || [];
     providers.push(account.providerId);
     providersByUser.set(account.userId, providers);
+    const accounts = accountsByUser.get(account.userId) || [];
+    accounts.push(account);
+    accountsByUser.set(account.userId, accounts);
   }
   return plan.users.map((user) => {
     const providers = [...new Set(providersByUser.get(user.id) || [])].sort();
@@ -578,10 +582,14 @@ function identityBridgeRows(plan) {
         `user ${user.id}: identity projection timestamp is invalid`,
       );
     }
+    const accounts = [...(accountsByUser.get(user.id) || [])].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
     return {
       firebaseUid: user.id,
       betterAuthUserId: user.id,
       providersJson: JSON.stringify(providers),
+      sourceRecordSha256: sha256(stableJson({ user, accounts })),
       sourceUpdatedAt,
     };
   });
@@ -591,7 +599,7 @@ async function readIdentityBridgeRows(client) {
   const [projections, fences] = await Promise.all([
     client.query(
       `SELECT firebaseUid, betterAuthUserId, providersJson, sourceImportId,
-              status, sourceUpdatedAt
+              status, sourceUpdatedAt, sourceRecordSha256
          FROM cf_firebase_identity_projection
         ORDER BY firebaseUid COLLATE BINARY`,
     ),
@@ -620,7 +628,8 @@ function assertIdentityBridgeRows(actual, plan) {
       row.providersJson !== planned.providersJson ||
       row.sourceImportId !== IMPORT_LEDGER_ID ||
       row.status !== "imported" ||
-      Number(row.sourceUpdatedAt) !== planned.sourceUpdatedAt
+      Number(row.sourceUpdatedAt) !== planned.sourceUpdatedAt ||
+      row.sourceRecordSha256 !== planned.sourceRecordSha256
     ) {
       throw new FirebaseIdentityMigrationError(
         `Firebase identity projection conflicts for ${row.firebaseUid || "<unknown>"}`,
@@ -871,8 +880,8 @@ async function applyDatabase(client, plan, sourceSha256) {
   await insertBatches(client, bridgeRows, (row) => ({
     sql: `INSERT OR IGNORE INTO cf_firebase_identity_projection
             (firebaseUid, betterAuthUserId, providersJson, sourceImportId,
-             status, sourceUpdatedAt, updatedAt)
-          VALUES (?, ?, ?, ?, 'imported', ?, ?)` ,
+             status, sourceUpdatedAt, updatedAt, sourceRecordSha256)
+          VALUES (?, ?, ?, ?, 'imported', ?, ?, ?)` ,
     params: [
       row.firebaseUid,
       row.betterAuthUserId,
@@ -880,8 +889,22 @@ async function applyDatabase(client, plan, sourceSha256) {
       IMPORT_LEDGER_ID,
       row.sourceUpdatedAt,
       row.sourceUpdatedAt,
+      row.sourceRecordSha256,
     ],
   }));
+  // Rows created by the pre-provenance migrations are nullable by design.
+  // Only backfill a missing digest after the complete user/account checksum
+  // has already been verified above; a non-null conflicting digest remains a
+  // hard failure in verifyIdentityBridge rather than being overwritten.
+  for (const row of bridgeRows) {
+    await client.query(
+      `UPDATE cf_firebase_identity_projection
+          SET sourceRecordSha256 = ?
+        WHERE firebaseUid = ? AND sourceImportId = ?
+          AND status = 'imported' AND sourceRecordSha256 IS NULL`,
+      [row.sourceRecordSha256, row.firebaseUid, IMPORT_LEDGER_ID],
+    );
+  }
   await insertBatches(client, bridgeRows, (row) => ({
     sql: `INSERT OR IGNORE INTO cf_auth_deletion_fences
             (uid, generation, status, startedAt, completedAt)
