@@ -265,6 +265,51 @@ describe("edge gateway", () => {
     }
   });
 
+  it("fails closed for legacy Gemini proxy paths in staging", async () => {
+    const env = {
+      GEMINI_PROXY_STAGING_FAIL_CLOSED: "true",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    const requests = [
+      "/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+      "/v1/proxy/gemini-stream/models/gemini-2.5-flash:streamGenerateContent",
+    ];
+
+    try {
+      for (const path of requests) {
+        const response = await edge.fetch(
+          new Request(`https://edge.test${path}`, {
+            method: "POST",
+            headers: {
+              authorization: "Bearer opaque-session",
+              cookie: "session=opaque",
+              "content-type": "application/json",
+              "x-byok-gemini": "opaque-provider-key",
+            },
+            body: JSON.stringify({ contents: [{ parts: [{ text: "secret" }] }] }),
+          }),
+          env as never,
+        );
+
+        expect(response.status, path).toBe(503);
+        await expect(response.json()).resolves.toEqual({
+          error: "gemini_proxy_unavailable",
+          detail:
+            "Legacy Gemini proxy provider and desktop compatibility are unavailable on Cloudflare staging.",
+        });
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {

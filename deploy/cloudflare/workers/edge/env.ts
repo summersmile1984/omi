@@ -21,6 +21,8 @@ export type EdgeEnv = {
   AUTH_OAUTH_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for legacy Twilio phone-call paths. */
   PHONE_TWILIO_STAGING_FAIL_CLOSED?: string;
+  /** Staging-only deny switch for the legacy Gemini desktop proxy paths. */
+  GEMINI_PROXY_STAGING_FAIL_CLOSED?: string;
   BYOK_FINGERPRINT_PEPPER?: string;
   ALLOWED_ORIGINS?: string;
 };

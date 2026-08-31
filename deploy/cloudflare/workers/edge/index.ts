@@ -591,6 +591,34 @@ const legacyPhoneTwilioStagingBoundary = async (
   );
 };
 
+// The desktop Gemini proxy is more than a provider HTTP forward: it owns the
+// legacy Firebase-authenticated user boundary, Redis burst/daily quotas,
+// request-local Gemini BYOK keys, Vertex ADC/PT routing and Gemini-specific
+// stream/usage/error semantics. The API-AI worker's fixed-host proxy cannot
+// claim those contracts, and Workers AI is not wire-compatible with the
+// Gemini model/action paths. In isolated staging, stop this path before it
+// can forward credentials or prompts to the legacy backend. The switch stays
+// opt-in so non-staging deployments preserve the legacy route.
+const legacyGeminiProxyStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.GEMINI_PROXY_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "gemini_proxy_unavailable",
+        detail:
+          "Legacy Gemini proxy provider and desktop compatibility are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 // The cloud Agent VM was retired, but released desktop clients still call
@@ -682,6 +710,10 @@ app.delete("/v1/summary-app-ids/:appId", proxyPublicJobs);
 app.post("/v1/integrations/notification", proxyIntegrationCore);
 app.post("/v1/notification", proxyPublicJobs);
 app.post("/v1/agents/hume/callback", proxyHumeWebhook);
+app.post("/v1/proxy/gemini", legacyGeminiProxyStagingBoundary);
+app.post("/v1/proxy/gemini/*", legacyGeminiProxyStagingBoundary);
+app.post("/v1/proxy/gemini-stream", legacyGeminiProxyStagingBoundary);
+app.post("/v1/proxy/gemini-stream/*", legacyGeminiProxyStagingBoundary);
 app.get("/v1/auth/authorize", legacyAuthOAuthStagingBoundary);
 app.get("/v1/auth/callback/google", legacyAuthOAuthStagingBoundary);
 app.post("/v1/auth/callback/apple", legacyAuthOAuthStagingBoundary);
