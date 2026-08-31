@@ -45,6 +45,10 @@ const MAX_SCOPES = 64;
 const MAX_TOOLS = 256;
 const MAX_TOOL_NAME_BYTES = 256;
 const MAX_TOOL_DESCRIPTION_BYTES = 8_192;
+const MAX_TOOL_SCHEMA_BYTES = 512_000;
+const MAX_TOOL_SCHEMA_DEPTH = 16;
+const MAX_TOOL_SCHEMA_PROPERTIES = 256;
+const MCP_PROTOCOL_VERSION = "2025-03-26";
 const STATE_TTL_SECONDS = 600;
 const MAX_ENDPOINT_LENGTH = 2_048;
 const OPAQUE_RE = /^[A-Za-z0-9._~-]{16,512}$/;
@@ -446,6 +450,7 @@ function validateMcpTools(value: unknown): JsonObject[] {
   if (!Array.isArray(value) || value.length > MAX_TOOLS)
     throw new McpAppOauthError(502, "discovery_response_invalid");
   const tools: JsonObject[] = [];
+  const names = new Set<string>();
   for (const rawTool of value) {
     const tool = objectValue(rawTool);
     const name = tool?.name;
@@ -457,6 +462,10 @@ function validateMcpTools(value: unknown): JsonObject[] {
       /[\u0000-\u001f\u007f]/.test(name)
     )
       throw new McpAppOauthError(502, "discovery_response_invalid");
+    const normalizedName = name.trim();
+    if (names.has(normalizedName))
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    names.add(normalizedName);
     const description = tool.description;
     if (
       description !== undefined &&
@@ -464,10 +473,16 @@ function validateMcpTools(value: unknown): JsonObject[] {
         utf8Bytes(description) > MAX_TOOL_DESCRIPTION_BYTES)
     )
       throw new McpAppOauthError(502, "discovery_response_invalid");
-    if (tool.inputSchema !== undefined && !objectValue(tool.inputSchema))
-      throw new McpAppOauthError(502, "discovery_response_invalid");
+    if (tool.inputSchema !== undefined) {
+      if (!objectValue(tool.inputSchema))
+        throw new McpAppOauthError(502, "discovery_response_invalid");
+      const schemaJson = JSON.stringify(tool.inputSchema);
+      if (utf8Bytes(schemaJson) > MAX_TOOL_SCHEMA_BYTES)
+        throw new McpAppOauthError(502, "discovery_response_invalid");
+      validateToolSchema(tool.inputSchema);
+    }
     tools.push({
-      name: name.trim(),
+      name: normalizedName,
       ...(typeof description === "string" ? { description } : {}),
       ...(tool.inputSchema !== undefined
         ? { inputSchema: tool.inputSchema }
@@ -478,6 +493,30 @@ function validateMcpTools(value: unknown): JsonObject[] {
   if (utf8Bytes(serialized) > 2_000_000)
     throw new McpAppOauthError(502, "discovery_response_invalid");
   return tools;
+}
+
+function validateToolSchema(value: unknown, depth = 0, properties = 0): number {
+  if (depth > MAX_TOOL_SCHEMA_DEPTH)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  if (value === null || typeof value !== "object") return properties;
+  if (Array.isArray(value)) {
+    if (value.length > MAX_TOOL_SCHEMA_PROPERTIES)
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    return value.reduce(
+      (count, item) => validateToolSchema(item, depth + 1, count),
+      properties,
+    );
+  }
+  const object = value as Record<string, unknown>;
+  const keys = Object.keys(object);
+  if (keys.length > MAX_TOOL_SCHEMA_PROPERTIES)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  let count = properties + keys.length;
+  if (count > MAX_TOOL_SCHEMA_PROPERTIES)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  for (const key of keys)
+    count = validateToolSchema(object[key], depth + 1, count);
+  return count;
 }
 
 function callbackHtml(title: string, message: string): string {
@@ -927,10 +966,12 @@ async function discover(
   if (!appId || appId.length > 256)
     throw new McpAppOauthError(422, "invalid_request");
   const connection = await c.env.APP_DB.prepare(
-    `SELECT app_id, owner_uid, server_url, resolved_endpoint, status,
-            credential_envelope_enc
-       FROM cf_mcp_app_connections
-      WHERE app_id = ? AND owner_uid = ?
+    `SELECT c.app_id, c.owner_uid, c.server_url, c.resolved_endpoint, c.status,
+            c.credential_envelope_enc, c.revision AS connection_revision,
+            d.revision AS discovery_revision
+       FROM cf_mcp_app_connections c
+       LEFT JOIN cf_mcp_app_discoveries d ON d.app_id = c.app_id
+      WHERE c.app_id = ? AND c.owner_uid = ?
       LIMIT 1`,
   )
     .bind(appId, context.uid)
@@ -941,6 +982,8 @@ async function discover(
       resolved_endpoint?: string | null;
       status?: string;
       credential_envelope_enc?: string | null;
+      connection_revision?: number;
+      discovery_revision?: number | null;
     }>();
   if (
     !connection?.app_id ||
@@ -954,6 +997,23 @@ async function discover(
     throw new McpAppOauthError(409, "mcp_endpoint_unavailable");
   const now = nowSeconds(dependencies);
   if (!now) throw new McpAppOauthError(503, "clock_unavailable");
+  const observedConnectionRevision = Number(connection.connection_revision);
+  if (
+    !Number.isSafeInteger(observedConnectionRevision) ||
+    observedConnectionRevision < 0
+  )
+    throw new McpAppOauthError(409, "app_connection_changed");
+  const observedDiscoveryRevision =
+    connection.discovery_revision === null ||
+    connection.discovery_revision === undefined
+      ? null
+      : Number(connection.discovery_revision);
+  if (
+    observedDiscoveryRevision !== null &&
+    (!Number.isSafeInteger(observedDiscoveryRevision) ||
+      observedDiscoveryRevision < 0)
+  )
+    throw new McpAppOauthError(409, "discovery_changed");
   try {
     const credentials = await decrypt(
       c.env,
@@ -981,9 +1041,9 @@ async function discover(
         id: 1,
         method: "initialize",
         params: {
-          protocolVersion: "2025-03-26",
+          protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
-          clientInfo: { name: "Omi", version: "1.0" },
+          clientInfo: { name: "Omi", version: "1.0.0" },
         },
       }),
     });
@@ -997,7 +1057,7 @@ async function discover(
     );
     if (
       initializePayload.jsonrpc !== "2.0" ||
-      Number(initializePayload.id) !== 1 ||
+      initializePayload.id !== 1 ||
       !objectValue(initializePayload.result)
     )
       throw new McpAppOauthError(502, "discovery_response_invalid");
@@ -1040,35 +1100,31 @@ async function discover(
       toolsResponse,
       "discovery_response_invalid",
     );
-    if (toolsPayload.jsonrpc !== "2.0" || Number(toolsPayload.id) !== 2)
+    if (toolsPayload.jsonrpc !== "2.0" || toolsPayload.id !== 2)
       throw new McpAppOauthError(502, "discovery_response_invalid");
     const toolsResult = objectValue(toolsPayload.result);
     const tools = validateMcpTools(toolsResult?.tools);
     if (!tools.length) throw new McpAppOauthError(422, "no_tools_found");
-    const protocolVersion = String(
-      objectValue(initializePayload.result)?.protocolVersion || "",
-    );
-    if (!protocolVersion || utf8Bytes(protocolVersion) > 64)
+    const protocolVersion = objectValue(
+      initializePayload.result,
+    )?.protocolVersion;
+    if (protocolVersion !== MCP_PROTOCOL_VERSION)
       throw new McpAppOauthError(502, "discovery_response_invalid");
     const toolsJson = JSON.stringify(tools);
-    const writes = await c.env.APP_DB.batch([
-      c.env.APP_DB.prepare(
+    const connectionWrite = c.env.APP_DB.prepare(
+      `UPDATE cf_mcp_app_connections
+          SET resolved_endpoint = ?, revision = revision + 1, updated_at = ?
+        WHERE app_id = ? AND owner_uid = ? AND status = 'authorized' AND revision = ?`,
+    ).bind(endpoint, now, appId, context.uid, observedConnectionRevision);
+    let discoveryWrite;
+    if (observedDiscoveryRevision === null) {
+      discoveryWrite = c.env.APP_DB.prepare(
         `INSERT INTO cf_mcp_app_discoveries
            (app_id, owner_uid, endpoint, protocol_version, tools_json,
             provider_etag, provider_session_id_enc, status, revision,
             last_error, fetched_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, NULL, 'ready', 0, NULL, ?, ?)
-         ON CONFLICT(app_id) DO UPDATE SET
-           endpoint = excluded.endpoint,
-           protocol_version = excluded.protocol_version,
-           tools_json = excluded.tools_json,
-           provider_etag = excluded.provider_etag,
-           status = 'ready',
-           revision = cf_mcp_app_discoveries.revision + 1,
-           last_error = NULL,
-           fetched_at = excluded.fetched_at,
-           updated_at = excluded.updated_at
-         WHERE cf_mcp_app_discoveries.owner_uid = excluded.owner_uid`,
+         ON CONFLICT(app_id) DO NOTHING`,
       ).bind(
         appId,
         context.uid,
@@ -1078,20 +1134,41 @@ async function discover(
         toolsResponse.headers.get("etag"),
         now,
         now,
-      ),
-      c.env.APP_DB.prepare(
-        `UPDATE cf_mcp_app_connections
-            SET resolved_endpoint = ?, revision = revision + 1, updated_at = ?
-          WHERE app_id = ? AND owner_uid = ? AND status = 'authorized'`,
-      ).bind(endpoint, now, appId, context.uid),
-    ]);
-    if (Number(writes[1]?.meta?.changes) !== 1)
+      );
+    } else {
+      discoveryWrite = c.env.APP_DB.prepare(
+        `UPDATE cf_mcp_app_discoveries
+            SET endpoint = ?, protocol_version = ?, tools_json = ?,
+                provider_etag = ?, status = 'ready', revision = revision + 1,
+                last_error = NULL, fetched_at = ?, updated_at = ?
+          WHERE app_id = ? AND owner_uid = ? AND revision = ?`,
+      ).bind(
+        endpoint,
+        protocolVersion,
+        toolsJson,
+        toolsResponse.headers.get("etag"),
+        now,
+        now,
+        appId,
+        context.uid,
+        observedDiscoveryRevision,
+      );
+    }
+    const writes = await c.env.APP_DB.batch([connectionWrite, discoveryWrite]);
+    if (Number(writes[0]?.meta?.changes) !== 1)
       throw new McpAppOauthError(409, "app_connection_changed");
+    if (Number(writes[1]?.meta?.changes) !== 1)
+      throw new McpAppOauthError(409, "discovery_changed");
+    const revision =
+      observedDiscoveryRevision === null ? 0 : observedDiscoveryRevision + 1;
     return c.json(
       {
         app_id: appId,
         status: "ready",
         endpoint,
+        transport: "streamable_http",
+        protocol_version: protocolVersion,
+        revision,
         tools_count: tools.length,
         tool_names: tools.map((tool) => String(tool.name)),
       },
@@ -1099,14 +1176,37 @@ async function discover(
       { "cache-control": "no-store" },
     );
   } catch (error) {
+    const failureCode =
+      error instanceof McpAppOauthError ? error.code : "discovery_unavailable";
+    try {
+      // Keep the last successful tools_json intact while marking this fetch
+      // failed. A later successful discovery can atomically restore ready.
+      if (observedDiscoveryRevision !== null) {
+        await c.env.APP_DB.prepare(
+          `UPDATE cf_mcp_app_discoveries
+              SET status = 'failed', last_error = ?, updated_at = ?
+            WHERE app_id = ? AND owner_uid = ? AND revision = ?`,
+        )
+          .bind(
+            failureCode.slice(0, 2_000),
+            now,
+            appId,
+            context.uid,
+            observedDiscoveryRevision,
+          )
+          .run();
+      }
+    } catch {
+      // Account-deletion fences intentionally reject this status update.
+    }
     if (error instanceof McpAppOauthError && error.status === 401) {
       try {
         await c.env.APP_DB.prepare(
           `UPDATE cf_mcp_app_connections
               SET status = 'reauthorize', last_error = ?, updated_at = ?
-            WHERE app_id = ? AND owner_uid = ? AND status = 'authorized'`,
+            WHERE app_id = ? AND owner_uid = ? AND status = 'authorized' AND revision = ?`,
         )
-          .bind(error.code, now, appId, context.uid)
+          .bind(error.code, now, appId, context.uid, observedConnectionRevision)
           .run();
       } catch {
         // Account-deletion fences intentionally reject this status update.

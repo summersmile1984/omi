@@ -498,6 +498,9 @@ describe("namespaced MCP app OAuth staging seam", () => {
       app_id: "mcp-app",
       status: "ready",
       endpoint: "https://provider.example.test/mcp",
+      transport: "streamable_http",
+      protocol_version: "2025-03-26",
+      revision: 0,
       tools_count: 1,
       tool_names: ["fixture_search"],
     });
