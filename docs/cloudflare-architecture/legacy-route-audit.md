@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 59 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 58 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -8,7 +8,7 @@
 | --- | ---: | --- | --- | --- |
 | Auth / OAuth / social | 9 | `/v1/auth/*`、`/v1/oauth/*`、`/v1/apps/mcp/callback`、Twitter ownership | Firebase provider identity、Google/Apple callback、OAuth app consent 仍由 legacy 维护；Better Auth 目前只承接 MCP OAuth 和会话 | 先完成身份连续性与 provider link/import，再迁移 callback/token；不能用 Better Auth session 别名替代 Firebase exchange |
 | Phone / external integrations | 6 | `/v1/phone/*`、电话 webhook | Twilio、Redis 状态、号码验证和电话 webhook | 定义 DO/Queue 状态机、签名校验和 provider secret 生命周期后再迁移 |
-| Conversation lifecycle | 4 | `/v1/conversations/{id}/finalization`、`finalize`、`reprocess`、`merge` | legacy lifecycle path and fan-out | finalize/status/reprocess/merge now use shared D1 job projections, Jobs leases, and API Core; merge performs bounded R2 artifact copy before atomic source cleanup |
+| Conversation lifecycle | 0 | `/v1/conversations/{id}/finalization`、`finalize`、`reprocess`、`merge`、finalization run | legacy lifecycle path and fan-out | finalize/status/reprocess/merge/finalization run now use shared D1 job projections, Jobs leases, and API Core; merge performs bounded R2 artifact copy before atomic source cleanup |
 | Import / files / sync / audio | 9 | `/v1/import/*`、`/v1/files`、`/v2/files`、sync/audio jobs | GCS/本机临时文件、multipart、长任务和 R2 residual contract | `POST /v1/sync-local-files` 与 `POST /v2/voice-messages` 已复用 D1/R2/Queue 或 Workers AI authority；其余 import/files/audio jobs 仍需先完成 R2 multipart/presigned 与 Queue replay |
 | Task intelligence / staged tasks | 15 | `/v1/staged-tasks*`、`/v1/task-intelligence/*`、`/v1/what-matters-now*` | candidate/recommendation store、generation fence、LLM judgment、device snapshot | candidate D1 projection 和 generation contract 完成前保持 fail-closed legacy owner |
 | Persona / apps | 4 | `/v1/personas` mutation、`/v1/apps/*` MCP mutation、Twitter ownership | multipart 图片、R2、LLM prompt、Twitter provider identity 与 public app cache | 默认 Persona 和只读 profile 已迁移；通用 Persona mutation/Twitter ownership 需完整 D1/R2/provider contract |
@@ -22,7 +22,7 @@
 ## 当前可执行顺序
 
 1. 让 release pipeline 使用 `.github/scripts/backfill-desktop-release-manifest.py` 回填已迁移的 D1 immutable manifest；Stable/Beta promotion、legacy release bridge 和 `clear-cache` 已由 API Core/D1 承接，完成 Firestore→D1 回放后再注入发布流水线凭据并复验 Beta 晋级。该工具只读 legacy manifest、验证 v1 digest，再向 Cloudflare Edge 的 `/v2/desktop/releases` 做幂等 POST，不改变 channel pointer。
-2. 保持 conversation finalization/reprocess/merge、sync-local-files、voice-messages、sync-jobs run 与 account-deletion run 的 staging residual 监控；下一组迁移优先处理 release pipeline 回填。
+2. 保持 conversation finalization/reprocess/merge/finalization run、sync-local-files、voice-messages、sync-jobs run 与 account-deletion run 的 staging residual 监控；下一组迁移优先处理 release pipeline 回填。
 3. 完成 candidate/recommendation authority 后，再处理 staged-tasks 与 What Matters Now；在此之前保持现有 404/legacy 边界。
 
 Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生结构化冲突记录；三个 review-queue 端点由 API Core/Edge 承载；每次读取校验来源 `updated_at` revision 与 SHA-256 content hash，来源变化自动 tombstone；accept/reject/correct/timeout 解析具备 D1 原子写入和幂等状态。该阶段的 producer 覆盖 canonical `/v3/memories` 与 `/v3/memories/batch` 写入，手工已确认的 MCP/developer memory 不会重新进入队列。
@@ -62,5 +62,6 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 - `POST/PATCH /v1/personas*` 仍不能切到 Worker：创建/更新同时依赖图片上传、作者资料、用户名唯一化、Workers/legacy LLM prompt、以及公开目录缓存失效；当前 `cf_app_catalog` 仅是投影，直接写入会绕过这些约束。
 - `/v1/oauth/*` 与 `/v1/apps/mcp*` 仍不能由 Better Auth session 直接替代：legacy token 路径验证 Firebase ID token、应用启用/付费状态及 OAuth state/PKCE；D1 的 MCP OAuth 表只覆盖已迁移的 `/v1/mcp/*`，不是外部应用动态注册流程。
 - `/v2/sync-jobs/run` 已切到 staging Jobs owner：Edge 只转发已验证的 Better Auth 身份，Jobs 只接受有界 `{job_id}`，从 D1 反查当前账号的 lane/lease，并将 queued 或过期 running job 投递到现有 `sync_local_files` Queue；未知/跨账号安全 dropped，terminal acked，活动 lease 返回 409 locked，Queue 不可用返回 503。最新 staging 边界探针已覆盖未认证 `401`、未知 `200 dropped`、queued `200 queued`、终态 `200 acked`，fixture 清理后 Auth/App 均无残留；带真实录音的 Queue drain、旧 Cloud Tasks/OIDC dispatcher 的生产切换和 staging residual 观察仍待完成。Merge 的外部 OAuth/AI fan-out 依赖仍按配置 fail-closed，不能把缺失 provider secret 当作成功。
+- `/v1/conversation-finalization-jobs/run` 已切到 staging Jobs owner：Edge 只转发已验证的 Better Auth 身份，Jobs 只接受有界 `{job_id}`，从 D1 反查当前账号的 operation/conversation/revision，并将 queued 或过期 running job 投递到 `conversation_finalize`/`conversation_reprocess` Queue；未知/跨账号安全 dropped，终态 acked，活动 lease 返回 409 locked，Queue 不可用返回 503。最新 staging 边界探针已覆盖未认证 `401`、认证未知 job `200 dropped`、多余 caller 字段 `400 invalid_request`；探针账号清理后 Auth/App 均无残留。该探针验证的是入口和 owner boundary，不等同于真实旧 Cloud Tasks/OIDC dispatcher 已切换或完整 Queue drain。
 - `/v1/users/account-deletion-wipes/run` 已切到 staging Jobs owner：Edge 先验证 Better Auth，再由 Jobs 从 D1 intent 反查 UID，只推进当前账号自己的 deletion intent；未知或跨账号 job 只返回 dropped，不执行任何写入。Cloudflare Queue consumer 仍是实际清理 authority，旧 Cloud Tasks/OIDC 生产 dispatcher 尚未切换。
 - Desktop Beta 四条 mutation 已成组迁移：reserve/admission、signed GitHub evidence、manifest/pointer CAS 和 breakglass audit 共享 D1 控制面；没有 `BETA_PROMOTION_TOKEN`/`GITHUB_TOKEN` 时 promotion 与 emergency rollout 会 fail-closed，不会产生半写入。发布流水线凭据和历史 Firestore→D1 回放仍是 staging 正向验证前置条件。
