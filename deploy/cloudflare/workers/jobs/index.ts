@@ -123,6 +123,7 @@ import {
 import { processWrappedJobMessage, registerWrappedRoutes } from "./wrapped";
 import { registerPhoneTwilioRoutes } from "./phone-twilio";
 import { registerPhoneHistoryImportRoutes } from "./phone-history-import";
+import { registerChatHistoryImportRoutes } from "./chat-history-import";
 import {
   processTaskIntelligenceMessage,
   reconcileTaskIntelligenceJobs,
@@ -213,6 +214,7 @@ registerHumeWebhookRoutes(app);
 registerWrappedRoutes(app, requestContext);
 registerPhoneTwilioRoutes(app, requestContext);
 registerPhoneHistoryImportRoutes(app);
+registerChatHistoryImportRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.

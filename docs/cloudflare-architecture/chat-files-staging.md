@@ -251,3 +251,26 @@ ledger 以 uid+entity 的唯一键阻止同一历史实体被不同导出静默�
 Assistants thread/file_search、GCS thumbnail/provider object 或 `/v2/messages` 的完整
 wire parity。真实 Firestore export、账号 cutover marker 和独立文件/provider 验证完成前，
 不得把该 planner 视作 production owner switch 证据。
+
+### Reviewed apply executor（默认关闭）
+
+为避免把“生成 SQL”误当成已经落库，Jobs Worker 另提供一个仅供受控操作员使用的
+`POST /internal/chat-history/apply`。它只在
+`CHAT_HISTORY_IMPORT_STAGING_ENABLED=true` 且请求带 `secret-key: ADMIN_KEY` 时启用；
+请求体必须是上面 planner 的 reviewed JSON（可使用 `manifestHash`/`batch_id`），并以
+`CHAT_HISTORY_IMPORT_SIGNING_SECRET`（至少 32 字节）的 HMAC-SHA256 对
+`<batch_id>\0<manifest_hash>` 生成 URL-safe Base64 签名，放入
+`x-chat-history-plan-signature`。body 上限 1 MiB、每批最多 20 个实体，Worker 会再次
+校验来源集合、行字段、所有 SHA-256、session/message 结构和 source-row hash，不接受
+凭据、Firebase/Provider token、邮箱或文件引用。
+
+Migration `0130_chat_history_apply_receipts.sql` 保存每个 `(uid, import_id)` 的内容绑定
+receipt。apply 在一个 D1 batch 中先写 `cf_chat_history_import_ledger`，按 session→message
+顺序写带来源 marker 的 canonical rows，再 finalize ledger 并写 receipt；已有相同 receipt
+只返回幂等 replay 结果，不覆盖目标行。每次 apply 都要求 account cutover 已完成且 generation
+完全匹配，并检查 deletion intent/tombstone；receipt、ledger 和目标 marker 还有 D1 trigger
+作第二道 fence。
+
+该 endpoint 是审阅后的 staging apply seam，不会读取 Firestore/GCS，也不会自动发现或执行
+导出文件；当前 gate 默认关闭，尚未做真实历史 export、远端正向 apply 或生产 owner cutover。
+启用前必须人工审阅 planner 输出并先完成独立 chat-file/provider continuity 验证。

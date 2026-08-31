@@ -171,4 +171,8 @@ export type JobsEnv = {
   PHONE_DATA_ENCRYPTION_SECRET?: string;
   /** Explicit operator gate for reviewed historical phone-number promotion. */
   PHONE_HISTORY_IMPORT_STAGING_ENABLED?: string;
+  /** Explicit operator gate for reviewed historical chat-session/message promotion. */
+  CHAT_HISTORY_IMPORT_STAGING_ENABLED?: string;
+  /** HMAC secret for content-bound chat-history apply plans. */
+  CHAT_HISTORY_IMPORT_SIGNING_SECRET?: string;
 };

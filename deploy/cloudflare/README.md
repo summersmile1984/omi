@@ -1305,6 +1305,22 @@ cutover with matching generation and `destination_backend_bound=1`; it never
 overwrites an occupied D1 row or imports file/provider state. A zero-row
 verification result is required before treating a replay as complete.
 
+The Jobs Worker also exposes a separately gated operator apply seam at
+`POST /internal/chat-history/apply`. It is disabled unless
+`CHAT_HISTORY_IMPORT_STAGING_ENABLED=true`, requires `secret-key: ADMIN_KEY`,
+and requires an HMAC-SHA256 signature from the at-least-32-byte
+`CHAT_HISTORY_IMPORT_SIGNING_SECRET` over `<batch_id>\0<manifest_hash>` in
+`x-chat-history-plan-signature`. The body is bounded to 1 MiB/20 entries and
+must be the reviewed planner output; the Worker recomputes source-row,
+import, plan, manifest, and batch hashes, rejects sensitive fields and file
+references, and applies sessions before messages in one D1 batch. Migration
+`0130_chat_history_apply_receipts.sql` records content-bound receipts for
+idempotent replay. Account-generation, cutover, and deletion fences are
+checked before and during the batch. This is an operator-controlled staging
+seam only: it does not fetch Firestore/GCS, and no real export or production
+owner cutover is claimed until the export and provider/file continuity review
+has completed.
+
 The account read routes use D1 as the isolated staging authority. Conversation
 and memory writes update one idempotent `cf_usage_sources` row in the same D1
 batch as the source projection, and migration `0046_account_usage.sql`
