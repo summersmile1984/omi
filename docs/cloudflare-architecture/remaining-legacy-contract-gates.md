@@ -9,13 +9,13 @@
 | 路由组 | 条数 | 当前判断 | 不能切换的硬门槛 |
 | --- | ---: | --- | --- |
 | Auth / social | 4 | 阻塞 | Firebase provider identity、Redis auth session/auth code、移动端 HTML callback、Firebase custom-token exchange 尚未由 Better Auth/D1 证明等价替代 |
-| External App OAuth | 2 | 阻塞 | legacy Firestore app catalog、CSRF/state、app enable/payment/setup 检查和 `uid + redirect_url + state` 响应仍无同一 D1 authority |
+| External App OAuth | 2 | 部分准备，owner 阻塞 | namespaced `/v2/cf/oauth/*` 已有 Better Auth + App D1 authority；精确 `/v1/oauth/*` 仍需 legacy Firebase token、旧客户端 response、provider/历史 catalog continuity |
 | Phone / Twilio | 0 | staging owner，生产阻塞 | Jobs 已闭合 caller-ID 验证状态、Twilio API/token/webhook contract、quota 和删除清理；仍缺真实 provider 验证、历史回填和 production cutover |
 | Wrapped | 0 | staging owner，生产阻塞 | Jobs 已闭合 D1 recap 聚合、Workers AI structured output、通知和 job/result 状态；仍缺历史 Firestore 回填、真实 provider probe 和 production cutover |
 | Chat compatibility | 3 | 阻塞 | prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract 与 D1 chat session 不是同一语义 |
 | Persona / MCP mutation | 5 | 部分 staging owner | `PATCH /v1/personas/{persona_id}` 已对 D1-owned projection 提供 bounded CAS/R2/deletion-fence update；历史 Firestore prompt/image/cache continuity、Twitter provider identity 和 MCP OAuth token/discovery 仍未迁移 |
 | Staged tasks / task intelligence | 0 | staging owner，生产阻塞 | API Core/D1 已建立 candidate/recommendation authority、device/open-loop snapshot、LLM receipt、promotion transaction 和 Jobs Queue retry consumer；仍缺 Firestore 历史回放、provider 正向账号探针、旧客户端 continuity 和 production cutover |
-| Gemini proxy | 2 | 部分准备，owner 阻塞 | Cloudflare AI Studio adapter、Edge burst 和 D1 daily ledger 已落地但仅 staging opt-in；Firebase identity continuity、Vertex ADC/PT、完整 BYOK/Redis quota、SSE/usage/error/cost parity 尚未闭合 |
+| Gemini proxy | 2 | 部分准备，owner 阻塞 | AI Studio 与显式 Vertex service-account adapter、Edge burst 和 D1 daily ledger 已落地但仅 staging opt-in；Firebase identity continuity、Vertex ADC/PT、完整 BYOK/Redis quota、SSE/usage/error/cost parity 尚未闭合 |
 | Files | 2 | 部分准备 | Worker chat-file adapter 已有 D1/R2/provider contract，但 Assistants/session continuity、旧数据回填和下游 reader 仍未完成 |
 
 上表合计 18 条。`GET /v1/apps/mcp/callback` 计入 Persona/MCP mutation，而不是 Auth / social；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口不计入本表。Task intelligence 的 13 条路径已是 staging owner，因此不再计入 legacy 队列，但其生产门槛仍保留在表内。
@@ -44,7 +44,7 @@ Legacy 实现位于 [`backend/routers/oauth.py`](../../backend/routers/oauth.py)
 - `GET /v1/oauth/authorize` 读取 Firestore app、capabilities、external integration 和 Firebase config，生成 CSRF cookie，并返回 consent HTML。
 - `POST /v1/oauth/token` 校验 Firebase ID token 与 CSRF cookie，读取 app 的 private/tester/paid/setup 状态，必要时 enable app/increment installs，最后返回 `{uid, redirect_url, state}`。
 
-现有 D1 `cf_app_catalog` 和 `/v1/mcp/oauth/*` 只覆盖 Cloudflare app projection 与 MCP server 的 OAuth grants。它们没有覆盖外部 App 的 `app_home_url`、Firebase token verifier、setup-completed callback、paid-app/install CAS、CSRF transaction 和 account deletion sweep。因此不能把 `/v1/mcp/authorize` 或 Better Auth session 直接挂到 `/v1/oauth/*`。
+现有 D1 `cf_app_catalog` 和 `/v1/mcp/oauth/*` 只覆盖 Cloudflare app projection 与 MCP server 的 OAuth grants。现在新增的 `0116_external_app_oauth.sql` 与 `/v2/cf/oauth/*` namespaced seam 已覆盖 Better Auth uid、app revision、setup/paid/tester admission、hash-only CSRF transaction、install CAS 和 deletion fence；它仍不承接精确 `/v1/oauth/*` 的 Firebase token/旧客户端 wire contract，也不等于历史 Firestore catalog 已回填。因此不能把 `/v1/mcp/authorize` 或 Better Auth session 直接挂到 `/v1/oauth/*`。
 
 切换前必须新增并回放：
 
