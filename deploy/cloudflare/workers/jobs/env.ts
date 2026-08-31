@@ -126,6 +126,10 @@ export type JobsEnv = {
   CLICKUP_CLIENT_SECRET?: string;
   RAPID_API_HOST?: string;
   RAPID_API_KEY?: string;
+  /** Explicit staging gate for the namespaced external MCP OAuth seam. */
+  MCP_APP_OAUTH_STAGING_ENABLED?: string;
+  /** AES-GCM key material for external MCP app OAuth envelopes. */
+  MCP_APP_TOKEN_ENCRYPTION_SECRET?: string;
   HUME_WEBHOOK_SIGNING_KEY?: string;
   /** Twilio REST credentials and Voice SDK token configuration. */
   TWILIO_ACCOUNT_SID?: string;

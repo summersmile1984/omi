@@ -60,6 +60,12 @@ describe("external MCP app authority foundation", () => {
   it("provides separate encrypted OAuth, connection, and discovery state", () => {
     const db = database();
     try {
+      const connectionColumns = db
+        .prepare("PRAGMA table_info(cf_mcp_app_connections)")
+        .all() as Array<{ name: string }>;
+      expect(connectionColumns.map((column) => column.name)).toContain(
+        "oauth_transaction_id",
+      );
       insertApp(db, "mcp-app", "mcp-owner");
       db.prepare(
         `INSERT INTO cf_mcp_app_connections

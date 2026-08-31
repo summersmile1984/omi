@@ -94,6 +94,7 @@ import {
   registerChatAssistantRoutes,
 } from "./chat-assistant-provider";
 import { registerPersonaMutationRoutes } from "./persona-mutations";
+import { registerMcpAppOauthRoutes } from "./mcp-app-oauth-staging";
 import {
   processAudioMergeJobMessage,
   registerAudioMergeRoutes,
@@ -186,6 +187,7 @@ registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
 registerChatAssistantRoutes(app, requestContext);
 registerPersonaMutationRoutes(app, requestContext);
+registerMcpAppOauthRoutes(app, requestContext);
 registerAudioMergeRoutes(app, requestContext);
 registerLegacyAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);

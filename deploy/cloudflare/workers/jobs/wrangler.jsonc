@@ -16,6 +16,7 @@
     "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
     "WORKERS_AI_X_MEMORY_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "WORKERS_AI_WRAPPED_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "MCP_APP_OAUTH_STAGING_ENABLED": "false",
   },
   // Secrets provisioned with `wrangler secret put`: ADMIN_KEY, APPS_ADMIN_KEY,
   // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets,
@@ -29,6 +30,8 @@
   // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, HUME_WEBHOOK_SIGNING_KEY,
   // optional OPENAI_API_KEY and CHAT_FILE_THUMBNAIL_SECRET for the chat-file
   // provider/thumbnail boundary, and optional RAPID_API_HOST/RAPID_API_KEY.
+  // MCP_APP_TOKEN_ENCRYPTION_SECRET is required only when the namespaced
+  // external-MCP OAuth staging gate is explicitly enabled.
   "services": [
     { "binding": "AUTH", "service": "omi-cf-auth-staging" },
     { "binding": "API_CORE", "service": "omi-cf-api-core-staging" },

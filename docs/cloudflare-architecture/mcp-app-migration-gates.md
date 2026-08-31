@@ -18,6 +18,14 @@
 - `cf_mcp_app_oauth_transactions`：`SHA-256(state)`、加密 PKCE verifier、加密 registration credentials、固定 redirect/token/authorization endpoint、expiry、single-use status。callback 必须使用 `DELETE ... RETURNING` 或等价的 `status='pending' AND expires_at > now` CAS，不能按 app 查询后再更新。
 - `cf_mcp_app_discoveries`：最后一次成功的 endpoint/protocol/tools JSON 与 revision。provider 失败只能写 `failed/last_error`，不能覆盖最后一个成功的 tools projection；成功后才允许刷新公开目录/cache。
 
+当前已增加一个显式开关的 namespaced staging seam（不减少 legacy route 计数）：
+
+- `POST /v2/cf/apps/mcp/authorize`：Better Auth signed context 下校验 owner-scoped app/provider endpoints，执行可选 RFC 7591 registration，生成 S256 PKCE 和一次性 state，并把 verifier/registration secret 以 AES-GCM envelope 写入 D1。
+- `GET /v2/cf/apps/mcp/callback`：按 hash-only state 原子消费 transaction，禁止 provider 自动 redirect，bounded 读取 token response，凭据只写入加密 connection envelope；重复/过期 state、跨 owner、私网/映射地址、超限或 malformed provider payload 均 fail-closed。
+- `0115_mcp_app_oauth_generation.sql` 把 connection 绑定到具体 transaction generation，避免慢 callback 覆盖更新中的授权。
+
+该 seam 需要 `MCP_APP_OAUTH_STAGING_ENABLED=true` 和 `MCP_APP_TOKEN_ENCRYPTION_SECRET`（至少 32 字节），默认关闭。它目前只闭合 registration→authorization redirect→token exchange；discovery、MCP initialize/tools/list、refresh、install、provider revoke、真实 staging provider replay 尚未完成，因此不切换 `/v1/apps/mcp`、`/v1/apps/mcp/callback` 或 refresh owner。
+
 这三张表均带 `owner_uid`、INSERT/UPDATE account-deletion fence 和 owner/status/expiry 索引；残留扫描与 purge inventory 已登记。基础 schema 不包含 migration job、Firebase proof 或 R2 logo cleanup，因为这些依赖仍未闭合，不能用空表伪造完成度。
 
 ## Provider fixture
@@ -40,4 +48,3 @@
 ## Existing Cloudflare surfaces that are intentionally not aliases
 
 `/api/better-auth/*` 与 `/v1/mcp/*` 的 OAuth/session surface 是“外部 MCP client 调用 Omi MCP server”，其 `oauthClient`、grant 和 access token 不能承载“用户安装外部 MCP server”所需的 upstream client registration/token。当前 `/v1/apps/:app_id/refresh-manifest` 只读取 `chat_tools_manifest_url`，不执行 OAuth、token refresh、MCP JSON-RPC discovery；`/v1/personas/twitter/profile` 也只读 RapidAPI profile，不执行 tweet ownership proof 或 Persona mutation。因此这些入口保持独立 owner，不应通过 manifest alias 宣称迁移完成。
-

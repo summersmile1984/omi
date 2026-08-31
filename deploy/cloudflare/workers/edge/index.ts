@@ -1202,6 +1202,11 @@ const proxyAuthenticatedAsyncTranscriptionStatus = async (
 
 app.all("/v1/cf/jobs", proxyAuthenticatedJobs);
 app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
+// Namespaced external MCP App OAuth staging seam. This is intentionally
+// separate from Better Auth's client-to-Omi MCP OAuth and from legacy
+// /v1/apps/mcp; Jobs enforces its explicit staging gate and D1 authority.
+app.post("/v2/cf/apps/mcp/authorize", proxyAuthenticatedJobs);
+app.get("/v2/cf/apps/mcp/callback", proxyPublicJobs);
 app.post("/v1/payments/checkout-session", proxyAuthenticatedJobs);
 app.post("/v1/payments/customer-portal", proxyAuthenticatedJobs);
 app.post("/v1/payments/upgrade-subscription", proxyAuthenticatedJobs);
