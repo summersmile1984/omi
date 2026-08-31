@@ -117,6 +117,16 @@ function requestUrl() {
   return "https://jobs.test/v2/cf/personas/twitter/verify-ownership?username=alice&handle=%40omi";
 }
 
+function exactRequestUrl(personaId?: string, handle = "@omi") {
+  const query = new URLSearchParams({ username: "alice", handle });
+  if (personaId) query.set("persona_id", personaId);
+  return `https://jobs.test/v1/personas/twitter/verify-ownership?${query}`;
+}
+
+function requestPath(request: RequestInfo | URL) {
+  return new URL(request instanceof Request ? request.url : request).pathname;
+}
+
 describe("dormant Cloudflare Twitter ownership seam", () => {
   it("is feature-gated before auth or provider access", async () => {
     const database = new SqliteD1();
@@ -260,5 +270,149 @@ describe("dormant Cloudflare Twitter ownership seam", () => {
       tweetId: null,
       providerResponseFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
+  });
+
+  it("keeps the exact owner fail-closed when the explicit gate or provider secret is absent", async () => {
+    const { database, fetchImpl } = environment(() =>
+      Response.json({ timeline: [] }),
+    );
+    const env = {
+      APP_DB: database,
+      TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED: "false",
+    } as unknown as JobsEnv;
+    const app = appFor("uid-1", fetchImpl);
+    const gated = await app.request(
+      exactRequestUrl(),
+      { headers: { ...(await headers("uid-1")) } },
+      env,
+    );
+    expect(gated.status).toBe(503);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const missingSecretEnv = {
+      ...env,
+      TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED: "true",
+      RAPID_API_HOST: undefined,
+      RAPID_API_KEY: undefined,
+    } as unknown as JobsEnv;
+    const unavailable = await app.request(
+      exactRequestUrl(),
+      { headers: { ...(await headers("uid-1")) } },
+      missingSecretEnv,
+    );
+    expect(unavailable.status).toBe(503);
+    await expect(unavailable.json()).resolves.toMatchObject({
+      error: "provider_not_configured",
+    });
+    expect(
+      database.database
+        .prepare("SELECT COUNT(*) AS count FROM cf_app_catalog")
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("verifies the exact owner and atomically projects a D1 Persona on replay", async () => {
+    const { database, env, fetchImpl } = environment((request) => {
+      const pathname = requestPath(request);
+      if (pathname.endsWith("/screenname.php")) {
+        return Response.json({
+          name: "Omi",
+          profile: "omi",
+          rest_id: "twitter-1",
+          avatar: "https://cdn.example/omi.jpg",
+          desc: "A profile",
+          friends: 10,
+          sub_count: 20,
+          id: "twitter-1",
+          status: "ok",
+        });
+      }
+      return Response.json({
+        timeline: [{ tweet_id: "tweet-1", text: "Verifying my clone(alice)" }],
+      });
+    });
+    const exactEnv = {
+      ...env,
+      TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED: "true",
+    } as unknown as JobsEnv;
+    const app = appFor("uid-1", fetchImpl);
+    const first = await app.request(
+      exactRequestUrl(),
+      { headers: { ...(await headers("uid-1")) } },
+      exactEnv,
+    );
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { persona_id?: string; tweet?: string; verified?: boolean };
+    expect(firstBody).toMatchObject({ tweet: "Verifying my clone(alice)", verified: true });
+    expect(firstBody.persona_id).toMatch(/^twitter-persona-/);
+    const replay = await app.request(
+      exactRequestUrl(),
+      { headers: { ...(await headers("uid-1")) } },
+      exactEnv,
+    );
+    expect(await replay.json()).toEqual(firstBody);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const row = database.database
+      .prepare("SELECT owner_uid, data_json FROM cf_app_catalog")
+      .get() as { owner_uid: string; data_json: string };
+    expect(row.owner_uid).toBe("uid-1");
+    expect(JSON.parse(row.data_json)).toMatchObject({
+      username: "alice",
+      connected_accounts: ["twitter"],
+      twitter: { username: "omi" },
+    });
+  });
+
+  it("attaches only to the owning Persona and rejects a cross-uid write", async () => {
+    const { database, env, fetchImpl } = environment((request) => {
+      if (requestPath(request).endsWith("/screenname.php")) {
+        return Response.json({
+          name: "Omi",
+          profile: "omi",
+          avatar: "https://cdn.example/omi.jpg",
+          desc: "A profile",
+          status: "ok",
+        });
+      }
+      return Response.json({
+        timeline: [{ tweet_id: "tweet-1", text: "Verifying my clone(alice)" }],
+      });
+    });
+    database.database
+      .prepare(
+        `INSERT INTO cf_app_catalog
+          (id, approved, status, disabled, is_popular, installs, rating_count,
+           data_json, updated_at, owner_uid)
+         VALUES ('persona-1', 1, 'approved', 0, 0, 0, 0, ?, 1000, 'uid-1')`,
+      )
+      .run(
+        JSON.stringify({
+          id: "persona-1",
+          username: "alice",
+          capabilities: ["persona"],
+          connected_accounts: ["omi"],
+        }),
+      );
+    const exactEnv = {
+      ...env,
+      TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED: "true",
+    } as unknown as JobsEnv;
+    const first = await appFor("uid-1", fetchImpl).request(
+      exactRequestUrl("persona-1"),
+      { headers: { ...(await headers("uid-1")) } },
+      exactEnv,
+    );
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ persona_id: "persona-1", verified: true });
+    const crossUid = await appFor("uid-2", fetchImpl).request(
+      exactRequestUrl("persona-1", "@newhandle"),
+      { headers: { ...(await headers("uid-2")) } },
+      exactEnv,
+    );
+    expect(crossUid.status).toBe(403);
+    await expect(crossUid.json()).resolves.toMatchObject({ error: "persona_owner_mismatch" });
+    expect(
+      database.database.prepare("SELECT owner_uid FROM cf_app_catalog WHERE id = 'persona-1'").get(),
+    ).toEqual({ owner_uid: "uid-1" });
   });
 });

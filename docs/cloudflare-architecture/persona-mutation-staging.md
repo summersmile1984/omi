@@ -13,10 +13,11 @@
 - PATCH 只允许更新 owner 自己的 D1 Persona projection；使用 `owner_uid + data_json` CAS 防止并发覆盖，用户名以 D1 冲突检查约束，省略图片时保留原 R2/legacy image URL，提供新图片时以版本化 R2 object 替换并清理旧对象。
 - PATCH 的响应保持 legacy `{"status":"ok","app_id":...,"username":...}` 形状；D1 mutation fence 会阻止删除中的账户继续更新，失败的 staged logo 会清理或登记 `cf_asset_cleanup_tasks`。
 
-## Twitter ownership dormant seam
+## Twitter ownership staging owner
 
 `deploy/cloudflare/migrations/app/0121_twitter_ownership.sql` 和 Jobs 的
-`twitter-ownership.ts` 现在提供一个显式开关保护的 namespaced evidence seam：
+`twitter-ownership.ts` 提供显式开关保护的 namespaced evidence seam，以及一个
+可逐步启用的 exact staging owner：
 `GET /v2/cf/personas/twitter/verify-ownership` 在
 `TWITTER_OWNERSHIP_STAGING_ENABLED=true` 时才会读取有界的 RapidAPI
 `timeline.php` 响应，验证最新 tweet 的
@@ -24,19 +25,23 @@
 fingerprint、account generation、结果和唯一 handle claim 写入 D1。
 `cf_twitter_ownership_claims.handle` 的唯一约束防止跨 uid 抢占，transaction
 request fingerprint 支持 replay 幂等，D1 INSERT/UPDATE triggers 和 residual
-inventory 覆盖删号竞态。它只记录外部 provider evidence，不读取或伪造
-Firebase provider data，也不创建/更新 Persona、Memory 或公开目录。
+inventory 覆盖删号竞态。namespaced 路径只记录外部 provider evidence，不读取
+或伪造 Firebase provider data。exact `/v1/personas/twitter/verify-ownership`
+在 Edge 与 Jobs 的 `TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED=true` 且 RapidAPI
+secret 已配置时，额外读取同一 RapidAPI 的 bounded `screenname.php` profile，
+并把 verified 结果以 owner-scoped CAS 写入 D1 `cf_app_catalog`（新建或显式
+`persona_id` attach）。
 
 该 seam 使用独立的 `/v2/cf/personas/twitter/verify-ownership` namespaced
-Edge→Jobs 路径，但不加入 legacy backend route manifest。Edge exact
-`GET /v1/personas/twitter/verify-ownership` 仍由
-`PERSONA_APPS_STAGING_FAIL_CLOSED=true` 保护并保持 legacy owner；RapidAPI
-secret、Firebase provider identity、Persona/Memory side effects、历史
-Firestore 回放和 production positive probe 仍是 owner cutover gates。
+Edge→Jobs 路径；exact route 已在 manifest 标记为 Jobs staging-owned，但默认
+gate 为 false，关闭时返回 no-store `503`，非 staging 环境仍可回退到 legacy。
+该 projection 只覆盖 Persona metadata 和 `twitter` account 字段，不伪造
+Firebase identity、prompt/memory 生成或 legacy public-cache side effect；历史
+Firestore 回放和 production positive probe 仍是生产准入 gates。
 
 ## 尚未宣称完成的部分
 
-Twitter ownership verification 与 owner migration 仍由 legacy owner 处理。外部 MCP app 的 exact registration/callback/refresh 已由 Jobs staging owner 承载（但 provider replay、Firebase identity/catalog backfill 和 production parity 仍未完成）。为防止 Persona/Twitter/owner-migration 凭据或请求继续进入 legacy，Edge 在 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 时仅对这些剩余入口返回 `503 persona_apps_unavailable`，不读取请求 body 或调用 legacy；当前仅这两条路由仍计入 legacy-owned。
+Twitter ownership exact route 已是可显式开启的 Jobs staging owner，owner migration 仍由 legacy owner 处理。外部 MCP app 的 exact registration/callback/refresh 已由 Jobs staging owner 承载（但 provider replay、Firebase identity/catalog backfill 和 production parity 仍未完成）。为防止 Persona/owner-migration 凭据或请求继续进入 legacy，Edge 在 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 且 Twitter exact gate 关闭时返回 `503 persona_apps_unavailable`，不读取请求 body 或调用 legacy；当前仅 owner migration 1 条路由仍计入 legacy-owned。
 
 Persona PATCH 的范围仍是“D1-owned projection 的 bounded update”，不是生产 wire parity：历史 Firestore Persona 尚未回填；现有 Workers AI 只生成有界 description，不能证明 legacy `generate_persona_prompt` 的 memories/conversations/tweets condensation 等价；legacy GCS logo 不能被 Worker 在没有迁移映射时主动删除。公开 app 目录目前直接读 D1、没有 Redis cache writer，故 PATCH 只能通过 D1 revision/`updated_at` 保持可见性，不能宣称已迁移 legacy cache invalidation。历史回填、完整 prompt contract、图片缩略图/legacy object mapping 和 production cutover 仍需独立门槛。
 
@@ -44,4 +49,4 @@ Persona PATCH 的范围仍是“D1-owned projection 的 bounded update”，不�
 
 `deploy/cloudflare/tests/persona-mutations.test.ts` 覆盖认证、图片校验、D1/R2 创建、Workers AI 描述调用、重复 multipart 幂等、无图更新、R2 logo rotation、跨 owner 拒绝和 deletion fence；Edge test 覆盖 PATCH 的 Better Auth→Jobs forwarding，manifest 与 Edge/Jobs route registration 同步更新。2026-08-31 本地 4 个 Persona mutation tests 通过；真实 Better Auth 账号创建默认 Persona 后，带 1x1 PNG 的 PATCH 经 staging 返回 `200` 并完成 username 更新，账号随后提交删号并收敛到 Persona residual `0`。历史 Firestore/prompt/cache parity、legacy GCS object mapping 和 production cutover 仍未完成。
 
-`deploy/cloudflare/tests/twitter-ownership.test.ts` 覆盖 feature gate、无 tweet 结果和 replay 幂等、RapidAPI response fingerprint、verified handle 的跨 uid 冲突，以及 account-deletion fence/late-write 拒绝。该测试验证的是 dormant evidence transaction，不是 exact legacy owner 已迁移。
+`deploy/cloudflare/tests/twitter-ownership.test.ts` 覆盖 namespaced evidence 与 exact owner 的 feature gate、RapidAPI provider 缺失、profile/timeline D1 Persona 创建、显式 Persona attach、replay 幂等、verified handle 的跨 uid 冲突，以及 account-deletion fence/late-write 拒绝。Firebase provider continuity、prompt/memory side effects、历史回放和生产 positive probe 仍未完成。

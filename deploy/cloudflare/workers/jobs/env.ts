@@ -150,6 +150,8 @@ export type JobsEnv = {
   LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED?: string;
   /** Dormant namespaced Twitter ownership evidence seam; exact legacy owner stays fail-closed. */
   TWITTER_OWNERSHIP_STAGING_ENABLED?: string;
+  /** Explicit opt-in for the exact Twitter ownership staging owner. */
+  TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED?: string;
   /** Dormant app-owner migration admission seam; exact legacy owner stays fail-closed. */
   APP_OWNER_MIGRATION_STAGING_ENABLED?: string;
   /** Auth-verified anonymous Firebase source projection into hash-only App D1 evidence. */

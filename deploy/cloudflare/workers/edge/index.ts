@@ -830,6 +830,15 @@ const legacyMcpCallbackStagingBoundary = async (
   return legacyPersonaAppsStagingBoundary(c);
 };
 
+const legacyTwitterOwnershipStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED === "true") {
+    return proxyAuthenticatedJobs(c);
+  }
+  return legacyPersonaAppsStagingBoundary(c);
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 // The cloud Agent VM was retired, but released desktop clients still call
@@ -927,7 +936,7 @@ app.post("/v1/proxy/gemini-stream", cloudflareGeminiProxyBoundary);
 app.post("/v1/proxy/gemini-stream/*", cloudflareGeminiProxyBoundary);
 app.get(
   "/v1/personas/twitter/verify-ownership",
-  legacyPersonaAppsStagingBoundary,
+  legacyTwitterOwnershipStagingBoundary,
 );
 app.post("/v1/apps/mcp", legacyMcpAppsStagingBoundary);
 app.get("/v1/apps/mcp/callback", legacyMcpCallbackStagingBoundary);

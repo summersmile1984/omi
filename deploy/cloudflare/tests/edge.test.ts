@@ -630,6 +630,56 @@ describe("edge gateway", () => {
     );
   });
 
+  it("routes exact Twitter ownership to Jobs only with the explicit staging gate", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED: "true",
+      PERSONA_APPS_STAGING_FAIL_CLOSED: "true",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "twitter-owner", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({
+          state: "new",
+          client_action: "none",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        }),
+      ),
+      JOBS: rawService((request) => {
+        jobsRequests.push(request);
+        return Response.json(
+          { error: "provider_not_configured" },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      }),
+    };
+    const response = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/personas/twitter/verify-ownership?username=alice&handle=omi",
+        {
+          headers: {
+            authorization: "Bearer opaque-session",
+            cookie: "must-not-forward",
+          },
+        },
+      ),
+      env as never,
+    );
+    expect(response.status).toBe(503);
+    expect(jobsRequests).toHaveLength(1);
+    expect(new URL(jobsRequests[0].url).pathname).toBe(
+      "/v1/personas/twitter/verify-ownership",
+    );
+    expect(jobsRequests[0].headers.get("authorization")).toBeNull();
+    expect(jobsRequests[0].headers.get("cookie")).toBeNull();
+    expect(jobsRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes exact legacy MCP app paths to Jobs only behind their explicit owner gate", async () => {
     const jobsRequests: Request[] = [];
     const env = {

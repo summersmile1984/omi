@@ -14,7 +14,7 @@ export type TwitterProfileDependencies = Readonly<{
   fetchImpl?: FetchLike;
 }>;
 
-type TwitterProfilePayload = {
+export type TwitterProfilePayload = {
   name: string;
   profile: string;
   rest_id: string;
@@ -82,7 +82,7 @@ async function providerJson(response: Response): Promise<Record<string, unknown>
   return object;
 }
 
-async function fetchTwitterProfile(
+export async function fetchTwitterProfile(
   env: JobsEnv,
   handle: string,
   dependencies: TwitterProfileDependencies,

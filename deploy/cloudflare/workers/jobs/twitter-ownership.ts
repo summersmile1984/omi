@@ -1,6 +1,10 @@
 import type { Context, Hono } from "hono";
 import type { SignedAuthContext } from "../shared/auth-context";
 import type { JobsEnv } from "./env";
+import {
+  fetchTwitterProfile,
+  type TwitterProfilePayload,
+} from "./twitter-profile";
 
 const MAX_REQUEST_TEXT = 256;
 const MAX_HANDLE_LENGTH = 128;
@@ -33,6 +37,7 @@ type OwnershipResult = Readonly<{
   verified: boolean;
   providerRequestFingerprint: string;
   providerResponseFingerprint: string | null;
+  personaId?: string;
 }>;
 
 type TransactionRow = {
@@ -58,6 +63,12 @@ type ClaimRow = {
   transaction_id: string;
   username: string;
   tweet_id: string;
+};
+
+type PersonaCatalogRow = {
+  id: string;
+  owner_uid: string | null;
+  data_json: string;
 };
 
 class TwitterOwnershipError extends Error {
@@ -314,12 +325,28 @@ async function accountState(env: JobsEnv, uid: string) {
   return generation;
 }
 
-function publicResult(row: TransactionRow, claimStatus: string | null = null) {
-  let result: { tweet?: unknown; verified?: unknown } = {};
+function publicResult(
+  row: TransactionRow,
+  claimStatus: string | null = null,
+  legacyWire = false,
+) {
+  let result: { tweet?: unknown; verified?: unknown; persona_id?: unknown } = {};
   try {
-    result = JSON.parse(row.result_json) as { tweet?: unknown; verified?: unknown };
+    result = JSON.parse(row.result_json) as {
+      tweet?: unknown;
+      verified?: unknown;
+      persona_id?: unknown;
+    };
   } catch {
     // A malformed result is never returned as a successful proof.
+  }
+  const personaId = typeof result.persona_id === "string" ? result.persona_id : undefined;
+  if (legacyWire) {
+    return {
+      tweet: typeof result.tweet === "string" ? result.tweet : "",
+      verified: row.status === "verified" && row.verified === 1,
+      ...(personaId ? { persona_id: personaId } : {}),
+    };
   }
   return {
     transaction_id: row.transaction_id,
@@ -327,6 +354,7 @@ function publicResult(row: TransactionRow, claimStatus: string | null = null) {
     verified: row.status === "verified" && row.verified === 1,
     status: row.status,
     claim_status: claimStatus,
+    ...(personaId ? { persona_id: personaId } : {}),
   };
 }
 
@@ -340,6 +368,156 @@ async function readTransaction(
   )
     .bind(uid, requestFingerprint)
     .first<TransactionRow>();
+}
+
+function catalogPayload(raw: string, personaId: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new TwitterOwnershipError(503, "persona_unavailable", "Persona is unavailable");
+  }
+  const object = objectValue(parsed);
+  if (!object || object.id !== undefined && object.id !== personaId) {
+    throw new TwitterOwnershipError(503, "persona_unavailable", "Persona is unavailable");
+  }
+  if (!Array.isArray(object.capabilities) || !object.capabilities.includes("persona")) {
+    throw new TwitterOwnershipError(404, "persona_not_found", "Persona not found");
+  }
+  return object;
+}
+
+function catalogString(value: unknown, maximum: number): string {
+  return typeof value === "string" ? value.trim().slice(0, maximum) : "";
+}
+
+function catalogWriteError(error: unknown): TwitterOwnershipError {
+  if (error instanceof Error && error.message.includes("account deletion fence")) {
+    return new TwitterOwnershipError(
+      409,
+      "account_deletion_fenced",
+      "account data plane is fenced",
+    );
+  }
+  return new TwitterOwnershipError(409, "persona_changed", "Persona changed during update");
+}
+
+/**
+ * Apply the smallest Cloudflare-owned Persona projection needed by the exact
+ * Twitter verification contract.  This intentionally writes only D1 catalog
+ * metadata; legacy prompt generation, memory extraction, and public-cache
+ * invalidation remain separate migration gates.
+ */
+async function attachTwitterPersona(
+  env: JobsEnv,
+  uid: string,
+  username: string,
+  handle: string,
+  profile: TwitterProfilePayload,
+  requestedPersonaId: string | null,
+  now: number,
+) {
+  let row: PersonaCatalogRow | null = null;
+  if (requestedPersonaId) {
+    row = await env.APP_DB.prepare(
+      "SELECT id, owner_uid, data_json FROM cf_app_catalog WHERE id = ? AND disabled = 0 LIMIT 1",
+    )
+      .bind(requestedPersonaId)
+      .first<PersonaCatalogRow>();
+    if (!row) {
+      throw new TwitterOwnershipError(404, "persona_not_found", "Persona not found");
+    }
+    if (row.owner_uid !== uid) {
+      throw new TwitterOwnershipError(403, "persona_owner_mismatch", "Persona owner does not match");
+    }
+  } else {
+    row = await env.APP_DB.prepare(
+      `SELECT id, owner_uid, data_json FROM cf_app_catalog
+         WHERE owner_uid = ? AND disabled = 0
+           AND json_extract(data_json, '$.username') = ?
+         ORDER BY updated_at DESC, id DESC LIMIT 1`,
+    )
+      .bind(uid, username)
+      .first<PersonaCatalogRow>();
+    if (!row) {
+      const conflicting = await env.APP_DB.prepare(
+        `SELECT id FROM cf_app_catalog WHERE disabled = 0
+           AND json_extract(data_json, '$.username') = ? LIMIT 1`,
+      )
+        .bind(username)
+        .first<{ id?: string }>();
+      if (conflicting) {
+        throw new TwitterOwnershipError(409, "persona_username_taken", "Persona username is already taken");
+      }
+    }
+  }
+
+  const personaId = row?.id || `twitter-persona-${crypto.randomUUID()}`;
+  const existing = row ? catalogPayload(row.data_json, personaId) : {};
+  const priorAccounts = Array.isArray(existing.connected_accounts)
+    ? existing.connected_accounts.filter((value): value is string => typeof value === "string")
+    : [];
+  const priorTwitter = objectValue(existing.twitter) || {};
+  const profileHandle = catalogString(profile.profile, MAX_HANDLE_LENGTH) || handle;
+  const payload: Record<string, unknown> = {
+    ...existing,
+    id: personaId,
+    uid,
+    owner_uid: uid,
+    name: catalogString(profile.name, 512) || username,
+    author: catalogString(profile.name, 512) || username,
+    username,
+    description: catalogString(profile.desc, 4_000),
+    image: catalogString(profile.avatar, 2_048),
+    category: existing.category || "personality-emulation",
+    capabilities: ["persona"],
+    connected_accounts: [...new Set([...priorAccounts, "twitter"])],
+    approved: true,
+    status: "approved",
+    private: existing.private === true,
+    twitter: {
+      ...priorTwitter,
+      username: profileHandle,
+      avatar: catalogString(profile.avatar, 2_048),
+      connected_at: new Date(now * 1_000).toISOString(),
+    },
+    updated_at: new Date(now * 1_000).toISOString(),
+  };
+  if (!row) payload.created_at = new Date(now * 1_000).toISOString();
+  const encoded = JSON.stringify(payload);
+  if (utf8Length(encoded) > 500_000) {
+    throw new TwitterOwnershipError(503, "persona_unavailable", "Persona is unavailable");
+  }
+  if (row) {
+    let update: { meta?: { changes?: number } };
+    try {
+      update = await env.APP_DB.prepare(
+        `UPDATE cf_app_catalog SET data_json = ?, updated_at = ?
+           WHERE id = ? AND owner_uid = ? AND data_json = ?`,
+      )
+        .bind(encoded, now, personaId, uid, row.data_json)
+        .run();
+    } catch (error) {
+      throw catalogWriteError(error);
+    }
+    if (Number(update.meta?.changes || 0) !== 1) {
+      throw new TwitterOwnershipError(409, "persona_changed", "Persona changed during update");
+    }
+  } else {
+    try {
+      await env.APP_DB.prepare(
+        `INSERT INTO cf_app_catalog
+           (id, approved, status, disabled, is_popular, installs, rating_avg,
+            rating_count, data_json, updated_at, owner_uid)
+         VALUES (?, 1, 'approved', 0, 0, 0, NULL, 0, ?, ?, ?)`,
+      )
+        .bind(personaId, encoded, now, uid)
+        .run();
+    } catch (error) {
+      throw catalogWriteError(error);
+    }
+  }
+  return personaId;
 }
 
 async function markFailed(
@@ -371,6 +549,7 @@ async function claimHandle(
   )
     .bind(handle)
     .first<ClaimRow>();
+  let inserted = false;
   if (existing && existing.uid !== uid) {
     return { conflict: true, status: "conflict" } as const;
   }
@@ -381,6 +560,7 @@ async function claimHandle(
       )
         .bind(handle, uid, generation, transactionId, username, tweetId, now, now)
         .run();
+      inserted = true;
     } catch {
       throw new TwitterOwnershipError(
         503,
@@ -403,6 +583,7 @@ async function claimHandle(
   return {
     conflict: false,
     status: existing.transaction_id === transactionId ? "claimed" : "already_claimed",
+    created: inserted && existing.transaction_id === transactionId && existing.uid === uid,
   } as const;
 }
 
@@ -410,6 +591,7 @@ async function verifyOwnership(
   c: OwnershipContext,
   context: SignedAuthContext,
   dependencies: TwitterOwnershipDependencies,
+  options: { exact: boolean } = { exact: false },
 ) {
   if (!validUid(context.uid)) {
     throw new TwitterOwnershipError(403, "invalid_principal", "invalid principal");
@@ -427,7 +609,7 @@ async function verifyOwnership(
   }
   const generation = await accountState(c.env, context.uid);
   const requestFingerprint = await sha256Hex(
-    `twitter-ownership:v1\0${stableJson({ handle, personaId, username })}`,
+    `twitter-ownership:${options.exact ? "exact" : "evidence"}:v1\0${stableJson({ handle, personaId, username })}`,
   );
   const providerRequestFingerprint = await sha256Hex(
     `rapidapi-timeline:v1\0${handle}`,
@@ -454,7 +636,7 @@ async function verifyOwnership(
         "Twitter handle is already claimed",
       );
     }
-    return publicResult(row, row.status === "verified" ? "claimed" : null);
+    return publicResult(row, row.status === "verified" ? "claimed" : null, options.exact);
   }
   const now = nowSeconds(dependencies);
   if (!row) {
@@ -549,12 +731,45 @@ async function verifyOwnership(
       );
     }
     claimStatus = claim.status;
+    if (options.exact) {
+      try {
+        const profile = await fetchTwitterProfile(c.env, handle, {
+          fetchImpl: dependencies.fetchImpl,
+        });
+        result = {
+          ...result,
+          personaId: await attachTwitterPersona(
+            c.env,
+            context.uid,
+            username,
+            handle,
+            profile,
+            personaId,
+            now,
+          ),
+        };
+      } catch (error) {
+        // A claim is provisional until the D1 catalog projection commits. Do
+        // not strand it when the provider/catalog authority is unavailable.
+        if (claim.created) {
+          await c.env.APP_DB.prepare(
+            "DELETE FROM cf_twitter_ownership_claims WHERE handle = ? AND uid = ? AND transaction_id = ?",
+          )
+            .bind(handle, context.uid, transactionId)
+            .run()
+            .catch(() => undefined);
+        }
+        if (error instanceof TwitterOwnershipError) throw error;
+        throw providerErrorResponse(error);
+      }
+    }
   }
   const status = result.verified ? "verified" : "unverified";
   const resultJson = JSON.stringify({
     tweet: result.tweet,
     tweet_id: result.tweetId,
     verified: result.verified,
+    ...(result.personaId ? { persona_id: result.personaId } : {}),
   });
   const updated = await c.env.APP_DB.prepare(
     "UPDATE cf_twitter_ownership_transactions SET status = ?, verified = ?, tweet_id = ?, provider_response_fingerprint = ?, result_json = ?, last_error = NULL, updated_at = ? WHERE uid = ? AND transaction_id = ? AND account_generation = ? AND status = 'pending'",
@@ -586,7 +801,7 @@ async function verifyOwnership(
       "Twitter ownership transaction is unavailable",
     );
   }
-  return publicResult(row, claimStatus);
+  return publicResult(row, claimStatus, options.exact);
 }
 
 function errorResponse(c: OwnershipContext, error: unknown) {
@@ -619,6 +834,22 @@ export function registerTwitterOwnershipRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return c.json(await verifyOwnership(c, context, dependencies));
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+  app.get("/v1/personas/twitter/verify-ownership", async (c) => {
+    if (c.env.TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED !== "true") {
+      return c.json(
+        { error: "twitter_ownership_unavailable" },
+        503,
+        { "cache-control": "no-store" },
+      );
+    }
+    const context = await requestContext(c);
+    if (!context) return c.json({ detail: "Not authenticated" }, 401);
+    try {
+      return c.json(await verifyOwnership(c, context, dependencies, { exact: true }));
     } catch (error) {
       return errorResponse(c, error);
     }

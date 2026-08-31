@@ -1,6 +1,6 @@
 # External MCP app migration gates
 
-截至 2026-09-01，远端 MCP app 的三条 exact 路径已由 Edge → Jobs 承载 staging owner；`migrate-owner` 与 Twitter ownership 仍是 `legacy-owned`。本文件描述当前 owner seam 及把“远端 MCP server 安装为 Omi app”迁移到生产前必须闭合的契约：
+截至 2026-09-01，远端 MCP app 的三条 exact 路径与 Twitter ownership exact route 已由 Edge → Jobs 承载 staging owner；`migrate-owner` 仍是 `legacy-owned`。本文件描述当前 owner seam 及把“远端 MCP server 安装为 Omi app”迁移到生产前必须闭合的契约：
 
 | 路由 | legacy 行为 | 当前结论 |
 | --- | --- | --- |
