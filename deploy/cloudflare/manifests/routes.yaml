@@ -3240,6 +3240,17 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/cf/messages/attachments
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, external-openai-api, queue-jobs, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v2/cf/chat-sessions/:sessionId/assistant-runs/:runId
     owner: jobs

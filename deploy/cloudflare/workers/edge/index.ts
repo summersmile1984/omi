@@ -40,6 +40,7 @@ import {
 const app = new Hono<{ Bindings: EdgeEnv; Variables: EdgeVariables }>();
 const MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES = 5_000_000;
 const MAX_BYOK_ACTIVATION_BODY_BYTES = 8_192;
+const MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES = 128 * 1024;
 const OPENAI_APPS_CHALLENGE_TOKEN =
   "ZsVB_wpc4R35_tHloCZCokY6H2fBkKyBJrz-4MtXjYE";
 
@@ -1432,6 +1433,102 @@ const proxyAuthenticatedAI = async (
   return withRequestId(response, id);
 };
 
+type ChatAttachmentRoutingResult = {
+  body: ArrayBuffer;
+  hasAttachments: boolean;
+};
+
+async function inspectChatAttachmentBody(
+  request: Request,
+): Promise<ChatAttachmentRoutingResult | null> {
+  if (!(request.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
+    return { body: new ArrayBuffer(0), hasAttachments: false };
+  }
+  const declared = Number(request.headers.get("content-length") || "0");
+  if (Number.isFinite(declared) && declared > MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES) return null;
+  const body = request.clone().body;
+  if (!body) return { body: new ArrayBuffer(0), hasAttachments: false };
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(next.value);
+    }
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    return { body: bytes.buffer, hasAttachments: false };
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    return { body: bytes.buffer, hasAttachments: false };
+  }
+  const payload = decoded as Record<string, unknown>;
+  const fileIds = payload.file_ids;
+  const hasAttachments = Array.isArray(fileIds) && fileIds.length > 0 && !("context" in payload);
+  return { body: bytes.buffer, hasAttachments };
+}
+
+const proxyChatMessages = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const url = new URL(c.req.url);
+  const appChatRequested = ["app_id", "plugin_id"].some((key) => {
+    const value = url.searchParams.get(key);
+    return value !== null && value !== "" && value !== "null";
+  });
+  let inspected: ChatAttachmentRoutingResult | null = null;
+  if (!appChatRequested) inspected = await inspectChatAttachmentBody(c.req.raw);
+  if (inspected?.hasAttachments) {
+    const target = new URL("/v2/cf/messages/attachments", "https://jobs.internal");
+    const headers = await authenticatedHeaders(c, auth, "jobs", {
+      method: "POST",
+      url: target,
+    });
+    if (headers instanceof Response) return withRequestId(headers, id);
+    const response = await c.env.JOBS.fetch(
+      new Request(target, { method: "POST", headers, body: inspected.body }),
+    );
+    return withRequestId(response, id);
+  }
+  const headers = await authenticatedHeaders(c, auth, "api-ai");
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.API_AI.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+};
+
 app.get("/v1/config/api-keys", proxyAuthenticatedCore);
 app.post("/v1/users/me/byok-active", async (c) => {
   const id = requestId(c.req.raw);
@@ -1506,7 +1603,7 @@ app.post("/v1/messages/:messageId/report", proxyAuthenticatedCore);
 app.post("/v2/messages/:messageId/report", proxyAuthenticatedCore);
 app.patch("/v2/messages/:messageId/rating", proxyAuthenticatedCore);
 app.post("/v2/messages/share", proxyAuthenticatedCore);
-app.post("/v2/messages", proxyAuthenticatedAI);
+app.post("/v2/messages", proxyChatMessages);
 app.post("/v1/initial-message", proxyAuthenticatedAI);
 app.post("/v2/initial-message", proxyAuthenticatedAI);
 app.post("/v2/chat/initial-message", proxyAuthenticatedAI);
@@ -1563,6 +1660,7 @@ app.post(
   "/v2/cf/chat-sessions/:sessionId/assistant-runs",
   proxyAuthenticatedJobs,
 );
+app.post("/v2/cf/messages/attachments", proxyAuthenticatedJobs);
 app.get(
   "/v2/cf/chat-sessions/:sessionId/assistant-runs/:runId",
   proxyAuthenticatedJobs,

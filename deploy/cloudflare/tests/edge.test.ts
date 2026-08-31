@@ -827,6 +827,110 @@ describe("edge gateway", () => {
     expect(requests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes only attachment messages to the guarded Jobs Assistant bridge", async () => {
+    const jobsRequests: Request[] = [];
+    const aiRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      API_AI: rawService(async (request) => {
+        aiRequests.push(request);
+        return Response.json({ route: "api-ai" });
+      }),
+      JOBS: rawService(async (request) => {
+        jobsRequests.push(request);
+        return Response.json({ route: "jobs" }, { status: 202 });
+      }),
+      RATE_LIMITS: rateLimits(() => allowRateLimit()),
+    };
+
+    const attachmentResponse = await edge.fetch(
+      new Request("https://edge.test/v2/messages", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "better-auth-session=opaque",
+          "content-type": "application/json",
+          "x-omi-auth-context": "caller-controlled",
+        },
+        body: JSON.stringify({ text: "Summarize", file_ids: ["file-1"] }),
+      }),
+      env as never,
+    );
+    expect(attachmentResponse.status).toBe(202);
+    await expect(attachmentResponse.json()).resolves.toEqual({ route: "jobs" });
+    expect(jobsRequests).toHaveLength(1);
+    expect(new URL(jobsRequests[0].url).pathname).toBe(
+      "/v2/cf/messages/attachments",
+    );
+    await expect(jobsRequests[0].json()).resolves.toEqual({
+      text: "Summarize",
+      file_ids: ["file-1"],
+    });
+    expect(jobsRequests[0].headers.get("authorization")).toBeNull();
+    expect(jobsRequests[0].headers.get("cookie")).toBeNull();
+    expect(
+      decodeAuthContext(jobsRequests[0].headers.get("x-omi-auth-context")),
+    ).toMatchObject({
+      uid: "user-1",
+      audience: "jobs",
+      method: "POST",
+      path: "/v2/cf/messages/attachments",
+    });
+    expect(jobsRequests[0].headers.get("x-omi-internal-signature")).toBeTruthy();
+
+    const textResponse = await edge.fetch(
+      new Request("https://edge.test/v2/messages", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ text: "Plain text" }),
+      }),
+      env as never,
+    );
+    expect(textResponse.status).toBe(200);
+    await expect(textResponse.json()).resolves.toEqual({ route: "api-ai" });
+    expect(aiRequests).toHaveLength(1);
+    expect(new URL(aiRequests[0].url).pathname).toBe("/v2/messages");
+    await expect(aiRequests[0].json()).resolves.toEqual({ text: "Plain text" });
+    expect(
+      decodeAuthContext(aiRequests[0].headers.get("x-omi-auth-context")),
+    ).toMatchObject({
+      uid: "user-1",
+      audience: "api-ai",
+      method: "POST",
+      path: "/v2/messages",
+    });
+
+    const contextualResponse = await edge.fetch(
+      new Request("https://edge.test/v2/messages", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          text: "Contextual attachment",
+          file_ids: ["file-1"],
+          context: { screen: "settings" },
+        }),
+      }),
+      env as never,
+    );
+    expect(contextualResponse.status).toBe(200);
+    await expect(contextualResponse.json()).resolves.toEqual({ route: "api-ai" });
+    expect(aiRequests).toHaveLength(2);
+    expect(jobsRequests).toHaveLength(1);
+  });
+
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {

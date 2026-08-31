@@ -30,9 +30,10 @@
 - `GET /v2/cf/chat-sessions/{session_id}/files` 只读同一 uid/session 下仍为 ready 的文件，并返回安全的 FileChat metadata projection，不返回 R2 storage key。
 - `DELETE /v2/cf/chat-sessions/{session_id}/files/{file_id}` 只解除 session 关联，不删除文件 authority；删 session、删文件和账号删除 residual sweep 都会清理关联。
 
-这组 route 证明了 D1 attachment reader 的 uid/session/deletion fence，但尚未让
-legacy `/v2/messages` 消费附件；该 exact route 仍对 `file_ids` 返回
-`409 attachments_not_migrated`。因此 `/v1/files`、`/v2/files` 继续不切 owner。
+这组 route 证明了 D1 attachment reader 的 uid/session/deletion fence。带有旧 app/context
+参数的 `/v2/messages` 仍在 API-AI 返回 `409`；不带这些参数且含非空 `file_ids` 的请求
+现在只在 Edge 的显式 staging bridge 开关打开后才进入 Jobs Assistants adapter。因此
+`/v1/files`、`/v2/files` 继续不切 owner。
 
 另外，API Core 的 staging-only `POST /v2/desktop/messages` 现在可以接收
 `file_ids`：它只接受当前 uid 下 `cf_chat_files.status = 'ready'` 的 canonical
@@ -49,9 +50,9 @@ rows，在同一 D1 batch 中写入 `cf_chat_session_files`（带
 当前不能仅把 Edge manifest 的 owner 改成 Jobs。旧上传接口的返回值会被后续桌面聊天请求继续使用，至少还需要以下闭合证据：
 
 1. `cf_chat_files` 的 canonical row 必须有一个 Cloudflare chat-session reader。该 reader
-   已由 `/v2/cf/chat-sessions/{session_id}/files` 提供；legacy API-AI 的
-   `/v2/messages` 对 `file_ids` 仍明确返回 `409 attachments_not_migrated`，因此
-   上传成功后仍不能把 exact legacy chat owner 切到 Cloudflare。
+   已由 `/v2/cf/chat-sessions/{session_id}/files` 提供；exact `/v2/messages` 的附件
+   bridge 目前只是默认关闭的 202/poll staging contract，仍不具备旧 response/SSE
+   parity，因此上传成功后仍不能把 exact legacy chat owner 切到 Cloudflare。
 2. 非图片文件需要保留旧 Assistants `thread → message attachment → file_search → run` 的会话连续性；图片需要保留旧 vision 读取语义。显式 staging adapter 已闭合新 run 的 Worker-side Assistants thread/assistant authority 和 D1 thread/file/message projection，但 exact legacy `/v2/messages` 仍未接入该 adapter。
 3. 旧 Firestore `users/{uid}/files` 的历史 rows 以及其中的 `openai_file_id`、`thumb_name`、GCS thumbnail URL 必须先回放到 canonical D1/R2/provider 记录，并能验证重复上传、provider 删除和删号残留。`cf_chat_files` 目前只覆盖新上传 authority，不能让历史 id 在切换后凭空变成可读。
 4. 兼容验证需要同时覆盖 legacy 多文件 200 response、session attachment 消费、图片缩略图 URL 过期/跨 uid 隔离，以及 provider/R2/D1 任一失败时的原子回滚。现有测试覆盖 canonical Files、session attachment 和显式 Assistants adapter 的 provider/message projection，但不证明旧客户端 response/SSE/session parity。
@@ -61,7 +62,7 @@ rows，在同一 D1 batch 中写入 `cf_chat_session_files`（带
 ## 代码证据
 
 - Legacy upload 与持久化：`backend/routers/chat.py` 的 `/v1/files`、`/v2/files` 写本机临时文件，经 `FileChatTool.upload` 调用 Pillow/OpenAI Files，再把 FileChat rows 写入 Firestore chat database。
-- Legacy 消费：`backend/routers/chat.py` 的 `/v2/messages` 将 `file_ids` 加入 Firestore chat session，随后由 `FileChatTool` 创建或恢复 OpenAI Assistants thread/assistant 并运行 file search；Cloudflare 当前 exact `/v2/messages` 仍未承接这条附件分支，但显式 `/v2/cf/chat-sessions/{session_id}/assistant-runs` 已通过 Jobs adapter 承接新 projection。
+- Legacy 消费：`backend/routers/chat.py` 的 `/v2/messages` 将 `file_ids` 加入 Firestore chat session，随后由 `FileChatTool` 创建或恢复 OpenAI Assistants thread/assistant 并运行 file search；Cloudflare exact `/v2/messages` 现在只在显式 staging bridge 开启时把无 app/context 的附件分支转到 Jobs，显式 `/v2/cf/chat-sessions/{session_id}/assistant-runs` 仍是底层 projection contract。
 - Cloudflare 新 authority：`deploy/cloudflare/workers/jobs/chat-file-routes.ts` 写 `cf_chat_files` 与专用 `CHAT_FILES` R2，并通过 direct OpenAI Files REST；`0111`/`0113`/`0118` 共同提供 session attachment、Assistants provider state 和 D1 message projection，但仍没有历史 Firestore/GCS backfill。
 
 ## 历史回放与 legacy owner 切换设计
@@ -86,7 +87,7 @@ CREATE TABLE cf_chat_session_files (
 
 provider 侧现在已在显式 staging adapter 中闭合 `thread create`、`message attachment`、`run create/poll/list` 和 vision/file-search content 读取，并把 provider 状态、重试幂等键、D1 message projection 和不可恢复错误写入 Cloudflare authority。仅把 `cf_chat_files.provider_file_id` 传进 Workers AI，或把 file bytes 拼进普通文本 prompt，都不等价于旧 Assistants `file_search` 语义。历史回放还需要 cursor/idempotency 表，能从 Firestore file row 和 provider object 恢复 canonical row；没有可读原始 provider object 的旧 row 必须明确标记不可迁移，不能生成伪造 file id。
 
-在历史回放和旧客户端 conformance 完成前，当前可验证范围是 `/v1/cf/chat-files` 的上传/list/delete、session attachment reader 和默认关闭的 staging aliases；不存在一个既有的 legacy GET/list/delete endpoint 可以独立切 owner 来绕过这条 session dependency。
+在历史回放和旧客户端 conformance 完成前，当前可验证范围是 `/v1/cf/chat-files` 的上传/list/delete、session attachment reader、Assistants projection 和默认关闭的 attachment bridge；不存在一个既有的 legacy GET/list/delete endpoint 可以独立切 owner 来绕过这条 session dependency。
 
 ## Assistants continuity adapter（显式 staging opt-in）
 
@@ -113,8 +114,42 @@ projection 与 run/session 一样有 account-deletion fence，并由 residual au
 seam，不是 owner 切换。
 
 这仍然不是 `/v1/files`、`/v2/files` 的 owner 切换，也不是 exact `/v2/messages` 的
-legacy wire parity。未覆盖的 legacy contract 包括 Firestore `users/{uid}/files`/chat
-session 历史回放、GCS thumbnail/provider object backfill、旧 `FileChatTool` 的完整多轮/
-SSE/response wire、Assistants 历史 thread 恢复、桌面客户端兼容回归和真实 staging
-provider secret/live probe。Workers AI 文本替代不作为等价实现；在这些证据补齐前，legacy
+legacy wire parity。当前只新增了一个默认关闭的附件 bridge：Edge 会在 exact
+`POST /v2/messages` 检出非空 `file_ids`（且没有旧 app/context 参数）后，把同一份
+有界 JSON body 转发到 Jobs 的 `/v2/cf/messages/attachments`；无附件请求仍原样进入
+API-AI 的 Workers AI text path。Jobs bridge 复用 `cf_chat_session_files`、Assistants
+run/message projection 和 Queue，不读取或信任客户端 provider id；admission 成功返回
+`202` JSON，并通过 `Location` 和 `x-omi-chat-stream: poll` 指向 run polling，而不是旧
+客户端的 SSE。`CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED` 仍必须显式打开，关闭时 bridge
+返回 `404 legacy_route_disabled`。
+
+因此该 bridge 只是客户端迁移用的 staging contract，不是 `/v2/messages` legacy owner
+切换。未覆盖的 legacy contract 包括 Firestore `users/{uid}/files`/chat session 历史
+回放、GCS thumbnail/provider object backfill、旧 `FileChatTool` 的完整多轮/SSE/response
+wire、Assistants 历史 thread 恢复、桌面客户端兼容回归和真实 staging provider
+secret/live probe。Workers AI 文本替代不作为等价实现；在这些证据补齐前，legacy
 aliases 继续默认 fail-closed。
+
+## Attachment bridge contract（默认关闭）
+
+`POST /v2/messages` 的附件分支只识别 JSON body 中非空的 `file_ids`。Edge 重新读取一份
+不超过 128 KiB 的 clone 来决定路由，原始 body 不会被 API-AI 分支提前消费；请求带
+`app_id`、`plugin_id` 或 `context` 时继续留在 API-AI 的现有拒绝边界。Jobs 端再次以
+128 KiB body、64 KiB text、20 个唯一 canonical file id、uid/session/`ready` 状态和
+account-deletion fence 做校验，因此 Edge 路由判断不是安全边界。
+
+Jobs admission 先复用同一 uid 下已有的非 app chat session 和 session-file projection，
+再通过既有 Assistants thread/message/run adapter 创建 D1 projection。请求应带
+`Idempotency-Key`（缺失时只生成一次性 key，不能依赖它做客户端重试）；首次 admission
+返回 `202`，重复 key 返回已持久化的 `200` projection，Queue failure 明确返回 `503`
+且不回落 legacy。响应不包含 provider credential，run 结果通过现有
+`GET /v2/cf/chat-sessions/{sessionId}/assistant-runs/{runId}` 读取。
+
+此 bridge 尚未提供旧 `/v2/messages` 的 SSE、同步 200 response、Firestore session
+连续性或历史 file backfill，因此不能作为 legacy owner 切换证据。验证命令：
+
+```bash
+npm test -- --run tests/chat-attachments-bridge.test.ts tests/edge.test.ts
+npm run typecheck
+npm run validate:manifest
+```

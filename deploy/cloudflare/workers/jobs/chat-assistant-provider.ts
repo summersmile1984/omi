@@ -10,6 +10,8 @@ const MAX_POLL_ATTEMPTS = 12;
 const MAX_TEXT_BYTES = 64_000;
 const MAX_IDEMPOTENCY_BYTES = 300;
 const MAX_ATTACHMENTS = 20;
+const MAX_ATTACHMENT_BRIDGE_BODY_BYTES = 128 * 1024;
+const MAX_ATTACHMENT_ID_BYTES = 128;
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type AuthContext = { uid: string; authority?: string };
@@ -68,7 +70,12 @@ type AssistantMessageProjectionRow = {
 
 export class ChatAssistantProviderError extends Error {
   constructor(
-    readonly code: "provider_unavailable" | "provider_not_configured" | "provider_rejected" | "invalid_provider_response",
+    readonly code:
+      | "provider_unavailable"
+      | "provider_not_configured"
+      | "provider_rejected"
+      | "invalid_provider_response"
+      | "request_too_large",
     message: string,
     readonly retryable = false,
   ) {
@@ -949,16 +956,208 @@ function stagingEnabled(c: JobsContext): boolean {
 
 function errorResponse(c: JobsContext, error: unknown): Response {
   if (error instanceof ChatAssistantProviderError) {
-    const status = error.code === "provider_rejected" ? 400 : error.code === "provider_not_configured" ? 503 : 502;
+    const status =
+      error.code === "request_too_large"
+        ? 413
+        : error.code === "provider_rejected"
+          ? 400
+          : error.code === "provider_not_configured"
+            ? 503
+            : 502;
     return c.json({ error: error.code, message: error.message }, status);
   }
   return c.json({ error: "chat_assistant_provider_unavailable" }, 503);
+}
+
+type AttachmentBridgePayload = {
+  text: string;
+  fileIds: string[];
+  sessionId?: string;
+};
+
+async function boundedRequestText(c: JobsContext, limit: number): Promise<string> {
+  const declared = Number(c.req.header("content-length") || "0");
+  if (Number.isFinite(declared) && declared > limit)
+    throw new ChatAssistantProviderError("request_too_large", "request body is too large");
+  const body = c.req.raw.body;
+  if (!body)
+    throw new ChatAssistantProviderError("provider_rejected", "request body is required");
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > limit) {
+        await reader.cancel();
+        throw new ChatAssistantProviderError("request_too_large", "request body is too large");
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (error instanceof ChatAssistantProviderError) throw error;
+    throw new ChatAssistantProviderError("provider_unavailable", "request body is unavailable", true);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new ChatAssistantProviderError("provider_rejected", "request body is not valid UTF-8");
+  }
+}
+
+async function parseAttachmentBridgePayload(c: JobsContext): Promise<AttachmentBridgePayload> {
+  const raw = await boundedRequestText(c, MAX_ATTACHMENT_BRIDGE_BODY_BYTES);
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    throw new ChatAssistantProviderError("provider_rejected", "request body is not valid JSON");
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded))
+    throw new ChatAssistantProviderError("provider_rejected", "request body must be an object");
+  const payload = decoded as Record<string, unknown>;
+  const allowed = new Set(["text", "file_ids", "session_id"]);
+  if (Object.keys(payload).some((key) => !allowed.has(key)))
+    throw new ChatAssistantProviderError("provider_rejected", "unsupported attachment request field");
+  const text = typeof payload.text === "string" ? payload.text : "";
+  if (!text.trim() || new TextEncoder().encode(text).byteLength > MAX_TEXT_BYTES)
+    throw new ChatAssistantProviderError("provider_rejected", "chat question is invalid");
+  const rawFileIds = payload.file_ids;
+  if (!Array.isArray(rawFileIds) || rawFileIds.length === 0 || rawFileIds.length > MAX_ATTACHMENTS)
+    throw new ChatAssistantProviderError("provider_rejected", "chat attachments are invalid");
+  const fileIds = rawFileIds.map((value) => (typeof value === "string" ? value : ""));
+  if (
+    fileIds.some(
+      (value) =>
+        !validSegment(value, MAX_ATTACHMENT_ID_BYTES) ||
+        new TextEncoder().encode(value).byteLength > MAX_ATTACHMENT_ID_BYTES,
+    ) ||
+    new Set(fileIds).size !== fileIds.length
+  )
+    throw new ChatAssistantProviderError("provider_rejected", "chat attachments are invalid");
+  const sessionValue = payload.session_id;
+  if (sessionValue !== undefined && (typeof sessionValue !== "string" || !validSegment(sessionValue, 256)))
+    throw new ChatAssistantProviderError("provider_rejected", "chat session is invalid");
+  return { text, fileIds, ...(sessionValue === undefined ? {} : { sessionId: sessionValue }) };
+}
+
+async function resolveAttachmentSession(
+  env: JobsEnv,
+  uid: string,
+  requestedSessionId: string | undefined,
+  now: number,
+): Promise<string> {
+  if (requestedSessionId !== undefined) {
+    const row = await env.APP_DB.prepare(
+      "SELECT id FROM cf_chat_sessions WHERE uid = ? AND id = ? LIMIT 1",
+    )
+      .bind(uid, requestedSessionId)
+      .first<{ id?: string }>();
+    if (!row?.id)
+      throw new ChatAssistantProviderError("provider_rejected", "chat session not found");
+    return row.id;
+  }
+  const latest = await env.APP_DB.prepare(
+    "SELECT id FROM cf_chat_sessions WHERE uid = ? AND app_id IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1",
+  )
+    .bind(uid)
+    .first<{ id?: string }>();
+  if (latest?.id) return latest.id;
+  const sessionId = crypto.randomUUID();
+  try {
+    const inserted = await env.APP_DB.prepare(
+      "INSERT OR IGNORE INTO cf_chat_sessions (uid, id, title, preview, created_at, updated_at, app_id, message_count, starred) VALUES (?, ?, 'New Chat', NULL, ?, ?, NULL, 0, 0)",
+    )
+      .bind(uid, sessionId, now, now)
+      .run();
+    if (Number(inserted.meta?.changes || 0) === 1) return sessionId;
+  } catch (error) {
+    if (String(error).includes("account deletion fence"))
+      throw new ChatAssistantProviderError("provider_rejected", "account deletion fence");
+    throw new ChatAssistantProviderError("provider_unavailable", "chat session could not be persisted", true);
+  }
+  const winner = await env.APP_DB.prepare(
+    "SELECT id FROM cf_chat_sessions WHERE uid = ? AND app_id IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1",
+  )
+    .bind(uid)
+    .first<{ id?: string }>();
+  if (!winner?.id)
+    throw new ChatAssistantProviderError("provider_unavailable", "chat session could not be resolved", true);
+  return winner.id;
+}
+
+function attachmentIdempotencyKey(c: JobsContext): string {
+  const supplied = c.req.header("idempotency-key")?.trim() || c.req.header("x-omi-request-id")?.trim();
+  const key = supplied || `chat-attachment-${crypto.randomUUID()}`;
+  if (!validSegment(key, MAX_IDEMPOTENCY_BYTES) || new TextEncoder().encode(key).byteLength > MAX_IDEMPOTENCY_BYTES)
+    throw new ChatAssistantProviderError("provider_rejected", "idempotency key is invalid");
+  return key;
+}
+
+function attachmentResponseHeaders(sessionId: string, runId: string): Record<string, string> {
+  return {
+    "cache-control": "no-store",
+    "x-omi-chat-contract": "cloudflare-assistants-v1",
+    "x-omi-chat-stream": "poll",
+    location: `/v2/cf/chat-sessions/${encodeURIComponent(sessionId)}/assistant-runs/${encodeURIComponent(runId)}`,
+  };
 }
 
 export function registerChatAssistantRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: (c: JobsContext) => Promise<AuthContext | null>,
 ): void {
+  app.post("/v2/cf/messages/attachments", async (c) => {
+    if (!stagingEnabled(c)) return c.json({ error: "legacy_route_disabled" }, 404);
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      const payload = await parseAttachmentBridgePayload(c);
+      const now = Math.floor(Date.now() / 1000);
+      const sessionId = await resolveAttachmentSession(c.env, context.uid, payload.sessionId, now);
+      const idempotencyKey = attachmentIdempotencyKey(c);
+      const result = await createAssistantRun(
+        c.env,
+        context.uid,
+        sessionId,
+        idempotencyKey,
+        payload.text,
+        payload.fileIds,
+        now,
+      );
+      const runId = typeof result.run_id === "string" ? result.run_id : "";
+      if (!runId)
+        throw new ChatAssistantProviderError("provider_unavailable", "chat assistant run has no id", true);
+      if (result.created) {
+        try {
+          await c.env.JOBS.send({
+            jobId: runId,
+            uid: context.uid,
+            kind: "chat_assistant_poll",
+            payload: { sessionId, runId },
+          });
+        } catch {
+          return c.json(
+            { ...result, queue_status: "unavailable" },
+            503,
+            attachmentResponseHeaders(sessionId, runId),
+          );
+        }
+      }
+      return c.json(result, result.created ? 202 : 200, attachmentResponseHeaders(sessionId, runId));
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+
   app.post("/v2/cf/chat-sessions/:sessionId/assistant-runs", async (c) => {
     if (!stagingEnabled(c)) return c.json({ error: "legacy_route_disabled" }, 404);
     const context = await requestContext(c);

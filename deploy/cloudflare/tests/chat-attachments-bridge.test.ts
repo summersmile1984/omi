@@ -1,0 +1,232 @@
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Hono } from "hono";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { JobsEnv } from "../workers/jobs/env";
+import { registerChatAssistantRoutes } from "../workers/jobs/chat-assistant-provider";
+
+class SqliteD1 {
+  readonly database = new DatabaseSync(":memory:");
+
+  constructor() {
+    this.database.exec("PRAGMA foreign_keys = ON");
+    const directory = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../migrations/app",
+    );
+    for (const filename of readdirSync(directory)
+      .filter((value) => value.endsWith(".sql"))
+      .sort()) {
+      this.database.exec(readFileSync(path.join(directory, filename), "utf8"));
+    }
+  }
+
+  prepare(sql: string) {
+    const build = (args: unknown[] = []) => ({
+      bind: (...values: unknown[]) => build(values),
+      first: async <T>() =>
+        (this.database.prepare(sql).get(...(args as never[])) as
+          T | undefined) ?? null,
+      all: async <T>() => ({
+        results: this.database.prepare(sql).all(...(args as never[])) as T[],
+      }),
+      run: async () => {
+        const result = this.database.prepare(sql).run(...(args as never[]));
+        return { meta: { changes: Number(result.changes) } };
+      },
+    });
+    return build();
+  }
+
+  async batch(statements: Array<{ run: () => Promise<unknown> }>) {
+    const results = [];
+    for (const statement of statements) results.push(await statement.run());
+    return results;
+  }
+
+  close() {
+    this.database.close();
+  }
+}
+
+const databases: SqliteD1[] = [];
+
+function environment(withSession = true) {
+  const database = new SqliteD1();
+  databases.push(database);
+  database.database.exec(`
+    ${withSession ? "INSERT INTO cf_chat_sessions (uid, id, title, created_at, updated_at) VALUES ('attachment-user', 'session-1', 'Test', 1, 1);" : ""}
+    INSERT INTO cf_chat_files
+      (uid, file_id, request_fingerprint, provider, provider_file_id, name,
+       mime_type, size, checksum_sha256, storage_key, status,
+       thumbnail_status, created_at, updated_at)
+    VALUES
+      ('attachment-user', 'file-1', '${"a".repeat(64)}', 'openai', 'file-1-provider',
+       'notes.txt', 'text/plain', 4, '${"b".repeat(64)}',
+       'attachment-user/file-1', 'ready', 'not_applicable', 1, 1);
+    ${withSession ? "INSERT INTO cf_chat_session_files (uid, session_id, file_id, attached_at) VALUES ('attachment-user', 'session-1', 'file-1', 1);" : ""}
+  `);
+  const queue = { send: vi.fn(async () => undefined) };
+  const env = {
+    APP_DB: database,
+    JOBS: queue,
+    CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED: "true",
+    OPENAI_API_KEY: "test-openai-key",
+    OPENAI_ASSISTANT_ID: "asst-test-1",
+  } as never as JobsEnv;
+  return { database, env, queue };
+}
+
+function testApp(env: JobsEnv) {
+  const app = new Hono<{ Bindings: JobsEnv }>();
+  registerChatAssistantRoutes(app, async () => ({
+    uid: "attachment-user",
+    authority: "better-auth",
+  }));
+  return app;
+}
+
+function provider() {
+  return vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.endsWith("/threads")) return Response.json({ id: "thread-1" });
+    if (url.endsWith("/messages")) return Response.json({ id: "msg-1" });
+    return Response.json({ id: "run-1", status: "queued" });
+  });
+}
+
+function request(
+  app: Hono<{ Bindings: JobsEnv }>,
+  env: JobsEnv,
+  payload: Record<string, unknown>,
+  idempotencyKey = "attachment-request-1",
+) {
+  return app.request(
+    "https://jobs.test/v2/cf/messages/attachments",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": idempotencyKey,
+      },
+      body: JSON.stringify(payload),
+    },
+    env,
+  );
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  while (databases.length) databases.pop()?.close();
+});
+
+describe("Cloudflare /v2/messages attachment bridge", () => {
+  it("reuses the Assistant projection and returns an explicit 202 polling contract", async () => {
+    const fixture = environment();
+    const app = testApp(fixture.env);
+    const calls = provider();
+    vi.stubGlobal("fetch", calls);
+
+    const response = await request(app, fixture.env, {
+      text: "Summarize this file",
+      file_ids: ["file-1"],
+      session_id: "session-1",
+    });
+    expect(response.status).toBe(202);
+    expect(response.headers.get("x-omi-chat-contract")).toBe(
+      "cloudflare-assistants-v1",
+    );
+    expect(response.headers.get("x-omi-chat-stream")).toBe("poll");
+    expect(response.headers.get("location")).toMatch(
+      /\/v2\/cf\/chat-sessions\/session-1\/assistant-runs\/[^/]+$/,
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      created: true,
+      session_id: "session-1",
+      status: "queued",
+      message_projection: {
+        human_status: "pending",
+        assistant_status: "pending",
+      },
+    });
+    expect(calls).toHaveBeenCalledTimes(3);
+    expect(fixture.queue.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uid: "attachment-user",
+        kind: "chat_assistant_poll",
+        payload: expect.objectContaining({ sessionId: "session-1" }),
+      }),
+    );
+    expect(
+      fixture.database.database
+        .prepare(
+          "SELECT file_ids_json FROM cf_chat_assistant_message_projections",
+        )
+        .get(),
+    ).toEqual({ file_ids_json: '["file-1"]' });
+  });
+
+  it("resolves a default user session, supports idempotent retry, and binds all state to uid", async () => {
+    const fixture = environment();
+    const app = testApp(fixture.env);
+    const calls = provider();
+    vi.stubGlobal("fetch", calls);
+
+    const payload = { text: "Describe this", file_ids: ["file-1"] };
+    const first = await request(app, fixture.env, payload, "same-request");
+    expect(first.status).toBe(202);
+    const firstPayload = (await first.json()) as {
+      session_id: string;
+      run_id: string;
+    };
+    expect(firstPayload.session_id).toBe("session-1");
+    const second = await request(app, fixture.env, payload, "same-request");
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      created: false,
+      run_id: firstPayload.run_id,
+      session_id: firstPayload.session_id,
+    });
+    expect(calls).toHaveBeenCalledTimes(3);
+    expect(fixture.queue.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed for unbounded, duplicate, unsupported, and unavailable attachments", async () => {
+    const fixture = environment();
+    const app = testApp(fixture.env);
+    const calls = provider();
+    vi.stubGlobal("fetch", calls);
+
+    const duplicate = await request(app, fixture.env, {
+      text: "Question",
+      file_ids: ["file-1", "file-1"],
+    });
+    expect(duplicate.status).toBe(400);
+    await expect(duplicate.json()).resolves.toMatchObject({
+      error: "provider_rejected",
+    });
+
+    const unsupported = await request(app, fixture.env, {
+      text: "Question",
+      file_ids: ["file-1"],
+      context: { screen: "secret" },
+    });
+    expect(unsupported.status).toBe(400);
+
+    const unready = await request(app, fixture.env, {
+      text: "Question",
+      file_ids: ["missing-file"],
+    });
+    expect(unready.status).toBe(400);
+
+    const oversized = await request(app, fixture.env, {
+      text: "x".repeat(140_000),
+      file_ids: ["file-1"],
+    });
+    expect(oversized.status).toBe(413);
+    expect(calls).not.toHaveBeenCalled();
+    expect(fixture.queue.send).not.toHaveBeenCalled();
+  });
+});
