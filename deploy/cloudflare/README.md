@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-gate. The current inventory contains 577 backend routes: 491 already match
-Cloudflare staging owners and 86 remain legacy-owned. Edge directly serves
+gate. The current inventory contains 577 backend routes: 494 already match
+Cloudflare staging owners and 83 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -241,6 +241,22 @@ npm run rollback:staging -- .wrangler/releases/staging-before-<timestamp>.json
 D1 migrations and R2/Queue resources are not versioned by Workers rollback;
 staging migrations must therefore remain backward-compatible with the captured
 Worker versions. The current migrations are additive.
+
+The desktop release manifest projection is intentionally one-way while
+production promotion remains Firestore-owned. To replay one retained production
+manifest into the staging D1 table, provide the staging Edge URL and an admin key
+on a protected runner:
+
+```bash
+ADMIN_KEY='…' python3 .github/scripts/backfill-desktop-release-manifest.py \
+  --release-id v1.2.3+10203-macos \
+  --target-base-url https://omi-cf-edge-staging.<account>.workers.dev
+```
+
+The command reads the exact manifest from `https://api.omi.me`, validates its
+canonical digest, registers it through Edge/API Core, and verifies the returned
+manifest. It does not advance Beta or Stable pointers; those mutations remain a
+separate, guarded migration step.
 
 Before applying D1 migrations, the release resolves each exact staging
 database name through `wrangler d1 list --json` and writes a mode-`0600`

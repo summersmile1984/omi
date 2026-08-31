@@ -19,7 +19,7 @@
 
 ## 当前可执行顺序
 
-1. 让 release pipeline 回填已迁移的 D1 immutable manifest，并完成 Firestore→D1 回放后，再迁移 beta admission/promotion 与 channel mutation。
+1. 让 release pipeline 使用 `.github/scripts/backfill-desktop-release-manifest.py` 回填已迁移的 D1 immutable manifest，并完成 Firestore→D1 回放后，再迁移 beta admission/promotion 与 channel mutation。该工具只读 legacy manifest、验证 v1 digest，再向 Cloudflare Edge 的 `/v2/desktop/releases` 做幂等 POST，不改变 channel pointer。
 2. 设计并落地 memory review-conflict D1 表及 producer，随后迁移 review queue 的三个端点。
 3. 建立 conversation finalization 的 Jobs/D1 lease projection，成组迁移 status、finalize、reprocess 和 merge。
 4. 完成 candidate/recommendation authority 后，再处理 staged-tasks 与 What Matters Now；在此之前保持现有 404/legacy 边界。
