@@ -360,6 +360,59 @@ def test_desktop_save_is_idempotent_and_accepts_monotonic_revisions():
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_quota_events").fetchone()[0] == 1
 
 
+def test_desktop_save_projects_ready_files_to_message_and_session_reader():
+    secret = "chat-session-secret"
+    db = FakeDb()
+    env = environment(db, secret)
+    insert_file(db, "file-1")
+    request = {
+        "text": "Describe this file",
+        "sender": "human",
+        "file_ids": ["file-1"],
+        "client_message_id": "file-message-1",
+    }
+
+    created = asyncio.run(save_desktop_message(FakeRequest(env, signed_headers(secret), body=request)))
+    assert created["created"] is True
+    stored = json.loads(
+        db.connection.execute("SELECT message_json FROM cf_chat_messages WHERE id = ?", (created["id"],)).fetchone()[0]
+    )
+    assert stored["files_id"] == ["file-1"]
+    assert stored["files"][0]["id"] == "file-1"
+    assert stored["files"][0]["openai_file_id"] == "provider-file-1"
+    attachment = db.connection.execute(
+        "SELECT source_message_id FROM cf_chat_session_files WHERE uid = ? AND file_id = ?",
+        ("chat-user", "file-1"),
+    ).fetchone()
+    assert dict(attachment) == {"source_message_id": "file-message-1"}
+
+    messages = asyncio.run(
+        get_desktop_messages(FakeRequest(env, signed_headers(secret), query={"session_id": created["session_id"]}))
+    )
+    assert messages[0]["files_id"] == ["file-1"]
+    assert messages[0]["files"][0]["name"] == "notes.txt"
+
+
+def test_desktop_save_rejects_missing_files_before_session_or_message_mutation():
+    secret = "chat-session-secret"
+    db = FakeDb()
+    env = environment(db, secret)
+    insert_file(db, "file-failed", status="failed")
+    result = asyncio.run(
+        save_desktop_message(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"text": "Nope", "sender": "human", "file_ids": ["file-failed"]},
+            )
+        )
+    )
+    assert result.status_code == 404
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 0
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_session_files").fetchone()[0] == 0
+
+
 def test_desktop_lists_reconciles_and_deletes_with_session_metadata():
     secret = "chat-session-secret"
     db = FakeDb()

@@ -32,6 +32,16 @@
 
 这组 route 证明了 D1 attachment reader 的 uid/session/deletion fence，但尚未让 `/v2/messages` 消费附件；现阶段 API AI 仍对 `file_ids` 返回 `409 attachments_not_migrated`。因此 `/v1/files`、`/v2/files` 继续不切 owner。
 
+另外，API Core 的 staging-only `POST /v2/desktop/messages` 现在可以接收
+`file_ids`：它只接受当前 uid 下 `cf_chat_files.status = 'ready'` 的 canonical
+rows，在同一 D1 batch 中写入 `cf_chat_session_files`（带
+`source_message_id`）并把安全 metadata projection 固化到该 message 的
+`files_id`/`files` 字段。重复的 `client_message_id` 会沿用既有 payload hash
+幂等语义；跨 uid、failed/deleted、不存在、重复或 assistant message 附件会在
+任何 session/message mutation 前拒绝。这个 slice 让 persistence message reader
+可回读文件 metadata，但不调用 Assistants、file_search 或任何 provider，所以
+仍不等价于旧 `/v2/messages` 的附件聊天。
+
 ## Legacy owner 切换门槛
 
 当前不能仅把 Edge manifest 的 owner 改成 Jobs。旧上传接口的返回值会被后续桌面聊天请求继续使用，至少还需要以下闭合证据：

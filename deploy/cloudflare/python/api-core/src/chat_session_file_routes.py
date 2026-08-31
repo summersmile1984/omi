@@ -98,6 +98,39 @@ async def read_session_chat_files(
     return [_file_projection(row) for row in rows if isinstance(row, dict)]
 
 
+async def read_ready_chat_files(
+    env: object,
+    uid: str,
+    file_ids: list[str],
+) -> list[dict[str, object]]:
+    """Read canonical ready files in the caller's requested order.
+
+    This reader is used by the persistence-only message projection before it
+    links a message's file ids to its D1 session.  It deliberately reads the
+    canonical row rather than trusting a provider id supplied by a client.
+    """
+
+    if not _valid_identifier(uid, MAX_SESSION_ID_LENGTH) or not file_ids:
+        return []
+    if len(file_ids) > MAX_SESSION_FILE_IDS or any(
+        not _valid_identifier(file_id, MAX_FILE_ID_LENGTH) for file_id in file_ids
+    ):
+        return []
+    placeholders = ", ".join("?" for _ in file_ids)
+    result = await env.APP_DB.prepare(
+        "SELECT file_id, name, mime_type, size, provider_file_id, created_at "
+        "FROM cf_chat_files WHERE uid = ? AND status = 'ready' "
+        f"AND file_id IN ({placeholders})"
+    ).bind(uid, *file_ids).all()
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    by_id = {
+        str(row["file_id"]): _file_projection(row)
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("file_id"), str)
+    }
+    return [by_id[file_id] for file_id in file_ids if file_id in by_id]
+
+
 async def _ready_file_rows(env: object, uid: str, file_ids: list[str]) -> list[dict[str, object]]:
     placeholders = ", ".join("?" for _ in file_ids)
     result = await env.APP_DB.prepare(

@@ -25,6 +25,8 @@ MAX_RECONCILE_SCAN = 1_000
 MAX_OFFSET = 100_000
 MAX_TEXT_LENGTH = 100_000
 MAX_JOURNAL_REVISION = 9_007_199_254_740_991
+MAX_MESSAGE_FILE_IDS = 20
+MAX_FILE_ID_LENGTH = 128
 
 
 class CreateChatSessionRequest(BaseModel):
@@ -50,6 +52,7 @@ class SaveMessageRequest(BaseModel):
     session_id: str | None = Field(None, max_length=MAX_APP_ID_LENGTH)
     metadata: str | None = None
     content_blocks: list[dict[str, object]] | None = None
+    file_ids: list[str] | None = Field(None, max_length=MAX_MESSAGE_FILE_IDS)
     client_message_id: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
     message_source: str = Field("desktop_chat", pattern=r"^(desktop_chat|realtime_voice)$")
     journal_revision: int | None = Field(None, ge=1, le=MAX_JOURNAL_REVISION)
@@ -188,6 +191,10 @@ def _payload_hash(payload: SaveMessageRequest, requested_session_id: str | None)
     }
     if payload.content_blocks is not None:
         value["content_blocks"] = payload.content_blocks
+    # Keep the no-attachment hash byte-compatible with rows written before
+    # file_ids became part of the persistence projection.
+    if payload.file_ids:
+        value["file_ids"] = payload.file_ids
     canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
@@ -222,6 +229,11 @@ def _stored_payload_matches(
     if message.get("text") != payload.text or message.get("metadata") != payload.metadata:
         return False
     if payload.content_blocks is not None and message.get("content_blocks") != payload.content_blocks:
+        return False
+    stored_file_ids = message.get("files_id")
+    if not isinstance(stored_file_ids, list):
+        stored_file_ids = []
+    if stored_file_ids != list(payload.file_ids or []):
         return False
     return True
 
@@ -271,6 +283,15 @@ async def _existing_save(
         return _save_response(message_id, message, updated=False)
     if requested_revision < stored_revision:
         return _save_response(message_id, message, updated=False)
+
+    stored_file_ids = message.get("files_id")
+    if not isinstance(stored_file_ids, list):
+        stored_file_ids = []
+    if stored_file_ids != list(payload.file_ids or []):
+        # A journal revision cannot silently replace or drop an attachment:
+        # the provider/session projection must be changed through the
+        # attachment boundary first.
+        return JSONResponse({"error": "client_message_id payload conflict"}, status_code=409)
 
     message.update(
         {
@@ -468,6 +489,17 @@ async def save_desktop_message(request: Request):
         payload = SaveMessageRequest.model_validate(await _bounded_json(request))
     except (ValidationError, ValueError, TypeError):
         return JSONResponse({"error": "invalid message"}, status_code=400)
+    file_ids = list(payload.file_ids or [])
+    if len(set(file_ids)) != len(file_ids) or any(
+        not isinstance(file_id, str)
+        or not (0 < len(file_id) <= MAX_FILE_ID_LENGTH)
+        or "\x00" in file_id
+        or "/" in file_id
+        for file_id in file_ids
+    ):
+        return JSONResponse({"error": "invalid message files"}, status_code=400)
+    if file_ids and payload.sender != "human":
+        return JSONResponse({"error": "message files require a human message"}, status_code=400)
     requested_session_id = payload.session_id
     message_id = payload.client_message_id or str(uuid.uuid4())
     payload_hash = _payload_hash(payload, requested_session_id)
@@ -483,6 +515,15 @@ async def save_desktop_message(request: Request):
         session_insert = None
         if session_id is None:
             session_id, session_insert = await _acquire_session(env, uid, payload.app_id, now)
+        file_rows: list[dict[str, object]] = []
+        if file_ids:
+            # Import lazily because chat_session_file_routes imports the
+            # session auth helpers from this module.
+            from chat_session_file_routes import read_ready_chat_files
+
+            file_rows = await read_ready_chat_files(env, uid, file_ids)
+            if len(file_rows) != len(file_ids):
+                return JSONResponse({"error": "chat file not found"}, status_code=404)
         created_at = datetime.now(timezone.utc).isoformat()
         message: dict[str, object] = {
             "id": message_id,
@@ -499,8 +540,8 @@ async def save_desktop_message(request: Request):
             "reported": False,
             "memories_id": [],
             "memories": [],
-            "files_id": [],
-            "files": [],
+            "files_id": file_ids,
+            "files": file_rows,
             "metadata": payload.metadata,
             "content_blocks": payload.content_blocks or [],
             "client_message_id": payload.client_message_id,
@@ -512,6 +553,16 @@ async def save_desktop_message(request: Request):
         statements = []
         if session_insert is not None:
             statements.append(session_insert)
+        statements.extend(
+            [
+                env.APP_DB.prepare(
+                    "INSERT OR IGNORE INTO cf_chat_session_files "
+                    "(uid, session_id, file_id, source_message_id, attached_at) "
+                    "VALUES (?, ?, ?, ?, ?)"
+                ).bind(uid, session_id, file_id, message_id, now)
+                for file_id in file_ids
+            ]
+        )
         statements.extend(
             [
                 env.APP_DB.prepare(
