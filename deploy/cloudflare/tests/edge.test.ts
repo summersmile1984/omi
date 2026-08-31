@@ -3368,6 +3368,57 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes task-goal link migration to API Core with the authenticated boundary", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "migration-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ imported: 1, unchanged: 0, failed: 0, failure_task_ids: [] });
+      }),
+    };
+
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/workflow-migrations/task-goal-links", { method: "POST" }),
+      env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/workflow-migrations/task-goal-links", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "session=must-not-forward",
+          "idempotency-key": "task-goal-import-1",
+          "x-account-generation": "3",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ links: [{ task_id: "task-1", goal_id: "goal-1" }] }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://invalid").pathname).toBe(
+      "/v1/workflow-migrations/task-goal-links",
+    );
+    expect(forwarded?.method).toBe("POST");
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(forwarded?.headers.get("idempotency-key")).toBe("task-goal-import-1");
+    expect(forwarded?.headers.get("x-account-generation")).toBe("3");
+    await expect(forwarded?.json()).resolves.toEqual({
+      links: [{ task_id: "task-1", goal_id: "goal-1" }],
+    });
+  });
+
   it("routes candidate workflow control to API Core with the authenticated boundary", async () => {
     let forwarded: Request | undefined;
     const env = {

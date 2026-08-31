@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 488 already match
-Cloudflare staging owners and 88 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 490 already match
+Cloudflare staging owners and 87 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -945,6 +945,8 @@ DELETE /v1/goals/{goalId}/focus
 POST /v1/goals/{goalId}/lifecycle
                               Edge → Python API Core → D1 mutation + receipt
 POST /v1/work-intents       Edge → Python API Core → D1 workstream + task
+POST /v1/workflow-migrations/task-goal-links
+                              Edge → Python API Core → D1 task/goal projection + receipt
 GET/PATCH /v1/workstreams/{workstreamId}
                               Edge → Python API Core → D1
 GET/POST /v1/workstreams/{workstreamId}/events
@@ -1176,7 +1178,8 @@ staging-only pending goal/event backfill and downstream reader cutover.
 
 The workstream routes migrate canonical workflow metadata, journal events,
 artifact descriptors, continuation checkpoints, and task/goal-origin work
-intents to D1. Mutating operations use generation-scoped idempotency receipts;
+intents to D1. The task-goal link migration preserves imported/unchanged/failed
+outcomes and records a generation-scoped idempotency receipt. Mutating operations use generation-scoped idempotency receipts;
 artifact revisions and checkpoints enforce their monotonic version/sequence
 rules. Workstream search/index refresh and candidate automation remain legacy
 owned. The goal detail reader now composes the bounded

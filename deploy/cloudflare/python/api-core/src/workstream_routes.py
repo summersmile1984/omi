@@ -159,6 +159,19 @@ WorkIntent = Annotated[Union[TaskOriginWorkIntent, GoalOriginWorkIntent], Field(
 _WORK_INTENT_ADAPTER = TypeAdapter(WorkIntent)
 
 
+class TaskGoalLink(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    task_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
+    goal_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
+
+
+class TaskGoalLinkImportRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    links: list[TaskGoalLink] = Field(max_length=MAX_LIST_LIMIT)
+
+
 _WORKSTREAM_SELECT = (
     "SELECT id, goal_id, title, objective, status, current_state_summary, next_review_at, "
     "last_meaningful_progress_at, latest_event_sequence, account_generation, created_at, updated_at "
@@ -1006,6 +1019,95 @@ async def _insert_initial_workstream(
             ),
         ]
     )
+
+
+@router.post("/v1/workflow-migrations/task-goal-links")
+async def import_task_goal_links(request: Request):
+    """Import task-to-goal links against the uid-scoped D1 projection.
+
+    The legacy migration also checked per-document account generations.  D1
+    action items and goals are current projections without those columns, so
+    this route uses the signed request generation and validates the generation
+    on any existing workstream relationship instead.
+    """
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        migration_request = TaskGoalLinkImportRequest.model_validate(await _bounded_json(request))
+        payload = migration_request.model_dump(mode="json")
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid task-goal links"}, status_code=400)
+    mutation = _mutation_inputs(request, payload)
+    if mutation is None:
+        return JSONResponse({"error": "Idempotency-Key and X-Account-Generation are required"}, status_code=400)
+    key, generation, request_hash = mutation
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    operation = "task-goal-link-import"
+    try:
+        stored, conflict = await _load_mutation(env, uid, operation, key, generation, request_hash)
+        if conflict:
+            return conflict
+        if stored is not None:
+            return stored
+
+        projected_goal_ids: dict[str, str | None] = {}
+        outcomes: list[str] = []
+        updates: list[object] = []
+        now = int(time.time())
+        for link in migration_request.links:
+            task = (
+                await env.APP_DB.prepare(_TASK_SELECT + "WHERE uid = ? AND id = ? AND deleted = 0")
+                .bind(uid, link.task_id)
+                .first()
+            )
+            goal = (
+                await env.APP_DB.prepare("SELECT id FROM cf_goals WHERE uid = ? AND id = ?")
+                .bind(uid, link.goal_id)
+                .first()
+            )
+            outcome = "failed"
+            if isinstance(task, dict) and isinstance(goal, dict):
+                task_id = str(task.get("id") or link.task_id)
+                current_goal_id = projected_goal_ids.get(task_id, task.get("goal_id"))
+                relationship_valid = True
+                workstream_id = task.get("workstream_id")
+                if isinstance(workstream_id, str) and workstream_id:
+                    workstream = await _first_workstream(env, uid, workstream_id)
+                    relationship_valid = bool(
+                        workstream
+                        and workstream.get("goal_id") == link.goal_id
+                        and int(workstream.get("account_generation") or 0) == generation
+                    )
+                if relationship_valid and current_goal_id in (None, link.goal_id):
+                    if current_goal_id == link.goal_id:
+                        outcome = "unchanged"
+                    else:
+                        outcome = "imported"
+                        projected_goal_ids[task_id] = link.goal_id
+                        updates.append(
+                            env.APP_DB.prepare(
+                                "UPDATE cf_action_items SET goal_id = ?, updated_at = ? "
+                                "WHERE uid = ? AND id = ? AND deleted = 0 AND goal_id IS NULL"
+                            ).bind(link.goal_id, now, uid, link.task_id)
+                        )
+            outcomes.append(outcome)
+
+        report = {
+            "imported": outcomes.count("imported"),
+            "unchanged": outcomes.count("unchanged"),
+            "failed": outcomes.count("failed"),
+            "failure_task_ids": [
+                link.task_id for link, outcome in zip(migration_request.links, outcomes) if outcome == "failed"
+            ],
+        }
+        updates.append(_mutation_statement(env, uid, operation, key, generation, request_hash, report, now))
+        await env.APP_DB.batch(updates)
+        return report
+    except Exception:
+        return JSONResponse({"error": "workflow resource unavailable"}, status_code=503)
 
 
 @router.post("/v1/work-intents")

@@ -13,6 +13,7 @@ from workstream_routes import (  # noqa: E402
     append_workstream_event,
     create_artifact_descriptor,
     get_workstream_detail,
+    import_task_goal_links,
     list_artifact_descriptors,
     list_continuation_checkpoints,
     list_workstream_events,
@@ -249,3 +250,53 @@ def test_workstream_routes_fail_closed_on_missing_headers_and_invalid_boundaries
         list_workstream_events(FakeRequest(env, signed_headers(secret), query={"limit": "0"}), "missing")
     )
     assert invalid_limit.status_code == 400
+
+
+def test_task_goal_link_import_is_uid_scoped_idempotent_and_generation_aware():
+    secret = "workstream-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    headers = signed_headers(secret)
+    goal = asyncio.run(create_goal(FakeRequest(env, headers, {"title": "Ship the release"})))
+    goal_id = goal["id"]
+    now = 1_700_000_000
+    env.APP_DB.connection.executemany(
+        "INSERT INTO cf_action_items (uid, id, description, status, completed, goal_id, workstream_id, owner, "
+        "source, provenance_json, created_at, updated_at) VALUES (?, ?, ?, 'active', 0, ?, ?, 'user', 'manual', '[]', ?, ?)",
+        [
+            ("workstream-user", "task-1", "Unlinked task", None, None, now, now),
+            ("workstream-user", "task-2", "Already linked task", goal_id, None, now, now),
+            ("workstream-user", "task-3", "Stale workstream task", None, "ws-stale", now, now),
+        ],
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_workstreams (uid, id, goal_id, title, objective, status, account_generation, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+        ("workstream-user", "ws-stale", goal_id, "Stale", "Stale", 2, now, now),
+    )
+    env.APP_DB.connection.commit()
+    body = {
+        "links": [
+            {"task_id": "task-1", "goal_id": goal_id},
+            {"task_id": "task-1", "goal_id": goal_id},
+            {"task_id": "task-2", "goal_id": goal_id},
+            {"task_id": "task-3", "goal_id": goal_id},
+            {"task_id": "missing", "goal_id": goal_id},
+        ]
+    }
+    mutation = mutation_headers(secret, "task-goal-import-1", generation=3)
+    report = asyncio.run(import_task_goal_links(FakeRequest(env, mutation, body)))
+    assert report == {
+        "imported": 1,
+        "unchanged": 2,
+        "failed": 2,
+        "failure_task_ids": ["task-3", "missing"],
+    }
+    task = env.APP_DB.connection.execute(
+        "SELECT goal_id FROM cf_action_items WHERE uid = ? AND id = ?", ("workstream-user", "task-1")
+    ).fetchone()
+    assert task[0] == goal_id
+    assert asyncio.run(import_task_goal_links(FakeRequest(env, mutation, body))) == report
+    conflict = asyncio.run(
+        import_task_goal_links(FakeRequest(env, mutation, {"links": [{"task_id": "task-1", "goal_id": "other"}]}))
+    )
+    assert conflict.status_code == 409

@@ -1356,6 +1356,7 @@ app.get("/v1/goals/:goalId/history", proxyAuthenticatedCore);
 app.post("/v1/goals/:goalId/progress-events", proxyAuthenticatedCore);
 app.get("/v1/goals/:goalId/progress-events", proxyAuthenticatedCore);
 app.post("/v1/work-intents", proxyAuthenticatedCore);
+app.post("/v1/workflow-migrations/task-goal-links", proxyAuthenticatedCore);
 app.get("/v1/workstreams/:workstreamId/events", proxyAuthenticatedCore);
 app.post("/v1/workstreams/:workstreamId/events", proxyAuthenticatedCore);
 app.get("/v1/workstreams/:workstreamId/artifacts", proxyAuthenticatedCore);
