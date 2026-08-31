@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   exchangeFirebaseCustomToken,
   exchangeFirebaseProviderCredential,
@@ -339,5 +339,48 @@ describe("Firebase custom-token bridge", () => {
           ),
       ),
     ).rejects.toBeInstanceOf(FirebaseCustomTokenBridgeError);
+  });
+
+  it("bounds Firebase token exchange responses before parsing provider data", async () => {
+    const oversized = new Response("provider body must not be read", {
+      status: 200,
+      headers: { "content-length": "32001" },
+    });
+    const text = vi.spyOn(oversized, "text");
+    await expect(
+      exchangeFirebaseCustomToken(
+        "custom-token",
+        { FIREBASE_API_KEY: "AIza-test-key" },
+        async () => oversized,
+      ),
+    ).rejects.toMatchObject({ code: "provider_unavailable" });
+    expect(text).not.toHaveBeenCalled();
+
+    await expect(
+      exchangeFirebaseCustomToken(
+        "custom-token",
+        { FIREBASE_API_KEY: "AIza-test-key" },
+        async () =>
+          new Response(
+            JSON.stringify({
+              idToken: "i".repeat(8_193),
+              refreshToken: "refresh-token",
+              localId: "firebase-user",
+              expiresIn: "3600",
+            }),
+          ),
+      ),
+    ).rejects.toMatchObject({ code: "provider_unavailable" });
+
+    await expect(
+      exchangeFirebaseCustomToken(
+        "custom-token",
+        { FIREBASE_API_KEY: "AIza-test-key" },
+        async () =>
+          new Response("x".repeat(32_001), {
+            status: 200,
+          }),
+      ),
+    ).rejects.toMatchObject({ code: "provider_unavailable" });
   });
 });

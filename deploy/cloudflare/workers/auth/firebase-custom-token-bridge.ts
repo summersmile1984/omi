@@ -19,6 +19,7 @@ const FIREBASE_LOOKUP_URL =
 const DEFAULT_TOKEN_TTL_SECONDS = 300;
 const MAX_TOKEN_TTL_SECONDS = 3_600;
 const MAX_SERVICE_ACCOUNT_BYTES = 32_000;
+const MAX_FIREBASE_TOKEN_RESPONSE_BYTES = 32_000;
 const MAX_API_KEY_BYTES = 512;
 const MAX_UID_BYTES = 256;
 const MAX_ERROR_BYTES = 128;
@@ -732,16 +733,30 @@ export async function exchangeFirebaseCustomToken(
   } catch {
     throw new FirebaseCustomTokenBridgeError("provider_unavailable");
   }
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    body = null;
+  const contentLength = Number(response.headers.get("content-length") || "0");
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_FIREBASE_TOKEN_RESPONSE_BYTES
+  ) {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
   }
   if (!response.ok) {
+    // Do not parse provider error bodies: they may contain unbounded or
+    // sensitive provider data. The status alone determines the bounded error
+    // class, after the declared-size guard above.
     throw new FirebaseCustomTokenBridgeError(
       response.status >= 500 ? "provider_unavailable" : "provider_rejected",
     );
+  }
+  let body: unknown;
+  try {
+    const raw = await response.text();
+    if (utf8Bytes(raw) > MAX_FIREBASE_TOKEN_RESPONSE_BYTES) {
+      throw new Error("provider response too large");
+    }
+    body = JSON.parse(raw);
+  } catch {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new FirebaseCustomTokenBridgeError("provider_unavailable");
@@ -752,10 +767,8 @@ export async function exchangeFirebaseCustomToken(
   const localId = object.localId;
   const expiresIn = responseNumber(object.expiresIn, 1, 86_400);
   if (
-    typeof idToken !== "string" ||
-    !idToken ||
-    typeof refreshToken !== "string" ||
-    !refreshToken ||
+    !validBearerToken(idToken) ||
+    !validBearerToken(refreshToken) ||
     !validUid(localId) ||
     expiresIn === null
   ) {
