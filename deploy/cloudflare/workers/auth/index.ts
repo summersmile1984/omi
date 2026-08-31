@@ -22,6 +22,7 @@ import {
   FirebaseCustomTokenBridgeError,
   issueFirebaseCustomToken,
 } from "./firebase-custom-token-bridge";
+import { registerNativeAuthCompatibilityRoutes } from "./native-auth-compatibility";
 
 const app = new Hono<{ Bindings: AuthEnv }>();
 const AUTH_BASE_PATH = "/api/better-auth";
@@ -43,6 +44,11 @@ const MCP_OAUTH_SCOPE_SET = new Set(MCP_OAUTH_SCOPES);
 const MCP_DATA_SCOPE_SET = new Set<string>(MCP_SCOPES);
 const MAX_MCP_VERIFY_BODY_BYTES = 4_096;
 const MAX_FIREBASE_BRIDGE_BODY_BYTES = 4_096;
+
+// Keep this namespaced seam beside the Auth Worker while the exact legacy
+// `/v1/auth/*` contract remains owned by the Python service.  The seam is
+// disabled unless staging explicitly supplies its gate and provider secrets.
+registerNativeAuthCompatibilityRoutes(app);
 
 type SocialProviderId = "google" | "apple";
 

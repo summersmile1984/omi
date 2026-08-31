@@ -97,6 +97,7 @@ cf_legacy_auth_transactions(
   codeChallenge TEXT NOT NULL,
   codeChallengeMethod TEXT NOT NULL CHECK (codeChallengeMethod = 'S256'),
   encryptedPayload TEXT,
+  metadataEnvelopeEnc TEXT, -- v1.* AES-GCM caller redirect/state for sessions
   status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'failed')),
   expiresAt INTEGER NOT NULL,
   createdAt INTEGER NOT NULL,
@@ -110,6 +111,35 @@ raw state、raw auth code、raw CSRF 和 provider token 都不能写入 D1；
 form-post、redirect scheme allowlist 和 PKCE verifier 都必须保持旧客户端可观察
 的行为。这个表本身不能解决 Firebase custom-token 签发，它只解决 Redis
 transaction authority。
+
+#### Namespaced native-auth seam（staging-only）
+
+上述 transaction authority 现在有一个不改变 owner 的最小可执行 seam：
+`workers/auth/native-auth-compatibility.ts` 注册
+`/v2/cf/auth/authorize`、`/v2/cf/auth/callback/google`、
+`/v2/cf/auth/callback/apple` 和 `/v2/cf/auth/token`。它只在
+`LEGACY_AUTH_COMPAT_STAGING_ENABLED=true` 且 provider、HTTPS public base URL
+及 `LEGACY_AUTH_TRANSACTION_ENCRYPTION_SECRET` 均已配置时启用；没有这些配置时
+统一 fail-closed，不调用 provider。
+
+authorize 创建五分钟 D1 session transaction，session 的 caller redirect/state
+使用 `auth/0009_legacy_auth_transaction_metadata.sql` 新增的
+`metadataEnvelopeEnc` AES-GCM envelope 保存；state/code secret 仅保存 hash，
+而 provider credential 只进入加密 envelope（经过校验的 redirect URI 和 PKCE
+challenge 仍是 transaction protocol metadata）。
+Google GET 和 Apple form-post callback 先原子消费 session，再通过可注入的
+provider fetch exchange code，并把 provider credential 放进 code envelope。
+token 以 redirect + S256 verifier 原子消费 code 后返回 provider credential-only
+响应。provider 授权 URL 保持 legacy wire，不发送无法在后续 exchange 提供的
+客户端 PKCE challenge；PKCE 仍绑定 Omi 自己的 auth code。
+
+`use_custom_token=true` 当前始终 fail-closed：即使 Firebase secret 存在，也必须
+先完成 Firebase localId → Better Auth uid 的 identity projection/link authority，
+不能从 provider token 猜测或伪造 Firebase uid。该 seam 不是 `/v1/auth/*` owner、
+不是 Edge manifest route，也没有声明真实 Google/Apple 或 Firebase 正向生产
+兼容性；focused coverage 位于
+`tests/native-auth-compatibility.test.ts`（正向 mock provider、redirect/PKCE、
+replay/expiry、provider failure 和 secret gate）。
 
 ### 3. External app OAuth transaction
 

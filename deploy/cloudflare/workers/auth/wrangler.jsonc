@@ -13,6 +13,7 @@
     "MCP_RESOURCE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev/v1/mcp/sse",
     "MCP_ALLOW_UNAUTHENTICATED_DCR": "true",
     "FIREBASE_CUSTOM_TOKEN_BRIDGE_STAGING_ENABLED": "false",
+    "LEGACY_AUTH_COMPAT_STAGING_ENABLED": "false",
   },
   "d1_databases": [
     {

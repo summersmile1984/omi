@@ -90,6 +90,7 @@ export type LegacyAuthTransactionInput = {
   codeChallenge: string;
   codeChallengeMethod: string;
   encryptedPayload?: string | null;
+  metadataEnvelopeEnc?: string | null;
   createdAt: number;
   expiresAt: number;
 };
@@ -115,6 +116,7 @@ export type ConsumedLegacyAuthTransaction = {
   redirectUri: string;
   codeChallenge: string;
   encryptedPayload: string | null;
+  metadataEnvelopeEnc: string | null;
   stateHash: string;
   consumedAt: number;
 };
@@ -155,6 +157,27 @@ function validUid(uid: string): boolean {
 
 function validOpaqueSecret(secret: string): boolean {
   return OPAQUE_SECRET.test(secret);
+}
+
+/**
+ * Exported for the namespaced adapter so redirect validation has one source of
+ * truth.  The exact legacy route remains owned by the Python service.
+ */
+export function isValidLegacyRedirectUri(value: string): boolean {
+  return validRedirectUri(value);
+}
+
+/** Keep PKCE validation identical between the dormant authority and its seam. */
+export function isValidLegacyPkceChallenge(
+  challenge: string,
+  method: string,
+): boolean {
+  return validPkce(challenge, method);
+}
+
+/** Used only for validating generated/returned opaque transaction secrets. */
+export function isValidLegacyOpaqueSecret(value: string): boolean {
+  return validOpaqueSecret(value);
 }
 
 function validRedirectUri(value: string): boolean {
@@ -355,6 +378,15 @@ function validateAuthTransactionInput(
   ) {
     return failure("invalid_opaque_secret");
   }
+  if (
+    input.metadataEnvelopeEnc !== undefined &&
+    input.metadataEnvelopeEnc !== null &&
+    (input.metadataEnvelopeEnc.length < 20 ||
+      input.metadataEnvelopeEnc.length > 400_000 ||
+      !input.metadataEnvelopeEnc.startsWith("v1."))
+  ) {
+    return failure("invalid_opaque_secret");
+  }
   return { ok: true };
 }
 
@@ -374,9 +406,9 @@ export async function createLegacyAuthTransaction(
     .prepare(
       `INSERT INTO cf_legacy_auth_transactions
          (id, kind, provider, lookupHash, stateHash, redirectUri,
-          codeChallenge, codeChallengeMethod, encryptedPayload, status,
-          expiresAt, createdAt, consumedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'S256', ?, 'pending', ?, ?, NULL)`,
+          codeChallenge, codeChallengeMethod, encryptedPayload,
+          metadataEnvelopeEnc, status, expiresAt, createdAt, consumedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'S256', ?, ?, 'pending', ?, ?, NULL)`,
     )
     .bind(
       id,
@@ -387,6 +419,7 @@ export async function createLegacyAuthTransaction(
       input.redirectUri,
       input.codeChallenge,
       input.encryptedPayload ?? null,
+      input.metadataEnvelopeEnc ?? null,
       input.expiresAt,
       input.createdAt,
     )
@@ -403,6 +436,10 @@ function consumedAuthRow(row: Record<string, unknown>): ConsumedLegacyAuthTransa
     codeChallenge: String(row.codeChallenge),
     encryptedPayload:
       typeof row.encryptedPayload === "string" ? row.encryptedPayload : null,
+    metadataEnvelopeEnc:
+      typeof row.metadataEnvelopeEnc === "string"
+        ? row.metadataEnvelopeEnc
+        : null,
     stateHash: String(row.stateHash),
     consumedAt: Number(row.consumedAt),
   };
@@ -414,28 +451,40 @@ export async function consumeLegacyAuthTransaction(
     lookupSecret: string;
     kind: LegacyAuthTransactionKind;
     provider: LegacyAuthProvider;
-    redirectUri: string;
+    /**
+     * Required for code transactions. Session callbacks do not know the
+     * caller redirect until their authenticated metadata envelope is opened,
+     * so they may consume by state/provider first and verify the redirect
+     * against that envelope afterwards.
+     */
+    redirectUri?: string;
     codeVerifier?: string;
     now: number;
   },
 ): Promise<ConsumedLegacyAuthTransaction | null> {
-  if (!validOpaqueSecret(input.lookupSecret) || !validRedirectUri(input.redirectUri)) {
+  if (
+    !validOpaqueSecret(input.lookupSecret) ||
+    (input.redirectUri !== undefined && !validRedirectUri(input.redirectUri)) ||
+    (input.kind === "code" && input.redirectUri === undefined)
+  ) {
     return null;
   }
   const lookupHash = await sha256Base64Url(input.lookupSecret);
+  const redirectPredicate =
+    input.redirectUri === undefined ? "" : "AND redirectUri = ?";
   const row = await database
     .prepare(
       `SELECT id, kind, provider, redirectUri, codeChallenge,
-              encryptedPayload, stateHash
+              encryptedPayload, metadataEnvelopeEnc, stateHash
          FROM cf_legacy_auth_transactions
         WHERE lookupHash = ? AND kind = ? AND provider = ?
-          AND redirectUri = ? AND status = 'pending' AND expiresAt > ?`,
+          ${redirectPredicate} AND status = 'pending' AND expiresAt > ?`,
     )
     .bind(
       lookupHash,
       input.kind,
       input.provider,
-      input.redirectUri,
+      ...(input.redirectUri === undefined ? [] : [input.redirectUri]),
       input.now,
     )
     .first<Record<string, unknown>>();
@@ -452,7 +501,7 @@ export async function consumeLegacyAuthTransaction(
           SET status = 'consumed', consumedAt = ?
         WHERE id = ? AND status = 'pending' AND expiresAt > ?
         RETURNING id, kind, provider, redirectUri, codeChallenge,
-                  encryptedPayload, stateHash, consumedAt`,
+                  encryptedPayload, metadataEnvelopeEnc, stateHash, consumedAt`,
     )
     .bind(consumedAt, row.id, input.now)
     .first<Record<string, unknown>>();

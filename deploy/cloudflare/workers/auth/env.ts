@@ -27,4 +27,10 @@ export type AuthEnv = {
   FIREBASE_CUSTOM_TOKEN_TTL_SECONDS?: string;
   /** Optional staging-only bridge for the Flutter Better Auth dev sign-in. */
   AUTH_DEV_ISSUER_SECRET?: string;
+  /** Explicit gate for the namespaced native-auth compatibility seam. */
+  LEGACY_AUTH_COMPAT_STAGING_ENABLED?: string;
+  /** Secret used to derive the AES-GCM key for native-auth transaction envelopes. */
+  LEGACY_AUTH_TRANSACTION_ENCRYPTION_SECRET?: string;
+  /** Public HTTPS origin used to construct provider callback URLs. */
+  NATIVE_AUTH_PUBLIC_BASE_URL?: string;
 };
