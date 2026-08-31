@@ -12,6 +12,7 @@ const MAX_HUME_PREDICTIONS = 2_000;
 const MAX_HUME_EMOTIONS_PER_PREDICTION = 128;
 const MAX_HUME_TIME_SECONDS = 24 * 60 * 60;
 const MAX_HUME_PREDICTIONS_JSON_BYTES = 512 * 1024;
+const MAX_HUME_RESULT_JSON_CHARS = 524_288;
 
 type HumeWebhookRow = {
   event_id: string;
@@ -64,6 +65,43 @@ function boundedPredictionsJson(predictions: HumePrediction[]) {
     json = JSON.stringify(bounded);
   }
   return { predictions: bounded, json };
+}
+
+function boundedResultJson(result: HumeWebhookResultRow) {
+  const parsedPredictions: unknown = JSON.parse(result.predictions_json);
+  let predictions: unknown[] = Array.isArray(parsedPredictions)
+    ? parsedPredictions
+    : [];
+  const build = (items: unknown[]) =>
+    JSON.stringify({
+      schema_version: 1,
+      provider: "hume",
+      job_id: result.job_id,
+      status: result.callback_status,
+      mapping_status: result.mapping_status,
+      prediction_count: items.length,
+      predictions: items,
+    });
+  let resultJson = build(predictions);
+  // The predictions receipt has its own bound, but the result envelope adds
+  // metadata. Re-check at settlement so a near-limit receipt can never make
+  // the D1 result CHECK fail. Trimming provider-order tail entries is
+  // deterministic and preserves a valid, auditable prefix.
+  while (
+    resultJson.length > MAX_HUME_RESULT_JSON_CHARS &&
+    predictions.length > 0
+  ) {
+    predictions = predictions.slice(0, -1);
+    resultJson = build(predictions);
+  }
+  if (resultJson.length > MAX_HUME_RESULT_JSON_CHARS) {
+    throw new Error("hume result exceeds D1 limit");
+  }
+  return {
+    resultJson,
+    predictionsJson: JSON.stringify(predictions),
+    predictionCount: predictions.length,
+  };
 }
 
 /**
@@ -427,21 +465,20 @@ export async function processHumeWebhookMessage(
     message.ack();
     return;
   }
-  const resultJson = JSON.stringify({
-    schema_version: 1,
-    provider: "hume",
-    job_id: result.job_id,
-    status: result.callback_status,
-    mapping_status: result.mapping_status,
-    prediction_count: result.prediction_count,
-    predictions: JSON.parse(result.predictions_json),
-  });
+  const bounded = boundedResultJson(result);
   const settled = await env.APP_DB.prepare(
-    "UPDATE cf_hume_webhook_results SET processing_status = 'completed', result_json = ?, " +
-      "last_error = NULL, processed_at = ?, updated_at = ? " +
+    "UPDATE cf_hume_webhook_results SET processing_status = 'completed', prediction_count = ?, " +
+      "predictions_json = ?, result_json = ?, last_error = NULL, processed_at = ?, updated_at = ? " +
       "WHERE event_id = ? AND processing_status = 'pending'",
   )
-    .bind(resultJson, now, now, eventId)
+    .bind(
+      bounded.predictionCount,
+      bounded.predictionsJson,
+      bounded.resultJson,
+      now,
+      now,
+      eventId,
+    )
     .run();
   if (settled.meta?.changes !== 1) {
     message.ack();

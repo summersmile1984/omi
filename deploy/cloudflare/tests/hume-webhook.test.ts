@@ -532,4 +532,69 @@ describe("Hume webhook boundary", () => {
       ),
     ).resolves.toBe(false);
   });
+
+  it("re-bounds the result envelope when the normalized receipt is near D1's limit", async () => {
+    const state = testEnvironment();
+    try {
+      const body = JSON.stringify({
+        job_id: "batch_job_result_limit",
+        status: "COMPLETED",
+      });
+      await jobs.fetch(signedRequest(body), state.env);
+
+      const predictions: Array<{
+        start: number;
+        end: number;
+        emotions: Array<{ name: string; score: number }>;
+      }> = [];
+      const longEmotionName = "e".repeat(128);
+      while (JSON.stringify(predictions).length < 524_200) {
+        const start = predictions.length;
+        predictions.push({
+          start,
+          end: start + 0.5,
+          emotions: [{ name: longEmotionName, score: 0.5 }],
+        });
+      }
+      const predictionsJson = JSON.stringify(predictions);
+      expect(predictionsJson.length).toBeLessThanOrEqual(524_288);
+      state.database.database
+        .prepare(
+          "UPDATE cf_hume_webhook_results SET predictions_json = ?, prediction_count = ? " +
+            "WHERE event_id = ?",
+        )
+        .run(
+          predictionsJson,
+          predictions.length,
+          "hume:batch_job_result_limit",
+        );
+
+      await processHumeWebhookMessage(
+        {
+          body: state.sent[0],
+          ack: vi.fn(),
+          retry: vi.fn(),
+        } as unknown as Message<JobMessage>,
+        state.env,
+      );
+      const result = state.database.row<{
+        prediction_count: number;
+        predictions_json: string;
+        result_json: string;
+      }>(
+        "SELECT prediction_count, predictions_json, result_json " +
+          "FROM cf_hume_webhook_results WHERE event_id = ?",
+        "hume:batch_job_result_limit",
+      );
+      expect(result).not.toBeNull();
+      expect(result?.result_json.length ?? 0).toBeLessThanOrEqual(524_288);
+      expect(result?.predictions_json.length ?? 0).toBeLessThanOrEqual(524_288);
+      expect(result?.prediction_count).toBeLessThan(predictions.length);
+      expect(JSON.parse(result?.result_json ?? "{}").prediction_count).toBe(
+        result?.prediction_count,
+      );
+    } finally {
+      state.database.close();
+    }
+  });
 });
