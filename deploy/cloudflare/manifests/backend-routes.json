@@ -79,7 +79,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/admin/fair-use/flagged", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/admin/fair-use/user/{uid}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/advice", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "GET", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/agent/tools", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/agent/tools", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/announcements/all", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/announcements/changelogs", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/announcements/features", "protocol": "http", "target_runtime": "python-worker"},

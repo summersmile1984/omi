@@ -71,6 +71,7 @@ from developer_routes import router as developer_router
 from developer_mutation_routes import router as developer_mutation_router
 from developer_conversation_create_routes import router as developer_conversation_create_router
 from tool_routes import router as tool_router
+from agent_tools_routes import router as agent_tools_router
 from knowledge_graph_routes import router as knowledge_graph_router
 from synthesis_routes import router as synthesis_router
 from goal_ai_routes import router as goal_ai_router
@@ -124,6 +125,7 @@ app.include_router(developer_router)
 app.include_router(developer_mutation_router)
 app.include_router(developer_conversation_create_router)
 app.include_router(tool_router)
+app.include_router(agent_tools_router)
 app.include_router(knowledge_graph_router)
 app.include_router(synthesis_router)
 app.include_router(goal_ai_router)
