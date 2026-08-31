@@ -227,12 +227,13 @@ and Jobs have no public `workers.dev` or preview URL; only Edge, Web, and the
 staging Auth compatibility surface remain public.
 
 If any post-deploy check fails, the command restores every Worker version from
-the pre-release snapshot and checks the restored Edge/Web entrypoints. Snapshots
-are owner-only files under `deploy/cloudflare/.wrangler/releases/`. Automatic
-rollback messages use only the bounded snapshot filename; including the full
-worktree path can exceed Wrangler's 120-character message limit and reopen an
-interactive prompt instead of completing recovery. A prior snapshot can also
-be restored explicitly:
+the pre-release snapshot and checks the restored Edge `/ready` and Web
+`/api/worker-ready` readiness envelopes. A `200` with HTML or a body whose
+`status` is not `ready` is rejected. Snapshots are owner-only files under
+`deploy/cloudflare/.wrangler/releases/`. Automatic rollback messages use only
+the bounded snapshot filename; including the full worktree path can exceed
+Wrangler's 120-character message limit and reopen an interactive prompt instead
+of completing recovery. A prior snapshot can also be restored explicitly:
 
 ```bash
 npm run rollback:staging -- .wrangler/releases/staging-before-<timestamp>.json

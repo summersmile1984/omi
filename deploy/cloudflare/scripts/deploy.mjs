@@ -439,16 +439,7 @@ try {
     );
     rollbackDeployment(snapshot, snapshotPath);
     const restoredHealth = await verifyStagingHealth({
-      targets: [
-        {
-          name: "edge",
-          url: "https://omi-cf-edge-staging.summersmile1984.workers.dev/health",
-        },
-        {
-          name: "web",
-          url: "https://omi-web-app-staging.summersmile1984.workers.dev/login",
-        },
-      ],
+      targets: stagingHealthTargets(),
     });
     console.error(
       `Staging rollback health passed: ${JSON.stringify(restoredHealth)}.`,

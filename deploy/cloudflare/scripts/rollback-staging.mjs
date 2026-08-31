@@ -5,7 +5,7 @@ import {
   rollbackPlan,
   ROLLBACK_STDIO,
 } from "./deployment-state.mjs";
-import { verifyStagingHealth } from "./deploy-health.mjs";
+import { stagingHealthTargets, verifyStagingHealth } from "./deploy-health.mjs";
 
 const snapshotPath = process.argv[2];
 if (!snapshotPath) {
@@ -27,16 +27,7 @@ if (failures.length) {
   throw new Error(`rollback failed for: ${failures.join(", ")}`);
 }
 const restoredHealth = await verifyStagingHealth({
-  targets: [
-    {
-      name: "edge",
-      url: "https://omi-cf-edge-staging.summersmile1984.workers.dev/health",
-    },
-    {
-      name: "web",
-      url: "https://omi-web-app-staging.summersmile1984.workers.dev/login",
-    },
-  ],
+  targets: stagingHealthTargets(),
 });
 console.log(
   `Cloudflare staging rollback complete from ${snapshotPath}: ${JSON.stringify(restoredHealth)}.`,

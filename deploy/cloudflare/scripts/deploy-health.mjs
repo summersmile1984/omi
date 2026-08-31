@@ -28,7 +28,6 @@ export async function verifyStagingHealth({
       response = await fetchImpl(target.url, {
         signal: AbortSignal.timeout(timeoutMs),
       });
-      await response.arrayBuffer();
     } catch (error) {
       throw new Error(
         `${target.name} health request failed: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -38,6 +37,17 @@ export async function verifyStagingHealth({
     if (response.status !== 200) {
       throw new Error(
         `${target.name} expected HTTP 200, received HTTP ${response.status}`,
+      );
+    }
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      throw new Error(`${target.name} readiness response was not valid JSON`);
+    }
+    if (!body || typeof body !== "object" || body.status !== "ready") {
+      throw new Error(
+        `${target.name} readiness response did not report status=ready`,
       );
     }
   }

@@ -16,9 +16,9 @@ describe("staging deployment health", () => {
     const calls: string[] = [];
     const fetchImpl = async (url: string) => {
       calls.push(url);
-      return new Response(null, {
-        status: url.includes("worker-ready") ? 503 : 200,
-      });
+      return url.includes("worker-ready")
+        ? new Response(null, { status: 503 })
+        : Response.json({ status: "ready" });
     };
     await expect(verifyStagingHealth({ fetchImpl })).rejects.toThrow(
       "web expected HTTP 200, received HTTP 503",
@@ -26,11 +26,29 @@ describe("staging deployment health", () => {
     expect(calls).toHaveLength(2);
   });
 
-  it("returns a status map after consuming every health body", async () => {
+  it("rejects a 200 response that is not a ready JSON envelope", async () => {
+    await expect(
+      verifyStagingHealth({
+        fetchImpl: async () =>
+          new Response("<html>ok</html>", {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          }),
+      }),
+    ).rejects.toThrow("edge readiness response was not valid JSON");
+
+    await expect(
+      verifyStagingHealth({
+        fetchImpl: async () => Response.json({ status: "ok" }),
+      }),
+    ).rejects.toThrow("edge readiness response did not report status=ready");
+  });
+
+  it("returns a status map after validating every readiness body", async () => {
     const calls: string[] = [];
     const fetchImpl = async (url: string) => {
       calls.push(url);
-      return new Response(new Uint8Array([1]), { status: 200 });
+      return Response.json({ status: "ready", service: "edge" });
     };
     await expect(verifyStagingHealth({ fetchImpl })).resolves.toEqual({
       edge: 200,
