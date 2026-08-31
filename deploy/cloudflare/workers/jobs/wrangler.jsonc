@@ -17,7 +17,10 @@
     "WORKERS_AI_X_MEMORY_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "WORKERS_AI_WRAPPED_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "MCP_APP_OAUTH_STAGING_ENABLED": "false",
+    "LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED": "false",
     "CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED": "false",
+    "WORKERS_AI_CHAT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "FREE_CHAT_QUESTIONS_PER_MONTH": "30",
   },
   // Secrets provisioned with `wrangler secret put`: ADMIN_KEY, APPS_ADMIN_KEY,
   // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets,
@@ -33,6 +36,8 @@
   // provider/thumbnail boundary, and optional RAPID_API_HOST/RAPID_API_KEY.
   // MCP_APP_TOKEN_ENCRYPTION_SECRET is required only when the namespaced
   // external-MCP OAuth staging gate is explicitly enabled.
+  // LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED additionally requires
+  // Firebase API/identity verification through the Auth service binding.
   "services": [
     { "binding": "AUTH", "service": "omi-cf-auth-staging" },
     { "binding": "API_CORE", "service": "omi-cf-api-core-staging" },

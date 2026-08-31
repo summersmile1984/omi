@@ -21,6 +21,8 @@ export type EdgeEnv = {
   AUTH_OAUTH_STAGING_FAIL_CLOSED?: string;
   /** Explicit opt-in for the exact native Firebase auth routes in Auth Worker. */
   AUTH_EXACT_NATIVE_STAGING_ENABLED?: string;
+  /** Explicit opt-in for the exact Firebase app-consent OAuth routes in Jobs. */
+  AUTH_EXACT_OAUTH_STAGING_ENABLED?: string;
   /** Staging-only deny switch for legacy Twilio phone-call paths. */
   PHONE_TWILIO_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for the legacy Gemini desktop proxy paths. */
@@ -29,6 +31,8 @@ export type EdgeEnv = {
   GEMINI_PROXY_CLOUDFLARE_ENABLED?: string;
   /** Staging-only deny switch for legacy chat completion/materialization paths. */
   CHAT_COMPAT_STAGING_FAIL_CLOSED?: string;
+  /** Cloudflare Jobs owner for the text/materialization compatibility routes. */
+  CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED?: string;
   /** Staging-only deny switch for legacy staged-task/task-intelligence paths. */
   TASK_INTELLIGENCE_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for legacy Persona and app/MCP mutation paths. */

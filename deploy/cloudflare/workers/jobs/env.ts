@@ -31,9 +31,7 @@ export type WorkersAiBinding = {
 
 /** Narrow Images binding surface used for private chat-file thumbnails. */
 export type ImagesTransformBinding = {
-  input(
-    stream: ReadableStream<Uint8Array>,
-  ): {
+  input(stream: ReadableStream<Uint8Array>): {
     transform(options: {
       width: number;
       height: number;
@@ -85,8 +83,15 @@ export type JobsEnv = {
   CHAT_FILE_THUMBNAIL_SECRET?: string;
   /** Explicit opt-in while the legacy upload owner is being cut over. */
   LEGACY_CHAT_FILES_STAGING_ENABLED?: string;
+  /** Cloudflare-owned exact Chat compatibility routes in isolated staging. */
+  CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED?: string;
   /** Explicit opt-in for legacy-shaped attachment SSE/JSON envelopes. */
   CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED?: string;
+  /** Workers AI chat model and quota pricing used by exact compatibility routes. */
+  WORKERS_AI_CHAT_MODEL?: string;
+  FREE_CHAT_QUESTIONS_PER_MONTH?: string;
+  WORKERS_AI_CHAT_INPUT_USD_PER_MILLION?: string;
+  WORKERS_AI_CHAT_OUTPUT_USD_PER_MILLION?: string;
   SYNC_CONTENT_ID_SECRET?: string;
   LEGACY_AUDIO_ENCRYPTION_SECRET?: string;
   STRIPE_SECRET_KEY?: string;
@@ -104,6 +109,10 @@ export type JobsEnv = {
   WORKERS_AI_X_MEMORY_MODEL?: string;
   WORKERS_AI_WRAPPED_MODEL?: string;
   FIREBASE_SERVICE_ACCOUNT_JSON?: string;
+  /** Firebase Web API key/domain/project used by the legacy app-consent page and token verifier. */
+  FIREBASE_API_KEY?: string;
+  FIREBASE_AUTH_DOMAIN?: string;
+  FIREBASE_PROJECT_ID?: string;
   ADMIN_KEY?: string;
   APPS_ADMIN_KEY?: string;
   X_OAUTH_CLIENT_ID?: string;
@@ -134,6 +143,8 @@ export type JobsEnv = {
   MCP_APP_TOKEN_ENCRYPTION_SECRET?: string;
   /** Explicit staging gate for the Better Auth app-consent OAuth seam. */
   EXTERNAL_APP_OAUTH_STAGING_ENABLED?: string;
+  /** Explicit opt-in for the exact legacy /v1/oauth/* owner. */
+  LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED?: string;
   HUME_WEBHOOK_SIGNING_KEY?: string;
   /** Twilio REST credentials and Voice SDK token configuration. */
   TWILIO_ACCOUNT_SID?: string;

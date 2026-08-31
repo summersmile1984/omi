@@ -89,6 +89,7 @@ import {
   registerLimitlessImportRoutes,
 } from "./limitless-import";
 import { registerChatFileRoutes } from "./chat-file-routes";
+import { registerChatCompatibilityRoutes } from "./chat-compatibility";
 import {
   processChatAssistantRunMessage,
   registerChatAssistantRoutes,
@@ -113,12 +114,12 @@ import {
   processHumeWebhookMessage,
   registerHumeWebhookRoutes,
 } from "./hume-webhook";
-import {
-  processWrappedJobMessage,
-  registerWrappedRoutes,
-} from "./wrapped";
+import { processWrappedJobMessage, registerWrappedRoutes } from "./wrapped";
 import { registerPhoneTwilioRoutes } from "./phone-twilio";
-import { processTaskIntelligenceMessage, reconcileTaskIntelligenceJobs } from "./task-intelligence";
+import {
+  processTaskIntelligenceMessage,
+  reconcileTaskIntelligenceJobs,
+} from "./task-intelligence";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -186,10 +187,12 @@ registerAdminNotificationRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
 registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
+registerChatCompatibilityRoutes(app, requestContext);
 registerChatAssistantRoutes(app, requestContext);
 registerPersonaMutationRoutes(app, requestContext);
 registerMcpAppOauthRoutes(app, requestContext);
 registerExternalAppOauthRoutes(app, requestContext);
+registerExternalAppOauthRoutes(app, requestContext, {}, { surface: "legacy" });
 registerAudioMergeRoutes(app, requestContext);
 registerLegacyAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);

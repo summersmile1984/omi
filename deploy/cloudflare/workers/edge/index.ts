@@ -543,10 +543,8 @@ const proxyLegacyBackend = async (
 };
 
 // Firebase provider exchange and legacy app-consent OAuth are not Better Auth
-// contracts. The native-auth transaction seam now has an exact /v1/auth/*
-// handler in the Auth Worker, but it is independently gated while provider
-// credentials and Firebase identity replay are verified. App-consent OAuth
-// remains fail-closed until its D1 catalog/consent authority is complete.
+// contracts. The native-auth transaction seam is hosted by Auth and the app
+// consent transaction by Jobs; each has an independent staging owner gate.
 const proxyExactNativeAuth = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -579,6 +577,32 @@ const proxyExactNativeAuth = async (
   }
 };
 
+// The legacy app-consent page is intentionally public: it bootstraps Firebase
+// sign-in in the browser and posts the resulting ID token to /token. Jobs
+// performs the provider verification before touching the D1 install state.
+const proxyExactLegacyAppOauth = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  try {
+    const response = await c.env.JOBS.fetch(
+      new Request(c.req.raw, { headers }),
+    );
+    return withRequestId(response, id);
+  } catch {
+    return withRequestId(
+      Response.json(
+        { error: "auth_unavailable" },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+};
+
 const legacyAuthOAuthStagingBoundary = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -597,6 +621,15 @@ const legacyAuthOAuthStagingBoundary = async (
     ),
     id,
   );
+};
+
+const legacyExactAppOauthStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.AUTH_EXACT_OAUTH_STAGING_ENABLED === "true") {
+    return proxyExactLegacyAppOauth(c);
+  }
+  return legacyAuthOAuthStagingBoundary(c);
 };
 
 // Keep the app-consent OAuth contract on its existing boundary.  Enabling the
@@ -687,6 +720,8 @@ async function cloudflareGeminiProxyBoundary(
 const legacyChatCompatibilityStagingBoundary = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
+  if (c.env.CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED === "true")
+    return proxyAuthenticatedJobs(c);
   const id = requestId(c.req.raw);
   if (c.env.CHAT_COMPAT_STAGING_FAIL_CLOSED !== "true") {
     return proxyLegacyBackend(c);
@@ -712,9 +747,9 @@ const legacyChatCompatibilityStagingBoundary = async (
 const legacyChatFilesStagingBoundary = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
-  if (c.env.LEGACY_CHAT_FILES_STAGING_ENABLED !== "true")
-    return proxyLegacyBackend(c);
-  return proxyAuthenticatedJobs(c);
+  if (c.env.LEGACY_CHAT_FILES_STAGING_ENABLED === "true")
+    return proxyAuthenticatedJobs(c);
+  return proxyLegacyBackend(c);
 };
 
 // Staged tasks and task-intelligence writes still depend on the legacy
@@ -873,17 +908,14 @@ app.get(
 );
 app.post("/v1/apps/mcp", legacyPersonaAppsStagingBoundary);
 app.get("/v1/apps/mcp/callback", legacyPersonaAppsStagingBoundary);
-app.post(
-  "/v1/apps/:app_id/mcp/refresh",
-  legacyPersonaAppsStagingBoundary,
-);
+app.post("/v1/apps/:app_id/mcp/refresh", legacyPersonaAppsStagingBoundary);
 app.post("/v1/apps/migrate-owner", legacyPersonaAppsStagingBoundary);
 app.get("/v1/auth/authorize", legacyExactNativeAuthStagingBoundary);
 app.get("/v1/auth/callback/google", legacyExactNativeAuthStagingBoundary);
 app.post("/v1/auth/callback/apple", legacyExactNativeAuthStagingBoundary);
 app.post("/v1/auth/token", legacyExactNativeAuthStagingBoundary);
-app.get("/v1/oauth/authorize", legacyAuthOAuthStagingBoundary);
-app.post("/v1/oauth/token", legacyAuthOAuthStagingBoundary);
+app.get("/v1/oauth/authorize", legacyExactAppOauthStagingBoundary);
+app.post("/v1/oauth/token", legacyExactAppOauthStagingBoundary);
 app.get("/v1/phone/numbers", proxyAuthenticatedPhone);
 app.delete("/v1/phone/numbers/:phoneNumberId", proxyAuthenticatedPhone);
 app.post("/v1/phone/numbers/verify", proxyAuthenticatedPhone);
@@ -1111,6 +1143,19 @@ const proxyAuthenticatedJobs = async (
     id,
   );
   if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(
+      c.env,
+      auth,
+      policy,
+      id,
+      {
+        failClosed: true,
+      },
+    );
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
   const headers = await authenticatedHeaders(c, auth, "jobs");
   if (headers instanceof Response) return withRequestId(headers, id);
   const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
@@ -1132,9 +1177,15 @@ async function proxyAuthenticatedPhone(
   if (denial) return withRequestId(denial, id);
   const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
   if (policy) {
-    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id, {
-      failClosed: true,
-    });
+    const rateLimitDenial = await enforceEdgeRateLimit(
+      c.env,
+      auth,
+      policy,
+      id,
+      {
+        failClosed: true,
+      },
+    );
     if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
   }
   const headers = await authenticatedHeaders(c, auth, "jobs");
@@ -1142,7 +1193,6 @@ async function proxyAuthenticatedPhone(
   const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
   return withRequestId(response, id);
 }
-
 
 // Privacy deletion must remain reachable while ordinary product traffic is
 // fenced. Jobs validates that the account is fully Cloudflare-owned before it
@@ -1441,11 +1491,19 @@ type ChatAttachmentRoutingResult = {
 async function inspectChatAttachmentBody(
   request: Request,
 ): Promise<ChatAttachmentRoutingResult | null> {
-  if (!(request.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
+  if (
+    !(request.headers.get("content-type") || "")
+      .toLowerCase()
+      .includes("application/json")
+  ) {
     return { body: new ArrayBuffer(0), hasAttachments: false };
   }
   const declared = Number(request.headers.get("content-length") || "0");
-  if (Number.isFinite(declared) && declared > MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES) return null;
+  if (
+    Number.isFinite(declared) &&
+    declared > MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES
+  )
+    return null;
   const body = request.clone().body;
   if (!body) return { body: new ArrayBuffer(0), hasAttachments: false };
   const reader = body.getReader();
@@ -1473,7 +1531,9 @@ async function inspectChatAttachmentBody(
   }
   let decoded: unknown;
   try {
-    decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    decoded = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
   } catch {
     return { body: bytes.buffer, hasAttachments: false };
   }
@@ -1482,7 +1542,8 @@ async function inspectChatAttachmentBody(
   }
   const payload = decoded as Record<string, unknown>;
   const fileIds = payload.file_ids;
-  const hasAttachments = Array.isArray(fileIds) && fileIds.length > 0 && !("context" in payload);
+  const hasAttachments =
+    Array.isArray(fileIds) && fileIds.length > 0 && !("context" in payload);
   return { body: bytes.buffer, hasAttachments };
 }
 
@@ -1508,7 +1569,10 @@ const proxyChatAttachmentToJobs = async (
     const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
     if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
   }
-  const target = new URL("/v2/cf/messages/attachments", "https://jobs.internal");
+  const target = new URL(
+    "/v2/cf/messages/attachments",
+    "https://jobs.internal",
+  );
   if (envelope) target.searchParams.set("envelope", envelope);
   const headers = await authenticatedHeaders(c, auth, "jobs", {
     method: "POST",
@@ -1547,7 +1611,10 @@ const proxyChatMessages = async (
   let inspected: ChatAttachmentRoutingResult | null = null;
   if (!appChatRequested) inspected = await inspectChatAttachmentBody(c.req.raw);
   if (inspected?.hasAttachments) {
-    const target = new URL("/v2/cf/messages/attachments", "https://jobs.internal");
+    const target = new URL(
+      "/v2/cf/messages/attachments",
+      "https://jobs.internal",
+    );
     if (c.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED === "true")
       target.searchParams.set("envelope", "messages");
     const headers = await authenticatedHeaders(c, auth, "jobs", {
@@ -1562,7 +1629,9 @@ const proxyChatMessages = async (
   }
   const headers = await authenticatedHeaders(c, auth, "api-ai");
   if (headers instanceof Response) return withRequestId(headers, id);
-  const response = await c.env.API_AI.fetch(new Request(c.req.raw, { headers }));
+  const response = await c.env.API_AI.fetch(
+    new Request(c.req.raw, { headers }),
+  );
   return withRequestId(response, id);
 };
 
@@ -1582,7 +1651,8 @@ const legacyChatCompletionsStagingBoundary = async (
   });
   if (appChatRequested) return legacyChatCompatibilityStagingBoundary(c);
   const inspected = await inspectChatAttachmentBody(c.req.raw);
-  if (!inspected?.hasAttachments) return legacyChatCompatibilityStagingBoundary(c);
+  if (!inspected?.hasAttachments)
+    return legacyChatCompatibilityStagingBoundary(c);
   return proxyChatAttachmentToJobs(c, inspected, "openai");
 };
 
@@ -1722,10 +1792,7 @@ app.get(
   "/v2/cf/chat-sessions/:sessionId/assistant-runs/:runId",
   proxyAuthenticatedJobs,
 );
-app.delete(
-  "/v2/cf/chat-sessions/:sessionId/assistant",
-  proxyAuthenticatedJobs,
-);
+app.delete("/v2/cf/chat-sessions/:sessionId/assistant", proxyAuthenticatedJobs);
 app.post("/v2/desktop/messages", proxyAuthenticatedCore);
 app.get("/v2/desktop/messages", proxyAuthenticatedCore);
 app.get("/v2/desktop/messages/reconcile", proxyAuthenticatedCore);
