@@ -1847,6 +1847,77 @@ async function refresh(
   return discover(c, context, dependencies, appId);
 }
 
+async function install(
+  c: JobsContext,
+  context: SignedAuthContext,
+  dependencies: McpAppOauthDependencies,
+): Promise<Response> {
+  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+    throw new McpAppOauthError(404, "not_found");
+  const body = parseBody(await requestText(c));
+  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  if (!appId || appId.length > 256)
+    throw new McpAppOauthError(422, "invalid_request");
+  const row = await c.env.APP_DB.prepare(
+    `SELECT c.app_id, c.owner_uid, c.status AS connection_status,
+            a.disabled, d.status AS discovery_status, d.revision AS discovery_revision,
+            d.tools_json
+       FROM cf_mcp_app_connections c
+       JOIN cf_app_catalog a ON a.id = c.app_id
+       LEFT JOIN cf_mcp_app_discoveries d ON d.app_id = c.app_id AND d.owner_uid = c.owner_uid
+      WHERE c.app_id = ? AND c.owner_uid = ?
+      LIMIT 1`,
+  )
+    .bind(appId, context.uid)
+    .first<{
+      app_id?: string;
+      owner_uid?: string;
+      connection_status?: string;
+      disabled?: number;
+      discovery_status?: string | null;
+      discovery_revision?: number | null;
+      tools_json?: string | null;
+    }>();
+  if (!row?.app_id || !row.owner_uid || Number(row.disabled) === 1)
+    throw new McpAppOauthError(404, "app_not_found");
+  if (row.connection_status !== "authorized")
+    throw new McpAppOauthError(409, "mcp_authorization_required");
+  if (row.discovery_status !== "ready" || typeof row.tools_json !== "string")
+    throw new McpAppOauthError(409, "mcp_discovery_required");
+  let tools: unknown;
+  try {
+    tools = JSON.parse(row.tools_json);
+  } catch {
+    throw new McpAppOauthError(503, "mcp_discovery_unavailable");
+  }
+  if (!Array.isArray(tools) || tools.length === 0 || tools.length > MAX_TOOLS)
+    throw new McpAppOauthError(503, "mcp_discovery_unavailable");
+  const now = nowSeconds(dependencies);
+  if (!now) throw new McpAppOauthError(503, "clock_unavailable");
+  const inserted = await c.env.APP_DB.prepare(
+    "INSERT OR IGNORE INTO cf_user_enabled_apps (uid, app_id, created_at) VALUES (?, ?, ?)",
+  )
+    .bind(context.uid, appId, now)
+    .run();
+  if (Number(inserted.meta?.changes) === 1) {
+    await c.env.APP_DB.prepare(
+      "UPDATE cf_app_catalog SET installs = MAX(0, installs + 1), updated_at = ? WHERE id = ? AND (owner_uid IS NULL OR owner_uid != ?)",
+    )
+      .bind(now, appId, context.uid)
+      .run();
+  }
+  return c.json(
+    {
+      app_id: appId,
+      status: "installed",
+      discovery_revision: Number(row.discovery_revision || 0),
+      tools_count: tools.length,
+    },
+    200,
+    { "cache-control": "no-store" },
+  );
+}
+
 export function registerMcpAppOauthRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: RequestContext,
@@ -1875,6 +1946,15 @@ export function registerMcpAppOauthRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return await refresh(c, context, dependencies);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+  app.post("/v2/cf/apps/mcp/install", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      return await install(c, context, dependencies);
     } catch (error) {
       return errorResponse(c, error);
     }

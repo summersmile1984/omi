@@ -362,7 +362,20 @@ describe("edge gateway", () => {
       env as never,
     );
     expect(refresh.status).toBe(200);
-    expect(jobsRequests).toHaveLength(4);
+    const install = await edge.fetch(
+      new Request("https://edge.test/v2/cf/apps/mcp/install", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "must-not-forward",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ app_id: "mcp-app" }),
+      }),
+      env as never,
+    );
+    expect(install.status).toBe(200);
+    expect(jobsRequests).toHaveLength(5);
     expect(new URL(jobsRequests[0].url).pathname).toBe("/v2/cf/apps/mcp/authorize");
     expect(jobsRequests[0].headers.get("cookie")).toBeNull();
     expect(jobsRequests[0].headers.get("authorization")).toBeNull();
@@ -379,6 +392,10 @@ describe("edge gateway", () => {
     expect(jobsRequests[3].headers.get("cookie")).toBeNull();
     expect(jobsRequests[3].headers.get("authorization")).toBeNull();
     expect(jobsRequests[3].headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(new URL(jobsRequests[4].url).pathname).toBe("/v2/cf/apps/mcp/install");
+    expect(jobsRequests[4].headers.get("cookie")).toBeNull();
+    expect(jobsRequests[4].headers.get("authorization")).toBeNull();
+    expect(jobsRequests[4].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
   it("fails closed for legacy Gemini proxy paths in staging", async () => {

@@ -525,6 +525,28 @@ describe("namespaced MCP app OAuth staging seam", () => {
     expect(projection.protocol_version).toBe("2025-03-26");
     expect(JSON.parse(projection.tools_json)).toHaveLength(1);
     expect(projection.revision).toBe(0);
+
+    const install = await app.request("/v2/cf/apps/mcp/install", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(install.status).toBe(200);
+    await expect(install.json()).resolves.toEqual({
+      app_id: "mcp-app",
+      status: "installed",
+      discovery_revision: 0,
+      tools_count: 1,
+    });
+    const repeatInstall = await app.request("/v2/cf/apps/mcp/install", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(repeatInstall.status).toBe(200);
+    expect(
+      database.database
+        .prepare("SELECT COUNT(*) AS count FROM cf_user_enabled_apps WHERE uid = ? AND app_id = ?")
+        .get("owner-1", "mcp-app"),
+    ).toEqual({ count: 1 });
   });
 
   it("tries endpoint candidates and follows bounded tools/list cursor pagination", async () => {
