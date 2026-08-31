@@ -50,6 +50,7 @@ class SqliteD1 {
 
 class MemoryBucket {
   readonly objects = new Map<string, Uint8Array>();
+  failPutCount = 0;
 
   async get(key: string, options?: { range?: { offset: number; length: number } }) {
     const stored = this.objects.get(key);
@@ -78,6 +79,10 @@ class MemoryBucket {
   }
 
   async put(key: string, body: BodyInit | ReadableStream<Uint8Array>) {
+    if (this.failPutCount > 0) {
+      this.failPutCount -= 1;
+      throw new Error("transient R2 write failure");
+    }
     this.objects.set(key, new Uint8Array(await new Response(body).arrayBuffer()));
   }
 
@@ -258,5 +263,47 @@ describe("Cloudflare legacy MP3 audio merge adapter", () => {
     expect(message.retry).not.toHaveBeenCalled();
     expect(await env.APP_DB.prepare("SELECT status, last_error FROM cf_audio_merge_legacy_jobs WHERE job_id = ?")
       .bind(job.job_id).first()).toMatchObject({ status: "failed", last_error: "legacy audio chunks are not available in R2" });
+  });
+
+  it("resets a transient artifact failure for Queue retry and keeps deletion fenced", async () => {
+    const { env, assets, sent, database } = environment();
+    await assets.put("chunks/audio-user/conversation-1/1000.bin", new Uint8Array(32_000));
+    const admitted = await jobs.fetch(
+      new Request("https://jobs.test/v2/cf/audio-merge-jobs/legacy/run", {
+        method: "POST",
+        headers: {
+          ...(await signedHeaders("POST", "/v2/cf/audio-merge-jobs/legacy/run")),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ conversation_id: "conversation-1", audio_file_id: "audio-1", timestamps: [1000] }),
+      }),
+      env,
+    );
+    const job = (await admitted.json()) as { job_id: string };
+    assets.failPutCount = 1;
+    const first = queueMessage(sent[0]);
+    await jobs.queue({ messages: [first] } as never, env);
+    expect(first.retry).toHaveBeenCalledOnce();
+    expect(first.ack).not.toHaveBeenCalled();
+    expect(await env.APP_DB.prepare("SELECT status, last_error FROM cf_audio_merge_legacy_jobs WHERE job_id = ?")
+      .bind(job.job_id).first()).toMatchObject({ status: "queued", last_error: "audio merge processor unavailable" });
+    const deletionNow = Math.floor(Date.now() / 1000);
+    database.database.prepare(
+      "INSERT INTO cf_account_deletion_intents (uid, job_id, status, phase, next_attempt_at, created_at, updated_at) VALUES (?, ?, 'pending', 'quiescing', ?, ?, ?)",
+    ).run("audio-user", "delete-audio-user", deletionNow, deletionNow, deletionNow);
+    const fenced = await jobs.fetch(
+      new Request("https://jobs.test/v2/cf/audio-merge-jobs/legacy/run", {
+        method: "POST",
+        headers: {
+          ...(await signedHeaders("POST", "/v2/cf/audio-merge-jobs/legacy/run")),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ conversation_id: "conversation-1", audio_file_id: "audio-1", timestamps: [1000, 1001] }),
+      }),
+      env,
+    );
+    expect(fenced.status).toBe(503);
+    expect(await env.APP_DB.prepare("SELECT COUNT(*) AS count FROM cf_audio_merge_legacy_jobs WHERE uid = 'audio-user'").first())
+      .toMatchObject({ count: 1 });
   });
 });
