@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import jobs from "../workers/jobs/index";
 import { captureDlqMessage } from "../workers/jobs/dlq-replay";
 import type { JobMessage, JobsEnv } from "../workers/jobs/env";
@@ -168,10 +168,18 @@ function request(
 }
 
 function capturedMessage(messageId = "message-1"): Record<string, unknown> {
+  const envelope = JSON.stringify({
+    jobId: "job-1",
+    uid: "user-1",
+    kind: "probe",
+    payload: {},
+  });
   return {
     queue_name: DLQ,
     message_id: messageId,
-    body_sha256: "a".repeat(64),
+    body_sha256: createHash("sha256")
+      .update(envelope)
+      .digest("hex"),
     job_id: "job-1",
     uid: "user-1",
     kind: "probe",
@@ -314,5 +322,22 @@ describe("Queue DLQ replay boundary", () => {
       env(database()),
     );
     expect(response.status).toBe(400);
+  });
+
+  it("rejects a D1 envelope whose stored digest no longer matches", async () => {
+    const db = database({
+      message: { ...capturedMessage(), body_sha256: "b".repeat(64) },
+    });
+    const response = await jobs.fetch(
+      request(JSON.stringify({ message_ids: ["message-1"] }), "replay-tampered"),
+      env(db),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "partial",
+      queuedCount: 0,
+      skippedCount: 1,
+    });
+    expect(db.state.messageUpdates).toHaveLength(0);
   });
 });

@@ -488,9 +488,27 @@ export function registerDlqReplayRoutes(
                 payload,
               })
             : null;
+        // The index stores only the bounded envelope fields, not the original
+        // Queue body. Recompute the digest before republishing so a partially
+        // edited D1 row cannot silently turn into a different JobMessage.
+        const reconstructedHash =
+          !fenced && job
+            ? await sha256Hex(
+                serializedBody({
+                  jobId: job.jobId,
+                  uid: job.uid,
+                  kind: job.kind,
+                  payload: job.payload,
+                }),
+              )
+            : null;
         const queue =
-          !fenced && payload ? targetQueue(row, payload, c.env) : null;
-        if (!fenced && (!job || !queue)) {
+          !fenced && payload && reconstructedHash === row.body_sha256
+            ? targetQueue(row, payload, c.env)
+            : null;
+        if (!fenced && job && reconstructedHash !== row.body_sha256) {
+          reason = "message_record_hash_mismatch";
+        } else if (!fenced && (!job || !queue)) {
           reason = "replay_target_unavailable";
         } else if (!fenced && job && queue) {
           const claimed = await c.env.APP_DB.prepare(
