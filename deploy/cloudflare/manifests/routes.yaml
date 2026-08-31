@@ -4779,6 +4779,16 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/integrations/{app_key}
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: PUT
     path: /v1/integrations/apple-health/sync
     owner: api-core

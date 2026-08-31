@@ -11,6 +11,7 @@ const GOOGLE_CALENDAR_OAUTH_ALIASES = new Set([
   "contacts",
   "google_contacts",
 ]);
+const GOOGLE_CALENDAR_DELETE_ALIASES = new Set(["google_calendar", "gmail"]);
 const TOKEN_SENTINEL = "configured";
 const OAUTH_STATE_TTL_SECONDS = 10 * 60;
 const TOKEN_REFRESH_BUFFER_SECONDS = 5 * 60;
@@ -1461,7 +1462,7 @@ export function registerGoogleCalendarRoutes(
     }
   });
 
-  app.delete("/v1/integrations/google_calendar", async (c) => {
+  const disconnectCalendar = async (c: JobsContext) => {
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
@@ -1488,6 +1489,15 @@ export function registerGoogleCalendarRoutes(
     } catch (error) {
       return errorResponse(c, error);
     }
+  };
+
+  app.delete("/v1/integrations/google_calendar", disconnectCalendar);
+  app.delete("/v1/integrations/:appKey", async (c) => {
+    const requested = c.req.param("appKey").trim().toLowerCase().replace(/-/g, "_");
+    if (!GOOGLE_CALENDAR_DELETE_ALIASES.has(requested)) {
+      return c.json({ detail: "Integration not found" }, 404);
+    }
+    return disconnectCalendar(c);
   });
 
   app.get("/v1/calendar/google/events", async (c) => {

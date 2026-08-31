@@ -347,6 +347,30 @@ describe("Google Calendar Worker routes", () => {
     ).toBe(404);
   });
 
+  it("deletes the Google Calendar grant for the legacy Gmail alias", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    const saved = await app.request("/v1/integrations/google_calendar", {
+      method: "PUT",
+      body: JSON.stringify({
+        connected: true,
+        access_token: "manual-calendar-access",
+      }),
+    });
+    expect(saved.status).toBe(200);
+
+    const deleted = await app.request("/v1/integrations/gmail", {
+      method: "DELETE",
+    });
+    expect(deleted.status).toBe(204);
+    expect(
+      database.database
+        .prepare("SELECT COUNT(*) AS count FROM cf_google_calendar_integrations WHERE uid = ?")
+        .get("calendar-user"),
+    ).toEqual({ count: 0 });
+    expect((await app.request("/v1/integrations/whoop", { method: "DELETE" })).status).toBe(404);
+  });
+
   it("uses hashed single-use OAuth state and the Calendar-only scope", async () => {
     const { database, env, calls, fetchImpl } = environment();
     const app = testApp(env, { fetchImpl, now: () => 1_000 });
