@@ -14,6 +14,7 @@ export type JobMessage = {
     | "conversation_finalize"
     | "conversation_reprocess"
     | "conversation_merge"
+    | "hume_webhook"
     | "limitless_import";
   payload: Record<string, unknown>;
 };
@@ -86,4 +87,5 @@ export type JobsEnv = {
   CLICKUP_CLIENT_SECRET?: string;
   RAPID_API_HOST?: string;
   RAPID_API_KEY?: string;
+  HUME_WEBHOOK_SIGNING_KEY?: string;
 };

@@ -5456,6 +5456,17 @@ routes:
     idempotency: none
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/agents/hume/callback
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: [d1-app, queue-jobs, worker-secrets]
+    protocol: http
+    idempotency: provider-event-id
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/tools/conversations
     owner: api-core

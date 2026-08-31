@@ -293,6 +293,26 @@ const proxyPublicJobs = async (
   return withRequestId(response, id);
 };
 
+// Hume signs the exact request bytes. Preserve only the provider signature
+// envelope and content type; caller credentials and internal identity headers
+// must never cross this public webhook boundary.
+const proxyHumeWebhook = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const headers = new Headers();
+  for (const name of [
+    "content-type",
+    "x-hume-ai-webhook-signature",
+    "x-hume-ai-webhook-timestamp",
+  ]) {
+    const value = c.req.header(name);
+    if (value) headers.set(name, value);
+  }
+  const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+};
+
 const proxyMetricsCore = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -611,6 +631,7 @@ app.post("/v1/summary-app-ids/:appId", proxyPublicJobs);
 app.delete("/v1/summary-app-ids/:appId", proxyPublicJobs);
 app.post("/v1/integrations/notification", proxyIntegrationCore);
 app.post("/v1/notification", proxyPublicJobs);
+app.post("/v1/agents/hume/callback", proxyHumeWebhook);
 app.post("/v2/integrations/:app_id/user/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/user/memories", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/memories", proxyIntegrationCore);

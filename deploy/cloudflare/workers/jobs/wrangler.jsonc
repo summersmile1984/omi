@@ -25,8 +25,9 @@
   // GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET,
   // TODOIST_CLIENT_ID/TODOIST_CLIENT_SECRET, ASANA_CLIENT_ID/ASANA_CLIENT_SECRET,
   // GOOGLE_TASKS_CLIENT_ID/GOOGLE_TASKS_CLIENT_SECRET,
-  // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, optional OPENAI_API_KEY for the
-  // chat-file provider boundary, and optional RAPID_API_HOST/RAPID_API_KEY.
+  // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, HUME_WEBHOOK_SIGNING_KEY,
+  // optional OPENAI_API_KEY for the chat-file provider boundary, and optional
+  // RAPID_API_HOST/RAPID_API_KEY.
   "services": [
     { "binding": "AUTH", "service": "omi-cf-auth-staging" },
     { "binding": "API_CORE", "service": "omi-cf-api-core-staging" },

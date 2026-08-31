@@ -89,6 +89,11 @@ import {
   registerLimitlessImportRoutes,
 } from "./limitless-import";
 import { registerChatFileRoutes } from "./chat-file-routes";
+import {
+  cleanupExpiredHumeWebhookEvents,
+  processHumeWebhookMessage,
+  registerHumeWebhookRoutes,
+} from "./hume-webhook";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -156,6 +161,7 @@ registerAdminNotificationRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
 registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
+registerHumeWebhookRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -922,6 +928,10 @@ async function processJobMessage(
   message: Message<JobMessage>,
   env: JobsEnv,
 ): Promise<void> {
+  if (message.body.kind === "hume_webhook") {
+    await processHumeWebhookMessage(message, env);
+    return;
+  }
   if (message.body.kind === "limitless_import") {
     await processLimitlessImportMessage(message, env);
     return;
@@ -1124,6 +1134,7 @@ export default {
       cleanupExpiredTaskIntegrationOAuthStates(env, now),
       cleanupExpiredGoogleCalendarOAuthStates(env, now),
       cleanupExpiredLimitlessImports(env, now),
+      cleanupExpiredHumeWebhookEvents(env, now),
       ...syncMaintenance,
     ]);
     const failure = results.find(

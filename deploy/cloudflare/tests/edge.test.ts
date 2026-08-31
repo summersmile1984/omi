@@ -1337,6 +1337,44 @@ describe("edge gateway", () => {
     }
   });
 
+  it("preserves only the Hume webhook envelope and raw body for Jobs", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      JOBS: rawService(async (request) => {
+        forwarded = request;
+        return Response.json({ status: "accepted" }, { status: 202 });
+      }),
+    };
+    const rawBody = '{"job_id":"edge_hume_job","status":"COMPLETED"}';
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/agents/hume/callback", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer caller-must-not-cross",
+          cookie: "session=caller-must-not-cross",
+          "content-type": "application/json",
+          "x-hume-ai-webhook-signature": "a".repeat(64),
+          "x-hume-ai-webhook-timestamp": "1770000000",
+          "x-omi-auth-context": "caller-must-not-cross",
+        },
+        body: rawBody,
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(202);
+    expect(forwarded?.headers.get("content-type")).toBe("application/json");
+    expect(forwarded?.headers.get("x-hume-ai-webhook-signature")).toBe(
+      "a".repeat(64),
+    );
+    expect(forwarded?.headers.get("x-hume-ai-webhook-timestamp")).toBe(
+      "1770000000",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
+    await expect(forwarded?.text()).resolves.toBe(rawBody);
+  });
+
   it("keeps the X OAuth callback public and signs the authenticated connector surface for Jobs", async () => {
     const jobRequests: Request[] = [];
     const env = {
