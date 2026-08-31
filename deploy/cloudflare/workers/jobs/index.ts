@@ -94,6 +94,10 @@ import {
   registerAudioMergeRoutes,
 } from "./audio-merge-boundary";
 import {
+  processMemoryShortTermLifecycleMessage,
+  registerMemoryShortTermLifecycleRoutes,
+} from "./memory-short-term-lifecycle";
+import {
   cleanupExpiredHumeWebhookEvents,
   processHumeWebhookMessage,
   registerHumeWebhookRoutes,
@@ -166,6 +170,7 @@ registerTwitterProfileRoutes(app, requestContext);
 registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
 registerAudioMergeRoutes(app, requestContext);
+registerMemoryShortTermLifecycleRoutes(app);
 registerHumeWebhookRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
@@ -935,6 +940,10 @@ async function processJobMessage(
 ): Promise<void> {
   if (message.body.kind === "audio_merge") {
     await processAudioMergeJobMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "memory_short_term_lifecycle") {
+    await processMemoryShortTermLifecycleMessage(message, env);
     return;
   }
   if (message.body.kind === "hume_webhook") {
