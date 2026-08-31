@@ -33,8 +33,11 @@ expired lease, retries transient errors, and terminally acknowledges deletion
 fences, malformed projections, or exhausted attempts. Transition inserts are
 idempotent by the policy/evaluation/source fingerprint.
 
-Before production cutover, run a staging probe that covers: one active expired
-row and one tombstoned row, exact retry, a transient D1 retry, cross-account
-scope, malformed lifecycle evidence, and account deletion residual cleanup.
-Historical Firestore memory-item/transition backfill and production cutover
-remain separate work.
+The remote staging migration is applied and the unauthenticated admin boundary
+has been checked (`403` without `secret-key`). Before production cutover, run
+an authenticated fixture probe that covers: one active expired row and one
+tombstoned row, exact retry, a transient D1 retry, cross-account scope,
+malformed lifecycle evidence, and account deletion residual cleanup. The
+staging shell used for this deployment did not contain an admin key or fixture,
+so it does not claim the positive Queue drain. Historical Firestore
+memory-item/transition backfill and production cutover remain separate work.
