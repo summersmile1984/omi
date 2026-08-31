@@ -386,7 +386,7 @@
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/apps/disable", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/apps/enable", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/apps/mcp", "protocol": "http", "target_runtime": "typescript-worker"},
-    {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/apps/migrate-owner", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/apps/migrate-owner", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/apps/review", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/apps/tester", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/apps/tester/access", "protocol": "http", "target_runtime": "typescript-worker"},

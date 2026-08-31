@@ -830,6 +830,19 @@ const legacyMcpCallbackStagingBoundary = async (
   return legacyPersonaAppsStagingBoundary(c);
 };
 
+// The legacy owner-migration payload carries a Firebase anonymous source
+// token.  Once explicitly enabled, send it to the Jobs adapter so the token
+// can only reach Auth's anonymous-identity bridge; otherwise retain the
+// existing Persona/apps fail-closed/legacy behavior.
+const legacyAppOwnerMigrationStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED === "true") {
+    return proxyAuthenticatedJobs(c);
+  }
+  return legacyPersonaAppsStagingBoundary(c);
+};
+
 const legacyTwitterOwnershipStagingBoundary = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -941,7 +954,10 @@ app.get(
 app.post("/v1/apps/mcp", legacyMcpAppsStagingBoundary);
 app.get("/v1/apps/mcp/callback", legacyMcpCallbackStagingBoundary);
 app.post("/v1/apps/:app_id/mcp/refresh", legacyMcpAppsStagingBoundary);
-app.post("/v1/apps/migrate-owner", legacyPersonaAppsStagingBoundary);
+app.post(
+  "/v1/apps/migrate-owner",
+  legacyAppOwnerMigrationStagingBoundary,
+);
 app.get("/v1/auth/authorize", legacyExactNativeAuthStagingBoundary);
 app.get("/v1/auth/callback/google", legacyExactNativeAuthStagingBoundary);
 app.post("/v1/auth/callback/apple", legacyExactNativeAuthStagingBoundary);

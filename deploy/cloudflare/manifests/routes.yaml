@@ -2001,6 +2001,17 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/apps/migrate-owner
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [auth-worker, d1-app, queue-jobs, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/apps/popular
     owner: api-core

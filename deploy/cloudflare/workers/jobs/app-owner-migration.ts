@@ -26,6 +26,7 @@ import type { JobMessage, JobsEnv } from "./env";
  */
 
 const ROUTE_PATH = "/v2/cf/apps/migrate-owner";
+const LEGACY_ROUTE_PATH = "/v1/apps/migrate-owner";
 const IDENTITY_PROJECTION_PATH = `${ROUTE_PATH}/identity-projection`;
 const DATA_PROJECTION_ATTESTATION_PATH =
   "/v2/cf/apps/migrate-owner/data-projection";
@@ -93,6 +94,11 @@ type MigrationRequest = {
 };
 
 type IdentityProjectionRequest = {
+  sourceUid: string;
+  sourceToken: string;
+};
+
+type LegacyMigrationRequest = {
   sourceUid: string;
   sourceToken: string;
 };
@@ -469,6 +475,25 @@ async function readBoundedJson(request: Request): Promise<unknown> {
     offset += chunk.byteLength;
   }
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}
+
+function parseLegacyMigrationRequest(
+  value: unknown,
+  sourceUid: string | undefined,
+): LegacyMigrationRequest | null {
+  if (!validText(sourceUid, MAX_UID_LENGTH)) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  // The legacy endpoint embeds only source_token in its JSON body.  Reject
+  // destination/source identity assertions in the body so the query-bound
+  // old_id remains the sole source identity input.
+  if (
+    Object.keys(body).some((key) => key !== "source_token") ||
+    !validText(body.source_token, 8_192)
+  ) {
+    return null;
+  }
+  return { sourceUid, sourceToken: body.source_token };
 }
 
 function parseRequest(
@@ -1014,6 +1039,7 @@ async function verifyAnonymousSource(
 async function projectAnonymousIdentity(
   c: JobsContext,
   context: SignedAuthContext,
+  overrideBody?: unknown,
 ): Promise<Response> {
   if (c.env.FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED !== "true") {
     return c.json(
@@ -1027,7 +1053,9 @@ async function projectAnonymousIdentity(
   }
   let body: unknown;
   try {
-    body = await readBoundedJson(c.req.raw);
+    body = overrideBody === undefined
+      ? await readBoundedJson(c.req.raw)
+      : overrideBody;
   } catch {
     return c.json({ error: "invalid_request" }, 400, noStoreHeaders());
   }
@@ -1286,6 +1314,15 @@ async function admit(
     return c.json({ error: "invalid_request" }, 400, noStoreHeaders());
   }
   const idempotencyKey = c.req.header("idempotency-key") || null;
+  return admitParsed(c, context, parsed, idempotencyKey);
+}
+
+async function admitParsed(
+  c: JobsContext,
+  context: SignedAuthContext,
+  parsed: unknown,
+  idempotencyKey: string | null,
+): Promise<Response> {
   const request = parseRequest(parsed, idempotencyKey);
   if (!request || request.sourceUid === context.uid) {
     return c.json(
@@ -1449,6 +1486,128 @@ async function admit(
       noStoreHeaders(),
     );
   }
+}
+
+async function admitLegacyMigration(
+  c: JobsContext,
+  context: SignedAuthContext,
+): Promise<Response> {
+  if (
+    c.env.APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED !== "true" ||
+    c.env.APP_OWNER_MIGRATION_STAGING_ENABLED !== "true" ||
+    c.env.APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED !== "true"
+  ) {
+    return c.json(
+      { error: "app_owner_migration_unavailable" },
+      503,
+      noStoreHeaders(),
+    );
+  }
+  if (context.authority !== "better-auth") {
+    return c.json({ error: "better_auth_required" }, 403, noStoreHeaders());
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = await readBoundedJson(c.req.raw);
+  } catch {
+    return c.json(
+      { detail: "Source identity is not eligible for migration" },
+      403,
+      noStoreHeaders(),
+    );
+  }
+  const request = parseLegacyMigrationRequest(
+    parsed,
+    c.req.query("old_id"),
+  );
+  if (!request || request.sourceUid === context.uid) {
+    return c.json(
+      { detail: "Source identity is not eligible for migration" },
+      403,
+      noStoreHeaders(),
+    );
+  }
+
+  // The legacy Firebase credential is sent only to the Auth Worker identity
+  // bridge.  It is converted to hash-only evidence before the D1 migration
+  // admission path sees the request; no token or raw source uid is persisted.
+  const projection = await projectAnonymousIdentity(c, context, {
+    source_uid: request.sourceUid,
+    source_token: request.sourceToken,
+  });
+  if (!projection.ok) {
+    if (projection.status === 403) {
+      return c.json(
+        { detail: "Source identity is not eligible for migration" },
+        403,
+        noStoreHeaders(),
+      );
+    }
+    return c.json(
+      { detail: "App owner migration is unavailable" },
+      projection.status === 409 ? 409 : 503,
+      noStoreHeaders(),
+    );
+  }
+  let evidence: { source_ref?: unknown; source_proof_hash?: unknown };
+  try {
+    evidence = (await projection.json()) as typeof evidence;
+  } catch {
+    return c.json(
+      { detail: "App owner migration is unavailable" },
+      503,
+      noStoreHeaders(),
+    );
+  }
+  if (!validText(evidence.source_ref, MAX_UID_LENGTH) || !evidence.source_ref.startsWith("fb-anon-") || !validHash(evidence.source_proof_hash)) {
+    return c.json(
+      { detail: "App owner migration is unavailable" },
+      503,
+      noStoreHeaders(),
+    );
+  }
+
+  const admitted = await admitParsed(
+    c,
+    context,
+    {
+      source_uid: evidence.source_ref,
+      source_proof_hash: evidence.source_proof_hash,
+    },
+    `legacy-${evidence.source_ref}`,
+  );
+  if (admitted.status !== 200 && admitted.status !== 202) {
+    return c.json(
+      { detail: "App owner migration is unavailable" },
+      admitted.status === 409 ? 409 : 503,
+      noStoreHeaders(),
+    );
+  }
+  try {
+    const body = (await admitted.json()) as { status?: unknown };
+    if (body.status === "failed") {
+      return c.json(
+        { detail: "App owner migration is unavailable" },
+        503,
+        noStoreHeaders(),
+      );
+    }
+  } catch {
+    return c.json(
+      { detail: "App owner migration is unavailable" },
+      503,
+      noStoreHeaders(),
+    );
+  }
+  // Keep the old success envelope/status while the actual migration remains
+  // asynchronous in Jobs.  Callers can continue to treat this as an
+  // accepted migration without learning the internal job id or state.
+  return c.json(
+    { status: "ok", message: "Migration started" },
+    200,
+    noStoreHeaders(),
+  );
 }
 
 async function updateFailed(
@@ -1718,6 +1877,17 @@ export function registerAppOwnerMigrationRoutes(
     return admit(c, context);
   });
 
+  // Exact legacy compatibility is independently gated.  The adapter keeps
+  // the old query/body contract and success envelope, but routes the source
+  // token through the Auth anonymous-identity bridge and only then reuses the
+  // reviewed D1/Queue admission above.
+  app.post(LEGACY_ROUTE_PATH, async (c) => {
+    const context = await requestContext(c);
+    if (!context)
+      return c.json({ error: "unauthorized" }, 401, noStoreHeaders());
+    return admitLegacyMigration(c, context);
+  });
+
   app.get(`${ROUTE_PATH}/:jobId`, async (c) => {
     if (
       c.env.APP_OWNER_MIGRATION_STAGING_ENABLED !== "true" ||
@@ -1752,6 +1922,7 @@ export function registerAppOwnerMigrationRoutes(
 
 export const appOwnerMigrationConstants = Object.freeze({
   routePath: ROUTE_PATH,
+  legacyRoutePath: LEGACY_ROUTE_PATH,
   identityProjectionPath: IDENTITY_PROJECTION_PATH,
   dataProjectionAttestationPath: DATA_PROJECTION_ATTESTATION_PATH,
   processorPath: PROCESSOR_PATH,

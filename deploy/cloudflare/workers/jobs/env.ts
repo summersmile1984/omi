@@ -154,6 +154,8 @@ export type JobsEnv = {
   TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED?: string;
   /** Dormant app-owner migration admission seam; exact legacy owner stays fail-closed. */
   APP_OWNER_MIGRATION_STAGING_ENABLED?: string;
+  /** Explicit opt-in for the legacy /v1/apps/migrate-owner compatibility adapter. */
+  APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED?: string;
   /** Auth-verified anonymous Firebase source projection into hash-only App D1 evidence. */
   FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED?: string;
   /** Explicit executor gate; no API Core migration executor is enabled by default. */

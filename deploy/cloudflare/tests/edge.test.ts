@@ -748,6 +748,55 @@ describe("edge gateway", () => {
     expect(jobsRequests.every((request) => request.headers.get("authorization") === null)).toBe(true);
   });
 
+  it("routes exact app-owner migration to Jobs only behind its explicit gate", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED: "true",
+      PERSONA_APPS_STAGING_FAIL_CLOSED: "true",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "migration-owner", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      JOBS: rawService(async (request) => {
+        jobsRequests.push(request);
+        return Response.json({ status: "ok", message: "Migration started" });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request(
+        "https://edge.test/v1/apps/migrate-owner?old_id=firebase-anonymous-source",
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer opaque-session",
+            cookie: "must-not-forward",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ source_token: "firebase-source-token" }),
+        },
+      ),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(jobsRequests).toHaveLength(1);
+    expect(new URL(jobsRequests[0].url).pathname).toBe(
+      "/v1/apps/migrate-owner",
+    );
+    expect(new URL(jobsRequests[0].url).search).toBe(
+      "?old_id=firebase-anonymous-source",
+    );
+    expect(jobsRequests[0].headers.get("authorization")).toBeNull();
+    expect(jobsRequests[0].headers.get("cookie")).toBeNull();
+    expect(jobsRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(await jobsRequests[0].json()).toEqual({
+      source_token: "firebase-source-token",
+    });
+  });
+
   it("fails closed for legacy Gemini proxy paths in staging", async () => {
     const env = {
       GEMINI_PROXY_STAGING_FAIL_CLOSED: "true",

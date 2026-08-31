@@ -39,6 +39,8 @@ export type EdgeEnv = {
   PERSONA_APPS_STAGING_FAIL_CLOSED?: string;
   /** Explicit opt-in for the exact Twitter ownership staging owner. */
   TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED?: string;
+  /** Explicit opt-in for the exact legacy app-owner Jobs compatibility adapter. */
+  APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED?: string;
   /** Explicit staging opt-in for the exact legacy external-MCP app routes. */
   MCP_APP_EXACT_LEGACY_STAGING_ENABLED?: string;
   /** Explicit staging opt-in for the guarded canonical chat-file aliases. */

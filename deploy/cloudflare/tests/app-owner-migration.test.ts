@@ -177,6 +177,20 @@ function migrationRequest(idempotencyKey = "migration-1", proof = PROOF_HASH) {
   );
 }
 
+function legacyMigrationRequest(
+  oldId = "firebase-anonymous-source",
+  sourceToken = "firebase-anonymous-id-token",
+) {
+  return new Request(
+    `https://jobs.test${appOwnerMigrationConstants.legacyRoutePath}?old_id=${encodeURIComponent(oldId)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source_token: sourceToken }),
+    },
+  );
+}
+
 function dataProjectionAttestationRequest(
   overrides: Partial<Record<string, unknown>> = {},
   secret = ADMIN_KEY,
@@ -387,6 +401,68 @@ describe("dormant app owner migration seam", () => {
     expect((await missingProof.json()) as { reason?: string }).toMatchObject({
       reason: "source_proof_not_admitted",
     });
+  });
+
+  it("adapts the exact legacy payload through Auth evidence and preserves the 200 success envelope", async () => {
+    const auth = vi.fn(async (request: Request) => {
+      expect(request.headers.get("authorization")).toBe(
+        "Bearer firebase-anonymous-id-token",
+      );
+      expect(await request.json()).toEqual({
+        expected_source_uid: "firebase-anonymous-source",
+      });
+      return Response.json(attestation());
+    });
+    const { env, sent, database } = environment(undefined, { auth });
+    env.APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED = "true";
+    const response = await appFor().fetch(
+      legacyMigrationRequest(),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      status: "ok",
+      message: "Migration started",
+    });
+    expect(auth).toHaveBeenCalledOnce();
+    expect(sent).toHaveLength(1);
+    expect(
+      database.database
+        .prepare(
+          "SELECT source_uid, target_uid, idempotency_key, status FROM cf_app_owner_migration_jobs",
+        )
+        .get(),
+    ).toMatchObject({
+      source_uid: SOURCE_REF,
+      target_uid: "target-user",
+      idempotency_key: `legacy-${SOURCE_REF}`,
+      status: "queued",
+    });
+    expect(
+      database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_app_owner_migration_sources WHERE source_uid LIKE 'firebase-anonymous%'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("keeps the exact adapter fail-closed by default and maps an invalid source token to the legacy 403", async () => {
+    const auth = vi.fn(async () =>
+      Response.json({ error: "source_identity_rejected" }, { status: 403 }),
+    );
+    const { env } = environment(undefined, { auth });
+    const disabled = await appFor().fetch(legacyMigrationRequest(), env);
+    expect(disabled.status).toBe(503);
+    expect(auth).not.toHaveBeenCalled();
+
+    env.APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED = "true";
+    const rejected = await appFor().fetch(legacyMigrationRequest(), env);
+    expect(rejected.status).toBe(403);
+    expect(await rejected.json()).toEqual({
+      detail: "Source identity is not eligible for migration",
+    });
+    expect(rejected.headers.get("cache-control")).toBe("no-store");
   });
 
   it("does not admit identity-only evidence as a data migration", async () => {
