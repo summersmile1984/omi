@@ -31,3 +31,11 @@
 - API Core `omi-cf-api-core-staging` deployed version: `2e3b7807-7039-48fc-860c-5cdddd940ed7`。
 - Edge `omi-cf-edge-staging` deployed version: `55c17726-50fc-4dc6-9759-2a29a0ea965b`。
 - `POST /updates/releases` 和 `PATCH /updates/releases/promote` 通过 Edge 实测返回 `401 Invalid or missing X-Release-Secret header`（不是 404），证明请求已进入 API Core 的新 owner；staging 当前尚未注入 `RELEASE_SECRET`，因此没有执行真实写入探针。
+
+## 本轮 authority 核对（2026-08-31）
+
+- `POST /v1/import/limitless` 仍不能切到 Worker：legacy 会接收 multipart ZIP、落本机临时目录并启动后台解析；当前 D1 只有 `v3/memory-imports/batch` 的 artifact receipt，没有 ZIP 解包、导入 job、Queue 重试和同等的会话创建 authority。`retired_compat_routes.py` 中的 Limitless 删除接口是有意的零副作用兼容响应，不代表上传已迁移。
+- `POST/PATCH /v1/personas*` 仍不能切到 Worker：创建/更新同时依赖图片上传、作者资料、用户名唯一化、Workers/legacy LLM prompt、以及公开目录缓存失效；当前 `cf_app_catalog` 仅是投影，直接写入会绕过这些约束。
+- `/v1/oauth/*` 与 `/v1/apps/mcp*` 仍不能由 Better Auth session 直接替代：legacy token 路径验证 Firebase ID token、应用启用/付费状态及 OAuth state/PKCE；D1 的 MCP OAuth 表只覆盖已迁移的 `/v1/mcp/*`，不是外部应用动态注册流程。
+- `/v1/conversations/*/finalize*`、`/v1/conversations/merge` 和 `/v2/sync-jobs/run` 仍缺少同一 canonical conversation、lease、提取 fan-out 与 Queue consumer；现有 sync-local-files consumer 只覆盖其独立的 D1/R2 文件同步 job。
+- Desktop Beta 四条 mutation 必须成组迁移：reserve/admission、signed GitHub evidence、manifest/pointer CAS 和 breakglass audit 共享同一控制面。当前 staging 已完成 manifest、stable pointer、legacy release bridge 与 clear-cache，尚未注入发布流水线回放，因此本轮不把 Beta 控制接口改成仅 D1 的半迁移状态。
