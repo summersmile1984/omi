@@ -1346,6 +1346,10 @@ const proxyAuthenticatedAsyncTranscriptionStatus = async (
 
 app.all("/v1/cf/jobs", proxyAuthenticatedJobs);
 app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
+// Operator-only DLQ replay is signed and authenticated inside Jobs.  The Edge
+// proxy deliberately remains public-auth passthrough so it can preserve the
+// admin key, idempotency key, timestamp, and request signature headers.
+app.post("/internal/cf/jobs/dlq/replay", proxyPublicJobs);
 // Namespaced external MCP App OAuth staging seam. This is intentionally
 // separate from Better Auth's client-to-Omi MCP OAuth and from legacy
 // /v1/apps/mcp; Jobs enforces its explicit staging gate and D1 authority.

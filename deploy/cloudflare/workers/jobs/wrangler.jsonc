@@ -30,6 +30,7 @@
     "CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED": "false",
     "CHAT_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "WRAPPED_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "DLQ_REPLAY_STAGING_ENABLED": "false",
     "LEGACY_CHAT_FILES_STAGING_ENABLED": "true",
     "WORKERS_AI_CHAT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "FREE_CHAT_QUESTIONS_PER_MONTH": "30",
@@ -51,6 +52,9 @@
   // Firestore export or invokes a provider.
   // CHAT_HISTORY_IMPORT_SIGNING_SECRET is required together with the explicit
   // chat-history apply staging gate; it must be at least 32 bytes.
+  // DLQ_REPLAY_SIGNING_SECRET is required together with the explicit DLQ
+  // replay staging gate; it must be at least 32 bytes. The DLQ consumer stores
+  // only bounded, hash-bound JobMessage envelopes in D1.
   // MCP_APP_TOKEN_ENCRYPTION_SECRET is required when either the namespaced
   // or exact legacy external-MCP OAuth staging gate is explicitly enabled.
   // LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED additionally requires
@@ -134,6 +138,13 @@
         "retry_delay": 30,
         "max_concurrency": 4,
         "dead_letter_queue": "omi-cf-jobs-dlq-staging",
+      },
+      {
+        "queue": "omi-cf-jobs-dlq-staging",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "retry_delay": 10,
       },
     ],
   },

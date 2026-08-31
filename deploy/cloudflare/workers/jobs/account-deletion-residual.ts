@@ -79,6 +79,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_integration_hourly_usage", column: "uid" },
   { table: "cf_integration_webhook_outbox", column: "uid" },
   { table: "cf_jobs", column: "uid" },
+  { table: "cf_queue_dlq_messages", column: "uid" },
   { table: "cf_import_jobs", column: "uid" },
   { table: "cf_chat_files", column: "uid" },
   { table: "cf_chat_file_import_ledger", column: "uid" },

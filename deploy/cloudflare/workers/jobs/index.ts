@@ -129,6 +129,7 @@ import {
   processTaskIntelligenceMessage,
   reconcileTaskIntelligenceJobs,
 } from "./task-intelligence";
+import { captureDlqMessage, registerDlqReplayRoutes } from "./dlq-replay";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -217,6 +218,7 @@ registerPhoneTwilioRoutes(app, requestContext);
 registerPhoneHistoryImportRoutes(app);
 registerChatHistoryImportRoutes(app);
 registerWrappedHistoryImportRoutes(app);
+registerDlqReplayRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -1178,6 +1180,12 @@ async function drainAssetCleanup(env: JobsEnv): Promise<void> {
 export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch<JobMessage>, env: JobsEnv): Promise<void> {
+    if (typeof batch.queue === "string" && batch.queue.includes("-dlq-")) {
+      for (const message of batch.messages) {
+        await captureDlqMessage(message, env, batch.queue);
+      }
+      return;
+    }
     for (const message of batch.messages) {
       try {
         await processJobMessage(message, env);

@@ -4706,6 +4706,17 @@ routes:
     idempotency: run-payload
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /internal/cf/jobs/dlq/replay
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, queue-jobs, worker-secrets]
+    protocol: http
+    idempotency: required
+    rollout: staging-only
+    rollback: disabled
   - method: GET
     path: /memory/vector/search
     owner: api-core
