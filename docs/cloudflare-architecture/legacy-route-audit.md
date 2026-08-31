@@ -36,7 +36,7 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 
 本轮新增 `POST /v2/voice-messages` 的 Cloudflare owner：API AI Worker 使用有界 multipart parser 与 Workers AI Whisper 完成转写，按 D1 fair-use source 去重计量，再把 transcript 交给 D1-backed `/v2/messages` 生成 SSE。空音频保持空 SSE；不支持的容器、超限和 provider/D1 故障均 fail-closed，不回落到本机临时文件或 legacy inline chat。
 
-本轮新增 `POST /v1/conversations/shared/chat` 的 Cloudflare owner：Edge 从 Cloudflare 的 `CF-Connecting-IP` 生成不可逆 subject，仅用于独立的 per-IP/global Durable Object 限流；转发时使用绑定 method/path/audience/TTL 的 signed public assertion，不伪造 Better Auth 用户身份。API Core 只读取 D1 的 shared owner index/conversation projection，并调用 Workers AI；未签名请求、私有/锁定会话、80KiB 超限、D1/AI 故障分别保持 401/404/413/503。该路由目前只完成 staging owner boundary 与 hermetic 验证，尚未部署或进行真实 provider 正向 probe。
+本轮新增 `POST /v1/conversations/shared/chat` 的 Cloudflare owner：Edge 从 Cloudflare 的 `CF-Connecting-IP` 生成不可逆 subject，仅用于独立的 per-IP/global Durable Object 限流；转发时使用绑定 method/path/audience/TTL 的 signed public assertion，不伪造 Better Auth 用户身份。API Core 只读取 D1 的 shared owner index/conversation projection，并调用 Workers AI；未签名请求、私有/锁定会话、80KiB 超限、D1/AI 故障分别保持 401/404/413/503。API Core 版本 `caa1bcb0-d066-4752-9495-110077a1f424` 与 Edge 版本 `94d581e0-f07c-4ef8-a574-372da0049974` 已发布 staging；未签名请求为 401、缺失会话为 404，隔离 Better Auth 账号创建 public conversation 后真实 Workers AI 返回 200。删号清理后 D1 conversation/share/intent 残留为 0，仅保留预期 tombstone。
 
 ## Staging evidence（2026-08-31）
 
@@ -58,6 +58,7 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 - Account-deletion run staging live recheck（2026-08-31）：最新 Jobs `a919224e-2a57-4b9a-b491-6b3f53aab206` 与 Edge `0628bff6-3b50-47a9-9660-a58755d546b7` 已发布。未认证 `POST /v1/users/account-deletion-wipes/run` 返回 `401`；Better Auth 认证的未知 job 返回 `200 {status:dropped,reason:unknown_job}`；为隔离账号建立显式 `isolated-staging-v1` cutover fixture 后，公开删号返回 `200`，run boundary 返回 `200 {status:queued}`，Queue 实际经历 `quiescing → purging`（attempt 1/2）并完成 Auth user/session/account、App intent/cutover/conversation/chat residual 全部为 `0`，仅保留预期 tombstone。非 Cloudflare-owned 新账号公开删号返回 `503 account_deletion_unavailable`，保持 fail-closed；旧 Cloud Tasks/OIDC production dispatcher 尚未切换。
 - Agent tool directory staging live evidence（2026-08-31）：API Core `70bd49eb-f0db-4338-a166-0612af37eda7`、Edge `79ba9a42-e9fc-4819-b5ac-778487a5ee8b` 已发布；未认证 `GET /v1/agent/tools` 与 `POST /v1/agent/execute-tool` 均返回 `401`，Better Auth 认证后目录返回 `200` 与 7 个 Cloudflare-native 工具定义，执行 `get_memories_tool` 返回 D1 结果，未迁移的 `get_calendar_events_tool` 返回 `404`，响应不含 `config`，临时账号已提交删号。
 - Stateless chat generate-reply staging live recheck（2026-08-31）：API AI `0b8636e3-ed1b-4928-8434-ac470110f238`、Edge `af9be7e8-277b-4392-9614-f19f72928ef7` 已发布。隔离 Better Auth 账号经真实 Edge 生成草稿返回 200；未认证、非法 history、缺失 app 分别返回 401/422/404。请求只产生独立 quota event，不写 chat session/message；公开删号完成后 quota/session/message/deletion intent 均清零，仅保留预期 tombstone。
+- Public shared chat staging live probe（2026-08-31）：API Core `caa1bcb0-d066-4752-9495-110077a1f424`、Edge `94d581e0-f07c-4ef8-a574-372da0049974` 已发布。未签名请求为 401，缺失会话为 404；隔离 Better Auth 账号写入 public conversation 后真实 Workers AI 返回 200。公开删号完成后 D1 conversation/share/intent 残留为 0，仅保留 1 条预期 tombstone。
 
 ## 本轮 authority 核对（2026-08-31）
 
