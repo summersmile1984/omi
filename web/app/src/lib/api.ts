@@ -53,6 +53,17 @@ import type {
 // Always use proxy to avoid CORS (browser → proxy → api.omi.me)
 const API_BASE_URL = '/api/proxy';
 
+/** A failed API request with its HTTP status preserved for safe UI handling. */
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+  }
+}
+
 async function createAuthenticatedHeaders(initial?: HeadersInit): Promise<Headers> {
   const headers = new Headers(initial);
   if (isBetterAuthEnabled) return headers;
@@ -99,9 +110,12 @@ async function fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Pr
       }
 
       if (response.status === 401) {
-        throw new Error('Unauthorized - please sign in again');
+        throw new ApiRequestError(response.status, 'Unauthorized - please sign in again');
       }
-      throw new Error(`API error: ${response.status} ${response.statusText}`);
+      throw new ApiRequestError(
+        response.status,
+        `API error: ${response.status} ${response.statusText}`,
+      );
     }
 
     // Handle 204 No Content responses (common for DELETE operations)
@@ -1857,14 +1871,10 @@ export async function getIntegrations(): Promise<Integration[]> {
 export async function getIntegrationOAuthUrl(
   integrationId: string,
 ): Promise<string | null> {
-  try {
-    const response = await fetchWithAuth<{ auth_url: string }>(
-      `/v1/integrations/${integrationId}/oauth-url`,
-    );
-    return response.auth_url || null;
-  } catch {
-    return null;
-  }
+  const response = await fetchWithAuth<{ auth_url: string }>(
+    `/v1/integrations/${integrationId}/oauth-url`,
+  );
+  return response.auth_url || null;
 }
 
 /**

@@ -91,6 +91,7 @@ import {
   upgradeSubscription,
   cancelSubscription,
   getCustomerPortal,
+  ApiRequestError,
 } from '@/lib/api';
 import { SUPPORTED_LANGUAGES, API_KEY_SCOPES } from '@/types/user';
 import type {
@@ -1645,6 +1646,7 @@ function IntegrationsSection({
 }) {
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const handleConnect = async (integration: Integration) => {
     if (integration.coming_soon || loadingId) return;
@@ -1665,6 +1667,15 @@ function IntegrationsSection({
       }
     } catch (error) {
       console.error('Failed to get OAuth URL:', error);
+      if (
+        integration.id === 'google_calendar' &&
+        error instanceof ApiRequestError &&
+        error.status === 503
+      ) {
+        showToast('Google Calendar is not configured for this environment.', 'error');
+      } else {
+        showToast(`Unable to connect ${integration.name}. Please try again.`, 'error');
+      }
     } finally {
       setLoadingId(null);
     }
