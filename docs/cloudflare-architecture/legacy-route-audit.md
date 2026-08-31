@@ -25,3 +25,9 @@
 4. 完成 candidate/recommendation authority 后，再处理 staged-tasks 与 What Matters Now；在此之前保持现有 404/legacy 边界。
 
 每一组迁移都必须同时更新 route manifest、Edge owner、回归测试、删除/残留清理和 staging live evidence；不能仅添加同路径 alias 来降低 legacy 计数。
+
+## Staging evidence（2026-08-31）
+
+- API Core `omi-cf-api-core-staging` deployed version: `2e3b7807-7039-48fc-860c-5cdddd940ed7`。
+- Edge `omi-cf-edge-staging` deployed version: `55c17726-50fc-4dc6-9759-2a29a0ea965b`。
+- `POST /updates/releases` 和 `PATCH /updates/releases/promote` 通过 Edge 实测返回 `401 Invalid or missing X-Release-Secret header`（不是 404），证明请求已进入 API Core 的新 owner；staging 当前尚未注入 `RELEASE_SECRET`，因此没有执行真实写入探针。
