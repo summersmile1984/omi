@@ -133,6 +133,13 @@ token 以 redirect + S256 verifier 原子消费 code 后返回 provider credenti
 响应。provider 授权 URL 保持 legacy wire，不发送无法在后续 exchange 提供的
 客户端 PKCE challenge；PKCE 仍绑定 Omi 自己的 auth code。
 
+由于 D1 没有 Redis 式 TTL，native-auth seam 在 authorize、provider callback 和
+token admission 时执行最多 100 行的有界过期清理：过期的 pending session/code
+以及已过期的 consumed/failed transaction 都会被删除，按
+`(expiresAt, id)` 确定性排序，不触碰仍在有效期内的 transaction。清理失败不会
+放宽认证校验或阻止当前请求；它只会留下下一次 admission 可回收的 maintenance
+残留。provider credential 仍只存在于 AES-GCM envelope，清理不会把其明文读出。
+
 `use_custom_token=true` 当前始终 fail-closed：即使 Firebase secret 存在，也必须
 先完成 Firebase localId → Better Auth uid 的 identity projection/link authority，
 不能从 provider token 猜测或伪造 Firebase uid。该 seam 不是 `/v1/auth/*` owner、

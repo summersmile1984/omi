@@ -23,6 +23,7 @@ import {
   isValidLegacyOpaqueSecret,
   isValidLegacyPkceChallenge,
   isValidLegacyRedirectUri,
+  pruneExpiredLegacyAuthTransactions,
   type LegacyAuthProvider,
 } from "./legacy-compatibility";
 
@@ -80,6 +81,20 @@ const MAX_CREDENTIAL_BYTES = 8_192;
 const MAX_CLIENT_STATE_BYTES = 512;
 const MAX_NAME_BYTES = 256;
 const BASE64_URL_RE = /^[A-Za-z0-9_-]+$/;
+
+async function bestEffortPruneTransactions(
+  database: Parameters<typeof createLegacyAuthTransaction>[0],
+  now: number,
+): Promise<void> {
+  try {
+    await pruneExpiredLegacyAuthTransactions(database, now);
+  } catch {
+    // Transaction cleanup is maintenance, not an authorization prerequisite.
+    // A D1 outage must not cause provider credentials to be issued from a
+    // newly-created transaction, but it also must not turn a bounded cleanup
+    // failure into a user-visible auth outage.
+  }
+}
 
 // TypeScript's DOM lib models Uint8Array's backing buffer as ArrayBufferLike,
 // while Workers' crypto declarations require BufferSource.  The values here
@@ -531,6 +546,8 @@ async function authorize(
   if (!now)
     return responseError(c, new NativeAuthError(503, "clock_unavailable"));
 
+  await bestEffortPruneTransactions(c.env.AUTH_DB, now);
+
   try {
     const configuration = providerConfiguration(c.env, provider);
     transactionSecret(c.env);
@@ -602,6 +619,7 @@ async function callback(
       undefined,
       503,
     );
+  await bestEffortPruneTransactions(c.env.AUTH_DB, now);
   let configuration: ProviderConfiguration;
   try {
     configuration = providerConfiguration(c.env, provider);
@@ -825,6 +843,7 @@ async function token(
   const now = nowSeconds(dependencies);
   if (!now)
     return responseError(c, new NativeAuthError(503, "clock_unavailable"));
+  await bestEffortPruneTransactions(c.env.AUTH_DB, now);
   try {
     const consumed = await consumeLegacyAuthTransaction(c.env.AUTH_DB, {
       lookupSecret: code,

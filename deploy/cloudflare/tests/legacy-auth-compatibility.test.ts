@@ -11,6 +11,7 @@ import {
   evaluateExternalAppAdmission,
   evaluateFirebaseIdentityAdmission,
   pkceChallengeForVerifier,
+  pruneExpiredLegacyAuthTransactions,
 } from "../workers/auth/legacy-compatibility";
 
 class SqliteD1 {
@@ -212,6 +213,53 @@ describe("legacy auth compatibility authority", () => {
           now: 2001,
         }),
       ).resolves.toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("prunes only expired native-auth rows in a bounded deterministic batch", async () => {
+    const database = new SqliteD1();
+    try {
+      const challenge = await pkceChallengeForVerifier(VERIFIER);
+      await createLegacyAuthTransaction(database, {
+        id: "expired-session",
+        kind: "session",
+        provider: "google",
+        lookupSecret: "expired-session-secret",
+        stateSecret: "expired-state-secret",
+        redirectUri: "omi://auth/callback",
+        codeChallenge: challenge,
+        codeChallengeMethod: "S256",
+        metadataEnvelopeEnc: "v1.session-envelope-x",
+        createdAt: 1000,
+        expiresAt: 1500,
+      });
+      await createLegacyAuthTransaction(database, {
+        id: "live-session",
+        kind: "session",
+        provider: "google",
+        lookupSecret: "live-session-secret",
+        stateSecret: "live-state-secret",
+        redirectUri: "omi://auth/callback",
+        codeChallenge: challenge,
+        codeChallengeMethod: "S256",
+        metadataEnvelopeEnc: "v1.session-envelope-x",
+        createdAt: 1000,
+        expiresAt: 3000,
+      });
+
+      await expect(
+        pruneExpiredLegacyAuthTransactions(database, 2000),
+      ).resolves.toBe(1);
+      expect(
+        database.database
+          .prepare("SELECT id FROM cf_legacy_auth_transactions ORDER BY id")
+          .all(),
+      ).toEqual([{ id: "live-session" }]);
+      await expect(
+        pruneExpiredLegacyAuthTransactions(database, 2000),
+      ).resolves.toBe(0);
     } finally {
       database.close();
     }

@@ -18,6 +18,10 @@ type CompatibilityDatabase = {
   prepare(sql: string): D1Statement;
 };
 
+type D1RunResult = {
+  meta?: { changes?: number | bigint };
+};
+
 export type CompatibilityGateFailure =
   | "identity_import_incomplete"
   | "identity_projection_missing"
@@ -130,6 +134,8 @@ export type ConsumedExternalOAuthTransaction = {
   appPolicyJson: string;
   consumedAt: number;
 };
+
+const MAX_TRANSACTION_PRUNE_BATCH = 100;
 
 const FORBIDDEN_REDIRECT_SCHEMES = new Set([
   "https",
@@ -506,6 +512,39 @@ export async function consumeLegacyAuthTransaction(
     .bind(consumedAt, row.id, input.now)
     .first<Record<string, unknown>>();
   return consumed ? consumedAuthRow(consumed) : null;
+}
+
+/**
+ * Reclaim expired native-auth transactions without scanning or rewriting live
+ * state.  D1 has no TTL primitive, so the Worker performs a bounded sweep on
+ * admission/consume.  The cutoff is the transaction expiry rather than
+ * `consumedAt`: once a code's five-minute redemption window ends, retaining
+ * its encrypted provider envelope provides no compatibility value and would
+ * let failed/replayed flows accumulate indefinitely.
+ */
+export async function pruneExpiredLegacyAuthTransactions(
+  database: CompatibilityDatabase,
+  now: number,
+  limit = MAX_TRANSACTION_PRUNE_BATCH,
+): Promise<number> {
+  if (!Number.isSafeInteger(now) || now <= 0) return 0;
+  if (!Number.isSafeInteger(limit) || limit < 1) return 0;
+  const boundedLimit = Math.min(limit, MAX_TRANSACTION_PRUNE_BATCH);
+  const result = (await database
+    .prepare(
+      `DELETE FROM cf_legacy_auth_transactions
+        WHERE id IN (
+          SELECT id
+            FROM cf_legacy_auth_transactions
+           WHERE expiresAt <= ?
+           ORDER BY expiresAt ASC, id ASC
+           LIMIT ?
+        )`,
+    )
+    .bind(now, boundedLimit)
+    .run()) as D1RunResult;
+  const changes = result.meta?.changes;
+  return typeof changes === "bigint" ? Number(changes) : Number(changes || 0);
 }
 
 function validateExternalTransactionInput(
