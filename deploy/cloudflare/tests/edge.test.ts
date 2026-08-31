@@ -2371,6 +2371,38 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
   });
 
+  it("routes short-term lifecycle admin runs to Jobs without forwarding caller auth", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      JOBS: service((request) => {
+        forwarded = request;
+        return Response.json({ evaluated_count: 0 });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request(
+        "https://edge.test/memory/admin/users/lifecycle-user/short-term-lifecycle/run?run_id=run-1",
+        {
+          method: "POST",
+          headers: {
+            "secret-key": "admin-secret",
+            authorization: "Bearer untrusted",
+            cookie: "session=untrusted",
+          },
+        },
+      ),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://missing").pathname).toBe(
+      "/memory/admin/users/lifecycle-user/short-term-lifecycle/run",
+    );
+    expect(forwarded?.headers.get("secret-key")).toBe("admin-secret");
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeNull();
+  });
+
   it("preserves the independent app admin key while stripping caller auth", async () => {
     const jobsRequests: Request[] = [];
     const env = {

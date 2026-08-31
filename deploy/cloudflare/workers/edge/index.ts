@@ -943,6 +943,7 @@ app.post("/v1/admin/fair-use/user/:uid/reset", proxyPublicCore);
 app.post("/v1/admin/fair-use/user/:uid/set-stage", proxyPublicCore);
 app.get("/v1/admin/fair-use/case/:case_ref", proxyPublicCore);
 app.get("/memory/admin/users/:uid/non-active-route-report", proxyPublicCore);
+app.post("/memory/admin/users/:uid/short-term-lifecycle/run", proxyPublicJobs);
 
 app.all("/api/better-auth/*", async (c) => {
   const id = requestId(c.req.raw);

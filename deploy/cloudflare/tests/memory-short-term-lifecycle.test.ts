@@ -10,6 +10,7 @@ import { processMemoryShortTermLifecycleMessage } from "../workers/jobs/memory-s
 type D1Statement = {
   bind(...values: unknown[]): D1Statement;
   first<T>(): Promise<T | null>;
+  all<T>(): Promise<T>;
   run(): Promise<{ meta: { changes: number } }>;
 };
 
@@ -19,6 +20,7 @@ function sqliteValue(value: unknown) {
 
 class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
+  private failMemoryRead = false;
 
   constructor() {
     this.database.exec("PRAGMA foreign_keys = ON");
@@ -43,6 +45,15 @@ class SqliteD1 {
       bind: (...values: unknown[]) => build(values),
       first: async <T>() =>
         (this.database.prepare(sql).get(...args.map(sqliteValue)) as T | undefined) ?? null,
+      all: async <T>() => ({
+        ...(this.failMemoryRead && sql.includes("FROM cf_memories WHERE")
+          ? (() => {
+              this.failMemoryRead = false;
+              throw new Error("simulated lifecycle memory read failure");
+            })()
+          : {}),
+        results: this.database.prepare(sql).all(...args.map(sqliteValue)),
+      }) as T,
       run: async () => ({
         meta: {
           changes: Number(this.database.prepare(sql).run(...args.map(sqliteValue)).changes),
@@ -50,6 +61,16 @@ class SqliteD1 {
       }),
     });
     return build();
+  }
+
+  failNextLifecycleMemoryRead() {
+    this.failMemoryRead = true;
+  }
+
+  async batch(statements: D1Statement[]) {
+    const results = [];
+    for (const statement of statements) results.push(await statement.run());
+    return results;
   }
 
   close() {
@@ -100,8 +121,8 @@ function adminRequest(uid: string, query: string, key = "lifecycle-admin-secret"
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("Cloudflare short-term lifecycle shadow boundary", () => {
-  it("fails closed without a D1 control projection and does not create a run", async () => {
+describe("Cloudflare short-term lifecycle D1 authority", () => {
+  it("bootstraps the lifecycle projection from a completed cutover", async () => {
     const { database, env, sent } = environment();
     try {
       seedAuthority(database);
@@ -110,17 +131,19 @@ describe("Cloudflare short-term lifecycle shadow boundary", () => {
         env,
       );
 
-      expect(response.status).toBe(503);
+      expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        error: "short_term_lifecycle_unavailable",
-        reason: "missing_ready_lifecycle_authority",
+        uid: "lifecycle-user",
+        run_id: "run-1",
+        evaluated_count: 0,
+        created_count: 0,
       });
       expect(sent).toHaveLength(0);
       expect(
         database.database
-          .prepare("SELECT COUNT(*) AS count FROM cf_memory_short_term_lifecycle_runs")
+          .prepare("SELECT COUNT(*) AS count FROM cf_memory_short_term_lifecycle_control")
           .get(),
-      ).toMatchObject({ count: 0 });
+      ).toMatchObject({ count: 1 });
     } finally {
       database.close();
     }
@@ -145,21 +168,19 @@ describe("Cloudflare short-term lifecycle shadow boundary", () => {
         env,
       );
 
-      expect(first.status).toBe(202);
+      expect(first.status).toBe(200);
       expect(await first.json()).toMatchObject({
-        status: "queued",
+        uid,
         run_id: "run-1",
-        account_generation: generation,
       });
       expect(duplicate.status).toBe(200);
-      expect(await duplicate.json()).toEqual({ status: "already_queued", run_id: "run-1" });
-      expect(conflict.status).toBe(409);
-      expect(sent).toHaveLength(1);
-      expect(sent[0]).toMatchObject({
+      expect(await duplicate.json()).toMatchObject({
         uid,
-        kind: "memory_short_term_lifecycle",
-        payload: { runId: "run-1", accountGeneration: generation },
+        run_id: "run-1",
+        evaluated_count: 0,
       });
+      expect(conflict.status).toBe(409);
+      expect(sent).toHaveLength(0);
     } finally {
       database.close();
     }
@@ -170,9 +191,14 @@ describe("Cloudflare short-term lifecycle shadow boundary", () => {
     try {
       const { uid, generation } = seedAuthority(database);
       readyControl(database, uid, generation);
-      const queued = await jobs.fetch(adminRequest(uid, "run_id=run-2"), env);
-      expect(queued.status).toBe(202);
-
+      database.database
+        .prepare(
+          `INSERT INTO cf_memory_short_term_lifecycle_runs
+             (uid, run_id, request_fingerprint, evaluated_at, requested_limit,
+              status, attempts, next_attempt_at, account_generation, created_at, updated_at)
+           VALUES (?, ?, ?, 100, 10, 'queued', 0, 100, ?, 100, 100)`,
+        )
+        .run(uid, "run-2", "a".repeat(64), generation);
       database.database
         .prepare(
           `INSERT INTO cf_account_deletion_intents
@@ -183,7 +209,16 @@ describe("Cloudflare short-term lifecycle shadow boundary", () => {
       const acknowledgements = { ack: vi.fn(), retry: vi.fn() };
       await processMemoryShortTermLifecycleMessage(
         {
-          body: sent[0],
+          body: {
+            jobId: "memory-stl-fenced",
+            uid,
+            kind: "memory_short_term_lifecycle",
+            payload: {
+              runId: "run-2",
+              requestFingerprint: "a".repeat(64),
+              accountGeneration: generation,
+            },
+          },
           attempts: 1,
           ack: acknowledgements.ack,
           retry: acknowledgements.retry,
@@ -214,25 +249,131 @@ describe("Cloudflare short-term lifecycle shadow boundary", () => {
     }
   });
 
-  it("fails a ready-but-unimplemented executor explicitly instead of reporting parity", async () => {
+  it("completes a ready D1 lifecycle run without reporting a false executor failure", async () => {
     const { database, env, sent } = environment();
     try {
       const { uid, generation } = seedAuthority(database);
       readyControl(database, uid, generation);
-      const queued = await jobs.fetch(adminRequest(uid, "run_id=run-3"), env);
-      expect(queued.status).toBe(202);
-      const acknowledgements = { ack: vi.fn(), retry: vi.fn() };
-      await processMemoryShortTermLifecycleMessage(
-        { body: sent[0], attempts: 1, ack: acknowledgements.ack, retry: acknowledgements.retry } as never,
-        env,
-      );
+      const completed = await jobs.fetch(adminRequest(uid, "run_id=run-3"), env);
+      expect(completed.status).toBe(200);
       expect(
         database.database
-          .prepare("SELECT status, last_error FROM cf_memory_short_term_lifecycle_runs WHERE uid = ? AND run_id = ?")
+          .prepare("SELECT status, last_error, result_json FROM cf_memory_short_term_lifecycle_runs WHERE uid = ? AND run_id = ?")
           .get(uid, "run-3"),
-      ).toMatchObject({ status: "failed", last_error: "lifecycle_executor_unavailable" });
-      expect(acknowledgements.ack).toHaveBeenCalledOnce();
-      expect(acknowledgements.retry).not.toHaveBeenCalled();
+      ).toMatchObject({ status: "completed", last_error: null });
+      expect(JSON.parse((database.database
+        .prepare("SELECT result_json FROM cf_memory_short_term_lifecycle_runs WHERE uid = ? AND run_id = ?")
+        .get(uid, "run-3") as { result_json: string }).result_json)).toMatchObject({
+        uid,
+        run_id: "run-3",
+        evaluated_count: 0,
+        created_count: 0,
+        existing_count: 0,
+        skipped_count: 0,
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("applies the legacy expiry policy and persists source-tombstoned audits idempotently", async () => {
+    const { database, env, sent } = environment();
+    try {
+      const { uid, generation } = seedAuthority(database);
+      readyControl(database, uid, generation);
+      database.database
+        .prepare(
+          `INSERT INTO cf_memories
+             (uid, id, content, memory_tier, valid_at, created_at, updated_at,
+              status, processing_state, source_state, captured_at, expires_at,
+              account_generation, evidence_json, conversation_id)
+           VALUES (?, 'expired-active', 'expired', 'short_term', 100, 100, 100,
+                   'active', 'processed', 'active', 100, 999999999, ?,
+                   '[]', 'conversation-1'),
+                  (?, 'expired-tombstoned', 'gone', 'short_term', 100, 100, 100,
+                   'active', 'processed', 'tombstoned', 100, 999999999, ?,
+                   '[]', 'conversation-2')`,
+        )
+        .run(uid, generation, uid, generation);
+
+      const completed = await jobs.fetch(
+        adminRequest(uid, "run_id=run-policy&limit=10&evaluated_at=2026-08-31T00:00:00Z"),
+        env,
+      );
+      expect(completed.status).toBe(200);
+
+      expect(database.database
+        .prepare("SELECT status, last_error, result_json FROM cf_memory_short_term_lifecycle_runs WHERE uid = ? AND run_id = ?")
+        .get(uid, "run-policy")).toMatchObject({ status: "completed", last_error: null });
+      expect(database.database
+        .prepare("SELECT memory_id, outcome, reason FROM cf_memory_short_term_lifecycle_transitions WHERE uid = ? ORDER BY memory_id")
+        .all(uid)).toEqual([
+        { memory_id: "expired-active", outcome: "remain_short_term", reason: "short_term_expired_requires_lifecycle_decision" },
+        { memory_id: "expired-tombstoned", outcome: "source_tombstoned", reason: "source_tombstoned" },
+      ]);
+      const result = JSON.parse((database.database
+        .prepare("SELECT result_json FROM cf_memory_short_term_lifecycle_runs WHERE uid = ? AND run_id = ?")
+        .get(uid, "run-policy") as { result_json: string }).result_json);
+      expect(result).toMatchObject({ evaluated_count: 2, created_count: 2, existing_count: 0 });
+      const duplicate = await jobs.fetch(
+        adminRequest(uid, "run_id=run-policy&limit=10&evaluated_at=2026-08-31T00:00:00Z"),
+        env,
+      );
+      expect(duplicate.status).toBe(200);
+      expect(await duplicate.json()).toMatchObject({ evaluated_count: 2, created_count: 2 });
+      expect(database.database
+        .prepare("SELECT COUNT(*) AS count FROM cf_memory_short_term_lifecycle_transitions")
+        .get()).toMatchObject({ count: 2 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("releases a lease for transient D1 failure and lets the next delivery complete", async () => {
+    const { database, env } = environment();
+    try {
+      const { uid, generation } = seedAuthority(database);
+      readyControl(database, uid, generation);
+      database.database
+        .prepare(
+          `INSERT INTO cf_memory_short_term_lifecycle_runs
+             (uid, run_id, request_fingerprint, evaluated_at, requested_limit,
+              status, attempts, next_attempt_at, account_generation, created_at, updated_at)
+           VALUES (?, ?, ?, 100, 10, 'queued', 0, 100, ?, 100, 100)`,
+        )
+        .run(uid, "run-retry", "b".repeat(64), generation);
+      database.failNextLifecycleMemoryRead();
+      const first = { ack: vi.fn(), retry: vi.fn() };
+      const message = {
+        body: {
+          jobId: "memory-stl-retry",
+          uid,
+          kind: "memory_short_term_lifecycle",
+          payload: {
+            runId: "run-retry",
+            requestFingerprint: "b".repeat(64),
+            accountGeneration: generation,
+          },
+        },
+        attempts: 1,
+        ack: first.ack,
+        retry: first.retry,
+      };
+      const firstMessage = message as never;
+      await processMemoryShortTermLifecycleMessage(firstMessage, env);
+      expect(first.retry).toHaveBeenCalledOnce();
+      expect(first.ack).not.toHaveBeenCalled();
+      expect(database.database
+        .prepare("SELECT status, last_error, lease_token FROM cf_memory_short_term_lifecycle_runs WHERE uid = ? AND run_id = ?")
+        .get(uid, "run-retry")).toMatchObject({ status: "queued", lease_token: null });
+
+      const second = { ack: vi.fn(), retry: vi.fn() };
+      await processMemoryShortTermLifecycleMessage({ ...message, attempts: 2, ack: second.ack, retry: second.retry } as never, env);
+      expect(second.ack).toHaveBeenCalledOnce();
+      expect(second.retry).not.toHaveBeenCalled();
+      expect(database.database
+        .prepare("SELECT status, last_error FROM cf_memory_short_term_lifecycle_runs WHERE uid = ? AND run_id = ?")
+        .get(uid, "run-retry")).toMatchObject({ status: "completed", last_error: null });
     } finally {
       database.close();
     }

@@ -4147,6 +4147,17 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /memory/admin/users/{uid}/short-term-lifecycle/run
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, queue-jobs, worker-secrets]
+    protocol: http
+    idempotency: run-payload
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /memory/vector/search
     owner: api-core
