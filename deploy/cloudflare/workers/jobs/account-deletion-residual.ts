@@ -65,6 +65,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_integration_webhook_outbox", column: "uid" },
   { table: "cf_jobs", column: "uid" },
   { table: "cf_import_jobs", column: "uid" },
+  { table: "cf_chat_files", column: "uid" },
   { table: "cf_llm_usage_daily", column: "uid" },
   { table: "cf_memories", column: "uid" },
   { table: "cf_memory_import_artifacts", column: "uid" },
@@ -158,6 +159,7 @@ const PURGE_PRIORITY = Object.freeze([
   "cf_memory_import_artifacts.uid",
   "cf_memory_import_runs.uid",
   "cf_import_jobs.uid",
+  "cf_chat_files.uid",
   "cf_x_oauth_states.uid",
   "cf_x_connections.uid",
   "cf_sync_job_files.uid",
@@ -201,6 +203,11 @@ export const ACCOUNT_DELETION_R2_PREFIX_PATTERNS = Object.freeze([
 export const ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS =
   Object.freeze(["{uid}/"] as const);
 
+/** Private chat-file objects live in the dedicated CHAT_FILES bucket. */
+export const ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS = Object.freeze([
+  "{uid}/",
+] as const);
+
 export const ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS = Object.freeze([
   "{uid}/",
 ] as const);
@@ -235,7 +242,11 @@ function r2Prefix(pattern: string, uid: string): string {
 export async function readAccountProductResidual(
   env: Pick<
     JobsEnv,
-    "APP_DB" | "ASSETS" | "CONVERSATION_RECORDINGS" | "SPEECH_PROFILES"
+    | "APP_DB"
+    | "ASSETS"
+    | "CHAT_FILES"
+    | "CONVERSATION_RECORDINGS"
+    | "SPEECH_PROFILES"
   >,
   uid: string,
 ): Promise<AccountProductResidual> {
@@ -256,6 +267,16 @@ export async function readAccountProductResidual(
         const listed = await env.ASSETS.list({ prefix, limit: 1 });
         return [prefix, listed.objects.length > 0 ? 1 : 0] as const;
       }),
+      ...(env.CHAT_FILES
+        ? ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS.map(async (pattern) => {
+            const prefix = r2Prefix(pattern, uid);
+            const listed = await env.CHAT_FILES!.list({ prefix, limit: 1 });
+            return [
+              `chat-files:${prefix}`,
+              listed.objects.length > 0 ? 1 : 0,
+            ] as const;
+          })
+        : []),
       ...ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS.map(
         async (pattern) => {
           const prefix = r2Prefix(pattern, uid);

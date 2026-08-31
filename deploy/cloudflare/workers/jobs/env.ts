@@ -32,6 +32,7 @@ export type JobsEnv = {
   API_CORE?: Fetcher;
   APP_DB: D1Database;
   ASSETS: R2Bucket;
+  CHAT_FILES?: R2Bucket;
   CONVERSATION_RECORDINGS: R2Bucket;
   SPEECH_PROFILES: R2Bucket;
   AI: WorkersAiBinding;
@@ -44,6 +45,7 @@ export type JobsEnv = {
   SYNC_FRESH: Queue<JobMessage>;
   SYNC_BACKFILL: Queue<JobMessage>;
   INTERNAL_ASSERTION_SECRET?: string;
+  OPENAI_API_KEY?: string;
   SYNC_CONTENT_ID_SECRET?: string;
   LEGACY_AUDIO_ENCRYPTION_SECRET?: string;
   STRIPE_SECRET_KEY?: string;

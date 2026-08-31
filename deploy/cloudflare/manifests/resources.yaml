@@ -13,6 +13,10 @@ resources:
     owner: api-core
     environment: staging
   - kind: r2
+    name: omi-cf-chat-files-staging
+    owner: jobs
+    environment: staging
+  - kind: r2
     name: omi-cf-conversation-recordings-staging
     owner: jobs
     environment: staging

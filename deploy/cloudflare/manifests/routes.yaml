@@ -3032,6 +3032,36 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: DELETE
+    path: /v1/cf/chat-files/:fileId
+    owner: jobs
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2-chat-files, external-openai-api, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v1/cf/chat-files
+    owner: jobs
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/cf/chat-files
+    owner: jobs
+    runtime: typescript-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2-chat-files, external-openai-api, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
     path: /v1/joan/:memoryId/followup-question
     owner: api-core
     runtime: python-worker

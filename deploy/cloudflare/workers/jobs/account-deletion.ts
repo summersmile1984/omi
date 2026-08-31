@@ -8,6 +8,7 @@ import {
 import { recordFallback } from "../shared/fallback";
 import {
   ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS,
+  ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS,
   ACCOUNT_DELETION_D1_PURGE_SURFACES,
   ACCOUNT_DELETION_R2_PREFIX_PATTERNS,
   ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS,
@@ -787,15 +788,22 @@ async function assertStorageKeysBoundToAccount(env: JobsEnv, uid: string) {
   const prefixes = ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map((pattern) =>
     prefixFor(pattern, uid),
   );
+  const storagePrefixes = [
+    ...prefixes,
+    ...ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS.map((pattern) =>
+      prefixFor(pattern, uid),
+    ),
+  ];
   const checks = [
     ["cf_asset_objects", "storage_key"],
     ["cf_asset_cleanup_tasks", "storage_key"],
     ["cf_sync_playback_objects", "storage_key"],
     ["cf_sync_job_files", "object_key"],
     ["cf_import_jobs", "source_object_key"],
+    ["cf_chat_files", "storage_key"],
   ] as const;
   for (const [table, column] of checks) {
-    const columnPrefixPredicate = prefixes
+    const columnPrefixPredicate = storagePrefixes
       .map(() => `instr(${column}, ?) = 1`)
       .join(" OR ");
     const row = await env.APP_DB.prepare(
@@ -803,7 +811,7 @@ async function assertStorageKeysBoundToAccount(env: JobsEnv, uid: string) {
        WHERE uid = ? AND ${column} IS NOT NULL
          AND NOT (${columnPrefixPredicate}) LIMIT 1`,
     )
-      .bind(uid, ...prefixes)
+      .bind(uid, ...storagePrefixes)
       .first<{ storage_key?: unknown }>();
     if (row) throw new Error("account storage key escaped uid prefix");
   }
@@ -821,6 +829,12 @@ async function purgeOneR2Page(env: JobsEnv, uid: string): Promise<boolean> {
       bucket: env.ASSETS,
       prefix: prefixFor(pattern, uid),
     })),
+    ...(env.CHAT_FILES
+      ? ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS.map((pattern) => ({
+          bucket: env.CHAT_FILES!,
+          prefix: prefixFor(pattern, uid),
+        }))
+      : []),
     ...ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.map((pattern) => ({
       bucket: env.SPEECH_PROFILES,
       prefix: prefixFor(pattern, uid),

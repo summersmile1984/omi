@@ -88,6 +88,7 @@ import {
   processLimitlessImportMessage,
   registerLimitlessImportRoutes,
 } from "./limitless-import";
+import { registerChatFileRoutes } from "./chat-file-routes";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -154,6 +155,7 @@ registerGoogleCalendarRoutes(app, requestContext);
 registerAdminNotificationRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
 registerLimitlessImportRoutes(app, requestContext);
+registerChatFileRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.

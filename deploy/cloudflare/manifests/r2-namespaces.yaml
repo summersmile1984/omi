@@ -81,7 +81,7 @@ namespaces:
     object_patterns: ["{uid}/{file_name}"]
     data_classification: customer-content
     lifecycle: account-lifetime
-    migration_state: inventory-only
+    migration_state: staging-owned
   - id: desktop-updates
     legacy_env: BUCKET_DESKTOP_UPDATES
     target_binding: DESKTOP_UPDATES
