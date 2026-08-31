@@ -32,3 +32,25 @@
 - Legacy upload 与持久化：`backend/routers/chat.py` 的 `/v1/files`、`/v2/files` 写本机临时文件，经 `FileChatTool.upload` 调用 Pillow/OpenAI Files，再把 FileChat rows 写入 Firestore chat database。
 - Legacy 消费：`backend/routers/chat.py` 的 `/v2/messages` 将 `file_ids` 加入 Firestore chat session，随后由 `FileChatTool` 创建或恢复 OpenAI Assistants thread/assistant 并运行 file search；Cloudflare 当前 `deploy/cloudflare/python/api-ai/src/chat_generation_routes.py` 尚未承接这条附件分支。
 - Cloudflare 新 authority：`deploy/cloudflare/workers/jobs/chat-file-routes.ts` 只写 `cf_chat_files` 与专用 `CHAT_FILES` R2，并通过 direct OpenAI Files REST；`deploy/cloudflare/migrations/app/0101_chat_files.sql` / `0106_chat_file_thumbnails.sql` 没有 legacy session/thread 关联或历史 backfill 状态。
+
+## 最小闭合设计（当前尚未实现）
+
+若要推进两个 legacy upload owner，下一步最小数据契约应在 D1 增加 session attachment projection，而不是让聊天请求直接信任客户端传来的 provider id：
+
+```sql
+CREATE TABLE cf_chat_session_files (
+  uid TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  file_id TEXT NOT NULL,
+  attached_at INTEGER NOT NULL,
+  source_message_id TEXT,
+  PRIMARY KEY (uid, session_id, file_id),
+  FOREIGN KEY (uid, file_id) REFERENCES cf_chat_files(uid, file_id)
+);
+```
+
+写入必须同时满足 uid、session uid 和 `cf_chat_files.status = 'ready'`，并在 `cf_chat_files` 删除/账号删号时级联或显式清理；读取必须按 uid+session_id 查询并限制数量，拒绝跨账号、failed/deleted 或不存在的 file id。`cf_chat_sessions` 还需要保存经迁移的 provider thread/assistant identity（或另一个 uid-scoped provider-session 表），并带 generation/deletion fence；否则新上传虽然有 provider id，旧会话仍无法恢复其 Assistants thread。
+
+provider 侧至少需要在 Worker 可控超时内闭合 `thread retrieve/create`、`message attachment`、`run create/poll/list` 和 vision content 读取，并把 provider 状态、重试幂等键和不可恢复错误写入 D1。仅把 `cf_chat_files.provider_file_id` 传进 Workers AI，或把文件 bytes 拼进普通文本 prompt，都不等价于旧 Assistants `file_search` 语义。历史回放还需要 cursor/idempotency 表，能从 Firestore file row 和 provider object 恢复 canonical row；没有可读原始 provider object 的旧 row 必须明确标记不可迁移，不能生成伪造 file id。
+
+在此设计落地前，当前最安全的可验证范围仍是 `/v1/cf/chat-files` 的上传/list/delete 和默认关闭的 staging aliases；不存在一个既有的 legacy GET/list/delete endpoint 可以独立切 owner 来绕过这条 session dependency。
