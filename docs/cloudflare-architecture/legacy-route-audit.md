@@ -35,7 +35,8 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 - `npm run smoke:staging` 通过：Edge/v1 health、Apple association、OpenAI Apps challenge、公告、趋势、app reviews、支付边界均符合预期；authenticated checks 因未提供 smoke bearer token 而跳过。Calendar Google events 未认证探针返回 `401`（不是 `404`）。
 - `/memory/vector/search?query=coffee&limit=3` 通过专用合成账号实测：未认证返回 `401`，Better Auth 认证后空 D1/Vectorize 结果返回 `200` 且 `search_status=ok`、`items=[]`；账号随后通过 `DELETE /v1/users/delete-account` 清理。此次发布版本为 API Core `50fb07d7-f464-43aa-a6ea-9560360c4280`、Edge `a991ab93-8013-40b9-8172-4a2049ffe5e9`。
 - Memory review queue staging 数据面已实测：远端应用 `0093_memory_review_queue.sql` 后，API Core `e6e64b52-7215-44c7-9c91-0b5a9d91100a`、Edge `a39cd3d1-3524-472e-8935-8eeabc37e0a2`、Jobs `3f9efdd3-8695-4f16-8ca8-fdeb20df7342` 已发布；临时 Better Auth 账号通过 Edge 连续创建结构化冲突、读取到 `pending` queue、`accept` 得到 `accepted` 与确定性 D1 commit，并提交删号清理。未认证的三个 queue 路由均返回 `401` 而非 `404`。
-- Conversation finalization 的 admission/status、D1 revision/job schema、Jobs lease/retry/reconcile 和 API Core Workers AI processor 已实现并有 Python/TypeScript 回归测试；`0094_conversation_finalization_jobs.sql` 尚未部署到 staging，故尚不宣称真实队列完成或生产等价。
+- Conversation finalization 的 admission/status、D1 revision/job schema、Jobs lease/retry/reconcile 和 API Core Workers AI processor 已实现并有 Python/TypeScript 回归测试；已完成 staging migration 与正向队列验证，但不宣称生产等价。
+- Conversation finalization staging live evidence（2026-08-31）：远端应用 `0094_conversation_finalization_jobs.sql` 后，API Core `cb1a8271-22f2-4211-9ba4-94d7463c4745`、Jobs `18df02b0-7ad1-4010-a063-46144d584899`、Edge `99eb710f-03c3-41bf-8f29-763630690393` 已发布。隔离 Better Auth 账号经 Edge 完成 `POST /v1/conversations/{id}/finalize`（200），status 实际经历 `queued → running → completed`（attempt 1），会话读回 `status=completed`；随后公开删号完成 Queue 清理，`cf_conversations` 与 `cf_conversation_finalization_jobs` 均为 0，仅保留预期 tombstone。
 
 ## 本轮 authority 核对（2026-08-31）
 
