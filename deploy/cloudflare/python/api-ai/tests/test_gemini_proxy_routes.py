@@ -317,6 +317,56 @@ def test_byok_requests_keep_the_historical_8192_token_ceiling(monkeypatch):
     assert database.receipt("gemini-byok-1")["status"] == "success"
 
 
+def test_unenrolled_byok_header_is_rejected_before_provider_dispatch(monkeypatch):
+    database = FakeD1()
+    calls = []
+
+    async def fake_fetch(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("an unenrolled BYOK key must not reach the provider")
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(database),
+        b'{"contents":[{"parts":[{"text":"hi"}]}]}',
+        path="/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+        headers={"x-byok-gemini": "un-enrolled-key"},
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-2.5-flash:generateContent"))
+
+    assert result.status_code == 403
+    assert json.loads(result.body)["error"] == "gemini_byok_unavailable"
+    assert calls == []
+    assert database.request_count("user-1") == 0
+
+
+def test_declared_oversize_body_is_rejected_before_reading_request(monkeypatch):
+    database = FakeD1()
+    calls = []
+
+    async def fake_fetch(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("an oversize request must not reach the provider")
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(database),
+        b"{}",
+        path="/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+        headers={"content-length": str(gemini.MAX_BODY_BYTES + 1)},
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-2.5-flash:generateContent"))
+
+    assert result.status_code == 413
+    assert json.loads(result.body)["error"] == "gemini_request_too_large"
+    assert calls == []
+    assert database.request_count("user-1") == 0
+
+
 def test_vertex_service_account_signing_uses_web_crypto_rs256(monkeypatch):
     calls = {}
 
@@ -608,6 +658,30 @@ def test_stream_generate_content_preserves_gemini_sse_and_settles_usage(monkeypa
     assert body == b"".join(chunks)
     assert calls[0][0].endswith("models/gemini-2.5-flash:streamGenerateContent?alt=sse")
     assert database.receipt("gemini-stream-1")["status"] == "success"
+
+
+def test_stream_response_limit_settles_reserved_receipt(monkeypatch):
+    database = FakeD1()
+    monkeypatch.setattr(gemini, "MAX_RESPONSE_BYTES", 4)
+
+    async def fake_fetch(_url, **_options):
+        return FakeStreamingProviderResponse([b"12345"])
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(database),
+        b'{"contents":[{"parts":[{"text":"hi"}]}]}',
+        path="/v1/proxy/gemini-stream/models/gemini-2.5-flash:streamGenerateContent",
+        headers={"x-omi-request-id": "gemini-stream-oversize"},
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_stream_proxy(request, "models/gemini-2.5-flash:streamGenerateContent"))
+    body = b"".join(asyncio.run(collect_async(result.body_iterator)))
+
+    assert result.status_code == 200
+    assert json.loads(body.removeprefix(b"data: ").split(b"\n", 1)[0])["error"] == "gemini_response_too_large"
+    assert database.receipt("gemini-stream-oversize")["status"] == "failed"
 
 
 async def collect_async(iterator):

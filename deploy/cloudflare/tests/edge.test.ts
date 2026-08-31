@@ -506,6 +506,68 @@ describe("edge gateway", () => {
     }
   });
 
+  it("routes enabled Gemini exact paths to the API-AI owner", async () => {
+    const apiAiRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      GEMINI_PROXY_STAGING_FAIL_CLOSED: "true",
+      GEMINI_PROXY_CLOUDFLARE_ENABLED: "true",
+      AUTH: service((request) => {
+        if (new URL(request.url).pathname === "/internal/verify") {
+          return Response.json({ uid: "gemini-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({
+          state: "new",
+          client_action: "none",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        }),
+      ),
+      API_AI: rawService(async (request) => {
+        apiAiRequests.push(request);
+        return Response.json({ ok: true, owner: "api-ai" });
+      }),
+      RATE_LIMITS: rateLimits(() => allowRateLimit()),
+    };
+    const requests = [
+      "/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+      "/v1/proxy/gemini-stream/models/gemini-2.5-flash:streamGenerateContent",
+    ];
+
+    for (const path of requests) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer opaque-session",
+            cookie: "session=must-not-forward",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ contents: [{ parts: [{ text: "hello" }] }] }),
+        }),
+        env as never,
+      );
+
+      expect(response.status, path).toBe(200);
+      await expect(response.json()).resolves.toEqual({ ok: true, owner: "api-ai" });
+    }
+
+    expect(apiAiRequests).toHaveLength(2);
+    for (const [index, request] of apiAiRequests.entries()) {
+      expect(new URL(request.url).pathname).toBe(requests[index]);
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeTruthy();
+      expect(request.headers.get("x-omi-internal-signature")).toBeTruthy();
+      await expect(request.json()).resolves.toEqual({
+        contents: [{ parts: [{ text: "hello" }] }],
+      });
+    }
+  });
+
   it("fails closed for legacy chat compatibility paths in staging", async () => {
     const env = {
       CHAT_COMPAT_STAGING_FAIL_CLOSED: "true",

@@ -1,10 +1,12 @@
 # Gemini desktop proxy on Cloudflare
 
-截至 2026-08-31，`POST /v1/proxy/gemini/{path}` 和
-`POST /v1/proxy/gemini-stream/{path}` 仍是 `legacy-owned`。本说明把
-“能不能在 Workers 上发 Gemini 请求”和“能不能替换旧桌面代理”分开：前者
-可行，后者目前没有足够的 authority 和 wire-contract 证据，不能仅把路径
-改成 API-AI 或 Workers AI。
+截至 2026-09-01，`POST /v1/proxy/gemini/{path}` 和
+`POST /v1/proxy/gemini-stream/{path}` 已登记为 Cloudflare
+`staging-owned`：Edge 负责 Better Auth/Firebase bridge 身份验证、BYOK
+指纹校验和 30/60 burst，API-AI Worker 负责 Gemini JSON/SSE provider
+adapter、D1 daily ledger 与 usage accounting。生产 owner promotion 仍需
+完成旧客户端兼容和真实 Vertex/provider 验证；不能把 staging owner 当成
+生产 parity。
 
 ## 结论
 
@@ -14,7 +16,9 @@ Cloudflare Worker 可以通过 `fetch` 调用 Gemini REST API；Gemini 官方 RE
 Better Auth 也原生支持把 D1 作为数据库，因此新建的 Cloudflare-only
 Gemini surface 可以使用 Better Auth session、Edge signed context 和 D1。
 
-这仍不足以接管旧入口，原因是当前没有同时闭合：
+Cloudflare staging owner 已经可以在配置了 provider secret 的环境中真正发起
+Gemini 请求；缺少 secret 时 API-AI 明确返回 `503`，不会回退到 legacy。生产
+兼容仍有以下未闭合项：
 
 1. 旧 Firebase principal 到 Better Auth user 的可回滚 identity bridge。Auth
    Worker 的 `/internal/verify` 当前证明的是 Better Auth session/JWT，不能把
@@ -22,31 +26,31 @@ Gemini surface 可以使用 Better Auth session、Edge signed context 和 D1。
 2. 公司付费流量的 Vertex ADC / Provisioned Throughput 路由。AI Studio
    `GEMINI_API_KEY` 不能替代现有 Vertex PT、地域和 `trafficType` 语义；把
    `/v1/ai/*` 的固定 OpenAI-compatible proxy 当 Gemini adapter 也会改变协议。
-3. 旧 Redis burst（30/60 秒）和 daily hard limit（1500/24 小时）的原子
-   admission、Pro 降级、失败/重放计费及 cost accounting。现在的 guarded
-   adapter 已有 Edge DO 30/60 policy 和 D1 daily ledger，但这不等于旧 Redis
-   的完整语义或生产配额迁移。
+3. 旧 Redis burst（30/60 秒）和 daily hard limit（1500/24 小时）的完整
+   admission、Pro 降级、失败/重放计费及历史配额迁移。当前 owner 已有 Edge
+   DO 30/60 policy 和 D1 daily ledger；历史 Redis 账本仍未回放。
 4. `x-byok-gemini` 的请求级密钥 authority、未入日志的 provider header、旧
-   客户端对模型/action 白名单和错误头的依赖。现在已有仅供 Cloudflare
-   adapter 使用的 AI Studio provider route；它仍不是 Firebase/Vertex 兼容
-   的公开 owner。
+   客户端对模型/action 白名单和错误头的依赖。当前 API-AI adapter 已成为
+   staging exact route 的 provider owner，但尚未宣称 Firebase/Vertex 生产
+   兼容。
 5. 非流式 JSON、Gemini SSE 分块、`usageMetadata`、Vertex `trafficType`、
    `X-Omi-*` 错误头和 timeout/retry 语义的旧客户端 conformance fixture。
 
-因此 staging 继续由 `GEMINI_PROXY_STAGING_FAIL_CLOSED=true` 保护，且
-`GEMINI_PROXY_CLOUDFLARE_ENABLED=false`：两个
-入口返回 `503 gemini_proxy_unavailable`、`cache-control: no-store`，不读取
-body、不把 prompt、cookie、Firebase token 或 BYOK key 发给 legacy。该保护
-不是 owner migration，也不减少 manifest 中的两条 `legacy-owned`。
+staging 使用 `GEMINI_PROXY_CLOUDFLARE_ENABLED=true` 将 exact route 送入
+Cloudflare owner；API-AI 的 `GEMINI_PROXY_ENABLED`、provider 选择和 provider
+secret 仍独立控制实际 provider dispatch。关闭 Cloudflare switch 或缺少
+secret 时返回 `503 gemini_proxy_unavailable`/provider-specific error，带
+`cache-control: no-store`，不向 legacy 转发 prompt、cookie、Firebase token
+或 BYOK key。生产环境仍需单独的 rollout 与回滚证据。
 
-## 已落地但未切 owner 的最小 Cloudflare 设计
+## 已落地的 Cloudflare staging owner
 
 ### Provider adapter
 
-`deploy/cloudflare/python/api-ai/src/gemini_proxy_routes.py` 新增了唯一的
-Gemini adapter（API-AI Worker；Edge 只负责认证、BYOK 校验和 signed context），
-而不是扩大通用 `/v1/ai/{path}`。它默认不由 Edge public route 调用，必须显式
-打开 `GEMINI_PROXY_CLOUDFLARE_ENABLED` 才能做隔离验证：
+`deploy/cloudflare/python/api-ai/src/gemini_proxy_routes.py` 是唯一的
+Gemini adapter（API-AI Worker；Edge 只负责认证、BYOK 校验、burst 和 signed
+context），而不是扩大通用 `/v1/ai/{path}`。exact route 通过
+`GEMINI_PROXY_CLOUDFLARE_ENABLED` 显式接入该 adapter：
 
 - 只接受 `models/{model}:{action}`，沿用旧 allowlist；未知模型/action 在
   provider dispatch 前返回 403。
@@ -67,9 +71,10 @@ Gemini adapter（API-AI Worker；Edge 只负责认证、BYOK 校验和 signed co
   credential 错误，429 带 `Retry-After` 且可重试，408/504 为 timeout，5xx
   为 502 provider unavailable；错误 body 不透传 prompt、key 或上游原文。
 
-### Vertex service-account seam（仅显式 opt-in）
+### Vertex service-account seam（仅显式 provider opt-in）
 
-API-AI 现在还提供一个未切 owner 的 Vertex service-account seam：
+API-AI 现在还提供一个可配置但尚未完成旧 PT/ADC parity 的 Vertex
+service-account seam：
 `GEMINI_PROXY_PROVIDER=vertex`（或 `vertex_ai`）时，Worker 从 secret
 `GEMINI_VERTEX_SERVICE_ACCOUNT_JSON` 解析 project/client email/PKCS#8 key，
 使用 Workers Web Crypto 的 `RSASSA-PKCS1-v1_5`/SHA-256 签署 OAuth 2.0 JWT
@@ -96,8 +101,9 @@ account 的 `project_id` 一致。当前 seam 支持 `generateContent`、
 不是旧桌面代理的 Vertex PT/ADC 路由 parity：仍缺 PT `requestType`/overflow
 ladder、Redis burst/Pro demotion、Firebase principal continuity、真实成本卡及
 authenticated staging positive probe。因此 staging 仍保持
-`GEMINI_PROXY_CLOUDFLARE_ENABLED=false`，不能把配置 seam 或单元测试当作
-legacy owner cutover 证据。
+`GEMINI_PROXY_CLOUDFLARE_ENABLED=true`；没有 Vertex service identity 时，该
+provider 会明确返回 503。production 仍不能把配置 seam 或单元测试当作 legacy
+owner cutover 证据。
 
 ### Quota 与 usage authority
 
@@ -122,7 +128,7 @@ CREATE TABLE cf_gemini_usage_receipts (
   model TEXT NOT NULL,
   action TEXT NOT NULL,
   credential_source TEXT NOT NULL CHECK (credential_source IN ('byok', 'server')),
-  provider TEXT NOT NULL CHECK (provider = 'ai_studio'),
+  provider TEXT NOT NULL CHECK (provider IN ('ai_studio', 'vertex_ai')),
   status TEXT NOT NULL CHECK (status IN ('reserved', 'success', 'rejected', 'failed')),
   prompt_tokens INTEGER,
   output_tokens INTEGER,
@@ -157,7 +163,7 @@ The adapter test set adds fixtures under a Gemini-specific test module and exerc
 production seams, not source-string assertions. It currently covers direct JSON
 provider dispatch/usage, missing-secret fail-closed behavior, D1 daily reservation,
 stream-route action validation, credential-query rejection, and query forwarding.
-The following are still required before any owner change:
+The following are still required before production owner promotion:
 
 - **Auth:** Better Auth session success; missing/expired session; an unmigrated
   Firebase bearer principal; wrong signed audience; and account-generation/deletion
@@ -187,21 +193,24 @@ The following are still required before any owner change:
   provider fixture, prove authenticated positive JSON and SSE responses, quota
   receipts, and deletion cleanup; then prove the legacy backend was not called.
   Without Vertex/BYOK credentials and these fixtures, only the current anonymous
-  401 boundary and staging fail-closed 503 probe may be reported.
+  401 boundary and provider-missing 503 probe may be reported.
 
-The current regression test in
+The current regression tests in
 [`deploy/cloudflare/tests/edge.test.ts`](../../deploy/cloudflare/tests/edge.test.ts)
-already proves that both staging paths return the fail-closed envelope and that a
-request containing an opaque BYOK key/prompt does not invoke legacy `fetch`. It is
-not evidence of a positive provider migration.
+prove both the enabled exact-route forwarding boundary and the disabled legacy
+fallback; the API-AI suite also proves missing-secret, unenrolled-BYOK, bounded
+request, stream-overflow settlement, JSON/SSE provider dispatch, and D1 ledger
+behavior. A unit test is not a substitute for a positive production-provider
+probe.
 
 ## Cutover gate
 
-Only after the identity bridge, provider identity, DO/D1 quota transaction,
-versioned usage accounting, fixtures, deletion fence, and authenticated staging
-probe all pass should the manifest owner move. Until then the correct Cloudflare
-posture is to keep the two routes `legacy-owned` and fail closed in isolated
-staging.
+Before production promotion, the identity bridge, provider identity, DO/D1 quota
+transaction, versioned usage accounting, fixtures, deletion fence, and an
+authenticated staging positive probe must all pass. Until then the correct posture
+is Cloudflare staging ownership with explicit provider fail-closed behavior; any
+environment without a configured provider remains a safe `503`, never an implicit
+legacy fallback.
 
 References: [Gemini REST generateContent and streamGenerateContent](https://ai.google.dev/gemini-api/docs/generate-content/text-generation),
 [Gemini GenerateContent API](https://ai.google.dev/api/generate-content), and

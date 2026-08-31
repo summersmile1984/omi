@@ -500,6 +500,55 @@ async def _array_buffer(response: object) -> bytes:
     return _bytes(await method())
 
 
+async def _bounded_request_body(request: Request) -> bytes:
+    """Read a Gemini request without buffering an unbounded chunked body.
+
+    Cloudflare normally supplies a content length for client uploads, but the
+    Worker must also enforce the limit when a caller uses transfer encoding
+    chunked.  The small fake request used by the CPython tests only exposes
+    ``body()``, so retain that fallback for the unit-test/runtime shim.
+    """
+
+    declared = request.headers.get("content-length", "")
+    try:
+        declared_size = int(declared) if declared else None
+    except (TypeError, ValueError):
+        declared_size = None
+    if declared_size is not None and (declared_size < 0 or declared_size > MAX_BODY_BYTES):
+        raise GeminiProviderError(
+            "gemini_request_too_large", "Gemini request body is too large", status_code=413, retryable=False
+        )
+
+    stream = getattr(request, "stream", None)
+    if callable(stream):
+        body = bytearray()
+        try:
+            async for chunk in stream():
+                value = _bytes(chunk)
+                if len(body) + len(value) > MAX_BODY_BYTES:
+                    raise GeminiProviderError(
+                        "gemini_request_too_large",
+                        "Gemini request body is too large",
+                        status_code=413,
+                        retryable=False,
+                    )
+                body.extend(value)
+        except GeminiProviderError:
+            raise
+        except Exception as error:
+            raise GeminiProviderError(
+                "invalid_request", "Gemini request body could not be read", status_code=400, retryable=False
+            ) from error
+        return bytes(body)
+
+    body = await request.body()
+    if len(body) > MAX_BODY_BYTES:
+        raise GeminiProviderError(
+            "gemini_request_too_large", "Gemini request body is too large", status_code=413, retryable=False
+        )
+    return body
+
+
 def _usage(payload: Mapping[str, Any]) -> dict[str, int | str] | None:
     raw = payload.get("usageMetadata")
     if not isinstance(raw, dict):
@@ -758,6 +807,16 @@ async def _stream_body(
                 if not chunk:
                     continue
                 if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
+                    await _settle(
+                        env,
+                        request_id=request_id,
+                        uid=uid,
+                        status="failed",
+                        usage=None,
+                        now=int(time.time()),
+                        cost_micros=None,
+                        error="response_too_large",
+                    )
                     yield _stream_data_event("gemini_response_too_large", request_id)
                     return
                 chunks.extend(chunk)
@@ -765,6 +824,16 @@ async def _stream_body(
         else:
             chunk = await _array_buffer(response)
             if len(chunk) > MAX_RESPONSE_BYTES:
+                await _settle(
+                    env,
+                    request_id=request_id,
+                    uid=uid,
+                    status="failed",
+                    usage=None,
+                    now=int(time.time()),
+                    cost_micros=None,
+                    error="response_too_large",
+                )
                 yield _stream_data_event("gemini_response_too_large", request_id)
                 return
             chunks.extend(chunk)
@@ -811,7 +880,7 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
     provider = str(getattr(env, "GEMINI_PROXY_PROVIDER", "ai_studio")).strip().lower()
     if provider in {"vertex", "vertex_ai"}:
         provider = "vertex_ai"
-    elif provider == "ai_studio":
+    elif provider in {"ai_studio", "aistudio", "google", "google_ai_studio"}:
         provider = "ai_studio"
     else:
         return _json_error(
@@ -831,8 +900,15 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
                 status_code=400,
                 retryable=False,
             )
-        body = await request.body()
+        body = await _bounded_request_body(request)
         byok_key = request.headers.get("x-byok-gemini")
+        if byok_key and context.get("byokActive") is not True:
+            raise GeminiProviderError(
+                "gemini_byok_unavailable",
+                "Gemini BYOK key is not enrolled for this account",
+                status_code=403,
+                retryable=False,
+            )
         if context.get("byokActive") is True and not byok_key:
             raise GeminiProviderError(
                 "gemini_byok_unavailable", "Gemini BYOK key is unavailable", status_code=403, retryable=False

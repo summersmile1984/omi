@@ -400,6 +400,7 @@ families:
       - tools:mutate
       - tools:search
       - tts:synthesize
+      - gemini:proxy
     migrated_routes:
       - DELETE /v1/dev/user/action-items/{action_item_id}
       - DELETE /v1/dev/user/conversations/{conversation_id}
@@ -472,6 +473,8 @@ families:
       - POST /v2/messages
       - POST /v2/voice-message/transcribe
       - POST /v2/voice-messages
+      - POST /v1/proxy/gemini/*
+      - POST /v1/proxy/gemini-stream/*
       - DELETE /v3/memories
       - DELETE /v3/memories/:memoryId
       - DELETE /v3/memories/batch
