@@ -5,9 +5,7 @@ import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type { AuthEnv } from "../workers/auth/env";
-import {
-  pkceChallengeForVerifier,
-} from "../workers/auth/legacy-compatibility";
+import { pkceChallengeForVerifier } from "../workers/auth/legacy-compatibility";
 import {
   registerNativeAuthCompatibilityRoutes,
   type NativeAuthCompatibilityDependencies,
@@ -33,11 +31,14 @@ class SqliteD1 {
     const build = (args: unknown[] = []) => ({
       bind: (...values: unknown[]) => build(values),
       first: async <T>() =>
-        (this.database.prepare(sql).get(...(args as never[])) as T | undefined) ??
-        null,
+        (this.database.prepare(sql).get(...(args as never[])) as
+          T | undefined) ?? null,
       run: async () => {
         const result = this.database.prepare(sql).run(...(args as never[]));
-        return { success: true as const, meta: { changes: Number(result.changes) } };
+        return {
+          success: true as const,
+          meta: { changes: Number(result.changes) },
+        };
       },
     });
     return build();
@@ -53,7 +54,42 @@ const ENCRYPTION_SECRET = "native-auth-transaction-secret-32-bytes";
 const VERIFIER = "v".repeat(43);
 const REDIRECT_URI = "omi://auth/callback";
 
-function testEnv(database: SqliteD1, overrides: Partial<AuthEnv> = {}): AuthEnv {
+function base64(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+async function firebaseServiceAccount() {
+  const keys = await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2_048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  );
+  const der = new Uint8Array(
+    await crypto.subtle.exportKey("pkcs8", keys.privateKey),
+  );
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${base64(der)}\n-----END PRIVATE KEY-----`;
+  return {
+    FIREBASE_PROJECT_ID: "omi-test-project",
+    FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
+      project_id: "omi-test-project",
+      client_email: "firebase-admin@omi-test-project.iam.gserviceaccount.com",
+      private_key: privateKey,
+      private_key_id: "key-1",
+    }),
+  };
+}
+
+function testEnv(
+  database: SqliteD1,
+  overrides: Partial<AuthEnv> = {},
+): AuthEnv {
   return {
     AUTH_DB: database as unknown as D1Database,
     BETTER_AUTH_SECRET: "better-auth-secret",
@@ -153,18 +189,20 @@ function tokenRequest(
 
 describe("namespaced native auth compatibility seam", () => {
   it("closes authorize → Google callback → single-use provider token", async () => {
-    const providerFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toBe("https://oauth2.googleapis.com/token");
-      expect(init?.method).toBe("POST");
-      const body = new URLSearchParams(String(init?.body));
-      expect(body.get("client_id")).toBe("google-client-id");
-      expect(body.get("client_secret")).toBe("google-client-secret");
-      return Response.json({
-        id_token: "google-id-token-secret",
-        access_token: "google-access-token-secret",
-        expires_in: 3_600,
-      });
-    });
+    const providerFetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toBe("https://oauth2.googleapis.com/token");
+        expect(init?.method).toBe("POST");
+        const body = new URLSearchParams(String(init?.body));
+        expect(body.get("client_id")).toBe("google-client-id");
+        expect(body.get("client_secret")).toBe("google-client-secret");
+        return Response.json({
+          id_token: "google-id-token-secret",
+          access_token: "google-access-token-secret",
+          expires_in: 3_600,
+        });
+      },
+    );
     const fixture = harness(providerFetch);
     try {
       const providerState = await authorize(fixture);
@@ -172,7 +210,9 @@ describe("namespaced native auth compatibility seam", () => {
       // Omi's PKCE challenge is bound to the D1-issued Omi code. The provider
       // exchange follows the legacy wire and therefore does not advertise a
       // provider challenge that cannot be redeemed later.
-      expect(providerState.searchParams.get("code_challenge_method")).toBeNull();
+      expect(
+        providerState.searchParams.get("code_challenge_method"),
+      ).toBeNull();
       const code = await callbackAndCode(fixture, providerState);
       const response = await tokenRequest(fixture, code);
       expect(response.status).toBe(200);
@@ -196,7 +236,13 @@ describe("namespaced native auth compatibility seam", () => {
         .all() as Array<Record<string, unknown>>;
       expect(JSON.stringify(rows)).not.toContain("google-id-token-secret");
       expect(JSON.stringify(rows)).not.toContain("google-access-token-secret");
-      expect(rows.every((row) => String(row.encryptedPayload || row.metadataEnvelopeEnc).startsWith("v1."))).toBe(true);
+      expect(
+        rows.every((row) =>
+          String(row.encryptedPayload || row.metadataEnvelopeEnc).startsWith(
+            "v1.",
+          ),
+        ),
+      ).toBe(true);
     } finally {
       fixture.database.close();
     }
@@ -211,10 +257,18 @@ describe("namespaced native auth compatibility seam", () => {
       const providerState = await authorize(fixture);
       const code = await callbackAndCode(fixture, providerState);
       expect(
-        (await tokenRequest(fixture, code, { redirect_uri: "omi://other/callback" })).status,
+        (
+          await tokenRequest(fixture, code, {
+            redirect_uri: "omi://other/callback",
+          })
+        ).status,
       ).toBe(400);
       expect(
-        (await tokenRequest(fixture, code, { code_verifier: "wrong-verifier-123456789012345678901234567890" })).status,
+        (
+          await tokenRequest(fixture, code, {
+            code_verifier: "wrong-verifier-123456789012345678901234567890",
+          })
+        ).status,
       ).toBe(400);
       expect((await tokenRequest(fixture, code)).status).toBe(200);
     } finally {
@@ -223,23 +277,31 @@ describe("namespaced native auth compatibility seam", () => {
   });
 
   it("accepts Apple's form-post callback and keeps the client secret out of D1", async () => {
-    const providerFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toBe("https://appleid.apple.com/auth/token");
-      const body = new URLSearchParams(String(init?.body));
-      expect(body.get("client_secret")).toBe("apple-client-secret");
-      return Response.json({ id_token: "apple-id-token-secret" });
-    });
+    const providerFetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toBe("https://appleid.apple.com/auth/token");
+        const body = new URLSearchParams(String(init?.body));
+        expect(body.get("client_secret")).toBe("apple-client-secret");
+        return Response.json({ id_token: "apple-id-token-secret" });
+      },
+    );
     const fixture = harness(providerFetch, {
       APPLE_CLIENT_ID: "apple-client-id",
       APPLE_CLIENT_SECRET: "apple-client-secret",
     });
     try {
-      const providerState = await authorize(fixture, "apple", "apple-state-123456");
+      const providerState = await authorize(
+        fixture,
+        "apple",
+        "apple-state-123456",
+      );
       const callback = new URL(`${BASE_URL}/v2/cf/auth/callback/apple`);
       const form = new URLSearchParams({
         code: "apple-code-1234567890",
         state: providerState.searchParams.get("state") || "",
-        user: JSON.stringify({ name: { firstName: "Ada", lastName: "Lovelace" } }),
+        user: JSON.stringify({
+          name: { firstName: "Ada", lastName: "Lovelace" },
+        }),
       });
       const callbackResponse = await fixture.app.request(
         callback,
@@ -254,7 +316,9 @@ describe("namespaced native auth compatibility seam", () => {
       const html = await callbackResponse.text();
       const href = html.match(/href="([^"]+)"/)?.[1];
       expect(href).toBeTruthy();
-      const code = new URL(href!.replaceAll("&amp;", "&")).searchParams.get("code")!;
+      const code = new URL(href!.replaceAll("&amp;", "&")).searchParams.get(
+        "code",
+      )!;
       const response = await tokenRequest(fixture, code);
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
@@ -280,7 +344,10 @@ describe("namespaced native auth compatibility seam", () => {
     try {
       const providerState = await authorize(fixture);
       const code = await callbackAndCode(fixture, providerState);
-      expect((await tokenRequest(fixture, code, { use_custom_token: "true" })).status).toBe(503);
+      expect(
+        (await tokenRequest(fixture, code, { use_custom_token: "true" }))
+          .status,
+      ).toBe(503);
       fixture.advance(301);
       expect((await tokenRequest(fixture, code)).status).toBe(400);
     } finally {
@@ -288,9 +355,88 @@ describe("namespaced native auth compatibility seam", () => {
     }
   });
 
+  it("exchanges the provider credential and returns a Firebase custom token once", async () => {
+    const providerFetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "https://oauth2.googleapis.com/token") {
+          return Response.json({
+            id_token: "google-id-token-secret",
+            access_token: "google-access-token-secret",
+            expires_in: 3_600,
+          });
+        }
+        expect(url).toBe(
+          "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=AIza-test-key",
+        );
+        const payload = JSON.parse(String(init?.body)) as { postBody: string };
+        expect(new URLSearchParams(payload.postBody).get("providerId")).toBe(
+          "google.com",
+        );
+        return Response.json({
+          localId: "firebase-user",
+          idToken: "firebase-id-token",
+          refreshToken: "firebase-refresh-token",
+          expiresIn: "3600",
+        });
+      },
+    );
+    const fixture = harness(providerFetch, {
+      FIREBASE_API_KEY: "AIza-test-key",
+      ...(await firebaseServiceAccount()),
+    });
+    fixture.database.database.exec(`
+      INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+      VALUES ('better-user', 'Better User', 'better@example.test', 1, 1, 1);
+      INSERT INTO auth_identity_imports
+        (id, sourceSha256, configFingerprint, canonicalSha256, userCount,
+         accountCount, status, startedAt, completedAt)
+      VALUES ('firebase', '${"a".repeat(64)}', 'config', '${"b".repeat(64)}', 1,
+         1, 'completed', 1, 2);
+      INSERT INTO cf_firebase_identity_projection
+        (firebaseUid, betterAuthUserId, providersJson, sourceImportId, status,
+         sourceUpdatedAt, updatedAt)
+      VALUES ('firebase-user', 'better-user', '["google.com"]', 'firebase',
+         'imported', 1, 1);
+      INSERT INTO cf_auth_deletion_fences
+        (uid, generation, status, startedAt, completedAt)
+      VALUES ('better-user', 1, 'clear', 1, NULL);
+    `);
+    try {
+      const providerState = await authorize(fixture);
+      const code = await callbackAndCode(fixture, providerState);
+      const response = await tokenRequest(fixture, code, {
+        use_custom_token: "true",
+      });
+      expect(response.status).toBe(200);
+      const payload = (await response.json()) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        provider: "google",
+        id_token: "google-id-token-secret",
+        access_token: "google-access-token-secret",
+        provider_id: "google.com",
+      });
+      expect(typeof payload.custom_token).toBe("string");
+      expect(providerFetch).toHaveBeenCalledTimes(2);
+      const replay = await tokenRequest(fixture, code, {
+        use_custom_token: "true",
+      });
+      expect(replay.status).toBe(400);
+      expect(await replay.json()).toEqual({ error: "invalid_or_expired_code" });
+      expect(
+        fixture.database.database
+          .prepare("SELECT status FROM cf_firebase_bridge_issuances")
+          .get(),
+      ).toEqual({ status: "issued" });
+    } finally {
+      fixture.database.close();
+    }
+  });
+
   it("consumes denied/provider-failed callbacks and blocks replay", async () => {
-    const providerFetch = vi.fn(async () =>
-      new Response(JSON.stringify({ error: "denied" }), { status: 500 }),
+    const providerFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "denied" }), { status: 500 }),
     );
     const fixture = harness(providerFetch);
     try {
@@ -300,8 +446,12 @@ describe("namespaced native auth compatibility seam", () => {
         code: "provider-code-1234567890",
         state: providerState.searchParams.get("state") || "",
       }).toString();
-      expect((await fixture.app.request(callback, {}, fixture.env)).status).toBe(503);
-      expect((await fixture.app.request(callback, {}, fixture.env)).status).toBe(400);
+      expect(
+        (await fixture.app.request(callback, {}, fixture.env)).status,
+      ).toBe(503);
+      expect(
+        (await fixture.app.request(callback, {}, fixture.env)).status,
+      ).toBe(400);
       expect(providerFetch).toHaveBeenCalledTimes(1);
     } finally {
       fixture.database.close();
@@ -309,7 +459,9 @@ describe("namespaced native auth compatibility seam", () => {
   });
 
   it("is disabled outside the explicit staging gate and when secrets are missing", async () => {
-    const disabled = harness(vi.fn(), { LEGACY_AUTH_COMPAT_STAGING_ENABLED: "false" });
+    const disabled = harness(vi.fn(), {
+      LEGACY_AUTH_COMPAT_STAGING_ENABLED: "false",
+    });
     try {
       const challenge = await pkceChallengeForVerifier(VERIFIER);
       const url = new URL(`${BASE_URL}/v2/cf/auth/authorize`);
@@ -320,13 +472,17 @@ describe("namespaced native auth compatibility seam", () => {
         code_challenge: challenge,
         code_challenge_method: "S256",
       }).toString();
-      expect((await disabled.app.request(url, {}, disabled.env)).status).toBe(404);
+      expect((await disabled.app.request(url, {}, disabled.env)).status).toBe(
+        404,
+      );
       const missing = harness(vi.fn(), {
         LEGACY_AUTH_TRANSACTION_ENCRYPTION_SECRET: undefined,
         GOOGLE_CLIENT_SECRET: undefined,
       });
       try {
-        expect((await missing.app.request(url, {}, missing.env)).status).toBe(503);
+        expect((await missing.app.request(url, {}, missing.env)).status).toBe(
+          503,
+        );
       } finally {
         missing.database.close();
       }

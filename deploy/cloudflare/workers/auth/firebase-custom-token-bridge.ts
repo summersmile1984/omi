@@ -12,6 +12,8 @@ const FIREBASE_CUSTOM_TOKEN_AUDIENCE =
   "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit";
 const FIREBASE_SIGN_IN_URL =
   "https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken";
+const FIREBASE_SIGN_IN_WITH_IDP_URL =
+  "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp";
 const DEFAULT_TOKEN_TTL_SECONDS = 300;
 const MAX_TOKEN_TTL_SECONDS = 3_600;
 const MAX_SERVICE_ACCOUNT_BYTES = 32_000;
@@ -58,13 +60,23 @@ export type FirebaseTokenExchangeResult = {
   localId: string;
 };
 
+export type FirebaseProvider = "google" | "apple";
+
+export type FirebaseProviderExchangeResult = {
+  localId: string;
+  idToken: string;
+  refreshToken: string;
+  expiresIn: number;
+};
+
 export type FirebaseBridgeFailureCode =
   | "bridge_unavailable"
   | "identity_not_admitted"
   | "account_generation_conflict"
   | "deletion_fence_active"
   | "provider_unavailable"
-  | "provider_rejected";
+  | "provider_rejected"
+  | "provider_identity_mismatch";
 
 export class FirebaseCustomTokenBridgeError extends Error {
   readonly code: FirebaseBridgeFailureCode;
@@ -104,7 +116,10 @@ function base64Url(value: string | Uint8Array): string {
 }
 
 function decodeBase64(value: string): Uint8Array {
-  const normalized = value.replace(/\s+/g, "").replaceAll("-", "+").replaceAll("_", "/");
+  const normalized = value
+    .replace(/\s+/g, "")
+    .replaceAll("-", "+")
+    .replaceAll("_", "/");
   if (!normalized || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
     throw new FirebaseCustomTokenBridgeError("bridge_unavailable");
   }
@@ -128,7 +143,10 @@ function privateKeyBytes(pem: string): Uint8Array {
   if (!pem.includes(begin) || !pem.includes(end)) {
     throw new FirebaseCustomTokenBridgeError("bridge_unavailable");
   }
-  const encoded = pem.slice(pem.indexOf(begin) + begin.length, pem.indexOf(end));
+  const encoded = pem.slice(
+    pem.indexOf(begin) + begin.length,
+    pem.indexOf(end),
+  );
   return decodeBase64(encoded);
 }
 
@@ -187,7 +205,8 @@ export function parseFirebaseServiceAccount(
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   const object = parsed as Record<string, unknown>;
   const projectId = object.project_id;
   const clientEmail = object.client_email;
@@ -201,7 +220,8 @@ export function parseFirebaseServiceAccount(
     !privateKey.includes("-----BEGIN PRIVATE KEY-----") ||
     !privateKey.includes("-----END PRIVATE KEY-----") ||
     (privateKeyId !== undefined &&
-      (typeof privateKeyId !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(privateKeyId)))
+      (typeof privateKeyId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,256}$/.test(privateKeyId)))
   ) {
     return null;
   }
@@ -221,10 +241,17 @@ export function parseFirebaseServiceAccount(
   };
 }
 
-function serviceAccount(env: FirebaseCustomTokenBridgeEnv): FirebaseServiceAccount {
-  const account = parseFirebaseServiceAccount(env.FIREBASE_SERVICE_ACCOUNT_JSON);
+function serviceAccount(
+  env: FirebaseCustomTokenBridgeEnv,
+): FirebaseServiceAccount {
+  const account = parseFirebaseServiceAccount(
+    env.FIREBASE_SERVICE_ACCOUNT_JSON,
+  );
   if (!account) throw new FirebaseCustomTokenBridgeError("bridge_unavailable");
-  if (env.FIREBASE_PROJECT_ID !== undefined && env.FIREBASE_PROJECT_ID !== account.projectId) {
+  if (
+    env.FIREBASE_PROJECT_ID !== undefined &&
+    env.FIREBASE_PROJECT_ID !== account.projectId
+  ) {
     throw new FirebaseCustomTokenBridgeError("bridge_unavailable");
   }
   return account;
@@ -243,7 +270,9 @@ function parseProviders(value: unknown): string[] | null {
     !Array.isArray(parsed) ||
     parsed.length === 0 ||
     parsed.length > 16 ||
-    parsed.some((provider) => typeof provider !== "string" || provider.length === 0)
+    parsed.some(
+      (provider) => typeof provider !== "string" || provider.length === 0,
+    )
   ) {
     return null;
   }
@@ -251,7 +280,9 @@ function parseProviders(value: unknown): string[] | null {
   return new Set(providers).size === providers.length ? providers : null;
 }
 
-function normalizedIdentityRow(row: FirebaseIdentityRow): FirebaseIdentityBridgeRow | null {
+function normalizedIdentityRow(
+  row: FirebaseIdentityRow,
+): FirebaseIdentityBridgeRow | null {
   const firebaseUid = row.firebaseUid;
   const betterAuthUserId = row.betterAuthUserId;
   const providers = parseProviders(row.providersJson);
@@ -311,6 +342,53 @@ export async function resolveFirebaseIdentityBridge(
   const identity = row ? normalizedIdentityRow(row) : null;
   if (!identity) {
     throw new FirebaseCustomTokenBridgeError("identity_not_admitted");
+  }
+  if (identity.fenceStatus !== "clear") {
+    throw new FirebaseCustomTokenBridgeError("deletion_fence_active");
+  }
+  return identity;
+}
+
+/** Resolve an imported Firebase identity by the provider-issued localId. */
+export async function resolveFirebaseIdentityByFirebaseUid(
+  database: FirebaseBridgeDatabase,
+  firebaseUid: string,
+  provider?: FirebaseProvider,
+): Promise<FirebaseIdentityBridgeRow> {
+  if (!validUid(firebaseUid)) {
+    throw new FirebaseCustomTokenBridgeError("identity_not_admitted");
+  }
+  let row: FirebaseIdentityRow | null;
+  try {
+    row = await database
+      .prepare(
+        `SELECT p.firebaseUid, p.betterAuthUserId, p.providersJson,
+                p.status AS projectionStatus, i.status AS importStatus,
+                f.generation, f.status AS fenceStatus
+           FROM cf_firebase_identity_projection AS p
+           JOIN auth_identity_imports AS i ON i.id = p.sourceImportId
+           JOIN cf_auth_deletion_fences AS f
+             ON f.uid = p.betterAuthUserId
+          WHERE p.firebaseUid = ?
+          LIMIT 1`,
+      )
+      .bind(firebaseUid)
+      .first<FirebaseIdentityRow>();
+  } catch {
+    throw new FirebaseCustomTokenBridgeError("bridge_unavailable");
+  }
+  const identity = row ? normalizedIdentityRow(row) : null;
+  if (!identity) {
+    throw new FirebaseCustomTokenBridgeError("identity_not_admitted");
+  }
+  if (provider) {
+    const providerId = `${provider}.com`;
+    if (
+      !identity.providers.includes(providerId) &&
+      !identity.providers.includes(provider)
+    ) {
+      throw new FirebaseCustomTokenBridgeError("provider_identity_mismatch");
+    }
   }
   if (identity.fenceStatus !== "clear") {
     throw new FirebaseCustomTokenBridgeError("deletion_fence_active");
@@ -389,10 +467,14 @@ export async function issueFirebaseCustomToken(
   now = Math.floor(Date.now() / 1_000),
   expectedGeneration?: number,
 ): Promise<FirebaseCustomTokenResult> {
-  const identity = await resolveFirebaseIdentityBridge(database, betterAuthUserId);
+  const identity = await resolveFirebaseIdentityBridge(
+    database,
+    betterAuthUserId,
+  );
   if (
     expectedGeneration !== undefined &&
-    (!Number.isSafeInteger(expectedGeneration) || expectedGeneration !== identity.generation)
+    (!Number.isSafeInteger(expectedGeneration) ||
+      expectedGeneration !== identity.generation)
   ) {
     throw new FirebaseCustomTokenBridgeError("account_generation_conflict");
   }
@@ -429,7 +511,13 @@ export async function issueFirebaseCustomToken(
   }
 
   try {
-    const token = await signCustomToken(account, identity, issuanceId, now, expiresAt);
+    const token = await signCustomToken(
+      account,
+      identity,
+      issuanceId,
+      now,
+      expiresAt,
+    );
     const hash = await tokenHash(token);
     const updated = await database
       .prepare(
@@ -474,7 +562,11 @@ export async function issueFirebaseCustomToken(
   }
 }
 
-function responseNumber(value: unknown, min: number, max: number): number | null {
+function responseNumber(
+  value: unknown,
+  min: number,
+  max: number,
+): number | null {
   const parsed = strictInteger(value);
   return parsed !== null && parsed >= min && parsed <= max ? parsed : null;
 }
@@ -485,7 +577,11 @@ export async function exchangeFirebaseCustomToken(
   env: FirebaseCustomTokenBridgeEnv,
   fetcher: typeof fetch = fetch,
 ): Promise<FirebaseTokenExchangeResult> {
-  if (!token || utf8Bytes(token) > 8_192 || !validApiKey(env.FIREBASE_API_KEY)) {
+  if (
+    !token ||
+    utf8Bytes(token) > 8_192 ||
+    !validApiKey(env.FIREBASE_API_KEY)
+  ) {
     throw new FirebaseCustomTokenBridgeError("provider_unavailable");
   }
   const endpoint = `${FIREBASE_SIGN_IN_URL}?key=${encodeURIComponent(env.FIREBASE_API_KEY)}`;
@@ -529,6 +625,93 @@ export async function exchangeFirebaseCustomToken(
     throw new FirebaseCustomTokenBridgeError("provider_unavailable");
   }
   return { idToken, refreshToken, expiresIn, localId };
+}
+
+/**
+ * Exchange a Google/Apple provider credential through Firebase Identity
+ * Toolkit. The returned localId is the only identity accepted by the
+ * imported Firebase projection; provider tokens never enter D1.
+ */
+export async function exchangeFirebaseProviderCredential(
+  provider: FirebaseProvider,
+  idToken: string,
+  accessToken: string | null,
+  env: FirebaseCustomTokenBridgeEnv,
+  fetcher: typeof fetch = fetch,
+): Promise<FirebaseProviderExchangeResult> {
+  if (
+    (provider !== "google" && provider !== "apple") ||
+    !idToken ||
+    utf8Bytes(idToken) > 8_192 ||
+    (accessToken !== null &&
+      (typeof accessToken !== "string" || utf8Bytes(accessToken) > 8_192)) ||
+    !validApiKey(env.FIREBASE_API_KEY)
+  ) {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  const providerId = `${provider}.com`;
+  const postBody = new URLSearchParams({
+    id_token: idToken,
+    providerId,
+    ...(accessToken ? { access_token: accessToken } : {}),
+  }).toString();
+  const endpoint = `${FIREBASE_SIGN_IN_WITH_IDP_URL}?key=${encodeURIComponent(env.FIREBASE_API_KEY)}`;
+  let response: Response;
+  try {
+    response = await fetcher(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        postBody,
+        requestUri: "http://localhost",
+        returnIdpCredential: true,
+        returnSecureToken: true,
+      }),
+    });
+  } catch {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  let body: unknown;
+  try {
+    const raw = await response.text();
+    if (utf8Bytes(raw) > MAX_SERVICE_ACCOUNT_BYTES) {
+      throw new Error("provider response too large");
+    }
+    body = JSON.parse(raw);
+  } catch {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  if (!response.ok) {
+    throw new FirebaseCustomTokenBridgeError(
+      response.status >= 500 ? "provider_unavailable" : "provider_rejected",
+    );
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  const object = body as Record<string, unknown>;
+  const localId = object.localId;
+  const firebaseIdToken = object.idToken;
+  const refreshToken = object.refreshToken;
+  const expiresIn = responseNumber(object.expiresIn, 1, 86_400);
+  if (
+    !validUid(localId) ||
+    typeof firebaseIdToken !== "string" ||
+    !firebaseIdToken ||
+    utf8Bytes(firebaseIdToken) > 8_192 ||
+    typeof refreshToken !== "string" ||
+    !refreshToken ||
+    utf8Bytes(refreshToken) > 8_192 ||
+    expiresIn === null
+  ) {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  return {
+    localId,
+    idToken: firebaseIdToken,
+    refreshToken,
+    expiresIn,
+  };
 }
 
 export const firebaseCustomTokenBridgeConstants = Object.freeze({

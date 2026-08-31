@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   exchangeFirebaseCustomToken,
+  exchangeFirebaseProviderCredential,
   FirebaseCustomTokenBridgeError,
   issueFirebaseCustomToken,
   parseFirebaseServiceAccount,
@@ -30,8 +31,8 @@ class SqliteD1 {
     const build = (args: unknown[] = []) => ({
       bind: (...values: unknown[]) => build(values),
       first: async <T>() =>
-        (this.database.prepare(sql).get(...(args as never[])) as T | undefined) ??
-        null,
+        (this.database.prepare(sql).get(...(args as never[])) as
+          T | undefined) ?? null,
       run: async () => {
         const result = this.database.prepare(sql).run(...(args as never[]));
         return {
@@ -63,11 +64,18 @@ function base64UrlDecode(value: string): string {
 
 async function serviceAccount() {
   const keys = await crypto.subtle.generateKey(
-    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2_048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2_048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
     true,
     ["sign", "verify"],
   );
-  const der = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keys.privateKey));
+  const der = new Uint8Array(
+    await crypto.subtle.exportKey("pkcs8", keys.privateKey),
+  );
   const pem = `-----BEGIN PRIVATE KEY-----\n${base64(der)}\n-----END PRIVATE KEY-----`;
   return {
     FIREBASE_PROJECT_ID: "omi-test-project",
@@ -103,6 +111,48 @@ function databaseWithIdentity() {
 }
 
 describe("Firebase custom-token bridge", () => {
+  it("exchanges a provider credential through Firebase Identity Toolkit", async () => {
+    const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=AIza-test-key",
+      );
+      expect(init?.method).toBe("POST");
+      const payload = JSON.parse(String(init?.body)) as {
+        postBody: string;
+        requestUri: string;
+        returnIdpCredential: boolean;
+        returnSecureToken: boolean;
+      };
+      expect(payload.requestUri).toBe("http://localhost");
+      expect(payload.returnIdpCredential).toBe(true);
+      expect(payload.returnSecureToken).toBe(true);
+      const postBody = new URLSearchParams(payload.postBody);
+      expect(postBody.get("providerId")).toBe("google.com");
+      expect(postBody.get("id_token")).toBe("provider-id-token");
+      expect(postBody.get("access_token")).toBe("provider-access-token");
+      return Response.json({
+        localId: "firebase-user",
+        idToken: "firebase-id-token",
+        refreshToken: "firebase-refresh-token",
+        expiresIn: "3600",
+      });
+    };
+    await expect(
+      exchangeFirebaseProviderCredential(
+        "google",
+        "provider-id-token",
+        "provider-access-token",
+        { FIREBASE_API_KEY: "AIza-test-key" },
+        fetcher,
+      ),
+    ).resolves.toEqual({
+      localId: "firebase-user",
+      idToken: "firebase-id-token",
+      refreshToken: "firebase-refresh-token",
+      expiresIn: 3_600,
+    });
+  });
+
   it("rejects malformed service-account credentials without exposing key data", () => {
     expect(parseFirebaseServiceAccount(undefined)).toBeNull();
     expect(parseFirebaseServiceAccount("not-json")).toBeNull();
@@ -111,7 +161,8 @@ describe("Firebase custom-token bridge", () => {
         JSON.stringify({
           project_id: "bad",
           client_email: "admin@example.test",
-          private_key: "-----BEGIN PRIVATE KEY-----bad-----END PRIVATE KEY-----",
+          private_key:
+            "-----BEGIN PRIVATE KEY-----bad-----END PRIVATE KEY-----",
         }),
       ),
     ).toBeNull();
@@ -167,7 +218,13 @@ describe("Firebase custom-token bridge", () => {
     try {
       const env = await serviceAccount();
       await expect(
-        issueFirebaseCustomToken(database, "better-user", env, 1_700_000_000, 3),
+        issueFirebaseCustomToken(
+          database,
+          "better-user",
+          env,
+          1_700_000_000,
+          3,
+        ),
       ).rejects.toMatchObject({ code: "account_generation_conflict" });
 
       database.database.exec(
@@ -194,7 +251,9 @@ describe("Firebase custom-token bridge", () => {
         "https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=AIza-test-key",
       );
       expect(request.method).toBe("POST");
-      expect(request.headers).toMatchObject({ "content-type": "application/json" });
+      expect(request.headers).toMatchObject({
+        "content-type": "application/json",
+      });
       expect(JSON.parse(String(request.body))).toEqual({
         token: "custom-token",
         returnSecureToken: true,
@@ -220,11 +279,21 @@ describe("Firebase custom-token bridge", () => {
     });
 
     await expect(
-      exchangeFirebaseCustomToken("custom-token", {}, fetcher as unknown as typeof fetch),
+      exchangeFirebaseCustomToken(
+        "custom-token",
+        {},
+        fetcher as unknown as typeof fetch,
+      ),
     ).rejects.toMatchObject({ code: "provider_unavailable" });
     await expect(
-      exchangeFirebaseCustomToken("custom-token", { FIREBASE_API_KEY: "AIza-test-key" }, async () =>
-        Response.json({ error: { message: "secret provider detail" } }, { status: 400 }),
+      exchangeFirebaseCustomToken(
+        "custom-token",
+        { FIREBASE_API_KEY: "AIza-test-key" },
+        async () =>
+          Response.json(
+            { error: { message: "secret provider detail" } },
+            { status: 400 },
+          ),
       ),
     ).rejects.toBeInstanceOf(FirebaseCustomTokenBridgeError);
   });

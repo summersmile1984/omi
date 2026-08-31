@@ -12,6 +12,12 @@
 import type { Context, Hono } from "hono";
 import type { AuthEnv } from "./env";
 import {
+  exchangeFirebaseProviderCredential,
+  FirebaseCustomTokenBridgeError,
+  issueFirebaseCustomToken,
+  resolveFirebaseIdentityByFirebaseUid,
+} from "./firebase-custom-token-bridge";
+import {
   consumeLegacyAuthTransaction,
   createLegacyAuthTransaction,
   isValidLegacyOpaqueSecret,
@@ -57,7 +63,7 @@ type ProviderCredentials = {
 
 class NativeAuthError extends Error {
   constructor(
-    readonly status: 400 | 404 | 502 | 503,
+    readonly status: 400 | 404 | 409 | 502 | 503,
     readonly code: string,
   ) {
     super(code);
@@ -121,13 +127,10 @@ async function encryptionKey(env: AuthEnv): Promise<CryptoKey> {
     "SHA-256",
     new TextEncoder().encode(transactionSecret(env)),
   );
-  return crypto.subtle.importKey(
-    "raw",
-    digest,
-    { name: "AES-GCM" },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
 }
 
 function envelopeContext(
@@ -152,7 +155,9 @@ async function encryptEnvelope(
     {
       name: "AES-GCM",
       iv: cryptoBytes(iv),
-      additionalData: cryptoBytes(envelopeContext(kind, provider, transactionId)),
+      additionalData: cryptoBytes(
+        envelopeContext(kind, provider, transactionId),
+      ),
     },
     await encryptionKey(env),
     cryptoBytes(new TextEncoder().encode(JSON.stringify(value))),
@@ -179,7 +184,9 @@ async function decryptEnvelope(
     {
       name: "AES-GCM",
       iv: cryptoBytes(decodeBase64Url(parts[1])),
-      additionalData: cryptoBytes(envelopeContext(kind, provider, transactionId)),
+      additionalData: cryptoBytes(
+        envelopeContext(kind, provider, transactionId),
+      ),
     },
     await encryptionKey(env),
     cryptoBytes(decodeBase64Url(parts[2])),
@@ -275,7 +282,7 @@ function providerFromCode(code: string): LegacyAuthProvider | null {
 function responseError(
   c: NativeAuthContext,
   error: NativeAuthError | string,
-  status?: 400 | 404 | 502 | 503,
+  status?: 400 | 404 | 409 | 502 | 503,
 ): Response {
   const resolvedStatus =
     error instanceof NativeAuthError ? error.status : status || 503;
@@ -316,7 +323,10 @@ function callbackResponse(
   status: 200 | 400 | 502 | 503 = 200,
 ): Response {
   c.header("cache-control", "no-store");
-  c.header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
+  c.header(
+    "content-security-policy",
+    "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+  );
   return c.html(callbackHtml(title, message, redirectUrl, status), status);
 }
 
@@ -393,7 +403,10 @@ async function providerCredentials(
       body: form.toString(),
     });
   } catch {
-    throw new NativeAuthError(503, `${configuration.provider}_provider_unavailable`);
+    throw new NativeAuthError(
+      503,
+      `${configuration.provider}_provider_unavailable`,
+    );
   }
   const contentLength = Number(response.headers.get("content-length") || "0");
   if (
@@ -402,7 +415,8 @@ async function providerCredentials(
   ) {
     throw new NativeAuthError(503, "provider_response_too_large");
   }
-  if (!response.ok) throw providerErrorResponse(response, configuration.provider);
+  if (!response.ok)
+    throw providerErrorResponse(response, configuration.provider);
   let body: unknown;
   try {
     const raw = await response.text();
@@ -447,11 +461,13 @@ function parseAppleName(value: string | null): string | undefined {
       decoded && typeof decoded === "object" && !Array.isArray(decoded)
         ? (decoded as Record<string, unknown>).name
         : null;
-    if (!name || typeof name !== "object" || Array.isArray(name)) return undefined;
+    if (!name || typeof name !== "object" || Array.isArray(name))
+      return undefined;
     const first = (name as Record<string, unknown>).firstName;
     const last = (name as Record<string, unknown>).lastName;
     const parts = [first, last].filter(
-      (part): part is string => typeof part === "string" && part.trim().length > 0,
+      (part): part is string =>
+        typeof part === "string" && part.trim().length > 0,
     );
     const full = parts.join(" ").trim();
     return full && utf8Bytes(full) <= MAX_NAME_BYTES ? full : undefined;
@@ -512,7 +528,8 @@ async function authorize(
     return responseError(c, new NativeAuthError(400, "invalid_pkce"));
   }
   const now = nowSeconds(dependencies);
-  if (!now) return responseError(c, new NativeAuthError(503, "clock_unavailable"));
+  if (!now)
+    return responseError(c, new NativeAuthError(503, "clock_unavailable"));
 
   try {
     const configuration = providerConfiguration(c.env, provider);
@@ -557,22 +574,46 @@ async function callback(
   c: NativeAuthContext,
   provider: LegacyAuthProvider,
   dependencies: NativeAuthCompatibilityDependencies,
-  values: { code: string | null; state: string | null; error: string | null; user: string | null },
+  values: {
+    code: string | null;
+    state: string | null;
+    error: string | null;
+    user: string | null;
+  },
 ): Promise<Response> {
   if (c.env.LEGACY_AUTH_COMPAT_STAGING_ENABLED !== "true") {
     return responseError(c, new NativeAuthError(404, "not_found"));
   }
   if (!values.state || !isValidLegacyOpaqueSecret(values.state)) {
-    return callbackResponse(c, "Authentication failed", "Invalid or expired authentication state.", undefined, 400);
+    return callbackResponse(
+      c,
+      "Authentication failed",
+      "Invalid or expired authentication state.",
+      undefined,
+      400,
+    );
   }
   const now = nowSeconds(dependencies);
-  if (!now) return callbackResponse(c, "Authentication failed", "Authentication service is unavailable.", undefined, 503);
+  if (!now)
+    return callbackResponse(
+      c,
+      "Authentication failed",
+      "Authentication service is unavailable.",
+      undefined,
+      503,
+    );
   let configuration: ProviderConfiguration;
   try {
     configuration = providerConfiguration(c.env, provider);
     transactionSecret(c.env);
   } catch (error) {
-    return callbackResponse(c, "Authentication unavailable", "The provider is not configured.", undefined, 503);
+    return callbackResponse(
+      c,
+      "Authentication unavailable",
+      "The provider is not configured.",
+      undefined,
+      503,
+    );
   }
 
   // Consume the provider-facing state before provider exchange.  A provider
@@ -584,7 +625,13 @@ async function callback(
     now,
   });
   if (!consumed || !consumed.metadataEnvelopeEnc) {
-    return callbackResponse(c, "Authentication failed", "Invalid or expired authentication state.", undefined, 400);
+    return callbackResponse(
+      c,
+      "Authentication failed",
+      "Invalid or expired authentication state.",
+      undefined,
+      400,
+    );
   }
   let metadata: SessionMetadata;
   try {
@@ -599,8 +646,11 @@ async function callback(
       typeof decoded.redirectUri !== "string" ||
       !isValidLegacyRedirectUri(decoded.redirectUri) ||
       decoded.redirectUri !== consumed.redirectUri ||
-      (decoded.clientState !== null && typeof decoded.clientState !== "string") ||
-      !validClientState((decoded.clientState as string | null | undefined) ?? null) ||
+      (decoded.clientState !== null &&
+        typeof decoded.clientState !== "string") ||
+      !validClientState(
+        (decoded.clientState as string | null | undefined) ?? null,
+      ) ||
       decoded.provider !== provider
     ) {
       throw new Error("invalid session metadata");
@@ -611,13 +661,31 @@ async function callback(
       provider,
     };
   } catch {
-    return callbackResponse(c, "Authentication unavailable", "The authentication transaction is unavailable.", undefined, 503);
+    return callbackResponse(
+      c,
+      "Authentication unavailable",
+      "The authentication transaction is unavailable.",
+      undefined,
+      503,
+    );
   }
   if (values.error) {
-    return callbackResponse(c, "Authentication cancelled", "The provider did not authorize this sign-in.", undefined, 400);
+    return callbackResponse(
+      c,
+      "Authentication cancelled",
+      "The provider did not authorize this sign-in.",
+      undefined,
+      400,
+    );
   }
   if (!values.code || !isValidLegacyOpaqueSecret(values.code)) {
-    return callbackResponse(c, "Authentication failed", "The provider callback did not include a valid code.", undefined, 400);
+    return callbackResponse(
+      c,
+      "Authentication failed",
+      "The provider callback did not include a valid code.",
+      undefined,
+      400,
+    );
   }
 
   let credentials: ProviderCredentials;
@@ -627,14 +695,21 @@ async function callback(
       values.code,
       dependencies.fetchImpl || fetch,
     );
-    const fullName = provider === "apple" ? parseAppleName(values.user) : undefined;
+    const fullName =
+      provider === "apple" ? parseAppleName(values.user) : undefined;
     if (fullName) credentials.fullName = fullName;
   } catch (error) {
     const failure =
       error instanceof NativeAuthError
         ? error
         : new NativeAuthError(503, "provider_unavailable");
-    return callbackResponse(c, "Authentication unavailable", "The identity provider could not be reached.", undefined, failure.status === 400 ? 400 : failure.status === 502 ? 502 : 503);
+    return callbackResponse(
+      c,
+      "Authentication unavailable",
+      "The identity provider could not be reached.",
+      undefined,
+      failure.status === 400 ? 400 : failure.status === 502 ? 502 : 503,
+    );
   }
 
   try {
@@ -671,9 +746,21 @@ async function callback(
       authCode,
       metadata.clientState,
     );
-    return callbackResponse(c, "Authentication ready", "Continue in the Omi app to finish signing in.", redirectUrl, 200);
+    return callbackResponse(
+      c,
+      "Authentication ready",
+      "Continue in the Omi app to finish signing in.",
+      redirectUrl,
+      200,
+    );
   } catch {
-    return callbackResponse(c, "Authentication unavailable", "The authentication transaction could not be saved.", undefined, 503);
+    return callbackResponse(
+      c,
+      "Authentication unavailable",
+      "The authentication transaction could not be saved.",
+      undefined,
+      503,
+    );
   }
 }
 
@@ -688,21 +775,26 @@ async function token(
   let body: Record<string, unknown>;
   if (contentType.includes("application/json")) {
     const contentLength = Number(c.req.header("content-length") || "0");
-    if (!Number.isFinite(contentLength) || contentLength > MAX_TOKEN_BODY_BYTES) {
+    if (
+      !Number.isFinite(contentLength) ||
+      contentLength > MAX_TOKEN_BODY_BYTES
+    ) {
       return responseError(c, new NativeAuthError(400, "invalid_request"));
     }
     try {
       const raw = await c.req.text();
       if (utf8Bytes(raw) > MAX_TOKEN_BODY_BYTES) throw new Error("too large");
       const parsed: unknown = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid body");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        throw new Error("invalid body");
       body = parsed as Record<string, unknown>;
     } catch {
       return responseError(c, new NativeAuthError(400, "invalid_request"));
     }
   } else {
     const form = await readBoundedForm(c.req.raw, MAX_TOKEN_BODY_BYTES);
-    if (!form) return responseError(c, new NativeAuthError(400, "invalid_request"));
+    if (!form)
+      return responseError(c, new NativeAuthError(400, "invalid_request"));
     body = Object.fromEntries(form.entries());
   }
   const grantType = body.grant_type;
@@ -722,24 +814,17 @@ async function token(
     return responseError(c, new NativeAuthError(400, "invalid_request"));
   }
   const provider = providerFromCode(code);
-  if (!provider) return responseError(c, new NativeAuthError(400, "invalid_code"));
+  if (!provider)
+    return responseError(c, new NativeAuthError(400, "invalid_code"));
   if (!isValidLegacyRedirectUri(redirectUri)) {
     return responseError(c, new NativeAuthError(400, "invalid_redirect_uri"));
   }
   if (!isValidLegacyOpaqueSecret(codeVerifier)) {
     return responseError(c, new NativeAuthError(400, "invalid_pkce"));
   }
-  if (useCustomToken) {
-    // A provider credential does not prove a Firebase UID.  Until the imported
-    // identity projection is used to map Firebase localId -> Better Auth uid,
-    // custom-token mode remains fail-closed even when the secrets exist.
-    if (!c.env.FIREBASE_API_KEY || !c.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-      return responseError(c, new NativeAuthError(503, "firebase_bridge_unavailable"));
-    }
-    return responseError(c, new NativeAuthError(503, "firebase_identity_bridge_required"));
-  }
   const now = nowSeconds(dependencies);
-  if (!now) return responseError(c, new NativeAuthError(503, "clock_unavailable"));
+  if (!now)
+    return responseError(c, new NativeAuthError(503, "clock_unavailable"));
   try {
     const consumed = await consumeLegacyAuthTransaction(c.env.AUTH_DB, {
       lookupSecret: code,
@@ -750,7 +835,10 @@ async function token(
       now,
     });
     if (!consumed?.encryptedPayload) {
-      return responseError(c, new NativeAuthError(400, "invalid_or_expired_code"));
+      return responseError(
+        c,
+        new NativeAuthError(400, "invalid_or_expired_code"),
+      );
     }
     const decoded = await decryptEnvelope(
       c.env,
@@ -762,26 +850,85 @@ async function token(
     if (
       decoded.provider !== provider ||
       !validCredential(decoded.id_token) ||
-      (decoded.access_token !== null && decoded.access_token !== undefined && !validCredential(decoded.access_token))
+      (decoded.access_token !== null &&
+        decoded.access_token !== undefined &&
+        !validCredential(decoded.access_token))
     ) {
       throw new Error("invalid provider payload");
     }
     const expiresIn = Number(decoded.expires_in || 3_600);
-    if (!Number.isSafeInteger(expiresIn) || expiresIn < 1 || expiresIn > 86_400) {
+    if (
+      !Number.isSafeInteger(expiresIn) ||
+      expiresIn < 1 ||
+      expiresIn > 86_400
+    ) {
       throw new Error("invalid expiry");
     }
-    c.header("cache-control", "no-store");
-    return c.json({
+    const response: Record<string, unknown> = {
       provider,
       id_token: decoded.id_token,
       access_token: decoded.access_token ?? null,
       provider_id: provider === "google" ? "google.com" : "apple.com",
       token_type: "Bearer",
       expires_in: expiresIn,
-    });
+    };
+    if (useCustomToken) {
+      if (!c.env.FIREBASE_API_KEY || !c.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+        return responseError(
+          c,
+          new NativeAuthError(503, "firebase_bridge_unavailable"),
+        );
+      }
+      try {
+        const firebaseExchange = await exchangeFirebaseProviderCredential(
+          provider,
+          decoded.id_token as string,
+          decoded.access_token === null || decoded.access_token === undefined
+            ? null
+            : (decoded.access_token as string),
+          c.env,
+          dependencies.fetchImpl || fetch,
+        );
+        const identity = await resolveFirebaseIdentityByFirebaseUid(
+          c.env.AUTH_DB,
+          firebaseExchange.localId,
+          provider,
+        );
+        const issued = await issueFirebaseCustomToken(
+          c.env.AUTH_DB,
+          identity.betterAuthUserId,
+          c.env,
+          now,
+          identity.generation,
+        );
+        response.custom_token = issued.token;
+      } catch (error) {
+        if (error instanceof FirebaseCustomTokenBridgeError) {
+          const status =
+            error.code === "identity_not_admitted" ||
+            error.code === "provider_identity_mismatch" ||
+            error.code === "deletion_fence_active" ||
+            error.code === "account_generation_conflict"
+              ? 409
+              : error.code === "provider_rejected"
+                ? 502
+                : 503;
+          return responseError(c, new NativeAuthError(status, error.code));
+        }
+        return responseError(
+          c,
+          new NativeAuthError(503, "firebase_bridge_unavailable"),
+        );
+      }
+    }
+    c.header("cache-control", "no-store");
+    return c.json(response);
   } catch (error) {
     if (error instanceof NativeAuthError) return responseError(c, error);
-    return responseError(c, new NativeAuthError(503, "transaction_authority_unavailable"));
+    return responseError(
+      c,
+      new NativeAuthError(503, "transaction_authority_unavailable"),
+    );
   }
 }
 
@@ -801,7 +948,13 @@ export function registerNativeAuthCompatibilityRoutes(
   app.post("/v2/cf/auth/callback/apple", async (c) => {
     const form = await readBoundedForm(c.req.raw, MAX_CALLBACK_BODY_BYTES);
     if (!form) {
-      return callbackResponse(c, "Authentication failed", "The provider callback was too large.", undefined, 400);
+      return callbackResponse(
+        c,
+        "Authentication failed",
+        "The provider callback was too large.",
+        undefined,
+        400,
+      );
     }
     return callback(c, "apple", dependencies, {
       code: queryString(form.get("code")),
