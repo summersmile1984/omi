@@ -55,6 +55,33 @@ columns in its residual checks. The source and output prefixes are already
 covered by the shared ASSETS deletion inventory (`chunks/{uid}/` and
 `sync-playback/{uid}/`).
 
+## Historical GCS chunk reconciliation planner
+
+`scripts/audio-reconcile.mjs` provides the first safe production-migration
+seam for the old private-cloud-sync bucket. It is deliberately a dry-run
+planner: it accepts a bounded GCS object inventory and emits a reviewable D1
+ledger SQL plus an R2 copy plan, but never connects to GCS/R2 or writes D1.
+Every staged row must include the credential-free `gs://` object URI, its
+immutable GCS `generation`, a precomputed SHA-256, a bounded size, and a
+supported legacy chunk filename. The planner derives the destination key only
+from `chunks/{uid}/{conversation_id}/...`, rejects cross-identity paths,
+blocks duplicate destination claims and deletion-fenced accounts, and carries
+`if_generation_match` into the future copy plan. The `0125` ledger is an audit
+record, not audio authority; no copy or production cutover is implied.
+
+Run it with:
+
+```sh
+npm run audio:reconcile -- --input gcs-audio-inventory.json \
+  --fenced-uid <uid-being-deleted>
+```
+
+The future executor must re-read the deletion fence, verify the GCS
+generation/checksum, copy to the isolated environment's `ASSETS` R2 binding,
+and only then promote a row from `planned` to `applied`. This planner does not
+attempt to prove ffmpeg/pydub byte parity or bridge the old Cloud Tasks OIDC
+dispatcher.
+
 ## Verification boundary
 
 The contract is covered by Worker tests for Better Auth rejection, bounded and

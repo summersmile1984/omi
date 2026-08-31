@@ -14,6 +14,7 @@
     "smoke:staging": "node scripts/smoke-staging.mjs",
     "identity:import": "node scripts/import-firebase-identities.mjs",
     "identity:dry-run": "node scripts/dry-run-firebase-identity-import.mjs",
+    "audio:reconcile": "node scripts/audio-reconcile.mjs",
     "deploy:staging": "npm run validate:backend-routes && npm run validate:manifest && node scripts/deploy.mjs staging",
     "rollback:staging": "node scripts/rollback-staging.mjs"
   },
