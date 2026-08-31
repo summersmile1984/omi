@@ -8,7 +8,8 @@ type IdentityColumn =
   | "recipient_uid"
   | "reviewer_uid"
   | "sender_uid"
-  | "uid_hint";
+  | "uid_hint"
+  | "mapped_uid";
 
 type D1IdentitySurface = Readonly<{
   table: string;
@@ -118,6 +119,8 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_memory_short_term_lifecycle_control", column: "uid" },
   { table: "cf_memory_short_term_lifecycle_runs", column: "uid" },
   { table: "cf_memory_short_term_lifecycle_transitions", column: "uid" },
+  { table: "cf_hume_task_projections", column: "uid" },
+  { table: "cf_hume_webhook_results", column: "mapped_uid" },
   { table: "cf_data_protection_migration_control", column: "uid" },
   { table: "cf_data_protection_migration_runs", column: "uid" },
   { table: "cf_memory_control", column: "uid" },
@@ -220,6 +223,8 @@ const PURGE_PRIORITY = Object.freeze([
   "cf_memory_short_term_lifecycle_transitions.uid",
   "cf_memory_short_term_lifecycle_runs.uid",
   "cf_memory_short_term_lifecycle_control.uid",
+  "cf_hume_webhook_results.mapped_uid",
+  "cf_hume_task_projections.uid",
   "cf_data_protection_migration_runs.uid",
   "cf_data_protection_migration_control.uid",
   "cf_import_jobs.uid",

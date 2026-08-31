@@ -55,7 +55,37 @@ END;
 CREATE TRIGGER IF NOT EXISTS adf_u_hume_task_projections
 BEFORE UPDATE ON cf_hume_task_projections
 BEGIN
+  -- Keep the deletion fence explicit even though this projection is
+  -- immutable.  The OLD/NEW references are part of the schema coverage
+  -- contract and prevent a future relaxation from bypassing account purge.
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid IN (OLD.uid, NEW.uid))
+                   OR EXISTS (SELECT 1 FROM cf_account_deletion_tombstones WHERE uid IN (OLD.uid, NEW.uid))
+              THEN RAISE(ABORT, 'account deletion fence') END;
   SELECT RAISE(ABORT, 'hume task projection immutable');
+END;
+
+-- The webhook result row is initially identity-neutral.  Once an attested
+-- mapping is attached, mapped_uid becomes an account-bearing field and must
+-- participate in the same mutation/deletion fence inventory.
+CREATE TRIGGER IF NOT EXISTS adf_i_hume_webhook_results
+BEFORE INSERT ON cf_hume_webhook_results
+WHEN NEW.mapped_uid IS NOT NULL
+ AND (EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid = NEW.mapped_uid)
+      OR EXISTS (SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = NEW.mapped_uid))
+BEGIN
+  SELECT RAISE(ABORT, 'account deletion fence');
+END;
+
+CREATE TRIGGER IF NOT EXISTS adf_u_hume_webhook_results
+BEFORE UPDATE ON cf_hume_webhook_results
+WHEN (NEW.mapped_uid IS NOT NULL
+      AND (EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid = NEW.mapped_uid)
+           OR EXISTS (SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = NEW.mapped_uid)))
+  OR (OLD.mapped_uid IS NOT NULL
+      AND (EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid = OLD.mapped_uid)
+           OR EXISTS (SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = OLD.mapped_uid)))
+BEGIN
+  SELECT RAISE(ABORT, 'account deletion fence');
 END;
 
 CREATE TRIGGER IF NOT EXISTS validate_hume_result_mapping

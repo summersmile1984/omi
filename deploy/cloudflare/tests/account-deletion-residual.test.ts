@@ -28,6 +28,7 @@ const IDENTITY_COLUMNS = new Set([
   "reviewer_uid",
   "sender_uid",
   "uid_hint",
+  "mapped_uid",
 ]);
 
 function migrationIdentitySurfaces(): Set<string> {
