@@ -143,6 +143,39 @@ describe("Cloudflare migration manifests", () => {
     ).toThrow("already owned in routes.yaml");
   });
 
+  it("keeps chat compatibility aliases legacy-owned until the replay contract closes", async () => {
+    const [routes, backendRoutes] = await Promise.all([
+      loadYaml("routes.yaml"),
+      readFile(
+        resolve(cloudflareRoot, "manifests/backend-routes.json"),
+        "utf8",
+      ).then(JSON.parse),
+    ]);
+    const legacyChatPaths = [
+      "/v1/chat/materialize-prompts",
+      "/v2/chat/materialize-prompts",
+      "/v2/chat/completions",
+    ];
+    const inventoryByPath = new Map(
+      backendRoutes.routes.map((route) => [route.path, route]),
+    );
+
+    for (const path of legacyChatPaths) {
+      const inventory = inventoryByPath.get(path);
+      expect(inventory, path).toMatchObject({
+        migration_state: "legacy-owned",
+        owner: "legacy",
+        target_runtime: "legacy",
+      });
+      expect(
+        routes.routes.some(
+          (route) => route.method === "POST" && route.path === path,
+        ),
+        `${path} must not have a Cloudflare owner route`,
+      ).toBe(false);
+    }
+  });
+
   it("fails when a Redis source symbol or a direct Worker Redis dependency is introduced", async () => {
     const [manifest, routes] = await Promise.all([
       loadYaml("redis-primitives.yaml"),

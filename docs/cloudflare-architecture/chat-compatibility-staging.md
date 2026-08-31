@@ -39,6 +39,26 @@ legacy alias，也不应把受限文本实现计入三个旧路由的迁移完�
 工具、provider/quota、完整 SSE 和 materialization D1 authority 均完成回放验证后，
 才可评估切换旧路由 owner。
 
+## 0113/0114 provider recheck
+
+当前 workspace 还包含显式 opt-in 的 OpenAI Assistants continuity adapter
+（`0113_chat_assistant_provider.sql`）。它把 D1 session 映射到 provider
+thread/run，并由 Jobs Queue 轮询；入口是
+`/v2/cf/chat-sessions/:sessionId/assistant-runs`，admission 返回 `202`，
+随后通过 GET 读取 terminal result。它不是 `/v2/chat/completions` 的实现：
+
+- 旧 completion 的 managed Anthropic/gateway、Anthropic BYOK、model alias、
+  web-search、client/server tool、pause-turn continuation 和 OpenAI-compatible
+  SSE/usage/error contract 仍未由该 adapter 提供；
+- Assistants adapter 的 provider session/run projection 不写
+  `cf_chat_messages`，也没有把旧 Redis burst/daily quota 和 Firestore chat
+  history 回放接入同一事务；
+- text-only `/v2/cf/chat/completions` 和 Assistants adapter 的响应时序、provider
+  及文件/tool 语义都不同，不能通过 Edge alias 伪装成旧客户端兼容。
+
+因此 0113/0114 只扩大了可验证的 Cloudflare 前置，不改变三条 legacy 路由的
+owner，也不构成 `/v2/chat/completions` 的切换证据。
+
 ## 逐路由闭合审计（2026-08-31）
 
 本轮对三个 legacy 入口做了 bounded audit。结论是没有一个可以独立切 owner 的
