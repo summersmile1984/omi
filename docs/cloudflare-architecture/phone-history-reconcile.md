@@ -94,6 +94,37 @@ plaintext/pending/missing-proof rejection, duplicate and hash/SID collision
 blocking, SQL idempotency, generation admission, and deletion-fence absence.
 The test suite is hermetic and never calls Twilio or a storage service.
 
+## Export checksum and reviewed apply CLI
+
+`deploy/cloudflare/scripts/phone-history-export-verify.mjs` closes the operator
+handoff around the planner. It reads at most 8 MiB, requires the exact phone
+export schema, computes SHA-256 over the original UTF-8 manifest bytes, and
+optionally requires an independently recorded `--expected-sha256`. It then
+invokes the existing planner and can perform the Jobs review/apply sequence
+with `--apply`:
+
+```sh
+node deploy/cloudflare/scripts/phone-history-export-verify.mjs \
+  --export /path/to/phone-history-export.json \
+  --expected-sha256 <sha256-of-that-file>
+
+ADMIN_KEY='...' node deploy/cloudflare/scripts/phone-history-export-verify.mjs \
+  --export /path/to/phone-history-export.json \
+  --expected-sha256 <sha256-of-that-file> \
+  --apply https://jobs-staging.example/internal/phone-history/reviews
+```
+
+The file checksum and `source.export_sha256` are intentionally separate. The
+latter is the independently attested checksum of the original Firestore
+export, and phone `source_fingerprint` values are bound to it; requiring the
+embedded source metadata to equal the checksum of the containing JSON would
+create a self-referential checksum. The CLI reports both values and refuses
+`--apply` without the file checksum. Its review request sends only
+`manifest_sha256`, `uid`, `import_id`, and `plan_hash`; encrypted row payloads
+and the admin key are never sent by the client. Apply is limited to the Jobs
+Worker's 100-entry review bound and remains subject to
+`PHONE_HISTORY_IMPORT_STAGING_ENABLED`.
+
 ## Reviewed apply (Jobs Worker)
 
 Migration `0129_phone_number_import_executor.sql` adds a short-lived review

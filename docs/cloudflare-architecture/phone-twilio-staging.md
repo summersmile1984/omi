@@ -63,4 +63,5 @@ an operator review; it only accepts the manifest/plan hashes recorded in the
 ledger, re-checks generation and deletion fences, and writes encrypted rows
 plus idempotent apply markers. It never decrypts the number or calls Twilio.
 See [the historical reconciliation contract](phone-history-reconcile.md) for
-the required proof, collision, and deletion-fence checks.
+the required proof, collision, deletion-fence, and checksum-bound review/apply
+CLI workflow.
