@@ -14,6 +14,7 @@ export type JobMessage = {
     | "conversation_finalize"
     | "conversation_reprocess"
     | "conversation_merge"
+    | "audio_merge"
     | "hume_webhook"
     | "limitless_import";
   payload: Record<string, unknown>;

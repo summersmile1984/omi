@@ -1279,6 +1279,8 @@ app.delete("/v1/import/jobs/:jobId", proxyAuthenticatedCore);
 app.post("/v1/cf/chat-files", proxyAuthenticatedJobs);
 app.get("/v1/cf/chat-files", proxyAuthenticatedJobs);
 app.delete("/v1/cf/chat-files/:fileId", proxyAuthenticatedJobs);
+app.post("/v2/cf/audio-merge-jobs/run", proxyAuthenticatedJobs);
+app.get("/v2/cf/audio-merge-jobs/:jobId", proxyAuthenticatedJobs);
 app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedJobs);
 app.get("/v1/sync/audio/:conversationId/urls", proxyAuthenticatedCore);
 app.get("/v3/speech-profile", proxyAuthenticatedCore);

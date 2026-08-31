@@ -90,6 +90,10 @@ import {
 } from "./limitless-import";
 import { registerChatFileRoutes } from "./chat-file-routes";
 import {
+  processAudioMergeJobMessage,
+  registerAudioMergeRoutes,
+} from "./audio-merge-boundary";
+import {
   cleanupExpiredHumeWebhookEvents,
   processHumeWebhookMessage,
   registerHumeWebhookRoutes,
@@ -161,6 +165,7 @@ registerAdminNotificationRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
 registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
+registerAudioMergeRoutes(app, requestContext);
 registerHumeWebhookRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
@@ -928,6 +933,10 @@ async function processJobMessage(
   message: Message<JobMessage>,
   env: JobsEnv,
 ): Promise<void> {
+  if (message.body.kind === "audio_merge") {
+    await processAudioMergeJobMessage(message, env);
+    return;
+  }
   if (message.body.kind === "hume_webhook") {
     await processHumeWebhookMessage(message, env);
     return;
