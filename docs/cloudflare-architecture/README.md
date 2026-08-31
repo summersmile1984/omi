@@ -43,7 +43,7 @@
 - 一次性 MCP key 写入 memory/action-item/conversation 后，英文和中文 semantic query 均由 BGE-M3/1024 Vectorize 召回并通过 D1 hydrate；conversation UTC 日期包含/排除过滤在 metadata WAL 收敛后分别命中/不命中。会话 Queue 路径 19.9 秒可搜索，删除后源数据、projection state、outbox 和 key 回读均为 0。
 - 隔离 smoke 账号的真实公开删号返回 200，随后 live Queue 完成两次零 residual scan；App D1 intent/cutover/conversation/chat/memory 和 Auth user/session/account 均验证为 0，25 小时 tombstone 已落库。
 - `npm run deploy:staging`：健康检查、迁移和 smoke 全部通过；Edge health 为 200。
-- 最新分支发布尝试已通过 backend-route/manifest preflight，但在调用 Wrangler 前因未设置 `CLOUDFLARE_SMOKE_BEARER_TOKEN` 或 `CLOUDFLARE_SMOKE_TOKEN_FILE` 停止；因此本轮 OAuth alias 更新尚未进入 staging。
+- 最新分支发布尝试已通过 backend-route/manifest preflight，但在调用 Wrangler 前因未设置 `CLOUDFLARE_SMOKE_BEARER_TOKEN` 或 `CLOUDFLARE_SMOKE_TOKEN_FILE` 停止；因此本轮 Calendar callback 与 task-goal link 更新尚未进入 staging。
 - 浏览器 staging：`/recaps`、`/chat`、`/conversations`、`/memories`、`/my-apps`、`/tasks`、`/settings` 均无新的 API error/404。
 - MCP OAuth 根路径/后缀 discovery 的 `GET/HEAD` 均为 200；grant list 未认证为 401、隔离 Better Auth 账号为 200；撤销后的 token 在 Auth live-consent 检查处立即失效。CIMD 因 Workers 无法满足 DNS pinning transport contract 而明确不广告。
 - MCP OAuth 根路径别名的本地 Edge 验证覆盖 `GET/POST /authorize`、`POST /token`、查询串/body 保留、cookie/Authorization 透传和不可信身份头剥离；下游统一落到 Better Auth `/api/better-auth/oauth2/*`。
