@@ -138,6 +138,7 @@
 - 浏览器回归（2026-09-01，本轮发布后）：已登录 staging `/conversations` 页面显示正常的 Conversations 空态，DOM 中没有错误页或 API error/404；该 tab 的浏览器 error/warn 日志为空，与 authenticated smoke 的 `conversations=200` 一致。
 - ASR 正向 staging probe（2026-09-01，本轮发布后）：仓库内 4.9 秒、16 kHz mono WAV fixture 经 authenticated Edge → API AI `/v2/voice-message/transcribe` 返回 HTTP 200，`stt_provider=workers-ai`、`stt_model=@cf/openai/whisper-large-v3-turbo`，得到非空英文 transcript；验证了真实 Workers AI 推理、D1 fair-use 计量和 API-first 路径，不代表其它语言/长音频/streaming WER 与生产成本基线已完成。
 - Chat history reviewed apply seam（2026-09-01，已发布但默认关闭）：Jobs 新增 `POST /internal/chat-history/apply`，要求 `ADMIN_KEY` 与至少 32 字节 `CHAT_HISTORY_IMPORT_SIGNING_SECRET`，对 reviewed planner 输出做 bounded body/entry、敏感字段、source-row/import/manifest/batch hash、account-generation 和 deletion-fence 校验；远端 App D1 已应用 `0130_chat_history_apply_receipts.sql`，Jobs 版本 `21d0ee9b-ff58-4e3b-b61b-d0ed292b29ba` 已发布，Edge/Web readiness 均为 200。84 个 Worker 测试/642 个测试、typecheck 和 manifest 均通过；该 seam 不读取 Firestore/GCS，尚未做真实 export apply 或 production owner cutover。
+- Wrapped history reviewed apply seam（2026-09-01，已发布但默认关闭）：Jobs 新增 `POST /internal/wrapped-history/reviews` 与 `/apply`，远端 App D1 已应用 `0131_wrapped_history_executor.sql`，创建 review batch/items/apply marker 三张表；Jobs 最新部署已包含批量 generation/deletion-fence 复核、JSON 深度/节点与字段白名单、并发 apply 幂等保护。远端迁移复核为无待应用项，三张表已存在；85 个 Worker 测试/647 个测试、typecheck 和 manifest 均通过。该 seam 只接受已在外部完成审阅的有界 Firestore result plan，默认 gate=false，不代表已完成 Firestore/GCS export、历史账号连续性或 production cutover。
 
 ## 发布前必须补齐
 

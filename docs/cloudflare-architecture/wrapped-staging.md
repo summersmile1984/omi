@@ -98,7 +98,12 @@ row rather than a fabricated import.
 transient provider retry with the lease contract, notification idempotency, GET
 status readback, and account-deletion fencing. `tests/wrapped-history-import.test.ts`
 covers the reviewed apply gate, operator authentication, idempotent promotion,
-and generation drift after review. The route inventory marks both legacy paths
-`staging-owned` with Jobs as the target runtime; production remains unchanged
-until the historical backfill and client/provider parity review is explicitly
-complete.
+concurrent apply races, and generation drift after review. On 2026-09-01,
+remote staging applied `0131_wrapped_history_executor.sql`, the Jobs Worker was
+redeployed, and `npx wrangler d1 migrations list --remote` reported no pending
+migrations; the remote review batch/items/apply tables are present. The full
+Worker suite passed 85 files/647 tests, plus typecheck and manifest validation.
+The gate remains false and no historical export was applied. The route inventory
+marks both legacy paths `staging-owned` with Jobs as the target runtime;
+production remains unchanged until the historical backfill and client/provider
+parity review is explicitly complete.
