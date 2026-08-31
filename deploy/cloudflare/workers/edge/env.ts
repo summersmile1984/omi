@@ -19,6 +19,8 @@ export type EdgeEnv = {
   INTERNAL_ASSERTION_SECRET?: string;
   /** Staging-only deny switch for legacy Firebase/OAuth compatibility paths. */
   AUTH_OAUTH_STAGING_FAIL_CLOSED?: string;
+  /** Staging-only deny switch for legacy Twilio phone-call paths. */
+  PHONE_TWILIO_STAGING_FAIL_CLOSED?: string;
   BYOK_FINGERPRINT_PEPPER?: string;
   ALLOWED_ORIGINS?: string;
 };

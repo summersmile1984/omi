@@ -213,6 +213,58 @@ describe("edge gateway", () => {
     }
   });
 
+  it("fails closed for legacy Twilio phone paths in staging", async () => {
+    const env = {
+      PHONE_TWILIO_STAGING_FAIL_CLOSED: "true",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    const requests = [
+      ["GET", "/v1/phone/numbers"],
+      ["DELETE", "/v1/phone/numbers/phone-1"],
+      ["POST", "/v1/phone/numbers/verify"],
+      ["POST", "/v1/phone/numbers/verify/check"],
+      ["POST", "/v1/phone/token"],
+      ["POST", "/v1/phone/twiml"],
+    ] as const;
+
+    try {
+      for (const [method, path] of requests) {
+        const response = await edge.fetch(
+          new Request(`https://edge.test${path}`, {
+            method,
+            headers: {
+              authorization: "Bearer opaque-session",
+              cookie: "session=opaque",
+              "content-type": "application/x-www-form-urlencoded",
+              "x-twilio-signature": "opaque",
+              "x-omi-auth-context": "caller-controlled",
+            },
+            ...(method === "POST"
+              ? { body: "phone_number=%2B15551234567&To=%2B15551234567" }
+              : {}),
+          }),
+          env as never,
+        );
+
+        expect(response.status, `${method} ${path}`).toBe(503);
+        await expect(response.json()).resolves.toEqual({
+          error: "phone_twilio_unavailable",
+          detail:
+            "Legacy Twilio phone verification and calling are unavailable on Cloudflare staging.",
+        });
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {

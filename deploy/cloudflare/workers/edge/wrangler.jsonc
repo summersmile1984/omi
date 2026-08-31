@@ -39,5 +39,6 @@
     "RATE_LIMIT_BOOST": "1.0",
     "RATE_LIMIT_SHADOW_MODE": "false",
     "AUTH_OAUTH_STAGING_FAIL_CLOSED": "true",
+    "PHONE_TWILIO_STAGING_FAIL_CLOSED": "true",
   },
 }

@@ -566,6 +566,31 @@ const legacyAuthOAuthStagingBoundary = async (
   );
 };
 
+// The phone surface is a coupled Twilio/Firestore/Redis contract. Until the
+// caller-ID verification state, quota reservation, TwiML signature validation,
+// and Twilio credential lifecycle all have Cloudflare authorities, isolated
+// staging must not send phone credentials or call instructions to legacy. The
+// switch remains opt-in so non-staging deployments preserve the legacy route.
+const legacyPhoneTwilioStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.PHONE_TWILIO_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "phone_twilio_unavailable",
+        detail:
+          "Legacy Twilio phone verification and calling are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 // The cloud Agent VM was retired, but released desktop clients still call
@@ -663,6 +688,21 @@ app.post("/v1/auth/callback/apple", legacyAuthOAuthStagingBoundary);
 app.post("/v1/auth/token", legacyAuthOAuthStagingBoundary);
 app.get("/v1/oauth/authorize", legacyAuthOAuthStagingBoundary);
 app.post("/v1/oauth/token", legacyAuthOAuthStagingBoundary);
+app.get("/v1/phone/numbers", legacyPhoneTwilioStagingBoundary);
+app.delete(
+  "/v1/phone/numbers/:phoneNumberId",
+  legacyPhoneTwilioStagingBoundary,
+);
+app.post(
+  "/v1/phone/numbers/verify",
+  legacyPhoneTwilioStagingBoundary,
+);
+app.post(
+  "/v1/phone/numbers/verify/check",
+  legacyPhoneTwilioStagingBoundary,
+);
+app.post("/v1/phone/token", legacyPhoneTwilioStagingBoundary);
+app.post("/v1/phone/twiml", legacyPhoneTwilioStagingBoundary);
 app.post("/v2/integrations/:app_id/user/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/user/memories", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/memories", proxyIntegrationCore);
