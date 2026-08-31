@@ -39,6 +39,7 @@
 - `api-core`：310 个测试通过；`api-ai`：83 个测试通过。
 - Web：8 个测试文件、38 个测试通过；vinext staging build 与 Worker dry-run 通过。
 - manifest：531 条 Cloudflare 路由、577 条完整 backend 路由和 22 个 staging 资源通过校验；68 条 legacy-owned 路由成为可量化迁移队列。D1 review queue 的三个端点已由 API Core/Edge 承载，并由 canonical memory 写入 producer、source revision/hash projection 和原子 resolve 覆盖；conversation finalize/status 已声明 API Core owner，`0094` staging migration 与 live Queue 验证已完成；`GET /v1/agent/tools` 已切到 API Core，并仅声明已具备 D1 authority 的一方工具。
+- `GET /v1/agent/tools` staging live probe（2026-08-31）：未认证请求返回 `401`；临时 Better Auth 账号经 Edge 认证后返回 `200`，7 个工具定义均来自 Cloudflare D1 对话/记忆/任务面，响应不含内部 `config` 参数；探针账号已提交删号。
 - Conversation finalization 的 `0094` migration、API Core/Jobs/Edge 已于 2026-08-31 发布（版本 `cb1a8271` / `18df02b0` / `99eb710f`）；隔离账号实测 `queued → running → completed`，会话读回 completed，删号后 finalization job 与 conversation 残留均为 0（仅预期 tombstone）。
 - Wrangler 本地 D1 曾实际执行截至 `0052` 的 52 个 App migration（123 条 SQL 命令），验证删除 intent/tombstone 均阻止迟到写入，清理过期 tombstone 后恢复写入；本轮新增 `0068` 并在远端单独验证。
 - `0068_vector_projection_outbox.sql` 已在远端 staging D1 执行 9 条命令；Auth、Rate-limit、Realtime、Jobs、Edge、api-core、api-ai 与 Web Worker 已发布新版本，完整 authenticated smoke 通过。
