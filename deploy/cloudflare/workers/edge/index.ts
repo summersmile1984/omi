@@ -1208,6 +1208,7 @@ app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/authorize", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/discover", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/refresh", proxyAuthenticatedJobs);
+app.post("/v2/cf/apps/mcp/tools/:appId/call", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/install", proxyAuthenticatedJobs);
 app.get("/v2/cf/apps/mcp/callback", proxyPublicJobs);
 app.post("/v1/payments/checkout-session", proxyAuthenticatedJobs);

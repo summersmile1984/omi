@@ -1136,4 +1136,128 @@ describe("namespaced MCP app OAuth staging seam", () => {
     });
     expect(response.status).toBe(401);
   });
+
+  it("executes an installed ready tool through bounded streamable MCP call", async () => {
+    const { env, database } = environment();
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let rejectCall = false;
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        calls.push({ url, init });
+        if (url.endsWith("/token"))
+          return Response.json({ access_token: "call-access-token", expires_in: 3_600 });
+        if (url.endsWith("/mcp")) {
+          const payload = JSON.parse(String(init?.body)) as {
+            id?: number;
+            method?: string;
+            params?: { name?: string; arguments?: Record<string, unknown> };
+          };
+          expect(init?.headers).toMatchObject({ authorization: "Bearer call-access-token" });
+          if (payload.method === "initialize")
+            return Response.json(
+              {
+                jsonrpc: "2.0",
+                id: payload.id,
+                result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture" } },
+              },
+              { headers: { "Mcp-Session-Id": "call-session" } },
+            );
+          if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+          if (payload.method === "tools/list")
+            return Response.json({
+              jsonrpc: "2.0",
+              id: payload.id,
+              result: {
+                tools: [{ name: "fixture_search", inputSchema: { type: "object" } }],
+              },
+            });
+          if (payload.method === "tools/call") {
+            expect(payload.params).toEqual({ name: "fixture_search", arguments: { query: "cloudflare" } });
+            expect(init?.headers).toMatchObject({ "mcp-session-id": "call-session" });
+            if (rejectCall) return new Response(null, { status: 401 });
+            return Response.json({
+              jsonrpc: "2.0",
+              id: payload.id,
+              result: { content: [{ type: "text", text: "ok" }], isError: false },
+            });
+          }
+        }
+        throw new Error(`unexpected provider request ${url}`);
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://provider.example.test/mcp",
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(((await start.json()) as { auth_url: string }).auth_url);
+    const callback = await app.request(
+      `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+    );
+    expect(callback.status).toBe(200);
+    const discovery = await app.request("/v2/cf/apps/mcp/discover", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(discovery.status).toBe(200);
+    const install = await app.request("/v2/cf/apps/mcp/install", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(install.status).toBe(200);
+
+    const response = await app.request("/v2/cf/apps/mcp/tools/mcp-app/call", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "fixture_search", arguments: { query: "cloudflare" } }),
+    });
+    expect(response.status).toBe(200);
+    const responsePayload = await response.json();
+    expect(responsePayload).toEqual({
+      app_id: "mcp-app",
+      tool_name: "fixture_search",
+      result: { content: [{ type: "text", text: "ok" }], isError: false },
+    });
+    expect(JSON.stringify(responsePayload)).not.toContain("call-access-token");
+    expect(calls).toHaveLength(7);
+    expect(
+      database.database.prepare("SELECT status FROM cf_mcp_app_connections WHERE app_id = ?").get("mcp-app"),
+    ).toEqual({ status: "authorized" });
+
+    rejectCall = true;
+    const expired = await app.request("/v2/cf/apps/mcp/tools/mcp-app/call", {
+      method: "POST",
+      body: JSON.stringify({ name: "fixture_search", arguments: { query: "cloudflare" } }),
+    });
+    expect(expired.status).toBe(401);
+    await expect(expired.json()).resolves.toEqual({ error: "mcp_reauthorization_required" });
+    expect(
+      database.database.prepare("SELECT status, credential_envelope_enc FROM cf_mcp_app_connections WHERE app_id = ?").get("mcp-app"),
+    ).toEqual({ status: "reauthorize", credential_envelope_enc: null });
+  });
+
+  it("rejects malformed tool calls before provider I/O", async () => {
+    const { env } = environment();
+    const fetchImpl = vi.fn(async () => Response.json({ access_token: "unused", expires_in: 3_600 }));
+    const app = testApp(env, { fetchImpl });
+    const response = await app.request("/v2/cf/apps/mcp/tools/mcp-app/call", {
+      method: "POST",
+      body: JSON.stringify({ name: "bad\u0000name", arguments: [] }),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_tool_name" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });

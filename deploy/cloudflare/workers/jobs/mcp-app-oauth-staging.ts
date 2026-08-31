@@ -478,6 +478,58 @@ function strictRpcResult(payload: JsonObject, expectedId: number): JsonObject {
   return result;
 }
 
+function strictToolCallResult(payload: JsonObject, expectedId: number): JsonObject {
+  if (payload.jsonrpc !== "2.0" || payload.id !== expectedId)
+    throw new McpAppOauthError(502, "mcp_call_response_invalid");
+  const hasResult = Object.prototype.hasOwnProperty.call(payload, "result");
+  const hasError = Object.prototype.hasOwnProperty.call(payload, "error");
+  if (hasResult === hasError)
+    throw new McpAppOauthError(502, "mcp_call_response_invalid");
+  if (hasError) {
+    const error = objectValue(payload.error);
+    if (
+      !error ||
+      typeof error.code !== "number" ||
+      !Number.isSafeInteger(error.code) ||
+      typeof error.message !== "string" ||
+      utf8Bytes(error.message) > 8_192
+    )
+      throw new McpAppOauthError(502, "mcp_call_response_invalid");
+    throw new McpAppOauthError(502, "mcp_provider_error");
+  }
+  const result = objectValue(payload.result);
+  if (!result) throw new McpAppOauthError(502, "mcp_call_response_invalid");
+  return result;
+}
+
+const MAX_CALL_ARGUMENT_BYTES = 16_000;
+const MAX_CALL_ARGUMENT_DEPTH = 16;
+const MAX_CALL_ARGUMENT_PROPERTIES = 256;
+
+function validateCallArguments(value: unknown, depth = 0, properties = 0): number {
+  if (depth > MAX_CALL_ARGUMENT_DEPTH)
+    throw new McpAppOauthError(422, "invalid_tool_arguments");
+  if (value === null || typeof value !== "object") return properties;
+  if (Array.isArray(value)) {
+    if (value.length > MAX_CALL_ARGUMENT_PROPERTIES)
+      throw new McpAppOauthError(422, "invalid_tool_arguments");
+    let total = properties;
+    for (const item of value)
+      total = validateCallArguments(item, depth + 1, total);
+    return total;
+  }
+  const object = value as Record<string, unknown>;
+  const keys = Object.keys(object);
+  if (keys.length > MAX_CALL_ARGUMENT_PROPERTIES)
+    throw new McpAppOauthError(422, "invalid_tool_arguments");
+  let total = properties + keys.length;
+  if (total > MAX_CALL_ARGUMENT_PROPERTIES)
+    throw new McpAppOauthError(422, "invalid_tool_arguments");
+  for (const item of Object.values(object))
+    total = validateCallArguments(item, depth + 1, total);
+  return total;
+}
+
 function nextToolsCursor(result: JsonObject): string | null {
   if (result.nextCursor === undefined || result.nextCursor === null)
     return null;
@@ -646,6 +698,8 @@ async function legacySseRpc(
   headers: Record<string, string>,
   request: JsonObject,
   expectedId: number,
+  resultParser: (payload: JsonObject, expectedId: number) => JsonObject =
+    strictRpcResult,
 ): Promise<JsonObject> {
   const response = await providerFetch(dependencies, session.endpoint, {
     method: "POST",
@@ -661,7 +715,7 @@ async function legacySseRpc(
       response,
       "discovery_response_invalid",
     );
-    return strictRpcResult(payload, expectedId);
+    return resultParser(payload, expectedId);
   }
   for (let count = 0; count < 32; count += 1) {
     const event = await nextSseEvent(session.state);
@@ -669,7 +723,7 @@ async function legacySseRpc(
     if (event.event === "endpoint") continue;
     const payload = sseJsonRpc(event);
     if (payload.id !== expectedId) continue;
-    return strictRpcResult(payload, expectedId);
+    return resultParser(payload, expectedId);
   }
   throw new McpAppOauthError(502, "discovery_response_invalid");
 }
@@ -913,6 +967,145 @@ async function discoverEndpoint(
   }
   if (lastError) throw lastError;
   throw new McpAppOauthError(502, "discovery_unavailable");
+}
+
+async function callStreamableHttp(
+  dependencies: McpAppOauthDependencies,
+  endpoint: string,
+  accessToken: string,
+  toolName: string,
+  args: JsonObject,
+): Promise<JsonObject | null> {
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    authorization: `Bearer ${accessToken}`,
+  };
+  const initialize = await providerFetch(dependencies, endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "Omi", version: "1.0.0" },
+      },
+    }),
+  });
+  if (initialize.status === 401)
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  if (initialize.status === 404 || initialize.status === 405) return null;
+  if (!initialize.ok)
+    throw new McpAppOauthError(502, "mcp_provider_unavailable");
+  const initializeResult = strictToolCallResult(
+    await boundedRpcJson(initialize, "mcp_call_response_invalid"),
+    1,
+  );
+  if (
+    typeof initializeResult.protocolVersion !== "string" ||
+    !SUPPORTED_MCP_PROTOCOL_VERSIONS.has(initializeResult.protocolVersion)
+  )
+    throw new McpAppOauthError(502, "mcp_call_response_invalid");
+  const sessionId = initialize.headers.get("mcp-session-id");
+  if (sessionId && (utf8Bytes(sessionId) > MAX_CURSOR_BYTES || /[\u0000-\u001f\u007f]/.test(sessionId)))
+    throw new McpAppOauthError(502, "mcp_call_response_invalid");
+  const sessionHeaders = {
+    ...headers,
+    ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+  };
+  const notification = await providerFetch(dependencies, endpoint, {
+    method: "POST",
+    headers: sessionHeaders,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    }),
+  });
+  if (!notification.ok && notification.status !== 202 && notification.status !== 204)
+    throw new McpAppOauthError(502, "mcp_provider_unavailable");
+  const response = await providerFetch(dependencies, endpoint, {
+    method: "POST",
+    headers: sessionHeaders,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: toolName, arguments: args },
+    }),
+  });
+  if (response.status === 401)
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  if (!response.ok)
+    throw new McpAppOauthError(502, "mcp_provider_unavailable");
+  return strictToolCallResult(
+    await boundedRpcJson(response, "mcp_call_response_invalid"),
+    1,
+  );
+}
+
+async function callLegacySse(
+  dependencies: McpAppOauthDependencies,
+  endpoint: string,
+  accessToken: string,
+  toolName: string,
+  args: JsonObject,
+): Promise<JsonObject> {
+  const session = await openLegacySse(dependencies, endpoint, accessToken);
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${accessToken}`,
+  };
+  try {
+    await legacySseRpc(
+      dependencies,
+      session,
+      headers,
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "Omi", version: "1.0.0" },
+        },
+      },
+      1,
+      strictToolCallResult,
+    );
+    const notification = await providerFetch(dependencies, session.endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+      }),
+    });
+    if (!notification.ok && notification.status !== 202 && notification.status !== 204)
+      throw new McpAppOauthError(502, "mcp_provider_unavailable");
+    return await legacySseRpc(
+      dependencies,
+      session,
+      headers,
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: toolName, arguments: args },
+      },
+      1,
+      strictToolCallResult,
+    );
+  } finally {
+    try {
+      await session.state.reader.cancel();
+    } catch {
+      // The provider stream may already be closed after delivering the result.
+    }
+  }
 }
 
 async function readBoundedText(
@@ -1847,6 +2040,180 @@ async function refresh(
   return discover(c, context, dependencies, appId);
 }
 
+async function callTool(
+  c: JobsContext,
+  context: SignedAuthContext,
+  dependencies: McpAppOauthDependencies,
+  appId: string,
+): Promise<Response> {
+  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+    throw new McpAppOauthError(404, "not_found");
+  if (!appId || appId.length > 256)
+    throw new McpAppOauthError(422, "invalid_request");
+  const body = parseBody(await requestText(c));
+  const bodyKeys = Object.keys(body);
+  if (bodyKeys.some((key) => key !== "name" && key !== "arguments"))
+    throw new McpAppOauthError(422, "invalid_request");
+  const toolName = typeof body.name === "string" ? body.name.trim() : "";
+  if (
+    !toolName ||
+    utf8Bytes(toolName) > MAX_TOOL_NAME_BYTES ||
+    /[\u0000-\u001f\u007f]/.test(toolName)
+  )
+    throw new McpAppOauthError(422, "invalid_tool_name");
+  const argsValue = body.arguments === undefined ? {} : body.arguments;
+  if (!objectValue(argsValue))
+    throw new McpAppOauthError(422, "invalid_tool_arguments");
+  const args = argsValue as JsonObject;
+  let argsJson: string;
+  try {
+    argsJson = JSON.stringify(args);
+  } catch {
+    throw new McpAppOauthError(422, "invalid_tool_arguments");
+  }
+  if (utf8Bytes(argsJson) > MAX_CALL_ARGUMENT_BYTES)
+    throw new McpAppOauthError(413, "request_too_large");
+  validateCallArguments(args);
+
+  const row = await c.env.APP_DB.prepare(
+    `SELECT c.app_id, c.owner_uid, c.status AS connection_status,
+            c.credential_envelope_enc, c.revision AS connection_revision,
+            d.endpoint, d.status AS discovery_status, d.tools_json
+       FROM cf_user_enabled_apps u
+       JOIN cf_mcp_app_connections c ON c.app_id = u.app_id AND c.owner_uid = u.uid
+       JOIN cf_mcp_app_discoveries d ON d.app_id = c.app_id AND d.owner_uid = c.owner_uid
+       JOIN cf_app_catalog a ON a.id = c.app_id
+      WHERE u.uid = ? AND u.app_id = ?
+        AND c.status = 'authorized' AND d.status = 'ready' AND a.disabled = 0
+        AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents i WHERE i.uid = u.uid)
+        AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_tombstones t WHERE t.uid = u.uid)
+      LIMIT 1`,
+  )
+    .bind(context.uid, appId)
+    .first<{
+      app_id?: string;
+      owner_uid?: string;
+      connection_status?: string;
+      credential_envelope_enc?: string | null;
+      connection_revision?: number;
+      endpoint?: string;
+      discovery_status?: string;
+      tools_json?: string;
+    }>();
+  if (
+    !row?.app_id ||
+    row.owner_uid !== context.uid ||
+    row.connection_status !== "authorized" ||
+    row.discovery_status !== "ready" ||
+    typeof row.endpoint !== "string" ||
+    !publicHttps(row.endpoint) ||
+    typeof row.credential_envelope_enc !== "string"
+  )
+    throw new McpAppOauthError(404, "mcp_app_not_ready");
+  const connectionRevision = Number(row.connection_revision);
+  if (!Number.isSafeInteger(connectionRevision) || connectionRevision < 0)
+    throw new McpAppOauthError(409, "app_connection_changed");
+  if (typeof row.tools_json !== "string")
+    throw new McpAppOauthError(409, "mcp_discovery_required");
+  let tools: JsonObject[];
+  try {
+    tools = validateMcpTools(JSON.parse(row.tools_json));
+  } catch (error) {
+    if (error instanceof McpAppOauthError) throw error;
+    throw new McpAppOauthError(409, "mcp_discovery_required");
+  }
+  if (!tools.some((tool) => tool.name === toolName))
+    throw new McpAppOauthError(404, "tool_not_found");
+  // Recheck the deletion fence and connection revision immediately before
+  // decrypting/provider I/O. The call itself is read-only in D1, so a delete
+  // cannot be resurrected by a late result; a 401 status update below is CASed.
+  const fence = await c.env.APP_DB.prepare(
+    `SELECT 1 AS ready FROM cf_mcp_app_connections c
+      WHERE c.app_id = ? AND c.owner_uid = ? AND c.status = 'authorized' AND c.revision = ?
+        AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents i WHERE i.uid = c.owner_uid)
+        AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_tombstones t WHERE t.uid = c.owner_uid)
+      LIMIT 1`,
+  )
+    .bind(appId, context.uid, connectionRevision)
+    .first<{ ready?: number }>();
+  if (!fence) throw new McpAppOauthError(409, "app_connection_changed");
+  let credentials: JsonObject;
+  try {
+    credentials = await decrypt(
+      c.env,
+      "connection",
+      context.uid,
+      appId,
+      row.credential_envelope_enc,
+    );
+  } catch {
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  }
+  const accessToken = validatedCredential(
+    credentials.access_token,
+    "mcp_reauthorization_required",
+    401,
+    true,
+  ) as string;
+  let result: JsonObject | null;
+  try {
+    result = await callStreamableHttp(
+      dependencies,
+      row.endpoint,
+      accessToken,
+      toolName,
+      args,
+    );
+    if (result === null)
+      result = await callLegacySse(
+        dependencies,
+        row.endpoint,
+        accessToken,
+        toolName,
+        args,
+      );
+  } catch (error) {
+    if (error instanceof McpAppOauthError && error.status === 401) {
+      const now = nowSeconds(dependencies);
+      if (now) {
+        try {
+          await c.env.APP_DB.prepare(
+            `UPDATE cf_mcp_app_connections
+                SET status = 'reauthorize', credential_envelope_enc = NULL,
+                    revision = revision + 1, last_error = ?, updated_at = ?
+              WHERE app_id = ? AND owner_uid = ? AND status = 'authorized' AND revision = ?
+                AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents i WHERE i.uid = owner_uid)
+                AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_tombstones t WHERE t.uid = owner_uid)`,
+          )
+            .bind("mcp_reauthorization_required", now, appId, context.uid, connectionRevision)
+            .run();
+        } catch {
+          // Deletion fences intentionally reject a late provider failure update.
+        }
+      }
+    }
+    throw error;
+  }
+  if (!result) throw new McpAppOauthError(502, "mcp_call_response_invalid");
+  let responseBody: string;
+  try {
+    responseBody = JSON.stringify({
+      app_id: appId,
+      tool_name: toolName,
+      result,
+    });
+  } catch {
+    throw new McpAppOauthError(502, "mcp_call_response_invalid");
+  }
+  if (utf8Bytes(responseBody) > MAX_PROVIDER_RESPONSE_BYTES)
+    throw new McpAppOauthError(502, "mcp_call_response_invalid");
+  return c.json(
+    { app_id: appId, tool_name: toolName, result },
+    200,
+    { "cache-control": "no-store" },
+  );
+}
+
 async function install(
   c: JobsContext,
   context: SignedAuthContext,
@@ -1946,6 +2313,20 @@ export function registerMcpAppOauthRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return await refresh(c, context, dependencies);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+  app.post("/v2/cf/apps/mcp/tools/:appId/call", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      return await callTool(
+        c,
+        context,
+        dependencies,
+        c.req.param("appId") || "",
+      );
     } catch (error) {
       return errorResponse(c, error);
     }

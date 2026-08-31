@@ -2282,6 +2282,17 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/cf/apps/mcp/tools/{appId}/call
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, external-mcp-provider, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v2/cf/chat-sessions/:sessionId/files
     owner: api-core
