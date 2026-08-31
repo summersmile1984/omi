@@ -276,6 +276,76 @@ describe("edge gateway", () => {
     }
   });
 
+  it("forwards exact app-consent OAuth paths to Jobs only with the explicit staging owner", async () => {
+    const forwarded: Request[] = [];
+    const env = {
+      AUTH_EXACT_OAUTH_STAGING_ENABLED: "true",
+      AUTH_OAUTH_STAGING_FAIL_CLOSED: "true",
+      JOBS: rawService(async (request) => {
+        forwarded.push(request);
+        // Consume the forwarded body just as the Jobs Worker does. This keeps
+        // the test's Request stream lifecycle identical to production.
+        await request.arrayBuffer();
+        return Response.json({ owner: "jobs", ok: true });
+      }),
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    try {
+      const authorizeResponse = await edge.fetch(
+        new Request(
+          "https://edge.test/v1/oauth/authorize?app_id=app&state=opaque",
+          {
+            headers: {
+              authorization: "Bearer firebase-session",
+              cookie: "omi_oauth_csrf=opaque",
+            },
+          },
+        ),
+        env as never,
+      );
+      expect(authorizeResponse.status).toBe(200);
+      await expect(authorizeResponse.json()).resolves.toEqual({
+        owner: "jobs",
+        ok: true,
+      });
+
+      const tokenResponse = await edge.fetch(
+        new Request("https://edge.test/v1/oauth/token", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer firebase-session",
+            cookie: "omi_oauth_csrf=opaque",
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: "firebase_id_token=opaque",
+        }),
+        env as never,
+      );
+      expect(tokenResponse.status).toBe(200);
+      expect(await tokenResponse.json()).toEqual({ owner: "jobs", ok: true });
+      expect(forwarded).toHaveLength(2);
+      expect(new URL(forwarded[0].url).pathname).toBe(
+        "/v1/oauth/authorize",
+      );
+      expect(new URL(forwarded[1].url).pathname).toBe("/v1/oauth/token");
+      for (const request of forwarded) {
+        expect(request.headers.get("authorization")).toBe(
+          "Bearer firebase-session",
+        );
+        expect(request.headers.get("cookie")).toBe("omi_oauth_csrf=opaque");
+        expect(request.headers.get("x-omi-auth-context")).toBeNull();
+      }
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
   it("forwards authenticated Phone routes to Jobs and preserves the Twilio webhook", async () => {
     const forwarded: Request[] = [];
     const env = {
