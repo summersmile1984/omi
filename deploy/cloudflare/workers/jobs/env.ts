@@ -121,4 +121,12 @@ export type JobsEnv = {
   RAPID_API_HOST?: string;
   RAPID_API_KEY?: string;
   HUME_WEBHOOK_SIGNING_KEY?: string;
+  /** Twilio REST credentials and Voice SDK token configuration. */
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_API_KEY_SID?: string;
+  TWILIO_API_KEY_SECRET?: string;
+  TWILIO_TWIML_APP_SID?: string;
+  /** AES-GCM key material for caller-ID numbers retained in D1. */
+  PHONE_DATA_ENCRYPTION_SECRET?: string;
 };

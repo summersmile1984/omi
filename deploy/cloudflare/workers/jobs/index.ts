@@ -111,6 +111,7 @@ import {
   processWrappedJobMessage,
   registerWrappedRoutes,
 } from "./wrapped";
+import { registerPhoneTwilioRoutes } from "./phone-twilio";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -184,6 +185,7 @@ registerLegacyAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);
 registerHumeWebhookRoutes(app);
 registerWrappedRoutes(app, requestContext);
+registerPhoneTwilioRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.

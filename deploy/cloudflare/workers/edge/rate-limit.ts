@@ -202,6 +202,21 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 60,
     windowSeconds: 3600,
   },
+  "phone:numbers_verify": {
+    name: "phone:numbers_verify",
+    maxRequests: 5,
+    windowSeconds: 3600,
+  },
+  "phone:numbers_verify_check": {
+    name: "phone:numbers_verify_check",
+    maxRequests: 30,
+    windowSeconds: 60,
+  },
+  "phone:token": {
+    name: "phone:token",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
   "tts:synthesize": {
     name: "tts:synthesize",
     maxRequests: 300,
@@ -262,6 +277,9 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ],
   ["POST /v1/stt/transcribe", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v1/stt/transcribe-workers-ai", STT_TRANSCRIBE_RATE_LIMIT],
+  ["POST /v1/phone/numbers/verify", EDGE_RATE_LIMIT_POLICIES["phone:numbers_verify"]],
+  ["POST /v1/phone/numbers/verify/check", EDGE_RATE_LIMIT_POLICIES["phone:numbers_verify_check"]],
+  ["POST /v1/phone/token", EDGE_RATE_LIMIT_POLICIES["phone:token"]],
   ["POST /v1/stt/transcribe-async", STT_TRANSCRIBE_RATE_LIMIT],
   ["POST /v2/voice-message/transcribe", STT_TRANSCRIBE_RATE_LIMIT],
   [

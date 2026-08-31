@@ -714,15 +714,6 @@ const legacyPersonaAppsStagingBoundary = async (
   );
 };
 
-// Wrapped is now a Jobs-owned D1/Queue workflow.  The Jobs handler enforces a
-// completed account cutover, bounded D1 aggregation, structured Workers AI
-// output, lease/retry, and the shared notification outbox before it publishes
-// a result.  Keep this alias name so the route declaration remains adjacent to
-// the other legacy-compatible paths while the owner is being rolled out.
-const legacyWrappedStagingBoundary = async (
-  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
-) => proxyAuthenticatedJobs(c);
-
 const proxyPublicFirmware = proxyPublicCore;
 
 // The cloud Agent VM was retired, but released desktop clients still call
@@ -836,15 +827,14 @@ app.post("/v1/auth/callback/apple", legacyAuthOAuthStagingBoundary);
 app.post("/v1/auth/token", legacyAuthOAuthStagingBoundary);
 app.get("/v1/oauth/authorize", legacyAuthOAuthStagingBoundary);
 app.post("/v1/oauth/token", legacyAuthOAuthStagingBoundary);
-app.get("/v1/phone/numbers", legacyPhoneTwilioStagingBoundary);
-app.delete(
-  "/v1/phone/numbers/:phoneNumberId",
-  legacyPhoneTwilioStagingBoundary,
-);
-app.post("/v1/phone/numbers/verify", legacyPhoneTwilioStagingBoundary);
-app.post("/v1/phone/numbers/verify/check", legacyPhoneTwilioStagingBoundary);
-app.post("/v1/phone/token", legacyPhoneTwilioStagingBoundary);
-app.post("/v1/phone/twiml", legacyPhoneTwilioStagingBoundary);
+app.get("/v1/phone/numbers", proxyAuthenticatedPhone);
+app.delete("/v1/phone/numbers/:phoneNumberId", proxyAuthenticatedPhone);
+app.post("/v1/phone/numbers/verify", proxyAuthenticatedPhone);
+app.post("/v1/phone/numbers/verify/check", proxyAuthenticatedPhone);
+app.post("/v1/phone/token", proxyAuthenticatedPhone);
+// Twilio authenticates this webhook with X-Twilio-Signature; it is not a
+// Better Auth request and therefore must retain the provider signature/body.
+app.post("/v1/phone/twiml", proxyPublicJobs);
 app.post("/v2/integrations/:app_id/user/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/user/memories", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/memories", proxyIntegrationCore);
@@ -1069,6 +1059,33 @@ const proxyAuthenticatedJobs = async (
   const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
   return withRequestId(response, id);
 };
+
+async function proxyAuthenticatedPhone(
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+): Promise<Response> {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id, {
+      failClosed: true,
+    });
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const headers = await authenticatedHeaders(c, auth, "jobs");
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+}
+
 
 // Privacy deletion must remain reachable while ordinary product traffic is
 // fenced. Jobs validates that the account is fully Cloudflare-owned before it
@@ -1440,8 +1457,8 @@ app.post("/v2/chat/completions", legacyChatCompatibilityStagingBoundary);
 app.post("/v1/files", legacyChatFilesStagingBoundary);
 app.post("/v2/files", legacyChatFilesStagingBoundary);
 app.post("/v2/audio-merge-jobs/run", proxyAuthenticatedJobs);
-app.get("/v1/wrapped/:year", legacyWrappedStagingBoundary);
-app.post("/v1/wrapped/:year/generate", legacyWrappedStagingBoundary);
+app.get("/v1/wrapped/:year", proxyAuthenticatedJobs);
+app.post("/v1/wrapped/:year/generate", proxyAuthenticatedJobs);
 app.delete("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);
 app.delete(
   "/v1/staged-tasks/:taskId",

@@ -392,6 +392,9 @@ families:
       - memories:delete_batch
       - memories:modify
       - memory_imports:batch
+      - phone:numbers_verify
+      - phone:numbers_verify_check
+      - phone:token
       - stt:transcribe
       - agent:execute_tool
       - tools:mutate
@@ -449,6 +452,9 @@ families:
       - POST /v1/stt/transcribe
       - POST /v1/stt/transcribe-async
       - POST /v1/stt/transcribe-workers-ai
+      - POST /v1/phone/numbers/verify
+      - POST /v1/phone/numbers/verify/check
+      - POST /v1/phone/token
       - PATCH /v1/tools/action-items/{action_item_id}
       - POST /v1/agent/execute-tool
       - POST /v1/tools/action-items
