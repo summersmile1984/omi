@@ -25,6 +25,28 @@ export type WorkersAiBinding = {
   run(model: string, input: Record<string, unknown>): Promise<unknown>;
 };
 
+/** Narrow Images binding surface used for private chat-file thumbnails. */
+export type ImagesTransformBinding = {
+  input(
+    stream: ReadableStream<Uint8Array>,
+  ): {
+    transform(options: {
+      width: number;
+      height: number;
+      fit: "scale-down" | "contain" | "pad" | "squeeze" | "cover" | "crop";
+    }): {
+      output(options: {
+        format: "jpeg" | "png" | "webp";
+        quality?: number;
+      }): Promise<{
+        response(options?: { headers?: HeadersInit }): Response;
+        contentType(): string;
+        image(options?: { encoding?: "base64" }): ReadableStream<Uint8Array>;
+      }>;
+    };
+  };
+};
+
 export type VectorizeBinding = {
   upsert(vectors: Array<Record<string, unknown>>): Promise<unknown>;
   deleteByIds(ids: string[]): Promise<unknown>;
@@ -39,6 +61,8 @@ export type JobsEnv = {
   CONVERSATION_RECORDINGS: R2Bucket;
   SPEECH_PROFILES: R2Bucket;
   AI: WorkersAiBinding;
+  /** Optional until the account has Cloudflare Images transformations enabled. */
+  IMAGES?: ImagesTransformBinding;
   MEMORY_VECTORS: VectorizeBinding;
   ACTION_ITEM_VECTORS: VectorizeBinding;
   CONVERSATION_VECTORS: VectorizeBinding;
@@ -49,6 +73,10 @@ export type JobsEnv = {
   SYNC_BACKFILL: Queue<JobMessage>;
   INTERNAL_ASSERTION_SECRET?: string;
   OPENAI_API_KEY?: string;
+  /** HMAC key used by the unauthenticated, short-lived private thumbnail URL. */
+  CHAT_FILE_THUMBNAIL_SECRET?: string;
+  /** Explicit opt-in while the legacy upload owner is being cut over. */
+  LEGACY_CHAT_FILES_STAGING_ENABLED?: string;
   SYNC_CONTENT_ID_SECRET?: string;
   LEGACY_AUDIO_ENCRYPTION_SECRET?: string;
   STRIPE_SECRET_KEY?: string;

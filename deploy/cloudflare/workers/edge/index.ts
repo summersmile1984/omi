@@ -646,6 +646,19 @@ const legacyChatCompatibilityStagingBoundary = async (
   );
 };
 
+// The canonical Jobs handler can serve the old upload response shape, but the
+// downstream Cloudflare chat-session reader and historical Firestore file
+// backfill must be complete before these aliases can become the route owner.
+// Keep the edge switch explicit: disabled means the existing legacy forwarding
+// behavior, enabled means authenticated Jobs forwarding for staging proof.
+const legacyChatFilesStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.LEGACY_CHAT_FILES_STAGING_ENABLED !== "true")
+    return proxyLegacyBackend(c);
+  return proxyAuthenticatedJobs(c);
+};
+
 // Staged tasks and task-intelligence writes still depend on the legacy
 // Firestore candidate store, account-generation/device snapshots, Redis
 // quotas, and an LLM evaluation/promotion transaction. Cloudflare currently
@@ -1438,6 +1451,8 @@ app.post(
   legacyChatCompatibilityStagingBoundary,
 );
 app.post("/v2/chat/completions", legacyChatCompatibilityStagingBoundary);
+app.post("/v1/files", legacyChatFilesStagingBoundary);
+app.post("/v2/files", legacyChatFilesStagingBoundary);
 app.get("/v1/wrapped/:year", legacyWrappedStagingBoundary);
 app.post("/v1/wrapped/:year/generate", legacyWrappedStagingBoundary);
 app.delete("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);

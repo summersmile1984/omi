@@ -42,6 +42,7 @@ type ChatFileRow = {
   size: number;
   checksum_sha256: string;
   storage_key: string;
+  thumbnail_key: string | null;
   status: string;
   thumbnail_status: string;
   created_at: number;
@@ -98,6 +99,136 @@ function response(row: Partial<ChatFileRow>): Record<string, unknown> {
   };
 }
 
+const THUMBNAIL_TTL_SECONDS = 15 * 60;
+const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1)
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return difference === 0;
+}
+
+async function thumbnailSignature(
+  secret: string,
+  uid: string,
+  fileId: string,
+  expires: number,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`${uid}\0${fileId}\0${expires}`),
+  );
+  return base64Url(new Uint8Array(digest));
+}
+
+async function thumbnailUrl(
+  env: JobsEnv,
+  row: Partial<ChatFileRow>,
+): Promise<string> {
+  if (
+    row.thumbnail_status !== "ready" ||
+    !row.thumbnail_key ||
+    !row.uid ||
+    !row.file_id
+  )
+    return "";
+  const secret = String(env.CHAT_FILE_THUMBNAIL_SECRET || "").trim();
+  const base = String(env.PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
+  if (!secret || !base) return "";
+  const expires = Math.floor(Date.now() / 1000) + THUMBNAIL_TTL_SECONDS;
+  const signature = await thumbnailSignature(
+    secret,
+    row.uid,
+    row.file_id,
+    expires,
+  );
+  return `${base}/v1/cf/chat-files/${encodeURIComponent(row.file_id)}/thumbnail?uid=${encodeURIComponent(row.uid)}&exp=${expires}&sig=${encodeURIComponent(signature)}`;
+}
+
+async function responseWithThumbnail(
+  env: JobsEnv,
+  row: Partial<ChatFileRow>,
+): Promise<Record<string, unknown>> {
+  const value = response(row);
+  value.thumbnail = await thumbnailUrl(env, row);
+  return value;
+}
+
+function bytesStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+async function renderThumbnail(
+  env: JobsEnv,
+  bytes: Uint8Array,
+): Promise<{ bytes: Uint8Array; contentType: string }> {
+  if (!env.IMAGES || !String(env.CHAT_FILE_THUMBNAIL_SECRET || "").trim())
+    throw new ChatFileHttpError(
+      503,
+      "thumbnail_unavailable",
+      "image thumbnails are not configured on the Cloudflare boundary",
+    );
+  try {
+    const transformed = await env.IMAGES.input(bytesStream(bytes)).transform({
+      width: 128,
+      height: 128,
+      fit: "scale-down",
+    }).output({ format: "jpeg", quality: 85 });
+    const output = new Uint8Array(await transformed.response().arrayBuffer());
+    if (!output.length || output.length > MAX_THUMBNAIL_BYTES)
+      throw new ChatFileHttpError(
+        503,
+        "thumbnail_unavailable",
+        "image thumbnail output is invalid",
+      );
+    return {
+      bytes: output,
+      contentType: transformed.contentType() || "image/jpeg",
+    };
+  } catch (error) {
+    if (error instanceof ChatFileHttpError) throw error;
+    // Cloudflare Images uses code 9412 for a non-image input.  Treat that as
+    // invalid client input; other transformation failures are capability or
+    // provider failures and must not result in a successful upload without a
+    // thumbnail URL.
+    if ((error as { code?: unknown })?.code === 9412)
+      throw new ChatFileHttpError(
+        400,
+        "unsupported_file",
+        "file contents are not a supported image",
+      );
+    throw new ChatFileHttpError(
+      503,
+      "thumbnail_unavailable",
+      "image thumbnail generation is unavailable",
+    );
+  }
+}
+
 async function hashFile(
   file: Blob,
 ): Promise<{ bytes: Uint8Array; checksum: string }> {
@@ -110,6 +241,7 @@ async function providerUpload(
   bytes: Uint8Array,
   name: string,
   mime: string,
+  purpose: "assistants" | "vision",
 ): Promise<string> {
   const key = String(env.OPENAI_API_KEY || "").trim();
   if (!key)
@@ -119,7 +251,7 @@ async function providerUpload(
       "file provider is not configured",
     );
   const form = new FormData();
-  form.set("purpose", "assistants");
+  form.set("purpose", purpose);
   form.set(
     "file",
     new File([bytes.buffer as ArrayBuffer], name, { type: mime }),
@@ -280,27 +412,29 @@ async function parseUploads(request: Request): Promise<FileUpload[]> {
   return uploads;
 }
 
+type UploadedChatFile = {
+  row: ChatFileRow;
+  newlyReady: boolean;
+};
+
 async function uploadOne(
   env: JobsEnv,
   uid: string,
   file: FileUpload,
-): Promise<Record<string, unknown>> {
+): Promise<UploadedChatFile> {
   const name = safeName(file.name || "upload");
   const mime = mimeType(file);
-  // Thumbnail generation is part of the legacy public response.  Do not
-  // publish an image without its thumbnail until a Worker-safe decoder exists.
-  if (mime.startsWith("image/"))
-    throw new ChatFileHttpError(
-      400,
-      "thumbnail_unavailable",
-      "image chat files are not enabled on the Cloudflare boundary yet",
-    );
+  const image = mime.startsWith("image/");
   const { bytes, checksum } = await hashFile(file);
+  // Render before writing any authority.  A successful image upload without a
+  // corresponding thumbnail would be a false success for the legacy clients,
+  // whose response and persisted message model both expose `thumbnail`.
+  const thumbnail = image ? await renderThumbnail(env, bytes) : null;
   const fingerprint = bytesToHex(
     sha256(new TextEncoder().encode(`${uid}\0${name}\0${mime}\0${checksum}`)),
   );
   const existing = await existingByFingerprint(env, uid, fingerprint);
-  if (existing?.status === "ready") return response(existing);
+  if (existing?.status === "ready") return { row: existing, newlyReady: false };
   if (existing?.status === "staging")
     throw new ChatFileHttpError(
       409,
@@ -309,6 +443,7 @@ async function uploadOne(
     );
   const fileId = existing?.file_id || crypto.randomUUID();
   const storageKey = existing?.storage_key || privateKey(uid, fileId);
+  const thumbnailKey = image ? `${storageKey}/thumbnail.jpg` : null;
   const now = Math.floor(Date.now() / 1000);
   if (!storageKey.startsWith(`${uid}/`))
     throw new ChatFileHttpError(
@@ -317,8 +452,8 @@ async function uploadOne(
       "file metadata is invalid",
     );
   const metadata = await env.APP_DB.prepare(
-    "INSERT INTO cf_chat_files (uid, file_id, request_fingerprint, provider, provider_file_id, name, mime_type, size, checksum_sha256, storage_key, status, thumbnail_status, created_at, updated_at) VALUES (?, ?, ?, 'openai', NULL, ?, ?, ?, ?, ?, 'staging', 'unsupported', ?, ?) " +
-      "ON CONFLICT(uid, request_fingerprint) DO UPDATE SET provider_file_id = NULL, status = 'staging', thumbnail_status = 'not_applicable', last_error = NULL, updated_at = excluded.updated_at",
+    "INSERT INTO cf_chat_files (uid, file_id, request_fingerprint, provider, provider_file_id, name, mime_type, size, checksum_sha256, storage_key, thumbnail_key, status, thumbnail_status, created_at, updated_at) VALUES (?, ?, ?, 'openai', NULL, ?, ?, ?, ?, ?, ?, 'staging', ?, ?, ?) " +
+      "ON CONFLICT(uid, request_fingerprint) DO UPDATE SET provider_file_id = NULL, name = excluded.name, mime_type = excluded.mime_type, size = excluded.size, checksum_sha256 = excluded.checksum_sha256, storage_key = excluded.storage_key, thumbnail_key = excluded.thumbnail_key, status = 'staging', thumbnail_status = excluded.thumbnail_status, last_error = NULL, updated_at = excluded.updated_at",
   )
     .bind(
       uid,
@@ -329,6 +464,8 @@ async function uploadOne(
       bytes.length,
       checksum,
       storageKey,
+      thumbnailKey,
+      image ? "unsupported" : "not_applicable",
       now,
       now,
     )
@@ -351,11 +488,23 @@ async function uploadOne(
       httpMetadata: { contentType: mime },
       customMetadata: { uid, fileId, checksum },
     });
-    providerId = await providerUpload(env, bytes, name, mime);
+    if (thumbnail && thumbnailKey) {
+      await env.CHAT_FILES.put(thumbnailKey, thumbnail.bytes, {
+        httpMetadata: { contentType: thumbnail.contentType },
+        customMetadata: { uid, fileId, kind: "thumbnail" },
+      });
+    }
+    providerId = await providerUpload(
+      env,
+      bytes,
+      name,
+      mime,
+      image ? "vision" : "assistants",
+    );
     await env.APP_DB.prepare(
-      "UPDATE cf_chat_files SET provider_file_id = ?, status = 'ready', updated_at = ?, last_error = NULL WHERE uid = ? AND file_id = ? AND status = 'staging'",
+      "UPDATE cf_chat_files SET provider_file_id = ?, status = 'ready', thumbnail_status = ?, updated_at = ?, last_error = NULL WHERE uid = ? AND file_id = ? AND status = 'staging'",
     )
-      .bind(providerId, now, uid, fileId)
+      .bind(providerId, image ? "ready" : "not_applicable", now, uid, fileId)
       .run();
     const ready = await env.APP_DB.prepare(
       "SELECT * FROM cf_chat_files WHERE uid = ? AND file_id = ? AND status = 'ready'",
@@ -368,7 +517,7 @@ async function uploadOne(
         "metadata_unavailable",
         "file metadata commit failed",
       );
-    return response(ready);
+    return { row: ready, newlyReady: true };
   } catch (error) {
     const message =
       error instanceof ChatFileHttpError
@@ -381,8 +530,9 @@ async function uploadOne(
       .run();
     try {
       await env.CHAT_FILES?.delete(storageKey);
+      if (thumbnailKey) await env.CHAT_FILES?.delete(thumbnailKey);
     } catch {
-      /* account residual sweep remains authoritative */
+      /* account residual sweep remains authoritative for both objects */
     }
     if (providerId) {
       try {
@@ -397,29 +547,106 @@ async function uploadOne(
   }
 }
 
+async function rollbackBatch(
+  env: JobsEnv,
+  uploaded: UploadedChatFile[],
+): Promise<void> {
+  for (const item of uploaded) {
+    if (!item.newlyReady) continue;
+    const row = item.row;
+    let providerDeleted = !row.provider_file_id;
+    if (row.provider_file_id) {
+      try {
+        await providerDelete(env, row.provider_file_id);
+        providerDeleted = true;
+      } catch {
+        // Keep the provider id in D1 so a later residual reconciliation can
+        // retry deletion; still remove local objects and mark the batch
+        // failed, so the caller never observes a partial successful batch.
+      }
+    }
+    try {
+      await env.CHAT_FILES?.delete(row.storage_key);
+      if (row.thumbnail_key) await env.CHAT_FILES?.delete(row.thumbnail_key);
+    } catch {
+      // The failed row and account residual sweep remain authoritative.
+    }
+    await env.APP_DB.prepare(
+      "UPDATE cf_chat_files SET provider_file_id = ?, status = 'failed', last_error = ?, updated_at = ? WHERE uid = ? AND file_id = ? AND status = 'ready'",
+    )
+      .bind(
+        providerDeleted ? null : row.provider_file_id,
+        "batch upload rolled back",
+        Math.floor(Date.now() / 1000),
+        row.uid,
+        row.file_id,
+      )
+      .run();
+  }
+}
+
 export function registerChatFileRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: (c: JobsContext) => Promise<AuthContext | null>,
 ): void {
-  app.post("/v1/cf/chat-files", async (c) => {
+  const upload = async (c: JobsContext, legacy: boolean) => {
+    if (
+      legacy &&
+      c.env.LEGACY_CHAT_FILES_STAGING_ENABLED !== "true"
+    )
+      return c.json(
+        {
+          error: "legacy_route_disabled",
+          detail:
+            "Legacy chat-file compatibility is disabled until the downstream session contract is migrated.",
+        },
+        404,
+      );
     const context = await requestContext(c);
     if (!context || !validUid(context.uid))
       return c.json({ error: "unauthorized" }, 401);
     try {
       const uploads = await parseUploads(c.req.raw);
       const results: Record<string, unknown>[] = [];
-      for (const upload of uploads)
-        results.push(await uploadOne(c.env, context.uid, upload));
-      return c.json(results, 201);
+      const completed: UploadedChatFile[] = [];
+      try {
+        for (const upload of uploads) {
+          const item = await uploadOne(c.env, context.uid, upload);
+          completed.push(item);
+          results.push(await responseWithThumbnail(c.env, item.row));
+        }
+      } catch (error) {
+        await rollbackBatch(c.env, completed);
+        throw error;
+      }
+      // FastAPI's legacy handlers return 200 for a successful list.  The
+      // explicit /v1/cf staging API keeps its original 201 admission status.
+      return c.json(results, legacy ? 200 : 201);
     } catch (error) {
       if (error instanceof ChatFileHttpError)
         return c.json(
-          { error: error.code, message: error.message },
+          legacy
+            ? { detail: error.message }
+            : { error: error.code, message: error.message },
           error.status as 400,
         );
-      return c.json({ error: "upload_unavailable" }, 503);
+      return c.json(
+        legacy
+          ? { detail: "File upload is temporarily unavailable" }
+          : { error: "upload_unavailable" },
+        503,
+      );
     }
-  });
+  };
+
+  app.post("/v1/cf/chat-files", (c) => upload(c, false));
+
+  // These aliases are guarded by an explicit switch.  This lets staging
+  // prove the same canonical handler and legacy 200/response shape without
+  // silently changing the route inventory before downstream chat-session
+  // reads and historical backfill are complete.
+  app.post("/v1/files", (c) => upload(c, true));
+  app.post("/v2/files", (c) => upload(c, true));
 
   app.get("/v1/cf/chat-files", async (c) => {
     const context = await requestContext(c);
@@ -430,7 +657,13 @@ export function registerChatFileRoutes(
     )
       .bind(context.uid)
       .all<ChatFileRow>();
-    return c.json((rows.results || []).map(response));
+    return c.json(
+      await Promise.all(
+        (rows.results || []).map((row) =>
+          responseWithThumbnail(c.env, row),
+        ),
+      ),
+    );
   });
 
   app.delete("/v1/cf/chat-files/:fileId", async (c) => {
@@ -456,6 +689,7 @@ export function registerChatFileRoutes(
           "chat file storage is not configured",
         );
       await c.env.CHAT_FILES.delete(row.storage_key);
+      if (row.thumbnail_key) await c.env.CHAT_FILES.delete(row.thumbnail_key);
       await c.env.APP_DB.prepare(
         "DELETE FROM cf_chat_files WHERE uid = ? AND file_id = ? AND status = 'ready'",
       )
@@ -470,5 +704,44 @@ export function registerChatFileRoutes(
         );
       return c.json({ error: "delete_unavailable" }, 503);
     }
+  });
+
+  // The source and thumbnail objects are private.  Legacy clients render the
+  // returned `thumbnail` URL directly, so this endpoint accepts only a short
+  // lived HMAC token and never accepts a caller-supplied R2 key.
+  app.get("/v1/cf/chat-files/:fileId/thumbnail", async (c) => {
+    const fileId = c.req.param("fileId");
+    const uid = String(c.req.query("uid") || "");
+    const expires = Number(c.req.query("exp"));
+    const signature = String(c.req.query("sig") || "");
+    const secret = String(c.env.CHAT_FILE_THUMBNAIL_SECRET || "").trim();
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      !validUid(uid) ||
+      !/^[0-9a-f-]{36}$/i.test(fileId) ||
+      !secret ||
+      !Number.isInteger(expires) ||
+      expires < now ||
+      expires > now + THUMBNAIL_TTL_SECONDS + 5 ||
+      !/^[A-Za-z0-9_-]{43}$/.test(signature)
+    )
+      return c.body(null, 404);
+    const expected = await thumbnailSignature(secret, uid, fileId, expires);
+    if (!constantTimeEqual(signature, expected)) return c.body(null, 404);
+    const row = await c.env.APP_DB.prepare(
+      "SELECT * FROM cf_chat_files WHERE uid = ? AND file_id = ? AND status = 'ready' AND thumbnail_status = 'ready'",
+    )
+      .bind(uid, fileId)
+      .first<ChatFileRow>();
+    if (!row?.thumbnail_key || !c.env.CHAT_FILES) return c.body(null, 404);
+    const object = await c.env.CHAT_FILES.get(row.thumbnail_key);
+    if (!object) return c.body(null, 404);
+    return new Response(object.body, {
+      headers: {
+        "content-type": object.httpMetadata?.contentType || "image/jpeg",
+        "cache-control": "private, max-age=300",
+        etag: object.httpEtag,
+      },
+    });
   });
 }

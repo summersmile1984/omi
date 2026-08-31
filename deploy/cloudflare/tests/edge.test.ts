@@ -359,6 +359,66 @@ describe("edge gateway", () => {
     }
   });
 
+  it("forwards guarded legacy chat-file aliases to Jobs only with the explicit staging switch", async () => {
+    const forwarded: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      LEGACY_CHAT_FILES_STAGING_ENABLED: "true",
+      AUTH: service((request) => {
+        if (new URL(request.url).pathname === "/internal/verify")
+          return Response.json({ uid: "file-user", authority: "better-auth" });
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({
+          state: "new",
+          client_action: "none",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        }),
+      ),
+      JOBS: rawService((request) => {
+        forwarded.push(request);
+        return Response.json(
+          [
+            {
+              id: "file-1",
+              name: "notes.txt",
+              thumbnail: "",
+              mime_type: "text/plain",
+              openai_file_id: "file-provider-1",
+              created_at: "2026-08-31T00:00:00.000Z",
+            },
+          ],
+          { status: 200 },
+        );
+      }),
+      RATE_LIMITS: rateLimits(() => allowRateLimit()),
+    };
+    const form = new FormData();
+    form.set("files", new File(["opaque"], "notes.txt", { type: "text/plain" }));
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/files", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "session=must-not-forward",
+        },
+        body: form,
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      expect.objectContaining({ id: "file-1", openai_file_id: "file-provider-1" }),
+    ]);
+    expect(forwarded).toHaveLength(1);
+    expect(new URL(forwarded[0].url).pathname).toBe("/v2/files");
+    expect(forwarded[0].headers.get("authorization")).toBeNull();
+    expect(forwarded[0].headers.get("cookie")).toBeNull();
+    expect(forwarded[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("fails closed for legacy staged-task and task-intelligence paths in staging", async () => {
     const env = {
       TASK_INTELLIGENCE_STAGING_FAIL_CLOSED: "true",

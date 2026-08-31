@@ -26,8 +26,8 @@
   // TODOIST_CLIENT_ID/TODOIST_CLIENT_SECRET, ASANA_CLIENT_ID/ASANA_CLIENT_SECRET,
   // GOOGLE_TASKS_CLIENT_ID/GOOGLE_TASKS_CLIENT_SECRET,
   // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, HUME_WEBHOOK_SIGNING_KEY,
-  // optional OPENAI_API_KEY for the chat-file provider boundary, and optional
-  // RAPID_API_HOST/RAPID_API_KEY.
+  // optional OPENAI_API_KEY and CHAT_FILE_THUMBNAIL_SECRET for the chat-file
+  // provider/thumbnail boundary, and optional RAPID_API_HOST/RAPID_API_KEY.
   "services": [
     { "binding": "AUTH", "service": "omi-cf-auth-staging" },
     { "binding": "API_CORE", "service": "omi-cf-api-core-staging" },
@@ -55,6 +55,10 @@
     },
   ],
   "ai": { "binding": "AI" },
+  // Cloudflare Images transforms private R2 bytes into the 128px JPEG
+  // thumbnail required by the legacy FileChat response.  The upload handler
+  // remains fail-closed when the account or thumbnail HMAC secret is absent.
+  "images": { "binding": "IMAGES" },
   "vectorize": [
     { "binding": "MEMORY_VECTORS", "index_name": "omi-cf-memories-v2" },
     {

@@ -31,6 +31,8 @@ export type EdgeEnv = {
   PERSONA_APPS_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for legacy yearly Wrapped generation/retrieval. */
   WRAPPED_STAGING_FAIL_CLOSED?: string;
+  /** Explicit staging opt-in for the guarded canonical chat-file aliases. */
+  LEGACY_CHAT_FILES_STAGING_ENABLED?: string;
   BYOK_FINGERPRINT_PEPPER?: string;
   ALLOWED_ORIGINS?: string;
 };

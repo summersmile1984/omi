@@ -62,17 +62,29 @@ async function headers(
   };
 }
 
-function environment(openaiKey = "provider-key") {
+function environment(openaiKey = "provider-key", withImages = false) {
   const database = new SqliteD1();
   const objects = new Map<string, Uint8Array>();
   const deleted: string[] = [];
-  const env = {
+  const env: Record<string, unknown> = {
     APP_DB: database,
     INTERNAL_ASSERTION_SECRET: "chat-file-secret",
     OPENAI_API_KEY: openaiKey,
+    PUBLIC_API_BASE_URL: "https://edge.test",
+    CHAT_FILE_THUMBNAIL_SECRET: withImages ? "thumbnail-secret" : undefined,
     CHAT_FILES: {
       put: async (key: string, body: Uint8Array) => {
         objects.set(key, body);
+      },
+      get: async (key: string) => {
+        const body = objects.get(key);
+        return body
+          ? {
+              body: new Response(body.slice().buffer as ArrayBuffer).body!,
+              httpMetadata: { contentType: key.endsWith("thumbnail.jpg") ? "image/jpeg" : "application/octet-stream" },
+              httpEtag: '"test-etag"',
+            }
+          : null;
       },
       delete: async (key: string) => {
         objects.delete(key);
@@ -84,6 +96,19 @@ function environment(openaiKey = "provider-key") {
     },
     JOBS: { send: async (_message: JobMessage) => undefined },
   };
+  if (withImages) {
+    env.IMAGES = {
+      input: (_stream: ReadableStream<Uint8Array>) => ({
+        transform: (_options: unknown) => ({
+          output: async (_options: unknown) => ({
+            response: () => new Response(new Uint8Array([8, 7, 6])),
+            contentType: () => "image/jpeg",
+            image: () => new ReadableStream<Uint8Array>(),
+          }),
+        }),
+      }),
+    };
+  }
   return { database, env, objects, deleted };
 }
 
@@ -228,12 +253,101 @@ describe("Cloudflare private chat-file boundary", () => {
       }),
       images.env as never,
     );
-    expect(imageResponse.status).toBe(400);
+    expect(imageResponse.status).toBe(503);
     expect(await imageResponse.json()).toMatchObject({
       error: "thumbnail_unavailable",
     });
     expect(images.objects.size).toBe(0);
     missing.database.database.close();
     images.database.database.close();
+  });
+
+  it("uses the Images binding for private thumbnails and the vision provider purpose", async () => {
+    const { database, env, objects } = environment("provider-key", true);
+    const purposes: string[] = [];
+    const provider = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method || "GET";
+        if (method === "POST") {
+          purposes.push(String((init?.body as FormData).get("purpose")));
+          return Response.json({ id: "file-image-1", filename: "photo.png" });
+        }
+        return Response.json({ deleted: true });
+      },
+    );
+    vi.stubGlobal("fetch", provider);
+    const form = new FormData();
+    form.set(
+      "files",
+      new File([new Uint8Array([137, 80, 78, 71])], "photo.png", {
+        type: "image/png",
+      }),
+    );
+    const upload = await jobs.fetch(
+      new Request("https://jobs.test/v1/cf/chat-files", {
+        method: "POST",
+        headers: await headers("chat-file-secret", "POST", "/v1/cf/chat-files"),
+        body: form,
+      }),
+      env as never,
+    );
+    expect(upload.status).toBe(201);
+    const [file] = (await upload.json()) as Array<{
+      id: string;
+      thumbnail: string;
+      openai_file_id: string;
+    }>;
+    expect(file).toMatchObject({
+      openai_file_id: "file-image-1",
+      thumbnail: expect.stringContaining("/v1/cf/chat-files/"),
+    });
+    expect(purposes).toEqual(["vision"]);
+    expect([...objects.values()]).toContainEqual(new Uint8Array([8, 7, 6]));
+
+    const thumb = await jobs.fetch(new Request(file.thumbnail), env as never);
+    expect(thumb.status).toBe(200);
+    expect(thumb.headers.get("content-type")).toBe("image/jpeg");
+    expect([...new Uint8Array(await thumb.arrayBuffer())]).toEqual([8, 7, 6]);
+
+    const removed = await jobs.fetch(
+      new Request(`https://jobs.test/v1/cf/chat-files/${file.id}`, {
+        method: "DELETE",
+        headers: await headers(
+          "chat-file-secret",
+          "DELETE",
+          `/v1/cf/chat-files/${file.id}`,
+        ),
+      }),
+      env as never,
+    );
+    expect(removed.status).toBe(200);
+    expect(objects.size).toBe(0);
+    database.database.close();
+  });
+
+  it("exposes both legacy aliases through the canonical handler only when explicitly enabled", async () => {
+    const { database, env } = environment();
+    env.LEGACY_CHAT_FILES_STAGING_ENABLED = "true";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ id: "file-alias-1", filename: "a.txt" })),
+    );
+    for (const path of ["/v1/files", "/v2/files"]) {
+      const form = new FormData();
+      form.set("files", new File(["alias"], "a.txt", { type: "text/plain" }));
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: await headers("chat-file-secret", "POST", path),
+          body: form,
+        }),
+        env as never,
+      );
+      expect(response.status, path).toBe(200);
+      expect(await response.json()).toEqual([
+        expect.objectContaining({ id: expect.any(String), name: "a.txt" }),
+      ]);
+    }
+    database.database.close();
   });
 });
