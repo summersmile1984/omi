@@ -3877,6 +3877,18 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v1/conversations/merge
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, queue-jobs, r2, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: conversations:merge
+    protocol: http
+    idempotency: conversation-merge-fingerprint
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/conversations/:conversationId/reprocess
     owner: api-core
     runtime: python-worker

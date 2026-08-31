@@ -675,8 +675,8 @@ POST /v1/conversations/search
 GET  /v1/conversations/{conversationId}
 DELETE /v1/conversations/{conversationId}
                               canonical read/search projection and non-cascade delete;
-                              reprocess and finalization are D1/Queue-owned;
-                              merge remains legacy
+                              finalization, reprocess, and merge are D1/Queue-owned;
+                              merge copies bounded R2 audio metadata before atomic cleanup
 GET  /v1/conversations/{conversationId}/shared
 PATCH /v1/conversations/{conversationId}/visibility
                               public D1 share index and privacy-redacted read
@@ -1018,7 +1018,8 @@ The calendar meeting routes use a uid-scoped natural key
 (`calendar_source` + `calendar_event_id`) and store bounded metadata in D1.
 They are staging-only until the legacy conversation context reader is migrated
 to the same authority. Jobs separately owns the Google Calendar OAuth grant and
-event discovery; conversation finalization is not migrated by either boundary.
+event discovery; conversation finalization, reprocess, and merge are now
+Cloudflare-owned lifecycle boundaries.
 
 `GET /v1/trends` reads the global category/topic projection from D1. Categories
 are limited to the five released trend families and topics are returned in
@@ -1537,9 +1538,9 @@ memory retraction and audio cleanup are not yet Worker-owned. The first-party
 pre-transcribed `/v1/conversations/from-segments` route now uses the same
 Workers AI enrichment, D1 batch, client-session-id claim, app/Developer webhook
 fanout, usage, and vector outboxes as Developer ingest, with device provenance
-resolved from the released headers. Redis in-progress finalization, merge,
-cascade deletion, audio deletion, realtime/audio integration fanout, and
-finalization-triggered fanout remain legacy-owned;
+resolved from the released headers. Conversation finalization, reprocess, and
+merge now use D1/Queue leases and API Core; cascade deletion, audio deletion,
+realtime/audio integration fanout, and finalization-triggered fanout remain legacy-owned;
 production reader cutover still requires those write authorities and readers to
 move together. App-key conversation/memory ingest is a separate migrated
 boundary described below. The isolated `/v2/sync-local-files` finalizer is the exception:

@@ -1187,6 +1187,7 @@ app.get("/v1/conversations", proxyAuthenticatedCore);
 app.post("/v1/conversations/from-segments", proxyAuthenticatedCore);
 app.post("/v1/conversations/search", proxyAuthenticatedCore);
 app.get("/v1/conversations/count", proxyAuthenticatedCore);
+app.post("/v1/conversations/merge", proxyAuthenticatedCore);
 app.post("/v1/conversations/:conversationId/finalize", proxyAuthenticatedCore);
 app.post("/v1/conversations/:conversationId/reprocess", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/finalization", proxyAuthenticatedCore);

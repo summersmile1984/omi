@@ -563,6 +563,17 @@ def _conversation_payload(
     external_data: dict[str, object],
     client_device_id: str | None,
     client_platform: str | None,
+    visibility: str = "private",
+    starred: bool = False,
+    private_cloud_sync_enabled: bool = False,
+    folder_id: str | None = None,
+    photos: list[dict[str, object]] | None = None,
+    audio_files: list[dict[str, object]] | None = None,
+    conversation_audio: dict[str, object] | None = None,
+    apps_results: list[dict[str, object]] | None = None,
+    suggested_apps: list[str] | None = None,
+    calendar_event: dict[str, object] | None = None,
+    app_id: str | None = None,
 ) -> dict[str, object]:
     return {
         "id": conversation_id,
@@ -572,23 +583,26 @@ def _conversation_payload(
         "source": source,
         "language": language,
         "status": "completed",
-        "visibility": "private",
-        "starred": False,
+        "visibility": visibility,
+        "starred": starred,
         "discarded": discarded,
         "is_locked": False,
-        "folder_id": None,
+        "private_cloud_sync_enabled": private_cloud_sync_enabled,
+        "folder_id": folder_id,
         "folder_name": None,
         "client_device_id": client_device_id,
         "client_platform": client_platform,
         "structured": structured,
         "transcript_segments": segments,
-        "photos": [],
-        "audio_files": [],
-        "apps_results": [],
-        "suggested_summarization_apps": [],
+        "photos": photos or [],
+        "audio_files": audio_files or [],
+        "conversation_audio": conversation_audio,
+        "apps_results": apps_results or [],
+        "suggested_summarization_apps": suggested_apps or [],
         "geolocation": geolocation,
         "external_data": external_data,
-        "calendar_event": None,
+        "calendar_event": calendar_event,
+        "app_id": app_id,
     }
 
 
@@ -605,8 +619,7 @@ def _conversation_insert(
         "discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, client_platform, "
         "structured_json, transcript_segments_json, photos_json, audio_files_json, conversation_audio_json, "
         "apps_results_json, suggested_apps_json, geolocation_json, external_data_json, calendar_event_json, app_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', 'private', 0, ?, 0, 0, 0, NULL, ?, ?, ?, ?, '[]', '[]', "
-        "NULL, '[]', '[]', ?, ?, NULL, NULL)"
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(
         uid,
         payload["id"],
@@ -616,13 +629,28 @@ def _conversation_insert(
         int(datetime.fromisoformat(str(payload["finished_at"])).timestamp()),
         payload["source"],
         payload["language"],
+        payload.get("visibility") or "private",
+        1 if payload.get("starred") else 0,
         1 if payload["discarded"] else 0,
+        1 if payload.get("private_cloud_sync_enabled") else 0,
+        payload.get("folder_id"),
         payload["client_device_id"],
         payload["client_platform"],
         _json(payload["structured"]),
         _json(payload["transcript_segments"]),
+        _json(payload.get("photos") if isinstance(payload.get("photos"), list) else []),
+        _json(payload.get("audio_files") if isinstance(payload.get("audio_files"), list) else []),
+        _json(payload["conversation_audio"]) if isinstance(payload.get("conversation_audio"), dict) else None,
+        _json(payload.get("apps_results") if isinstance(payload.get("apps_results"), list) else []),
+        _json(
+            payload.get("suggested_summarization_apps")
+            if isinstance(payload.get("suggested_summarization_apps"), list)
+            else []
+        ),
         _json(payload["geolocation"]) if payload["geolocation"] is not None else None,
         _json(payload["external_data"]),
+        _json(payload["calendar_event"]) if isinstance(payload.get("calendar_event"), dict) else None,
+        payload.get("app_id"),
     )
 
 
@@ -755,6 +783,8 @@ async def _persist_completed(
     now: int,
     claim_json: str | None | object = _NO_CONVERSATION_CLAIM,
     replace_derived: bool = False,
+    extra_cleanup_statements: list[object] | None = None,
+    extra_projection_rows: list[dict[str, object]] | None = None,
 ) -> None:
     conversation_id = str(payload["id"])
     structured = payload["structured"] if isinstance(payload["structured"], dict) else {}
@@ -771,8 +801,8 @@ async def _persist_completed(
     memory_contents = [] if discarded else list(payload.pop("_memory_contents", []))
     action_rows = _action_rows(uid, conversation_id, descriptions, now)
     memory_rows = _memory_rows(uid, conversation_id, memory_contents, now)
-    projection_rows: list[dict[str, object]] = []
-    cleanup_statements = []
+    projection_rows: list[dict[str, object]] = list(extra_projection_rows or [])
+    cleanup_statements = list(extra_cleanup_statements or [])
     if replace_derived:
         old_actions = (
             await env.APP_DB.prepare(
