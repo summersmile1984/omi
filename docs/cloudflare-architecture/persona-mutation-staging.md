@@ -13,7 +13,7 @@
 
 ## 尚未宣称完成的部分
 
-`PATCH /v1/personas/{persona_id}`、Twitter ownership verification，以及 `/v1/apps/mcp*` 仍由 legacy owner 处理。历史 Firestore Persona 回填、公开目录缓存的 legacy invalidation、完整的 Persona prompt/memory condensation、图片缩略图和生产 cutover 仍待单独闭合；因此本边界只迁移创建入口，不将其它 Persona/app mutation 路径改成 Cloudflare owner。
+`PATCH /v1/personas/{persona_id}`、Twitter ownership verification，以及 `/v1/apps/mcp*` 仍由 legacy owner 处理。它们依赖 Firestore app 文档、Firebase provider identity、公开目录缓存失效、本机图片临时文件/GCS logo，以及 MCP 外部 OAuth state/PKCE、token 和 tool-discovery 状态；现有 D1 MCP OAuth 仅覆盖已迁移的 `/v1/mcp/*` 工具，不是 app 动态注册的替代。为防止 staging 凭据或授权 code 进入 legacy，Edge 在 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 时对上述入口返回 `503 persona_apps_unavailable`，不读取请求 body 或调用 legacy；这些路由仍计入 legacy-owned。历史 Firestore Persona 回填、公开目录缓存的 legacy invalidation、完整的 Persona prompt/memory condensation、图片缩略图和生产 cutover 仍待单独闭合；因此本边界只迁移创建入口，不将其它 Persona/app mutation 路径改成 Cloudflare owner。
 
 ## 验证
 

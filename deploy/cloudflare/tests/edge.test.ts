@@ -359,6 +359,66 @@ describe("edge gateway", () => {
     }
   });
 
+  it("fails closed for legacy Persona and app/MCP mutation paths in staging", async () => {
+    const env = {
+      PERSONA_APPS_STAGING_FAIL_CLOSED: "true",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    const requests = [
+      ["PATCH", "/v1/personas/persona-1"],
+      [
+        "GET",
+        "/v1/personas/twitter/verify-ownership?username=alice&handle=alice",
+      ],
+      ["POST", "/v1/apps/mcp"],
+      ["GET", "/v1/apps/mcp/callback?code=opaque&state=opaque"],
+      ["POST", "/v1/apps/app-1/mcp/refresh"],
+      ["POST", "/v1/apps/migrate-owner"],
+    ] as const;
+
+    try {
+      for (const [method, path] of requests) {
+        const response = await edge.fetch(
+          new Request(`https://edge.test${path}`, {
+            method,
+            headers: {
+              authorization: "Bearer opaque-session",
+              cookie: "session=opaque",
+              "content-type": "application/json",
+              "x-omi-auth-context": "caller-controlled",
+            },
+            ...(method === "POST" || method === "PATCH"
+              ? {
+                  body: JSON.stringify({
+                    persona_data: "opaque",
+                    source_token: "opaque",
+                    mcp_server_url: "https://mcp.example.test",
+                  }),
+                }
+              : {}),
+          }),
+          env as never,
+        );
+
+        expect(response.status, `${method} ${path}`).toBe(503);
+        await expect(response.json()).resolves.toEqual({
+          error: "persona_apps_unavailable",
+          detail:
+            "Legacy Persona and app/MCP mutation routes are unavailable on Cloudflare staging.",
+        });
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {

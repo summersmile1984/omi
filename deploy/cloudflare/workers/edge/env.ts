@@ -25,6 +25,10 @@ export type EdgeEnv = {
   GEMINI_PROXY_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for legacy chat completion/materialization paths. */
   CHAT_COMPAT_STAGING_FAIL_CLOSED?: string;
+  /** Staging-only deny switch for legacy staged-task/task-intelligence paths. */
+  TASK_INTELLIGENCE_STAGING_FAIL_CLOSED?: string;
+  /** Staging-only deny switch for legacy Persona and app/MCP mutation paths. */
+  PERSONA_APPS_STAGING_FAIL_CLOSED?: string;
   BYOK_FINGERPRINT_PEPPER?: string;
   ALLOWED_ORIGINS?: string;
 };

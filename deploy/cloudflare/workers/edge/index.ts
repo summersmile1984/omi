@@ -646,6 +646,61 @@ const legacyChatCompatibilityStagingBoundary = async (
   );
 };
 
+// Staged tasks and task-intelligence writes still depend on the legacy
+// Firestore candidate store, account-generation/device snapshots, Redis
+// quotas, and an LLM evaluation/promotion transaction. Cloudflare currently
+// has no canonical candidate or recommendation projection, so isolated
+// staging must reject these paths before credentials, prompts, or task data
+// reach the legacy backend. The switch remains opt-in for non-staging
+// deployments until the full task authority and replay contract exists.
+const legacyTaskIntelligenceStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.TASK_INTELLIGENCE_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "task_intelligence_unavailable",
+        detail:
+          "Legacy staged-task and task-intelligence workflows are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
+// Persona PATCH/Twitter ownership and the legacy app/MCP mutation family still
+// depend on Firestore app documents, Firebase provider identity, public app
+// cache invalidation, and (for MCP) external OAuth state/token storage. The
+// existing D1 MCP OAuth surface is only for the migrated `/v1/mcp/*` tools and
+// cannot safely replace the dynamic app registration/callback contract. In
+// isolated staging, stop these paths before credentials, OAuth codes, or MCP
+// server URLs can reach legacy. The switch remains opt-in so non-staging
+// deployments preserve the existing compatibility forwarding behavior.
+const legacyPersonaAppsStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.PERSONA_APPS_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "persona_apps_unavailable",
+        detail:
+          "Legacy Persona and app/MCP mutation routes are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 // The cloud Agent VM was retired, but released desktop clients still call
@@ -741,6 +796,18 @@ app.post("/v1/proxy/gemini", legacyGeminiProxyStagingBoundary);
 app.post("/v1/proxy/gemini/*", legacyGeminiProxyStagingBoundary);
 app.post("/v1/proxy/gemini-stream", legacyGeminiProxyStagingBoundary);
 app.post("/v1/proxy/gemini-stream/*", legacyGeminiProxyStagingBoundary);
+app.patch("/v1/personas/:personaId", legacyPersonaAppsStagingBoundary);
+app.get(
+  "/v1/personas/twitter/verify-ownership",
+  legacyPersonaAppsStagingBoundary,
+);
+app.post("/v1/apps/mcp", legacyPersonaAppsStagingBoundary);
+app.get("/v1/apps/mcp/callback", legacyPersonaAppsStagingBoundary);
+app.post(
+  "/v1/apps/:app_id/mcp/refresh",
+  legacyPersonaAppsStagingBoundary,
+);
+app.post("/v1/apps/migrate-owner", legacyPersonaAppsStagingBoundary);
 app.get("/v1/auth/authorize", legacyAuthOAuthStagingBoundary);
 app.get("/v1/auth/callback/google", legacyAuthOAuthStagingBoundary);
 app.post("/v1/auth/callback/apple", legacyAuthOAuthStagingBoundary);
