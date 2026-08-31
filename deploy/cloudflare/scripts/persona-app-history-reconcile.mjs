@@ -404,7 +404,7 @@ function planCandidate(row, source, index, fencedUids) {
   const publicMetadata = validatePublicMetadata(publicValue, appId);
   if (publicMetadata.error) errors.push(publicMetadata.error);
   const envelope = privateEnvelopeValue(row.private_envelope ?? row.private_metadata_envelope);
-  if (envelope.error) errors.push(envelope.error);
+  if (envelope?.error) errors.push(envelope.error);
   const image = imageObjectValue(row.image_object ?? row.logo_object, targetUid || "invalid-uid", appId || "invalid-app");
   if (image.error) errors.push(image.error);
 
@@ -418,7 +418,7 @@ function planCandidate(row, source, index, fencedUids) {
     sourceFingerprint,
     sourceExportSha256: source.export_sha256,
     publicMetadataJson: publicMetadata.encoded ?? null,
-    privateEnvelope: envelope.error || !envelope ? null : envelope,
+    privateEnvelope: envelope?.error || !envelope ? null : envelope,
     imageObject: image.descriptor ?? null,
     createdAt,
     updatedAt,

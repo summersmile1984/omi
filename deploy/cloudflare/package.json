@@ -14,6 +14,7 @@
     "smoke:staging": "node scripts/smoke-staging.mjs",
     "identity:import": "node scripts/import-firebase-identities.mjs",
     "identity:dry-run": "node scripts/dry-run-firebase-identity-import.mjs",
+    "app-owner:attestation": "node scripts/app-owner-attestation.mjs",
     "audio:reconcile": "node scripts/audio-reconcile.mjs",
     "chat:reconcile": "node scripts/chat-history-reconcile.mjs",
     "persona:reconcile": "node scripts/persona-app-history-reconcile.mjs",

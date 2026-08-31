@@ -61,8 +61,10 @@ memory re-encryption 结果，使用 `APPS_ADMIN_KEY` 对应的 `secret-key`，�
 接受 Firebase token、raw Firebase UID 或 Better Auth session，也不是面向普通用户的
 迁移入口；写入使用 source/proof/target generation CAS，完成后的 revision 不可改写。
 因此 Persona/Chat planner 或 Firestore export/import operator 必须先产出并审阅这些
-content-bound revisions，再调用 writer；当前仓库没有把 planner 结果自动提升为 attestation
-的内部 CLI，未完成该流程时 exact route 仍保持 legacy。
+content-bound revisions，再调用 writer。`npm run app-owner:attestation` 可离线汇总
+Persona/App 与 chat-history planner 的完整性并生成 JSON/只读 SQL 审阅包，但不会连接
+Firestore/D1、调用 writer 或执行 memory re-encryption；未完成人工审阅和真实历史回放时
+exact route 仍保持 legacy。
 
 当两个 gate 显式开启时，Jobs executor 只迁移已完成数据投影且
 `cf_app_catalog.owner_uid` 等于 hash-only `fb-anon-<sha256>` source reference
