@@ -814,7 +814,6 @@ app.delete("/v1/task-integrations/:app_key", proxyAuthenticatedJobs);
 app.get("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
 app.put("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
 app.delete("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
-app.delete("/v1/integrations/:app_key", proxyAuthenticatedJobs);
 app.get("/v1/integrations/google_calendar/oauth-url", proxyAuthenticatedJobs);
 app.post("/v1/app/thumbnails", proxyAuthenticatedJobs);
 app.get("/v1/integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
@@ -1241,6 +1240,13 @@ app.post(
 app.delete("/v1/import/limitless/conversations", proxyAuthenticatedCore);
 app.post("/v1/staged-tasks/migrate", proxyAuthenticatedCore);
 app.post("/v1/staged-tasks/migrate-conversation-items", proxyAuthenticatedCore);
+app.delete("/v1/staged-tasks", proxyAuthenticatedCore);
+app.delete("/v1/staged-tasks/:task_id", proxyAuthenticatedCore);
+app.get("/v1/staged-tasks", proxyAuthenticatedCore);
+app.patch("/v1/staged-tasks/batch-scores", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/promote", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/:task_id/promote", proxyAuthenticatedCore);
 app.post("/v1/chat-first/blocks/validate", proxyAuthenticatedCore);
 app.post("/v1/chat/deferrals", proxyAuthenticatedCore);
 app.get("/v1/tools/conversations", proxyAuthenticatedCore);
@@ -1259,6 +1265,9 @@ app.post("/v1/knowledge-graph/rebuild", proxyAuthenticatedCore);
 app.put("/v1/integrations/apple-health/sync", proxyAuthenticatedCore);
 app.put("/v1/integrations/apple_health", proxyAuthenticatedCore);
 app.delete("/v1/integrations/apple_health", proxyAuthenticatedCore);
+// Keep provider-specific core routes ahead of the generic Calendar alias
+// boundary so Apple Health never gets proxied to Jobs.
+app.delete("/v1/integrations/:app_key", proxyAuthenticatedJobs);
 app.post("/v1/memories/extract", proxyAuthenticatedCore);
 app.post("/v1/connectors/synthesize", proxyAuthenticatedCore);
 app.post("/v1/conversations/topic", proxyAuthenticatedCore);
