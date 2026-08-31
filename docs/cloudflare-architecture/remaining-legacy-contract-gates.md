@@ -1,15 +1,15 @@
 # Remaining legacy route contract gates
 
-截至 2026-09-01，Cloudflare route inventory 仍有 8 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
+截至 2026-09-01，Cloudflare route inventory 仍有 2 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
 
 ## 结论
 
-本轮没有发现可以安全地单独切换 owner 的最小组：
+Auth/social 与 External App OAuth 已切换到 Cloudflare staging owner；本轮剩余 legacy 仅为 Persona/Twitter 组。以下表格同时记录已经切换但仍未达到生产准入的组：
 
 | 路由组 | 条数 | 当前判断 | 不能切换的硬门槛 |
 | --- | ---: | --- | --- |
-| Auth / social | 4 | 阻塞 | Firebase provider identity、Redis auth session/auth code、移动端 HTML callback、Firebase custom-token exchange 尚未由 Better Auth/D1 证明等价替代 |
-| External App OAuth | 2 | 部分准备，owner 阻塞 | namespaced `/v2/cf/oauth/*` 已有 Better Auth + App D1 authority；精确 `/v1/oauth/*` 仍需 legacy Firebase token、旧客户端 response、provider/历史 catalog continuity |
+| Auth / social | 0 | staging owner，生产阻塞 | staging exact handler 已覆盖 Redis session/auth-code、Google/Apple callback、PKCE 和 fail-closed bridge；仍需真实 Firebase identity import、provider replay、custom-token exchange、旧客户端 wire parity 和生产身份连续性 |
+| External App OAuth | 0 | staging owner，生产阻塞 | staging Jobs handler 已覆盖 Firebase-context gate、CSRF transaction、app admission/install CAS；仍需真实 Firebase token、旧客户端 response、provider/历史 catalog continuity 和删除回放 |
 | Phone / Twilio | 0 | staging owner，生产阻塞 | Jobs 已闭合 caller-ID 验证状态、Twilio API/token/webhook contract、quota 和删除清理；仍缺真实 provider 验证、历史回填和 production cutover |
 | Wrapped | 0 | staging owner，生产阻塞 | Jobs 已闭合 D1 recap 聚合、Workers AI structured output、通知和 job/result 状态；仍缺历史 Firestore 回填、真实 provider probe 和 production cutover |
 | Chat compatibility | 0 | staging owner，生产阻塞 | Jobs/API-AI 已承载 bounded exact routes；仍需 prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract 与历史 D1 chat session parity |
@@ -18,7 +18,7 @@
 | Gemini proxy | 0 | staging owner，生产阻塞 | API-AI 已承载 bounded JSON/SSE、BYOK enrollment、burst/quota 和 provider alias；Firebase identity continuity、Vertex ADC/PT、完整 Redis quota、SSE/usage/error/cost parity 尚未闭合 |
 | Files | 0 | staging owner，生产阻塞 | Jobs 已承载 exact aliases、D1/R2/provider contract；Assistants/session continuity、旧数据回填和下游 reader 仍未完成 |
 
-上表合计 8 条：Auth/social 4、External App OAuth 2、Persona/Twitter 2。`GET /v1/apps/mcp/callback`、`POST /v1/apps/mcp` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已由 Jobs staging owner 承载，不再计入 legacy；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口也不计入本表。Task intelligence 的 13 条路径已是 staging owner，因此不再计入 legacy 队列，但其生产门槛仍保留在表内。
+上表当前 legacy 合计 2 条：Persona/Twitter 2。Auth/social 的 4 条 exact 路径与 External App OAuth 的 2 条 exact 路径已由 Auth/Jobs staging owner 承载，但仍受真实 provider、身份连续性、历史回放和生产切换门槛约束；`GET /v1/apps/mcp/callback`、`POST /v1/apps/mcp` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已由 Jobs staging owner 承载，不再计入 legacy。`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口也不计入本表。Task intelligence 的 13 条路径已是 staging owner，因此不再计入 legacy 队列，但其生产门槛仍保留在表内。
 
 ## Auth / social：不能用 Better Auth session 别名替代
 
@@ -35,7 +35,7 @@ Cloudflare Auth Worker 目前的 `/api/better-auth/*` 使用 Better Auth D1/sess
 3. Firebase custom-token 签发、旧客户端解析和撤销语义；
 4. legacy Redis session/auth-code 的一次性消费、PKCE 和删除 fence。
 
-只有完成 identity import ledger、provider link replay、兼容 auth-code 表/lease、Firebase credential bridge 和客户端 conformance test 后，才允许把这 4 条路由的 owner 改为 Auth Worker。Better Auth social sign-in 本身不能作为证明。
+以上证据已足以支持 staging owner，但只有完成 identity import ledger、provider link replay、兼容 auth-code 表/lease、Firebase credential bridge 和客户端 conformance test 后，才允许进行生产切换。Better Auth social sign-in 本身不能作为生产兼容证明。
 
 ## External App OAuth：MCP OAuth 不是同一个 authority
 
@@ -44,9 +44,9 @@ Legacy 实现位于 [`backend/routers/oauth.py`](../../backend/routers/oauth.py)
 - `GET /v1/oauth/authorize` 读取 Firestore app、capabilities、external integration 和 Firebase config，生成 CSRF cookie，并返回 consent HTML。
 - `POST /v1/oauth/token` 校验 Firebase ID token 与 CSRF cookie，读取 app 的 private/tester/paid/setup 状态，必要时 enable app/increment installs，最后返回 `{uid, redirect_url, state}`。
 
-现有 D1 `cf_app_catalog` 和 `/v1/mcp/oauth/*` 只覆盖 Cloudflare app projection 与 MCP server 的 OAuth grants。现在新增的 `0116_external_app_oauth.sql` 与 `/v2/cf/oauth/*` namespaced seam 已覆盖 Better Auth uid、app revision、setup/paid/tester admission、hash-only CSRF transaction、install CAS 和 deletion fence；它仍不承接精确 `/v1/oauth/*` 的 Firebase token/旧客户端 wire contract，也不等于历史 Firestore catalog 已回填。因此不能把 `/v1/mcp/authorize` 或 Better Auth session 直接挂到 `/v1/oauth/*`。
+现有 D1 `cf_app_catalog` 和 `/v1/mcp/oauth/*` 只覆盖 Cloudflare app projection 与 MCP server 的 OAuth grants。`0116_external_app_oauth.sql` 与 `/v2/cf/oauth/*` namespaced seam 已覆盖 Better Auth uid、app revision、setup/paid/tester admission、hash-only CSRF transaction、install CAS 和 deletion fence；Jobs 现在复用这套 authority 承载精确 `/v1/oauth/*` staging owner，但仍不等于历史 Firestore catalog 已回填或生产 Firebase token/旧客户端 wire parity 已完成。因此不能把 `/v1/mcp/authorize` 或 Better Auth session 直接当作生产 `/v1/oauth/*` 兼容证明。
 
-切换前必须新增并回放：
+生产切换前仍必须回放并核验：
 
 - uid-scoped `cf_external_oauth_transactions`（state、PKCE/CSRF、app、redirect、expiry、single-use）；
 - D1 app/payment/install reader 与 CAS writer；

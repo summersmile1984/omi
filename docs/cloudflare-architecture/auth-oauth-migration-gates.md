@@ -2,33 +2,33 @@
 
 审计日期：2026-08-31
 
-本文只定义下一次正向迁移所需的 authority、schema 和 fixture，不改变当前
-legacy owner。Better Auth 官方支持 Cloudflare Workers/Hono 与 D1；仓库中的
+本文定义 staging owner 与后续生产切换所需的 authority、schema 和 fixture。
+Better Auth 官方支持 Cloudflare Workers/Hono 与 D1；仓库中的
 Auth Worker 已经使用这条组合承载 `/api/better-auth/*`。这里的阻塞点不是
 Workers 不能运行 Better Auth，而是 Better Auth 的 session/OAuth wire 与 Omi
 现有 Firebase 客户端协议不同。
 
 ## 当前 route decision
 
-以下六条入口继续保持 legacy-owned，并由 Edge 在
-`AUTH_OAUTH_STAGING_FAIL_CLOSED=true` 时统一返回 `503 auth_oauth_unavailable`。
-该 boundary 不读取请求体、不转发 legacy，也不代表成功迁移。
+以下六条入口已经切到 Auth/Jobs staging owner；缺少 provider/identity
+secrets 时由 Worker fail-closed 返回 `503 auth_oauth_unavailable`，不读取
+无界请求体、不转发 legacy，也不代表生产迁移完成。
 
-实现状态（2026-09-01）：Auth/Jobs 已具备可配置的 exact-route staging owner，
-但默认 gate 仍关闭，manifest 仍保留 legacy owner。`AUTH_EXACT_NATIVE_STAGING_ENABLED`
-和 `AUTH_EXACT_OAUTH_STAGING_ENABLED` 只负责 Edge → Worker 路由选择；Auth 的
+实现状态（2026-09-01）：Auth/Jobs exact-route staging owner 已启用，manifest
+已更新为 staging-owned。`AUTH_EXACT_NATIVE_STAGING_ENABLED` 和
+`AUTH_EXACT_OAUTH_STAGING_ENABLED` 负责 Edge → Worker 路由选择；Auth 的
 `LEGACY_AUTH_EXACT_STAGING_ENABLED`、Jobs 的
 `LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED` 以及所需 secrets 缺失时仍 fail-closed。
 因此“代码已可运行”和“旧客户端已完成 production cutover”是两个独立结论。
 
 | 入口                           | 当前 owner | 不能单独切换的 state/side effect                                                       |
 | ------------------------------ | ---------- | -------------------------------------------------------------------------------------- |
-| `GET /v1/auth/authorize`       | legacy     | Redis 五分钟 auth session、native/loopback redirect、PKCE 和 provider redirect         |
-| `GET /v1/auth/callback/google` | legacy     | 消费 auth session、Google code exchange、一次性 auth code 和 callback HTML             |
-| `POST /v1/auth/callback/apple` | legacy     | form-post、Apple 首次 `user` name、一次性 auth code 和 callback HTML                   |
-| `POST /v1/auth/token`          | legacy     | single-use code、redirect/PKCE 校验、Firebase provider credential/custom token         |
-| `GET /v1/oauth/authorize`      | legacy     | Firestore app catalog、consent HTML、CSRF cookie；页面必须与 token transaction 配对    |
-| `POST /v1/oauth/token`         | legacy     | Firebase ID-token verify、private/paid/tester/setup admission、enable/install mutation |
+| `GET /v1/auth/authorize`       | Auth staging | Redis 五分钟 auth session、native/loopback redirect、PKCE 和 provider redirect         |
+| `GET /v1/auth/callback/google` | Auth staging | 消费 auth session、Google code exchange、一次性 auth code 和 callback HTML             |
+| `POST /v1/auth/callback/apple` | Auth staging | form-post、Apple 首次 `user` name、一次性 auth code 和 callback HTML                   |
+| `POST /v1/auth/token`          | Auth staging | single-use code、redirect/PKCE 校验、Firebase provider credential/custom token         |
+| `GET /v1/oauth/authorize`      | Jobs staging | D1 app catalog、consent HTML、CSRF cookie；页面必须与 token transaction 配对           |
+| `POST /v1/oauth/token`         | Jobs staging | Firebase ID-token verify、private/paid/tester/setup admission、enable/install mutation |
 
 证据来源：`backend/routers/auth.py`、`backend/routers/oauth.py`，以及桌面端
 `desktop/windows/src/main/auth/omiAuth.ts`、macOS `AuthService.swift` 和移动端
@@ -38,10 +38,10 @@ cookie 或 JWT 放进该字段不能算 wire compatibility。
 
 ## Required D1 authority design
 
-下面是实现前必须评审的 schema 形状。迁移
+下面是实现与生产切换前必须评审的 schema 形状。迁移
 `auth/0007_legacy_compatibility_authority.sql` 与
 `auth/0009_legacy_auth_transaction_metadata.sql` 声明这些表；namespaced 与
-exact staging adapter 已读取 auth D1 transaction authority，但没有改变 route
+exact staging adapter 已读取 auth D1 transaction authority 并承载 staging
 owner。只有下面的 adapter/fixture 和真实 provider replay 全部通过后才可启用生产切换。
 
 ### 1. Firebase identity continuity
@@ -158,15 +158,14 @@ token admission 时执行最多 100 行的有界过期清理：过期的 pending
 放宽认证校验或阻止当前请求；它只会留下下一次 admission 可回收的 maintenance
 残留。provider credential 仍只存在于 AES-GCM envelope，清理不会把其明文读出。
 
-Auth Worker 现在注册了 exact `/v1/auth/authorize`、Google/Apple callback 和
+Auth Worker 现在注册并承载 exact `/v1/auth/authorize`、Google/Apple callback 和
 `/v1/auth/token` handler；它们与 namespaced seam 共用同一套 D1 transaction
-authority，但由 `LEGACY_AUTH_EXACT_STAGING_ENABLED` 独立 gate。Google 使用
+authority，并由 `LEGACY_AUTH_EXACT_STAGING_ENABLED` 独立 gate。Google 使用
 `GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET`；Apple 使用静态
 `APPLE_CLIENT_SECRET`，或由 `APPLE_TEAM_ID`、`APPLE_KEY_ID`、
 `APPLE_PRIVATE_KEY` 在 Workers Web Crypto 中生成短时 ES256 client-secret JWT。
-Edge 只有在 `AUTH_EXACT_NATIVE_STAGING_ENABLED=true` 时才会把 exact 请求转给
-Auth Worker，否则继续沿用原有 fail-closed/legacy rollback 路径。该 wiring 已
-覆盖 route-level 回归测试，但没有改变 manifest owner，也没有宣称真实 provider
+Edge 在 `AUTH_EXACT_NATIVE_STAGING_ENABLED=true` 时把 exact 请求转给 Auth
+Worker；该 wiring 已覆盖 route-level 回归测试，但没有宣称真实 provider
 production parity。
 
 `use_custom_token=true` 现在仅在配置 Firebase bridge 且 identity projection
@@ -302,11 +301,10 @@ legacy callback 或 app enable/install。对应 fixture 通过这些生产 adapt
    account 做完整 provider callback → namespaced custom-token bridge → Firebase
    sign-in 试验；必须证明 UID 与 D1 projection/generation 一致，且旧客户端能
    解析所有字段。当前 service-account/API key 未配置时只允许验证 fail-closed。
-3. 先让 namespaced compatibility endpoint 命中 Auth Worker，验证 callback HTML、
-   single-use/PKCE、provider failure 和 deletion fence，再讨论 exact `/v1/auth/*`
-   owner；期间不要把 Better Auth session alias 到 Firebase custom token。
+3. 先在 staging 让 namespaced 与 exact compatibility endpoint 命中 Auth Worker，
+   验证 callback HTML、single-use/PKCE、provider failure 和 deletion fence；期间
+   不要把 Better Auth session alias 到 Firebase custom token。
 4. 对 app OAuth 先回放一个非付费、非私有 disposable app，再覆盖 paid/private/
    setup callback 失败和 install CAS；验证旧 backend 未被调用、D1 residual 为零。
-5. 只有上述正向与失败探针均通过，才可在一次变更中同步更新 Edge route、
-   `backend-routes.json` 和 `routes.yaml`；否则继续使用
-   `AUTH_OAUTH_STAGING_FAIL_CLOSED`。
+5. 只有上述正向与失败探针均通过，才可从 staging owner 进入 production rollout，
+   并保留 `AUTH_OAUTH_STAGING_FAIL_CLOSED` 作为回滚闸门。
