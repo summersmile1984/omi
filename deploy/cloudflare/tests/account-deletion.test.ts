@@ -308,6 +308,22 @@ async function deletionHeaders(uid: string, path: string) {
   };
 }
 
+async function deletionRunHeaders(uid: string, path: string) {
+  const signed = await createSignedAuthContext(
+    { uid, authority: "better-auth", requestId: "account-deletion-run" },
+    "jobs",
+    "POST",
+    path,
+    "account-deletion-test-secret",
+  );
+  if (!signed) throw new Error("account deletion run assertion unavailable");
+  return {
+    "content-type": "application/json",
+    [AUTH_CONTEXT_HEADER]: signed.encoded,
+    [AUTH_SIGNATURE_HEADER]: signed.signature,
+  };
+}
+
 function queueMessage(body: JobMessage) {
   const ack = vi.fn();
   const retry = vi.fn();
@@ -401,6 +417,67 @@ describe("Cloudflare account deletion workflow", () => {
           .prepare("UPDATE cf_task_share_items SET ordinal = 1 WHERE token = ?")
           .run("deletion-owned-share"),
       ).toThrow(/account deletion fence/);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("runs only the authenticated account's deletion intent through the legacy boundary", async () => {
+    const state = environment();
+    try {
+      seedCloudflareAccount(state.database);
+      const deletePath = "/v1/users/delete-account";
+      await jobs.fetch(
+        new Request(`https://jobs.test${deletePath}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", deletePath),
+        }),
+        state.env,
+      );
+      const jobId = state.database.row<{ job_id: string }>(
+        "SELECT job_id FROM cf_account_deletion_intents WHERE uid = ?",
+        "deletion-user",
+      )?.job_id;
+      expect(jobId).toMatch(/^[0-9a-f-]{32,128}$/);
+
+      const runPath = "/v1/users/account-deletion-wipes/run";
+      const crossAccount = await jobs.fetch(
+        new Request(`https://jobs.test${runPath}`, {
+          method: "POST",
+          headers: await deletionRunHeaders("other-user", runPath),
+          body: JSON.stringify({ job_id: jobId }),
+        }),
+        state.env,
+      );
+      expect(crossAccount.status).toBe(200);
+      await expect(crossAccount.json()).resolves.toEqual({
+        status: "dropped",
+        reason: "unknown_job",
+      });
+      expect(
+        state.database.row<{ attempts: number }>(
+          "SELECT attempts FROM cf_account_deletion_intents WHERE job_id = ?",
+          jobId,
+        )?.attempts,
+      ).toBe(0);
+
+      vi.advanceTimersByTime(60_000);
+      const ownAccount = await jobs.fetch(
+        new Request(`https://jobs.test${runPath}`, {
+          method: "POST",
+          headers: await deletionRunHeaders("deletion-user", runPath),
+          body: JSON.stringify({ job_id: jobId }),
+        }),
+        state.env,
+      );
+      expect(ownAccount.status).toBe(200);
+      await expect(ownAccount.json()).resolves.toEqual({ status: "queued" });
+      expect(
+        state.database.row<{ attempts: number }>(
+          "SELECT attempts FROM cf_account_deletion_intents WHERE job_id = ?",
+          jobId,
+        )?.attempts,
+      ).toBe(1);
     } finally {
       state.database.close();
     }

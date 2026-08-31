@@ -325,6 +325,29 @@ describe("edge gateway", () => {
     ).toMatchObject({ uid: "deletion-user", authority: "better-auth" });
     await expect(forwarded?.text()).resolves.toBe(body);
 
+    const runBody = JSON.stringify({ job_id: "deletion-job-1" });
+    const runResponse = await edge.fetch(
+      new Request("https://edge.test/v1/users/account-deletion-wipes/run", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: runBody,
+      }),
+      env as never,
+    );
+    expect(runResponse.status).toBe(200);
+    expect(forwarded?.method).toBe("POST");
+    expect(new URL(forwarded?.url || "https://invalid.test").pathname).toBe(
+      "/v1/users/account-deletion-wipes/run",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(
+      decodeAuthContext(forwarded?.headers.get("x-omi-auth-context") ?? null),
+    ).toMatchObject({ uid: "deletion-user", authority: "better-auth" });
+    await expect(forwarded?.text()).resolves.toBe(runBody);
+
     const unauthenticated = await edge.fetch(
       new Request("https://edge.test/v1/users/delete-account", {
         method: "DELETE",

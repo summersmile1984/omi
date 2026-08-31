@@ -878,6 +878,10 @@ app.get("/v1/integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
 app.get("/v1/calendar/google/events", proxyAuthenticatedJobs);
 app.get("/v1/personas/twitter/profile", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
+app.post(
+  "/v1/users/account-deletion-wipes/run",
+  proxyAuthenticatedAccountDeletion,
+);
 
 const proxyAuthenticatedCore = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,

@@ -44,6 +44,7 @@ const STRIPE_SCHEDULE_ID = /^sub_sched_[A-Za-z0-9]{8,128}$/;
 const STRIPE_CUSTOMER_ID = /^cus_[A-Za-z0-9]{8,128}$/;
 const STRIPE_CONNECT_ACCOUNT_ID = /^acct_[A-Za-z0-9]{7,155}$/;
 const STRIPE_TERMINAL_STATUSES = new Set(["canceled", "incomplete_expired"]);
+const ACCOUNT_DELETION_RUN_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 type AccountDeletionIntent = {
   uid: unknown;
@@ -683,6 +684,60 @@ export function registerAccountDeletionRoutes(
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
     return admitAccountDeletion(c, context);
+  });
+
+  // The legacy path was a Cloud Tasks/OIDC handler. In the Cloudflare profile
+  // the durable queue is the source of truth, so this compatibility boundary
+  // accepts only a Better Auth principal and advances that principal's own
+  // D1 deletion intent. It never accepts a caller-supplied uid and cannot
+  // trigger another account's job.
+  app.post("/v1/users/account-deletion-wipes/run", async (c) => {
+    const context = await requestContext(c);
+    if (!context || context.authority !== "better-auth") {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readBoundedRequestBody(c.req.raw));
+    } catch {
+      return c.json({ error: "invalid request" }, 400);
+    }
+    const payload =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : null;
+    const jobId = typeof payload?.job_id === "string" ? payload.job_id : "";
+    if (!ACCOUNT_DELETION_RUN_JOB_ID.test(jobId)) {
+      return c.json({ error: "invalid request" }, 400);
+    }
+
+    try {
+      const intent = await readIntentByJobId(c.env, jobId);
+      // Keep the old handler's non-disclosure behavior for unknown or
+      // cross-account job IDs: acknowledge without mutating any state.
+      if (!intent || intent.uid !== context.uid) {
+        return c.json({ status: "dropped", reason: "unknown_job" });
+      }
+      const message = {
+        body: accountDeletionMessage(jobId),
+        attempts: 0,
+        ack() {},
+        retry() {},
+      } as unknown as Message<JobMessage>;
+      await processAccountDeletionMessage(message, c.env);
+
+      const tombstone = await activeDeletionTombstone(
+        c.env,
+        context.uid,
+        Math.floor(Date.now() / 1_000),
+      );
+      if (tombstone) return c.json({ status: "done" });
+      const remaining = await readIntentByJobId(c.env, jobId);
+      if (!remaining) return c.json({ status: "dropped", reason: "completed" });
+      return c.json({ status: "queued" });
+    } catch {
+      return c.json({ status: "retry" }, 503);
+    }
   });
 }
 

@@ -3789,6 +3789,17 @@ routes:
     idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/users/account-deletion-wipes/run
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, d1-auth, r2-assets, queue-jobs, worker-secrets]
+    protocol: http
+    idempotency: optional
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/users/location-context-consent
     owner: api-core
