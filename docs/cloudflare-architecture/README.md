@@ -35,7 +35,7 @@
 
 ## 本轮验证证据
 
-- Cloudflare TypeScript：57 个测试文件、460 个测试通过；类型检查和生产依赖审计通过。
+- Cloudflare TypeScript：57 个测试文件、461 个测试通过；类型检查和生产依赖审计通过。
 - `api-core`：364 个测试通过；`api-ai`：88 个测试通过。
 - Web：9 个测试文件、41 个测试通过；vinext staging build 与 Worker dry-run 通过。
 - manifest：562 条 Cloudflare 路由、577 条完整 backend 路由和 23 个 staging 资源通过校验；42 条 legacy-owned 路由成为可量化迁移队列。D1 review queue 的三个端点已由 API Core/Edge 承载，并由 canonical memory 写入 producer、source revision/hash projection 和原子 resolve 覆盖；conversation finalize/status/reprocess/merge 已声明 API Core owner，`0094`/`0095`/`0096` staging migration 与 live Queue 验证已完成；`GET/POST /v1/agent/*` 已切到 API Core，并仅声明/执行已具备 D1 authority 的一方工具。
@@ -46,6 +46,7 @@
 - Hume callback staging ingress 已发布在同一 Jobs/Edge 版本；未配置 signing key 时返回 `503 hume_callback_unavailable`，避免接收无法验证的 provider payload。队列 consumer 仍以 `hume processing unavailable` terminal-fail，不宣称 legacy Firestore task/emotion/conversation/notification parity。
 - 最新 staging 边界发布（2026-08-31）：API Core `1a865464-2c3c-447a-bad5-f62ec231cbd1`、Edge `65b5b50b-2945-4a07-ad22-5a860bec1975`、Jobs `dd604220-0f34-40e2-b2d0-096932dcc3b3`；远端 D1 已应用 `0103_data_protection_migration.sql`。真实 Better Auth 账号验证 health=200、What Matters Now/debug=404（认证后无 projection）、migration single/batch/finalize=503（缺少 capability，未写 receipt）、Phone/Twilio=503、legacy Auth/OAuth=503；`POST /v1/personas` 图片创建返回 200，完全重复返回同一 `app_id`，随后删号返回 200。
 - Gemini/chat compatibility fail-closed staging 发布（2026-08-31）：Edge `09c66ac7-bb3c-4a1f-9f24-ec9d26ebddfe`。对 `/v1/proxy/gemini`、`/v1/proxy/gemini-stream/*`、`/v1/chat/materialize-prompts`、`/v2/chat/materialize-prompts`、`/v2/chat/completions` 的真实请求均返回 `503`（分别为 `gemini_proxy_unavailable` / `chat_compatibility_unavailable`），带 `cache-control: no-store`，不向 legacy 转发 prompt、凭据或 cookie；5 条路径仍为 legacy-owned，待 provider/quota/BYOK/SSE 与 Firestore continuity authority 完整后再切换。
+- Task intelligence/Wrapped fail-closed staging 发布（2026-08-31）：Edge `a9046a33-4b91-489a-8ec8-263134bc639a`。13 条 staged-task/task-intelligence 路径真实请求均返回 `503 task_intelligence_unavailable`，Wrapped 的 `GET /v1/wrapped/2025` 与 `POST /v1/wrapped/2025/generate` 返回 `503 wrapped_unavailable`，均带 `cache-control: no-store`；这些 legacy-owned 路径不会把任务数据、recap 或 prompt 转发到旧后端。
 - `GET/POST /v1/agent/*` staging live probe（2026-08-31）：未认证目录与执行请求均返回 `401`；临时 Better Auth 账号经 Edge 获取目录返回 `200` 与 7 个工具定义，执行 `get_memories_tool` 返回 D1 结果，未知/未迁移的 calendar tool 返回 `404`，响应不含内部 `config` 参数；探针账号已提交删号。
 - Stateless chat generate-reply staging live probe（2026-08-31）：API AI `0b8636e3-ed1b-4928-8434-ac470110f238`、Edge `af9be7e8-277b-4392-9614-f19f72928ef7` 已发布；Better Auth 隔离账号经 Edge 生成草稿返回 `200`，未认证为 `401`，非法 history 为 `422`，缺失 app 为 `404`；D1 quota event 独立结算，删号 Queue 完成后 chat session/message/quota event/deletion intent 均为 `0`，仅保留 1 条预期 tombstone。
 - Conversation finalization 的 `0094` migration、API Core/Jobs/Edge 已于 2026-08-31 发布（版本 `cb1a8271` / `18df02b0` / `99eb710f`）；隔离账号实测 `queued → running → completed`，会话读回 completed，删号后 finalization job 与 conversation 残留均为 0（仅预期 tombstone）。
