@@ -359,6 +359,70 @@ describe("edge gateway", () => {
     }
   });
 
+  it("fails closed for legacy staged-task and task-intelligence paths in staging", async () => {
+    const env = {
+      TASK_INTELLIGENCE_STAGING_FAIL_CLOSED: "true",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    const requests = [
+      ["DELETE", "/v1/staged-tasks"],
+      ["DELETE", "/v1/staged-tasks/staged-1"],
+      ["GET", "/v1/staged-tasks?limit=10&offset=0"],
+      ["PATCH", "/v1/staged-tasks/batch-scores"],
+      ["POST", "/v1/staged-tasks"],
+      ["POST", "/v1/staged-tasks/promote"],
+      ["POST", "/v1/staged-tasks/staged-1/promote"],
+      ["POST", "/v1/task-intelligence/feedback"],
+      ["POST", "/v1/task-intelligence/interventions"],
+      ["POST", "/v1/task-intelligence/outcomes"],
+      ["POST", "/v1/what-matters-now/evaluate"],
+      ["PUT", "/v1/task-intelligence/context-snapshot"],
+      ["PUT", "/v1/task-intelligence/open-loop-snapshot"],
+    ] as const;
+
+    try {
+      for (const [method, path] of requests) {
+        const response = await edge.fetch(
+          new Request(`https://edge.test${path}`, {
+            method,
+            headers: {
+              authorization: "Bearer opaque-session",
+              cookie: "session=opaque",
+              "content-type": "application/json",
+              "x-omi-auth-context": "caller-controlled",
+            },
+            ...(method === "GET"
+              ? {}
+              : {
+                  body: JSON.stringify({
+                    candidate_id: "opaque-candidate",
+                    prompt: "opaque task prompt",
+                    snapshot: "opaque task state",
+                  }),
+                }),
+          }),
+          env as never,
+        );
+
+        expect(response.status, `${method} ${path}`).toBe(503);
+        await expect(response.json()).resolves.toEqual({
+          error: "task_intelligence_unavailable",
+          detail:
+            "Legacy staged-task and task-intelligence workflows are unavailable on Cloudflare staging.",
+        });
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
   it("fails closed for legacy Persona and app/MCP mutation paths in staging", async () => {
     const env = {
       PERSONA_APPS_STAGING_FAIL_CLOSED: "true",
@@ -410,6 +474,53 @@ describe("edge gateway", () => {
           error: "persona_apps_unavailable",
           detail:
             "Legacy Persona and app/MCP mutation routes are unavailable on Cloudflare staging.",
+        });
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally {
+      legacyFetch.mockRestore();
+    }
+  });
+
+  it("fails closed for legacy Wrapped paths in staging", async () => {
+    const env = {
+      WRAPPED_STAGING_FAIL_CLOSED: "true",
+      LEGACY_BACKEND_URL: "https://legacy.example.test",
+    };
+    const legacyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        throw new Error("legacy backend must not be called");
+      });
+    const requests = [
+      ["GET", "/v1/wrapped/2025"],
+      ["POST", "/v1/wrapped/2025/generate"],
+    ] as const;
+
+    try {
+      for (const [method, path] of requests) {
+        const response = await edge.fetch(
+          new Request(`https://edge.test${path}`, {
+            method,
+            headers: {
+              authorization: "Bearer opaque-session",
+              cookie: "session=opaque",
+              "content-type": "application/json",
+              "x-omi-auth-context": "caller-controlled",
+            },
+            ...(method === "POST"
+              ? { body: JSON.stringify({ prompt: "opaque wrapped input" }) }
+              : {}),
+          }),
+          env as never,
+        );
+
+        expect(response.status, `${method} ${path}`).toBe(503);
+        await expect(response.json()).resolves.toEqual({
+          error: "wrapped_unavailable",
+          detail:
+            "Legacy Wrapped generation and retrieval are unavailable on Cloudflare staging.",
         });
         expect(response.headers.get("cache-control")).toBe("no-store");
       }

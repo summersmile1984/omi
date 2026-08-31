@@ -701,6 +701,34 @@ const legacyPersonaAppsStagingBoundary = async (
   );
 };
 
+// Wrapped currently reads and writes Firestore users/{uid}/wrapped/{year},
+// aggregates legacy Firestore conversations/action items, invokes the
+// wrapped-analysis provider, and emits a legacy notification from a local
+// executor. The Cloudflare D1 conversation projection and Workers AI do not
+// yet provide the result schema, durable job/lease state, historical data
+// backfill, or notification contract needed for parity. In isolated staging,
+// fail closed before a Wrapped request can reach legacy. The switch remains
+// opt-in so non-staging deployments preserve the existing compatibility path.
+const legacyWrappedStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.WRAPPED_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "wrapped_unavailable",
+        detail:
+          "Legacy Wrapped generation and retrieval are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
 const proxyPublicFirmware = proxyPublicCore;
 
 // The cloud Agent VM was retired, but released desktop clients still call
@@ -1410,6 +1438,51 @@ app.post(
   legacyChatCompatibilityStagingBoundary,
 );
 app.post("/v2/chat/completions", legacyChatCompatibilityStagingBoundary);
+app.get("/v1/wrapped/:year", legacyWrappedStagingBoundary);
+app.post("/v1/wrapped/:year/generate", legacyWrappedStagingBoundary);
+app.delete("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);
+app.delete(
+  "/v1/staged-tasks/:taskId",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.get("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);
+app.patch(
+  "/v1/staged-tasks/batch-scores",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.post("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);
+app.post(
+  "/v1/staged-tasks/promote",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.post(
+  "/v1/staged-tasks/:taskId/promote",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.post(
+  "/v1/task-intelligence/feedback",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.post(
+  "/v1/task-intelligence/interventions",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.post(
+  "/v1/task-intelligence/outcomes",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.post(
+  "/v1/what-matters-now/evaluate",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.put(
+  "/v1/task-intelligence/context-snapshot",
+  legacyTaskIntelligenceStagingBoundary,
+);
+app.put(
+  "/v1/task-intelligence/open-loop-snapshot",
+  legacyTaskIntelligenceStagingBoundary,
+);
 app.get("/v1/users/stats/chat-messages", proxyAuthenticatedCore);
 app.post("/v2/chat-sessions", proxyAuthenticatedCore);
 app.get("/v2/chat-sessions", proxyAuthenticatedCore);
