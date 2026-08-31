@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
@@ -133,6 +133,71 @@ function signedRequest(
     },
     body,
   });
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function reviewedHumeProjectionPlan(overrides: Record<string, unknown> = {}) {
+  const base = {
+    mode: "reviewed-apply",
+    schema_version: 1,
+    source: {
+      kind: "firestore-task-export",
+      export_sha256: "a".repeat(64),
+    },
+    review_id: "11111111-1111-4111-8111-111111111111",
+    projection: {
+      request_id: "batch_job_attested",
+      task_id: "task_attested",
+      action: "hume_mersure_user_expression",
+      uid: "hume-owner",
+      conversation_id: "conversation-attested",
+      account_generation: 4,
+      source_row_sha256: "b".repeat(64),
+    },
+    ...overrides,
+  };
+  return {
+    ...base,
+    plan_hash: createHash("sha256").update(stableJson(base)).digest("hex"),
+  };
+}
+
+function rehashProjectionPlan(
+  plan: ReturnType<typeof reviewedHumeProjectionPlan>,
+) {
+  const { plan_hash: _ignored, ...withoutHash } = plan;
+  return {
+    ...withoutHash,
+    plan_hash: createHash("sha256")
+      .update(stableJson(withoutHash))
+      .digest("hex"),
+  };
+}
+
+function destinationAccount(database: SqliteD1, generation = 4) {
+  database.database
+    .prepare(
+      "INSERT INTO cf_account_cutover " +
+        "(uid, state, account_generation, checkpoint_phase, destination_backend_bound, updated_at) " +
+        "VALUES (?, 'new', ?, 'completed', 1, ?)",
+    )
+    .run("hume-owner", generation, 100);
+  database.database
+    .prepare(
+      "INSERT INTO cf_conversations (uid, id, created_at) VALUES (?, ?, ?)",
+    )
+    .run("hume-owner", "conversation-attested", 100);
 }
 
 describe("Hume webhook boundary", () => {
@@ -593,6 +658,144 @@ describe("Hume webhook boundary", () => {
       expect(JSON.parse(result?.result_json ?? "{}").prediction_count).toBe(
         result?.prediction_count,
       );
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("keeps the reviewed projection gate closed by default", async () => {
+    const state = testEnvironment();
+    try {
+      const response = await jobs.fetch(
+        new Request("https://jobs.test/internal/hume-task-projections/apply", {
+          method: "POST",
+          headers: { "content-type": "application/json", "secret-key": "admin" },
+          body: JSON.stringify(reviewedHumeProjectionPlan()),
+        }),
+        state.env,
+      );
+      expect(response.status).toBe(503);
+      expect(
+        state.database.row("SELECT COUNT(*) AS count FROM cf_hume_task_projections"),
+      ).toEqual({ count: 0 });
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("maps a settled result only through an attested projection and is idempotent", async () => {
+    const state = testEnvironment();
+    try {
+      destinationAccount(state.database);
+      const operatorEnv = {
+        ...state.env,
+        ADMIN_KEY: "admin",
+        HUME_TASK_PROJECTION_STAGING_ENABLED: "true",
+      } as JobsEnv;
+      const body = JSON.stringify({
+        job_id: "batch_job_attested",
+        status: "COMPLETED",
+        predictions: [],
+      });
+      await jobs.fetch(signedRequest(body), state.env);
+      await processHumeWebhookMessage(
+        { body: state.sent[0], ack: vi.fn(), retry: vi.fn() } as unknown as Message<JobMessage>,
+        state.env,
+      );
+      expect(
+        state.database.row<{ mapping_status: string }>(
+          "SELECT mapping_status FROM cf_hume_webhook_results WHERE job_id = ?",
+          "batch_job_attested",
+        ),
+      ).toEqual({ mapping_status: "unmapped" });
+
+      const plan = reviewedHumeProjectionPlan();
+      const first = await jobs.fetch(
+        new Request("https://jobs.test/internal/hume-task-projections/apply", {
+          method: "POST",
+          headers: { "content-type": "application/json", "secret-key": "admin" },
+          body: JSON.stringify(plan),
+        }),
+        operatorEnv,
+      );
+      expect(first.status).toBe(201);
+      expect(
+        state.database.row<{
+          mapping_status: string;
+          mapped_uid: string;
+          mapped_conversation_id: string;
+          mapped_account_generation: number;
+        }>(
+          "SELECT mapping_status, mapped_uid, mapped_conversation_id, mapped_account_generation " +
+            "FROM cf_hume_webhook_results WHERE job_id = ?",
+          "batch_job_attested",
+        ),
+      ).toEqual({
+        mapping_status: "attested",
+        mapped_uid: "hume-owner",
+        mapped_conversation_id: "conversation-attested",
+        mapped_account_generation: 4,
+      });
+      const duplicate = await jobs.fetch(
+        new Request("https://jobs.test/internal/hume-task-projections/apply", {
+          method: "POST",
+          headers: { "content-type": "application/json", "secret-key": "admin" },
+          body: JSON.stringify(plan),
+        }),
+        operatorEnv,
+      );
+      expect(duplicate.status).toBe(200);
+      await processHumeWebhookMessage(
+        { body: state.sent[0], ack: vi.fn(), retry: vi.fn() } as unknown as Message<JobMessage>,
+        state.env,
+      );
+      expect(
+        state.database.row("SELECT COUNT(*) AS count FROM cf_hume_task_projections"),
+      ).toEqual({ count: 1 });
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("rejects a projection with the wrong generation or an active deletion fence", async () => {
+    const state = testEnvironment();
+    try {
+      destinationAccount(state.database);
+      const operatorEnv = {
+        ...state.env,
+        ADMIN_KEY: "admin",
+        HUME_TASK_PROJECTION_STAGING_ENABLED: "true",
+      } as JobsEnv;
+      const stale = reviewedHumeProjectionPlan();
+      stale.projection.account_generation = 3;
+      const staleResponse = await jobs.fetch(
+        new Request("https://jobs.test/internal/hume-task-projections/apply", {
+          method: "POST",
+          headers: { "content-type": "application/json", "secret-key": "admin" },
+          body: JSON.stringify(rehashProjectionPlan(stale)),
+        }),
+        operatorEnv,
+      );
+      expect(staleResponse.status).toBe(409);
+      state.database.database
+        .prepare(
+          "INSERT INTO cf_account_deletion_intents " +
+            "(uid, job_id, status, phase, next_attempt_at, created_at, updated_at) " +
+            "VALUES (?, ?, 'pending', 'quiescing', ?, ?, ?)",
+        )
+        .run("hume-owner", "delete-hume-owner", 100, 100, 100);
+      const fenced = await jobs.fetch(
+        new Request("https://jobs.test/internal/hume-task-projections/apply", {
+          method: "POST",
+          headers: { "content-type": "application/json", "secret-key": "admin" },
+          body: JSON.stringify(reviewedHumeProjectionPlan()),
+        }),
+        operatorEnv,
+      );
+      expect(fenced.status).toBe(409);
+      expect(
+        state.database.row("SELECT COUNT(*) AS count FROM cf_hume_task_projections"),
+      ).toEqual({ count: 0 });
     } finally {
       state.database.close();
     }

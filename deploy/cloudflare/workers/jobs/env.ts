@@ -185,4 +185,6 @@ export type JobsEnv = {
   DLQ_REPLAY_STAGING_ENABLED?: string;
   /** HMAC secret for bounded, content-bound DLQ replay requests. */
   DLQ_REPLAY_SIGNING_SECRET?: string;
+  /** Explicit operator gate for reviewed Hume request_id task projections. */
+  HUME_TASK_PROJECTION_STAGING_ENABLED?: string;
 };

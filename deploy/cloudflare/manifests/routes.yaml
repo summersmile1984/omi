@@ -4739,6 +4739,17 @@ routes:
     idempotency: release-id
     rollout: staging-only
     rollback: disabled
+  - method: POST
+    path: /internal/hume-task-projections/apply
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    idempotency: request-id
+    rollout: staging-only
+    rollback: disabled
   - method: GET
     path: /memory/vector/search
     owner: api-core

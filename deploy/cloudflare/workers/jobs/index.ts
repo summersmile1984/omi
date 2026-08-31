@@ -131,6 +131,7 @@ import {
   reconcileTaskIntelligenceJobs,
 } from "./task-intelligence";
 import { captureDlqMessage, registerDlqReplayRoutes } from "./dlq-replay";
+import { registerHumeTaskProjectionRoutes } from "./hume-task-projection";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -214,6 +215,7 @@ registerAudioMergeRoutes(app, requestContext);
 registerLegacyAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);
 registerHumeWebhookRoutes(app);
+registerHumeTaskProjectionRoutes(app);
 registerWrappedRoutes(app, requestContext);
 registerPhoneTwilioRoutes(app, requestContext);
 registerPhoneHistoryImportRoutes(app);

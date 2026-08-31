@@ -1357,6 +1357,10 @@ app.post(
   "/internal/desktop-release-history/reviews/:review_id/apply",
   proxyPublicJobs,
 );
+// Hume task ownership is operator-attested only. This route never accepts a
+// provider callback or caller identity; Jobs validates the reviewed D1
+// projection and its account-generation/deletion fences.
+app.post("/internal/hume-task-projections/apply", proxyPublicJobs);
 // Namespaced external MCP App OAuth staging seam. This is intentionally
 // separate from Better Auth's client-to-Omi MCP OAuth and from legacy
 // /v1/apps/mcp; Jobs enforces its explicit staging gate and D1 authority.

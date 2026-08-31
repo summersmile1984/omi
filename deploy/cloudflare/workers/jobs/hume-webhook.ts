@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import type { JobMessage, JobsEnv } from "./env";
+import { mapHumeResultIfAttested } from "./hume-task-projection";
 
 const MAX_HUME_WEBHOOK_BYTES = 2 * 1024 * 1024;
 const HUME_TIMESTAMP_TOLERANCE_SECONDS = 5 * 60;
@@ -31,6 +32,9 @@ type HumeWebhookResultRow = {
   prediction_count: number;
   predictions_json: string;
   result_json: string | null;
+  mapped_uid: string | null;
+  mapped_conversation_id: string | null;
+  mapped_account_generation: number | null;
   last_error: string | null;
 };
 
@@ -287,7 +291,8 @@ async function webhookRow(env: JobsEnv, eventId: string) {
 async function webhookResultRow(env: JobsEnv, eventId: string) {
   return env.APP_DB.prepare(
     "SELECT event_id, job_id, callback_status, mapping_status, processing_status, " +
-      "prediction_count, predictions_json, result_json, last_error " +
+      "prediction_count, predictions_json, result_json, mapped_uid, " +
+      "mapped_conversation_id, mapped_account_generation, last_error " +
       "FROM cf_hume_webhook_results WHERE event_id = ?",
   )
     .bind(eventId)
@@ -462,6 +467,7 @@ export async function processHumeWebhookMessage(
     return;
   }
   if (result.processing_status !== "pending") {
+    await mapHumeResultIfAttested(env, result.job_id);
     message.ack();
     return;
   }
@@ -481,9 +487,11 @@ export async function processHumeWebhookMessage(
     )
     .run();
   if (settled.meta?.changes !== 1) {
+    await mapHumeResultIfAttested(env, result.job_id);
     message.ack();
     return;
   }
+  await mapHumeResultIfAttested(env, result.job_id);
   await env.APP_DB.prepare(
     "UPDATE cf_hume_webhook_events SET attempts = attempts + 1, last_error = NULL, updated_at = ? " +
       "WHERE event_id = ? AND status = 'queued'",
