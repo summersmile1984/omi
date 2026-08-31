@@ -49,8 +49,15 @@ const MAX_TOOL_SCHEMA_BYTES = 512_000;
 const MAX_TOOL_SCHEMA_DEPTH = 16;
 const MAX_TOOL_SCHEMA_PROPERTIES = 256;
 const MCP_PROTOCOL_VERSION = "2025-03-26";
+const SUPPORTED_MCP_PROTOCOL_VERSIONS = new Set([
+  MCP_PROTOCOL_VERSION,
+  "2024-11-05",
+]);
 const STATE_TTL_SECONDS = 600;
 const MAX_ENDPOINT_LENGTH = 2_048;
+const MAX_ENDPOINT_CANDIDATES = 8;
+const MAX_TOOLS_PAGES = 16;
+const MAX_CURSOR_BYTES = 512;
 const OPAQUE_RE = /^[A-Za-z0-9._~-]{16,512}$/;
 const CLIENT_ID_RE = /^[\x21-\x7e]{1,2048}$/;
 
@@ -207,6 +214,53 @@ function publicHttps(value: unknown): value is string {
   } catch {
     return false;
   }
+}
+
+function normalizeEndpointCandidates(
+  primary: unknown,
+  extras: unknown,
+): string[] {
+  if (!publicHttps(primary))
+    throw new McpAppOauthError(422, "invalid_provider_metadata");
+  if (extras !== undefined && !Array.isArray(extras))
+    throw new McpAppOauthError(422, "invalid_provider_metadata");
+  const values = [primary, ...(Array.isArray(extras) ? extras : [])];
+  if (values.length > MAX_ENDPOINT_CANDIDATES)
+    throw new McpAppOauthError(422, "invalid_provider_metadata");
+  const candidates: string[] = [];
+  for (const value of values) {
+    if (!publicHttps(value))
+      throw new McpAppOauthError(422, "invalid_provider_metadata");
+    if (!candidates.includes(value)) candidates.push(value);
+  }
+  return candidates;
+}
+
+function metadataEndpointCandidates(
+  primary: string,
+  resolved: string | null | undefined,
+  metadataJson: string | null | undefined,
+): string[] {
+  const values: unknown[] = [];
+  if (resolved) values.push(resolved);
+  values.push(primary);
+  try {
+    const metadata = metadataJson
+      ? objectValue(JSON.parse(metadataJson))
+      : null;
+    if (Array.isArray(metadata?.endpoint_candidates))
+      values.push(...metadata.endpoint_candidates);
+  } catch {
+    // Older rows and a corrupt optional projection still retain server_url.
+  }
+  const candidates: string[] = [];
+  for (const value of values) {
+    if (publicHttps(value) && !candidates.includes(value)) {
+      candidates.push(value);
+      if (candidates.length === MAX_ENDPOINT_CANDIDATES) break;
+    }
+  }
+  return candidates;
 }
 
 function isPrivateIpLiteral(host: string): boolean {
@@ -398,6 +452,467 @@ async function boundedRpcJson(
   }
   if (!payload) throw new McpAppOauthError(502, unavailableCode);
   return payload;
+}
+
+function strictRpcResult(payload: JsonObject, expectedId: number): JsonObject {
+  if (payload.jsonrpc !== "2.0" || payload.id !== expectedId)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  const hasResult = Object.prototype.hasOwnProperty.call(payload, "result");
+  const hasError = Object.prototype.hasOwnProperty.call(payload, "error");
+  if (hasResult === hasError)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  if (hasError) {
+    const error = objectValue(payload.error);
+    if (
+      !error ||
+      typeof error.code !== "number" ||
+      !Number.isSafeInteger(error.code) ||
+      typeof error.message !== "string" ||
+      utf8Bytes(error.message) > 8_192
+    )
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    throw new McpAppOauthError(502, "discovery_provider_error");
+  }
+  const result = objectValue(payload.result);
+  if (!result) throw new McpAppOauthError(502, "discovery_response_invalid");
+  return result;
+}
+
+function nextToolsCursor(result: JsonObject): string | null {
+  if (result.nextCursor === undefined || result.nextCursor === null)
+    return null;
+  if (
+    typeof result.nextCursor !== "string" ||
+    !result.nextCursor ||
+    utf8Bytes(result.nextCursor) > MAX_CURSOR_BYTES ||
+    /[\u0000-\u001f\u007f]/.test(result.nextCursor)
+  )
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  return result.nextCursor;
+}
+
+type SseReaderState = {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  decoder: TextDecoder;
+  buffer: string;
+  event: string;
+  data: string[];
+  totalBytes: number;
+};
+
+type SseEvent = { event: string; data: string };
+
+async function nextSseEvent(state: SseReaderState): Promise<SseEvent | null> {
+  const dispatch = (): SseEvent | null => {
+    if (!state.data.length) {
+      state.event = "";
+      return null;
+    }
+    const event = {
+      event: state.event || "message",
+      data: state.data.join("\n"),
+    };
+    state.event = "";
+    state.data = [];
+    return event;
+  };
+  while (true) {
+    const newline = state.buffer.indexOf("\n");
+    if (newline >= 0) {
+      let line = state.buffer.slice(0, newline);
+      state.buffer = state.buffer.slice(newline + 1);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (!line) {
+        const event = dispatch();
+        if (event) return event;
+        continue;
+      }
+      if (line.startsWith(":")) continue;
+      const separator = line.indexOf(":");
+      const field = separator < 0 ? line : line.slice(0, separator);
+      const value =
+        separator < 0 ? "" : line.slice(separator + 1).replace(/^ /, "");
+      if (field === "event") state.event = value.slice(0, 128);
+      if (field === "data") {
+        state.data.push(value);
+        if (utf8Bytes(state.data.join("\n")) > MAX_PROVIDER_RESPONSE_BYTES)
+          throw new McpAppOauthError(502, "discovery_response_invalid");
+      }
+      continue;
+    }
+    const next = await state.reader.read();
+    if (next.done) {
+      state.buffer += state.decoder.decode();
+      if (state.buffer) {
+        state.buffer += "\n";
+        continue;
+      }
+      const event = dispatch();
+      return event;
+    }
+    state.totalBytes += next.value.byteLength;
+    if (state.totalBytes > MAX_PROVIDER_RESPONSE_BYTES) {
+      await state.reader.cancel();
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    }
+    state.buffer += state.decoder.decode(next.value, { stream: true });
+  }
+}
+
+function sseJsonRpc(event: SseEvent): JsonObject {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(event.data);
+  } catch {
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  }
+  const object = objectValue(payload);
+  if (!object) throw new McpAppOauthError(502, "discovery_response_invalid");
+  return object;
+}
+
+function legacySseEndpoint(base: string, value: string): string {
+  let resolved: URL;
+  try {
+    resolved = new URL(value, base);
+  } catch {
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  }
+  if (!publicHttps(resolved.toString()))
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  const baseUrl = new URL(base);
+  if (resolved.origin !== baseUrl.origin)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  return resolved.toString();
+}
+
+type DiscoveryTransportResult = {
+  endpoint: string;
+  transport: "streamable_http" | "sse";
+  protocolVersion: string;
+  tools: JsonObject[];
+  etag: string | null;
+};
+
+type LegacySseSession = {
+  endpoint: string;
+  state: SseReaderState;
+};
+
+async function openLegacySse(
+  dependencies: McpAppOauthDependencies,
+  endpoint: string,
+  accessToken: string,
+): Promise<LegacySseSession> {
+  const response = await providerFetch(dependencies, endpoint, {
+    method: "GET",
+    headers: {
+      accept: "text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+    },
+  });
+  if (response.status === 401)
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  if (!response.ok) throw new McpAppOauthError(502, "discovery_unavailable");
+  if (!response.body)
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+  if (!contentType.includes("text/event-stream"))
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  const state: SseReaderState = {
+    reader: response.body.getReader(),
+    decoder: new TextDecoder(),
+    buffer: "",
+    event: "",
+    data: [],
+    totalBytes: 0,
+  };
+  for (let count = 0; count < 32; count += 1) {
+    const event = await nextSseEvent(state);
+    if (!event) break;
+    if (event.event !== "endpoint") continue;
+    const value = event.data.trim();
+    if (!value || utf8Bytes(value) > MAX_ENDPOINT_LENGTH)
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    return { endpoint: legacySseEndpoint(endpoint, value), state };
+  }
+  await state.reader.cancel();
+  throw new McpAppOauthError(502, "discovery_response_invalid");
+}
+
+async function legacySseRpc(
+  dependencies: McpAppOauthDependencies,
+  session: LegacySseSession,
+  headers: Record<string, string>,
+  request: JsonObject,
+  expectedId: number,
+): Promise<JsonObject> {
+  const response = await providerFetch(dependencies, session.endpoint, {
+    method: "POST",
+    headers: { ...headers, accept: "application/json, text/event-stream" },
+    body: JSON.stringify(request),
+  });
+  if (response.status === 401)
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  if (!response.ok && response.status !== 202 && response.status !== 204)
+    throw new McpAppOauthError(502, "discovery_unavailable");
+  if (response.status !== 202 && response.status !== 204) {
+    const payload = await boundedRpcJson(
+      response,
+      "discovery_response_invalid",
+    );
+    return strictRpcResult(payload, expectedId);
+  }
+  for (let count = 0; count < 32; count += 1) {
+    const event = await nextSseEvent(session.state);
+    if (!event) break;
+    if (event.event === "endpoint") continue;
+    const payload = sseJsonRpc(event);
+    if (payload.id !== expectedId) continue;
+    return strictRpcResult(payload, expectedId);
+  }
+  throw new McpAppOauthError(502, "discovery_response_invalid");
+}
+
+async function discoverSse(
+  dependencies: McpAppOauthDependencies,
+  endpoint: string,
+  accessToken: string,
+): Promise<DiscoveryTransportResult> {
+  const session = await openLegacySse(dependencies, endpoint, accessToken);
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${accessToken}`,
+  };
+  const initialize = await legacySseRpc(
+    dependencies,
+    session,
+    headers,
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "Omi", version: "1.0.0" },
+      },
+    },
+    1,
+  );
+  const protocolVersion = initialize.protocolVersion;
+  if (
+    typeof protocolVersion !== "string" ||
+    !SUPPORTED_MCP_PROTOCOL_VERSIONS.has(protocolVersion)
+  )
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  const notification = await providerFetch(dependencies, session.endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    }),
+  });
+  if (
+    !notification.ok &&
+    notification.status !== 202 &&
+    notification.status !== 204
+  )
+    throw new McpAppOauthError(502, "discovery_unavailable");
+  let cursor: string | null = null;
+  const cursors = new Set<string>();
+  const tools: JsonObject[] = [];
+  const toolNames = new Set<string>();
+  let etag: string | null = null;
+  for (let page = 0; page < MAX_TOOLS_PAGES; page += 1) {
+    const result = await legacySseRpc(
+      dependencies,
+      session,
+      headers,
+      {
+        jsonrpc: "2.0",
+        id: page + 2,
+        method: "tools/list",
+        params: cursor ? { cursor } : {},
+      },
+      page + 2,
+    );
+    const pageTools = validateMcpTools(result.tools);
+    for (const tool of pageTools) {
+      const name = String(tool.name);
+      if (toolNames.has(name))
+        throw new McpAppOauthError(502, "discovery_response_invalid");
+      toolNames.add(name);
+    }
+    tools.push(...pageTools);
+    if (tools.length > MAX_TOOLS)
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    const nextCursor = nextToolsCursor(result);
+    if (!nextCursor) break;
+    if (cursors.has(nextCursor))
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    cursors.add(nextCursor);
+    cursor = nextCursor;
+    if (page === MAX_TOOLS_PAGES - 1)
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+  }
+  if (!tools.length) throw new McpAppOauthError(422, "no_tools_found");
+  return {
+    endpoint,
+    transport: "sse",
+    protocolVersion,
+    tools,
+    etag,
+  };
+}
+
+async function discoverStreamableHttp(
+  dependencies: McpAppOauthDependencies,
+  endpoint: string,
+  accessToken: string,
+): Promise<DiscoveryTransportResult> {
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    authorization: `Bearer ${accessToken}`,
+  };
+  const initialize = await providerFetch(dependencies, endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "Omi", version: "1.0.0" },
+      },
+    }),
+  });
+  if (initialize.status === 401)
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  if (initialize.status === 404 || initialize.status === 405)
+    throw new McpAppOauthError(502, "streamable_transport_unavailable");
+  if (!initialize.ok) throw new McpAppOauthError(502, "discovery_unavailable");
+  const initializePayload = await boundedRpcJson(
+    initialize,
+    "discovery_response_invalid",
+  );
+  const initializeResult = strictRpcResult(initializePayload, 1);
+  const protocolVersion = initializeResult.protocolVersion;
+  if (
+    typeof protocolVersion !== "string" ||
+    !SUPPORTED_MCP_PROTOCOL_VERSIONS.has(protocolVersion)
+  )
+    throw new McpAppOauthError(502, "discovery_response_invalid");
+  const sessionId = initialize.headers.get("mcp-session-id");
+  const sessionHeaders = {
+    ...headers,
+    ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+  };
+  const notification = await providerFetch(dependencies, endpoint, {
+    method: "POST",
+    headers: sessionHeaders,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    }),
+  });
+  if (
+    !notification.ok &&
+    notification.status !== 202 &&
+    notification.status !== 204
+  )
+    throw new McpAppOauthError(502, "discovery_unavailable");
+  let cursor: string | null = null;
+  const cursors = new Set<string>();
+  const tools: JsonObject[] = [];
+  const toolNames = new Set<string>();
+  let toolsResponse: Response | null = null;
+  for (let page = 0; page < MAX_TOOLS_PAGES; page += 1) {
+    const requestId = page + 2;
+    toolsResponse = await providerFetch(dependencies, endpoint, {
+      method: "POST",
+      headers: sessionHeaders,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: requestId,
+        method: "tools/list",
+        params: cursor ? { cursor } : {},
+      }),
+    });
+    if (toolsResponse.status === 401)
+      throw new McpAppOauthError(401, "mcp_reauthorization_required");
+    if (!toolsResponse.ok)
+      throw new McpAppOauthError(502, "discovery_unavailable");
+    const toolsPayload = await boundedRpcJson(
+      toolsResponse,
+      "discovery_response_invalid",
+    );
+    const toolsResult = strictRpcResult(toolsPayload, requestId);
+    const pageTools = validateMcpTools(toolsResult.tools);
+    for (const tool of pageTools) {
+      const name = String(tool.name);
+      if (toolNames.has(name))
+        throw new McpAppOauthError(502, "discovery_response_invalid");
+      toolNames.add(name);
+    }
+    tools.push(...pageTools);
+    if (tools.length > MAX_TOOLS)
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    const nextCursor = nextToolsCursor(toolsResult);
+    if (!nextCursor) break;
+    if (cursors.has(nextCursor))
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+    cursors.add(nextCursor);
+    cursor = nextCursor;
+    if (page === MAX_TOOLS_PAGES - 1)
+      throw new McpAppOauthError(502, "discovery_response_invalid");
+  }
+  if (!tools.length) throw new McpAppOauthError(422, "no_tools_found");
+  return {
+    endpoint,
+    transport: "streamable_http",
+    protocolVersion,
+    tools,
+    etag: toolsResponse?.headers.get("etag") || null,
+  };
+}
+
+async function discoverEndpoint(
+  dependencies: McpAppOauthDependencies,
+  endpoints: string[],
+  accessToken: string,
+): Promise<DiscoveryTransportResult> {
+  let lastError: unknown = null;
+  for (const endpoint of endpoints) {
+    try {
+      return await discoverStreamableHttp(dependencies, endpoint, accessToken);
+    } catch (error) {
+      if (
+        error instanceof McpAppOauthError &&
+        (error.status === 401 || error.code === "mcp_reauthorization_required")
+      )
+        throw error;
+      lastError = error;
+      if (
+        error instanceof McpAppOauthError &&
+        error.code === "streamable_transport_unavailable"
+      ) {
+        try {
+          return await discoverSse(dependencies, endpoint, accessToken);
+        } catch (sseError) {
+          if (sseError instanceof McpAppOauthError && sseError.status === 401)
+            throw sseError;
+          lastError = sseError;
+        }
+      }
+    }
+  }
+  if (lastError) throw lastError;
+  throw new McpAppOauthError(502, "discovery_unavailable");
 }
 
 async function readBoundedText(
@@ -606,6 +1121,10 @@ async function start(
     throw new McpAppOauthError(422, "invalid_provider_metadata");
   if (registrationEndpoint !== undefined && !publicHttps(registrationEndpoint))
     throw new McpAppOauthError(422, "invalid_provider_metadata");
+  const endpointCandidates = normalizeEndpointCandidates(
+    serverUrl,
+    body.endpoint_candidates,
+  );
   const scopes = normalizeScopes(body.scopes);
   const app = await c.env.APP_DB.prepare(
     "SELECT id, owner_uid, disabled FROM cf_app_catalog WHERE id = ? AND owner_uid = ? LIMIT 1",
@@ -674,6 +1193,7 @@ async function start(
     token_endpoint: tokenEndpoint,
     registration_endpoint: registrationEndpoint || null,
     scopes,
+    endpoint_candidates: endpointCandidates,
   });
   if (utf8Bytes(metadata) > MAX_METADATA_BYTES)
     throw new McpAppOauthError(422, "invalid_provider_metadata");
@@ -973,7 +1493,7 @@ async function discover(
     throw new McpAppOauthError(422, "invalid_request");
   const connection = await c.env.APP_DB.prepare(
     `SELECT c.app_id, c.owner_uid, c.server_url, c.resolved_endpoint, c.status,
-            c.credential_envelope_enc, c.revision AS connection_revision,
+            c.oauth_metadata_json, c.credential_envelope_enc, c.revision AS connection_revision,
             d.revision AS discovery_revision
        FROM cf_mcp_app_connections c
        LEFT JOIN cf_mcp_app_discoveries d ON d.app_id = c.app_id
@@ -987,6 +1507,7 @@ async function discover(
       server_url?: string;
       resolved_endpoint?: string | null;
       status?: string;
+      oauth_metadata_json?: string;
       credential_envelope_enc?: string | null;
       connection_revision?: number;
       discovery_revision?: number | null;
@@ -998,9 +1519,15 @@ async function discover(
     !connection.credential_envelope_enc
   )
     throw new McpAppOauthError(409, "mcp_authorization_required");
-  const endpoint = connection.resolved_endpoint || connection.server_url || "";
-  if (!publicHttps(endpoint))
+  const serverUrl = connection.server_url || "";
+  const endpoints = metadataEndpointCandidates(
+    serverUrl,
+    connection.resolved_endpoint,
+    connection.oauth_metadata_json,
+  );
+  if (!endpoints.length)
     throw new McpAppOauthError(409, "mcp_endpoint_unavailable");
+  let endpoint = endpoints[0];
   const now = nowSeconds(dependencies);
   if (!now) throw new McpAppOauthError(503, "clock_unavailable");
   const observedConnectionRevision = Number(connection.connection_revision);
@@ -1034,88 +1561,13 @@ async function discover(
       401,
       true,
     ) as string;
-    const headers = {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      authorization: `Bearer ${accessToken}`,
-    };
-    const initialize = await providerFetch(dependencies, endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: { name: "Omi", version: "1.0.0" },
-        },
-      }),
-    });
-    if (initialize.status === 401)
-      throw new McpAppOauthError(401, "mcp_reauthorization_required");
-    if (!initialize.ok)
-      throw new McpAppOauthError(502, "discovery_unavailable");
-    const initializePayload = await boundedRpcJson(
-      initialize,
-      "discovery_response_invalid",
+    const discovery = await discoverEndpoint(
+      dependencies,
+      endpoints,
+      accessToken,
     );
-    if (
-      initializePayload.jsonrpc !== "2.0" ||
-      initializePayload.id !== 1 ||
-      !objectValue(initializePayload.result)
-    )
-      throw new McpAppOauthError(502, "discovery_response_invalid");
-    const sessionId = initialize.headers.get("mcp-session-id");
-    const notification = await providerFetch(dependencies, endpoint, {
-      method: "POST",
-      headers: {
-        ...headers,
-        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        method: "notifications/initialized",
-      }),
-    });
-    if (
-      !notification.ok &&
-      notification.status !== 202 &&
-      notification.status !== 204
-    )
-      throw new McpAppOauthError(502, "discovery_unavailable");
-    const toolsResponse = await providerFetch(dependencies, endpoint, {
-      method: "POST",
-      headers: {
-        ...headers,
-        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/list",
-        params: {},
-      }),
-    });
-    if (toolsResponse.status === 401)
-      throw new McpAppOauthError(401, "mcp_reauthorization_required");
-    if (!toolsResponse.ok)
-      throw new McpAppOauthError(502, "discovery_unavailable");
-    const toolsPayload = await boundedRpcJson(
-      toolsResponse,
-      "discovery_response_invalid",
-    );
-    if (toolsPayload.jsonrpc !== "2.0" || toolsPayload.id !== 2)
-      throw new McpAppOauthError(502, "discovery_response_invalid");
-    const toolsResult = objectValue(toolsPayload.result);
-    const tools = validateMcpTools(toolsResult?.tools);
-    if (!tools.length) throw new McpAppOauthError(422, "no_tools_found");
-    const protocolVersion = objectValue(
-      initializePayload.result,
-    )?.protocolVersion;
-    if (protocolVersion !== MCP_PROTOCOL_VERSION)
-      throw new McpAppOauthError(502, "discovery_response_invalid");
+    endpoint = discovery.endpoint;
+    const { protocolVersion, tools } = discovery;
     const toolsJson = JSON.stringify(tools);
     const connectionWrite = c.env.APP_DB.prepare(
       `UPDATE cf_mcp_app_connections
@@ -1137,7 +1589,7 @@ async function discover(
         endpoint,
         protocolVersion,
         toolsJson,
-        toolsResponse.headers.get("etag"),
+        discovery.etag,
         now,
         now,
       );
@@ -1152,7 +1604,7 @@ async function discover(
         endpoint,
         protocolVersion,
         toolsJson,
-        toolsResponse.headers.get("etag"),
+        discovery.etag,
         now,
         now,
         appId,
@@ -1172,7 +1624,7 @@ async function discover(
         app_id: appId,
         status: "ready",
         endpoint,
-        transport: "streamable_http",
+        transport: discovery.transport,
         protocol_version: protocolVersion,
         revision,
         tools_count: tools.length,

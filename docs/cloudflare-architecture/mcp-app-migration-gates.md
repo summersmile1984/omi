@@ -22,17 +22,17 @@
 
 - `POST /v2/cf/apps/mcp/authorize`：Better Auth signed context 下校验 owner-scoped app/provider endpoints，执行可选 RFC 7591 registration，生成 S256 PKCE 和一次性 state，并把 verifier/registration secret 以 AES-GCM envelope 写入 D1。
 - `GET /v2/cf/apps/mcp/callback`：按 hash-only state 原子消费 transaction，禁止 provider 自动 redirect，bounded 读取 token response，凭据只写入加密 connection envelope；重复/过期 state、跨 owner、私网/映射地址、超限或 malformed provider payload 均 fail-closed。
-- `POST /v2/cf/apps/mcp/discover`：Better Auth owner 读取已授权的加密 connection，向 public MCP endpoint 发送 bounded `initialize`、`notifications/initialized`、`tools/list`（支持 JSON/SSE 单响应），通过 `Mcp-Session-Id` 续接并以 owner/revision CAS 写入 `cf_mcp_app_discoveries`；401 会标记 `reauthorize`，不会把 provider token 写入 app catalog。
+- `POST /v2/cf/apps/mcp/discover`：Better Auth owner 读取已授权的加密 connection，按受限 endpoint candidates 尝试 MCP transport；streamable HTTP 发送 bounded `initialize`、`notifications/initialized`、分页 `tools/list`，对 404/405 安全回退旧 SSE endpoint 流；响应必须是严格 JSON-RPC 2.0，游标循环、重复工具和超限 payload 均 fail-closed。通过 `Mcp-Session-Id` 续接并以 owner/revision CAS 写入 `cf_mcp_app_discoveries`；401 会标记 `reauthorize`，不会把 provider token 写入 app catalog。
 - `POST /v2/cf/apps/mcp/refresh`：Better Auth owner 读取并解密 connection envelope，通过禁止 redirect、20 秒 timeout 和 bounded response 的 refresh-token grant 更新凭据；以 connection revision CAS 防止并发 refresh 双写，provider 401 会清空 envelope 并转为 `reauthorize`，成功后立即复用 bounded discovery。该入口只属于 namespaced staging seam，不改变 legacy refresh owner。
 - `0115_mcp_app_oauth_generation.sql` 把 connection 绑定到具体 transaction generation，避免慢 callback 覆盖更新中的授权。
 
-该 seam 需要 `MCP_APP_OAUTH_STAGING_ENABLED=true` 和 `MCP_APP_TOKEN_ENCRYPTION_SECRET`（至少 32 字节），默认关闭。它目前闭合 registration→authorization redirect→token exchange→受限 discovery→bounded token refresh；install、provider revoke、SSE 多候选 endpoint、真实 staging provider replay 尚未完成，因此不切换 `/v1/apps/mcp`、`/v1/apps/mcp/callback` 或 refresh owner。
+该 seam 需要 `MCP_APP_OAUTH_STAGING_ENABLED=true` 和 `MCP_APP_TOKEN_ENCRYPTION_SECRET`（至少 32 字节），默认关闭。它目前闭合 registration→authorization redirect→token exchange→严格 JSON-RPC discovery（分页、候选 endpoint、旧 SSE fallback）→bounded token refresh；install、provider revoke、真实 staging provider replay 尚未完成，因此不切换 `/v1/apps/mcp`、`/v1/apps/mcp/callback` 或 refresh owner。
 
 这三张表均带 `owner_uid`、INSERT/UPDATE account-deletion fence 和 owner/status/expiry 索引；残留扫描与 purge inventory 已登记。基础 schema 不包含 migration job、Firebase proof 或 R2 logo cleanup，因为这些依赖仍未闭合，不能用空表伪造完成度。
 
 ## Provider fixture
 
-[`tests/fixtures/mcp-app-oauth-contract.json`](../../deploy/cloudflare/tests/fixtures/mcp-app-oauth-contract.json) 固化无真实 secret 的 wire fixture：RFC 7591 registration、authorization query（含 `code_challenge_method=S256`）、token response、MCP `initialize` 与 `tools/list`。fixture 同时列出 invalid/expired/replayed state、PKCE mismatch、cross-owner、401 refresh/discovery failure 和 oversized response 等失败类。
+[`tests/fixtures/mcp-app-oauth-contract.json`](../../deploy/cloudflare/tests/fixtures/mcp-app-oauth-contract.json) 固化无真实 secret 的 wire fixture：RFC 7591 registration、authorization query（含 `code_challenge_method=S256`）、token response、MCP `initialize` 与 `tools/list`。fixture 同时列出 invalid/expired/replayed state、PKCE mismatch、cross-owner、401 refresh/discovery failure、strict JSON-RPC mismatch、cursor pagination、endpoint candidate 和 oversized response 等失败类。
 
 它目前是准入 fixture，不是 live provider 成功证明。切换 owner 前必须用同一 fixture 驱动实际 Worker adapter，并增加真实 staging MCP server 的 registration→callback→discovery→refresh 回放；不能只测试 D1 insert 或 `refresh-manifest`。
 

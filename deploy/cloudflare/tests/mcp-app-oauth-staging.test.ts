@@ -527,6 +527,231 @@ describe("namespaced MCP app OAuth staging seam", () => {
     expect(projection.revision).toBe(0);
   });
 
+  it("tries endpoint candidates and follows bounded tools/list cursor pagination", async () => {
+    const { env } = environment();
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        calls.push({ url, init });
+        if (url.endsWith("/token"))
+          return Response.json({
+            access_token: "access-token",
+            expires_in: 3_600,
+          });
+        if (url === "https://primary.example.test/mcp")
+          return new Response("not found", { status: 404 });
+        if (url === "https://backup.example.test/mcp") {
+          const payload = JSON.parse(String(init?.body)) as {
+            id?: number;
+            method?: string;
+            params?: { cursor?: string };
+          };
+          if (payload.method === "initialize")
+            return Response.json({
+              jsonrpc: "2.0",
+              id: payload.id,
+              result: { protocolVersion: "2025-03-26", capabilities: {} },
+            });
+          if (payload.method === "notifications/initialized")
+            return new Response(null, { status: 202 });
+          if (payload.method === "tools/list" && !payload.params?.cursor)
+            return Response.json({
+              jsonrpc: "2.0",
+              id: payload.id,
+              result: { tools: [{ name: "first_tool" }], nextCursor: "page-2" },
+            });
+          if (
+            payload.method === "tools/list" &&
+            payload.params?.cursor === "page-2"
+          )
+            return Response.json({
+              jsonrpc: "2.0",
+              id: payload.id,
+              result: { tools: [{ name: "second_tool" }] },
+            });
+        }
+        throw new Error(`unexpected provider URL ${url}`);
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://primary.example.test/mcp",
+        endpoint_candidates: ["https://backup.example.test/mcp"],
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(
+      ((await start.json()) as { auth_url: string }).auth_url,
+    );
+    await expect(
+      app.request(
+        `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+    const discovery = await app.request("/v2/cf/apps/mcp/discover", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(discovery.status).toBe(200);
+    await expect(discovery.json()).resolves.toMatchObject({
+      endpoint: "https://backup.example.test/mcp",
+      tools_count: 2,
+      tool_names: ["first_tool", "second_tool"],
+      transport: "streamable_http",
+    });
+    expect(calls.map(({ url }) => url)).toEqual([
+      "https://provider.example.test/token",
+      "https://primary.example.test/mcp",
+      "https://primary.example.test/mcp",
+      "https://backup.example.test/mcp",
+      "https://backup.example.test/mcp",
+      "https://backup.example.test/mcp",
+      "https://backup.example.test/mcp",
+    ]);
+    const secondPage = JSON.parse(String(calls[6].init?.body)) as {
+      id: number;
+      params: { cursor: string };
+    };
+    expect(secondPage).toMatchObject({ id: 3, params: { cursor: "page-2" } });
+  });
+
+  it("rejects a non-matching JSON-RPC response id", async () => {
+    const { env } = environment();
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1)
+        return Response.json({
+          access_token: "access-token",
+          expires_in: 3_600,
+        });
+      return Response.json({
+        jsonrpc: "2.0",
+        id: 99,
+        result: { protocolVersion: "2025-03-26", capabilities: {} },
+      });
+    });
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://provider.example.test/mcp",
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(
+      ((await start.json()) as { auth_url: string }).auth_url,
+    );
+    await expect(
+      app.request(
+        `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+    const discovery = await app.request("/v2/cf/apps/mcp/discover", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(discovery.status).toBe(502);
+    await expect(discovery.json()).resolves.toEqual({
+      error: "discovery_response_invalid",
+    });
+  });
+
+  it("falls back to the bounded legacy SSE transport after streamable HTTP is unavailable", async () => {
+    const { env } = environment();
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const sseBody = [
+      "event: endpoint",
+      "data: /messages?session=sse-1",
+      "",
+      "event: message",
+      'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}',
+      "",
+      "event: message",
+      'data: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"sse_tool"}]}}',
+      "",
+    ].join("\n");
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        calls.push({ url, init });
+        if (url.endsWith("/token"))
+          return Response.json({
+            access_token: "access-token",
+            expires_in: 3_600,
+          });
+        if (url === "https://sse.example.test/mcp" && init?.method === "POST")
+          return new Response("method not allowed", { status: 405 });
+        if (url === "https://sse.example.test/mcp" && init?.method === "GET")
+          return new Response(sseBody, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url === "https://sse.example.test/messages?session=sse-1")
+          return new Response(null, { status: 202 });
+        throw new Error(`unexpected provider URL ${url}`);
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://sse.example.test/mcp",
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(
+      ((await start.json()) as { auth_url: string }).auth_url,
+    );
+    await expect(
+      app.request(
+        `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+    const discovery = await app.request("/v2/cf/apps/mcp/discover", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(discovery.status).toBe(200);
+    await expect(discovery.json()).resolves.toMatchObject({
+      endpoint: "https://sse.example.test/mcp",
+      transport: "sse",
+      protocol_version: "2024-11-05",
+      tools_count: 1,
+      tool_names: ["sse_tool"],
+    });
+    expect(calls.map(({ url }) => url)).toEqual([
+      "https://provider.example.test/token",
+      "https://sse.example.test/mcp",
+      "https://sse.example.test/mcp",
+      "https://sse.example.test/messages?session=sse-1",
+      "https://sse.example.test/messages?session=sse-1",
+      "https://sse.example.test/messages?session=sse-1",
+    ]);
+  });
+
   it("marks an authorized connection for reauthorization when the MCP server returns 401", async () => {
     const { env, database } = environment();
     let callCount = 0;
