@@ -194,6 +194,10 @@ describe("Cloudflare reviewed memory Archive projection", () => {
       const reviewed = await app.request("/internal/memory-archive/reviews", { method: "POST", headers, body }, env);
       expect(reviewed.status).toBe(201);
       const reviewId = ((await reviewed.json()) as { review_id: string }).review_id;
+      const reviewedAgain = await app.request("/internal/memory-archive/reviews", { method: "POST", headers, body }, env);
+      expect(reviewedAgain.status).toBe(200);
+      expect(((await reviewedAgain.json()) as { review_id: string }).review_id).toBe(reviewId);
+      expect(database.database.prepare("SELECT COUNT(*) AS count FROM cf_memory_archive_review_items").get()).toMatchObject({ count: 1 });
       const applyPayload = stableJson({
         review_id: reviewId,
         manifest_sha256: plan.manifest,

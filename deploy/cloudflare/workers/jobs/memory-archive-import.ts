@@ -447,7 +447,7 @@ async function review(c: Ctx): Promise<Response> {
   ];
   for (const entry of plan.entries) {
     statements.push(c.env.APP_DB.prepare(
-      "INSERT INTO cf_memory_archive_review_items (review_id, uid, memory_id, import_id, source_fingerprint, source_row_sha256, plan_hash, account_generation, row_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(review_id, uid, memory_id) DO NOTHING",
+      "INSERT INTO cf_memory_archive_review_items (review_id, uid, memory_id, import_id, source_fingerprint, source_row_sha256, plan_hash, account_generation, row_json, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM cf_memory_archive_review_batches WHERE review_id = ? AND uid = ? AND manifest_sha256 = ?) ON CONFLICT(review_id, uid, memory_id) DO NOTHING",
     ).bind(
       reviewId,
       entry.uid,
@@ -460,6 +460,9 @@ async function review(c: Ctx): Promise<Response> {
       stableJson(entry.normalized),
       now,
       now,
+      reviewId,
+      entry.uid,
+      plan.manifest_sha256,
     ));
   }
   try {
