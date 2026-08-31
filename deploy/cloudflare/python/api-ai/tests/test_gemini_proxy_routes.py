@@ -221,6 +221,84 @@ def test_provider_query_is_forwarded_without_reconstructing_each_character(monke
     ]
 
 
+def test_server_paid_requests_are_capped_to_one_2048_token_candidate(monkeypatch):
+    database = FakeD1()
+    calls = []
+
+    async def fake_fetch(_url, **options):
+        calls.append(options)
+        return FakeProviderResponse(b"{}")
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(database),
+        json.dumps(
+            {
+                "contents": [{"parts": [{"text": "hi"}]}],
+                "generationConfig": {"candidateCount": 1, "maxOutputTokens": 9000},
+            }
+        ).encode(),
+        path="/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-2.5-flash:generateContent"))
+
+    assert result.status_code == 200
+    sent = json.loads(calls[0]["body"])
+    assert sent["generationConfig"] == {"candidateCount": 1, "maxOutputTokens": 2048}
+
+
+def test_server_paid_multi_candidate_request_is_rejected_before_provider(monkeypatch):
+    database = FakeD1()
+    calls = []
+
+    async def fake_fetch(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("provider must not be called for multi-candidate requests")
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(database),
+        b'{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"candidateCount":2}}',
+        path="/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+        context=context(),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-2.5-flash:generateContent"))
+
+    assert result.status_code == 400
+    assert json.loads(result.body)["error"] == "invalid_request"
+    assert calls == []
+    assert database.request_count("user-1") == 0
+
+
+def test_byok_requests_keep_the_historical_8192_token_ceiling(monkeypatch):
+    database = FakeD1()
+    calls = []
+
+    async def fake_fetch(_url, **options):
+        calls.append(options)
+        return FakeProviderResponse(b"{}")
+
+    monkeypatch.setattr(gemini, "worker_fetch", fake_fetch)
+    request = FakeRequest(
+        make_env(database),
+        b'{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":9000}}',
+        path="/v1/proxy/gemini/models/gemini-2.5-flash:generateContent",
+        headers={"x-byok-gemini": "user-gemini-key", "x-omi-request-id": "gemini-byok-1"},
+        context=context(byok=True),
+    )
+
+    result = asyncio.run(gemini.gemini_proxy(request, "models/gemini-2.5-flash:generateContent"))
+
+    assert result.status_code == 200
+    sent = json.loads(calls[0]["body"])
+    assert sent["generationConfig"]["maxOutputTokens"] == 8192
+    assert calls[0]["headers"]["x-goog-api-key"] == "user-gemini-key"
+    assert database.receipt("gemini-byok-1")["status"] == "success"
+
+
 def test_provider_secret_is_fail_closed_without_calling_gemini(monkeypatch):
     database = FakeD1()
     calls = []

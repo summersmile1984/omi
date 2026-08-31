@@ -59,6 +59,10 @@ Gemini adapter（API-AI Worker；Edge 只负责认证、BYOK 校验和 signed co
 - adapter 有界读取 JSON（不超过旧 5 MiB 上限），保留 `contents`、
   `generationConfig`、inline media 的上限和旧的 system-role 规范化；响应
   只复制允许的 content type、SSE 和 `X-Omi-*` headers。
+- 对 `generateContent`/`streamGenerateContent`，Worker 复现桌面端的单候选
+  约束，并将 server-paid 请求的 `maxOutputTokens` 限制为 2048；BYOK 请求
+  保留历史 8192 上限。缺失预算时也会补上对应上限，避免合法但未声明的
+  provider 配置绕过付费成本边界；embedding action 不注入文本输出预算。
 - provider 状态必须映射为固定错误 envelope：400/403 为不可重试请求或
   credential 错误，429 带 `Retry-After` 且可重试，408/504 为 timeout，5xx
   为 502 provider unavailable；错误 body 不透传 prompt、key 或上游原文。

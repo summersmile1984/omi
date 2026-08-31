@@ -36,6 +36,8 @@ MAX_CONTENT_ITEMS = 128
 MAX_CONTENT_PARTS = 512
 MAX_INLINE_MEDIA_PARTS = 16
 DEFAULT_DAILY_LIMIT = 1_500
+MAX_OUTPUT_TOKENS = 8_192
+SERVER_PAID_MAX_OUTPUT_TOKENS = 2_048
 MAX_REQUEST_ID_CHARS = 128
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -180,7 +182,24 @@ def _body_shape(payload: Mapping[str, Any], size: int) -> None:
         )
 
 
-def _sanitize_payload(body: bytes) -> tuple[bytes, dict[str, Any]]:
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, float) and value >= 0 and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _sanitize_payload(
+    body: bytes,
+    *,
+    action: str,
+    max_output_tokens: int,
+) -> tuple[bytes, dict[str, Any]]:
     if len(body) > MAX_BODY_BYTES:
         raise GeminiProviderError(
             "gemini_request_too_large", "Gemini request body is too large", status_code=413, retryable=False
@@ -221,6 +240,47 @@ def _sanitize_payload(body: bytes) -> tuple[bytes, dict[str, Any]]:
                 instruction["parts"].extend(system_parts)
             else:
                 payload["systemInstruction"] = {"parts": system_parts}
+    # Gemini accepts candidate count and output budgets in either the legacy
+    # snake_case form or the REST camelCase form.  The desktop contract only
+    # serves one candidate.  Keep this validation and cap in the Worker so a
+    # Cloudflare request cannot bypass the paid-lane cost boundary by sending
+    # an otherwise valid provider field the old proxy would have constrained.
+    if action not in {"embedContent", "batchEmbedContents"}:
+        for key in ("candidate_count", "candidateCount"):
+            value = _nonnegative_int(payload.get(key))
+            if value is not None and value > 1:
+                raise GeminiProviderError(
+                    "invalid_request",
+                    "candidate_count must be 1 or absent",
+                    status_code=400,
+                    retryable=False,
+                )
+        configs = [
+            payload[key]
+            for key in ("generation_config", "generationConfig")
+            if isinstance(payload.get(key), dict)
+        ]
+        if not configs:
+            payload["generationConfig"] = {"maxOutputTokens": max_output_tokens}
+        for config in configs:
+            for key in ("candidate_count", "candidateCount"):
+                value = _nonnegative_int(config.get(key))
+                if value is not None and value > 1:
+                    raise GeminiProviderError(
+                        "invalid_request",
+                        "candidate_count must be 1 or absent",
+                        status_code=400,
+                        retryable=False,
+                    )
+            output_seen = False
+            for key in ("max_output_tokens", "maxOutputTokens"):
+                value = _nonnegative_int(config.get(key))
+                if value is not None:
+                    output_seen = True
+                    if value > max_output_tokens:
+                        config[key] = max_output_tokens
+            if not output_seen:
+                config["maxOutputTokens"] = max_output_tokens
     return json.dumps(payload, separators=(",", ":")).encode(), payload
 
 
@@ -589,13 +649,17 @@ async def _proxy(request: Request, path: str, *, stream_route: bool) -> Response
                 retryable=False,
             )
         body = await request.body()
-        sanitized_body, _ = _sanitize_payload(body)
         byok_key = request.headers.get("x-byok-gemini")
         if context.get("byokActive") is True and not byok_key:
             raise GeminiProviderError(
                 "gemini_byok_unavailable", "Gemini BYOK key is unavailable", status_code=403, retryable=False
             )
         credential_source = "byok" if byok_key else "server"
+        sanitized_body, _ = _sanitize_payload(
+            body,
+            action=action,
+            max_output_tokens=MAX_OUTPUT_TOKENS if byok_key else SERVER_PAID_MAX_OUTPUT_TOKENS,
+        )
         api_key = byok_key or str(getattr(env, "GEMINI_API_KEY", "")).strip()
         if not api_key:
             raise GeminiProviderError("gemini_provider_unavailable", "Gemini provider is not configured")
