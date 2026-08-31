@@ -20,6 +20,7 @@ export type JobMessage = {
     | "wrapped_generate"
     | "hume_webhook"
     | "limitless_import"
+    | "chat_assistant_poll"
     | "memory_short_term_lifecycle";
   payload: Record<string, unknown>;
 };
@@ -76,6 +77,10 @@ export type JobsEnv = {
   SYNC_BACKFILL: Queue<JobMessage>;
   INTERNAL_ASSERTION_SECRET?: string;
   OPENAI_API_KEY?: string;
+  /** Explicit opt-in for the direct OpenAI Assistants continuity adapter. */
+  CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED?: string;
+  /** OpenAI Assistant id used by the explicit staging adapter. */
+  OPENAI_ASSISTANT_ID?: string;
   /** HMAC key used by the unauthenticated, short-lived private thumbnail URL. */
   CHAT_FILE_THUMBNAIL_SECRET?: string;
   /** Explicit opt-in while the legacy upload owner is being cut over. */

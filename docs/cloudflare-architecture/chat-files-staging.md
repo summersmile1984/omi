@@ -70,3 +70,15 @@ CREATE TABLE cf_chat_session_files (
 provider 侧至少需要在 Worker 可控超时内闭合 `thread retrieve/create`、`message attachment`、`run create/poll/list` 和 vision content 读取，并把 provider 状态、重试幂等键和不可恢复错误写入 D1。仅把 `cf_chat_files.provider_file_id` 传进 Workers AI，或把文件 bytes 拼进普通文本 prompt，都不等价于旧 Assistants `file_search` 语义。历史回放还需要 cursor/idempotency 表，能从 Firestore file row 和 provider object 恢复 canonical row；没有可读原始 provider object 的旧 row 必须明确标记不可迁移，不能生成伪造 file id。
 
 在此设计落地前，当前最安全的可验证范围仍是 `/v1/cf/chat-files` 的上传/list/delete 和默认关闭的 staging aliases；不存在一个既有的 legacy GET/list/delete endpoint 可以独立切 owner 来绕过这条 session dependency。
+
+## Assistants continuity adapter（显式 staging opt-in）
+
+本轮补上了一个不影响 legacy owner 的 OpenAI Assistants continuity adapter。migration `0113_chat_assistant_provider.sql` 新增 `cf_chat_assistant_sessions`（D1 uid/session 到 OpenAI thread/assistant）和 `cf_chat_assistant_runs`（provider message/run、状态、幂等键、lease、错误及结果）。Jobs 提供三个显式 staging contract：
+
+- `POST /v2/cf/chat-sessions/{session_id}/assistant-runs`：校验当前 Better Auth uid、D1 ready attachment projection 和 `Idempotency-Key`，通过 OpenAI Assistants v2 创建 thread/message/run，成功 admission 返回 `202`。
+- `GET /v2/cf/chat-sessions/{session_id}/assistant-runs/{run_id}`：只读取同一 uid/session 的 run，并在 completed 时读取 assistant 文本结果。
+- `DELETE /v2/cf/chat-sessions/{session_id}/assistant`：先删除 provider thread，再删除 D1 provider state；账号删除 residual sweep 同样覆盖两张表。
+
+该 adapter 只有在 Jobs secrets `OPENAI_API_KEY`、`OPENAI_ASSISTANT_ID` 和 `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED=true` 同时配置时启用。provider REST 调用使用固定 Assistants v2 header、短重试预算和幂等键；Queue 的 `chat_assistant_poll` consumer 对 in-progress/transient 状态最多轮询 12 次，超出后把 D1 run 标记为 failed。队列 admission 失败不会丢失已创建的 provider run，客户端可用相同幂等键重试或直接 GET poll。
+
+这仍然不是 `/v1/files`、`/v2/files` 的 owner 切换，也不是 `/v2/messages` 的附件消费实现。未覆盖的 legacy contract 包括 Firestore `users/{uid}/files`/chat session 历史回放、GCS thumbnail/provider object backfill、旧 `FileChatTool` 的完整多轮/SSE/response wire、Assistants 历史 thread 恢复、桌面客户端兼容回归和真实 staging provider secret/live probe。Workers AI 文本替代不作为等价实现；在这些证据补齐前，legacy aliases 继续默认 fail-closed。

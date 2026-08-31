@@ -1488,6 +1488,18 @@ app.delete(
   "/v2/cf/chat-sessions/:sessionId/files/:fileId",
   proxyAuthenticatedCore,
 );
+app.post(
+  "/v2/cf/chat-sessions/:sessionId/assistant-runs",
+  proxyAuthenticatedJobs,
+);
+app.get(
+  "/v2/cf/chat-sessions/:sessionId/assistant-runs/:runId",
+  proxyAuthenticatedJobs,
+);
+app.delete(
+  "/v2/cf/chat-sessions/:sessionId/assistant",
+  proxyAuthenticatedJobs,
+);
 app.post("/v2/desktop/messages", proxyAuthenticatedCore);
 app.get("/v2/desktop/messages", proxyAuthenticatedCore);
 app.get("/v2/desktop/messages/reconcile", proxyAuthenticatedCore);

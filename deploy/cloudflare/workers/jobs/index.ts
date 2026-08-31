@@ -89,6 +89,10 @@ import {
   registerLimitlessImportRoutes,
 } from "./limitless-import";
 import { registerChatFileRoutes } from "./chat-file-routes";
+import {
+  processChatAssistantRunMessage,
+  registerChatAssistantRoutes,
+} from "./chat-assistant-provider";
 import { registerPersonaMutationRoutes } from "./persona-mutations";
 import {
   processAudioMergeJobMessage,
@@ -180,6 +184,7 @@ registerAdminNotificationRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
 registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
+registerChatAssistantRoutes(app, requestContext);
 registerPersonaMutationRoutes(app, requestContext);
 registerAudioMergeRoutes(app, requestContext);
 registerLegacyAudioMergeRoutes(app, requestContext);
@@ -979,6 +984,10 @@ async function processJobMessage(
   }
   if (message.body.kind === "limitless_import") {
     await processLimitlessImportMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "chat_assistant_poll") {
+    await processChatAssistantRunMessage(message, env);
     return;
   }
   if (message.body.kind === "account_delete") {
