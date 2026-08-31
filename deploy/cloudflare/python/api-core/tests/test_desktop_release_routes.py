@@ -25,7 +25,9 @@ from desktop_release_routes import (  # noqa: E402
     DesktopPreviewDelistRequest,
     DesktopPreviewPublishRequest,
     delist_desktop_preview,
+    get_desktop_release_manifest,
     publish_desktop_preview,
+    register_desktop_release_manifest,
 )
 
 
@@ -61,6 +63,7 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0084_desktop_release_projections.sql").read_text())
         self.connection.executescript((migration_dir / "0085_desktop_windows_update_feed.sql").read_text())
         self.connection.executescript((migration_dir / "0086_desktop_preview_projections.sql").read_text())
+        self.connection.executescript((migration_dir / "0089_desktop_release_manifests.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -76,7 +79,50 @@ class FakeRequest:
 
 
 def make_env():
-    return type("Env", (), {"APP_DB": FakeDb(), "DESKTOP_PREVIEW_PUBLISH_KEY": "preview-secret"})()
+    return type(
+        "Env",
+        (),
+        {"APP_DB": FakeDb(), "ADMIN_KEY": "admin-secret", "DESKTOP_PREVIEW_PUBLISH_KEY": "preview-secret"},
+    )()
+
+
+def desktop_manifest_payload(*, release_id="v0.12.64+12064-macos", notes=None):
+    version, build = release_id.removeprefix("v").split("+", 1)
+    build_number = int(build.removesuffix("-macos"))
+    manifest = {
+        "schema_version": 1,
+        "release_id": release_id,
+        "platform": "macos",
+        "version": version,
+        "build_number": build_number,
+        "app_source_sha": "a" * 40,
+        "zip_url": f"https://github.com/BasedHardware/omi/releases/download/{release_id}/Omi.zip",
+        "zip_sha256": "sha256:" + "b" * 64,
+        "dmg_url": f"https://github.com/BasedHardware/omi/releases/download/{release_id}/omi.dmg",
+        "dmg_sha256": "sha256:" + "c" * 64,
+        "ed_signature": "sparkle-signature",
+        "qualification_evidence_asset": f"qualification-evidence-{release_id}.json",
+        "qualification_evidence_sha256": "sha256:" + "d" * 64,
+        "qualification_tier": "T2",
+        "qualification_passed": True,
+        "backend_mode": "app_only",
+        "compatibility_contract": {
+            "schema_version": 1,
+            "app_release_id": release_id,
+            "app_version": version,
+            "app_build_number": build_number,
+            "backend_mode": "app_only",
+            "environment_contract_version": "desktop-backend-env-v1",
+        },
+        "environment_contract_version": "desktop-backend-env-v1",
+        "created_at": "2026-08-31T00:00:00Z",
+        "published_at": "2026-08-31T00:00:00Z",
+        "changelog": ["Qualified release"],
+        "mandatory": False,
+    }
+    if notes is not None:
+        manifest["changelog"] = [notes]
+    return manifest
 
 
 def insert_release(
@@ -483,3 +529,70 @@ def test_desktop_preview_publish_rejects_stale_generation_and_immutable_conflict
         )
     assert conflict.value.status_code == 409
     assert "immutable metadata" in str(conflict.value.detail)
+
+
+def test_desktop_release_manifest_registers_idempotently_and_returns_canonical_digest():
+    env = make_env()
+    request = FakeRequest(env, {"secret-key": "admin-secret"})
+    payload = desktop_manifest_payload()
+
+    created = asyncio.run(register_desktop_release_manifest(request, payload))
+    assert created == {"success": True, "manifest": payload}
+    retry = asyncio.run(register_desktop_release_manifest(request, payload))
+    assert retry == created
+
+    read = asyncio.run(get_desktop_release_manifest(request, payload["release_id"]))
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    assert read == {
+        "success": True,
+        "manifest": payload,
+        "manifest_sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+    with pytest.raises(sqlite3.IntegrityError):
+        env.APP_DB.connection.execute(
+            "UPDATE cf_desktop_release_manifests SET manifest_json = ? WHERE release_id = ?",
+            ("{}", payload["release_id"]),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        env.APP_DB.connection.execute(
+            "DELETE FROM cf_desktop_release_manifests WHERE release_id = ?",
+            (payload["release_id"],),
+        )
+
+
+def test_desktop_release_manifest_requires_admin_key_and_rejects_immutable_conflicts():
+    env = make_env()
+    payload = desktop_manifest_payload()
+    with pytest.raises(HTTPException) as unauthorized:
+        asyncio.run(register_desktop_release_manifest(FakeRequest(env), payload))
+    assert unauthorized.value.status_code == 403
+
+    request = FakeRequest(env, {"secret-key": "admin-secret"})
+    asyncio.run(register_desktop_release_manifest(request, payload))
+    with pytest.raises(HTTPException) as conflict:
+        asyncio.run(register_desktop_release_manifest(request, desktop_manifest_payload(notes="changed")))
+    assert conflict.value.status_code == 409
+    assert "immutable metadata" in str(conflict.value.detail)
+
+
+def test_desktop_release_manifest_fails_closed_for_missing_or_corrupt_projection():
+    env = make_env()
+    request = FakeRequest(env, {"secret-key": "admin-secret"})
+    release_id = "v0.12.64+12064-macos"
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(get_desktop_release_manifest(request, release_id))
+    assert missing.value.status_code == 404
+
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_desktop_release_manifests (release_id, manifest_json, manifest_sha256, created_at) "
+        "VALUES (?, ?, ?, 1)",
+        (release_id, "{}", "0" * 64),
+    )
+    env.APP_DB.connection.commit()
+    with pytest.raises(HTTPException) as corrupt:
+        asyncio.run(get_desktop_release_manifest(request, release_id))
+    assert corrupt.value.status_code == 503
+
+    with pytest.raises(HTTPException) as malformed_id:
+        asyncio.run(get_desktop_release_manifest(request, "not-a-release"))
+    assert malformed_id.value.status_code == 404

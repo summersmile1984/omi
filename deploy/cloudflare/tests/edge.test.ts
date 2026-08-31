@@ -599,6 +599,38 @@ describe("edge gateway", () => {
     });
   });
 
+  it("routes immutable desktop manifest reads and registration without stripping the admin key", async () => {
+    const forwarded: Request[] = [];
+    const env = {
+      API_CORE: service((request) => {
+        forwarded.push(request);
+        return Response.json({ success: true }, { status: request.method === "POST" ? 201 : 200 });
+      }),
+    };
+    const read = await edge.fetch(
+      new Request("https://edge.test/v2/desktop/releases/v0.12.64+12064-macos", {
+        headers: { "secret-key": "admin-secret" },
+      }),
+      env as never,
+    );
+    expect(read.status).toBe(200);
+    expect(forwarded[0].headers.get("secret-key")).toBe("admin-secret");
+    expect(forwarded[0].headers.get("authorization")).toBeNull();
+
+    const payload = { release_id: "v0.12.64+12064-macos", schema_version: 1 };
+    const registration = await edge.fetch(
+      new Request("https://edge.test/v2/desktop/releases", {
+        method: "POST",
+        headers: { "content-type": "application/json", "secret-key": "admin-secret" },
+        body: JSON.stringify(payload),
+      }),
+      env as never,
+    );
+    expect(registration.status).toBe(201);
+    expect(forwarded[1].headers.get("secret-key")).toBe("admin-secret");
+    await expect(forwarded[1].json()).resolves.toEqual(payload);
+  });
+
   it("routes admin Persona reads and deletes to the core worker", async () => {
     const paths: string[] = [];
     const env = {

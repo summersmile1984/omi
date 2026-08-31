@@ -15,7 +15,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,55 @@ PREVIEW_BUCKET_NAME = "omi_macos_updates"
 PREVIEW_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 PREVIEW_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 PREVIEW_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+DESKTOP_RELEASE_ID_RE = re.compile(r"^v(?P<version>[0-9]+\.[0-9]+(?:\.[0-9]+)?)\+(?P<build>[1-9][0-9]*)-macos$")
+DESKTOP_SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+DESKTOP_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+DESKTOP_EVIDENCE_RE = re.compile(r"^qualification-evidence-[^/]+\.json$")
+DESKTOP_ENVIRONMENT_RE = re.compile(r"^desktop-backend-env-v[1-9][0-9]*$")
+DESKTOP_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "release_id",
+        "platform",
+        "version",
+        "build_number",
+        "app_source_sha",
+        "zip_url",
+        "zip_sha256",
+        "dmg_url",
+        "dmg_sha256",
+        "ed_signature",
+        "qualification_evidence_asset",
+        "qualification_evidence_sha256",
+        "qualification_tier",
+        "qualification_passed",
+        "backend_mode",
+        "desktop_backend_source_sha",
+        "desktop_backend_oci_index_digest",
+        "desktop_backend_platform_digest",
+        "compatibility_contract",
+        "environment_contract_version",
+        "created_at",
+        "published_at",
+        "changelog",
+        "mandatory",
+    }
+)
+DESKTOP_MANIFEST_REQUIRED_FIELDS = DESKTOP_MANIFEST_FIELDS - {
+    "desktop_backend_source_sha",
+    "desktop_backend_oci_index_digest",
+    "desktop_backend_platform_digest",
+    "published_at",
+    "changelog",
+    "mandatory",
+}
+DESKTOP_BACKEND_FIELDS = frozenset(
+    {
+        "desktop_backend_source_sha",
+        "desktop_backend_oci_index_digest",
+        "desktop_backend_platform_digest",
+    }
+)
 
 
 class DesktopPreviewDelistRequest(BaseModel):
@@ -334,6 +383,223 @@ def _release(row: dict[str, object]) -> dict[str, object] | None:
         "channel": channel,
         "windows_feed_url": _https_url(row.get("windows_feed_url")),
     }
+
+
+def _manifest_timestamp(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip() or not value.endswith("Z"):
+        raise ValueError(f"{field} must be an RFC 3339 UTC timestamp")
+    try:
+        datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an RFC 3339 UTC timestamp") from exc
+    return value
+
+
+def _manifest_string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    return value
+
+
+def _manifest_digest(value: object, field: str) -> str:
+    digest = _manifest_string(value, field)
+    if not DESKTOP_DIGEST_RE.fullmatch(digest):
+        raise ValueError(f"{field} must use sha256:<64 lowercase hex> form")
+    return digest
+
+
+def _manifest_source_sha(value: object, field: str) -> str:
+    digest = _manifest_string(value, field)
+    if not DESKTOP_SOURCE_SHA_RE.fullmatch(digest):
+        raise ValueError(f"{field} must be a lowercase 40-character Git SHA")
+    return digest
+
+
+def _manifest_asset_url(value: object, field: str, *, release_id: str, asset_name: str) -> str:
+    url = _manifest_string(value, field)
+    parsed = urlparse(url)
+    expected = f"/BasedHardware/omi/releases/download/{release_id}/{asset_name}"
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != expected
+    ):
+        raise ValueError(f"{field} must reference {asset_name} on release {release_id}")
+    return url
+
+
+def _validate_desktop_manifest(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError("manifest must be a JSON object")
+    manifest = value
+    missing = sorted(DESKTOP_MANIFEST_REQUIRED_FIELDS - manifest.keys())
+    unknown = sorted(manifest.keys() - DESKTOP_MANIFEST_FIELDS)
+    if missing:
+        raise ValueError(f"manifest is missing required field(s): {', '.join(missing)}")
+    if unknown:
+        raise ValueError(f"manifest has unknown field(s): {', '.join(unknown)}")
+    if manifest.get("schema_version") != 1 or manifest.get("platform") != "macos":
+        raise ValueError("manifest must use schema_version 1 and platform macos")
+
+    release_id = _manifest_string(manifest.get("release_id"), "release_id")
+    match = DESKTOP_RELEASE_ID_RE.fullmatch(release_id)
+    if match is None:
+        raise ValueError("release_id must use v<version>+<build>-macos form")
+    version = _manifest_string(manifest.get("version"), "version")
+    build_number = manifest.get("build_number")
+    if not isinstance(build_number, int) or isinstance(build_number, bool) or build_number <= 0:
+        raise ValueError("build_number must be a positive integer")
+    if version != match.group("version") or build_number != int(match.group("build")):
+        raise ValueError("version and build_number must match release_id")
+
+    _manifest_source_sha(manifest.get("app_source_sha"), "app_source_sha")
+    _manifest_asset_url(manifest.get("zip_url"), "zip_url", release_id=release_id, asset_name="Omi.zip")
+    _manifest_digest(manifest.get("zip_sha256"), "zip_sha256")
+    _manifest_asset_url(manifest.get("dmg_url"), "dmg_url", release_id=release_id, asset_name="omi.dmg")
+    _manifest_digest(manifest.get("dmg_sha256"), "dmg_sha256")
+    _manifest_string(manifest.get("ed_signature"), "ed_signature")
+
+    evidence_asset = _manifest_string(manifest.get("qualification_evidence_asset"), "qualification_evidence_asset")
+    if not DESKTOP_EVIDENCE_RE.fullmatch(evidence_asset) and evidence_asset not in {
+        "desktop-smoke-result.json",
+        "desktop-smoke-result-beta.json",
+    }:
+        raise ValueError("qualification_evidence_asset is not a recognized evidence asset")
+    _manifest_digest(manifest.get("qualification_evidence_sha256"), "qualification_evidence_sha256")
+    qualification = (manifest.get("qualification_tier"), manifest.get("qualification_passed"))
+    if qualification not in {("T2", True), ("signed-smoke", False), ("emergency", False)}:
+        raise ValueError("release evidence must be T2, signed-smoke, or emergency truth")
+    if qualification == ("T2", True) and not DESKTOP_EVIDENCE_RE.fullmatch(evidence_asset):
+        raise ValueError("T2 qualification requires a qualification-evidence-*.json asset")
+    if qualification == ("emergency", False) and evidence_asset != "desktop-smoke-result.json":
+        raise ValueError("emergency qualification requires exact signed-smoke evidence")
+    if qualification == ("signed-smoke", False) and evidence_asset != "desktop-smoke-result-beta.json":
+        raise ValueError("normal Beta promotion requires exact Codemagic Beta signed-smoke evidence")
+
+    mode = manifest.get("backend_mode")
+    if mode not in {"app_only", "backend_required"}:
+        raise ValueError("backend_mode must be app_only or backend_required")
+    present_backend_fields = DESKTOP_BACKEND_FIELDS & manifest.keys()
+    if mode == "app_only" and present_backend_fields:
+        raise ValueError("app_only manifest must omit backend fields")
+    if mode == "backend_required":
+        if present_backend_fields != DESKTOP_BACKEND_FIELDS:
+            raise ValueError("backend_required manifest must include all backend fields")
+        _manifest_source_sha(manifest.get("desktop_backend_source_sha"), "desktop_backend_source_sha")
+        if manifest["desktop_backend_source_sha"] != manifest["app_source_sha"]:
+            raise ValueError("desktop backend and app must come from the same source SHA")
+        index_digest = _manifest_digest(
+            manifest.get("desktop_backend_oci_index_digest"), "desktop_backend_oci_index_digest"
+        )
+        platform_digest = _manifest_digest(
+            manifest.get("desktop_backend_platform_digest"), "desktop_backend_platform_digest"
+        )
+        if index_digest == platform_digest:
+            raise ValueError("OCI index and platform-child digests must identify distinct objects")
+
+    environment_contract = _manifest_string(
+        manifest.get("environment_contract_version"), "environment_contract_version"
+    )
+    if not DESKTOP_ENVIRONMENT_RE.fullmatch(environment_contract):
+        raise ValueError("environment_contract_version must use desktop-backend-env-vN form")
+    _manifest_timestamp(manifest.get("created_at"), "created_at")
+    if "published_at" in manifest:
+        _manifest_timestamp(manifest["published_at"], "published_at")
+    if "changelog" in manifest:
+        changelog = manifest["changelog"]
+        if not isinstance(changelog, list) or any(not isinstance(item, str) or not item.strip() for item in changelog):
+            raise ValueError("changelog must be a list of non-empty strings")
+    if "mandatory" in manifest and not isinstance(manifest["mandatory"], bool):
+        raise ValueError("mandatory must be a boolean")
+
+    compatibility = manifest.get("compatibility_contract")
+    if not isinstance(compatibility, dict):
+        raise ValueError("compatibility_contract must be an object")
+    expected_compatibility = {
+        "schema_version": 1,
+        "app_release_id": release_id,
+        "app_version": version,
+        "app_build_number": build_number,
+        "backend_mode": mode,
+        "environment_contract_version": environment_contract,
+    }
+    if mode == "backend_required":
+        expected_compatibility.update({field: manifest[field] for field in DESKTOP_BACKEND_FIELDS})
+    if compatibility != expected_compatibility:
+        raise ValueError("compatibility_contract must exactly match the manifest")
+    return manifest
+
+
+def _manifest_canonical_bytes(manifest: dict[str, object]) -> bytes:
+    return json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _manifest_sha256(manifest: dict[str, object]) -> str:
+    return hashlib.sha256(_manifest_canonical_bytes(manifest)).hexdigest()
+
+
+def _manifest_from_row(row: object, release_id: str) -> tuple[dict[str, object], str] | None:
+    if not isinstance(row, dict):
+        return None
+    raw_json = row.get("manifest_json")
+    stored_digest = row.get("manifest_sha256")
+    if not isinstance(raw_json, str) or not isinstance(stored_digest, str):
+        return None
+    try:
+        manifest = json.loads(raw_json)
+        validated = _validate_desktop_manifest(manifest)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if validated.get("release_id") != release_id or not hmac.compare_digest(stored_digest, _manifest_sha256(validated)):
+        return None
+    return validated, stored_digest
+
+
+def _release_manifest_key_valid(request: Request) -> bool:
+    expected = getattr(request.scope["env"], "ADMIN_KEY", None)
+    provided = request.headers.get("secret-key")
+    return (
+        isinstance(expected, str)
+        and bool(expected)
+        and isinstance(provided, str)
+        and hmac.compare_digest(provided, expected)
+    )
+
+
+async def _register_release_manifest(request: Request, payload: dict[str, object]) -> dict[str, object]:
+    manifest = _validate_desktop_manifest(payload)
+    release_id = str(manifest["release_id"])
+    digest = _manifest_sha256(manifest)
+    env = request.scope["env"]
+    existing = await (
+        env.APP_DB.prepare(
+            "SELECT release_id, manifest_json, manifest_sha256 FROM cf_desktop_release_manifests "
+            "WHERE release_id = ? LIMIT 1"
+        )
+        .bind(release_id)
+        .first()
+    )
+    if existing is not None:
+        parsed = _manifest_from_row(existing, release_id)
+        if parsed is None or parsed[0] != manifest or parsed[1] != digest:
+            raise ValueError("release_id already exists with different immutable metadata")
+        return manifest
+    try:
+        await (
+            env.APP_DB.prepare(
+                "INSERT INTO cf_desktop_release_manifests "
+                "(release_id, manifest_json, manifest_sha256, created_at) VALUES (?, ?, ?, unixepoch())"
+            )
+            .bind(release_id, _manifest_canonical_bytes(manifest).decode("utf-8"), digest)
+            .run()
+        )
+    except Exception as exc:
+        raise ValueError("release_id already exists or manifest projection is unavailable") from exc
+    return manifest
 
 
 async def _live_releases(request: Request) -> list[dict[str, object]]:
@@ -945,3 +1211,58 @@ async def get_update_policy(
     except Exception:
         return _default_policy()
     return _policy(row if isinstance(row, dict) else None, platform=platform, current_build=current_build)
+
+
+@router.post("/v2/desktop/releases", status_code=201)
+async def register_desktop_release_manifest(
+    request: Request,
+    payload: dict[str, object],
+    secret_key: str | None = Header(default=None),
+):
+    """Register one validated immutable desktop manifest in D1.
+
+    This endpoint does not publish a channel pointer. Publication remains a
+    separate release-pipeline operation, while the manifest itself is safe to
+    retry and cannot be overwritten after insertion.
+    """
+    if not _release_manifest_key_valid(request):
+        raise HTTPException(status_code=403, detail="You are not authorized to register desktop releases")
+    try:
+        manifest = await _register_release_manifest(request, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Desktop release manifest projection unavailable") from exc
+    return {"success": True, "manifest": manifest}
+
+
+@router.get("/v2/desktop/releases/{release_id}")
+async def get_desktop_release_manifest(
+    request: Request,
+    release_id: str,
+    secret_key: str | None = Header(default=None),
+):
+    """Return the validated immutable manifest for one release id."""
+    if not _release_manifest_key_valid(request):
+        raise HTTPException(status_code=403, detail="You are not authorized to read desktop releases")
+    if DESKTOP_RELEASE_ID_RE.fullmatch(release_id) is None:
+        raise HTTPException(status_code=404, detail="desktop release manifest not found")
+    try:
+        row = (
+            await request.scope["env"]
+            .APP_DB.prepare(
+                "SELECT release_id, manifest_json, manifest_sha256 FROM cf_desktop_release_manifests "
+                "WHERE release_id = ? LIMIT 1"
+            )
+            .bind(release_id)
+            .first()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Desktop release manifest projection unavailable") from exc
+    parsed = _manifest_from_row(row, release_id)
+    if parsed is None:
+        if row is None:
+            raise HTTPException(status_code=404, detail="desktop release manifest not found")
+        raise HTTPException(status_code=503, detail="Desktop release manifest projection is invalid")
+    manifest, digest = parsed
+    return {"success": True, "manifest": manifest, "manifest_sha256": digest}
