@@ -439,6 +439,21 @@ transient D1 write failure preserves the verified envelope, emits bounded
 fallback telemetry without identity or password data, and retries at the next
 login. All new and reset passwords use Better Auth's native algorithm.
 
+Before handling a protected export, run the credential-free schema/import
+preflight. It applies the real Auth migrations to an in-memory SQLite/D1
+equivalent and exercises apply → verify → replay plus changed-source conflict,
+revoked projection, and account-deletion fence rejection. The fixture is fully
+synthetic and makes no network requests:
+
+```bash
+npm run identity:dry-run
+```
+
+The command must report `status=passed`, `network_requests=0`, and every
+admission check as `true`. It verifies importer mechanics only; it is not
+evidence that a production Firebase export or provider configuration has been
+reconciled.
+
 Migration `0010_firebase_identity_provenance.sql` also stores a per-user
 `sourceRecordSha256` digest (user plus imported account rows, never the source
 data itself). The bridge requires this digest to be present and well-formed;
