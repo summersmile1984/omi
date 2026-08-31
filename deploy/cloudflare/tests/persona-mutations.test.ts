@@ -120,6 +120,22 @@ function form(data: Record<string, unknown>, image = PNG) {
   return body;
 }
 
+function updateForm(data: Record<string, unknown>, image?: Uint8Array) {
+  const body = new FormData();
+  body.set("persona_data", JSON.stringify(data));
+  if (image) {
+    const copy = new Uint8Array(image.byteLength);
+    copy.set(image);
+    body.set(
+      "file",
+      new File([copy.buffer as ArrayBuffer], "persona.png", {
+        type: "image/png",
+      }),
+    );
+  }
+  return body;
+}
+
 describe("Cloudflare Persona creation boundary", () => {
   it("creates a D1/R2 persona and deduplicates a retried multipart request", async () => {
     const state = await environment();
@@ -194,5 +210,166 @@ describe("Cloudflare Persona creation boundary", () => {
     );
     expect(invalid.status).toBe(422);
     expect(state.assets.objects.size).toBe(0);
+  });
+
+  it("updates only an owner D1 persona, preserves an omitted logo, and rotates a supplied logo", async () => {
+    const state = await environment();
+    const headers = {
+      "x-omi-auth-context": state.signed.encoded,
+      "x-omi-internal-signature": state.signed.signature,
+    };
+    const created = await jobs.fetch(
+      new Request("https://jobs.test/v1/personas", {
+        method: "POST",
+        headers,
+        body: form({
+          name: "Before update",
+          username: "before-update",
+          private: true,
+        }),
+      }),
+      state.env,
+    );
+    const createdBody = (await created.json()) as { app_id: string };
+    const originalKeys = [...state.assets.objects.keys()];
+    const patchSigned = await createSignedAuthContext(
+      {
+        uid: "persona-owner",
+        authority: "better-auth",
+        requestId: "persona-update",
+      },
+      "jobs",
+      "PATCH",
+      `/v1/personas/${createdBody.app_id}`,
+      "persona-mutation-secret",
+    );
+    if (!patchSigned) throw new Error("missing patch signed context");
+    const patchHeaders = {
+      "x-omi-auth-context": patchSigned.encoded,
+      "x-omi-internal-signature": patchSigned.signature,
+    };
+
+    const withoutImage = await jobs.fetch(
+      new Request(`https://jobs.test/v1/personas/${createdBody.app_id}`, {
+        method: "PATCH",
+        headers: patchHeaders,
+        body: updateForm({
+          name: "After update",
+          username: "after-update",
+          connected_accounts: ["omi"],
+          private: false,
+        }),
+      }),
+      state.env,
+    );
+    expect(withoutImage.status).toBe(200);
+    await expect(withoutImage.json()).resolves.toMatchObject({
+      status: "ok",
+      app_id: createdBody.app_id,
+      username: "after-update",
+    });
+    expect(state.assets.objects.size).toBe(1);
+    expect([...state.assets.objects.keys()]).toEqual(originalKeys);
+
+    const replacement = await jobs.fetch(
+      new Request(`https://jobs.test/v1/personas/${createdBody.app_id}`, {
+        method: "PATCH",
+        headers: patchHeaders,
+        body: updateForm({ name: "Rotated update", username: "rotated" }, PNG),
+      }),
+      state.env,
+    );
+    expect(replacement.status).toBe(200);
+    expect(state.assets.objects.size).toBe(1);
+    expect([...state.assets.objects.keys()]).not.toEqual(originalKeys);
+    const row = state.database.database
+      .prepare("SELECT owner_uid, data_json FROM cf_app_catalog WHERE id = ?")
+      .get(createdBody.app_id) as { owner_uid: string; data_json: string };
+    expect(row.owner_uid).toBe("persona-owner");
+    expect(JSON.parse(row.data_json)).toMatchObject({
+      id: createdBody.app_id,
+      uid: "persona-owner",
+      name: "Rotated update",
+      username: "rotated",
+      capabilities: ["persona"],
+    });
+    expect(state.ai.run).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects a non-owner and lets the D1 deletion fence block an update", async () => {
+    const state = await environment();
+    const headers = {
+      "x-omi-auth-context": state.signed.encoded,
+      "x-omi-internal-signature": state.signed.signature,
+    };
+    const created = await jobs.fetch(
+      new Request("https://jobs.test/v1/personas", {
+        method: "POST",
+        headers,
+        body: form({ name: "Fenced persona", username: "fenced" }),
+      }),
+      state.env,
+    );
+    const { app_id: personaId } = (await created.json()) as { app_id: string };
+    const patchSigned = await createSignedAuthContext(
+      {
+        uid: "persona-owner",
+        authority: "better-auth",
+        requestId: "persona-fence-update",
+      },
+      "jobs",
+      "PATCH",
+      `/v1/personas/${personaId}`,
+      "persona-mutation-secret",
+    );
+    if (!patchSigned) throw new Error("missing fence signed context");
+    const other = await createSignedAuthContext(
+      {
+        uid: "other-owner",
+        authority: "better-auth",
+        requestId: "persona-other",
+      },
+      "jobs",
+      "PATCH",
+      `/v1/personas/${personaId}`,
+      "persona-mutation-secret",
+    );
+    if (!other) throw new Error("missing other signed context");
+    const forbidden = await jobs.fetch(
+      new Request(`https://jobs.test/v1/personas/${personaId}`, {
+        method: "PATCH",
+        headers: {
+          "x-omi-auth-context": other.encoded,
+          "x-omi-internal-signature": other.signature,
+        },
+        body: updateForm({ name: "attacker" }),
+      }),
+      state.env,
+    );
+    expect(forbidden.status).toBe(403);
+
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_account_deletion_intents
+           (uid, job_id, status, phase, next_attempt_at, created_at, updated_at)
+         VALUES (?, ?, 'pending', 'quiescing', 1, 1, 1)`,
+      )
+      .run("persona-owner", "delete-persona-owner");
+    const fenced = await jobs.fetch(
+      new Request(`https://jobs.test/v1/personas/${personaId}`, {
+        method: "PATCH",
+        headers: {
+          "x-omi-auth-context": patchSigned.encoded,
+          "x-omi-internal-signature": patchSigned.signature,
+        },
+        body: updateForm({ name: "blocked" }),
+      }),
+      state.env,
+    );
+    expect(fenced.status).toBe(503);
+    const row = state.database.database
+      .prepare("SELECT data_json FROM cf_app_catalog WHERE id = ?")
+      .get(personaId) as { data_json: string };
+    expect(JSON.parse(row.data_json).name).toBe("Fenced persona");
   });
 });

@@ -335,7 +335,7 @@
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/goals/{goal_id}/progress", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/mcp/action-items/{action_item_id}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/mcp/memories/{memory_id}", "protocol": "http", "target_runtime": "python-worker"},
-    {"method": "PATCH", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/personas/{persona_id}", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "PATCH", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/personas/{persona_id}", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/staged-tasks/batch-scores", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/tools/action-items/{action_item_id}", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "PATCH", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/ai-profile", "protocol": "http", "target_runtime": "python-worker"},

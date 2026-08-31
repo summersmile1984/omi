@@ -23,6 +23,7 @@ const MAX_PERSONA_DATA_BYTES = 500_000;
 const MAX_PERSONA_IMAGE_BYTES = 10 * 1_024 * 1_024;
 const MAX_PERSONA_REQUEST_BYTES =
   MAX_PERSONA_DATA_BYTES + MAX_PERSONA_IMAGE_BYTES + 64_000;
+const MAX_PERSONA_ID_LENGTH = 256;
 const MAX_NAME_LENGTH = 160;
 const MAX_USERNAME_LENGTH = 120;
 const MAX_DESCRIPTION_LENGTH = 20_000;
@@ -36,7 +37,7 @@ type JsonObject = Record<string, unknown>;
 
 class PersonaMutationError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409 | 413 | 422 | 503,
+    readonly status: 400 | 403 | 404 | 409 | 413 | 422 | 503,
     readonly detail: string,
   ) {
     super(detail);
@@ -274,11 +275,12 @@ async function generateDescription(
 
 type ParsedPersonaMultipart = {
   input: JsonObject;
-  file: { bytes: Uint8Array; contentType: string };
+  file: { bytes: Uint8Array; contentType: string } | null;
 };
 
 async function parsePersonaMultipart(
   request: Request,
+  options: { requireFile?: boolean } = {},
 ): Promise<ParsedPersonaMultipart> {
   let input: JsonObject | null = null;
   let file: { bytes: Uint8Array; contentType: string } | null = null;
@@ -334,11 +336,11 @@ async function parsePersonaMultipart(
     }
     throw error;
   }
-  if (!input || !file)
+  if (!input || (options.requireFile !== false && !file))
     throw new PersonaMutationError(422, "Persona image is required");
   return {
     input: input as JsonObject,
-    file: file as { bytes: Uint8Array; contentType: string },
+    file: file as { bytes: Uint8Array; contentType: string } | null,
   };
 }
 
@@ -352,6 +354,8 @@ async function createPersona(c: JobsContext, context: SignedAuthContext) {
   if (!validAccountDeletionUid(context.uid))
     throw new PersonaMutationError(422, "Persona owner is invalid");
   const parsed = await parsePersonaMultipart(c.req.raw);
+  const file = parsed.file;
+  if (!file) throw new PersonaMutationError(422, "Persona image is required");
   const input = parsed.input;
   const profile = await authProfile(c.env, context);
   const name = stringValue(
@@ -373,9 +377,9 @@ async function createPersona(c: JobsContext, context: SignedAuthContext) {
     "SHA-256",
     new TextEncoder().encode(
       `${context.uid}\x1f${stableJson(input)}\x1f${hex(
-        await crypto.subtle.digest(
+          await crypto.subtle.digest(
           "SHA-256",
-          parsed.file.bytes.buffer as ArrayBuffer,
+          file.bytes.buffer as ArrayBuffer,
         ),
       )}`,
     ),
@@ -418,8 +422,8 @@ async function createPersona(c: JobsContext, context: SignedAuthContext) {
   const version = crypto.randomUUID();
   const key = appLogoObjectKey(context.uid, personaId, version);
   const image = appLogoUrl(c.env, personaId, version);
-  await c.env.ASSETS.put(key, parsed.file.bytes, {
-    httpMetadata: { contentType: parsed.file.contentType },
+  await c.env.ASSETS.put(key, file.bytes, {
+    httpMetadata: { contentType: file.contentType },
     customMetadata: { ownerUid: context.uid, appId: personaId, version },
   });
   let committed = false;
@@ -468,6 +472,284 @@ async function createPersona(c: JobsContext, context: SignedAuthContext) {
   }
 }
 
+type PersonaCatalogRow = {
+  id: string;
+  owner_uid: string | null;
+  approved: number;
+  status: string;
+  disabled: number;
+  data_json: string;
+};
+
+function validPersonaId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_PERSONA_ID_LENGTH &&
+    !value.includes("/") &&
+    !value.includes("\\")
+  );
+}
+
+function personaCatalogPayload(raw: string, personaId: string): JsonObject {
+  if (
+    new TextEncoder().encode(raw).byteLength > MAX_PERSONA_DATA_BYTES
+  ) {
+    throw new PersonaMutationError(503, "Persona unavailable");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new PersonaMutationError(503, "Persona unavailable");
+  }
+  const payload = objectValue(value);
+  if (!payload) {
+    throw new PersonaMutationError(503, "Persona unavailable");
+  }
+  if (payload.id !== undefined && payload.id !== personaId) {
+    throw new PersonaMutationError(503, "Persona unavailable");
+  }
+  if (!Array.isArray(payload.capabilities)) {
+    throw new PersonaMutationError(503, "Persona unavailable");
+  }
+  if (!payload.capabilities.includes("persona")) {
+    throw new PersonaMutationError(404, "Persona not found");
+  }
+  return payload;
+}
+
+function personaLogoKeyFromPayload(
+  raw: string,
+  ownerUid: string,
+  personaId: string,
+): string | null {
+  const payload = personaCatalogPayload(raw, personaId);
+  const image = payload.image;
+  if (typeof image !== "string" || !image) return null;
+  let pathname: string;
+  try {
+    pathname = new URL(image).pathname;
+  } catch {
+    return null;
+  }
+  const prefix = `/v1/apps/${encodeURIComponent(personaId)}/logo/`;
+  if (!pathname.startsWith(prefix)) return null;
+  const version = pathname.slice(prefix.length);
+  if (version.includes("/")) return null;
+  try {
+    return appLogoObjectKey(ownerUid, personaId, version);
+  } catch {
+    return null;
+  }
+}
+
+function currentPersonaList(value: unknown): string[] {
+  if (value === undefined || value === null) return ["omi"];
+  return stringList(value, "Connected accounts");
+}
+
+async function cleanupPersonaLogo(
+  env: JobsEnv,
+  key: string | null,
+  uid: string,
+  reason: "uncommitted-upload" | "superseded",
+) {
+  if (!key) return;
+  try {
+    await env.ASSETS.delete(key);
+  } catch {
+    const now = Math.floor(Date.now() / 1_000);
+    try {
+      await env.APP_DB.prepare(
+        `INSERT INTO cf_asset_cleanup_tasks
+           (storage_key, uid, logical_key, content_type, reason, not_before,
+            attempts, last_error, created_at, updated_at)
+         VALUES (?, ?, ?, 'image/unknown', ?, ?, 0,
+                 'r2 delete unavailable', ?, ?)
+         ON CONFLICT(storage_key) DO UPDATE SET
+           uid = excluded.uid,
+           logical_key = excluded.logical_key,
+           content_type = excluded.content_type,
+           reason = excluded.reason,
+           not_before = MIN(cf_asset_cleanup_tasks.not_before, excluded.not_before),
+           last_error = excluded.last_error,
+           updated_at = excluded.updated_at`,
+      )
+        .bind(key, uid, key, reason, now, now, now)
+        .run();
+    } catch {
+      // The account-deletion uid-scoped R2 sweep remains the final cleanup
+      // authority when a deletion fence rejects the cleanup receipt.
+    }
+  }
+}
+
+async function updatePersona(
+  c: JobsContext,
+  context: SignedAuthContext,
+  personaId: string,
+) {
+  if (!validPersonaId(personaId) || !validAccountDeletionUid(context.uid)) {
+    throw new PersonaMutationError(404, "Persona not found");
+  }
+  const current = await c.env.APP_DB.prepare(
+    `SELECT id, owner_uid, approved, status, disabled, data_json
+       FROM cf_app_catalog WHERE id = ? LIMIT 1`,
+  )
+    .bind(personaId)
+    .first<PersonaCatalogRow>();
+  if (!current) throw new PersonaMutationError(404, "Persona not found");
+  if (current.owner_uid !== context.uid) {
+    throw new PersonaMutationError(
+      403,
+      "You are not authorized to perform this action",
+    );
+  }
+  const existing = personaCatalogPayload(current.data_json, personaId);
+  const parsed = await parsePersonaMultipart(c.req.raw, { requireFile: false });
+  const input = parsed.input;
+  if (input.id !== undefined && input.id !== personaId) {
+    throw new PersonaMutationError(422, "Persona id is invalid");
+  }
+  if (input.uid !== undefined && input.uid !== context.uid) {
+    throw new PersonaMutationError(403, "Persona owner does not match");
+  }
+
+  const name = stringValue(
+    input.name ?? existing.name,
+    "Persona name",
+    MAX_NAME_LENGTH,
+    true,
+  );
+  const nextUsername = username(input.username ?? existing.username, name);
+  const usernameRow = await c.env.APP_DB.prepare(
+    `SELECT id FROM cf_app_catalog
+       WHERE json_extract(data_json, '$.username') = ? AND id != ? LIMIT 1`,
+  )
+    .bind(nextUsername, personaId)
+    .first<{ id: string }>();
+  if (usernameRow)
+    throw new PersonaMutationError(409, "Persona username is already taken");
+
+  const connectedAccounts = currentPersonaList(
+    input.connected_accounts ?? existing.connected_accounts,
+  );
+  if (input.private !== undefined && typeof input.private !== "boolean") {
+    throw new PersonaMutationError(422, "Private flag is invalid");
+  }
+  const privatePersona =
+    input.private === undefined ? existing.private === true : input.private;
+  const hadOmi = currentPersonaList(existing.connected_accounts).includes("omi");
+  const prompt =
+    input.persona_prompt === undefined
+      ? !hadOmi && connectedAccounts.includes("omi")
+        ? personaPrompt(name, { ...existing, ...input })
+        : typeof existing.persona_prompt === "string"
+          ? existing.persona_prompt
+          : personaPrompt(name, { ...existing, ...input })
+      : stringValue(input.persona_prompt, "Persona prompt", MAX_PROMPT_LENGTH);
+  const image = parsed.file
+    ? appLogoUrl(c.env, personaId, crypto.randomUUID())
+    : typeof existing.image === "string"
+      ? existing.image
+      : "";
+  if (!image) throw new PersonaMutationError(422, "Persona image is required");
+  if (input.image !== undefined && input.image !== image && !parsed.file) {
+    throw new PersonaMutationError(422, "Persona image requires a file");
+  }
+
+  let stagedKey: string | null = null;
+  let oldLogoKey: string | null = null;
+  if (parsed.file) {
+    const version = image.slice(image.lastIndexOf("/") + 1);
+    stagedKey = appLogoObjectKey(context.uid, personaId, version);
+    await c.env.ASSETS.put(stagedKey, parsed.file.bytes, {
+      httpMetadata: { contentType: parsed.file.contentType },
+      customMetadata: { ownerUid: context.uid, appId: personaId, version },
+    });
+    oldLogoKey = personaLogoKeyFromPayload(
+      current.data_json,
+      context.uid,
+      personaId,
+    );
+  }
+
+  let committed = false;
+  try {
+    const description = await generateDescription(c.env, name, {
+      ...existing,
+      ...input,
+      name,
+      username: nextUsername,
+      connected_accounts: connectedAccounts,
+      private: privatePersona,
+    });
+    const payload: JsonObject = {
+      ...existing,
+      id: personaId,
+      uid: context.uid,
+      name,
+      username: nextUsername,
+      description,
+      image,
+      connected_accounts: connectedAccounts,
+      private: privatePersona,
+      persona_prompt: prompt,
+      updated_at: new Date().toISOString(),
+    };
+    // These are authority-owned fields and cannot be changed through the
+    // Persona update form, even if a stale client sends them back.
+    for (const key of ["approved", "status", "category", "capabilities", "author", "email"])
+      payload[key] = existing[key];
+    const encoded = JSON.stringify(payload);
+    if (new TextEncoder().encode(encoded).byteLength > MAX_PERSONA_DATA_BYTES) {
+      throw new PersonaMutationError(413, "Persona data is too large");
+    }
+    const now = Math.floor(Date.now() / 1_000);
+    const result = await c.env.APP_DB.prepare(
+      `UPDATE cf_app_catalog SET data_json = ?, updated_at = ?
+         WHERE id = ? AND owner_uid = ? AND data_json = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM cf_app_catalog duplicate
+              WHERE duplicate.id != ?
+                AND json_extract(duplicate.data_json, '$.username') = ?
+           )`,
+    )
+      .bind(
+        encoded,
+        now,
+        personaId,
+        context.uid,
+        current.data_json,
+        personaId,
+        nextUsername,
+      )
+      .run();
+    if (Number(result.meta?.changes) !== 1) {
+      throw new PersonaMutationError(409, "Persona changed during update");
+    }
+    committed = true;
+    if (stagedKey && oldLogoKey && stagedKey !== oldLogoKey) {
+      await cleanupPersonaLogo(c.env, oldLogoKey, context.uid, "superseded");
+    }
+    return c.json(
+      { status: "ok", app_id: personaId, username: nextUsername },
+      200,
+      { "cache-control": "no-store" },
+    );
+  } finally {
+    if (!committed && stagedKey) {
+      await cleanupPersonaLogo(
+        c.env,
+        stagedKey,
+        context.uid,
+        "uncommitted-upload",
+      );
+    }
+  }
+}
+
 export function registerPersonaMutationRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: RequestContext,
@@ -477,6 +759,15 @@ export function registerPersonaMutationRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return await createPersona(c, context);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+  app.patch("/v1/personas/:personaId", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      return await updatePersona(c, context, c.req.param("personaId"));
     } catch (error) {
       return errorResponse(c, error);
     }

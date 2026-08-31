@@ -1,6 +1,6 @@
-# Persona 创建 staging 边界
+# Persona 创建/更新 staging 边界
 
-截至 2026-08-31，`POST /v1/personas` 已具备 Cloudflare staging owner 的最小闭环。Edge 使用 Better Auth 验证用户后，将请求绑定转发到 Jobs Worker；Jobs 不读取 Firebase/Firestore，也不依赖本机临时目录。
+截至 2026-08-31，`POST /v1/personas` 与 `PATCH /v1/personas/{persona_id}` 已具备 Cloudflare staging owner 的最小闭环。Edge 使用 Better Auth 验证用户后，将请求绑定转发到 Jobs Worker；Jobs 不读取 Firebase/Firestore，也不依赖本机临时目录。
 
 ## 已闭合的行为
 
@@ -10,11 +10,15 @@
 - 生成描述使用 Workers AI；provider 缺失、异常或返回空内容时返回 503，并通过共享 fallback telemetry 记录，不写入半成品 catalog row。
 - 用户名在 D1 catalog 中做冲突检查；响应保持 legacy `{"status":"ok","app_id":...,"username":...}` 形状。
 - Account deletion 已覆盖 `cf_app_catalog.owner_uid` 和 `cf-app-logos/{uid}/` R2 前缀。
+- PATCH 只允许更新 owner 自己的 D1 Persona projection；使用 `owner_uid + data_json` CAS 防止并发覆盖，用户名以 D1 冲突检查约束，省略图片时保留原 R2/legacy image URL，提供新图片时以版本化 R2 object 替换并清理旧对象。
+- PATCH 的响应保持 legacy `{"status":"ok","app_id":...,"username":...}` 形状；D1 mutation fence 会阻止删除中的账户继续更新，失败的 staged logo 会清理或登记 `cf_asset_cleanup_tasks`。
 
 ## 尚未宣称完成的部分
 
-`PATCH /v1/personas/{persona_id}`、Twitter ownership verification，以及 `/v1/apps/mcp*` 仍由 legacy owner 处理。它们依赖 Firestore app 文档、Firebase provider identity、公开目录缓存失效、本机图片临时文件/GCS logo，以及 MCP 外部 OAuth state/PKCE、token 和 tool-discovery 状态；现有 D1 MCP OAuth 仅覆盖已迁移的 `/v1/mcp/*` 工具，不是 app 动态注册的替代。为防止 staging 凭据或授权 code 进入 legacy，Edge 在 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 时对上述入口返回 `503 persona_apps_unavailable`，不读取请求 body 或调用 legacy；这些路由仍计入 legacy-owned。历史 Firestore Persona 回填、公开目录缓存的 legacy invalidation、完整的 Persona prompt/memory condensation、图片缩略图和生产 cutover 仍待单独闭合；因此本边界只迁移创建入口，不将其它 Persona/app mutation 路径改成 Cloudflare owner。
+Twitter ownership verification，以及 `/v1/apps/mcp*` 仍由 legacy owner 处理。它们依赖 Firebase provider identity、公开目录缓存失效和 MCP 外部 OAuth state/PKCE、token、tool-discovery 状态；现有 D1 MCP OAuth 仅覆盖已迁移的 `/v1/mcp/*` 工具，不是 app 动态注册的替代。为防止 staging 凭据或授权 code 进入 legacy，Edge 在 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 时对上述入口返回 `503 persona_apps_unavailable`，不读取请求 body 或调用 legacy；这些路由仍计入 legacy-owned。
+
+Persona PATCH 的范围仍是“D1-owned projection 的 bounded update”，不是生产 wire parity：历史 Firestore Persona 尚未回填；现有 Workers AI 只生成有界 description，不能证明 legacy `generate_persona_prompt` 的 memories/conversations/tweets condensation 等价；legacy GCS logo 不能被 Worker 在没有迁移映射时主动删除。公开 app 目录目前直接读 D1、没有 Redis cache writer，故 PATCH 只能通过 D1 revision/`updated_at` 保持可见性，不能宣称已迁移 legacy cache invalidation。历史回填、完整 prompt contract、图片缩略图/legacy object mapping 和 production cutover 仍需独立门槛。
 
 ## 验证
 
-`deploy/cloudflare/tests/persona-mutations.test.ts` 覆盖认证、图片校验、D1/R2 创建、Workers AI 描述调用和重复 multipart 幂等；manifest 与 Edge/Jobs route registration 同步更新。2026-08-31 staging 实测 `POST /v1/personas` 返回 200，完全重复 multipart 返回相同 `app_id`，账号随后通过公开删号清理。
+`deploy/cloudflare/tests/persona-mutations.test.ts` 覆盖认证、图片校验、D1/R2 创建、Workers AI 描述调用、重复 multipart 幂等、无图更新、R2 logo rotation、跨 owner 拒绝和 deletion fence；Edge test 覆盖 PATCH 的 Better Auth→Jobs forwarding，manifest 与 Edge/Jobs route registration 同步更新。2026-08-31 本地 4 个 Persona mutation tests 通过；staging 尚未完成带真实 Better Auth Persona fixture 的 PATCH/provider probe。

@@ -525,7 +525,6 @@ describe("edge gateway", () => {
         throw new Error("legacy backend must not be called");
       });
     const requests = [
-      ["PATCH", "/v1/personas/persona-1"],
       [
         "GET",
         "/v1/personas/twitter/verify-ownership?username=alice&handle=alice",
@@ -547,7 +546,7 @@ describe("edge gateway", () => {
               "content-type": "application/json",
               "x-omi-auth-context": "caller-controlled",
             },
-            ...(method === "POST" || method === "PATCH"
+            ...(method === "POST"
               ? {
                   body: JSON.stringify({
                     persona_data: "opaque",
@@ -572,6 +571,49 @@ describe("edge gateway", () => {
     } finally {
       legacyFetch.mockRestore();
     }
+  });
+
+  it("routes the D1-owned Persona PATCH through the authenticated Jobs owner", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "persona-owner", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      JOBS: service((request) => {
+        jobsRequests.push(request);
+        return Response.json({ status: "ok", app_id: "persona-1", username: "updated" });
+      }),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/personas/persona-1", {
+        method: "PATCH",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "better-auth-session=opaque",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ persona_data: "opaque" }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      app_id: "persona-1",
+      username: "updated",
+    });
+    expect(jobsRequests).toHaveLength(1);
+    expect(jobsRequests[0].method).toBe("PATCH");
+    expect(new URL(jobsRequests[0].url).pathname).toBe("/v1/personas/persona-1");
+    expect(jobsRequests[0].headers.get("cookie")).toBeNull();
+    expect(decodeAuthContext(jobsRequests[0].headers.get("x-omi-auth-context"))).toMatchObject({
+      uid: "persona-owner",
+      audience: "jobs",
+    });
   });
 
   it("routes Wrapped status and generation through the authenticated Jobs owner", async () => {

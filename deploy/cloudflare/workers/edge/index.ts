@@ -809,7 +809,6 @@ app.post("/v1/proxy/gemini", legacyGeminiProxyStagingBoundary);
 app.post("/v1/proxy/gemini/*", legacyGeminiProxyStagingBoundary);
 app.post("/v1/proxy/gemini-stream", legacyGeminiProxyStagingBoundary);
 app.post("/v1/proxy/gemini-stream/*", legacyGeminiProxyStagingBoundary);
-app.patch("/v1/personas/:personaId", legacyPersonaAppsStagingBoundary);
 app.get(
   "/v1/personas/twitter/verify-ownership",
   legacyPersonaAppsStagingBoundary,
@@ -1234,6 +1233,7 @@ app.delete("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
 app.get("/v1/integrations/google_calendar/oauth-url", proxyAuthenticatedJobs);
 app.post("/v1/app/thumbnails", proxyAuthenticatedJobs);
 app.post("/v1/personas", proxyAuthenticatedJobs);
+app.patch("/v1/personas/:personaId", proxyAuthenticatedJobs);
 app.get("/v1/integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
 app.get("/v1/calendar/google/events", proxyAuthenticatedJobs);
 app.get("/v1/personas/twitter/profile", proxyAuthenticatedJobs);
