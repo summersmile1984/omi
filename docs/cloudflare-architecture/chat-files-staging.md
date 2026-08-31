@@ -252,15 +252,35 @@ Assistants thread/file_search、GCS thumbnail/provider object 或 `/v2/messages`
 wire parity。真实 Firestore export、账号 cutover marker 和独立文件/provider 验证完成前，
 不得把该 planner 视作 production owner switch 证据。
 
+### Firestore export verification tool（默认 dry-run）
+
+如果手头是 Firestore chat history 的 JSON export bytes，可先用独立校验器按原始字节计算
+SHA-256，再交给同一个 `planChatHistoryReconciliation` planner。它只读 bounded UTF-8
+bytes，不连接 Firestore、GCS、D1 或任何 provider，也不会把凭据写入输出：
+
+```bash
+npm run chat:export-verify -- \
+  --export /path/to/chat-history-export.json \
+  --expected-sha256 <sha256>
+```
+
+只有显式指定 `--apply <https://jobs.example/internal/chat-history/apply>` 时才会向现有
+Jobs endpoint 发起一次 apply 请求；命令行同时要求 `--expected-sha256`、`ADMIN_KEY`
+和至少 32 字节的 `CHAT_HISTORY_IMPORT_SIGNING_SECRET`（可用
+`--admin-key-env`/`--signing-secret-env` 改变环境变量名）。脚本在内存中生成
+HMAC-SHA256，签名覆盖 canonical 排序后的 `batch_id`、manifest 和 entry metadata，
+secret 不进入 plan、HTTP body 或 JSON 输出。apply 每批最多 20 个已 stage 实体，默认行为
+始终是 dry-run。
+
 ### Reviewed apply executor（默认关闭）
 
 为避免把“生成 SQL”误当成已经落库，Jobs Worker 另提供一个仅供受控操作员使用的
 `POST /internal/chat-history/apply`。它只在
 `CHAT_HISTORY_IMPORT_STAGING_ENABLED=true` 且请求带 `secret-key: ADMIN_KEY` 时启用；
 请求体必须是上面 planner 的 reviewed JSON（可使用 `manifestHash`/`batch_id`），并以
-`CHAT_HISTORY_IMPORT_SIGNING_SECRET`（至少 32 字节）的 HMAC-SHA256 对
-`<batch_id>\0<manifest_hash>` 生成 URL-safe Base64 签名，放入
-`x-chat-history-plan-signature`。签名覆盖排序后的 batch、manifest 以及每个 entry 的
+`CHAT_HISTORY_IMPORT_SIGNING_SECRET`（至少 32 字节）的 HMAC-SHA256 对 canonical JSON
+signature payload 生成 URL-safe Base64 签名，放入
+`x-chat-history-plan-signature`。payload 覆盖排序后的 batch、manifest 以及每个 entry 的
 uid/entity/generation/source/import/plan hash 元数据；body 上限 1 MiB、每批最多 20 个实体，Worker 会再次
 校验来源集合、行字段、所有 SHA-256、session/message 结构和 source-row hash，不接受
 凭据、Firebase/Provider token、邮箱或文件引用。
