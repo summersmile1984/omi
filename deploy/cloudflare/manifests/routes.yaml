@@ -70,6 +70,26 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /updates/releases
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: release-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PATCH
+    path: /updates/releases/promote
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: release-secret
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v2/desktop/update-policy
     owner: api-core

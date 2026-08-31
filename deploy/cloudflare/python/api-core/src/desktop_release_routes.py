@@ -13,7 +13,8 @@ import hmac
 import json
 import re
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -106,6 +107,31 @@ class DesktopPreviewPublishRequest(BaseModel):
     notes: str | None = None
     backend_url: str | None = None
     expected_generation: int | None = Field(default=None, ge=0)
+
+
+class CreateReleaseRequest(BaseModel):
+    """Compatibility payload for the desktop release bridge.
+
+    The release pipeline still publishes the artifact elsewhere.  This model
+    only accepts the signed metadata that is projected into D1 for the legacy
+    desktop clients that have not moved to the immutable manifest endpoints.
+    """
+
+    version: str = Field(min_length=1, max_length=128)
+    build_number: int = Field(ge=0)
+    download_url: str = Field(min_length=1, max_length=4096)
+    manual_download_url: str | None = Field(default=None, max_length=4096)
+    ed_signature: str = Field(min_length=1, max_length=4096)
+    changelog: list[str] = Field(default_factory=list, max_length=100)
+    is_live: bool = False
+    is_critical: bool = False
+    channel: str | None = Field(default=None, max_length=16)
+
+
+class PromoteReleaseRequest(BaseModel):
+    """Compatibility payload for one-step staging -> beta -> stable promotion."""
+
+    doc_id: str = Field(min_length=1, max_length=256)
 
 
 def _https_url(value: object, default: str | None = None) -> str | None:
@@ -623,6 +649,115 @@ def _release_manifest_key_valid(request: Request) -> bool:
         and isinstance(provided, str)
         and hmac.compare_digest(provided, expected)
     )
+
+
+def _release_compat_key_valid(request: Request) -> bool:
+    """Validate the release pipeline's existing X-Release-Secret contract."""
+    expected = getattr(request.scope["env"], "RELEASE_SECRET", None)
+    provided = request.headers.get("x-release-secret")
+    return (
+        isinstance(expected, str)
+        and bool(expected)
+        and isinstance(provided, str)
+        and hmac.compare_digest(provided, expected)
+    )
+
+
+def _required_release_url(value: str, field: str) -> str:
+    candidate = value.strip()
+    parsed = urlparse(candidate)
+    if not candidate or parsed.scheme.lower() != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise ValueError(f"{field} must be an https URL")
+    return candidate
+
+
+def _normalize_compat_release(payload: CreateReleaseRequest) -> dict[str, object]:
+    version = payload.version.strip()
+    if not version:
+        raise ValueError("version is required")
+    download_url = _required_release_url(payload.download_url, "download_url")
+    manual_download_url = (
+        _required_release_url(payload.manual_download_url, "manual_download_url")
+        if payload.manual_download_url is not None and payload.manual_download_url.strip()
+        else None
+    )
+    signature = payload.ed_signature.strip()
+    if not signature:
+        raise ValueError("ed_signature is required")
+    changelog: list[str] = []
+    for item in payload.changelog:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("changelog must contain non-empty strings")
+        changelog.append(item.strip())
+    changelog_json = json.dumps(changelog, ensure_ascii=False, separators=(",", ":"))
+    if len(changelog_json) > 32_000:
+        raise ValueError("changelog is too large")
+    channel = (payload.channel or "staging").strip().lower()
+    if channel not in {"staging", "beta", "stable"}:
+        raise ValueError("channel must be staging, beta, or stable")
+    return {
+        "version": version,
+        "build_number": payload.build_number,
+        "download_url": download_url,
+        "manual_download_url": manual_download_url,
+        "ed_signature": signature,
+        "changelog_json": changelog_json,
+        "is_live": int(payload.is_live),
+        "is_critical": int(payload.is_critical),
+        "channel": channel,
+    }
+
+
+async def _create_compat_release(request: Request, payload: CreateReleaseRequest) -> str:
+    release = _normalize_compat_release(payload)
+    doc_id = f"cf_release_{uuid.uuid4().hex}"
+    env = request.scope["env"]
+    await (
+        env.APP_DB.prepare(
+            "INSERT INTO cf_desktop_releases "
+            "(id, version, build_number, download_url, manual_download_url, ed_signature, published_at, "
+            "changelog_json, is_live, is_critical, channel, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())"
+        )
+        .bind(
+            doc_id,
+            release["version"],
+            release["build_number"],
+            release["download_url"],
+            release["manual_download_url"],
+            release["ed_signature"],
+            datetime.now(timezone.utc).isoformat(),
+            release["changelog_json"],
+            release["is_live"],
+            release["is_critical"],
+            release["channel"],
+        )
+        .run()
+    )
+    return doc_id
+
+
+async def _promote_compat_release(request: Request, doc_id: str) -> tuple[str, str]:
+    env = request.scope["env"]
+    row = await (
+        env.APP_DB.prepare("SELECT id, channel FROM cf_desktop_releases WHERE id = ? LIMIT 1").bind(doc_id).first()
+    )
+    if not isinstance(row, dict):
+        raise ValueError("release not found")
+    old_channel = row.get("channel")
+    new_channel = {"staging": "beta", "beta": "stable"}.get(old_channel)
+    if new_channel is None:
+        raise ValueError("release is already stable")
+    result = await (
+        env.APP_DB.prepare(
+            "UPDATE cf_desktop_releases SET channel = ?, updated_at = unixepoch() " "WHERE id = ? AND channel = ?"
+        )
+        .bind(new_channel, doc_id, old_channel)
+        .run()
+    )
+    if _changes(result) != 1:
+        raise ValueError("release changed while promoting")
+    return str(old_channel), new_channel
 
 
 async def _register_release_manifest(request: Request, payload: dict[str, object]) -> dict[str, object]:
@@ -1463,6 +1598,52 @@ async def register_desktop_release_manifest(
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Desktop release manifest projection unavailable") from exc
     return {"success": True, "manifest": manifest}
+
+
+@router.post("/updates/releases", status_code=201)
+async def create_compat_release(
+    request: Request,
+    payload: CreateReleaseRequest,
+    x_release_secret: str | None = Header(default=None),
+):
+    """Project legacy release metadata into the D1 desktop feed.
+
+    This keeps the route shape and response used by existing release
+    automation while moving the authority from Firestore to the D1 projection.
+    """
+    if not _release_compat_key_valid(request):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Release-Secret header")
+    try:
+        doc_id = await _create_compat_release(request, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to create release") from exc
+    return {"success": True, "doc_id": doc_id, "message": f"Release v{payload.version.strip()} created successfully"}
+
+
+@router.patch("/updates/releases/promote")
+async def promote_compat_release(
+    request: Request,
+    payload: PromoteReleaseRequest,
+    x_release_secret: str | None = Header(default=None),
+):
+    """Advance one projected release from staging to beta or beta to stable."""
+    if not _release_compat_key_valid(request):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Release-Secret header")
+    try:
+        old_channel, new_channel = await _promote_compat_release(request, payload.doc_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to promote: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Failed to promote release") from exc
+    return {
+        "success": True,
+        "doc_id": payload.doc_id,
+        "old_channel": old_channel,
+        "new_channel": new_channel,
+        "message": f"Release promoted from {old_channel} to {new_channel}",
+    }
 
 
 @router.post("/v2/desktop/clear-cache")

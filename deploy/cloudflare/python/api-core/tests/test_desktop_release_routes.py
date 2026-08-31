@@ -30,6 +30,10 @@ from desktop_release_routes import (  # noqa: E402
     publish_desktop_preview,
     register_desktop_release_manifest,
     clear_desktop_cache,
+    CreateReleaseRequest,
+    PromoteReleaseRequest,
+    create_compat_release,
+    promote_compat_release,
 )
 
 
@@ -85,7 +89,12 @@ def make_env():
     return type(
         "Env",
         (),
-        {"APP_DB": FakeDb(), "ADMIN_KEY": "admin-secret", "DESKTOP_PREVIEW_PUBLISH_KEY": "preview-secret"},
+        {
+            "APP_DB": FakeDb(),
+            "ADMIN_KEY": "admin-secret",
+            "DESKTOP_PREVIEW_PUBLISH_KEY": "preview-secret",
+            "RELEASE_SECRET": "release-secret",
+        },
     )()
 
 
@@ -590,6 +599,96 @@ def test_desktop_cache_invalidation_is_admin_only_and_d1_is_already_uncached():
         "message": "Desktop releases cache cleared successfully",
         "projection": "d1",
     }
+
+
+def compat_release_payload(**overrides):
+    payload = {
+        "version": "0.12.80",
+        "build_number": 12080,
+        "download_url": "https://github.com/BasedHardware/omi/releases/download/v0.12.80/Omi.zip",
+        "manual_download_url": "https://github.com/BasedHardware/omi/releases/download/v0.12.80/omi.dmg",
+        "ed_signature": "signature-12080",
+        "changelog": ["Cloudflare release bridge"],
+        "is_live": True,
+        "is_critical": False,
+        "channel": "staging",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_legacy_release_bridge_projects_metadata_into_d1_and_preserves_response_contract():
+    env = make_env()
+    request = FakeRequest(env, {"x-release-secret": "release-secret"})
+    payload = CreateReleaseRequest.model_validate(compat_release_payload())
+
+    created = asyncio.run(create_compat_release(request, payload))
+    assert created["success"] is True
+    assert created["message"] == "Release v0.12.80 created successfully"
+    assert created["doc_id"].startswith("cf_release_")
+    row = env.APP_DB.connection.execute(
+        "SELECT version, build_number, download_url, manual_download_url, ed_signature, published_at, "
+        "changelog_json, is_live, is_critical, channel FROM cf_desktop_releases WHERE id = ?",
+        (created["doc_id"],),
+    ).fetchone()
+    assert tuple(row) == (
+        "0.12.80",
+        12080,
+        "https://github.com/BasedHardware/omi/releases/download/v0.12.80/Omi.zip",
+        "https://github.com/BasedHardware/omi/releases/download/v0.12.80/omi.dmg",
+        "signature-12080",
+        row[5],
+        '["Cloudflare release bridge"]',
+        1,
+        0,
+        "staging",
+    )
+    assert row[5].endswith("+00:00")
+
+
+def test_legacy_release_bridge_requires_secret_and_rejects_unsafe_projection_input():
+    env = make_env()
+    payload = CreateReleaseRequest.model_validate(compat_release_payload())
+    with pytest.raises(HTTPException) as unauthorized:
+        asyncio.run(create_compat_release(FakeRequest(env), payload))
+    assert unauthorized.value.status_code == 401
+
+    with pytest.raises(HTTPException) as invalid_url:
+        asyncio.run(
+            create_compat_release(
+                FakeRequest(env, {"x-release-secret": "release-secret"}),
+                CreateReleaseRequest.model_validate(compat_release_payload(download_url="http://example.invalid/a")),
+            )
+        )
+    assert invalid_url.value.status_code == 422
+    assert "https URL" in str(invalid_url.value.detail)
+
+
+def test_legacy_release_bridge_promotion_is_atomic_and_stops_at_stable():
+    env = make_env()
+    request = FakeRequest(env, {"x-release-secret": "release-secret"})
+    created = asyncio.run(create_compat_release(request, CreateReleaseRequest.model_validate(compat_release_payload())))
+    doc_id = created["doc_id"]
+
+    promoted = asyncio.run(promote_compat_release(request, PromoteReleaseRequest(doc_id=doc_id)))
+    assert promoted == {
+        "success": True,
+        "doc_id": doc_id,
+        "old_channel": "staging",
+        "new_channel": "beta",
+        "message": "Release promoted from staging to beta",
+    }
+    promoted_again = asyncio.run(promote_compat_release(request, PromoteReleaseRequest(doc_id=doc_id)))
+    assert promoted_again["old_channel"] == "beta"
+    assert promoted_again["new_channel"] == "stable"
+    with pytest.raises(HTTPException) as terminal:
+        asyncio.run(promote_compat_release(request, PromoteReleaseRequest(doc_id=doc_id)))
+    assert terminal.value.status_code == 400
+    assert "already stable" in str(terminal.value.detail)
+
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(promote_compat_release(request, PromoteReleaseRequest(doc_id="missing")))
+    assert missing.value.status_code == 400
 
 
 def test_desktop_release_manifest_fails_closed_for_missing_or_corrupt_projection():
