@@ -21,6 +21,11 @@ from chat_session_routes import (  # noqa: E402
     save_desktop_message,
     update_chat_session,
 )
+from chat_session_file_routes import (  # noqa: E402
+    attach_session_chat_files,
+    detach_session_chat_file,
+    list_session_chat_files,
+)
 
 
 class FakeStatement:
@@ -58,7 +63,13 @@ class FakeDb:
             "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);"
         )
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        for migration in ("0042_chat_messages.sql", "0053_user_feedback.sql", "0054_chat_sessions.sql"):
+        for migration in (
+            "0042_chat_messages.sql",
+            "0053_user_feedback.sql",
+            "0054_chat_sessions.sql",
+            "0101_chat_files.sql",
+            "0111_chat_session_files.sql",
+        ):
             self.connection.executescript((migration_dir / migration).read_text())
 
     def prepare(self, sql):
@@ -154,6 +165,17 @@ def insert_message(
     db.connection.commit()
 
 
+def insert_file(db, file_id="file-1", *, uid="chat-user", status="ready"):
+    db.connection.execute(
+        "INSERT INTO cf_chat_files "
+        "(uid, file_id, request_fingerprint, provider, provider_file_id, name, mime_type, size, "
+        "checksum_sha256, storage_key, status, thumbnail_status, created_at, updated_at) "
+        "VALUES (?, ?, ?, 'openai', ?, 'notes.txt', 'text/plain', 5, ?, ?, ?, 'not_applicable', 1, 1)",
+        (uid, file_id, file_id.ljust(64, "0")[:64], f"provider-{file_id}", "a" * 64, f"{uid}/{file_id}", status),
+    )
+    db.connection.commit()
+
+
 def test_chat_session_crud_is_uid_and_app_scoped():
     secret = "chat-session-secret"
     db = FakeDb()
@@ -186,6 +208,78 @@ def test_chat_session_crud_is_uid_and_app_scoped():
     deleted = asyncio.run(delete_chat_session(FakeRequest(env, signed_headers(secret)), session_id))
     assert deleted == {"status": "ok"}
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 0
+
+
+def test_session_file_projection_is_ready_and_uid_scoped():
+    secret = "chat-session-secret"
+    db = FakeDb()
+    env = environment(db, secret)
+    insert_session(db, "session-1")
+    insert_file(db, "file-1")
+    insert_file(db, "file-2", uid="other-user")
+
+    attached = asyncio.run(
+        attach_session_chat_files(
+            FakeRequest(env, signed_headers(secret), body={"file_ids": ["file-1"]}),
+            "session-1",
+        )
+    )
+    assert attached[0]["id"] == "file-1"
+    assert attached[0]["openai_file_id"] == "provider-file-1"
+    assert attached[0]["thumbnail"] is None
+
+    listed = asyncio.run(
+        list_session_chat_files(FakeRequest(env, signed_headers(secret)), "session-1")
+    )
+    assert [row["id"] for row in listed] == ["file-1"]
+
+    missing = asyncio.run(
+        attach_session_chat_files(
+            FakeRequest(env, signed_headers(secret), body={"file_ids": ["file-2"]}),
+            "session-1",
+        )
+    )
+    assert missing.status_code == 404
+
+    detached = asyncio.run(
+        detach_session_chat_file(FakeRequest(env, signed_headers(secret)), "session-1", "file-1")
+    )
+    assert detached == {"status": "ok", "id": "file-1"}
+    assert asyncio.run(list_session_chat_files(FakeRequest(env, signed_headers(secret)), "session-1")) == []
+
+    asyncio.run(
+        attach_session_chat_files(
+            FakeRequest(env, signed_headers(secret), body={"file_ids": ["file-1"]}),
+            "session-1",
+        )
+    )
+    assert asyncio.run(delete_chat_session(FakeRequest(env, signed_headers(secret)), "session-1")) == {"status": "ok"}
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_session_files").fetchone()[0] == 0
+
+
+def test_session_file_attachment_rejects_duplicates_and_failed_rows_atomically():
+    secret = "chat-session-secret"
+    db = FakeDb()
+    env = environment(db, secret)
+    insert_session(db, "session-1")
+    insert_file(db, "file-ready")
+    insert_file(db, "file-failed", status="failed")
+
+    duplicate = asyncio.run(
+        attach_session_chat_files(
+            FakeRequest(env, signed_headers(secret), body={"file_ids": ["file-ready", "file-ready"]}),
+            "session-1",
+        )
+    )
+    assert duplicate.status_code == 400
+    failed = asyncio.run(
+        attach_session_chat_files(
+            FakeRequest(env, signed_headers(secret), body={"file_ids": ["file-ready", "file-failed"]}),
+            "session-1",
+        )
+    )
+    assert failed.status_code == 404
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_session_files").fetchone()[0] == 0
 
 
 def test_desktop_save_is_idempotent_and_accepts_monotonic_revisions():

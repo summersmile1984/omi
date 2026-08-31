@@ -1482,6 +1482,12 @@ app.get("/v2/chat-sessions", proxyAuthenticatedCore);
 app.get("/v2/chat-sessions/:sessionId", proxyAuthenticatedCore);
 app.patch("/v2/chat-sessions/:sessionId", proxyAuthenticatedCore);
 app.delete("/v2/chat-sessions/:sessionId", proxyAuthenticatedCore);
+app.get("/v2/cf/chat-sessions/:sessionId/files", proxyAuthenticatedCore);
+app.post("/v2/cf/chat-sessions/:sessionId/files", proxyAuthenticatedCore);
+app.delete(
+  "/v2/cf/chat-sessions/:sessionId/files/:fileId",
+  proxyAuthenticatedCore,
+);
 app.post("/v2/desktop/messages", proxyAuthenticatedCore);
 app.get("/v2/desktop/messages", proxyAuthenticatedCore);
 app.get("/v2/desktop/messages/reconcile", proxyAuthenticatedCore);

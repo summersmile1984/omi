@@ -64,6 +64,7 @@ from limitless_import_routes import router as limitless_import_router
 from daily_summary_routes import router as daily_summary_router
 from chat_routes import router as chat_router
 from chat_session_routes import router as chat_session_router
+from chat_session_file_routes import router as chat_session_file_router
 from app_review_routes import router as app_review_router
 from feedback_routes import router as feedback_router
 from llm_usage_routes import router as llm_usage_router
@@ -124,6 +125,7 @@ app.include_router(limitless_import_router)
 app.include_router(daily_summary_router)
 app.include_router(chat_router)
 app.include_router(chat_session_router)
+app.include_router(chat_session_file_router)
 app.include_router(app_review_router)
 app.include_router(feedback_router)
 app.include_router(llm_usage_router)

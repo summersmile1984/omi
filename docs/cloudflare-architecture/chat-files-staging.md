@@ -8,13 +8,21 @@
 - D1 `cf_chat_files` 保存 uid、稳定请求指纹、provider file id、大小、SHA-256、状态和私有对象 key；唯一指纹使同一用户的重复上传返回同一 provider 记录。
 - 文件先写专用 `CHAT_FILES` R2 bucket 的 `{uid}/{file_id}` 私有 key，再通过 direct OpenAI Files REST（文档 `purpose=assistants`、图片 `purpose=vision`）取得 provider id；API Core 不绑定该 bucket，也不复制 metadata writer。
 - provider/R2/metadata 失败时标记 failed 并尽力清理对象/provider；账号删除会扫描并清除 D1 行及 `CHAT_FILES` 的 uid 前缀。
-- GET 列表和 DELETE 都按 signed uid 隔离；跨账号 file id 返回 404，不暴露对象或 provider id。
+- GET 列表和 DELETE 都按 signed uid 隔离；跨账号 file id 返回 404，不暴露 R2 对象 key；仅在已认证的 metadata response 中返回 provider file id。
 
 ## 仍未完成
 
 `/v1/files`、`/v2/files` 继续由 legacy owner 提供。旧 `FileChatTool` 还依赖 Firestore `users/{uid}/files`/chat session、GCS 缩略图、Pillow 和 OpenAI Assistants/vision 语义。配置 Cloudflare Images `IMAGES` binding 和 `CHAT_FILE_THUMBNAIL_SECRET` 时，Worker 会把图片转成 128px JPEG 写入私有 R2，并用短期 HMAC URL 提供读取；缺少任一能力时明确返回 `503 thumbnail_unavailable`。这只闭合上传/缩略图 authority，Assistants session continuity 和历史 Firestore/GCS backfill 仍需完成后才能切换两个 legacy path。
 
 当前边界是同步的 Jobs provider admission，不是旧 API 的兼容 alias，也不宣称历史数据已迁移。`OPENAI_API_KEY` 需要以 Jobs Worker secret 注入 staging；缺失时请求 fail-closed。
+
+本轮补上了最小的 D1 session attachment projection（migration `0111_chat_session_files.sql`），并由 API Core 提供显式 staging-only contract：
+
+- `POST /v2/cf/chat-sessions/{session_id}/files` 只接受当前 uid 下 `cf_chat_files.status = 'ready'` 的 canonical `file_id`，重复绑定是幂等的；跨 uid、failed/deleted 或不存在的 id 统一返回 404。
+- `GET /v2/cf/chat-sessions/{session_id}/files` 只读同一 uid/session 下仍为 ready 的文件，并返回安全的 FileChat metadata projection，不返回 R2 storage key。
+- `DELETE /v2/cf/chat-sessions/{session_id}/files/{file_id}` 只解除 session 关联，不删除文件 authority；删 session、删文件和账号删除 residual sweep 都会清理关联。
+
+这组 route 证明了 D1 attachment reader 的 uid/session/deletion fence，但尚未让 `/v2/messages` 消费附件；现阶段 API AI 仍对 `file_ids` 返回 `409 attachments_not_migrated`。因此 `/v1/files`、`/v2/files` 继续不切 owner。
 
 ## Legacy owner 切换门槛
 
@@ -31,9 +39,9 @@
 
 - Legacy upload 与持久化：`backend/routers/chat.py` 的 `/v1/files`、`/v2/files` 写本机临时文件，经 `FileChatTool.upload` 调用 Pillow/OpenAI Files，再把 FileChat rows 写入 Firestore chat database。
 - Legacy 消费：`backend/routers/chat.py` 的 `/v2/messages` 将 `file_ids` 加入 Firestore chat session，随后由 `FileChatTool` 创建或恢复 OpenAI Assistants thread/assistant 并运行 file search；Cloudflare 当前 `deploy/cloudflare/python/api-ai/src/chat_generation_routes.py` 尚未承接这条附件分支。
-- Cloudflare 新 authority：`deploy/cloudflare/workers/jobs/chat-file-routes.ts` 只写 `cf_chat_files` 与专用 `CHAT_FILES` R2，并通过 direct OpenAI Files REST；`deploy/cloudflare/migrations/app/0101_chat_files.sql` / `0106_chat_file_thumbnails.sql` 没有 legacy session/thread 关联或历史 backfill 状态。
+- Cloudflare 新 authority：`deploy/cloudflare/workers/jobs/chat-file-routes.ts` 写 `cf_chat_files` 与专用 `CHAT_FILES` R2，并通过 direct OpenAI Files REST；`deploy/cloudflare/migrations/app/0111_chat_session_files.sql` 现在补上 D1 session attachment projection，但仍没有 legacy Assistants thread/assistant 关联或历史 backfill 状态。
 
-## 最小闭合设计（当前尚未实现）
+## 最小闭合设计（projection 已实现，provider continuity 尚未实现）
 
 若要推进两个 legacy upload owner，下一步最小数据契约应在 D1 增加 session attachment projection，而不是让聊天请求直接信任客户端传来的 provider id：
 
@@ -48,6 +56,8 @@ CREATE TABLE cf_chat_session_files (
   FOREIGN KEY (uid, file_id) REFERENCES cf_chat_files(uid, file_id)
 );
 ```
+
+该表已由 `0111_chat_session_files.sql` 创建，并带有复合主键、`cf_chat_sessions`/`cf_chat_files` 外键、uid mutation fence 和 account-deletion residual surface。`tests/test_chat_session_routes.py` 的 fixture 覆盖 ready-only、跨 uid/failed rejection、重复绑定、解除关联及安全 metadata projection；它不是 Assistants provider 的 wire fixture。
 
 写入必须同时满足 uid、session uid 和 `cf_chat_files.status = 'ready'`，并在 `cf_chat_files` 删除/账号删号时级联或显式清理；读取必须按 uid+session_id 查询并限制数量，拒绝跨账号、failed/deleted 或不存在的 file id。`cf_chat_sessions` 还需要保存经迁移的 provider thread/assistant identity（或另一个 uid-scoped provider-session 表），并带 generation/deletion fence；否则新上传虽然有 provider id，旧会话仍无法恢复其 Assistants thread。
 

@@ -448,6 +448,9 @@ async def delete_chat_session(request: Request, session_id: str):
                     "COALESCE(NULLIF(json_extract(message_json, '$.chat_session_id'), ''), "
                     "NULLIF(json_extract(message_json, '$.session_id'), '')) = ?"
                 ).bind(uid, session_id),
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_chat_session_files WHERE uid = ? AND session_id = ?"
+                ).bind(uid, session_id),
                 env.APP_DB.prepare("DELETE FROM cf_chat_sessions WHERE uid = ? AND id = ?").bind(uid, session_id),
             ]
         )
