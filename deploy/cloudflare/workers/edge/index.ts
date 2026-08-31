@@ -582,9 +582,6 @@ const legacyAuthOAuthStagingBoundary = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
   const id = requestId(c.req.raw);
-  if (c.env.AUTH_EXACT_NATIVE_STAGING_ENABLED === "true") {
-    return proxyExactNativeAuth(c);
-  }
   if (c.env.AUTH_OAUTH_STAGING_FAIL_CLOSED !== "true") {
     return proxyLegacyBackend(c);
   }
@@ -599,6 +596,19 @@ const legacyAuthOAuthStagingBoundary = async (
     ),
     id,
   );
+};
+
+// Keep the app-consent OAuth contract on its existing boundary.  Enabling the
+// exact native-auth staging owner must not accidentally route `/v1/oauth/*`
+// into the Auth Worker, whose transaction authority is intentionally limited
+// to `/v1/auth/*`.
+const legacyExactNativeAuthStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.AUTH_EXACT_NATIVE_STAGING_ENABLED === "true") {
+    return proxyExactNativeAuth(c);
+  }
+  return legacyAuthOAuthStagingBoundary(c);
 };
 
 // The phone surface is a coupled Twilio/Firestore/Redis contract. Until the
@@ -867,10 +877,10 @@ app.post(
   legacyPersonaAppsStagingBoundary,
 );
 app.post("/v1/apps/migrate-owner", legacyPersonaAppsStagingBoundary);
-app.get("/v1/auth/authorize", legacyAuthOAuthStagingBoundary);
-app.get("/v1/auth/callback/google", legacyAuthOAuthStagingBoundary);
-app.post("/v1/auth/callback/apple", legacyAuthOAuthStagingBoundary);
-app.post("/v1/auth/token", legacyAuthOAuthStagingBoundary);
+app.get("/v1/auth/authorize", legacyExactNativeAuthStagingBoundary);
+app.get("/v1/auth/callback/google", legacyExactNativeAuthStagingBoundary);
+app.post("/v1/auth/callback/apple", legacyExactNativeAuthStagingBoundary);
+app.post("/v1/auth/token", legacyExactNativeAuthStagingBoundary);
 app.get("/v1/oauth/authorize", legacyAuthOAuthStagingBoundary);
 app.post("/v1/oauth/token", legacyAuthOAuthStagingBoundary);
 app.get("/v1/phone/numbers", proxyAuthenticatedPhone);

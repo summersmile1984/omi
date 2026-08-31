@@ -313,7 +313,42 @@ function responseError(
     error instanceof NativeAuthError ? error.status : status || 503;
   const code = error instanceof NativeAuthError ? error.code : error;
   c.header("cache-control", "no-store");
-  return c.json({ error: code }, resolvedStatus);
+  // The exact legacy auth contract uses FastAPI's `{detail: ...}` error
+  // envelope. Keep the namespaced seam's stable machine-readable `{error}`
+  // response while matching that wire shape when this handler is reached via
+  // `/v1/auth/*`.
+  return c.json(
+    isExactLegacyAuthRequest(c)
+      ? { detail: legacyErrorDetail(code) }
+      : { error: code },
+    resolvedStatus,
+  );
+}
+
+function legacyErrorDetail(code: string): string {
+  switch (code) {
+    case "unsupported_provider":
+      return "Unsupported provider";
+    case "invalid_redirect_uri":
+      return "Invalid redirect_uri";
+    case "invalid_state":
+      return "Invalid auth session";
+    case "invalid_pkce":
+      return "Invalid PKCE parameters";
+    case "invalid_code":
+    case "invalid_or_expired_code":
+      return "Invalid or expired code";
+    case "invalid_request":
+      return "Invalid request";
+    case "firebase_bridge_unavailable":
+      return "Failed to generate authentication token";
+    default:
+      return code;
+  }
+}
+
+function isExactLegacyAuthRequest(c: NativeAuthContext): boolean {
+  return new URL(c.req.url).pathname.startsWith("/v1/auth/");
 }
 
 function callbackHtml(
@@ -321,6 +356,7 @@ function callbackHtml(
   message: string,
   redirectUrl?: string,
   status: 200 | 400 | 502 | 503 = 200,
+  autoRedirect = false,
 ): string {
   const escapeHtml = (value: string) =>
     value.replace(
@@ -337,7 +373,14 @@ function callbackHtml(
   const link = redirectUrl
     ? `<p><a href="${escapeHtml(redirectUrl)}">Continue in Omi</a></p>`
     : "";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${link}</body></html>`;
+  const redirectScript =
+    autoRedirect && redirectUrl
+      ? `<script>window.location.assign(${JSON.stringify(redirectUrl)
+          .replaceAll("<", "\\u003c")
+          .replaceAll(">", "\\u003e")
+          .replaceAll("&", "\\u0026")});</script>`
+      : "";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${link}${redirectScript}</body></html>`;
 }
 
 function callbackResponse(
@@ -350,9 +393,25 @@ function callbackResponse(
   c.header("cache-control", "no-store");
   c.header(
     "content-security-policy",
-    "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    `default-src 'none'; style-src 'unsafe-inline';${
+      isExactLegacyAuthRequest(c) && status === 200
+        ? " script-src 'unsafe-inline';"
+        : ""
+    } base-uri 'none'; frame-ancestors 'none'`,
   );
-  return c.html(callbackHtml(title, message, redirectUrl, status), status);
+  if (isExactLegacyAuthRequest(c) && status !== 200) {
+    return c.json({ detail: message }, status);
+  }
+  return c.html(
+    callbackHtml(
+      title,
+      message,
+      redirectUrl,
+      status,
+      isExactLegacyAuthRequest(c) && status === 200,
+    ),
+    status,
+  );
 }
 
 function redirectWithCode(

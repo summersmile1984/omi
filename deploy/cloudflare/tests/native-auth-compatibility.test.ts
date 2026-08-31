@@ -235,6 +235,10 @@ describe("namespaced native auth compatibility seam", () => {
       );
       expect(callbackResponse.status).toBe(200);
       const callbackHtml = await callbackResponse.text();
+      expect(callbackHtml).toContain("<script>");
+      expect(callbackResponse.headers.get("content-security-policy")).toContain(
+        "script-src 'unsafe-inline'",
+      );
       const redirect = new URL(
         callbackHtml.match(/href="([^"]+)"/)![1].replaceAll("&amp;", "&"),
       );
@@ -258,6 +262,40 @@ describe("namespaced native auth compatibility seam", () => {
         provider_id: "google.com",
       });
       expect(providerFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps the exact auth error envelope compatible with FastAPI", async () => {
+    const database = new SqliteD1();
+    const app = new Hono<{ Bindings: AuthEnv }>();
+    registerNativeAuthCompatibilityRoutes(
+      app,
+      { fetchImpl: vi.fn(), now: () => 1_700_000_000 },
+      { surface: "legacy" },
+    );
+    const env = testEnv(database, { LEGACY_AUTH_EXACT_STAGING_ENABLED: "true" });
+    try {
+      const unsupported = await app.request(
+        `${BASE_URL}/v1/auth/authorize?provider=unknown&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`,
+        {},
+        env,
+      );
+      expect(unsupported.status).toBe(400);
+      await expect(unsupported.json()).resolves.toEqual({
+        detail: "Unsupported provider",
+      });
+
+      const callback = await app.request(
+        `${BASE_URL}/v1/auth/callback/google?state=invalid-state-1234567890`,
+        {},
+        env,
+      );
+      expect(callback.status).toBe(400);
+      await expect(callback.json()).resolves.toEqual({
+        detail: "Invalid or expired authentication state.",
+      });
     } finally {
       database.close();
     }

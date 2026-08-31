@@ -254,6 +254,22 @@ describe("edge gateway", () => {
       );
       expect(forwarded[0].headers.get("cookie")).toBe("session=native");
       expect(forwarded[0].headers.get("x-omi-auth-context")).toBeNull();
+
+      // `/v1/oauth/*` is a separate app-consent contract and must retain its
+      // existing staging boundary even when exact native auth is enabled.
+      const oauthResponse = await edge.fetch(
+        new Request(
+          "https://edge.test/v1/oauth/authorize?app_id=app&state=opaque",
+          { headers: { authorization: "Bearer native-session" } },
+        ),
+        env as never,
+      );
+      expect(oauthResponse.status).toBe(503);
+      await expect(oauthResponse.json()).resolves.toEqual({
+        error: "auth_oauth_unavailable",
+        detail:
+          "Legacy Firebase and app-consent OAuth are unavailable on Cloudflare staging.",
+      });
       expect(legacyFetch).not.toHaveBeenCalled();
     } finally {
       legacyFetch.mockRestore();
