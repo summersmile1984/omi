@@ -2389,7 +2389,10 @@ export function registerSyncRoutes(
     return c.json({ manifest });
   });
 
-  app.post("/v2/sync-local-files", async (c) => {
+  const syncLocalFilesHandler = async (
+    c: JobsContext,
+    options: { deprecatedV1?: boolean } = {},
+  ): Promise<Response> => {
     const context = await authContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
@@ -2483,6 +2486,21 @@ export function registerSyncRoutes(
           422,
         );
       }
+      if (options.deprecatedV1 && lane.lane === "backfill") {
+        await cleanupObjects(c.env, files);
+        return c.json(
+          {
+            code: "backfill_capacity",
+            detail:
+              "Historical recovery requires the v2 isolated worker; local audio was not consumed",
+          },
+          503,
+          {
+            "Retry-After": "30",
+            "X-Omi-Rate-Limit-Reason": "backfill_capacity",
+          },
+        );
+      }
       if (lane.lane === "fresh") {
         const restriction = await readFairUseRestriction(
           c.env.APP_DB,
@@ -2531,7 +2549,27 @@ export function registerSyncRoutes(
         503,
       );
     }
-  });
+  };
+
+  // Keep the historical upload path available while making the Cloudflare
+  // queue-backed implementation authoritative. The v1 contract is
+  // deprecated and clients should move to the asynchronous v2 endpoint.
+  const deprecatedSyncLocalFilesHandler = async (
+    c: JobsContext,
+  ): Promise<Response> => {
+    const response = await syncLocalFilesHandler(c, { deprecatedV1: true });
+    const headers = new Headers(response.headers);
+    headers.set("Deprecation", "true");
+    headers.set("Link", '</v2/sync-local-files>; rel="successor-version"');
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
+
+  app.post("/v1/sync-local-files", deprecatedSyncLocalFilesHandler);
+  app.post("/v2/sync-local-files", (c) => syncLocalFilesHandler(c));
 
   app.get("/v2/sync-local-files/:jobId", async (c) => {
     const context = await authContext(c);

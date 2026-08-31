@@ -4044,6 +4044,28 @@ describe("edge gateway", () => {
     );
     expect(upload.status).toBe(202);
 
+    const legacyForm = new FormData();
+    legacyForm.append(
+      "files",
+      new File(
+        [new Uint8Array([4, 5, 6])],
+        "audio_pcm16_16000_1_fs160_1787932801.bin",
+      ),
+    );
+    const legacyUpload = await edge.fetch(
+      new Request("https://edge.test/v1/sync-local-files", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "x-app-platform": "ios",
+          "x-device-id-hash": "1234abcd",
+        },
+        body: legacyForm,
+      }),
+      env as never,
+    );
+    expect(legacyUpload.status).toBe(202);
+
     const status = await edge.fetch(
       new Request("https://edge.test/v2/sync-local-files/job-1", {
         headers: { authorization: "Bearer opaque-session" },
@@ -4055,6 +4077,7 @@ describe("edge gateway", () => {
       [
         "/v2/sync-capture-manifest",
         "/v2/sync-local-files",
+        "/v1/sync-local-files",
         "/v2/sync-local-files/job-1",
       ],
     );

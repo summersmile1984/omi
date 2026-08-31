@@ -1133,6 +1133,7 @@ app.get(
   proxyAuthenticatedAsyncTranscriptionStatus,
 );
 app.post("/v2/sync-capture-manifest", proxyAuthenticatedJobs);
+app.post("/v1/sync-local-files", proxyAuthenticatedJobs);
 app.post("/v2/sync-local-files", proxyAuthenticatedJobs);
 app.get("/v2/sync-local-files/:jobId", proxyAuthenticatedJobs);
 app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedJobs);

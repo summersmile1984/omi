@@ -1,10 +1,12 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import type { JobMessage } from "../workers/jobs/env";
+import type { JobMessage, JobsEnv } from "../workers/jobs/env";
 import {
   cleanupOrphanPlaybackObjects,
   processSyncJobMessage,
+  registerSyncRoutes,
 } from "../workers/jobs/sync-local-files";
 
 function wal(frame: Uint8Array): ArrayBuffer {
@@ -496,6 +498,69 @@ describe("sync-local-files queue processing", () => {
     expect(JSON.parse(String(conversation?.structured_json))).toMatchObject({
       title: "Cloudflare sync",
     });
+  });
+});
+
+describe("sync-local-files route compatibility", () => {
+  it("keeps the v1 upload path on the queue-backed implementation and marks it deprecated", async () => {
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerSyncRoutes(app, async () => null);
+
+    const response = await app.request(
+      "https://jobs.test/v1/sync-local-files",
+      { method: "POST" },
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("deprecation")).toBe("true");
+    expect(response.headers.get("link")).toBe(
+      '</v2/sync-local-files>; rel="successor-version"',
+    );
+  });
+
+  it("rejects v1 uploads without capture provenance before queue admission", async () => {
+    const deleted: string[] = [];
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerSyncRoutes(app, async () => ({ uid: "user-1" }));
+    const env = {
+      APP_DB: {
+        prepare: () => ({
+          bind: () => ({ first: async () => null }),
+        }),
+      },
+      ASSETS: {
+        put: async () => undefined,
+        delete: async (key: string) => {
+          deleted.push(key);
+        },
+      },
+    };
+    const form = new FormData();
+    form.append(
+      "files",
+      new File(
+        [new Uint8Array([1, 2, 3])],
+        `audio_pcm16_16000_1_fs160_${Math.floor(Date.now() / 1000)}.bin`,
+      ),
+    );
+
+    const response = await app.fetch(
+      new Request("https://jobs.test/v1/sync-local-files", {
+        method: "POST",
+        body: form,
+      }),
+      env as never,
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({ code: "backfill_capacity" });
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(response.headers.get("deprecation")).toBe("true");
+    expect(response.headers.get("link")).toBe(
+      '</v2/sync-local-files>; rel="successor-version"',
+    );
+    expect(deleted).toHaveLength(1);
   });
 });
 

@@ -480,7 +480,7 @@
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/stripe/webhook", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v1/stt/transcribe", "protocol": "http", "target_runtime": "external-api"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/summary-app-ids/{app_id}", "protocol": "http", "target_runtime": "typescript-worker"},
-    {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/sync-local-files", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/sync-local-files", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/sync/audio/{conversation_id}/precache", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/task-integrations/{app_key}/tasks", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v1/task-intelligence/feedback", "protocol": "http", "target_runtime": "legacy"},
