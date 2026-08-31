@@ -51,7 +51,7 @@ export type NativeAuthCompatibilityDependencies = Readonly<{
 type ProviderConfiguration = {
   provider: LegacyAuthProvider;
   clientId: string;
-  clientSecret: string;
+  clientSecret: string | null;
   authorizationEndpoint: string;
   tokenEndpoint: string;
   callbackUri: string;
@@ -280,7 +280,20 @@ function providerConfiguration(
     provider === "google" ? env.GOOGLE_CLIENT_ID : env.APPLE_CLIENT_ID;
   const clientSecret =
     provider === "google" ? env.GOOGLE_CLIENT_SECRET : env.APPLE_CLIENT_SECRET;
-  if (!clientId?.trim() || !clientSecret?.trim()) {
+  const appleDynamicSecretConfigured =
+    provider === "apple" &&
+    Boolean(
+      env.APPLE_TEAM_ID?.trim() &&
+      env.APPLE_KEY_ID?.trim() &&
+      env.APPLE_PRIVATE_KEY?.trim(),
+    );
+  if (
+    !clientId?.trim() ||
+    (provider === "google" && !clientSecret?.trim()) ||
+    (provider === "apple" &&
+      !clientSecret?.trim() &&
+      !appleDynamicSecretConfigured)
+  ) {
     throw new NativeAuthError(503, "provider_not_configured");
   }
   const base = publicBaseUrl(env);
@@ -291,7 +304,7 @@ function providerConfiguration(
   return {
     provider,
     clientId: clientId.trim(),
-    clientSecret: clientSecret.trim(),
+    clientSecret: clientSecret?.trim() || null,
     authorizationEndpoint:
       provider === "google"
         ? "https://accounts.google.com/o/oauth2/v2/auth"
@@ -302,6 +315,78 @@ function providerConfiguration(
         : "https://appleid.apple.com/auth/token",
     callbackUri,
   };
+}
+
+function pemBytes(pem: string): Uint8Array {
+  const normalized = pem.replaceAll("\\n", "\n");
+  const begin = "-----BEGIN PRIVATE KEY-----";
+  const end = "-----END PRIVATE KEY-----";
+  const start = normalized.indexOf(begin);
+  const finish = normalized.indexOf(end);
+  if (start < 0 || finish <= start) throw new Error("invalid Apple key");
+  const encoded = normalized
+    .slice(start + begin.length, finish)
+    .replace(/\s+/g, "");
+  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw new Error("invalid Apple key");
+  }
+  const binary = atob(encoded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  if (bytes.byteLength < 32) throw new Error("invalid Apple key");
+  return bytes;
+}
+
+async function appleClientSecret(
+  env: AuthEnv,
+  configuration: ProviderConfiguration,
+): Promise<string> {
+  const teamId = env.APPLE_TEAM_ID?.trim();
+  const keyId = env.APPLE_KEY_ID?.trim();
+  const privateKey = env.APPLE_PRIVATE_KEY?.trim();
+  if (!teamId || !keyId || !privateKey) {
+    if (configuration.clientSecret) return configuration.clientSecret;
+    throw new NativeAuthError(503, "provider_not_configured");
+  }
+  if (
+    !/^[A-Za-z0-9]{1,64}$/.test(teamId) ||
+    !/^[A-Za-z0-9]{1,64}$/.test(keyId)
+  ) {
+    throw new NativeAuthError(503, "provider_not_configured");
+  }
+  const now = Math.floor(Date.now() / 1_000);
+  const header = base64Url(
+    new TextEncoder().encode(
+      JSON.stringify({ alg: "ES256", kid: keyId, typ: "JWT" }),
+    ),
+  );
+  const payload = base64Url(
+    new TextEncoder().encode(
+      JSON.stringify({
+        iss: teamId,
+        iat: now,
+        exp: now + 15 * 60,
+        aud: "https://appleid.apple.com",
+        sub: configuration.clientId,
+      }),
+    ),
+  );
+  try {
+    const key = await crypto.subtle.importKey(
+      "pkcs8",
+      cryptoBytes(pemBytes(privateKey)),
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["sign"],
+    );
+    const signature = await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      new TextEncoder().encode(`${header}.${payload}`),
+    );
+    return `${header}.${payload}.${base64Url(new Uint8Array(signature))}`;
+  } catch (error) {
+    throw new NativeAuthError(503, "provider_not_configured");
+  }
 }
 
 function providerFromCode(code: string): LegacyAuthProvider | null {
@@ -470,6 +555,7 @@ function providerErrorResponse(
 }
 
 async function providerCredentials(
+  env: AuthEnv,
   configuration: ProviderConfiguration,
   code: string,
   fetchImpl: FetchLike,
@@ -477,10 +563,15 @@ async function providerCredentials(
   if (!isValidLegacyOpaqueSecret(code) || utf8Bytes(code) > 2_048) {
     throw new NativeAuthError(400, "invalid_provider_code");
   }
+  const secret =
+    configuration.provider === "apple"
+      ? await appleClientSecret(env, configuration)
+      : configuration.clientSecret;
+  if (!secret) throw new NativeAuthError(503, "provider_not_configured");
   const form = new URLSearchParams({
     code,
     client_id: configuration.clientId,
-    client_secret: configuration.clientSecret,
+    client_secret: secret,
     redirect_uri: configuration.callbackUri,
     grant_type: "authorization_code",
   });
@@ -793,6 +884,7 @@ async function callback(
   let credentials: ProviderCredentials;
   try {
     credentials = await providerCredentials(
+      c.env,
       configuration,
       values.code,
       dependencies.fetchImpl || fetch,

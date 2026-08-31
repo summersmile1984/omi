@@ -9,7 +9,12 @@ export type AuthEnv = {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   APPLE_CLIENT_ID?: string;
+  /** Optional static secret for web Apple clients. */
   APPLE_CLIENT_SECRET?: string;
+  /** Native Apple Sign in configuration used to mint a short-lived client-secret JWT. */
+  APPLE_TEAM_ID?: string;
+  APPLE_KEY_ID?: string;
+  APPLE_PRIVATE_KEY?: string;
   APPLE_APP_BUNDLE_IDENTIFIER?: string;
   AUTH_FIREBASE_SCRYPT_SIGNER_KEY?: string;
   AUTH_FIREBASE_SCRYPT_SALT_SEPARATOR?: string;

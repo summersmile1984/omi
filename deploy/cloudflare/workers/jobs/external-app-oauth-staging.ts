@@ -9,11 +9,11 @@
  */
 
 import type { Context, Hono } from "hono";
-import type { SignedAuthContext } from "../shared/auth-context";
+import type { AuthContext } from "../shared/auth-context";
 import type { JobsEnv } from "./env";
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
-type RequestContext = (c: JobsContext) => Promise<SignedAuthContext | null>;
+type RequestContext = (c: JobsContext) => Promise<AuthContext | null>;
 type JsonObject = Record<string, unknown>;
 type FetchLike = (
   input: RequestInfo | URL,
@@ -23,6 +23,10 @@ type FetchLike = (
 export type ExternalAppOauthDependencies = Readonly<{
   fetchImpl?: FetchLike;
   now?: () => number;
+}>;
+
+export type ExternalAppOauthOptions = Readonly<{
+  surface?: "namespaced" | "legacy";
 }>;
 
 class ExternalAppOauthError extends Error {
@@ -44,9 +48,19 @@ const MAX_POLICY_BYTES = 65_536;
 const MAX_SETUP_RESPONSE_BYTES = 64_000;
 const TRANSACTION_TTL_SECONDS = 600;
 const COOKIE_NAME = "omi_cf_oauth_csrf";
+const LEGACY_COOKIE_NAME = "omi_oauth_csrf";
 const OPAQUE_SECRET_RE = /^[A-Za-z0-9._~-]{43,128}$/;
 const PRINTABLE_STATE_RE = /^[\x21-\x7e]{1,512}$/;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+function validFirebaseIdToken(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    utf8Bytes(value) > 0 &&
+    utf8Bytes(value) <= 8_192 &&
+    !CONTROL_CHARACTERS.test(value)
+  );
+}
 
 function nowSeconds(dependencies: ExternalAppOauthDependencies): number {
   const now = dependencies.now?.() ?? Math.floor(Date.now() / 1_000);
@@ -98,8 +112,12 @@ function objectValue(value: unknown): JsonObject | null {
 }
 
 function flag(value: unknown): boolean {
-  return value === true || value === 1 ||
-    (typeof value === "string" && ["1", "true"].includes(value.trim().toLowerCase()));
+  return (
+    value === true ||
+    value === 1 ||
+    (typeof value === "string" &&
+      ["1", "true"].includes(value.trim().toLowerCase()))
+  );
 }
 
 function validAppId(value: unknown): value is string {
@@ -179,17 +197,58 @@ function publicHttps(value: unknown): value is string {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-      character
-    ] || character,
+  return value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        character
+      ] || character,
   );
 }
 
 function errorResponse(c: JobsContext, error: unknown): Response {
-  if (error instanceof ExternalAppOauthError)
+  if (error instanceof ExternalAppOauthError) {
+    if (new URL(c.req.url).pathname.startsWith("/v1/oauth/")) {
+      return c.json({ detail: legacyErrorDetail(error.code) }, error.status);
+    }
     return c.json({ error: error.code }, error.status);
-  return c.json({ error: "external_app_oauth_unavailable" }, 503);
+  }
+  return new URL(c.req.url).pathname.startsWith("/v1/oauth/")
+    ? c.json({ detail: "External app authorization is unavailable." }, 503)
+    : c.json({ error: "external_app_oauth_unavailable" }, 503);
+}
+
+function legacyErrorDetail(code: string): string {
+  switch (code) {
+    case "app_not_found":
+      return "App not found";
+    case "external_integration_missing":
+      return "App does not support external integration";
+    case "external_setup_target_unsafe":
+      return "This app is misconfigured (setup URL is not a public address). Please contact the app developer.";
+    case "external_setup_incomplete":
+      return "App setup is not completed. Please complete app setup before authorizing.";
+    case "external_setup_unavailable":
+    case "external_setup_invalid":
+      return "Failed to verify app setup completion. Please try again later or contact support.";
+    case "external_app_not_entitled":
+      return "This is a paid app. Please purchase the app before authorizing.";
+    case "external_app_not_authorized":
+      return "This app is private and you are not authorized to enable it.";
+    case "csrf_invalid":
+    case "oauth_request_invalid":
+      return "This authorization request is invalid or expired. Please restart the connection from the app.";
+    case "firebase_auth_required":
+      return "Invalid Firebase ID token";
+    case "firebase_auth_unavailable":
+      return "Error verifying Firebase ID token";
+    case "firebase_config_unavailable":
+      return "Firebase sign-in is not configured for this environment.";
+    case "invalid_request":
+      return "Invalid request";
+    default:
+      return code;
+  }
 }
 
 async function readBoundedText(
@@ -228,24 +287,47 @@ async function readBoundedText(
   }
 }
 
-async function requestForm(c: JobsContext): Promise<URLSearchParams> {
+async function requestForm(
+  c: JobsContext,
+  allowMultipart = false,
+): Promise<URLSearchParams> {
   const contentLength = Number(c.req.header("content-length") || "0");
   if (Number.isFinite(contentLength) && contentLength > MAX_FORM_BYTES)
     throw new ExternalAppOauthError(413, "request_too_large");
-  const raw = await readBoundedText(c.req.raw.body, MAX_FORM_BYTES);
   const contentType = c.req.header("content-type")?.toLowerCase() || "";
-  if (!contentType.includes("application/x-www-form-urlencoded"))
-    throw new ExternalAppOauthError(422, "invalid_request");
-  return new URLSearchParams(raw);
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    const raw = await readBoundedText(c.req.raw.body, MAX_FORM_BYTES);
+    return new URLSearchParams(raw);
+  }
+  if (allowMultipart && contentType.includes("multipart/form-data")) {
+    let formData: FormData;
+    try {
+      formData = await c.req.raw.formData();
+    } catch {
+      throw new ExternalAppOauthError(422, "invalid_request");
+    }
+    const form = new URLSearchParams();
+    for (const [key, value] of formData.entries()) {
+      if (typeof value !== "string")
+        throw new ExternalAppOauthError(422, "invalid_request");
+      form.append(key, value);
+    }
+    return form;
+  }
+  throw new ExternalAppOauthError(422, "invalid_request");
 }
 
-function cookieValue(request: Request): string | null {
+function cookieValue(
+  request: Request,
+  surface: "namespaced" | "legacy",
+): string | null {
+  const expectedName = surface === "legacy" ? LEGACY_COOKIE_NAME : COOKIE_NAME;
   const cookie = request.headers.get("cookie") || "";
   for (const part of cookie.split(";")) {
     const separator = part.indexOf("=");
     if (separator < 0) continue;
     const name = part.slice(0, separator).trim();
-    if (name === COOKIE_NAME) return part.slice(separator + 1).trim() || null;
+    if (name === expectedName) return part.slice(separator + 1).trim() || null;
   }
   return null;
 }
@@ -267,7 +349,7 @@ type AppAdmission = {
 async function loadApp(
   env: JobsEnv,
   appId: string,
-  uid: string,
+  uid: string | null,
 ): Promise<AppAdmission> {
   const row = await env.APP_DB.prepare(
     `SELECT a.id, a.owner_uid, a.approved, a.disabled, a.updated_at, a.data_json,
@@ -276,7 +358,7 @@ async function loadApp(
        LEFT JOIN cf_app_testers t ON t.uid = ?
       WHERE a.id = ? LIMIT 1`,
   )
-    .bind(uid, appId)
+    .bind(uid || "", appId)
     .first<{
       id?: string;
       owner_uid?: string | null;
@@ -307,12 +389,17 @@ async function loadApp(
     throw new ExternalAppOauthError(400, "external_setup_target_unsafe");
   const privateApp = flag(payload.private);
   const paid = flag(payload.is_paid);
-  const ownerUid = row.owner_uid === null || row.owner_uid === undefined
-    ? null
-    : String(row.owner_uid);
+  const ownerUid =
+    row.owner_uid === null || row.owner_uid === undefined
+      ? null
+      : String(row.owner_uid);
   const owner = ownerUid === uid;
   const tester = Number(row.tester) === 1;
-  if (!owner && !tester && (!flag(row.approved) || privateApp))
+  // The legacy authorize page is intentionally public: Firebase signs the
+  // user in inside that page and posts the ID token to /token. Only the token
+  // exchange requires an admitted caller. A namespaced request always passes
+  // a concrete Better Auth uid and retains the stricter private-app check.
+  if (uid !== null && !owner && !tester && (!flag(row.approved) || privateApp))
     throw new ExternalAppOauthError(404, "app_not_found");
   const updatedAt = Number(row.updated_at);
   if (!Number.isSafeInteger(updatedAt) || updatedAt < 0)
@@ -346,30 +433,52 @@ function policyFor(app: AppAdmission): JsonObject {
 
 function permissionSummary(app: AppAdmission): string[] {
   const capabilities = app.payload.capabilities;
-  if (!Array.isArray(capabilities)) return ["Access your basic Omi profile information."];
+  if (!Array.isArray(capabilities))
+    return ["Access your basic Omi profile information."];
   const permissions: string[] = [];
-  if (capabilities.includes("chat")) permissions.push("Engage in chat conversations with Omi.");
-  if (capabilities.includes("memories")) permissions.push("Access and manage your conversations.");
-  if (capabilities.includes("external_integration")) permissions.push("Run the app's configured Omi integration.");
-  return permissions.length ? permissions : ["Access your basic Omi profile information."];
+  if (capabilities.includes("chat"))
+    permissions.push("Engage in chat conversations with Omi.");
+  if (capabilities.includes("memories"))
+    permissions.push("Access and manage your conversations.");
+  if (capabilities.includes("external_integration"))
+    permissions.push("Run the app's configured Omi integration.");
+  return permissions.length
+    ? permissions
+    : ["Access your basic Omi profile information."];
 }
 
 async function authorize(
   c: JobsContext,
-  context: SignedAuthContext,
+  context: AuthContext | null,
   dependencies: ExternalAppOauthDependencies,
+  surface: "namespaced" | "legacy",
 ): Promise<Response> {
-  if (c.env.EXTERNAL_APP_OAUTH_STAGING_ENABLED !== "true")
-    throw new ExternalAppOauthError(404, "not_found");
+  const enabled =
+    surface === "legacy"
+      ? c.env.LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED === "true"
+      : c.env.EXTERNAL_APP_OAUTH_STAGING_ENABLED === "true";
+  if (!enabled) throw new ExternalAppOauthError(404, "not_found");
+  if (
+    surface === "legacy" &&
+    (!c.env.FIREBASE_API_KEY?.trim() || !c.env.FIREBASE_PROJECT_ID?.trim())
+  ) {
+    throw new ExternalAppOauthError(503, "firebase_config_unavailable");
+  }
   const appId = c.req.query("app_id") || "";
-  if (!validAppId(appId)) throw new ExternalAppOauthError(422, "invalid_app_id");
+  if (!validAppId(appId))
+    throw new ExternalAppOauthError(422, "invalid_app_id");
   const clientState = c.req.query("state") || null;
-  if (clientState !== null &&
-      (utf8Bytes(clientState) > MAX_STATE_BYTES || !PRINTABLE_STATE_RE.test(clientState)))
+  if (
+    clientState !== null &&
+    (utf8Bytes(clientState) > MAX_STATE_BYTES ||
+      !PRINTABLE_STATE_RE.test(clientState))
+  )
     throw new ExternalAppOauthError(422, "invalid_state");
-  const app = await loadApp(c.env, appId, context.uid);
+  const app = await loadApp(c.env, appId, context?.uid || null);
   const csrfSecret = randomSecret();
   const transactionState = randomSecret();
+  const transactionId = crypto.randomUUID();
+  const transactionUid = context?.uid || `__legacy_pending__${transactionId}`;
   const now = nowSeconds(dependencies);
   if (!now) throw new ExternalAppOauthError(503, "clock_unavailable");
   const policyJson = JSON.stringify(policyFor(app));
@@ -383,9 +492,9 @@ async function authorize(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)`,
   )
     .bind(
-      crypto.randomUUID(),
+      transactionId,
       app.id,
-      context.uid,
+      transactionUid,
       await sha256Hex(transactionState),
       await sha256Hex(csrfSecret),
       clientState,
@@ -400,14 +509,42 @@ async function authorize(
   const permissions = permissionSummary(app)
     .map((permission) => `<li>${escapeHtml(permission)}</li>`)
     .join("");
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none';style-src 'unsafe-inline';form-action 'self'"><title>Authorize ${escapeHtml(String(app.payload.name || app.id))}</title></head><body><h1>Authorize ${escapeHtml(String(app.payload.name || app.id))}</h1><ul>${permissions}</ul><form method="post" action="/v2/cf/oauth/token"><input type="hidden" name="app_id" value="${escapeHtml(app.id)}"><input type="hidden" name="state" value="${escapeHtml(transactionState)}"><input type="hidden" name="csrf_token" value="${escapeHtml(csrfSecret)}"><button type="submit">Authorize</button></form></body></html>`;
+  const routePrefix = surface === "legacy" ? "/v1/oauth" : "/v2/cf/oauth";
+  const firebaseConfig = JSON.stringify({
+    apiKey: c.env.FIREBASE_API_KEY || "",
+    authDomain:
+      c.env.FIREBASE_AUTH_DOMAIN ||
+      `${c.env.FIREBASE_PROJECT_ID || ""}.firebaseapp.com`,
+    projectId: c.env.FIREBASE_PROJECT_ID || "",
+  })
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026");
+  const legacyScript =
+    surface === "legacy"
+      ? `<script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>`
+      : "";
+  const legacyControls =
+    surface === "legacy"
+      ? `<div id="firebase-controls"><button type="button" id="google-sign-in">Continue with Google</button><button type="button" id="apple-sign-in">Continue with Apple</button><form id="email-sign-in"><label>Email <input name="email" type="email" autocomplete="email" required></label><label>Password <input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form><p id="oauth-error" role="alert"></p></div>`
+      : "";
+  const legacyInlineScript =
+    surface === "legacy"
+      ? `<script>(function(){const config=${firebaseConfig};firebase.initializeApp(config);const auth=firebase.auth();const appId=${JSON.stringify(app.id)};const state=${JSON.stringify(transactionState)};const csrf=${JSON.stringify(csrfSecret)};const error=document.getElementById('oauth-error');function fail(){error.textContent='We could not complete sign-in. Please try again.';}function exchange(user){return user.getIdToken().then(function(idToken){const form=new FormData();form.append('firebase_id_token',idToken);form.append('app_id',appId);form.append('state',state);form.append('csrf_token',csrf);return fetch('${routePrefix}/token',{method:'POST',body:form});}).then(function(response){if(!response.ok)return response.json().then(function(value){throw new Error(value.detail||'Authentication failed');});return response.json();}).then(function(value){const target=new URL(value.redirect_url);target.searchParams.set('uid',value.uid);if(value.state)target.searchParams.set('state',value.state);window.location.assign(target.toString());}).catch(function(){fail();});}document.getElementById('google-sign-in').onclick=function(){exchange(auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).then(function(result){return result.user;}));};document.getElementById('apple-sign-in').onclick=function(){const provider=new firebase.auth.OAuthProvider('apple.com');exchange(auth.signInWithPopup(provider).then(function(result){return result.user;}));};document.getElementById('email-sign-in').onsubmit=function(event){event.preventDefault();const data=new FormData(event.currentTarget);exchange(auth.signInWithEmailAndPassword(data.get('email'),data.get('password')).then(function(result){return result.user;}));};})();</script>`
+      : "";
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${legacyScript}<title>Authorize ${escapeHtml(String(app.payload.name || app.id))}</title></head><body><main><h1>Authorize ${escapeHtml(String(app.payload.name || app.id))}</h1><ul>${permissions}</ul>${legacyControls}<form method="post" action="${routePrefix}/token"><input type="hidden" name="app_id" value="${escapeHtml(app.id)}"><input type="hidden" name="state" value="${escapeHtml(transactionState)}"><input type="hidden" name="csrf_token" value="${escapeHtml(csrfSecret)}">${surface === "legacy" ? "<noscript><p>JavaScript is required for Firebase sign-in.</p></noscript>" : ""}<button type="submit">Authorize</button></form></main>${legacyInlineScript}</body></html>`;
+  const cookieName = surface === "legacy" ? LEGACY_COOKIE_NAME : COOKIE_NAME;
+  const cookiePath = surface === "legacy" ? "/" : "/v2/cf/oauth";
   return new Response(html, {
     status: 200,
     headers: {
       "content-type": "text/html; charset=UTF-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
-      "set-cookie": `${COOKIE_NAME}=${csrfSecret}; Max-Age=${TRANSACTION_TTL_SECONDS}; Path=/v2/cf/oauth; HttpOnly; Secure; SameSite=Strict`,
+      "content-security-policy":
+        surface === "legacy"
+          ? "default-src 'none'; script-src 'unsafe-inline' https://www.gstatic.com; connect-src https://*.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com; form-action 'self'; frame-ancestors 'none'"
+          : "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+      "set-cookie": `${cookieName}=${csrfSecret}; Max-Age=${TRANSACTION_TTL_SECONDS}; Path=${cookiePath}; HttpOnly; Secure; SameSite=Strict`,
     },
   });
 }
@@ -435,7 +572,10 @@ async function setupCompleted(
   if (!response.ok)
     throw new ExternalAppOauthError(503, "external_setup_unavailable");
   const contentLength = Number(response.headers.get("content-length") || "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_SETUP_RESPONSE_BYTES)
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_SETUP_RESPONSE_BYTES
+  )
     throw new ExternalAppOauthError(503, "external_setup_invalid");
   const raw = await readBoundedText(response.body, MAX_SETUP_RESPONSE_BYTES);
   let payload: unknown;
@@ -447,7 +587,12 @@ async function setupCompleted(
   return objectValue(payload)?.is_setup_completed === true;
 }
 
-async function isPaid(env: JobsEnv, uid: string, appId: string, now: number): Promise<boolean> {
+async function isPaid(
+  env: JobsEnv,
+  uid: string,
+  appId: string,
+  now: number,
+): Promise<boolean> {
   const row = await env.APP_DB.prepare(
     "SELECT status, current_period_end FROM cf_app_subscriptions WHERE uid = ? AND app_id = ? LIMIT 1",
   )
@@ -475,11 +620,15 @@ async function ensureInstalled(
   if (existing?.uid === uid) return;
   if (app.paid && !(await isPaid(env, uid, app.id, now)))
     throw new ExternalAppOauthError(403, "external_app_not_entitled");
-  if (app.setupCompletedUrl && !(await setupCompleted(dependencies, app.setupCompletedUrl, uid)))
+  if (
+    app.setupCompletedUrl &&
+    !(await setupCompleted(dependencies, app.setupCompletedUrl, uid))
+  )
     throw new ExternalAppOauthError(400, "external_setup_incomplete");
   const owner = app.ownerUid === uid;
   const canInstall = owner || app.tester || (app.approved && !app.privateApp);
-  if (!canInstall) throw new ExternalAppOauthError(403, "external_app_not_authorized");
+  if (!canInstall)
+    throw new ExternalAppOauthError(403, "external_app_not_authorized");
   const inserted = await env.APP_DB.prepare(
     `INSERT OR IGNORE INTO cf_user_enabled_apps (uid, app_id, created_at)
        SELECT ?, ?, ?
@@ -518,15 +667,90 @@ async function ensureInstalled(
   }
 }
 
+async function verifyLegacyFirebaseContext(
+  c: JobsContext,
+  form: URLSearchParams,
+): Promise<AuthContext> {
+  const token = form.get("firebase_id_token") || "";
+  if (token && !validFirebaseIdToken(token)) {
+    throw new ExternalAppOauthError(401, "firebase_auth_required");
+  }
+  if (!token) throw new ExternalAppOauthError(422, "invalid_request");
+  if (!c.env.INTERNAL_ASSERTION_SECRET) {
+    throw new ExternalAppOauthError(503, "firebase_auth_unavailable");
+  }
+  let response: Response;
+  try {
+    response = await c.env.AUTH.fetch(
+      new Request("https://auth.internal/internal/verify-firebase", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-internal-assertion-secret": c.env.INTERNAL_ASSERTION_SECRET,
+          "x-request-id": c.req.header("x-request-id") || "legacy-oauth",
+        },
+      }),
+    );
+  } catch {
+    throw new ExternalAppOauthError(503, "firebase_auth_unavailable");
+  }
+  let body: unknown;
+  try {
+    const raw = await response.text();
+    if (utf8Bytes(raw) > 16_384) throw new Error("response too large");
+    body = JSON.parse(raw);
+  } catch {
+    throw new ExternalAppOauthError(503, "firebase_auth_unavailable");
+  }
+  if (!response.ok) {
+    throw new ExternalAppOauthError(
+      response.status === 401 ? 401 : 503,
+      response.status === 401
+        ? "firebase_auth_required"
+        : "firebase_auth_unavailable",
+    );
+  }
+  const value = objectValue(body);
+  if (
+    !value ||
+    typeof value.uid !== "string" ||
+    !value.uid ||
+    value.authority !== "firebase"
+  ) {
+    throw new ExternalAppOauthError(503, "firebase_auth_unavailable");
+  }
+  return {
+    uid: value.uid,
+    authority: "firebase",
+    ...(typeof value.displayName === "string"
+      ? { displayName: value.displayName }
+      : {}),
+    ...(typeof value.accountCreatedAt === "number"
+      ? { accountCreatedAt: value.accountCreatedAt }
+      : {}),
+    requestId:
+      typeof value.requestId === "string" ? value.requestId : "legacy-oauth",
+  };
+}
+
 async function token(
   c: JobsContext,
-  context: SignedAuthContext,
+  context: AuthContext,
   dependencies: ExternalAppOauthDependencies,
+  surface: "namespaced" | "legacy",
+  suppliedForm?: URLSearchParams,
 ): Promise<Response> {
-  if (c.env.EXTERNAL_APP_OAUTH_STAGING_ENABLED !== "true")
-    throw new ExternalAppOauthError(404, "not_found");
-  const form = await requestForm(c);
-  const allowed = new Set(["app_id", "state", "csrf_token"]);
+  const enabled =
+    surface === "legacy"
+      ? c.env.LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED === "true"
+      : c.env.EXTERNAL_APP_OAUTH_STAGING_ENABLED === "true";
+  if (!enabled) throw new ExternalAppOauthError(404, "not_found");
+  const form = suppliedForm || (await requestForm(c, surface === "legacy"));
+  const allowed = new Set(
+    surface === "legacy"
+      ? ["firebase_id_token", "app_id", "state", "csrf_token"]
+      : ["app_id", "state", "csrf_token"],
+  );
   for (const key of form.keys()) {
     if (!allowed.has(key) || form.getAll(key).length !== 1)
       throw new ExternalAppOauthError(422, "invalid_request");
@@ -534,7 +758,7 @@ async function token(
   const appId = form.get("app_id") || "";
   const state = form.get("state") || "";
   const csrfToken = form.get("csrf_token") || "";
-  const cookie = cookieValue(c.req.raw);
+  const cookie = cookieValue(c.req.raw, surface);
   if (
     !validAppId(appId) ||
     !OPAQUE_SECRET_RE.test(state) ||
@@ -549,18 +773,22 @@ async function token(
   if (!now) throw new ExternalAppOauthError(503, "clock_unavailable");
   const stateHash = await sha256Hex(state);
   const csrfHash = await sha256Hex(csrfToken);
+  const uidPredicate =
+    surface === "legacy"
+      ? "(uid = ? OR uid LIKE '__legacy_pending__%')"
+      : "uid = ?";
   const consumed = await c.env.APP_DB.prepare(
     `UPDATE cf_external_app_oauth_transactions
-        SET status = 'consumed', consumed_at = ?
-      WHERE app_id = ? AND uid = ? AND state_hash = ? AND csrf_hash = ?
+        SET uid = ?, status = 'consumed', consumed_at = ?
+      WHERE app_id = ? AND ${uidPredicate} AND state_hash = ? AND csrf_hash = ?
         AND status = 'pending' AND expires_at > ?
         AND NOT EXISTS (
           SELECT 1 FROM cf_account_deletion_intents i
-           WHERE i.uid = cf_external_app_oauth_transactions.uid
+           WHERE i.uid = ?
         )
         AND NOT EXISTS (
           SELECT 1 FROM cf_account_deletion_tombstones t
-           WHERE t.uid = cf_external_app_oauth_transactions.uid
+           WHERE t.uid = ?
         )
         AND EXISTS (
           SELECT 1 FROM cf_app_catalog a
@@ -571,7 +799,17 @@ async function token(
       RETURNING transaction_id, app_id, uid, client_state, redirect_url,
                 app_catalog_revision, app_policy_json`,
   )
-    .bind(now, appId, context.uid, stateHash, csrfHash, now)
+    .bind(
+      context.uid,
+      now,
+      appId,
+      context.uid,
+      stateHash,
+      csrfHash,
+      now,
+      context.uid,
+      context.uid,
+    )
     .first<{
       transaction_id?: string;
       app_id?: string;
@@ -591,7 +829,11 @@ async function token(
     throw new ExternalAppOauthError(409, "app_changed_or_deleting");
   try {
     const policy = objectValue(JSON.parse(consumed.app_policy_json || ""));
-    if (!policy || policy.app_id !== app.id || policy.catalog_revision !== app.updatedAt)
+    if (
+      !policy ||
+      policy.app_id !== app.id ||
+      policy.catalog_revision !== app.updatedAt
+    )
       throw new ExternalAppOauthError(409, "app_changed_or_deleting");
     await ensureInstalled(c.env, app, context.uid, now, dependencies);
   } catch (error) {
@@ -613,21 +855,29 @@ export function registerExternalAppOauthRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: RequestContext,
   dependencies: ExternalAppOauthDependencies = {},
+  options: ExternalAppOauthOptions = {},
 ): void {
-  app.get("/v2/cf/oauth/authorize", async (c) => {
-    const context = await requestContext(c);
-    if (!context) return c.json({ error: "unauthorized" }, 401);
+  const surface = options.surface || "namespaced";
+  const prefix = surface === "legacy" ? "/v1/oauth" : "/v2/cf/oauth";
+  app.get(`${prefix}/authorize`, async (c) => {
+    const context = surface === "legacy" ? null : await requestContext(c);
+    if (surface !== "legacy" && !context)
+      return c.json({ error: "unauthorized" }, 401);
     try {
-      return await authorize(c, context, dependencies);
+      return await authorize(c, context, dependencies, surface);
     } catch (error) {
       return errorResponse(c, error);
     }
   });
-  app.post("/v2/cf/oauth/token", async (c) => {
-    const context = await requestContext(c);
-    if (!context) return c.json({ error: "unauthorized" }, 401);
+  app.post(`${prefix}/token`, async (c) => {
     try {
-      return await token(c, context, dependencies);
+      const form = await requestForm(c, surface === "legacy");
+      const context =
+        surface === "legacy"
+          ? await verifyLegacyFirebaseContext(c, form)
+          : await requestContext(c);
+      if (!context) return c.json({ error: "unauthorized" }, 401);
+      return await token(c, context, dependencies, surface, form);
     } catch (error) {
       return errorResponse(c, error);
     }

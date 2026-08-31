@@ -35,8 +35,8 @@ class SqliteD1 {
     const build = (args: unknown[] = []) => ({
       bind: (...values: unknown[]) => build(values),
       first: async <T>() =>
-        (this.database.prepare(sql).get(...(args as never[])) as T | undefined) ??
-        null,
+        (this.database.prepare(sql).get(...(args as never[])) as
+          T | undefined) ?? null,
       all: async <T>() => ({
         success: true as const,
         results: this.database.prepare(sql).all(...(args as never[])) as T[],
@@ -82,12 +82,14 @@ class SqliteD1 {
 const databases: SqliteD1[] = [];
 const NOW = 1_788_000_100;
 
-function environment(options: {
-  enabled?: boolean;
-  uid?: string;
-  app?: Record<string, unknown>;
-  appId?: string;
-} = {}) {
+function environment(
+  options: {
+    enabled?: boolean;
+    uid?: string;
+    app?: Record<string, unknown>;
+    appId?: string;
+  } = {},
+) {
   const database = new SqliteD1();
   databases.push(database);
   const appId = options.appId || "oauth-app";
@@ -121,7 +123,8 @@ function environment(options: {
     );
   const env = {
     APP_DB: database as unknown as D1Database,
-    EXTERNAL_APP_OAUTH_STAGING_ENABLED: options.enabled === false ? "false" : "true",
+    EXTERNAL_APP_OAUTH_STAGING_ENABLED:
+      options.enabled === false ? "false" : "true",
   } as unknown as JobsEnv;
   return { database, env, uid: options.uid || "owner-1", appId };
 }
@@ -148,7 +151,11 @@ function testApp(
     request: (pathValue: string, init: RequestInit = {}) => {
       const headers = new Headers(init.headers);
       if (authenticated) headers.set("authorization", "Bearer owner-session");
-      return app.request(`https://jobs.test${pathValue}`, { ...init, headers }, env);
+      return app.request(
+        `https://jobs.test${pathValue}`,
+        { ...init, headers },
+        env,
+      );
     },
   };
 }
@@ -206,7 +213,9 @@ describe("namespaced external app OAuth staging seam", () => {
   it("requires Better Auth and remains fail-closed when disabled", async () => {
     const disabled = environment({ enabled: false });
     const disabledApp = testApp(disabled.env, {}, disabled.uid);
-    const gated = await disabledApp.request("/v2/cf/oauth/authorize?app_id=oauth-app");
+    const gated = await disabledApp.request(
+      "/v2/cf/oauth/authorize?app_id=oauth-app",
+    );
     expect(gated.status).toBe(404);
     await expect(gated.json()).resolves.toEqual({ error: "not_found" });
 
@@ -221,6 +230,81 @@ describe("namespaced external app OAuth staging seam", () => {
       "/v2/cf/oauth/authorize?app_id=oauth-app",
     );
     expect(response.status).toBe(401);
+  });
+
+  it("serves the exact legacy app-consent flow with Firebase form auth", async () => {
+    const { env, database, appId } = environment();
+    env.LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED = "true";
+    env.FIREBASE_API_KEY = "AIza-test-key";
+    env.FIREBASE_PROJECT_ID = "omi-test-project";
+    env.FIREBASE_AUTH_DOMAIN = "omi-test-project.firebaseapp.com";
+    env.INTERNAL_ASSERTION_SECRET = "internal-secret";
+    env.AUTH = {
+      fetch: async (request: Request) => {
+        expect(new URL(request.url).pathname).toBe("/internal/verify-firebase");
+        expect(request.headers.get("authorization")).toBe(
+          `Bearer ${"f".repeat(300)}`,
+        );
+        return Response.json({
+          uid: "legacy-user",
+          authority: "firebase",
+          requestId: "legacy-request",
+        });
+      },
+    } as unknown as Fetcher;
+    const app = new Hono<{ Bindings: JobsEnv }>();
+    registerExternalAppOauthRoutes(
+      app,
+      async () => null,
+      { now: () => NOW },
+      { surface: "legacy" },
+    );
+    const authorizeResponse = await app.request(
+      `https://jobs.test/v1/oauth/authorize?app_id=${appId}&state=client-state`,
+      {},
+      env,
+    );
+    expect(authorizeResponse.status).toBe(200);
+    const html = await authorizeResponse.text();
+    expect(html).toContain(
+      "https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js",
+    );
+    expect(html).toContain('action="/v1/oauth/token"');
+    expect(authorizeResponse.headers.get("content-security-policy")).toContain(
+      "script-src 'unsafe-inline' https://www.gstatic.com",
+    );
+    const state = hidden(html, "state");
+    const csrf = hidden(html, "csrf_token");
+    const cookie = csrfCookie(
+      authorizeResponse.headers.get("set-cookie") || "",
+    );
+    expect(cookie.startsWith("omi_oauth_csrf=")).toBe(true);
+
+    const form = new FormData();
+    form.set("firebase_id_token", "f".repeat(300));
+    form.set("app_id", appId);
+    form.set("state", state);
+    form.set("csrf_token", csrf);
+    const tokenResponse = await app.request(
+      "https://jobs.test/v1/oauth/token",
+      {
+        method: "POST",
+        headers: { cookie },
+        body: form,
+      },
+      env,
+    );
+    expect(tokenResponse.status).toBe(200);
+    await expect(tokenResponse.json()).resolves.toEqual({
+      uid: "legacy-user",
+      redirect_url: "https://app.example.test/complete",
+      state: "client-state",
+    });
+    expect(
+      database.database
+        .prepare("SELECT uid, status FROM cf_external_app_oauth_transactions")
+        .get(),
+    ).toMatchObject({ uid: "legacy-user", status: "consumed" });
   });
 
   it("uses hash-only double-submit CSRF and consumes a transaction once", async () => {
@@ -242,11 +326,20 @@ describe("namespaced external app OAuth staging seam", () => {
       status: string;
       client_state: string;
     };
-    expect(row).toMatchObject({ status: "pending", client_state: "client-state" });
+    expect(row).toMatchObject({
+      status: "pending",
+      client_state: "client-state",
+    });
     expect(row.state_hash).not.toContain(start.state);
     expect(row.csrf_hash).not.toContain(start.csrf);
 
-    const success = await tokenRequest(app, appId, start.state, start.csrf, start.cookie);
+    const success = await tokenRequest(
+      app,
+      appId,
+      start.state,
+      start.csrf,
+      start.cookie,
+    );
     expect(success.status).toBe(200);
     await expect(success.json()).resolves.toEqual({
       uid,
@@ -264,9 +357,17 @@ describe("namespaced external app OAuth staging seam", () => {
         .get(),
     ).toEqual({ status: "consumed" });
 
-    const replay = await tokenRequest(app, appId, start.state, start.csrf, start.cookie);
+    const replay = await tokenRequest(
+      app,
+      appId,
+      start.state,
+      start.csrf,
+      start.cookie,
+    );
     expect(replay.status).toBe(400);
-    await expect(replay.json()).resolves.toEqual({ error: "oauth_request_invalid" });
+    await expect(replay.json()).resolves.toEqual({
+      error: "oauth_request_invalid",
+    });
     const mismatch = await tokenRequest(
       app,
       appId,
@@ -282,7 +383,9 @@ describe("namespaced external app OAuth staging seam", () => {
     const { env, uid, appId } = environment({
       app: { setup_completed_url: "https://[::ffff:7f00:1]/setup" },
     });
-    const fetchImpl = vi.fn(async () => Response.json({ is_setup_completed: true }));
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ is_setup_completed: true }),
+    );
     const app = testApp(env, { fetchImpl, now: () => NOW }, uid);
     const unsafe = await app.request(`/v2/cf/oauth/authorize?app_id=${appId}`);
     expect(unsafe.status).toBe(400);
@@ -309,15 +412,23 @@ describe("namespaced external app OAuth staging seam", () => {
       body,
     });
     expect(duplicate.status).toBe(422);
-    await expect(duplicate.json()).resolves.toEqual({ error: "invalid_request" });
+    await expect(duplicate.json()).resolves.toEqual({
+      error: "invalid_request",
+    });
   });
 
   it("checks setup completion, paid entitlement, and catalog revision CAS", async () => {
-    const fetchImpl = vi.fn(async () => Response.json({ is_setup_completed: false }));
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ is_setup_completed: false }),
+    );
     const fixture = environment({
       app: { setup_completed_url: "https://setup.example.test/status" },
     });
-    const app = testApp(fixture.env, { fetchImpl, now: () => NOW }, fixture.uid);
+    const app = testApp(
+      fixture.env,
+      { fetchImpl, now: () => NOW },
+      fixture.uid,
+    );
     const first = await authorize(app, fixture.appId);
     const incomplete = await tokenRequest(
       app,
@@ -335,7 +446,9 @@ describe("namespaced external app OAuth staging seam", () => {
       RequestInfo | URL,
       RequestInit,
     ];
-    expect(String(setupTarget)).toBe("https://setup.example.test/status?uid=owner-1");
+    expect(String(setupTarget)).toBe(
+      "https://setup.example.test/status?uid=owner-1",
+    );
     expect(setupInit).toMatchObject({ method: "GET", redirect: "error" });
 
     const paid = environment({
@@ -369,7 +482,9 @@ describe("namespaced external app OAuth staging seam", () => {
       changedStart.cookie,
     );
     expect(stale.status).toBe(400);
-    await expect(stale.json()).resolves.toEqual({ error: "oauth_request_invalid" });
+    await expect(stale.json()).resolves.toEqual({
+      error: "oauth_request_invalid",
+    });
     expect(
       changed.database.database
         .prepare("SELECT COUNT(*) AS count FROM cf_user_enabled_apps")

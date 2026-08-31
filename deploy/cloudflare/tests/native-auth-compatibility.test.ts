@@ -192,9 +192,9 @@ describe("namespaced native auth compatibility seam", () => {
     const providerFetch = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         expect(String(input)).toBe("https://oauth2.googleapis.com/token");
-        expect(new URLSearchParams(String(init?.body)).get("redirect_uri")).toBe(
-          `${BASE_URL}/v1/auth/callback/google`,
-        );
+        expect(
+          new URLSearchParams(String(init?.body)).get("redirect_uri"),
+        ).toBe(`${BASE_URL}/v1/auth/callback/google`);
         return Response.json({
           id_token: "exact-google-id-token",
           access_token: "exact-google-access-token",
@@ -209,7 +209,9 @@ describe("namespaced native auth compatibility seam", () => {
       { fetchImpl: providerFetch, now: () => 1_700_000_000 },
       { surface: "legacy" },
     );
-    const env = testEnv(database, { LEGACY_AUTH_EXACT_STAGING_ENABLED: "true" });
+    const env = testEnv(database, {
+      LEGACY_AUTH_EXACT_STAGING_ENABLED: "true",
+    });
     try {
       const challenge = await pkceChallengeForVerifier(VERIFIER);
       const authorizeResponse = await app.request(
@@ -275,7 +277,9 @@ describe("namespaced native auth compatibility seam", () => {
       { fetchImpl: vi.fn(), now: () => 1_700_000_000 },
       { surface: "legacy" },
     );
-    const env = testEnv(database, { LEGACY_AUTH_EXACT_STAGING_ENABLED: "true" });
+    const env = testEnv(database, {
+      LEGACY_AUTH_EXACT_STAGING_ENABLED: "true",
+    });
     try {
       const unsupported = await app.request(
         `${BASE_URL}/v1/auth/authorize?provider=unknown&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`,
@@ -564,6 +568,91 @@ describe("namespaced native auth compatibility seam", () => {
     }
   });
 
+  it("mints an Apple ES256 client-secret JWT from native key material", async () => {
+    const keys = await crypto.subtle.generateKey(
+      {
+        name: "ECDSA",
+        namedCurve: "P-256",
+      },
+      true,
+      ["sign", "verify"],
+    );
+    const der = new Uint8Array(
+      await crypto.subtle.exportKey("pkcs8", keys.privateKey),
+    );
+    const privateKey = `-----BEGIN PRIVATE KEY-----\n${base64(der)}\n-----END PRIVATE KEY-----`;
+    const providerFetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toBe("https://appleid.apple.com/auth/token");
+        const body = new URLSearchParams(String(init?.body));
+        const clientSecret = body.get("client_secret") || "";
+        const [encodedHeader, encodedPayload, encodedSignature] =
+          clientSecret.split(".");
+        expect(encodedHeader).toBeTruthy();
+        expect(encodedPayload).toBeTruthy();
+        expect(encodedSignature).toBeTruthy();
+        const decode = (value: string) =>
+          JSON.parse(
+            atob(
+              value.replaceAll("-", "+").replaceAll("_", "/") +
+                "===".slice((value.length + 3) % 4),
+            ),
+          );
+        expect(decode(encodedHeader)).toMatchObject({
+          alg: "ES256",
+          kid: "applekey",
+          typ: "JWT",
+        });
+        expect(decode(encodedPayload)).toMatchObject({
+          iss: "appleteam",
+          aud: "https://appleid.apple.com",
+          sub: "apple-client",
+        });
+        return Response.json({ id_token: "apple-dynamic-id-token" });
+      },
+    );
+    const fixture = harness(providerFetch, {
+      APPLE_CLIENT_ID: "apple-client",
+      APPLE_TEAM_ID: "appleteam",
+      APPLE_KEY_ID: "applekey",
+      APPLE_PRIVATE_KEY: privateKey,
+    });
+    try {
+      const providerState = await authorize(
+        fixture,
+        "apple",
+        "apple-dynamic-state",
+      );
+      const callback = new URL(`${BASE_URL}/v2/cf/auth/callback/apple`);
+      const form = new URLSearchParams({
+        code: "apple-dynamic-code-1234567890",
+        state: providerState.searchParams.get("state") || "",
+      });
+      const callbackResponse = await fixture.app.request(
+        callback,
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: form.toString(),
+        },
+        fixture.env,
+      );
+      expect(callbackResponse.status).toBe(200);
+      const html = await callbackResponse.text();
+      const code = new URL(
+        html.match(/href="([^"]+)"/)![1].replaceAll("&amp;", "&"),
+      ).searchParams.get("code")!;
+      const response = await tokenRequest(fixture, code);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        provider: "apple",
+        id_token: "apple-dynamic-id-token",
+      });
+    } finally {
+      fixture.database.close();
+    }
+  });
+
   it("expires a pending code and fails closed when custom-token identity mapping is absent", async () => {
     const providerFetch = vi.fn(async () =>
       Response.json({ id_token: "id-token", access_token: "access-token" }),
@@ -662,27 +751,25 @@ describe("namespaced native auth compatibility seam", () => {
   });
 
   it("rejects a provider credential whose imported identity is linked to another provider", async () => {
-    const providerFetch = vi.fn(
-      async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === "https://oauth2.googleapis.com/token") {
-          return Response.json({
-            id_token: "google-id-token-secret",
-            access_token: "google-access-token-secret",
-            expires_in: 3_600,
-          });
-        }
-        expect(url).toBe(
-          "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=AIza-test-key",
-        );
+    const providerFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://oauth2.googleapis.com/token") {
         return Response.json({
-          localId: "firebase-user",
-          idToken: "firebase-id-token",
-          refreshToken: "firebase-refresh-token",
-          expiresIn: "3600",
+          id_token: "google-id-token-secret",
+          access_token: "google-access-token-secret",
+          expires_in: 3_600,
         });
-      },
-    );
+      }
+      expect(url).toBe(
+        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=AIza-test-key",
+      );
+      return Response.json({
+        localId: "firebase-user",
+        idToken: "firebase-id-token",
+        refreshToken: "firebase-refresh-token",
+        expiresIn: "3600",
+      });
+    });
     const fixture = harness(providerFetch, {
       FIREBASE_API_KEY: "AIza-test-key",
       ...(await firebaseServiceAccount()),

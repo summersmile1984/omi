@@ -9,6 +9,7 @@ import {
   FirebaseCustomTokenBridgeError,
   issueFirebaseCustomToken,
   parseFirebaseServiceAccount,
+  verifyFirebaseIdToken,
 } from "../workers/auth/firebase-custom-token-bridge";
 
 class SqliteD1 {
@@ -111,6 +112,39 @@ function databaseWithIdentity() {
 }
 
 describe("Firebase custom-token bridge", () => {
+  it("verifies an ID token through Identity Toolkit and admits the imported projection", async () => {
+    const database = databaseWithIdentity();
+    try {
+      const fetcher = async (url: string, request: RequestInit) => {
+        expect(url).toBe(
+          "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=AIza-test-key",
+        );
+        expect(request.method).toBe("POST");
+        expect(JSON.parse(String(request.body))).toEqual({
+          idToken: "firebase-id-token",
+        });
+        return Response.json({
+          users: [{ localId: "firebase-user", displayName: "Imported User" }],
+        });
+      };
+      await expect(
+        verifyFirebaseIdToken(
+          database,
+          "firebase-id-token",
+          { FIREBASE_API_KEY: "AIza-test-key" },
+          fetcher as unknown as typeof fetch,
+        ),
+      ).resolves.toEqual({
+        firebaseUid: "firebase-user",
+        betterAuthUserId: "better-user",
+        displayName: "Imported User",
+        accountCreatedAt: 1,
+      });
+    } finally {
+      database.close();
+    }
+  });
+
   it("exchanges a provider credential through Firebase Identity Toolkit", async () => {
     const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe(

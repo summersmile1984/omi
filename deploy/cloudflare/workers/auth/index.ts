@@ -21,6 +21,7 @@ import {
   exchangeFirebaseCustomToken,
   FirebaseCustomTokenBridgeError,
   issueFirebaseCustomToken,
+  verifyFirebaseIdToken,
 } from "./firebase-custom-token-bridge";
 import { registerNativeAuthCompatibilityRoutes } from "./native-auth-compatibility";
 
@@ -44,6 +45,7 @@ const MCP_OAUTH_SCOPE_SET = new Set(MCP_OAUTH_SCOPES);
 const MCP_DATA_SCOPE_SET = new Set<string>(MCP_SCOPES);
 const MAX_MCP_VERIFY_BODY_BYTES = 4_096;
 const MAX_FIREBASE_BRIDGE_BODY_BYTES = 4_096;
+const MAX_FIREBASE_ID_TOKEN_BYTES = 8_192;
 
 // Keep the namespaced seam beside the Auth Worker while the exact legacy
 // `/v1/auth/*` registration remains independently gated. Neither surface is
@@ -250,12 +252,45 @@ function bearerToken(request: Request): string | null {
   return match?.[1] || null;
 }
 
+function firebaseBearerToken(request: Request): string | null {
+  const value = bearerToken(request);
+  if (
+    !value ||
+    new TextEncoder().encode(value).byteLength > MAX_FIREBASE_ID_TOKEN_BYTES
+  ) {
+    return null;
+  }
+  return value;
+}
+
 function payloadUid(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const uid = (payload as { uid?: unknown }).uid;
   if (typeof uid === "string" && uid.length > 0) return uid;
   const subject = (payload as { sub?: unknown }).sub;
   return typeof subject === "string" && subject.length > 0 ? subject : null;
+}
+
+async function verifyFirebaseBearerContext(
+  request: Request,
+  env: AuthEnv,
+): Promise<AuthContext | null> {
+  const token = firebaseBearerToken(request);
+  if (!token || !env.FIREBASE_API_KEY) return null;
+  try {
+    const identity = await verifyFirebaseIdToken(env.AUTH_DB, token, env);
+    return {
+      uid: identity.betterAuthUserId,
+      authority: "firebase",
+      ...(identity.displayName ? { displayName: identity.displayName } : {}),
+      ...(identity.accountCreatedAt
+        ? { accountCreatedAt: identity.accountCreatedAt }
+        : {}),
+      requestId: request.headers.get("x-request-id") || "internal",
+    };
+  } catch {
+    return null;
+  }
 }
 
 function verifiedMcpClaims(payload: unknown): {
@@ -438,9 +473,9 @@ async function activeMcpConsent(
     const resources = oauthStringArray(row.resources);
     return Boolean(
       scopes &&
-        resources &&
-        tokenScopes.every((scope) => scopes.includes(scope)) &&
-        resources.includes(resource),
+      resources &&
+      tokenScopes.every((scope) => scopes.includes(scope)) &&
+      resources.includes(resource),
     );
   });
 }
@@ -708,10 +743,7 @@ app.post("/internal/firebase/custom-token", async (c) => {
       expires_at: issued.expiresAt,
     };
     if (requestBody.exchange === true) {
-      const exchanged = await exchangeFirebaseCustomToken(
-        issued.token,
-        c.env,
-      );
+      const exchanged = await exchangeFirebaseCustomToken(issued.token, c.env);
       Object.assign(response, {
         id_token: exchanged.idToken,
         refresh_token: exchanged.refreshToken,
@@ -791,28 +823,56 @@ app.post("/internal/verify", async (c) => {
       headers: c.req.raw.headers,
     });
     const uid = payloadUid(verified?.payload);
-    if (!uid) return c.json({ error: "unauthorized" }, 401);
-    let accountCreatedAt: number | undefined;
-    try {
-      const user = await c.env.AUTH_DB.prepare(
-        "SELECT createdAt FROM user WHERE id = ?",
-      )
-        .bind(uid)
-        .first<{ createdAt?: unknown }>();
-      accountCreatedAt = authContextCreatedAt(user?.createdAt);
-    } catch {
-      // Creation time is a fail-open trial input, never an auth prerequisite.
+    if (uid) {
+      let accountCreatedAt: number | undefined;
+      try {
+        const user = await c.env.AUTH_DB.prepare(
+          "SELECT createdAt FROM user WHERE id = ?",
+        )
+          .bind(uid)
+          .first<{ createdAt?: unknown }>();
+        accountCreatedAt = authContextCreatedAt(user?.createdAt);
+      } catch {
+        // Creation time is a fail-open trial input, never an auth prerequisite.
+      }
+      const result: AuthContext = {
+        uid,
+        authority: "better-auth",
+        accountCreatedAt,
+        requestId: c.req.header("x-request-id") || "internal",
+      };
+      return c.json(result);
     }
-    const result: AuthContext = {
-      uid,
-      authority: "better-auth",
-      accountCreatedAt,
-      requestId: c.req.header("x-request-id") || "internal",
-    };
-    return c.json(result);
+
+    // Firebase ID tokens are accepted only after Identity Toolkit verifies the
+    // credential and the completed D1 identity projection admits the Firebase
+    // principal. This preserves the legacy bearer boundary without trusting a
+    // caller-supplied uid or treating Better Auth JWTs as Firebase tokens.
+    const firebase = await verifyFirebaseBearerContext(c.req.raw, c.env);
+    if (firebase) return c.json(firebase);
+    return c.json({ error: "unauthorized" }, 401);
   } catch {
+    const firebase = await verifyFirebaseBearerContext(c.req.raw, c.env);
+    if (firebase) return c.json(firebase);
     return c.json({ error: "unauthorized" }, 401);
   }
+});
+
+// Jobs uses this private endpoint when the legacy app-consent OAuth form
+// carries its Firebase credential in the body rather than the Authorization
+// header. The endpoint returns the same projection-backed identity context as
+// `/internal/verify`; the service binding and assertion secret keep it off the
+// public surface.
+app.post("/internal/verify-firebase", async (c) => {
+  const expected = c.env.INTERNAL_ASSERTION_SECRET;
+  const presentedSecret = c.req.header("x-internal-assertion-secret") || "";
+  if (!expected || !constantTimeEqual(presentedSecret, expected)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const token = firebaseBearerToken(c.req.raw);
+  if (!token) return c.json({ error: "unauthorized" }, 401);
+  const context = await verifyFirebaseBearerContext(c.req.raw, c.env);
+  return context ? c.json(context) : c.json({ error: "unauthorized" }, 401);
 });
 
 app.post("/internal/mcp/verify", async (c) => {

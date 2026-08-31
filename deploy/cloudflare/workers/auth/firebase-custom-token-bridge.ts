@@ -14,6 +14,8 @@ const FIREBASE_SIGN_IN_URL =
   "https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken";
 const FIREBASE_SIGN_IN_WITH_IDP_URL =
   "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp";
+const FIREBASE_LOOKUP_URL =
+  "https://identitytoolkit.googleapis.com/v1/accounts:lookup";
 const DEFAULT_TOKEN_TTL_SECONDS = 300;
 const MAX_TOKEN_TTL_SECONDS = 3_600;
 const MAX_SERVICE_ACCOUNT_BYTES = 32_000;
@@ -71,6 +73,13 @@ export type FirebaseProviderExchangeResult = {
   expiresIn: number;
 };
 
+export type FirebaseIdTokenVerificationResult = {
+  firebaseUid: string;
+  betterAuthUserId: string;
+  displayName?: string;
+  accountCreatedAt?: number;
+};
+
 export type FirebaseBridgeFailureCode =
   | "bridge_unavailable"
   | "identity_not_admitted"
@@ -98,6 +107,13 @@ type D1Statement = {
 
 export type FirebaseBridgeDatabase = {
   prepare(sql: string): D1Statement;
+};
+
+type FirebaseIdTokenUser = {
+  localId?: unknown;
+  displayName?: unknown;
+  disabled?: unknown;
+  providerUserInfo?: unknown;
 };
 
 type FirebaseIdentityRow = Record<string, unknown>;
@@ -182,6 +198,15 @@ function validApiKey(value: unknown): value is string {
     typeof value === "string" &&
     utf8Bytes(value) <= MAX_API_KEY_BYTES &&
     /^[A-Za-z0-9_-]{8,512}$/.test(value)
+  );
+}
+
+function validBearerToken(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    utf8Bytes(value) > 0 &&
+    utf8Bytes(value) <= 8_192 &&
+    !/[\u0000-\u001f\u007f]/.test(value)
   );
 }
 
@@ -405,6 +430,107 @@ export async function resolveFirebaseIdentityByFirebaseUid(
     throw new FirebaseCustomTokenBridgeError("deletion_fence_active");
   }
   return identity;
+}
+
+/**
+ * Verify a Firebase ID token through Identity Toolkit and admit only an
+ * imported identity projection.  Auth callers must never infer a uid from a
+ * JWT body: the Firebase service is the verifier and the completed D1
+ * projection is the continuity/deletion authority.
+ */
+export async function verifyFirebaseIdToken(
+  database: FirebaseBridgeDatabase,
+  idToken: string,
+  env: FirebaseCustomTokenBridgeEnv,
+  fetcher: typeof fetch = fetch,
+): Promise<FirebaseIdTokenVerificationResult> {
+  if (!validBearerToken(idToken) || !validApiKey(env.FIREBASE_API_KEY)) {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  const endpoint = `${FIREBASE_LOOKUP_URL}?key=${encodeURIComponent(env.FIREBASE_API_KEY)}`;
+  let response: Response;
+  try {
+    response = await fetcher(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idToken }),
+    });
+  } catch {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  const contentLength = Number(response.headers.get("content-length") || "0");
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_SERVICE_ACCOUNT_BYTES
+  ) {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  let body: unknown;
+  try {
+    const raw = await response.text();
+    if (utf8Bytes(raw) > MAX_SERVICE_ACCOUNT_BYTES)
+      throw new Error("too large");
+    body = JSON.parse(raw);
+  } catch {
+    throw new FirebaseCustomTokenBridgeError(
+      response.ok ? "provider_unavailable" : "provider_rejected",
+    );
+  }
+  if (!response.ok) {
+    throw new FirebaseCustomTokenBridgeError("provider_rejected");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new FirebaseCustomTokenBridgeError("provider_unavailable");
+  }
+  const users = (body as { users?: unknown }).users;
+  if (!Array.isArray(users) || users.length !== 1) {
+    throw new FirebaseCustomTokenBridgeError("provider_rejected");
+  }
+  const user = users[0] as FirebaseIdTokenUser;
+  if (
+    typeof user !== "object" ||
+    user === null ||
+    user.disabled === true ||
+    user.disabled === 1 ||
+    !validUid(user.localId)
+  ) {
+    throw new FirebaseCustomTokenBridgeError("provider_rejected");
+  }
+
+  const identity = await resolveFirebaseIdentityByFirebaseUid(
+    database,
+    user.localId,
+  );
+  let displayName: string | undefined;
+  if (
+    typeof user.displayName === "string" &&
+    utf8Bytes(user.displayName) <= 256
+  ) {
+    displayName = user.displayName.trim() || undefined;
+  }
+  let accountCreatedAt: number | undefined;
+  try {
+    const row = await database
+      .prepare("SELECT createdAt FROM user WHERE id = ? LIMIT 1")
+      .bind(identity.betterAuthUserId)
+      .first<{ createdAt?: unknown }>();
+    const createdAt =
+      typeof row?.createdAt === "number"
+        ? row.createdAt
+        : Number(row?.createdAt || 0);
+    if (Number.isSafeInteger(createdAt) && createdAt > 0) {
+      accountCreatedAt = createdAt;
+    }
+  } catch {
+    // Creation time is an informational trial input, never an auth
+    // prerequisite. The projection/fence check above remains authoritative.
+  }
+  return {
+    firebaseUid: identity.firebaseUid,
+    betterAuthUserId: identity.betterAuthUserId,
+    ...(displayName ? { displayName } : {}),
+    ...(accountCreatedAt ? { accountCreatedAt } : {}),
+  };
 }
 
 async function signCustomToken(

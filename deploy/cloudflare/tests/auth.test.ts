@@ -453,6 +453,62 @@ describe("auth worker Better Auth dev issuer", () => {
     });
   });
 
+  it("verifies a Firebase ID token only through the imported identity projection", async () => {
+    const projection = {
+      firebaseUid: "firebase-user",
+      betterAuthUserId: "better-user",
+      providersJson: '["credential"]',
+      sourceRecordSha256: "c".repeat(64),
+      projectionStatus: "imported",
+      importStatus: "completed",
+      generation: 1,
+      fenceStatus: "clear",
+    };
+    const prepare = vi.fn((query: string) => ({
+      bind: vi.fn(() => ({
+        first: vi.fn(async () =>
+          query.includes("FROM user WHERE id") ? { createdAt: 1 } : projection,
+        ),
+      })),
+    }));
+    const environment = {
+      ...env(),
+      FIREBASE_API_KEY: "AIza-test-key",
+      AUTH_DB: { prepare } as unknown as D1Database,
+    };
+    const provider = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json({
+        users: [{ localId: "firebase-user", displayName: "Firebase User" }],
+      }),
+    );
+    try {
+      const response = await auth.fetch(
+        new Request("https://auth.test/internal/verify", {
+          method: "POST",
+          headers: {
+            "x-internal-assertion-secret": "internal-secret",
+            authorization: "Bearer firebase-id-token",
+          },
+        }),
+        environment,
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        uid: "better-user",
+        authority: "firebase",
+        displayName: "Firebase User",
+        accountCreatedAt: 1,
+        requestId: "internal",
+      });
+      expect(provider).toHaveBeenCalledWith(
+        "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=AIza-test-key",
+        expect.objectContaining({ method: "POST" }),
+      );
+    } finally {
+      provider.mockRestore();
+    }
+  });
+
   it("verifies an httpOnly Better Auth session cookie", async () => {
     authHandler.mockResolvedValueOnce(
       Response.json({
