@@ -84,6 +84,8 @@ Legacy 入口为：
 
 ## Persona / MCP mutation：已有 manifest refresh 不是 legacy refresh
 
+本组的逐路由 authority foundation、wire fixture 和切换门槛见 [`mcp-app-migration-gates.md`](mcp-app-migration-gates.md)。当前仅落地 `0112_mcp_app_authority.sql` 的不接管 schema；五条 legacy route 的 owner、manifest 与 fail-closed 开关均保持不变。
+
 `POST /v1/apps/{app_id}/mcp/refresh` 的 legacy 实现位于 [`backend/routers/apps.py`](../../backend/routers/apps.py)：它读取 Firestore `external_integration.mcp_server_url` 和 OAuth token，必要时刷新 token，再向 MCP server 做 authenticated tool discovery，并更新 `chat_tools` 和 public app cache。
 
 Cloudflare 当前 `POST /v1/apps/{app_id}/refresh-manifest` 只针对 D1 中的 `chat_tools_manifest_url` 做 bounded HTTPS JSON fetch；Jobs app mutation 明确拒绝 `mcp_server_url` / `mcp_oauth_tokens` 写入，避免把 provider secrets 当普通 catalog JSON 存储。两个 endpoint 的输入、认证、token refresh、discovery、错误和返回 shape 不同，不能只做路径 alias。要迁移需要专门的加密/provider-token authority、MCP discovery adapter、CAS/cache invalidation、secret deletion 和 OAuth callback 回放。
