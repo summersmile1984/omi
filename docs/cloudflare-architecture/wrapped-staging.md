@@ -86,6 +86,34 @@ parity; it is only the final, bounded D1 promotion step after an operator has
 verified the export and account continuity. The review/apply tables are part of
 the account-deletion residual inventory.
 
+`wrapped:export-verify` is the checked-in operator handoff for the actual
+export file. It computes SHA-256 over the original UTF-8 bytes before parsing,
+requires an independently supplied checksum for an attested run, and feeds the
+parsed rows through the same planner. It never writes D1 by default:
+
+```bash
+npm run wrapped:export-verify -- \
+  --export /path/to/wrapped-export.json \
+  --expected-sha256 <sha256> \
+  --output /tmp/wrapped-plan.json
+```
+
+After reviewing the generated plan and confirming destination account
+continuity, an operator may explicitly execute the two-step review/apply flow
+against the gated Jobs endpoint. The admin key is read from an environment
+variable and is not accepted from the export or written to the output:
+
+```bash
+ADMIN_KEY='...' npm run wrapped:export-verify -- \
+  --export /path/to/wrapped-export.json \
+  --expected-sha256 <sha256> \
+  --apply https://omi-cf-jobs-staging.example/internal/wrapped-history/reviews
+```
+
+The server-side gate, D1 account-generation check, deletion fence, and
+idempotent apply marker remain authoritative; a local checksum or successful
+HTTP request is not evidence of Firestore/provider parity.
+
 After an operator obtains a bounded D1 row export, `--verify --input plan.json
 --actual rows.json` checks status, request/source/result checksums, account
 generation, duplicate rows, and deletion-fenced absence. Missing source
@@ -106,4 +134,6 @@ Worker suite passed 85 files/647 tests, plus typecheck and manifest validation.
 The gate remains false and no historical export was applied. The route inventory
 marks both legacy paths `staging-owned` with Jobs as the target runtime;
 production remains unchanged until the historical backfill and client/provider
-parity review is explicitly complete.
+parity review is explicitly complete. `tests/wrapped-history-export-verify.test.ts`
+covers byte-bound checksum verification, malformed exports, and the explicit
+review-then-apply client flow.

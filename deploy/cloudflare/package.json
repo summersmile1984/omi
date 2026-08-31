@@ -19,6 +19,7 @@
     "chat:reconcile": "node scripts/chat-history-reconcile.mjs",
     "persona:reconcile": "node scripts/persona-app-history-reconcile.mjs",
     "phone:reconcile": "node scripts/phone-history-reconcile.mjs",
+    "wrapped:export-verify": "node scripts/wrapped-history-export-verify.mjs",
     "deploy:staging": "npm run validate:backend-routes && npm run validate:manifest && node scripts/deploy.mjs staging",
     "rollback:staging": "node scripts/rollback-staging.mjs"
   },
