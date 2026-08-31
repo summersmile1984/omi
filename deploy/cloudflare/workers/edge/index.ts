@@ -1184,6 +1184,7 @@ app.post("/v3/memories/:memoryId/review", proxyAuthenticatedCore);
 app.post("/v3/memory-imports/batch", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/shared", proxyPublicCore);
 app.get("/v1/conversations", proxyAuthenticatedCore);
+app.post("/v1/conversations", proxyAuthenticatedCore);
 app.post("/v1/conversations/from-segments", proxyAuthenticatedCore);
 app.post("/v1/conversations/search", proxyAuthenticatedCore);
 app.get("/v1/conversations/count", proxyAuthenticatedCore);

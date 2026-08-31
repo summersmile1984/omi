@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from conversation_finalization_routes import (  # noqa: E402
     finalize_conversation,
     get_conversation_finalization_status,
+    process_in_progress_conversation,
     process_conversation_finalization,
     reprocess_conversation,
 )
@@ -138,6 +139,20 @@ def test_finalize_admits_durable_job_and_enqueues():
         "SELECT status, attempts, finalization_revision FROM cf_conversation_finalization_jobs"
     ).fetchone()
     assert tuple(job) == ("queued", 0, 100)
+
+
+def test_root_conversation_finalize_uses_newest_d1_in_progress_row():
+    env, queue = environment()
+    response = asyncio.run(
+        process_in_progress_conversation(
+            FakeRequest(env, headers=auth_headers(), body={"calendar_meeting_context": {"title": "Standup"}})
+        )
+    )
+
+    assert response["conversation"]["id"] == CONVERSATION_ID
+    assert response["conversation"]["status"] == "processing"
+    assert len(queue.messages) == 1
+    assert queue.messages[0]["kind"] == "conversation_finalize"
 
 
 def test_finalization_status_projects_job_state():

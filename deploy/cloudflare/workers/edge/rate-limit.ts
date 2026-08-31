@@ -72,6 +72,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 30,
     windowSeconds: 3600,
   },
+  "conversations:create": {
+    name: "conversations:create",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
   "conversations:finalize": {
     name: "conversations:finalize",
     maxRequests: 30,
@@ -257,6 +262,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     "POST /v1/conversations/from-segments",
     EDGE_RATE_LIMIT_POLICIES["conversations:from-segments"],
   ],
+  ["POST /v1/conversations", EDGE_RATE_LIMIT_POLICIES["conversations:create"]],
   [
     "POST /v1/conversations/:conversationId/finalize",
     EDGE_RATE_LIMIT_POLICIES["conversations:finalize"],

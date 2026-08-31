@@ -3853,6 +3853,18 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST
+    path: /v1/conversations
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, queue-jobs, rate-limit-do]
+    rate_limit_policy: conversations:create
+    protocol: http
+    idempotency: conversation-finalization-revision
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
     path: /v1/conversations/from-segments
     owner: api-core
     runtime: python-worker

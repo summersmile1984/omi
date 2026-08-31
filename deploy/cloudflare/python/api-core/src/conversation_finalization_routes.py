@@ -181,6 +181,23 @@ async def _conversation_row(env: object, uid: str, conversation_id: str) -> dict
     return row if isinstance(row, dict) else None
 
 
+async def _latest_in_progress_conversation(env: object, uid: str) -> dict[str, object] | None:
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "
+            "starred, discarded, is_locked, deferred, private_cloud_sync_enabled, folder_id, client_device_id, "
+            "client_platform, structured_json, transcript_segments_json, photos_json, audio_files_json, "
+            "conversation_audio_json, apps_results_json, suggested_apps_json, geolocation_json, external_data_json, "
+            "calendar_event_json, app_id, finalization_job_id, finalization_revision, finalization_status "
+            "FROM cf_conversations WHERE uid = ? AND status = 'in_progress' "
+            "ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT 1"
+        )
+        .bind(uid)
+        .first()
+    )
+    return row if isinstance(row, dict) else None
+
+
 async def _complete_without_processing(
     env: object,
     uid: str,
@@ -381,6 +398,27 @@ async def process_conversation_finalization(request: Request):
     except Exception:
         return JSONResponse({"error": "conversation finalization state unavailable"}, status_code=503)
     return {**result, "meeting_treatment_eligible": eligible}
+
+
+@router.post("/v1/conversations")
+async def process_in_progress_conversation(request: Request):
+    """Finalize the uid's newest D1 in-progress conversation.
+
+    This is the Cloudflare equivalent of the legacy Redis pointer endpoint.
+    The D1 status is authoritative, so a stale client cannot finalize a newer
+    recording and a missing pointer fails closed with the historical 404.
+    """
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    uid = str(context.get("uid") or "")
+    try:
+        conversation = await _latest_in_progress_conversation(request.scope["env"], uid)
+    except Exception:
+        return JSONResponse({"error": "conversation finalization unavailable"}, status_code=503)
+    if conversation is None:
+        return JSONResponse({"error": "Conversation in progress not found"}, status_code=404)
+    return await finalize_conversation(request, str(conversation["id"]))
 
 
 @router.post("/v1/conversations/{conversation_id}/finalize")
@@ -627,6 +665,7 @@ async def get_conversation_finalization_status(request: Request, conversation_id
 __all__ = [
     "router",
     "finalize_conversation",
+    "process_in_progress_conversation",
     "reprocess_conversation",
     "get_conversation_finalization_status",
     "process_conversation_finalization",
