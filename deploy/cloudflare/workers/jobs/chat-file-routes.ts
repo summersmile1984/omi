@@ -87,16 +87,24 @@ function mimeType(file: FileUpload): string {
   return value;
 }
 
-function response(row: Partial<ChatFileRow>): Record<string, unknown> {
-  return {
+function response(
+  row: Partial<ChatFileRow>,
+  legacy = false,
+): Record<string, unknown> {
+  const value = {
     id: row.file_id,
     name: row.name,
     thumbnail: "",
     mime_type: row.mime_type,
     openai_file_id: row.provider_file_id,
     created_at: new Date(Number(row.created_at || 0) * 1000).toISOString(),
-    thumb_name: "",
   };
+  // FastAPI's FileChat.model_dump intentionally excludes the internal
+  // `thumb_name` field.  Keep it available on the canonical Cloudflare
+  // projection for diagnostics, but make the opt-in exact aliases match the
+  // released `/v1/files` and `/v2/files` response keys byte-for-byte at the
+  // object shape boundary.
+  return legacy ? value : { ...value, thumb_name: "" };
 }
 
 const THUMBNAIL_TTL_SECONDS = 15 * 60;
@@ -167,8 +175,9 @@ async function thumbnailUrl(
 async function responseWithThumbnail(
   env: JobsEnv,
   row: Partial<ChatFileRow>,
+  legacy = false,
 ): Promise<Record<string, unknown>> {
-  const value = response(row);
+  const value = response(row, legacy);
   value.thumbnail = await thumbnailUrl(env, row);
   return value;
 }
@@ -613,7 +622,7 @@ export function registerChatFileRoutes(
         for (const upload of uploads) {
           const item = await uploadOne(c.env, context.uid, upload);
           completed.push(item);
-          results.push(await responseWithThumbnail(c.env, item.row));
+          results.push(await responseWithThumbnail(c.env, item.row, legacy));
         }
       } catch (error) {
         await rollbackBatch(c.env, completed);

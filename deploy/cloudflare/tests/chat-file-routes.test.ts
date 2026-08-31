@@ -325,6 +325,29 @@ describe("Cloudflare private chat-file boundary", () => {
     database.database.close();
   });
 
+  it("keeps exact aliases fail-closed until the explicit staging switch is enabled", async () => {
+    const { database, env } = environment();
+    const provider = vi.fn(async () => Response.json({ id: "must-not-upload" }));
+    vi.stubGlobal("fetch", provider);
+    for (const path of ["/v1/files", "/v2/files"]) {
+      const form = new FormData();
+      form.set("files", new File(["disabled"], "disabled.txt", { type: "text/plain" }));
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: await headers("chat-file-secret", "POST", path),
+          body: form,
+        }),
+        env as never,
+      );
+      expect(response.status, path).toBe(404);
+      expect(await response.json()).toMatchObject({ error: "legacy_route_disabled" });
+    }
+    expect(provider).not.toHaveBeenCalled();
+    expect(database.database.prepare("SELECT COUNT(*) AS count FROM cf_chat_files").get()).toMatchObject({ count: 0 });
+    database.database.close();
+  });
+
   it("exposes both legacy aliases through the canonical handler only when explicitly enabled", async () => {
     const { database, env } = environment();
     env.LEGACY_CHAT_FILES_STAGING_ENABLED = "true";
@@ -344,9 +367,16 @@ describe("Cloudflare private chat-file boundary", () => {
         env as never,
       );
       expect(response.status, path).toBe(200);
-      expect(await response.json()).toEqual([
-        expect.objectContaining({ id: expect.any(String), name: "a.txt" }),
+      const [file] = (await response.json()) as Array<Record<string, unknown>>;
+      expect(Object.keys(file).sort()).toEqual([
+        "created_at",
+        "id",
+        "mime_type",
+        "name",
+        "openai_file_id",
+        "thumbnail",
       ]);
+      expect(file).toMatchObject({ id: expect.any(String), name: "a.txt" });
     }
     database.database.close();
   });

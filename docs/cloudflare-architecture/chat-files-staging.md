@@ -106,6 +106,12 @@ projection 与 run/session 一样有 account-deletion fence，并由 residual au
 
 该 adapter 只有在 Jobs secrets `OPENAI_API_KEY`、`OPENAI_ASSISTANT_ID` 和 `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED=true` 同时配置时启用。provider REST 调用使用固定 Assistants v2 header、短重试预算和幂等键；Queue 的 `chat_assistant_poll` consumer 对 in-progress/transient 状态最多轮询 12 次，超出后把 D1 run 标记为 failed。队列 admission 失败不会丢失已创建的 provider run，客户端可用相同幂等键重试或直接 GET poll。
 
+在显式 staging 开关打开时，Jobs alias 已能返回 legacy `FileChat.model_dump()` 的六个
+字段（`id`、`name`、`thumbnail`、`mime_type`、`openai_file_id`、`created_at`）；内部
+`thumb_name` 不会越过 exact response boundary。开关关闭时 alias 在 provider 调用前返回
+`404 legacy_route_disabled`，不会写入 `cf_chat_files`。这只是可回归的 response/gate
+seam，不是 owner 切换。
+
 这仍然不是 `/v1/files`、`/v2/files` 的 owner 切换，也不是 exact `/v2/messages` 的
 legacy wire parity。未覆盖的 legacy contract 包括 Firestore `users/{uid}/files`/chat
 session 历史回放、GCS thumbnail/provider object backfill、旧 `FileChatTool` 的完整多轮/
