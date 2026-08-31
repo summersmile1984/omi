@@ -41,7 +41,7 @@ Firestore 回放和 production positive probe 仍是生产准入 gates。
 
 ## 尚未宣称完成的部分
 
-Twitter ownership exact route 已是可显式开启的 Jobs staging owner，owner migration 仍由 legacy owner 处理。外部 MCP app 的 exact registration/callback/refresh 已由 Jobs staging owner 承载（但 provider replay、Firebase identity/catalog backfill 和 production parity 仍未完成）。为防止 Persona/owner-migration 凭据或请求继续进入 legacy，Edge 在 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 且 Twitter exact gate 关闭时返回 `503 persona_apps_unavailable`，不读取请求 body 或调用 legacy；当前仅 owner migration 1 条路由仍计入 legacy-owned。
+Twitter ownership exact route 与 app-owner exact adapter 已是可显式开启的 Jobs staging owner，外部 MCP app 的 exact registration/callback/refresh 也由 Jobs staging owner 承载（但 provider replay、Firebase identity/catalog backfill、memory re-encryption 和 production parity 仍未完成）。为防止 Persona/owner-migration 凭据或请求继续进入 legacy，Edge 在各自 exact gate 关闭时返回 `503 persona_apps_unavailable`，不读取请求 body 或调用 legacy；当前 manifest 已无 legacy-owned 路由。
 
 Persona PATCH 的范围仍是“D1-owned projection 的 bounded update”，不是生产 wire parity：历史 Firestore Persona 尚未回填；现有 Workers AI 只生成有界 description，不能证明 legacy `generate_persona_prompt` 的 memories/conversations/tweets condensation 等价；legacy GCS logo 不能被 Worker 在没有迁移映射时主动删除。公开 app 目录目前直接读 D1、没有 Redis cache writer，故 PATCH 只能通过 D1 revision/`updated_at` 保持可见性，不能宣称已迁移 legacy cache invalidation。历史回填、完整 prompt contract、图片缩略图/legacy object mapping 和 production cutover 仍需独立门槛。
 

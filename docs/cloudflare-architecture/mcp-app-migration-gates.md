@@ -1,18 +1,18 @@
 # External MCP app migration gates
 
-截至 2026-09-01，远端 MCP app 的三条 exact 路径与 Twitter ownership exact route 已由 Edge → Jobs 承载 staging owner；`migrate-owner` 仍是 `legacy-owned`。本文件描述当前 owner seam 及把“远端 MCP server 安装为 Omi app”迁移到生产前必须闭合的契约：
+截至 2026-09-01，远端 MCP app 的三条 exact 路径、Twitter ownership exact route 与 `migrate-owner` exact adapter 已由 Edge → Jobs 承载 staging owner；所有 gate 默认关闭或仅接受已审阅投影。 本文件描述当前 owner seam 及把“远端 MCP server 安装为 Omi app”迁移到生产前必须闭合的契约：
 
 | 路由 | legacy 行为 | 当前结论 |
 | --- | --- | --- |
 | `POST /v1/apps/mcp` | 发现 OAuth metadata，动态注册 client，生成 PKCE，写入 pending app；无 OAuth 时直接 discovery 并创建 app | staging 已由 Jobs owner 承载；使用 D1 app/connection authority、AES-GCM credential envelope 和 bounded provider adapter |
 | `GET /v1/apps/mcp/callback` | 一次性 state/code exchange，刷新 app token，带 token 做 MCP `initialize`/`tools/list`，写 app/cache，返回 HTML | staging 已由 Jobs owner 承载；exact callback auto-discovery/install，state 只允许一次消费 |
 | `POST /v1/apps/{app_id}/mcp/refresh` | 按 owner 重新 discovery；401 时 refresh token，再写 token/tools/cache | staging 已由 Jobs owner 承载；owner/revision CAS + token rotation 后复用 bounded discovery |
-| `POST /v1/apps/migrate-owner` | Firebase anonymous source token 证明旧 owner，再把旧 owner 的 Firestore app 迁到目标 uid | 保持 legacy；Better Auth uid 不能证明 Firebase anonymous identity |
+| `POST /v1/apps/migrate-owner` | Firebase anonymous source token 证明旧 owner，再把旧 owner 的 Firestore app 迁到目标 uid | staging 已由 Edge→Jobs adapter 承载；source token 仅经 Auth anonymous bridge，默认 gate=false，历史 Firestore/memory/provider parity 仍未完成 |
 | `GET /v1/personas/twitter/verify-ownership` | RapidAPI timeline 最新 tweet 验证；按 Firebase provider 决定新建 Persona 或关联已有 Persona | 保持 legacy；Twitter verification 与已有 X OAuth connection 不是同一 authority |
 
 ## Exact owner audit: `/v1/apps/migrate-owner`
 
-本次 staging owner 复核结论仍为**不可安全切换**。旧 route 的成功契约是
+本次 staging owner 复核结论是：**adapter 已部署，但 production 仍不可安全切换**。旧 route 的成功契约是
 `POST /v1/apps/migrate-owner?old_id=...` 搭配 body 中的 `source_token`，同步完成
 Firestore app-owner mutation 后返回 HTTP `200` 与
 `{"status":"ok","message":"Migration started"}`；Firebase token 无效、不是
@@ -26,15 +26,17 @@ identity evidence、`0127` data projection attestation 和 D1/Queue lease；它�
 响应和 Firestore side effects 都不是旧 route 的等价实现，因此不能把
 `/v2/cf/apps/migrate-owner` 直接 alias 成 exact `/v1` owner。
 
-Edge 对 exact route 继续使用 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 的 fail-closed
-boundary：staging 返回 HTTP `503`、`error=persona_apps_unavailable` 和
-`cache-control: no-store`，不读取 body、不调用 legacy；只有显式关闭该开关的非 staging
-配置才保留 legacy forwarding。现有 Edge regression test 覆盖了携带 opaque Firebase
-token/body 的请求不会回源。完成 Firebase/Firestore 历史回放、memory re-encryption、
-persona/cache side effects、旧 200/400/403 wire conformance 和真实 disposable-account
-重放之前，manifest 必须继续把 exact route 标为 `legacy-owned`。
+Edge 对 exact route 现在使用独立的 `APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED`
+fail-closed boundary：默认关闭时 staging 返回 HTTP `503`、`error=persona_apps_unavailable`
+和 `cache-control: no-store`，不读取 body、不调用 legacy；非 staging 环境未设置开关时仍保留
+legacy forwarding。开启后，Jobs 只接受经 Auth anonymous bridge 的 hash-only source evidence、
+D1 data attestation、target generation 与 deletion fence，并保留旧 HTTP `200` success envelope；
+现有 Edge regression test 覆盖 opaque Firebase token/body 不回源。完成 Firebase/Firestore 历史
+回放、memory re-encryption、persona/cache side effects、旧 200/400/403 wire conformance 和真实
+disposable-account/provider 重放之前，必须继续保持 exact gate 关闭，不能将 staging owner 当作
+production parity。
 
-`migrate-owner` 现在有一个不加入 legacy manifest 的 Edge→Jobs dormant seam：
+`migrate-owner` 现在有一个不加入 legacy manifest 的 Edge→Jobs gated seam：
 `0122_app_owner_migration.sql` 保存已由可信导入流程核验的
 `firebase-anonymous` source projection 和 hash-only proof，并以
 `cf_app_owner_migration_jobs` 记录 source/target、target account generation、

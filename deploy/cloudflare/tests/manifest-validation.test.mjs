@@ -81,7 +81,7 @@ describe("Cloudflare migration manifests", () => {
     const counts = validateBackendRouteInventory(backendRoutes, routes);
     expect(counts.total).toBe(backendRoutes.routes.length);
     expect(counts.stagingOwned).toBeGreaterThan(0);
-    expect(counts.legacyOwned).toBeGreaterThan(0);
+    expect(counts.legacyOwned).toBe(0);
 
     const unclassified = structuredClone(backendRoutes);
     unclassified.routes[0].migration_state = "unclassified";

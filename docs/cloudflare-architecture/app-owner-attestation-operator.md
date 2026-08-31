@@ -59,4 +59,6 @@ manifest/row digests、app/memory counts 及 memory evidence 计算出的 SHA-25
 和 JSON 中的 planner digest 让人工 reviewer 能确认审阅的输入没有被静默替换。审阅通过
 后，operator 仍需在独立、受 gate 保护的 workflow 中提交 `attestation`；本 CLI 本身
 不会发起该请求。真实 Firestore export/import、D1 projection 和 memory re-encryption
-完成前，exact `/v1/apps/migrate-owner` 继续保持 legacy owner。
+完成前，exact `/v1/apps/migrate-owner` 虽已由 gated Edge→Jobs adapter 承载，但必须保持
+exact gate 关闭；它不能绕过真实 Firestore export/import、D1 projection、memory
+re-encryption 与 provider continuity 门槛。
