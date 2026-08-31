@@ -413,6 +413,30 @@ def test_desktop_save_rejects_missing_files_before_session_or_message_mutation()
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_session_files").fetchone()[0] == 0
 
 
+def test_desktop_save_rejects_attachment_for_missing_session_before_mutation():
+    secret = "chat-session-secret"
+    db = FakeDb()
+    env = environment(db, secret)
+    insert_file(db, "file-1")
+    result = asyncio.run(
+        save_desktop_message(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={
+                    "text": "No session",
+                    "sender": "human",
+                    "session_id": "missing-session",
+                    "file_ids": ["file-1"],
+                },
+            )
+        )
+    )
+    assert result.status_code == 404
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_session_files").fetchone()[0] == 0
+
+
 def test_desktop_lists_reconciles_and_deletes_with_session_metadata():
     secret = "chat-session-secret"
     db = FakeDb()

@@ -515,6 +515,12 @@ async def save_desktop_message(request: Request):
         session_insert = None
         if session_id is None:
             session_id, session_insert = await _acquire_session(env, uid, payload.app_id, now)
+        elif file_ids:
+            # The attachment link has a composite foreign key to the session.
+            # Resolve the owner-scoped session before building the batch so a
+            # missing id is a stable 404 rather than a generic D1 503.
+            if await _session_row(env, uid, session_id) is None:
+                return JSONResponse({"error": "chat session not found"}, status_code=404)
         file_rows: list[dict[str, object]] = []
         if file_ids:
             # Import lazily because chat_session_file_routes imports the
