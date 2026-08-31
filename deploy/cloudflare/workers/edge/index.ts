@@ -1228,13 +1228,15 @@ app.get(
 );
 app.post("/v2/sync-capture-manifest", proxyAuthenticatedJobs);
 app.post("/v2/sync-jobs/run", proxyAuthenticatedJobs);
-app.post(
-  "/v1/conversation-finalization-jobs/run",
-  proxyAuthenticatedJobs,
-);
+app.post("/v1/conversation-finalization-jobs/run", proxyAuthenticatedJobs);
 app.post("/v1/sync-local-files", proxyAuthenticatedJobs);
 app.post("/v2/sync-local-files", proxyAuthenticatedJobs);
 app.get("/v2/sync-local-files/:jobId", proxyAuthenticatedJobs);
+app.post("/v1/import/limitless", proxyAuthenticatedJobs);
+app.get("/v1/import/jobs", proxyAuthenticatedCore);
+app.get("/v1/import/jobs/:jobId", proxyAuthenticatedCore);
+app.post("/v1/import/jobs/:jobId/cancel", proxyAuthenticatedCore);
+app.delete("/v1/import/jobs/:jobId", proxyAuthenticatedCore);
 app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedJobs);
 app.get("/v1/sync/audio/:conversationId/urls", proxyAuthenticatedCore);
 app.get("/v3/speech-profile", proxyAuthenticatedCore);
@@ -1293,7 +1295,10 @@ app.get("/v1/conversations/count", proxyAuthenticatedCore);
 app.post("/v1/conversations/merge", proxyAuthenticatedCore);
 app.post("/v1/conversations/:conversationId/finalize", proxyAuthenticatedCore);
 app.post("/v1/conversations/:conversationId/reprocess", proxyAuthenticatedCore);
-app.get("/v1/conversations/:conversationId/finalization", proxyAuthenticatedCore);
+app.get(
+  "/v1/conversations/:conversationId/finalization",
+  proxyAuthenticatedCore,
+);
 app.get("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.delete("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/photos", proxyAuthenticatedCore);

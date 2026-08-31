@@ -83,6 +83,11 @@ import {
 } from "./google-calendar";
 import { registerAdminNotificationRoutes } from "./admin-notification";
 import { registerTwitterProfileRoutes } from "./twitter-profile";
+import {
+  cleanupExpiredLimitlessImports,
+  processLimitlessImportMessage,
+  registerLimitlessImportRoutes,
+} from "./limitless-import";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -148,6 +153,7 @@ registerTaskIntegrationRoutes(app, requestContext);
 registerGoogleCalendarRoutes(app, requestContext);
 registerAdminNotificationRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
+registerLimitlessImportRoutes(app, requestContext);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
 // deletion state machine and remains available to signed internal audits.
@@ -914,6 +920,10 @@ async function processJobMessage(
   message: Message<JobMessage>,
   env: JobsEnv,
 ): Promise<void> {
+  if (message.body.kind === "limitless_import") {
+    await processLimitlessImportMessage(message, env);
+    return;
+  }
   if (message.body.kind === "account_delete") {
     await processAccountDeletionMessage(message, env);
     return;
@@ -1111,6 +1121,7 @@ export default {
       reconcileXConnections(env, now),
       cleanupExpiredTaskIntegrationOAuthStates(env, now),
       cleanupExpiredGoogleCalendarOAuthStates(env, now),
+      cleanupExpiredLimitlessImports(env, now),
       ...syncMaintenance,
     ]);
     const failure = results.find(

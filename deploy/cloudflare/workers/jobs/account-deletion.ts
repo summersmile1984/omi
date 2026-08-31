@@ -792,6 +792,7 @@ async function assertStorageKeysBoundToAccount(env: JobsEnv, uid: string) {
     ["cf_asset_cleanup_tasks", "storage_key"],
     ["cf_sync_playback_objects", "storage_key"],
     ["cf_sync_job_files", "object_key"],
+    ["cf_import_jobs", "source_object_key"],
   ] as const;
   for (const [table, column] of checks) {
     const columnPrefixPredicate = prefixes

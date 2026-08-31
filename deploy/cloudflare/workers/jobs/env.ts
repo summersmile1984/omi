@@ -13,7 +13,8 @@ export type JobMessage = {
     | "stripe_webhook"
     | "conversation_finalize"
     | "conversation_reprocess"
-    | "conversation_merge";
+    | "conversation_merge"
+    | "limitless_import";
   payload: Record<string, unknown>;
 };
 
