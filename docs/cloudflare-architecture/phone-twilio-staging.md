@@ -51,3 +51,11 @@ claims, cross-uid pending claims, and deletion fencing. A live staging check
 still requires configured Twilio test credentials and a disposable verified
 number; no production Twilio or historical Firestore backfill is implied by
 this code change.
+
+Historical verified-number replay is intentionally separate from the live
+owner. `scripts/phone-history-reconcile.mjs` accepts only a reviewed manifest
+containing Cloudflare AES-GCM ciphertext, a hash-only E.164 proof, and the
+destination account generation. It emits dry-run SQL for
+`cf_phone_number_import_ledger`; it never decrypts Firestore, calls Twilio, or
+writes D1. See [the historical reconciliation contract](phone-history-reconcile.md)
+for the required proof, collision, and deletion-fence checks.
