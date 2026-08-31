@@ -401,6 +401,9 @@ families:
       - POST /v1/conversations/from-segments
       - POST /v1/conversations/search
       - POST /v3/memory-imports/batch
+      - GET /v3/memories/review-queue
+      - GET /v3/memories/review-queue/:reviewId
+      - POST /v3/memories/review-queue/:reviewId/resolve
       - DELETE /v1/mcp/action-items/:action_item_id
       - PATCH /v1/mcp/action-items/:action_item_id
       - POST /v1/mcp/action-items

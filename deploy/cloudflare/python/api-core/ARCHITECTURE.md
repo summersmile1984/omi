@@ -39,6 +39,16 @@ has no Firestore fallback or dual write. Production account promotion remains
 forbidden until the account-cutover importer, manifest verification, and
 destination binding described by `INV-CUTOVER-1` exist.
 
+`memory_review_routes.py` owns the D1 `cf_memory_review_queue` projection for
+canonical memory conflicts. The `/v3/memories/review-queue*` endpoints are
+uid-scoped behind Edge Better Auth, and canonical memory create/batch writes
+append conflict rows in the same D1 batch. Reads verify the source
+`updated_at` revision and SHA-256 content hash; changed or missing sources are
+redacted and tombstoned. Resolution applies candidate/conflict mutations and
+the queue state atomically, with deterministic commit IDs for idempotent
+retries. MCP/developer memories that are already marked reviewed do not enter
+this queue.
+
 `knowledge_graph_routes.py` derives both released graph read shapes directly
 from eligible long-term `cf_memories` rows; D1 remains the only authority and
 there is no independently mutable graph store. Canonical pages use a signed,

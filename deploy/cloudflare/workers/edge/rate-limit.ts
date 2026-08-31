@@ -240,6 +240,10 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ["POST /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v3/memories/batch", EDGE_RATE_LIMIT_POLICIES["memories:batch"]],
   [
+    "GET /v3/memories/review-queue",
+    EDGE_RATE_LIMIT_POLICIES["memories:modify"],
+  ],
+  [
     "POST /v3/memory-imports/batch",
     EDGE_RATE_LIMIT_POLICIES["memory_imports:batch"],
   ],
@@ -327,6 +331,14 @@ export function edgeRateLimitPolicyForRequest(
       )) ||
     (normalizedMethod === "POST" &&
       /^\/v3\/memories\/[^/]+\/review$/.test(path))
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["memories:modify"];
+  }
+  if (
+    (normalizedMethod === "GET" &&
+      /^\/v3\/memories\/review-queue\/[^/]+$/.test(path)) ||
+    (normalizedMethod === "POST" &&
+      /^\/v3\/memories\/review-queue\/[^/]+\/resolve$/.test(path))
   ) {
     return EDGE_RATE_LIMIT_POLICIES["memories:modify"];
   }

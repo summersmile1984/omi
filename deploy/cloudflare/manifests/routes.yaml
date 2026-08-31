@@ -3928,6 +3928,39 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: GET
+    path: /v3/memories/review-queue
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:modify
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
+    path: /v3/memories/review-queue/:reviewId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:modify
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v3/memories/review-queue/:reviewId/resolve
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: memories:modify
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: DELETE
     path: /v3/memories
     owner: api-core

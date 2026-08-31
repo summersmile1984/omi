@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from internal_auth import decode_context
 from account_routes import usage_source_statement
+from memory_review_routes import build_review_queue_statements
 from vector_search import embed_query, hydrate_candidate_ids, query_vector_ids
 
 router = APIRouter()
@@ -736,7 +737,13 @@ async def create_memory(request: Request):
             memories_created=1,
             updated_at=now,
         )
-        await env.APP_DB.batch([memory_statement, usage_statement])
+        review_statements = await build_review_queue_statements(
+            env,
+            uid=uid,
+            candidate_rows=[_batch_row(uid, memory_id, memory, now)],
+            now=now,
+        )
+        await env.APP_DB.batch([memory_statement, usage_statement, *review_statements])
         row = await _first_active(env, uid, memory_id)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
@@ -805,6 +812,17 @@ async def create_memories_batch(request: Request):
                 "memories_created = excluded.memories_created, updated_at = excluded.updated_at"
             ).bind(uid, ids_json)
         )
+    try:
+        statements.extend(
+            await build_review_queue_statements(
+                env,
+                uid=uid,
+                candidate_rows=rows,
+                now=now,
+            )
+        )
+    except Exception:
+        return JSONResponse({"error": "memories unavailable"}, status_code=503)
     try:
         await env.APP_DB.batch(statements)
     except Exception:
