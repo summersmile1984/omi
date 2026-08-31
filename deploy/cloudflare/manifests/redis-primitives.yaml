@@ -460,6 +460,7 @@ families:
       - POST /v2/tts/synthesize
       - POST /v2/chat/generate-title
       - POST /v2/chat/generate-reply
+      - POST /v2/cf/chat/completions
       - POST /v2/chat/initial-message
       - POST /v2/initial-message
       - POST /v2/messages

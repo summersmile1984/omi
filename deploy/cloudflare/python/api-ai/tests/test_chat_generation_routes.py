@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 import chat_generation_routes  # noqa: E402
 from chat_generation_routes import (  # noqa: E402
     chat_messages,
+    cloudflare_chat_completions,
     create_initial_message,
     create_session_initial_message,
     generate_reply,
@@ -150,7 +151,7 @@ async def response_body(response) -> bytes:
     return b"".join(chunks)
 
 
-def stored(uid: str, message_id: str, created_at: int, sender: str, text: str):
+def stored(uid: str, message_id: str, created_at: int, sender: str, text: str, session_id: str = "session-1"):
     return (
         uid,
         message_id,
@@ -160,8 +161,8 @@ def stored(uid: str, message_id: str, created_at: int, sender: str, text: str):
                 "id": message_id,
                 "sender": sender,
                 "text": text,
-                "chat_session_id": "session-1",
-                "session_id": "session-1",
+                "chat_session_id": session_id,
+                "session_id": session_id,
                 "reported": False,
             }
         ),
@@ -840,3 +841,114 @@ def test_generate_reply_marks_failed_provider_reservation_without_leaking_detail
         "completion_tokens": 0,
         "settled": 1,
     }
+
+
+def test_cloudflare_completion_uses_d1_session_quota_and_is_idempotent():
+    secret = "chat-secret"
+    db = FakeDb()
+    ai = FakeAi(result={"response": "Workers answer", "usage": {"prompt_tokens": 9, "completion_tokens": 3}})
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret, "WORKERS_AI_CHAT_MODEL": "@cf/test/chat"},
+    )()
+    headers = {**signed_headers(secret), "idempotency-key": "compat-turn-1", "x-app-platform": "desktop"}
+    body = {
+        "model": "workers-ai",
+        "messages": [{"role": "user", "content": "Can Workers host this?"}],
+    }
+
+    first = asyncio.run(cloudflare_chat_completions(FakeRequest(env, headers, body=body)))
+    second = asyncio.run(cloudflare_chat_completions(FakeRequest(env, headers, body=body)))
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_payload = json.loads(first.body)
+    second_payload = json.loads(second.body)
+    assert first_payload["choices"][0]["message"] == {"role": "assistant", "content": "Workers answer"}
+    assert second_payload["choices"][0]["message"] == first_payload["choices"][0]["message"]
+    assert second_payload["usage"] == first_payload["usage"] == {
+        "prompt_tokens": 9,
+        "completion_tokens": 3,
+        "total_tokens": 12,
+    }
+    assert len(ai.calls) == 1
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions WHERE uid = 'chat-user'").fetchone()[0] == 1
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages WHERE uid = 'chat-user'").fetchone()[0] == 2
+    quota = db.connection.execute(
+        "SELECT source, chat_session_id, settled_at IS NOT NULL AS settled FROM cf_chat_quota_events "
+        "WHERE uid = 'chat-user'"
+    ).fetchone()
+    assert quota[0] == "cf_chat_completions"
+    assert isinstance(quota[1], str) and quota[1]
+    assert quota[2] == 1
+
+
+def test_cloudflare_completion_preserves_d1_history_and_emits_openai_sse():
+    secret = "chat-secret"
+    db = FakeDb()
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions "
+        "(uid,id,title,preview,created_at,updated_at,app_id,message_count,starred) "
+        "VALUES ('chat-user','compat-session','New Chat',NULL,1,2,NULL,2,0)"
+    )
+    db.connection.executemany(
+        "INSERT INTO cf_chat_messages (uid,id,app_id,created_at,message_json) VALUES (?, ?, NULL, ?, ?)",
+        [
+            stored("chat-user", "old-human", 1, "human", "Earlier question", "compat-session"),
+            stored("chat-user", "old-ai", 2, "ai", "Earlier answer", "compat-session"),
+        ],
+    )
+    db.connection.commit()
+    ai = FakeAi(result={"response": "Follow-up", "usage": {"prompt_tokens": 18, "completion_tokens": 2}})
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret, "WORKERS_AI_CHAT_MODEL": "@cf/test/chat"},
+    )()
+    response = asyncio.run(
+        cloudflare_chat_completions(
+            FakeRequest(
+                env,
+                {**signed_headers(secret), "idempotency-key": "compat-stream-1"},
+                body={
+                    "messages": [{"role": "user", "content": "A follow-up"}],
+                    "session_id": "compat-session",
+                    "stream": True,
+                },
+            )
+        )
+    )
+    body = asyncio.run(response_body(response)).decode()
+
+    assert response.status_code == 200
+    assert response.media_type == "text/event-stream"
+    assert "chat.completion.chunk" in body
+    assert '"content":"Follow-up"' in body
+    assert "data: [DONE]" in body
+    assert "done:" not in body
+    prompt = ai.calls[0][1]["messages"]
+    assert {"role": "user", "content": "Earlier question"} in prompt
+    assert {"role": "assistant", "content": "Earlier answer"} in prompt
+
+
+def test_cloudflare_completion_rejects_legacy_tool_shape_before_provider():
+    secret = "chat-secret"
+    db = FakeDb()
+    ai = FakeAi()
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    response = asyncio.run(
+        cloudflare_chat_completions(
+            FakeRequest(
+                env,
+                {**signed_headers(secret), "idempotency-key": "compat-invalid-1"},
+                body={"messages": [{"role": "user", "content": "hello"}], "tools": []},
+            )
+        )
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"]["type"] == "invalid_request_error"
+    assert ai.calls == []
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0

@@ -1443,6 +1443,10 @@ app.post("/v2/initial-message", proxyAuthenticatedAI);
 app.post("/v2/chat/initial-message", proxyAuthenticatedAI);
 app.post("/v2/chat/generate-title", proxyAuthenticatedAI);
 app.post("/v2/chat/generate-reply", proxyAuthenticatedAI);
+// Explicit Cloudflare text-only completion contract.  The released
+// /v2/chat/completions route remains behind its legacy compatibility boundary
+// until provider/tool/session wire parity is complete.
+app.post("/v2/cf/chat/completions", proxyAuthenticatedAI);
 app.post(
   "/v1/chat/materialize-prompts",
   legacyChatCompatibilityStagingBoundary,

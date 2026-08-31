@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import re
 import time
@@ -61,6 +62,146 @@ SYSTEM_PROMPT = (
     "Answer in the language used by the user. Do not claim access to memories, "
     "files, apps, tools, or live information that was not supplied in this chat."
 )
+
+# ``/v2/cf/chat/completions`` is the explicit Cloudflare chat contract.  It is
+# intentionally narrower than the released desktop compatibility endpoint:
+# only text messages and the D1/Workers AI authority are admitted here.  The
+# old endpoint also accepts Anthropic tool blocks, server-side web search,
+# multiple provider model aliases and a custom ``data:/done:`` stream; silently
+# dropping any of those fields would make a retry look successful while
+# changing the user's conversation.  The legacy aliases therefore remain
+# separately owned until their full wire contract is migrated.
+COMPAT_CHAT_DEFAULT_MODEL = "workers-ai"
+COMPAT_CHAT_MODEL_ALIASES = frozenset({"workers-ai", "cloudflare-workers-ai"})
+MAX_COMPAT_CHAT_MESSAGES = 64
+MAX_COMPAT_CHAT_TEXT_CHARS = 16_000
+MAX_COMPAT_CHAT_SESSION_ID_CHARS = 256
+MAX_COMPAT_CHAT_TOKENS = 4_096
+MAX_COMPAT_CHAT_BODY_BYTES = 128_000
+
+
+class CompatChatMessage(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(min_length=1, max_length=MAX_COMPAT_CHAT_TEXT_CHARS)
+
+
+class CompatChatCompletionRequest(BaseModel):
+    """The deliberately explicit, D1-backed Cloudflare completion contract."""
+
+    model_config = {"extra": "forbid"}
+
+    messages: list[CompatChatMessage] = Field(min_length=1, max_length=MAX_COMPAT_CHAT_MESSAGES)
+    model: str = COMPAT_CHAT_DEFAULT_MODEL
+    stream: bool = False
+    max_tokens: int | None = Field(default=None, ge=1, le=MAX_COMPAT_CHAT_TOKENS)
+    max_completion_tokens: int | None = Field(default=None, ge=1, le=MAX_COMPAT_CHAT_TOKENS)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    session_id: str | None = Field(default=None, min_length=1, max_length=MAX_COMPAT_CHAT_SESSION_ID_CHARS)
+
+
+def _compat_error(message: str, status_code: int = 400) -> JSONResponse:
+    return JSONResponse(
+        {"error": {"message": message, "type": "invalid_request_error", "code": status_code}},
+        status_code=status_code,
+        headers={"cache-control": "no-store"},
+    )
+
+
+def _compat_request_id(request: Request, context: dict[str, object]) -> str:
+    value = request.headers.get("idempotency-key") or request.headers.get("x-omi-request-id")
+    if not value:
+        value = context.get("requestId")
+    if isinstance(value, str) and 0 < len(value) <= 300:
+        return value
+    return str(uuid.uuid4())
+
+
+async def _compat_session(
+    env: object,
+    uid: str,
+    requested_session_id: str | None,
+) -> tuple[str, object | None]:
+    """Resolve a caller-owned D1 session and return a transactional insert."""
+
+    if requested_session_id is not None:
+        row = (
+            await env.APP_DB.prepare("SELECT id FROM cf_chat_sessions WHERE uid = ? AND id = ? LIMIT 1")
+            .bind(uid, requested_session_id)
+            .first()
+        )
+        if not isinstance(row, dict):
+            raise LookupError("chat session not found")
+        return requested_session_id, None
+    return await _initial_session(env, uid, None, None)
+
+
+def _compat_prompt(messages: list[CompatChatMessage]) -> list[dict[str, str]]:
+    """Convert validated text-only messages to the Workers AI request shape."""
+
+    return [{"role": message.role, "content": message.content} for message in messages]
+
+
+def _compat_response(
+    *,
+    answer: str,
+    requested_model: str,
+    usage: tuple[int, int] | None,
+    response_id: str | None = None,
+) -> dict[str, object]:
+    prompt_tokens, completion_tokens = usage or (0, 0)
+    return {
+        "id": response_id or f"chatcmpl-{uuid.uuid4()}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": requested_model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": answer},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    }
+
+
+async def _compat_response_stream(response: dict[str, object]):
+    """Emit a buffered OpenAI-compatible SSE stream.
+
+    Workers AI's Python binding currently exposes a completed RPC result in
+    the supported Python Worker runtime.  We still expose the released SSE
+    framing for callers that request ``stream``; the explicit contract calls
+    this buffered so clients do not mistake it for token-level streaming.
+    """
+
+    response_id = response["id"]
+    created = response["created"]
+    model = response["model"]
+    message = response["choices"][0]["message"]
+    content = message["content"]
+
+    def frame(delta: dict[str, object], finish_reason: str | None = None, usage: object | None = None) -> str:
+        payload: dict[str, object] = {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        if usage is not None:
+            payload["usage"] = usage
+        return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+    yield frame({"role": "assistant"})
+    yield frame({"content": content})
+    yield frame({}, finish_reason="stop", usage=response["usage"])
+    yield "data: [DONE]\n\n"
 
 
 class SendMessageRequest(BaseModel):
@@ -1006,6 +1147,279 @@ async def generate_reply(request: Request):
     return GenerateReplyResponse(text=re.sub(r"\[\d+\]", "", answer), app_id=app_id).model_dump()
 
 
+def _compat_stable_message_id(uid: str, idempotency_key: str, suffix: str) -> str:
+    digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode("utf-8")).hexdigest()[:48]
+    return f"cf-compat-{digest}-{suffix}"
+
+
+async def _compat_existing_response(env: object, uid: str, message_id: str, model: str) -> dict[str, object] | None:
+    """Return a previously persisted response for a retried idempotency key."""
+
+    row = await env.APP_DB.prepare("SELECT message_json FROM cf_chat_messages WHERE uid = ? AND id = ? LIMIT 1").bind(
+        uid, message_id
+    ).first()
+    raw = row.get("message_json") if isinstance(row, dict) else None
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_STORED_MESSAGE_BYTES:
+        message = None
+    else:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        message = parsed if isinstance(parsed, dict) else None
+    if not isinstance(message, dict) or message.get("sender") != "ai" or not isinstance(message.get("text"), str):
+        return None
+    raw_usage = message.get("compat_usage")
+    usage: tuple[int, int] | None = None
+    if isinstance(raw_usage, dict):
+        prompt_tokens = raw_usage.get("prompt_tokens")
+        completion_tokens = raw_usage.get("completion_tokens")
+        if (
+            isinstance(prompt_tokens, int)
+            and not isinstance(prompt_tokens, bool)
+            and prompt_tokens >= 0
+            and isinstance(completion_tokens, int)
+            and not isinstance(completion_tokens, bool)
+            and completion_tokens >= 0
+        ):
+            usage = (prompt_tokens, completion_tokens)
+    return _compat_response(
+        answer=str(message["text"]),
+        requested_model=model,
+        usage=usage,
+        response_id=f"chatcmpl-{message_id}",
+    )
+
+
+@router.post("/v2/cf/chat/completions")
+async def cloudflare_chat_completions(request: Request):
+    """Run the explicit D1/Workers AI text completion contract.
+
+    This endpoint is intentionally namespaced.  It is a migration seam for
+    clients, not an owner switch for the released ``/v2/chat/completions``
+    route.  Unsupported legacy features are rejected before provider or D1
+    mutation so a caller cannot receive a plausible but semantically different
+    answer.
+    """
+
+    context = _auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > MAX_COMPAT_CHAT_BODY_BYTES:
+            raise ValueError("chat request body is too large")
+        raw = await request.json()
+        if len(json.dumps(raw, ensure_ascii=False).encode("utf-8")) > MAX_COMPAT_CHAT_BODY_BYTES:
+            raise ValueError("chat request body is too large")
+        payload = CompatChatCompletionRequest.model_validate(raw)
+    except (ValidationError, ValueError, TypeError, json.JSONDecodeError):
+        return _compat_error("invalid Cloudflare chat completion request")
+
+    if payload.messages[-1].role != "user":
+        return _compat_error("the last chat message must have role user")
+    requested_model = payload.model.strip()
+    configured_model = str(
+        getattr(request.scope["env"], "WORKERS_AI_CHAT_MODEL", DEFAULT_WORKERS_AI_CHAT_MODEL) or ""
+    ).strip()
+    model_key = requested_model.lower()
+    is_workers_ai = model_key in COMPAT_CHAT_MODEL_ALIASES or requested_model == configured_model
+    is_openai_byok = model_key == "openai-byok"
+    if not is_workers_ai and not is_openai_byok:
+        return _compat_error(
+            "model is not available on the Cloudflare chat contract; use workers-ai or openai-byok",
+        )
+    if payload.max_tokens is not None and payload.max_completion_tokens is not None:
+        if payload.max_tokens != payload.max_completion_tokens:
+            return _compat_error("max_tokens and max_completion_tokens must match")
+    max_tokens = payload.max_completion_tokens or payload.max_tokens or 512
+    if payload.stream and is_openai_byok:
+        return _compat_error("streaming is only available for the buffered Workers AI contract")
+
+    env = request.scope["env"]
+    if getattr(env, "APP_DB", None) is None:
+        return JSONResponse({"error": "chat history is not configured"}, status_code=503)
+    byok_openai_key, byok_error = _byok_openai_key(request, context)
+    if byok_error:
+        return JSONResponse({"detail": byok_error}, status_code=403)
+    if byok_openai_key is not None and not is_openai_byok:
+        return _compat_error("validated BYOK requests must use model openai-byok", 403)
+    if is_openai_byok and byok_openai_key is None:
+        return JSONResponse({"error": "validated openai BYOK is required"}, status_code=403)
+    if is_workers_ai and getattr(env, "AI", None) is None:
+        return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
+
+    uid = str(context["uid"])
+    request_key = _compat_request_id(request, context)
+    human_message_id = _compat_stable_message_id(uid, request_key, "human")
+    ai_message_id = _compat_stable_message_id(uid, request_key, "assistant")
+    try:
+        existing = await _compat_existing_response(env, uid, ai_message_id, requested_model)
+    except Exception:
+        return JSONResponse({"error": "chat history unavailable"}, status_code=503)
+    if existing is not None:
+        if payload.stream:
+            return StreamingResponse(
+                _compat_response_stream(existing),
+                media_type="text/event-stream",
+                headers={"cache-control": "no-store", "x-omi-chat-contract": "cf-v1"},
+            )
+        return JSONResponse(existing, headers={"cache-control": "no-store", "x-omi-chat-contract": "cf-v1"})
+
+    try:
+        session_id, session_insert = await _compat_session(env, uid, payload.session_id)
+        prompt_messages = list(payload.messages)
+        if payload.session_id is not None and len(prompt_messages) == 1:
+            prompt_messages = [
+                CompatChatMessage(role="system", content=SYSTEM_PROMPT),
+                *[
+                    CompatChatMessage(role=item["role"], content=item["content"])
+                    for item in await _history(env, uid, session_id)
+                ],
+                *prompt_messages,
+            ]
+        elif not prompt_messages or prompt_messages[0].role != "system":
+            prompt_messages.insert(0, CompatChatMessage(role="system", content=SYSTEM_PROMPT))
+        prompt = _compat_prompt(prompt_messages)
+    except LookupError:
+        return JSONResponse({"detail": "Chat session not found"}, status_code=404)
+    except Exception:
+        return JSONResponse({"error": "chat context unavailable"}, status_code=503)
+
+    platform = request.headers.get("x-app-platform")
+    account_created_at = _account_created_at(context)
+    has_byok_keys = byok_openai_key is not None
+    quota_key = f"cf_chat_completions:{request_key}"
+    reserved = has_byok_keys
+    if not has_byok_keys:
+        try:
+            reserved = await reserve_chat_question(
+                env,
+                uid=uid,
+                idempotency_key=quota_key,
+                message_id=human_message_id,
+                chat_session_id=session_id,
+                platform=platform,
+                account_created_at=account_created_at,
+                has_byok_keys=False,
+                source="cf_chat_completions",
+            )
+        except Exception:
+            return JSONResponse({"error": "chat quota unavailable"}, status_code=503)
+    if not reserved:
+        try:
+            detail = await free_quota_detail(
+                env,
+                uid,
+                force_exhausted=trial_paywall_applies(
+                    env,
+                    platform=platform,
+                    account_created_at=account_created_at,
+                    has_byok_keys=False,
+                ),
+            )
+        except Exception:
+            return JSONResponse({"error": "chat quota unavailable"}, status_code=503)
+        return JSONResponse({"detail": detail}, status_code=402, headers={"cache-control": "no-store"})
+
+    public_model = requested_model
+    provider_model = configured_model
+    usage: tuple[int, int] | None = None
+    answer: str | None = None
+    try:
+        if is_openai_byok:
+            answer, provider_model = await _run_byok_openai(env, byok_openai_key or "", prompt)
+        else:
+            result = await env.AI.run(
+                provider_model,
+                {
+                    "messages": prompt,
+                    "stream": False,
+                    "max_tokens": max_tokens,
+                    "temperature": payload.temperature if payload.temperature is not None else 0.4,
+                },
+            )
+            mapping = _rpc_mapping(result)
+            answer = _response_text(mapping)
+            usage = provider_usage(mapping)
+    except ByokProviderError as error:
+        return JSONResponse(
+            {"error": "byok provider request failed", "provider": "openai"}, status_code=error.status_code
+        )
+    except Exception:
+        if not has_byok_keys:
+            await _settle_stateless_failure(env, uid, quota_key, provider_model)
+        return JSONResponse({"error": "cloudflare chat provider unavailable"}, status_code=502)
+    if answer is None or (not has_byok_keys and usage is None):
+        if not has_byok_keys:
+            await _settle_stateless_failure(env, uid, quota_key, provider_model)
+        return JSONResponse({"error": "chat provider returned an invalid response"}, status_code=502)
+
+    now = datetime.now(timezone.utc)
+    human_message = _message(
+        message_id=human_message_id,
+        text=payload.messages[-1].content,
+        sender="human",
+        created_at=now,
+        session_id=session_id,
+    )
+    ai_message = _message(
+        message_id=ai_message_id,
+        text=answer,
+        sender="ai",
+        created_at=now + timedelta(microseconds=1),
+        session_id=session_id,
+    )
+    if usage is not None:
+        ai_message["compat_usage"] = {
+            "prompt_tokens": usage[0],
+            "completion_tokens": usage[1],
+        }
+    settlement = None
+    if usage is not None:
+        prompt_tokens, completion_tokens = usage
+        settlement = settlement_statement(
+            env,
+            uid=uid,
+            idempotency_key=quota_key,
+            model=provider_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=provider_cost_usd(env, prompt_tokens, completion_tokens),
+        )
+    try:
+        await _persist_exchange(
+            env,
+            uid,
+            human_message,
+            ai_message,
+            _exchange_order_key(),
+            session_id,
+            settlement,
+        )
+    except Exception:
+        if settlement is not None:
+            try:
+                await settlement.run()
+            except Exception:
+                pass
+        return JSONResponse({"error": "chat history unavailable"}, status_code=503)
+
+    response = _compat_response(
+        answer=answer,
+        requested_model=public_model,
+        usage=usage,
+        response_id=f"chatcmpl-{ai_message_id}",
+    )
+    if payload.stream:
+        return StreamingResponse(
+            _compat_response_stream(response),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-store", "x-omi-chat-contract": "cf-v1"},
+        )
+    return JSONResponse(response, headers={"cache-control": "no-store", "x-omi-chat-contract": "cf-v1"})
+
+
 @router.post("/v2/messages")
 async def chat_messages(request: Request):
     context = _auth_context(request)
@@ -1222,6 +1636,7 @@ async def chat_messages(request: Request):
 
 
 __all__ = [
+    "cloudflare_chat_completions",
     "create_initial_message",
     "create_session_initial_message",
     "generate_session_title",
