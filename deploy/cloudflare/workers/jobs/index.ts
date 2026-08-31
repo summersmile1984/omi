@@ -83,6 +83,12 @@ import {
 } from "./google-calendar";
 import { registerAdminNotificationRoutes } from "./admin-notification";
 import { registerTwitterProfileRoutes } from "./twitter-profile";
+import { registerTwitterOwnershipRoutes } from "./twitter-ownership";
+import {
+  processAppOwnerMigrationMessage,
+  reconcileAppOwnerMigrationJobs,
+  registerAppOwnerMigrationRoutes,
+} from "./app-owner-migration";
 import {
   cleanupExpiredLimitlessImports,
   processLimitlessImportMessage,
@@ -185,6 +191,8 @@ registerTaskIntegrationRoutes(app, requestContext);
 registerGoogleCalendarRoutes(app, requestContext);
 registerAdminNotificationRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
+registerTwitterOwnershipRoutes(app, requestContext);
+registerAppOwnerMigrationRoutes(app, requestContext);
 registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
 registerChatCompatibilityRoutes(app, requestContext);
@@ -977,6 +985,10 @@ async function processJobMessage(
     await processLegacyAudioMergeJobMessage(message, env);
     return;
   }
+  if (message.body.kind === "app_owner_migration") {
+    await processAppOwnerMigrationMessage(message, env);
+    return;
+  }
   if (message.body.kind === "memory_short_term_lifecycle") {
     await processMemoryShortTermLifecycleMessage(message, env);
     return;
@@ -1196,6 +1208,7 @@ export default {
       reconcileConversationFinalizations(env, now),
       reconcileConversationMerges(env, now),
       reconcileTaskIntelligenceJobs(env, now),
+      reconcileAppOwnerMigrationJobs(env, now),
       reconcileXConnections(env, now),
       cleanupExpiredTaskIntegrationOAuthStates(env, now),
       cleanupExpiredGoogleCalendarOAuthStates(env, now),

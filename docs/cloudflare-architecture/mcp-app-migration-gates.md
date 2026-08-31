@@ -10,6 +10,19 @@
 | `POST /v1/apps/migrate-owner` | Firebase anonymous source token 证明旧 owner，再把旧 owner 的 Firestore app 迁到目标 uid | 保持 legacy；Better Auth uid 不能证明 Firebase anonymous identity |
 | `GET /v1/personas/twitter/verify-ownership` | RapidAPI timeline 最新 tweet 验证；按 Firebase provider 决定新建 Persona 或关联已有 Persona | 保持 legacy；Twitter verification 与已有 X OAuth connection 不是同一 authority |
 
+`migrate-owner` 现在有一个未接入 Edge/manifest 的 Jobs dormant seam：
+`0122_app_owner_migration.sql` 保存已由可信导入流程核验的
+`firebase-anonymous` source projection 和 hash-only proof，并以
+`cf_app_owner_migration_jobs` 记录 source/target、target account generation、
+幂等键、lease、retry 和结果。`POST /v2/cf/apps/migrate-owner` 只有在两个
+显式 staging gate、目标 D1 cutover 已完成、source projection=`imported` 且
+proof hash 匹配时才会入队；source proof 不接收 Firebase token，也不从
+`old_id` 推断身份。Jobs consumer 会在执行前重复校验 source revision、目标
+generation 和双方删除 fence，并将未来 API Core executor 的结果纳入同一
+lease/retry 生命周期。当前 executor 未实现，两个 gate 默认关闭，因此这
+只是可回放的迁移 admission seam，不代表 exact legacy owner 已切换或已
+完成 Firestore app/memory re-encryption。
+
 ## Foundation schema and route authority
 
 迁移 `0112_mcp_app_authority.sql` 增加最小 authority foundation；exact legacy owner 的路由切换由 manifest 和两个显式 staging 开关控制，不会隐式改变生产 owner：
@@ -43,7 +56,7 @@
 
 namespaced seam 需要 `MCP_APP_OAUTH_STAGING_ENABLED=true`；exact legacy seam 需要 `MCP_APP_LEGACY_EXACT_STAGING_ENABLED=true`；两者在涉及 token envelope 时都需要 `MCP_APP_TOKEN_ENCRYPTION_SECRET`（至少 32 字节）。实现已闭合 registration→authorization redirect→token exchange→严格 JSON-RPC discovery（分页、候选 endpoint、旧 SSE fallback）→bounded token refresh→authorized install projection→owner-scoped ready tools projection→显式 tools/call execution；provider revoke、真实 staging provider replay、旧 Firebase auth、历史 Firestore catalog/cache backfill、生产 cutover 尚未完成。
 
-这三张表均带 `owner_uid`、INSERT/UPDATE account-deletion fence 和 owner/status/expiry 索引；残留扫描与 purge inventory 已登记。基础 schema 不包含 migration job、Firebase proof 或 R2 logo cleanup，因为这些依赖仍未闭合，不能用空表伪造完成度。
+这三张 MCP 表均带 `owner_uid`、INSERT/UPDATE account-deletion fence 和 owner/status/expiry 索引；残留扫描与 purge inventory 已登记。`migrate-owner` 的独立 migration job 表同样只保存 hash-only proof 和生命周期元数据，不把 Firebase token、Firestore payload 或 R2 logo 数据伪装成已迁移 authority。
 
 ## Provider fixture
 

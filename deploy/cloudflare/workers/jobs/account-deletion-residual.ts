@@ -3,6 +3,8 @@ import type { JobsEnv } from "./env";
 type IdentityColumn =
   | "uid"
   | "owner_uid"
+  | "source_uid"
+  | "target_uid"
   | "recipient_uid"
   | "reviewer_uid"
   | "sender_uid"
@@ -27,6 +29,9 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_advice", column: "uid" },
   { table: "cf_announcement_dismissals", column: "uid" },
   { table: "cf_app_catalog", column: "owner_uid" },
+  { table: "cf_app_owner_migration_sources", column: "source_uid" },
+  { table: "cf_app_owner_migration_jobs", column: "source_uid" },
+  { table: "cf_app_owner_migration_jobs", column: "target_uid" },
   { table: "cf_mcp_app_connections", column: "owner_uid" },
   { table: "cf_mcp_app_discoveries", column: "owner_uid" },
   { table: "cf_mcp_app_oauth_transactions", column: "owner_uid" },
@@ -158,6 +163,8 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_x_connections", column: "uid" },
   { table: "cf_x_oauth_states", column: "uid" },
   { table: "cf_x_posts", column: "uid" },
+  { table: "cf_twitter_ownership_transactions", column: "uid" },
+  { table: "cf_twitter_ownership_claims", column: "uid" },
 ] satisfies readonly D1IdentitySurface[]);
 
 /**
@@ -177,6 +184,9 @@ const PURGE_PRIORITY = Object.freeze([
   "cf_app_reviews.reviewer_uid",
   "cf_app_tester_access.uid",
   "cf_app_testers.uid",
+  "cf_app_owner_migration_jobs.source_uid",
+  "cf_app_owner_migration_jobs.target_uid",
+  "cf_app_owner_migration_sources.source_uid",
   "cf_mcp_app_oauth_transactions.owner_uid",
   "cf_mcp_app_discoveries.owner_uid",
   "cf_mcp_app_connections.owner_uid",
@@ -229,6 +239,8 @@ const PURGE_PRIORITY = Object.freeze([
   "cf_task_evaluations.uid",
   "cf_x_oauth_states.uid",
   "cf_x_connections.uid",
+  "cf_twitter_ownership_transactions.uid",
+  "cf_twitter_ownership_claims.uid",
   "cf_sync_job_files.uid",
   "cf_sync_jobs.uid",
   "cf_conversation_finalization_jobs.uid",

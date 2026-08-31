@@ -10,6 +10,7 @@ export type JobMessage = {
     | "account_delete"
     | "recording_delete"
     | "app_delete"
+    | "app_owner_migration"
     | "stripe_webhook"
     | "conversation_finalize"
     | "conversation_reprocess"
@@ -147,6 +148,12 @@ export type JobsEnv = {
   EXTERNAL_APP_OAUTH_STAGING_ENABLED?: string;
   /** Explicit opt-in for the exact legacy /v1/oauth/* owner. */
   LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED?: string;
+  /** Dormant namespaced Twitter ownership evidence seam; exact legacy owner stays fail-closed. */
+  TWITTER_OWNERSHIP_STAGING_ENABLED?: string;
+  /** Dormant app-owner migration admission seam; exact legacy owner stays fail-closed. */
+  APP_OWNER_MIGRATION_STAGING_ENABLED?: string;
+  /** Explicit executor gate; no API Core migration executor is enabled by default. */
+  APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED?: string;
   HUME_WEBHOOK_SIGNING_KEY?: string;
   /** Twilio REST credentials and Voice SDK token configuration. */
   TWILIO_ACCOUNT_SID?: string;

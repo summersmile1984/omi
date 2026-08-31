@@ -22,6 +22,8 @@ import {
 const IDENTITY_COLUMNS = new Set([
   "uid",
   "owner_uid",
+  "source_uid",
+  "target_uid",
   "recipient_uid",
   "reviewer_uid",
   "sender_uid",
