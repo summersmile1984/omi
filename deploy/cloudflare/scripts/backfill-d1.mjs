@@ -176,6 +176,50 @@ const TABLES = {
     integers: ["size", "created_at", "updated_at"],
     json: [],
   },
+  // A ready chat-file row is only safe to import after the source object and
+  // provider object have both been verified.  The importer therefore accepts
+  // only the committed state; staging/failed rows belong to the reconciliation
+  // ledger and must not be promoted by a bulk SQL backfill.
+  cf_chat_files: {
+    key_columns: ["uid", "file_id"],
+    required: [
+      "uid",
+      "file_id",
+      "request_fingerprint",
+      "provider",
+      "provider_file_id",
+      "name",
+      "mime_type",
+      "size",
+      "checksum_sha256",
+      "storage_key",
+      "status",
+      "thumbnail_status",
+      "created_at",
+      "updated_at",
+    ],
+    columns: [
+      "uid",
+      "file_id",
+      "request_fingerprint",
+      "provider",
+      "provider_file_id",
+      "name",
+      "mime_type",
+      "size",
+      "checksum_sha256",
+      "storage_key",
+      "thumbnail_key",
+      "status",
+      "thumbnail_status",
+      "created_at",
+      "updated_at",
+      "last_error",
+    ],
+    defaults: { thumbnail_key: null, last_error: null },
+    integers: ["size", "created_at", "updated_at"],
+    json: [],
+  },
   cf_chat_file_import_ledger: {
     key_columns: ["uid", "import_id"],
     required: [
@@ -1218,6 +1262,95 @@ export function normalizeRow(table, input) {
     ) {
       fail("cf_chat_file_import_ledger.last_error is invalid");
     }
+  }
+  if (table === "cf_chat_files") {
+    if (
+      typeof normalized.uid !== "string" ||
+      normalized.uid.length < 1 ||
+      normalized.uid.length > 256 ||
+      /[\\/\0]/.test(normalized.uid)
+    ) {
+      fail("cf_chat_files.uid is invalid");
+    }
+    if (
+      typeof normalized.file_id !== "string" ||
+      normalized.file_id.length < 1 ||
+      normalized.file_id.length > 128 ||
+      /[\\/\0\u0000-\u001f\u007f]/.test(normalized.file_id)
+    ) {
+      fail("cf_chat_files.file_id is invalid");
+    }
+    if (
+      typeof normalized.request_fingerprint !== "string" ||
+      !/^[0-9a-f]{64}$/.test(normalized.request_fingerprint)
+    ) {
+      fail("cf_chat_files.request_fingerprint is invalid");
+    }
+    if (normalized.provider !== "openai")
+      fail("cf_chat_files.provider is invalid");
+    if (
+      typeof normalized.provider_file_id !== "string" ||
+      !/^file-[A-Za-z0-9_-]{1,256}$/.test(normalized.provider_file_id)
+    ) {
+      fail("cf_chat_files.provider_file_id is invalid");
+    }
+    if (
+      typeof normalized.name !== "string" ||
+      normalized.name.length < 1 ||
+      normalized.name.length > 512 ||
+      /[\0\u0000-\u001f\u007f]/.test(normalized.name)
+    ) {
+      fail("cf_chat_files.name is invalid");
+    }
+    if (
+      typeof normalized.mime_type !== "string" ||
+      normalized.mime_type.length < 1 ||
+      normalized.mime_type.length > 200 ||
+      !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(
+        normalized.mime_type,
+      )
+    ) {
+      fail("cf_chat_files.mime_type is invalid");
+    }
+    if (
+      !Number.isSafeInteger(normalized.size) ||
+      normalized.size <= 0 ||
+      normalized.size > 50 * 1024 * 1024
+    ) {
+      fail("cf_chat_files.size is invalid");
+    }
+    if (
+      typeof normalized.checksum_sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(normalized.checksum_sha256)
+    ) {
+      fail("cf_chat_files.checksum_sha256 is invalid");
+    }
+    if (
+      typeof normalized.storage_key !== "string" ||
+      normalized.storage_key.length < 1 ||
+      normalized.storage_key.length > 512 ||
+      !normalized.storage_key.startsWith(`${normalized.uid}/`) ||
+      /[\0\u0000-\u001f\u007f]/.test(normalized.storage_key)
+    ) {
+      fail("cf_chat_files.storage_key is invalid");
+    }
+    if (normalized.thumbnail_key !== null && normalized.thumbnail_key !== undefined) {
+      if (
+        typeof normalized.thumbnail_key !== "string" ||
+        normalized.thumbnail_key.length < 1 ||
+        normalized.thumbnail_key.length > 512 ||
+        !normalized.thumbnail_key.startsWith(`${normalized.uid}/`) ||
+        /[\0\u0000-\u001f\u007f]/.test(normalized.thumbnail_key)
+      ) {
+        fail("cf_chat_files.thumbnail_key is invalid");
+      }
+    }
+    if (normalized.status !== "ready")
+      fail("cf_chat_files.status must be ready for backfill");
+    if (!new Set(["not_applicable", "unsupported", "ready"]).has(normalized.thumbnail_status))
+      fail("cf_chat_files.thumbnail_status is invalid");
+    if (normalized.last_error !== null && normalized.last_error !== undefined)
+      fail("cf_chat_files.last_error must be null for ready backfill");
   }
   return normalized;
 }

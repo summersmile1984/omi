@@ -77,6 +77,40 @@ describe("D1 backfill SQL generator", () => {
     ).toThrow("source_object_uri is invalid");
   });
 
+  it("imports only verified ready chat-file metadata", () => {
+    const row = normalizeRow("cf_chat_files", {
+      uid: "user-1",
+      file_id: "legacy-file-1",
+      request_fingerprint: "a".repeat(64),
+      provider: "openai",
+      provider_file_id: "file-provider-1",
+      name: "notes.txt",
+      mime_type: "text/plain",
+      size: 4,
+      checksum_sha256: "b".repeat(64),
+      storage_key: "user-1/legacy-file-1",
+      status: "ready",
+      thumbnail_status: "not_applicable",
+      created_at: 1,
+      updated_at: 2,
+    });
+    expect(row).toMatchObject({
+      uid: "user-1",
+      provider_file_id: "file-provider-1",
+      thumbnail_key: null,
+      last_error: null,
+    });
+    expect(
+      renderBackfillSql([{ table: "cf_chat_files", row }]),
+    ).toContain("ON CONFLICT(uid, file_id) DO UPDATE SET");
+    expect(() =>
+      normalizeRow("cf_chat_files", { ...row, status: "staging" }),
+    ).toThrow("status must be ready for backfill");
+    expect(() =>
+      normalizeRow("cf_chat_files", { ...row, provider_file_id: "missing" }),
+    ).toThrow("provider_file_id is invalid");
+  });
+
   it("supports typed aliases while rejecting unsupported tables and malformed identities", () => {
     expect(
       normalizeRow("cf_goals", {
