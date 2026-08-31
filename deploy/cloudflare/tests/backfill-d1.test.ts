@@ -40,6 +40,43 @@ describe("D1 backfill SQL generator", () => {
     expect(sql).toContain("'O''Malley'");
   });
 
+  it("accepts only the bounded chat-file reconciliation ledger shape", () => {
+    const normalized = normalizeRow("cf_chat_file_import_ledger", {
+      uid: "user-1",
+      import_id: "a".repeat(64),
+      source_file_id: "legacy-file-1",
+      source_object_uri: "gs://legacy-chat-files/user-1/notes.txt",
+      checksum_sha256: "b".repeat(64),
+      provider_file_id: "file-provider-1",
+      name: "notes.txt",
+      mime_type: "text/plain",
+      size: 4,
+      desired_storage_key: "user-1/legacy-file-1",
+      plan_hash: "c".repeat(64),
+      action: "stage",
+      status: "planned",
+      created_at: 1,
+      updated_at: 2,
+    });
+    expect(normalized).toMatchObject({
+      uid: "user-1",
+      import_id: "a".repeat(64),
+      source_generation: null,
+      last_error: null,
+    });
+    expect(
+      renderBackfillSql([
+        { table: "cf_chat_file_import_ledger", row: normalized },
+      ]),
+    ).toContain("ON CONFLICT(uid, import_id) DO UPDATE SET");
+    expect(() =>
+      normalizeRow("cf_chat_file_import_ledger", {
+        ...normalized,
+        source_object_uri: "https://evil.example/object",
+      }),
+    ).toThrow("source_object_uri is invalid");
+  });
+
   it("supports typed aliases while rejecting unsupported tables and malformed identities", () => {
     expect(
       normalizeRow("cf_goals", {

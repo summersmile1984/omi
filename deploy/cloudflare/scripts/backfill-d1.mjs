@@ -176,6 +176,51 @@ const TABLES = {
     integers: ["size", "created_at", "updated_at"],
     json: [],
   },
+  cf_chat_file_import_ledger: {
+    key_columns: ["uid", "import_id"],
+    required: [
+      "uid",
+      "import_id",
+      "source_file_id",
+      "source_object_uri",
+      "name",
+      "mime_type",
+      "desired_storage_key",
+      "plan_hash",
+      "action",
+      "status",
+      "created_at",
+      "updated_at",
+    ],
+    columns: [
+      "uid",
+      "import_id",
+      "source_file_id",
+      "source_object_uri",
+      "source_generation",
+      "checksum_sha256",
+      "provider_file_id",
+      "name",
+      "mime_type",
+      "size",
+      "desired_storage_key",
+      "plan_hash",
+      "action",
+      "status",
+      "last_error",
+      "created_at",
+      "updated_at",
+    ],
+    defaults: {
+      source_generation: null,
+      checksum_sha256: null,
+      provider_file_id: null,
+      size: null,
+      last_error: null,
+    },
+    integers: ["size", "created_at", "updated_at"],
+    json: [],
+  },
   cf_conversations: {
     key_columns: ["uid", "id"],
     required: ["uid", "id", "created_at"],
@@ -1061,6 +1106,118 @@ export function normalizeRow(table, input) {
       fail("cf_mcp_api_keys.scopes_json must contain the full MCP scope set");
     }
     normalized.scopes_json = JSON.stringify(fullScopes);
+  }
+  if (table === "cf_chat_file_import_ledger") {
+    if (
+      typeof normalized.uid !== "string" ||
+      normalized.uid.length < 1 ||
+      normalized.uid.length > 256 ||
+      /[\\/\0]/.test(normalized.uid)
+    ) {
+      fail("cf_chat_file_import_ledger.uid is invalid");
+    }
+    if (
+      typeof normalized.import_id !== "string" ||
+      !/^[0-9a-f]{64}$/.test(normalized.import_id)
+    ) {
+      fail("cf_chat_file_import_ledger.import_id is invalid");
+    }
+    if (
+      typeof normalized.source_file_id !== "string" ||
+      normalized.source_file_id.length < 1 ||
+      normalized.source_file_id.length > 128 ||
+      /[\\/\0]/.test(normalized.source_file_id)
+    ) {
+      fail("cf_chat_file_import_ledger.source_file_id is invalid");
+    }
+    if (
+      typeof normalized.source_object_uri !== "string" ||
+      normalized.source_object_uri.length < 1 ||
+      normalized.source_object_uri.length > 1024 ||
+      !/^gs:\/\/[^/]+\/[^\s]+$/.test(normalized.source_object_uri) ||
+      /[\0\u0000-\u001f\u007f]/.test(normalized.source_object_uri)
+    ) {
+      fail("cf_chat_file_import_ledger.source_object_uri is invalid");
+    }
+    if (
+      normalized.source_generation !== null &&
+      normalized.source_generation !== undefined &&
+      (typeof normalized.source_generation !== "string" ||
+        normalized.source_generation.length < 1 ||
+        normalized.source_generation.length > 256 ||
+        /[\0\u0000-\u001f\u007f]/.test(normalized.source_generation))
+    ) {
+      fail("cf_chat_file_import_ledger.source_generation is invalid");
+    }
+    if (
+      normalized.checksum_sha256 !== null &&
+      normalized.checksum_sha256 !== undefined &&
+      (typeof normalized.checksum_sha256 !== "string" ||
+        !/^[0-9a-f]{64}$/.test(normalized.checksum_sha256))
+    ) {
+      fail("cf_chat_file_import_ledger.checksum_sha256 is invalid");
+    }
+    if (
+      normalized.provider_file_id !== null &&
+      normalized.provider_file_id !== undefined &&
+      (typeof normalized.provider_file_id !== "string" ||
+        !/^file-[A-Za-z0-9_-]{1,256}$/.test(normalized.provider_file_id))
+    ) {
+      fail("cf_chat_file_import_ledger.provider_file_id is invalid");
+    }
+    if (
+      typeof normalized.name !== "string" ||
+      normalized.name.length < 1 ||
+      normalized.name.length > 512 ||
+      normalized.name.includes("\0")
+    ) {
+      fail("cf_chat_file_import_ledger.name is invalid");
+    }
+    if (
+      typeof normalized.mime_type !== "string" ||
+      normalized.mime_type.length < 1 ||
+      normalized.mime_type.length > 200 ||
+      !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(
+        normalized.mime_type,
+      )
+    ) {
+      fail("cf_chat_file_import_ledger.mime_type is invalid");
+    }
+    if (
+      normalized.size !== null &&
+      normalized.size !== undefined &&
+      (!Number.isSafeInteger(normalized.size) ||
+        normalized.size <= 0 ||
+        normalized.size > 50 * 1024 * 1024)
+    ) {
+      fail("cf_chat_file_import_ledger.size is invalid");
+    }
+    if (
+      typeof normalized.desired_storage_key !== "string" ||
+      normalized.desired_storage_key.length < 1 ||
+      normalized.desired_storage_key.length > 512 ||
+      !normalized.desired_storage_key.startsWith(`${normalized.uid}/`) ||
+      /[\0\u0000-\u001f\u007f]/.test(normalized.desired_storage_key)
+    ) {
+      fail("cf_chat_file_import_ledger.desired_storage_key is invalid");
+    }
+    if (
+      typeof normalized.plan_hash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(normalized.plan_hash)
+    ) {
+      fail("cf_chat_file_import_ledger.plan_hash is invalid");
+    }
+    if (!["stage", "blocked"].includes(normalized.action))
+      fail("cf_chat_file_import_ledger.action is invalid");
+    if (!["planned", "blocked", "applied", "failed"].includes(normalized.status))
+      fail("cf_chat_file_import_ledger.status is invalid");
+    if (
+      normalized.last_error !== null &&
+      normalized.last_error !== undefined &&
+      (typeof normalized.last_error !== "string" || normalized.last_error.length > 2048)
+    ) {
+      fail("cf_chat_file_import_ledger.last_error is invalid");
+    }
   }
   return normalized;
 }

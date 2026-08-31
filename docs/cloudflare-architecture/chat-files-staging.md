@@ -153,3 +153,34 @@ npm test -- --run tests/chat-attachments-bridge.test.ts tests/edge.test.ts
 npm run typecheck
 npm run validate:manifest
 ```
+
+## Historical Firestore/GCS reconciliation planner（默认 dry-run）
+
+本轮新增 `scripts/chat-file-reconcile.mjs` 和 migration
+`0119_chat_file_import_ledger.sql`，用于把 Firestore FileChat metadata 与旧 GCS
+object 位置整理成可审计的 D1/R2 copy plan。它只接受有界 JSON export（最多 5,000
+行、8 MiB），要求无凭据的 `gs://bucket/object` URI、SHA-256、正数且不超过 50 MiB
+的 size、合法 OpenAI `file-*` provider id，并按
+`sha256(uid + source_file_id + checksum)` 生成稳定 `import_id`。同一输入重复出现
+只会生成一个 plan；同一 ledger key 的不同 plan hash 会被标成
+`conflicting_duplicate_plan`，不会覆盖原 metadata；同一 uid 的 destination key 或
+不同 uid 间重复的 provider file id 也会在生成 SQL 前被标成冲突，不让 D1 唯一约束把
+整批导入变成部分执行。
+
+命令默认只输出 JSON、ledger SQL 和 R2 copy plan，不连接 Firestore、GCS、D1 或 R2，
+也不会把任何 row 写成 `cf_chat_files.status = 'ready'`：
+
+```bash
+node deploy/cloudflare/scripts/chat-file-reconcile.mjs \
+  --input /path/to/firestore-chat-files.json \
+  [--fenced-uid <uid>]
+```
+
+缺少 checksum/provider id、非法 MIME/size、已进入账号删除 fence 的 uid 会生成
+`blocked` ledger entry，且不会生成 R2 copy step；`0119` ledger 本身有 insert/update
+deletion-fence trigger，并纳入 account-deletion residual scan。该 planner 不能代替
+线上删号状态读取，也没有执行远端 GCS copy/provider revalidation 的 apply 模式；未来
+要真正导入，必须在另一个显式 gated executor 中先再次检查 D1 fence、读取并校验 GCS
+bytes checksum、确认 provider id 属于该 uid，再原子提交 R2 object 与 canonical
+`cf_chat_files` row。历史 Firestore/GCS 回放和旧 `/v1/files`、`/v2/files` owner 切换
+仍未完成。
