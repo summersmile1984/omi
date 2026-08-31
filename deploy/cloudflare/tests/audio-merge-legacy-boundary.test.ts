@@ -200,7 +200,7 @@ describe("Cloudflare legacy MP3 audio merge adapter", () => {
     const unauthorized = await jobs.fetch(
       new Request("https://jobs.test/v2/cf/audio-merge-jobs/legacy/run", {
         method: "POST",
-        body: JSON.stringify({ schema_version: 2, conversation_id: "conversation-1" }),
+        body: JSON.stringify({ schema_version: 2, conversation_id: "conversation-1", fingerprint: "497587dcf888" }),
       }),
       env,
     );
@@ -219,7 +219,7 @@ describe("Cloudflare legacy MP3 audio merge adapter", () => {
       new Request("https://jobs.test/v2/cf/audio-merge-jobs/legacy/run", {
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ schema_version: 2, conversation_id: "conversation-1" }),
+        body: JSON.stringify({ schema_version: 2, conversation_id: "conversation-1", fingerprint: "497587dcf888" }),
       }),
       env,
     );

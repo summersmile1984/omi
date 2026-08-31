@@ -192,9 +192,21 @@ export async function legacyAudioFilesLegacyFingerprint(
       Math.round(file.chunk_timestamps.at(-1)! * 1_000) / 1_000,
     ])
     .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  // The legacy Python producer used json.dumps' default separators and
+  // serialised integral timestamps as floats (e.g. ``1000.0``). Keep this
+  // wire fingerprint exact so a schema-v2 task is not incorrectly treated as
+  // superseded after the owner moves to Workers.
+  const encodedRows = `[${rows
+    .map(([id, count, timestamp]) => {
+      const encodedTimestamp = Number.isInteger(timestamp)
+        ? `${timestamp}.0`
+        : String(timestamp);
+      return `[${JSON.stringify(id)}, ${count}, ${encodedTimestamp}]`;
+    })
+    .join(", ")}]`;
   const digest = await crypto.subtle.digest(
     "SHA-1",
-    new TextEncoder().encode(JSON.stringify(rows)),
+    new TextEncoder().encode(encodedRows),
   );
   return Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, "0"),
