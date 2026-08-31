@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 529 already match
-  Cloudflare staging owners and 48 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 535 already match
+  Cloudflare staging owners and 42 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1573,14 +1573,16 @@ conversation links (including auto-link) and the calendar-event tool also run in
 Jobs. The Calendar-only OAuth grant accepts attendee email addresses; contact
 lookup and non-Calendar integrations remain outside this cutover.
 
-The read-only data-protection migration inventory now runs in API Core over D1
-at `GET /v1/users/migration/requests?target_level=enhanced`. It preserves the
+The data-protection migration inventory now runs in API Core over D1 at
+`GET /v1/users/migration/requests?target_level=enhanced`. It preserves the
 legacy public/shared conversation exclusion and treats D1 rows without an
-explicit protection level as `standard`; the mutation endpoints remain on the
-legacy owner until their encryption and batch-write contracts are migrated. A
-live staging check returned 200 for an isolated Better Auth account, 401 without
-auth, and 400 for an invalid target; the smoke account was then deleted and
-verified absent from Auth and the App D1 deletion intent table.
+explicit protection level as `standard`. The single, batch, and finalize
+mutation endpoints are also Edge/API Core-owned in staging, but return a
+retryable 503 until completed cutover and an encryption executor are proven;
+they never call legacy or create a fake receipt. A live staging check returned
+200 for an isolated Better Auth account, 401 without auth, and 400 for an
+invalid target; the smoke account was then deleted and verified absent from
+Auth and the App D1 deletion intent table.
 
 The `/v1/candidates/control` read is also Cloudflare-owned for isolated staging
 accounts. Until the legacy Firestore task-control document has a D1 projection,

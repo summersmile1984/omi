@@ -4003,6 +4003,66 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes fail-closed task intelligence and migration writes to API Core", async () => {
+    const forwarded: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "boundary-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(async (request) => {
+        forwarded.push(request);
+        return Response.json({ error: "boundary_unavailable" }, { status: 503 });
+      }),
+    };
+    const requests = [
+      ["GET", "/v1/what-matters-now"],
+      ["GET", "/v1/task-intelligence/debug/evaluations/eval-1"],
+      ["POST", "/v1/users/migration/requests"],
+      ["POST", "/v1/users/migration/batch-requests"],
+      ["POST", "/v1/users/migration/requests/data-protection-level/finalize"],
+    ] as const;
+
+    for (const [method, path] of requests) {
+      const unauthenticated = await edge.fetch(
+        new Request(`https://edge.test${path}`, { method }),
+        env as never,
+      );
+      expect(unauthenticated.status, `${method} ${path}`).toBe(401);
+
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: "Bearer opaque-session",
+            ...(method === "POST"
+              ? {
+                  "content-type": "application/json",
+                  "idempotency-key": "boundary-test",
+                  "x-account-generation": "0",
+                }
+              : {}),
+          },
+          ...(method === "POST" ? { body: JSON.stringify({ target_level: "enhanced" }) } : {}),
+        }),
+        env as never,
+      );
+      expect(response.status, `${method} ${path}`).toBe(503);
+    }
+
+    expect(forwarded.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual(
+      requests.map(([method, path]) => `${method} ${path}`),
+    );
+    for (const request of forwarded) {
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeTruthy();
+    }
+  });
+
   it("routes task-goal link migration to API Core with the authenticated boundary", async () => {
     let forwarded: Request | undefined;
     const env = {

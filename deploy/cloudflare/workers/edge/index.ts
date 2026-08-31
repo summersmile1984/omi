@@ -693,14 +693,8 @@ app.delete(
   "/v1/phone/numbers/:phoneNumberId",
   legacyPhoneTwilioStagingBoundary,
 );
-app.post(
-  "/v1/phone/numbers/verify",
-  legacyPhoneTwilioStagingBoundary,
-);
-app.post(
-  "/v1/phone/numbers/verify/check",
-  legacyPhoneTwilioStagingBoundary,
-);
+app.post("/v1/phone/numbers/verify", legacyPhoneTwilioStagingBoundary);
+app.post("/v1/phone/numbers/verify/check", legacyPhoneTwilioStagingBoundary);
 app.post("/v1/phone/token", legacyPhoneTwilioStagingBoundary);
 app.post("/v1/phone/twiml", legacyPhoneTwilioStagingBoundary);
 app.post("/v2/integrations/:app_id/user/conversations", proxyIntegrationCore);
@@ -1370,6 +1364,11 @@ app.post("/v1/stt/transcribe", proxyAuthenticatedAI);
 app.get("/v1/account/cutover/control", proxyAuthenticatedCore);
 app.get("/v1/candidates/control", proxyAuthenticatedCore);
 app.get("/v1/candidates", proxyAuthenticatedCore);
+app.get("/v1/what-matters-now", proxyAuthenticatedCore);
+app.get(
+  "/v1/task-intelligence/debug/evaluations/:evaluationId",
+  proxyAuthenticatedCore,
+);
 app.post("/v1/candidates", proxyAuthenticatedCore);
 app.post("/v1/candidates/migrate-staged", proxyAuthenticatedCore);
 app.post("/v1/candidates/integrations/drain", proxyAuthenticatedCore);
@@ -1668,6 +1667,12 @@ app.patch("/v1/users/ai-profile", proxyAuthenticatedCore);
 app.post("/v1/users/ai-profile/synthesize", proxyAuthenticatedCore);
 app.get("/v1/users/profile", proxyAuthenticatedAuthProfile);
 app.get("/v1/users/migration/requests", proxyAuthenticatedCore);
+app.post("/v1/users/migration/requests", proxyAuthenticatedCore);
+app.post("/v1/users/migration/batch-requests", proxyAuthenticatedCore);
+app.post(
+  "/v1/users/migration/requests/data-protection-level/finalize",
+  proxyAuthenticatedCore,
+);
 app.get("/v1/mcp/oauth/grants", proxyAuthenticatedMcpGrants);
 app.delete("/v1/mcp/oauth/grants/:grantId", proxyAuthenticatedMcpGrants);
 app.get("/v1/users/location-context-consent", proxyAuthenticatedCore);
