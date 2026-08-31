@@ -35,7 +35,7 @@
 
 ## 本轮验证证据
 
-- Cloudflare TypeScript：89 个测试文件、670 个测试通过；类型检查和生产依赖审计通过。
+- Cloudflare TypeScript：89 个测试文件、671 个测试通过；类型检查和生产依赖审计通过。
 - `api-core`：377 个测试通过；`api-ai`：114 个测试通过。
 - Web：9 个测试文件、41 个测试通过；vinext staging build 与 Worker dry-run 通过。
 - manifest：617 条 Cloudflare 路由、577 条完整 backend 路由和 23 个 staging 资源通过校验；0 条 legacy-owned 路由。D1 review queue 的三个端点已由 API Core/Edge 承载，并由 canonical memory 写入 producer、source revision/hash projection 和原子 resolve 覆盖；conversation finalize/status/reprocess/merge 已声明 API Core owner，`0094`/`0095`/`0096` staging migration 与 live Queue 验证已完成；`GET/POST /v1/agent/*` 已切到 API Core，并仅声明/执行已具备 D1 authority 的一方工具。
@@ -142,7 +142,7 @@
 - Exact app-owner staging owner（2026-09-01，已发布但默认关闭）：`POST /v1/apps/migrate-owner` 已由 Edge → Jobs 承载，保留 `old_id` 查询参数、`source_token` body 和 legacy HTTP 200 success envelope。Jobs 先通过 Auth anonymous identity bridge 生成 hash-only evidence，再要求 D1 data attestation、target generation 与双方 deletion fence 后才创建 Queue job；token/raw Firebase UID 不落 D1，失败统一 `no-store`。远端 manifest 已校验为 616 CF / 577 backend / 0 legacy-owned；148 个 exact app-owner/Edge focused tests、typecheck 和 manifest 通过。最新 Jobs `b861f18f-7f9b-46e4-82e3-9c624da3ff5e`、Edge `3d98898d-476c-4e1e-b5ef-4be9d764c121` 已发布；线上 Edge `/health` 与 Web `/login` 均为 200，默认 gate 关闭的 exact probe 返回 `503 persona_apps_unavailable` + `no-store`。真实 Firebase/provider replay、Firestore app/persona 回放、memory re-encryption、旧客户端 parity 和 production cutover 仍未完成。
 - Chat/Phone 历史 export handoff（2026-09-01）：新增 `chat:export-verify` 与 `phone:export-verify`，均对原始 UTF-8 export bytes 做 SHA-256、复用 canonical planner，并默认 dry-run；显式 `--apply` 时才通过 Jobs 受保护 endpoint，分别使用 Chat HMAC plan signature 或 Phone review/apply、generation/deletion fence 和幂等 marker。工具不读取 Firestore/GCS/provider，不把 admin/signing secret 放进 plan、body 或输出；真实 Firestore export、人工审核和 production cutover 仍待完成。
 - Wrapped history reviewed apply seam（2026-09-01，已发布但默认关闭）：Jobs 新增 `POST /internal/wrapped-history/reviews` 与 `/apply`，远端 App D1 已应用 `0131_wrapped_history_executor.sql`，创建 review batch/items/apply marker 三张表；Jobs 最新部署已包含批量 generation/deletion-fence 复核、JSON 深度/节点与字段白名单、并发 apply 幂等保护。远端迁移复核为无待应用项，三张表已存在；85 个 Worker 测试/647 个测试、typecheck 和 manifest 均通过。该 seam 只接受已在外部完成审阅的有界 Firestore result plan，默认 gate=false，不代表已完成 Firestore/GCS export、历史账号连续性或 production cutover。
-- Hume/DLQ staging 发布（2026-09-01）：远端 App D1 已应用 `0132_hume_webhook_results.sql` 与 `0133_queue_dlq_replay.sql`；Jobs `f67eedcb-d7de-48a3-9f2d-ffc7b5a4247a` 已注册 `omi-cf-jobs-dlq-staging` consumer，Edge `df882287-31c3-4346-b174-6bc9de9e0c22` 已发布。`/ready` 返回 200；未配置 Hume signing key 时 callback 返回 `503 hume_callback_unavailable`，DLQ replay 默认关闭时返回 `503 dlq_replay_unavailable`，exact app-owner gate 仍按设计返回 `503 persona_apps_unavailable`/`no-store`。本地全量为 89 文件/670 测试；真实 Hume provider callback、历史 DLQ backlog 控制面导出和 replay positive probe 仍未执行。
+- Hume/DLQ staging 发布（2026-09-01）：远端 App D1 已应用 `0132_hume_webhook_results.sql` 与 `0133_queue_dlq_replay.sql`；Jobs `f67eedcb-d7de-48a3-9f2d-ffc7b5a4247a` 已注册 `omi-cf-jobs-dlq-staging` consumer，Edge `df882287-31c3-4346-b174-6bc9de9e0c22` 已发布。`/ready` 返回 200；未配置 Hume signing key 时 callback 返回 `503 hume_callback_unavailable`，DLQ replay 默认关闭时返回 `503 dlq_replay_unavailable`，exact app-owner gate 仍按设计返回 `503 persona_apps_unavailable`/`no-store`。本地全量为 89 文件/671 测试；真实 Hume provider callback、历史 DLQ backlog 控制面导出和 replay positive probe 仍未执行。
 
 ## 发布前必须补齐
 
