@@ -459,6 +459,7 @@ families:
       - POST /v1/tts/synthesize-workers-ai
       - POST /v2/tts/synthesize
       - POST /v2/chat/generate-title
+      - POST /v2/chat/generate-reply
       - POST /v2/chat/initial-message
       - POST /v2/initial-message
       - POST /v2/messages

@@ -223,6 +223,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ["POST /v2/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
   ["POST /v2/chat/initial-message", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
   ["POST /v2/chat/generate-title", EDGE_RATE_LIMIT_POLICIES["chat:initial"]],
+  ["POST /v2/chat/generate-reply", EDGE_RATE_LIMIT_POLICIES["chat:send_message"]],
   [
     "GET /v1/app/generate-prompts",
     EDGE_RATE_LIMIT_POLICIES["apps:generate_prompts"],

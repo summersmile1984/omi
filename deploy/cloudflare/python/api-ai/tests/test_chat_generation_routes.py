@@ -14,6 +14,7 @@ from chat_generation_routes import (  # noqa: E402
     chat_messages,
     create_initial_message,
     create_session_initial_message,
+    generate_reply,
     generate_session_title,
 )
 from chat_quota import reserve_chat_question  # noqa: E402
@@ -724,3 +725,118 @@ def test_chat_fails_closed_for_auth_provider_and_d1_persistence_errors():
     persistence_error = asyncio.run(chat_messages(FakeRequest(persistence_env, headers)))
     assert persistence_error.status_code == 503
     assert persistence_db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+
+
+def test_generate_reply_is_stateless_but_reserves_and_settles_chat_quota():
+    secret = "chat-secret"
+    db = FakeDb()
+    ai = FakeAi(result={"response": "Friday works[1].", "usage": {"prompt_tokens": 12, "completion_tokens": 4}})
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": db,
+            "AI": ai,
+            "INTERNAL_ASSERTION_SECRET": secret,
+            "WORKERS_AI_CHAT_MODEL": "@cf/test/chat",
+        },
+    )()
+
+    result = asyncio.run(
+        generate_reply(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={
+                    "text": "Draft a reply to Alice",
+                    "history": [
+                        {"sender": "human", "text": "Are we still on for Friday?"},
+                        {"sender": "ai", "text": "I think so."},
+                    ],
+                },
+            )
+        )
+    )
+
+    assert result == {"text": "Friday works.", "app_id": None}
+    assert ai.calls[0] == (
+        "@cf/test/chat",
+        {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Omi, a concise and helpful personal assistant. Answer in the language used by the user. "
+                        "Do not claim access to memories, files, apps, tools, or live information that was not supplied "
+                        "in this chat."
+                    ),
+                },
+                {"role": "user", "content": "Are we still on for Friday?"},
+                {"role": "assistant", "content": "I think so."},
+                {"role": "user", "content": "Draft a reply to Alice"},
+            ],
+            "stream": False,
+            "max_tokens": 512,
+            "temperature": 0.4,
+        },
+    )
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+    quota = db.connection.execute(
+        "SELECT source, message_id, chat_session_id, cost_usd, prompt_tokens, completion_tokens, model, "
+        "settled_at IS NOT NULL AS settled FROM cf_chat_quota_events WHERE uid = 'chat-user'"
+    ).fetchone()
+    assert dict(quota) == {
+        "source": "v2_chat_generate_reply",
+        "message_id": quota[1],
+        "chat_session_id": None,
+        "cost_usd": 0.000001952,
+        "prompt_tokens": 12,
+        "completion_tokens": 4,
+        "model": "@cf/test/chat",
+        "settled": 1,
+    }
+
+
+def test_generate_reply_rejects_bad_history_and_does_not_call_provider():
+    secret = "chat-secret"
+    db = FakeDb()
+    ai = FakeAi()
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    response = asyncio.run(
+        generate_reply(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={"text": "Draft", "history": [{"sender": "system", "text": "not allowed"}]},
+            )
+        )
+    )
+
+    assert response.status_code == 422
+    assert ai.calls == []
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_quota_events").fetchone()[0] == 0
+
+
+def test_generate_reply_marks_failed_provider_reservation_without_leaking_details():
+    secret = "chat-secret"
+    db = FakeDb()
+    ai = FakeAi(error=RuntimeError("provider internals"))
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    response = asyncio.run(generate_reply(FakeRequest(env, signed_headers(secret))))
+
+    assert response.status_code == 502
+    assert json.loads(response.body) == {"error": "workers ai chat unavailable"}
+    assert b"provider internals" not in response.body
+    quota = db.connection.execute(
+        "SELECT source, cost_usd, prompt_tokens, completion_tokens, settled_at IS NOT NULL AS settled "
+        "FROM cf_chat_quota_events WHERE uid = 'chat-user'"
+    ).fetchone()
+    assert dict(quota) == {
+        "source": "v2_chat_generate_reply",
+        "cost_usd": 0.0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "settled": 1,
+    }

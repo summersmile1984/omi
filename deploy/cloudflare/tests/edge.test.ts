@@ -844,6 +844,48 @@ describe("edge gateway", () => {
     ]);
   });
 
+  it("routes stateless reply generation through the AI worker", async () => {
+    const aiRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "reply-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      API_AI: service((request) => {
+        aiRequests.push(request);
+        return Response.json({ text: "Drafted reply", app_id: null });
+      }),
+      RATE_LIMITS: rateLimits(() => allowRateLimit()),
+    };
+
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v2/chat/generate-reply", { method: "POST" }),
+      env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/chat/generate-reply", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ text: "Draft a reply", history: [] }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ text: "Drafted reply", app_id: null });
+    expect(aiRequests).toHaveLength(1);
+    expect(new URL(aiRequests[0].url).pathname).toBe("/v2/chat/generate-reply");
+    expect(aiRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("keeps native payment terminal pages public", async () => {
     const coreRequests: Request[] = [];
     const env = {

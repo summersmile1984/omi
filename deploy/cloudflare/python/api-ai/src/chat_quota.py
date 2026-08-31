@@ -58,11 +58,12 @@ async def reserve_chat_question(
     uid: str,
     idempotency_key: str,
     message_id: str,
-    chat_session_id: str,
+    chat_session_id: str | None,
     platform: str | None,
     account_created_at: int | None = None,
     has_byok_keys: bool = False,
     occurred_at: int | None = None,
+    source: str = "v2_messages",
 ) -> bool:
     """Reserve one question atomically; only Free is hard-capped.
 
@@ -86,7 +87,7 @@ async def reserve_chat_question(
     await database.prepare(
         "INSERT OR IGNORE INTO cf_chat_quota_events "
         "(uid, idempotency_key, source, message_id, chat_session_id, platform, occurred_at) "
-        "SELECT ?, ?, 'v2_messages', ?, ?, ?, ? WHERE "
+        "SELECT ?, ?, ?, ?, ?, ?, ? WHERE "
         "COALESCE((SELECT CASE WHEN status = 'active' THEN plan ELSE 'basic' END "
         "FROM cf_user_subscriptions WHERE uid = ?), 'basic') != 'basic' OR "
         "(? = 0 AND (SELECT COUNT(*) FROM cf_chat_quota_events "
@@ -95,6 +96,7 @@ async def reserve_chat_question(
     ).bind(
         uid,
         idempotency_key,
+        source,
         message_id,
         chat_session_id,
         platform,
@@ -112,6 +114,37 @@ async def reserve_chat_question(
         .first()
     )
     return isinstance(row, dict) and int(row.get("reserved") or 0) == 1
+
+
+async def reserve_stateless_chat_question(
+    env: object,
+    *,
+    uid: str,
+    idempotency_key: str,
+    message_id: str,
+    platform: str | None,
+    account_created_at: int | None = None,
+    has_byok_keys: bool = False,
+    occurred_at: int | None = None,
+) -> bool:
+    """Reserve one question for generation that intentionally has no session.
+
+    Stateless drafts still consume the same monthly entitlement as a normal
+    chat turn, but their accounting row must not invent a chat session or
+    write either side of the generated exchange to chat history.
+    """
+    return await reserve_chat_question(
+        env,
+        uid=uid,
+        idempotency_key=idempotency_key,
+        message_id=message_id,
+        chat_session_id=None,
+        platform=platform,
+        account_created_at=account_created_at,
+        has_byok_keys=has_byok_keys,
+        occurred_at=occurred_at,
+        source="v2_chat_generate_reply",
+    )
 
 
 async def free_quota_detail(
@@ -218,6 +251,7 @@ __all__ = [
     "provider_cost_usd",
     "provider_usage",
     "reserve_chat_question",
+    "reserve_stateless_chat_question",
     "settle_failed_question",
     "settlement_statement",
     "trial_paywall_applies",

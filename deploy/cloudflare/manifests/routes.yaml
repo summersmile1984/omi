@@ -5568,6 +5568,18 @@ routes:
     idempotency: none
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/chat/generate-reply
+    owner: api-ai
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
+    rate_limit_policy: chat:send_message
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v3/speech-profile
     owner: api-core

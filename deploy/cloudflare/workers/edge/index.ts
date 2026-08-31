@@ -1076,6 +1076,7 @@ app.post("/v1/initial-message", proxyAuthenticatedAI);
 app.post("/v2/initial-message", proxyAuthenticatedAI);
 app.post("/v2/chat/initial-message", proxyAuthenticatedAI);
 app.post("/v2/chat/generate-title", proxyAuthenticatedAI);
+app.post("/v2/chat/generate-reply", proxyAuthenticatedAI);
 app.get("/v1/users/stats/chat-messages", proxyAuthenticatedCore);
 app.post("/v2/chat-sessions", proxyAuthenticatedCore);
 app.get("/v2/chat-sessions", proxyAuthenticatedCore);
