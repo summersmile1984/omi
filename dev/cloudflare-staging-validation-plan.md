@@ -207,6 +207,15 @@ CLOUDFLARE_SMOKE_TOKEN_FILE=/path/to/staging-token.json npm run smoke:staging
 6. 注入 provider 失败，验证 retry 次数、terminal error、DLQ 和人工 replay；
 7. cron cleanup 不删除 active object，只删除已终止或过期对象。
 
+DLQ 的正向 replay 探针使用一个已由 staging DLQ consumer 捕获的、可删除的
+synthetic message id；不要向 replay endpoint 提交新的 JobMessage payload。运行
+`npm run dlq:positive-probe`（见
+[`docs/cloudflare-architecture/dlq-replay-staging.md`](../docs/cloudflare-architecture/dlq-replay-staging.md)）
+会要求 staging-only Edge URL、`ADMIN_KEY` 和至少 32 字节的 signing secret，并只在
+单条消息返回 `202 completed queuedCount=1`（或同一幂等 receipt 的 `200`）时通过。
+该命令只证明 message 已重新入 Queue，不证明异步任务已经完成；gate、fixture 和
+观察窗口仍由 operator 显式控制。
+
 通过标准：至少一次投递不产生重复副作用；Queue backlog 回到 `0`；非故障演练期间 DLQ
 为 `0`；任何终态都没有孤立临时对象。
 

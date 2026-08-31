@@ -351,6 +351,13 @@ printf '%s' "$BETA_PROMOTION_TOKEN" | npx wrangler secret put BETA_PROMOTION_TOK
 printf '%s' "$GITHUB_TOKEN" | npx wrangler secret put GITHUB_TOKEN --name omi-cf-api-core-staging
 # Team-only notification API key; configure on the Jobs Worker only.
 printf '%s' "$ADMIN_KEY" | npx wrangler secret put ADMIN_KEY --name omi-cf-jobs-staging
+# Keep the checked-in DLQ_REPLAY_STAGING_ENABLED=false default. During a
+# controlled staging positive-probe window only, provision an independent
+# 32-byte signing secret and explicitly enable the matching Worker var.
+cf_dlq_replay_secret="$(openssl rand -base64 48)"
+printf '%s' "$cf_dlq_replay_secret" | npx wrangler secret put DLQ_REPLAY_SIGNING_SECRET --name omi-cf-jobs-staging
+# The probe itself reads these operator-only values from the environment; do
+# not put them in .dev.vars or a Worker response/log.
 # Independent staging-only credential for app tester and moderation routes.
 printf '%s' "$APPS_ADMIN_KEY" | npx wrangler secret put APPS_ADMIN_KEY --name omi-cf-jobs-staging
 # Required only when an isolated staging account has a registered FCM device.

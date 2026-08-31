@@ -44,6 +44,37 @@ delivery is still asynchronous, so `replayed` means “republished”, not
 cannot be listed or recovered by this Worker and require Cloudflare dashboard
 or API export/inspection.
 
+## Staging positive probe
+
+Once an operator has confirmed that a disposable staging message was captured
+by the DLQ consumer, the replay path can be exercised without putting a
+payload on the command line:
+
+```bash
+cd deploy/cloudflare
+CLOUDFLARE_EDGE_URL='https://omi-cf-edge-staging.<account>.workers.dev' \
+CLOUDFLARE_DLQ_MESSAGE_ID='<captured-message-id>' \
+CLOUDFLARE_DLQ_ADMIN_KEY='…' \
+CLOUDFLARE_DLQ_REPLAY_SIGNING_SECRET='…' \
+npm run dlq:positive-probe
+```
+
+The probe signs the exact `{ "message_ids": [...] }` bytes, sends one
+message id through Edge to the operator replay boundary, and exits non-zero
+unless the response is a successful one-message admission (`202`,
+`status=completed`, `queuedCount=1`, `skippedCount=0`, `failedCount=0`). A
+reused `--idempotency-key` may return the original `200` receipt and is still
+accepted only when it contains the same positive counts. The tool consumes the
+response but does not poll the job or claim that the asynchronous job
+completed.
+
+This command is deliberately staging-only: remote URLs must be HTTPS
+`workers.dev` origins whose hostname contains `staging`; localhost HTTP is
+allowed only for a local proxy/fixture harness. It does not create a DLQ
+message, list the Queue, enable the gate, or accept an unknown message id as a
+positive result. The gate remains `DLQ_REPLAY_STAGING_ENABLED=false` until the
+operator has a controlled staging window and a real captured fixture.
+
 The gate is `false` in staging by default. This boundary does not change any
 product owner gate, does not expose payload data in responses, and does not
 claim old Cloud Tasks/OIDC or production queue parity.

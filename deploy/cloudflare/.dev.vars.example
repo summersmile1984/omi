@@ -44,3 +44,7 @@ ANNOUNCEMENTS_ADMIN_KEY=
 DESKTOP_PREVIEW_PUBLISH_KEY=
 # Team-only notification API key; configure on the Jobs Worker only.
 ADMIN_KEY=
+# DLQ replay stays disabled unless a disposable staging positive-probe window
+# is explicitly approved. The signing secret is required when that gate is on.
+DLQ_REPLAY_STAGING_ENABLED=false
+DLQ_REPLAY_SIGNING_SECRET=
