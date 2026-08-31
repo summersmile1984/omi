@@ -461,6 +461,74 @@ describe("edge gateway", () => {
     expect(jobsRequests[4].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes exact legacy MCP app paths to Jobs only behind their explicit owner gate", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      MCP_APP_EXACT_LEGACY_STAGING_ENABLED: "true",
+      PERSONA_APPS_STAGING_FAIL_CLOSED: "true",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "mcp-owner", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() =>
+        Response.json({
+          state: "new",
+          client_action: "none",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        }),
+      ),
+      JOBS: rawService((request) => {
+        jobsRequests.push(request);
+        return Response.json({ ok: true });
+      }),
+    };
+    const start = await edge.fetch(
+      new Request("https://edge.test/v1/apps/mcp", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "must-not-forward",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "MCP", mcp_server_url: "https://provider.example.test/mcp" }),
+      }),
+      env as never,
+    );
+    expect(start.status).toBe(200);
+    const callback = await edge.fetch(
+      new Request("https://edge.test/v1/apps/mcp/callback?code=opaque&state=opaque-state", {
+        headers: { cookie: "must-not-forward", authorization: "must-not-forward" },
+      }),
+      env as never,
+    );
+    expect(callback.status).toBe(200);
+    const refresh = await edge.fetch(
+      new Request("https://edge.test/v1/apps/app-1/mcp/refresh", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "must-not-forward",
+          "content-type": "application/json",
+        },
+      }),
+      env as never,
+    );
+    expect(refresh.status).toBe(200);
+    expect(jobsRequests).toHaveLength(3);
+    expect(new URL(jobsRequests[0].url).pathname).toBe("/v1/apps/mcp");
+    expect(new URL(jobsRequests[1].url).pathname).toBe("/v1/apps/mcp/callback");
+    expect(new URL(jobsRequests[2].url).pathname).toBe("/v1/apps/app-1/mcp/refresh");
+    expect(jobsRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(jobsRequests[1].headers.get("x-omi-auth-context")).toBeNull();
+    expect(jobsRequests[2].headers.get("x-omi-auth-context")).toBeTruthy();
+    expect(jobsRequests.every((request) => request.headers.get("cookie") === null)).toBe(true);
+    expect(jobsRequests.every((request) => request.headers.get("authorization") === null)).toBe(true);
+  });
+
   it("fails closed for legacy Gemini proxy paths in staging", async () => {
     const env = {
       GEMINI_PROXY_STAGING_FAIL_CLOSED: "true",

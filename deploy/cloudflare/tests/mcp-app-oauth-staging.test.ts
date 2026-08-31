@@ -112,6 +112,7 @@ function environment(enabled = true) {
     APP_DB: database as unknown as D1Database,
     PUBLIC_API_BASE_URL: "https://edge.example.test",
     MCP_APP_OAUTH_STAGING_ENABLED: enabled ? "true" : "false",
+    MCP_APP_LEGACY_EXACT_STAGING_ENABLED: enabled ? "true" : "false",
     MCP_APP_TOKEN_ENCRYPTION_SECRET:
       "mcp-oauth-test-secret-01234567890123456789",
   } as unknown as JobsEnv;
@@ -122,6 +123,7 @@ function testApp(
   env: JobsEnv,
   dependencies: McpAppOauthDependencies,
   authenticated = true,
+  surface: "namespaced" | "legacy" = "namespaced",
 ) {
   const app = new Hono<{ Bindings: JobsEnv }>();
   const requestContext = async (c: {
@@ -134,7 +136,12 @@ function testApp(
           requestId: "oauth-test",
         } as SignedAuthContext)
       : null;
-  registerMcpAppOauthRoutes(app, requestContext as never, dependencies);
+  registerMcpAppOauthRoutes(
+    app,
+    requestContext as never,
+    dependencies,
+    surface,
+  );
   return {
     request: (pathValue: string, init: RequestInit = {}) => {
       const headers = new Headers(init.headers);
@@ -1258,6 +1265,170 @@ describe("namespaced MCP app OAuth staging seam", () => {
     });
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toEqual({ error: "invalid_tool_name" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("serves the exact legacy MCP app flow with callback auto-discovery and install", async () => {
+    const { env, database } = environment();
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(`${init?.method || "GET"} ${url}`);
+      if (url === "https://provider.example.test/.well-known/oauth-authorization-server") {
+        return Response.json({
+          authorization_endpoint: "https://provider.example.test/authorize",
+          token_endpoint: "https://provider.example.test/token",
+          registration_endpoint: "https://provider.example.test/register",
+          scopes_supported: ["tools"],
+        });
+      }
+      if (url === "https://provider.example.test/register") {
+        return Response.json({ client_id: "legacy-client", client_secret: "legacy-secret" });
+      }
+      if (url === "https://provider.example.test/token") {
+        return Response.json({
+          access_token: "legacy-access",
+          refresh_token: "legacy-refresh",
+          expires_in: 3_600,
+        });
+      }
+      if (url === "https://provider.example.test/mcp") {
+        const payload = JSON.parse(String(init?.body || "{}")) as { method?: string; id?: number };
+        if (payload.method === "initialize") {
+          return Response.json({ jsonrpc: "2.0", id: payload.id, result: { protocolVersion: "2025-03-26" } });
+        }
+        if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+        if (payload.method === "tools/list") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { tools: [{ name: "legacy_search", description: "Search" }] },
+          });
+        }
+      }
+      throw new Error(`unexpected provider request ${url}`);
+    });
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 }, true, "legacy");
+    const start = await app.request("/v1/apps/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Legacy MCP",
+        mcp_server_url: "https://provider.example.test/mcp",
+        description: "legacy app",
+      }),
+    });
+    expect(start.status).toBe(200);
+    const startPayload = (await start.json()) as { app_id: string; auth_url: string; requires_oauth: boolean };
+    expect(startPayload.app_id).toMatch(/^mcp-[A-Za-z0-9_-]+$/);
+    expect(startPayload.requires_oauth).toBe(true);
+    const authUrl = new URL(startPayload.auth_url);
+    expect(authUrl.searchParams.get("redirect_uri")).toBe(
+      "https://edge.example.test/v1/apps/mcp/callback",
+    );
+    const callback = await app.request(
+      `/v1/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+    );
+    expect(callback.status).toBe(200);
+    expect(await callback.text()).toContain("connected and its tools are ready");
+    expect(
+      database.database
+        .prepare("SELECT status FROM cf_mcp_app_connections WHERE app_id = ?")
+        .get(startPayload.app_id),
+    ).toEqual({ status: "authorized" });
+    expect(
+      database.database
+        .prepare("SELECT status FROM cf_mcp_app_discoveries WHERE app_id = ?")
+        .get(startPayload.app_id),
+    ).toEqual({ status: "ready" });
+    expect(
+      database.database
+        .prepare("SELECT uid, app_id FROM cf_user_enabled_apps WHERE app_id = ?")
+        .get(startPayload.app_id),
+    ).toEqual({ uid: "owner-1", app_id: startPayload.app_id });
+    expect(calls).toEqual([
+      "GET https://provider.example.test/.well-known/oauth-authorization-server",
+      "POST https://provider.example.test/register",
+      "POST https://provider.example.test/token",
+      "POST https://provider.example.test/mcp",
+      "POST https://provider.example.test/mcp",
+      "POST https://provider.example.test/mcp",
+    ]);
+
+    const refresh = await app.request(`/v1/apps/${startPayload.app_id}/mcp/refresh`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
+    expect(refresh.status).toBe(200);
+    await expect(refresh.json()).resolves.toEqual({
+      tools_count: 1,
+      tool_names: ["legacy_search"],
+    });
+  });
+
+  it("maps exact legacy input errors without forwarding malformed provider URLs", async () => {
+    const { env } = environment();
+    const fetchImpl = vi.fn(async () => Response.json({}));
+    const app = testApp(env, { fetchImpl }, true, "legacy");
+    const response = await app.request("/v1/apps/mcp", {
+      method: "POST",
+      body: JSON.stringify({ name: "", mcp_server_url: "http://127.0.0.1/mcp" }),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_app_name" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("supports an exact legacy server without OAuth through the same bounded discovery adapter", async () => {
+    const { env, database } = environment();
+    const calls: Array<{ url: string; authorization: string | null }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push({ url, authorization: new Headers(init?.headers).get("authorization") });
+      if (url === "https://public.example.test/.well-known/oauth-authorization-server") {
+        return new Response("not found", { status: 404 });
+      }
+      if (url === "https://public.example.test/mcp") {
+        const payload = JSON.parse(String(init?.body || "{}")) as { method?: string; id?: number };
+        if (payload.method === "initialize") {
+          return Response.json({ jsonrpc: "2.0", id: payload.id, result: { protocolVersion: "2025-03-26" } });
+        }
+        if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+        if (payload.method === "tools/list") {
+          return Response.json({ jsonrpc: "2.0", id: payload.id, result: { tools: [{ name: "public_search" }] } });
+        }
+      }
+      throw new Error(`unexpected provider request ${url}`);
+    });
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 }, true, "legacy");
+    const response = await app.request("/v1/apps/mcp", {
+      method: "POST",
+      body: JSON.stringify({ name: "Public MCP", mcp_server_url: "https://public.example.test/mcp" }),
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as { app_id: string; requires_oauth: boolean; tool_names: string[] };
+    expect(payload.requires_oauth).toBe(false);
+    expect(payload.tool_names).toEqual(["public_search"]);
+    expect(calls).toHaveLength(4);
+    expect(calls.slice(1).every((call) => call.authorization === null)).toBe(true);
+    expect(
+      database.database
+        .prepare("SELECT uid, app_id FROM cf_user_enabled_apps WHERE app_id = ?")
+        .get(payload.app_id),
+    ).toEqual({ uid: "owner-1", app_id: payload.app_id });
+  });
+
+  it("fails closed before provider I/O when the exact owner envelope secret is absent", async () => {
+    const { env } = environment();
+    delete (env as unknown as Record<string, unknown>).MCP_APP_TOKEN_ENCRYPTION_SECRET;
+    const fetchImpl = vi.fn(async () => Response.json({}));
+    const app = testApp(env, { fetchImpl }, true, "legacy");
+    const response = await app.request("/v1/apps/mcp", {
+      method: "POST",
+      body: JSON.stringify({ name: "MCP", mcp_server_url: "https://provider.example.test/mcp" }),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "mcp_app_oauth_unavailable" });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

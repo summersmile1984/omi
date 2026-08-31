@@ -25,6 +25,14 @@ export type McpAppOauthDependencies = Readonly<{
   now?: () => number;
 }>;
 
+/**
+ * The explicit v2 seam and the old app-install surface share one provider
+ * adapter, but they intentionally keep different callback paths and response
+ * envelopes.  Keeping the distinction here prevents an exact-route alias from
+ * accidentally advertising the v2 contract to released clients.
+ */
+export type McpAppOauthSurface = "namespaced" | "legacy";
+
 type JsonObject = Record<string, unknown>;
 
 class McpAppOauthError extends Error {
@@ -660,7 +668,7 @@ async function openLegacySse(
     method: "GET",
     headers: {
       accept: "text/event-stream",
-      authorization: `Bearer ${accessToken}`,
+      ...optionalBearer(accessToken),
     },
   });
   if (response.status === 401)
@@ -736,7 +744,7 @@ async function discoverSse(
   const session = await openLegacySse(dependencies, endpoint, accessToken);
   const headers = {
     "content-type": "application/json",
-    authorization: `Bearer ${accessToken}`,
+    ...optionalBearer(accessToken),
   };
   const initialize = await legacySseRpc(
     dependencies,
@@ -829,7 +837,7 @@ async function discoverStreamableHttp(
   const headers = {
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
-    authorization: `Bearer ${accessToken}`,
+    ...optionalBearer(accessToken),
   };
   const initialize = await providerFetch(dependencies, endpoint, {
     method: "POST",
@@ -979,7 +987,7 @@ async function callStreamableHttp(
   const headers = {
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
-    authorization: `Bearer ${accessToken}`,
+    ...optionalBearer(accessToken),
   };
   const initialize = await providerFetch(dependencies, endpoint, {
     method: "POST",
@@ -1056,7 +1064,7 @@ async function callLegacySse(
   const session = await openLegacySse(dependencies, endpoint, accessToken);
   const headers = {
     "content-type": "application/json",
-    authorization: `Bearer ${accessToken}`,
+    ...optionalBearer(accessToken),
   };
   try {
     await legacySseRpc(
@@ -1257,12 +1265,17 @@ function callbackResponse(
   return c.html(callbackHtml(title, message), status);
 }
 
-function callbackUri(env: JobsEnv): string {
+function callbackUri(
+  env: JobsEnv,
+  surface: McpAppOauthSurface = "namespaced",
+): string {
   const base = env.PUBLIC_API_BASE_URL?.trim();
   if (!publicHttps(base))
     throw new McpAppOauthError(503, "mcp_app_oauth_unavailable");
   return new URL(
-    "/v2/cf/apps/mcp/callback",
+    surface === "legacy"
+      ? "/v1/apps/mcp/callback"
+      : "/v2/cf/apps/mcp/callback",
     `${base.replace(/\/$/, "")}/`,
   ).toString();
 }
@@ -1283,19 +1296,40 @@ async function providerFetch(
   }
 }
 
+function optionalBearer(accessToken: string): Record<string, string> {
+  return accessToken ? { authorization: `Bearer ${accessToken}` } : {};
+}
+
+function surfaceEnabled(
+  env: JobsEnv,
+  surface: McpAppOauthSurface,
+): boolean {
+  return surface === "legacy"
+    ? env.MCP_APP_LEGACY_EXACT_STAGING_ENABLED === "true"
+    : env.MCP_APP_OAUTH_STAGING_ENABLED === "true";
+}
+
 async function start(
   c: JobsContext,
   context: SignedAuthContext,
   dependencies: McpAppOauthDependencies,
+  surface: McpAppOauthSurface = "namespaced",
 ): Promise<Response> {
-  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+  if (!surfaceEnabled(c.env, surface))
     throw new McpAppOauthError(404, "not_found");
-  let body: JsonObject;
-  try {
-    body = parseBody(await requestText(c));
-  } catch (error) {
-    throw error;
-  }
+  const body = parseBody(await requestText(c));
+  return startWithBody(c, context, dependencies, body, surface);
+}
+
+async function startWithBody(
+  c: JobsContext,
+  context: SignedAuthContext,
+  dependencies: McpAppOauthDependencies,
+  body: JsonObject,
+  surface: McpAppOauthSurface,
+): Promise<Response> {
+  if (!surfaceEnabled(c.env, surface))
+    throw new McpAppOauthError(404, "not_found");
   const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
   const serverUrl =
     typeof body.server_url === "string"
@@ -1333,7 +1367,7 @@ async function start(
     .first<{ owner_uid?: unknown }>();
   if (existingConnection && existingConnection.owner_uid !== context.uid)
     throw new McpAppOauthError(409, "app_connection_owner_mismatch");
-  const redirectUri = callbackUri(c.env);
+  const redirectUri = callbackUri(c.env, surface);
   let clientId =
     typeof body.client_id === "string" ? body.client_id.trim() : "";
   let clientSecret =
@@ -1465,11 +1499,228 @@ async function start(
   );
 }
 
+type LegacyMcpInput = {
+  name: string;
+  description: string;
+  serverUrl: string;
+};
+
+function legacyMcpInput(body: JsonObject): LegacyMcpInput {
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const descriptionValue = body.description;
+  const description =
+    descriptionValue === undefined || descriptionValue === null
+      ? ""
+      : typeof descriptionValue === "string"
+        ? descriptionValue.trim()
+        : "__invalid__";
+  const serverUrl =
+    typeof body.mcp_server_url === "string"
+      ? body.mcp_server_url.trim().replace(/\/$/, "")
+      : "";
+  if (!name || utf8Bytes(name) > 160)
+    throw new McpAppOauthError(422, "invalid_app_name");
+  if (description === "__invalid__" || utf8Bytes(description) > 20_000)
+    throw new McpAppOauthError(422, "invalid_app_description");
+  if (!publicHttps(serverUrl))
+    throw new McpAppOauthError(422, "invalid_provider_metadata");
+  return { name, description, serverUrl };
+}
+
+async function discoverLegacyOauthMetadata(
+  dependencies: McpAppOauthDependencies,
+  serverUrl: string,
+): Promise<{
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  registrationEndpoint?: string;
+  scopes: string[];
+} | null> {
+  const metadataUrl = new URL(serverUrl);
+  metadataUrl.pathname = "/.well-known/oauth-authorization-server";
+  metadataUrl.search = "";
+  metadataUrl.hash = "";
+  const response = await providerFetch(dependencies, metadataUrl, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
+  if (response.status === 404 || response.status === 405) return null;
+  if (!response.ok) return null;
+  const payload = await boundedJson(response, "oauth_metadata_invalid");
+  const authorizationEndpoint = payload.authorization_endpoint;
+  const tokenEndpoint = payload.token_endpoint;
+  if (!publicHttps(authorizationEndpoint) || !publicHttps(tokenEndpoint))
+    return null;
+  const registrationEndpoint =
+    payload.registration_endpoint === undefined
+      ? undefined
+      : payload.registration_endpoint;
+  if (
+    registrationEndpoint !== undefined &&
+    !publicHttps(registrationEndpoint)
+  )
+    throw new McpAppOauthError(502, "oauth_metadata_invalid");
+  const scopes = normalizeScopes(payload.scopes_supported);
+  return {
+    authorizationEndpoint,
+    tokenEndpoint,
+    ...(registrationEndpoint ? { registrationEndpoint } : {}),
+    scopes,
+  };
+}
+
+function legacyMcpAppId(): string {
+  return `mcp-${randomOpaque(16)}`;
+}
+
+async function createLegacyMcpCatalogApp(
+  c: JobsContext,
+  context: SignedAuthContext,
+  input: LegacyMcpInput,
+  appId: string,
+  now: number,
+): Promise<void> {
+  const payload = JSON.stringify({
+    id: appId,
+    name: input.name,
+    description: input.description,
+    image: "",
+    uid: context.uid,
+    private: true,
+    approved: true,
+    status: "pending_mcp_auth",
+    category: "utilities-and-tools",
+    capabilities: ["chat"],
+    chat_tools: [],
+    external_integration: { mcp_server_url: input.serverUrl },
+  });
+  await c.env.APP_DB.prepare(
+    `INSERT INTO cf_app_catalog
+       (id, approved, status, disabled, is_popular, installs, rating_avg,
+        rating_count, data_json, updated_at, owner_uid)
+     VALUES (?, 1, 'approved', 0, 0, 0, NULL, 0, ?, ?, ?)`,
+  )
+    .bind(appId, payload, now, context.uid)
+    .run();
+}
+
+async function deleteLegacyMcpCatalogApp(
+  c: JobsContext,
+  context: SignedAuthContext,
+  appId: string,
+): Promise<void> {
+  try {
+    await c.env.APP_DB.prepare(
+      "DELETE FROM cf_app_catalog WHERE id = ? AND owner_uid = ?",
+    )
+      .bind(appId, context.uid)
+      .run();
+  } catch {
+    // Preserve the original provider error. Account deletion fences and a
+    // concurrent app deletion must not turn it into a success response.
+  }
+}
+
+async function createLegacyUnauthenticatedMcp(
+  c: JobsContext,
+  context: SignedAuthContext,
+  dependencies: McpAppOauthDependencies,
+  input: LegacyMcpInput,
+): Promise<Response> {
+  const now = nowSeconds(dependencies);
+  if (!now) throw new McpAppOauthError(503, "clock_unavailable");
+  const appId = legacyMcpAppId();
+  await createLegacyMcpCatalogApp(c, context, input, appId, now);
+  try {
+    const envelope = await encrypt(
+      c.env,
+      "connection",
+      context.uid,
+      appId,
+      { anonymous: true },
+    );
+    await c.env.APP_DB.prepare(
+      `INSERT INTO cf_mcp_app_connections
+         (app_id, owner_uid, server_url, status, oauth_metadata_json,
+          credential_envelope_enc, revision, created_at, updated_at)
+       VALUES (?, ?, ?, 'authorized', '{}', ?, 0, ?, ?)`,
+    )
+      .bind(appId, context.uid, input.serverUrl, envelope, now, now)
+      .run();
+    const discovery = await discover(c, context, dependencies, appId, "legacy");
+    const payload = (await discovery.clone().json()) as JsonObject;
+    const toolNames = Array.isArray(payload.tool_names)
+      ? payload.tool_names.filter((value): value is string => typeof value === "string")
+      : [];
+    await install(c, context, dependencies, appId, "legacy");
+    return c.json(
+      {
+        app_id: appId,
+        requires_oauth: false,
+        tools_count: toolNames.length,
+        tool_names: toolNames,
+      },
+      200,
+      { "cache-control": "no-store" },
+    );
+  } catch (error) {
+    await deleteLegacyMcpCatalogApp(c, context, appId);
+    throw error;
+  }
+}
+
+async function startLegacy(
+  c: JobsContext,
+  context: SignedAuthContext,
+  dependencies: McpAppOauthDependencies,
+): Promise<Response> {
+  if (!surfaceEnabled(c.env, "legacy"))
+    throw new McpAppOauthError(404, "not_found");
+  // Fail before metadata/provider I/O when the exact owner has not been
+  // provisioned with its envelope key. This is the explicit staging boundary;
+  // it must never turn a missing secret into a legacy fallback.
+  encryptionSecret(c.env);
+  const input = legacyMcpInput(parseBody(await requestText(c)));
+  const metadata = await discoverLegacyOauthMetadata(
+    dependencies,
+    input.serverUrl,
+  );
+  if (!metadata) {
+    return createLegacyUnauthenticatedMcp(c, context, dependencies, input);
+  }
+  if (!metadata.registrationEndpoint)
+    throw new McpAppOauthError(422, "client_registration_required");
+  const appId = legacyMcpAppId();
+  const now = nowSeconds(dependencies);
+  if (!now) throw new McpAppOauthError(503, "clock_unavailable");
+  await createLegacyMcpCatalogApp(c, context, input, appId, now);
+  try {
+    return await startWithBody(
+      c,
+      context,
+      dependencies,
+      {
+        app_id: appId,
+        server_url: input.serverUrl,
+        authorization_endpoint: metadata.authorizationEndpoint,
+        token_endpoint: metadata.tokenEndpoint,
+        registration_endpoint: metadata.registrationEndpoint,
+        scopes: metadata.scopes,
+      },
+      "legacy",
+    );
+  } catch (error) {
+    await deleteLegacyMcpCatalogApp(c, context, appId);
+    throw error;
+  }
+}
+
 async function callback(
   c: JobsContext,
   dependencies: McpAppOauthDependencies,
+  surface: McpAppOauthSurface = "namespaced",
 ): Promise<Response> {
-  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+  if (!surfaceEnabled(c.env, surface))
     return callbackResponse(
       c,
       404,
@@ -1638,11 +1889,39 @@ async function callback(
       .run();
     if (Number(updated.meta?.changes) !== 1)
       throw new McpAppOauthError(409, "app_connection_changed");
+    if (surface === "legacy") {
+      const callbackContext = {
+        uid: consumed.owner_uid,
+        authority: "better-auth" as const,
+        requestId: `mcp-callback-${consumed.transaction_id}`,
+        version: 1 as const,
+        audience: "jobs" as const,
+        assertionId: consumed.transaction_id,
+        issuedAt: now,
+        expiresAt: now + 60,
+        method: "GET",
+        path: "/v1/apps/mcp/callback",
+      } satisfies SignedAuthContext;
+      // Released clients expect callback completion to include discovery and
+      // auto-install.  The v2 seam keeps these as explicit follow-up calls;
+      // this branch performs the same bounded operations before returning the
+      // legacy HTML success page.
+      await discover(c, callbackContext, dependencies, consumed.app_id, "legacy");
+      await install(
+        c,
+        callbackContext,
+        dependencies,
+        consumed.app_id,
+        "legacy",
+      );
+    }
     return callbackResponse(
       c,
       200,
       "Authorization complete",
-      "The MCP server is authorized. Tool discovery is pending.",
+      surface === "legacy"
+        ? "The MCP server is connected and its tools are ready."
+        : "The MCP server is authorized. Tool discovery is pending.",
     );
   } catch (error) {
     const codeValue =
@@ -1675,8 +1954,9 @@ async function discover(
   context: SignedAuthContext,
   dependencies: McpAppOauthDependencies,
   appIdOverride?: string,
+  surface: McpAppOauthSurface = "namespaced",
 ): Promise<Response> {
-  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+  if (!surfaceEnabled(c.env, surface))
     throw new McpAppOauthError(404, "not_found");
   const body = appIdOverride ? null : parseBody(await requestText(c));
   const appId =
@@ -1752,8 +2032,7 @@ async function discover(
       credentials.access_token,
       "mcp_authorization_required",
       401,
-      true,
-    ) as string;
+    ) || "";
     const discovery = await discoverEndpoint(
       dependencies,
       endpoints,
@@ -1810,19 +2089,47 @@ async function discover(
       throw new McpAppOauthError(409, "app_connection_changed");
     if (Number(writes[1]?.meta?.changes) !== 1)
       throw new McpAppOauthError(409, "discovery_changed");
+    if (surface === "legacy") {
+      const legacyTools = tools.map((tool) => ({
+        name: String(tool.name),
+        ...(typeof tool.description === "string"
+          ? { description: tool.description }
+          : {}),
+        ...(tool.inputSchema !== undefined
+          ? { parameters: tool.inputSchema }
+          : {}),
+      }));
+      const catalogUpdate = await c.env.APP_DB.prepare(
+        `UPDATE cf_app_catalog
+            SET data_json = json_set(
+              data_json,
+              '$.status', 'approved',
+              '$.chat_tools', json(?),
+              '$.external_integration.mcp_server_url', ?
+            ), updated_at = ?
+          WHERE id = ? AND owner_uid = ? AND disabled = 0`,
+      )
+        .bind(JSON.stringify(legacyTools), endpoint, now, appId, context.uid)
+        .run();
+      if (Number(catalogUpdate.meta?.changes) !== 1)
+        throw new McpAppOauthError(409, "app_catalog_changed");
+    }
     const revision =
       observedDiscoveryRevision === null ? 0 : observedDiscoveryRevision + 1;
+    const toolNames = tools.map((tool) => String(tool.name));
     return c.json(
-      {
-        app_id: appId,
-        status: "ready",
-        endpoint,
-        transport: discovery.transport,
-        protocol_version: protocolVersion,
-        revision,
-        tools_count: tools.length,
-        tool_names: tools.map((tool) => String(tool.name)),
-      },
+      surface === "legacy"
+        ? { tools_count: tools.length, tool_names: toolNames }
+        : {
+            app_id: appId,
+            status: "ready",
+            endpoint,
+            transport: discovery.transport,
+            protocol_version: protocolVersion,
+            revision,
+            tools_count: tools.length,
+            tool_names: toolNames,
+          },
       200,
       { "cache-control": "no-store" },
     );
@@ -1871,11 +2178,15 @@ async function refresh(
   c: JobsContext,
   context: SignedAuthContext,
   dependencies: McpAppOauthDependencies,
+  appIdOverride?: string,
+  surface: McpAppOauthSurface = "namespaced",
 ): Promise<Response> {
-  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+  if (!surfaceEnabled(c.env, surface))
     throw new McpAppOauthError(404, "not_found");
-  const body = parseBody(await requestText(c));
-  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  const body = appIdOverride ? null : parseBody(await requestText(c));
+  const appId =
+    appIdOverride ||
+    (typeof body?.app_id === "string" ? body.app_id.trim() : "");
   if (!appId || appId.length > 256)
     throw new McpAppOauthError(422, "invalid_request");
   const connection = await c.env.APP_DB.prepare(
@@ -2037,7 +2348,7 @@ async function refresh(
   // Reuse the same bounded initialize/tools-list projection and its revision
   // CAS. A failed discovery leaves the newly refreshed credential authorized;
   // a 401 from the server transitions it to reauthorize in discover().
-  return discover(c, context, dependencies, appId);
+  return discover(c, context, dependencies, appId, surface);
 }
 
 async function callTool(
@@ -2046,7 +2357,7 @@ async function callTool(
   dependencies: McpAppOauthDependencies,
   appId: string,
 ): Promise<Response> {
-  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+  if (!surfaceEnabled(c.env, "namespaced"))
     throw new McpAppOauthError(404, "not_found");
   if (!appId || appId.length > 256)
     throw new McpAppOauthError(422, "invalid_request");
@@ -2153,8 +2464,7 @@ async function callTool(
     credentials.access_token,
     "mcp_reauthorization_required",
     401,
-    true,
-  ) as string;
+  ) || "";
   let result: JsonObject | null;
   try {
     result = await callStreamableHttp(
@@ -2218,11 +2528,15 @@ async function install(
   c: JobsContext,
   context: SignedAuthContext,
   dependencies: McpAppOauthDependencies,
+  appIdOverride?: string,
+  surface: McpAppOauthSurface = "namespaced",
 ): Promise<Response> {
-  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+  if (!surfaceEnabled(c.env, surface))
     throw new McpAppOauthError(404, "not_found");
-  const body = parseBody(await requestText(c));
-  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  const body = appIdOverride ? null : parseBody(await requestText(c));
+  const appId =
+    appIdOverride ||
+    (typeof body?.app_id === "string" ? body.app_id.trim() : "");
   if (!appId || appId.length > 256)
     throw new McpAppOauthError(422, "invalid_request");
   const row = await c.env.APP_DB.prepare(
@@ -2289,7 +2603,38 @@ export function registerMcpAppOauthRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: RequestContext,
   dependencies: McpAppOauthDependencies = {},
+  surface: McpAppOauthSurface = "namespaced",
 ): void {
+  if (surface === "legacy") {
+    app.post("/v1/apps/mcp", async (c) => {
+      const context = await requestContext(c);
+      if (!context) return c.json({ error: "unauthorized" }, 401);
+      try {
+        return await startLegacy(c, context, dependencies);
+      } catch (error) {
+        return errorResponse(c, error);
+      }
+    });
+    app.post("/v1/apps/:app_id/mcp/refresh", async (c) => {
+      const context = await requestContext(c);
+      if (!context) return c.json({ error: "unauthorized" }, 401);
+      try {
+        return await refresh(
+          c,
+          context,
+          dependencies,
+          c.req.param("app_id") || "",
+          "legacy",
+        );
+      } catch (error) {
+        return errorResponse(c, error);
+      }
+    });
+    app.get("/v1/apps/mcp/callback", (c) =>
+      callback(c, dependencies, "legacy"),
+    );
+    return;
+  }
   app.post("/v2/cf/apps/mcp/authorize", async (c) => {
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);

@@ -779,14 +779,14 @@ const legacyTaskIntelligenceStagingBoundary = async (
   );
 };
 
-// Persona PATCH/Twitter ownership and the legacy app/MCP mutation family still
-// depend on Firestore app documents, Firebase provider identity, public app
-// cache invalidation, and (for MCP) external OAuth state/token storage. The
-// existing D1 MCP OAuth surface is only for the migrated `/v1/mcp/*` tools and
-// cannot safely replace the dynamic app registration/callback contract. In
-// isolated staging, stop these paths before credentials, OAuth codes, or MCP
-// server URLs can reach legacy. The switch remains opt-in so non-staging
-// deployments preserve the existing compatibility forwarding behavior.
+// Persona PATCH/Twitter ownership, owner migration, and the remaining legacy
+// app mutation family still depend on Firestore app documents, Firebase
+// provider identity, public app cache invalidation, and provider side effects.
+// Exact MCP app routes have their own opt-in Jobs owner below; this boundary
+// still protects the routes that have no Cloudflare authority. In isolated
+// staging, stop these paths before credentials or provider state can reach
+// legacy. The switch remains opt-in so non-staging deployments preserve the
+// existing compatibility forwarding behavior.
 const legacyPersonaAppsStagingBoundary = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -805,6 +805,29 @@ const legacyPersonaAppsStagingBoundary = async (
     ),
     id,
   );
+};
+
+// The exact MCP app routes now have a Cloudflare Jobs adapter that reuses the
+// encrypted D1/provider authority of the namespaced seam. Keep the opt-in
+// independent from the remaining Persona/Twitter/migrate-owner legacy group:
+// when the adapter is unavailable, Jobs returns an explicit no-store error and
+// the request never falls through to Firestore-backed legacy code.
+const legacyMcpAppsStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.MCP_APP_EXACT_LEGACY_STAGING_ENABLED === "true") {
+    return proxyAuthenticatedJobs(c);
+  }
+  return legacyPersonaAppsStagingBoundary(c);
+};
+
+const legacyMcpCallbackStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.MCP_APP_EXACT_LEGACY_STAGING_ENABLED === "true") {
+    return proxyPublicJobs(c);
+  }
+  return legacyPersonaAppsStagingBoundary(c);
 };
 
 const proxyPublicFirmware = proxyPublicCore;
@@ -906,9 +929,9 @@ app.get(
   "/v1/personas/twitter/verify-ownership",
   legacyPersonaAppsStagingBoundary,
 );
-app.post("/v1/apps/mcp", legacyPersonaAppsStagingBoundary);
-app.get("/v1/apps/mcp/callback", legacyPersonaAppsStagingBoundary);
-app.post("/v1/apps/:app_id/mcp/refresh", legacyPersonaAppsStagingBoundary);
+app.post("/v1/apps/mcp", legacyMcpAppsStagingBoundary);
+app.get("/v1/apps/mcp/callback", legacyMcpCallbackStagingBoundary);
+app.post("/v1/apps/:app_id/mcp/refresh", legacyMcpAppsStagingBoundary);
 app.post("/v1/apps/migrate-owner", legacyPersonaAppsStagingBoundary);
 app.get("/v1/auth/authorize", legacyExactNativeAuthStagingBoundary);
 app.get("/v1/auth/callback/google", legacyExactNativeAuthStagingBoundary);

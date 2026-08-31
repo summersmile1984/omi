@@ -17,6 +17,7 @@
     "WORKERS_AI_X_MEMORY_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "WORKERS_AI_WRAPPED_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "MCP_APP_OAUTH_STAGING_ENABLED": "false",
+    "MCP_APP_LEGACY_EXACT_STAGING_ENABLED": "true",
     "LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED": "false",
     "CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED": "false",
     "LEGACY_CHAT_FILES_STAGING_ENABLED": "true",
@@ -35,8 +36,8 @@
   // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, HUME_WEBHOOK_SIGNING_KEY,
   // optional OPENAI_API_KEY and CHAT_FILE_THUMBNAIL_SECRET for the chat-file
   // provider/thumbnail boundary, and optional RAPID_API_HOST/RAPID_API_KEY.
-  // MCP_APP_TOKEN_ENCRYPTION_SECRET is required only when the namespaced
-  // external-MCP OAuth staging gate is explicitly enabled.
+  // MCP_APP_TOKEN_ENCRYPTION_SECRET is required when either the namespaced
+  // or exact legacy external-MCP OAuth staging gate is explicitly enabled.
   // LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED additionally requires
   // Firebase API/identity verification through the Auth service binding.
   "services": [

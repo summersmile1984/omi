@@ -191,6 +191,10 @@ registerChatCompatibilityRoutes(app, requestContext);
 registerChatAssistantRoutes(app, requestContext);
 registerPersonaMutationRoutes(app, requestContext);
 registerMcpAppOauthRoutes(app, requestContext);
+// Exact legacy MCP app routes reuse the same encrypted D1/provider adapter.
+// They remain independently gated so the v2 seam can be tested without
+// claiming released-client Firebase/Firestore parity.
+registerMcpAppOauthRoutes(app, requestContext, {}, "legacy");
 registerExternalAppOauthRoutes(app, requestContext);
 registerExternalAppOauthRoutes(app, requestContext, {}, { surface: "legacy" });
 registerAudioMergeRoutes(app, requestContext);

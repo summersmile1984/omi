@@ -139,6 +139,8 @@ export type JobsEnv = {
   RAPID_API_KEY?: string;
   /** Explicit staging gate for the namespaced external MCP OAuth seam. */
   MCP_APP_OAUTH_STAGING_ENABLED?: string;
+  /** Explicit staging gate for the exact legacy /v1/apps/mcp owner. */
+  MCP_APP_LEGACY_EXACT_STAGING_ENABLED?: string;
   /** AES-GCM key material for external MCP app OAuth envelopes. */
   MCP_APP_TOKEN_ENCRYPTION_SECRET?: string;
   /** Explicit staging gate for the Better Auth app-consent OAuth seam. */
