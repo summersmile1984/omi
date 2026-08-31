@@ -900,6 +900,9 @@ async function callback(
       consumed.owner_uid,
       consumed.app_id,
       {
+        client_id: consumed.client_id,
+        ...(clientSecret ? { client_secret: clientSecret } : {}),
+        token_endpoint: consumed.token_endpoint,
         access_token: accessToken,
         refresh_token: refreshToken,
         expires_in: expiresIn,
@@ -958,11 +961,14 @@ async function discover(
   c: JobsContext,
   context: SignedAuthContext,
   dependencies: McpAppOauthDependencies,
+  appIdOverride?: string,
 ): Promise<Response> {
   if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
     throw new McpAppOauthError(404, "not_found");
-  const body = parseBody(await requestText(c));
-  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  const body = appIdOverride ? null : parseBody(await requestText(c));
+  const appId =
+    appIdOverride ||
+    (typeof body?.app_id === "string" ? body.app_id.trim() : "");
   if (!appId || appId.length > 256)
     throw new McpAppOauthError(422, "invalid_request");
   const connection = await c.env.APP_DB.prepare(
@@ -1216,6 +1222,179 @@ async function discover(
   }
 }
 
+async function refresh(
+  c: JobsContext,
+  context: SignedAuthContext,
+  dependencies: McpAppOauthDependencies,
+): Promise<Response> {
+  if (c.env.MCP_APP_OAUTH_STAGING_ENABLED !== "true")
+    throw new McpAppOauthError(404, "not_found");
+  const body = parseBody(await requestText(c));
+  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  if (!appId || appId.length > 256)
+    throw new McpAppOauthError(422, "invalid_request");
+  const connection = await c.env.APP_DB.prepare(
+    `SELECT app_id, owner_uid, status, credential_envelope_enc, revision
+       FROM cf_mcp_app_connections
+      WHERE app_id = ? AND owner_uid = ?
+      LIMIT 1`,
+  )
+    .bind(appId, context.uid)
+    .first<{
+      app_id?: string;
+      owner_uid?: string;
+      status?: string;
+      credential_envelope_enc?: string | null;
+      revision?: number;
+    }>();
+  if (!connection?.app_id || !connection.owner_uid)
+    throw new McpAppOauthError(404, "app_not_found");
+  if (connection.status === "reauthorize")
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  if (
+    connection.status !== "authorized" ||
+    typeof connection.credential_envelope_enc !== "string"
+  )
+    throw new McpAppOauthError(409, "mcp_authorization_required");
+  const observedRevision = Number(connection.revision);
+  if (!Number.isSafeInteger(observedRevision) || observedRevision < 0)
+    throw new McpAppOauthError(409, "app_connection_changed");
+  const now = nowSeconds(dependencies);
+  if (!now) throw new McpAppOauthError(503, "clock_unavailable");
+
+  let credentials: JsonObject;
+  try {
+    credentials = await decrypt(
+      c.env,
+      "connection",
+      connection.owner_uid,
+      connection.app_id,
+      connection.credential_envelope_enc,
+    );
+  } catch (error) {
+    if (error instanceof McpAppOauthError) throw error;
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  }
+  const refreshToken = validatedCredential(
+    credentials.refresh_token,
+    "mcp_reauthorization_required",
+    401,
+    true,
+  ) as string;
+  const clientId = validatedCredential(
+    credentials.client_id,
+    "mcp_reauthorization_required",
+    401,
+    true,
+  ) as string;
+  const tokenEndpoint = validatedCredential(
+    credentials.token_endpoint,
+    "mcp_authorization_required",
+    401,
+    true,
+  ) as string;
+  if (!publicHttps(tokenEndpoint))
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  const clientSecret = validatedCredential(
+    credentials.client_secret,
+    "mcp_reauthorization_required",
+    401,
+  );
+  const form = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: clientId,
+    ...(clientSecret ? { client_secret: clientSecret } : {}),
+  });
+  let response: Response;
+  try {
+    response = await providerFetch(dependencies, tokenEndpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      body: form.toString(),
+    });
+  } catch (error) {
+    throw error;
+  }
+  if (response.status === 401) {
+    const marked = await c.env.APP_DB.prepare(
+      `UPDATE cf_mcp_app_connections
+          SET status = 'reauthorize', credential_envelope_enc = NULL,
+              revision = revision + 1, last_error = ?, updated_at = ?
+        WHERE app_id = ? AND owner_uid = ? AND status = 'authorized' AND revision = ?`,
+    )
+      .bind(
+        "mcp_reauthorization_required",
+        now,
+        connection.app_id,
+        connection.owner_uid,
+        observedRevision,
+      )
+      .run();
+    if (Number(marked.meta?.changes) !== 1)
+      throw new McpAppOauthError(409, "app_connection_changed");
+    throw new McpAppOauthError(401, "mcp_reauthorization_required");
+  }
+  if (!response.ok) throw new McpAppOauthError(502, "token_refresh_failed");
+  const payload = await boundedJson(response, "token_response_invalid");
+  const accessToken = validatedCredential(
+    payload.access_token,
+    "token_response_invalid",
+    502,
+    true,
+  ) as string;
+  const nextRefreshToken =
+    payload.refresh_token === undefined
+      ? refreshToken
+      : validatedCredential(
+          payload.refresh_token,
+          "token_response_invalid",
+          502,
+        );
+  const expiresIn = Number(payload.expires_in || 3_600);
+  if (!Number.isSafeInteger(expiresIn) || expiresIn < 1 || expiresIn > 86_400)
+    throw new McpAppOauthError(502, "token_response_invalid");
+  const nextEnvelope = await encrypt(
+    c.env,
+    "connection",
+    connection.owner_uid,
+    connection.app_id,
+    {
+      client_id: clientId,
+      ...(clientSecret ? { client_secret: clientSecret } : {}),
+      token_endpoint: tokenEndpoint,
+      access_token: accessToken,
+      refresh_token: nextRefreshToken,
+      expires_in: expiresIn,
+      issued_at: now,
+    },
+  );
+  const updated = await c.env.APP_DB.prepare(
+    `UPDATE cf_mcp_app_connections
+        SET status = 'authorized', credential_envelope_enc = ?,
+            revision = revision + 1, last_error = NULL, updated_at = ?
+      WHERE app_id = ? AND owner_uid = ? AND status = 'authorized' AND revision = ?`,
+  )
+    .bind(
+      nextEnvelope,
+      now,
+      connection.app_id,
+      connection.owner_uid,
+      observedRevision,
+    )
+    .run();
+  if (Number(updated.meta?.changes) !== 1)
+    throw new McpAppOauthError(409, "app_connection_changed");
+
+  // Reuse the same bounded initialize/tools-list projection and its revision
+  // CAS. A failed discovery leaves the newly refreshed credential authorized;
+  // a 401 from the server transitions it to reauthorize in discover().
+  return discover(c, context, dependencies, appId);
+}
+
 export function registerMcpAppOauthRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: RequestContext,
@@ -1235,6 +1414,15 @@ export function registerMcpAppOauthRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return await discover(c, context, dependencies);
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+  app.post("/v2/cf/apps/mcp/refresh", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    try {
+      return await refresh(c, context, dependencies);
     } catch (error) {
       return errorResponse(c, error);
     }

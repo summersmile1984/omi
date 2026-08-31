@@ -1207,6 +1207,7 @@ app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
 // /v1/apps/mcp; Jobs enforces its explicit staging gate and D1 authority.
 app.post("/v2/cf/apps/mcp/authorize", proxyAuthenticatedJobs);
 app.post("/v2/cf/apps/mcp/discover", proxyAuthenticatedJobs);
+app.post("/v2/cf/apps/mcp/refresh", proxyAuthenticatedJobs);
 app.get("/v2/cf/apps/mcp/callback", proxyPublicJobs);
 app.post("/v1/payments/checkout-session", proxyAuthenticatedJobs);
 app.post("/v1/payments/customer-portal", proxyAuthenticatedJobs);

@@ -577,6 +577,309 @@ describe("namespaced MCP app OAuth staging seam", () => {
     });
   });
 
+  it("refreshes an encrypted credential and immediately re-discovers tools", async () => {
+    const { env, database } = environment();
+    const refreshBodies: string[] = [];
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (url.endsWith("/token")) {
+          const body = String(init?.body);
+          if (body.includes("grant_type=refresh_token")) {
+            refreshBodies.push(body);
+            return Response.json({
+              access_token: "refreshed-access-token",
+              refresh_token: "refreshed-refresh-token",
+              expires_in: 7_200,
+            });
+          }
+          return Response.json({
+            access_token: "initial-access-token",
+            refresh_token: "initial-refresh-token",
+            expires_in: 3_600,
+          });
+        }
+        if (url.endsWith("/mcp")) {
+          const payload = JSON.parse(String(init?.body)) as { method?: string };
+          if (payload.method === "initialize") {
+            return Response.json(
+              {
+                jsonrpc: "2.0",
+                id: 1,
+                result: {
+                  protocolVersion: "2025-03-26",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "refresh-fixture", version: "1" },
+                },
+              },
+              { headers: { "Mcp-Session-Id": "refresh-session" } },
+            );
+          }
+          if (payload.method === "notifications/initialized")
+            return new Response(null, { status: 202 });
+          if (payload.method === "tools/list")
+            return Response.json({
+              jsonrpc: "2.0",
+              id: 2,
+              result: {
+                tools: [
+                  {
+                    name: "refresh_search",
+                    inputSchema: { type: "object" },
+                  },
+                ],
+              },
+            });
+        }
+        throw new Error(`unexpected provider URL ${url}`);
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://provider.example.test/mcp",
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(
+      ((await start.json()) as { auth_url: string }).auth_url,
+    );
+    const callback = await app.request(
+      `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+    );
+    expect(callback.status).toBe(200);
+
+    const refresh = await app.request("/v2/cf/apps/mcp/refresh", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(refresh.status).toBe(200);
+    await expect(refresh.json()).resolves.toEqual({
+      app_id: "mcp-app",
+      status: "ready",
+      endpoint: "https://provider.example.test/mcp",
+      transport: "streamable_http",
+      protocol_version: "2025-03-26",
+      revision: 0,
+      tools_count: 1,
+      tool_names: ["refresh_search"],
+    });
+    expect(refreshBodies).toHaveLength(1);
+    expect(refreshBodies[0]).toContain("grant_type=refresh_token");
+    expect(refreshBodies[0]).toContain("refresh_token=initial-refresh-token");
+    const connection = database.database
+      .prepare(
+        "SELECT status, revision, credential_envelope_enc FROM cf_mcp_app_connections WHERE app_id = ?",
+      )
+      .get("mcp-app") as {
+      status: string;
+      revision: number;
+      credential_envelope_enc: string;
+    };
+    expect(connection.status).toBe("authorized");
+    expect(connection.revision).toBe(3);
+    expect(connection.credential_envelope_enc).toMatch(/^v1\./);
+    expect(connection.credential_envelope_enc).not.toContain(
+      "refreshed-access-token",
+    );
+    expect(connection.credential_envelope_enc).not.toContain(
+      "refreshed-refresh-token",
+    );
+  });
+
+  it("clears credentials and requires reauthorization when refresh returns 401", async () => {
+    const { env, database } = environment();
+    let tokenCalls = 0;
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (!url.endsWith("/token"))
+          throw new Error(`unexpected provider URL ${url}`);
+        tokenCalls += 1;
+        if (String(init?.body).includes("grant_type=refresh_token"))
+          return new Response("expired", { status: 401 });
+        return Response.json({
+          access_token: "initial-access-token",
+          refresh_token: "initial-refresh-token",
+          expires_in: 3_600,
+        });
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://provider.example.test/mcp",
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(
+      ((await start.json()) as { auth_url: string }).auth_url,
+    );
+    await expect(
+      app.request(
+        `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+
+    const refresh = await app.request("/v2/cf/apps/mcp/refresh", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(refresh.status).toBe(401);
+    await expect(refresh.json()).resolves.toEqual({
+      error: "mcp_reauthorization_required",
+    });
+    const connection = database.database
+      .prepare(
+        "SELECT status, revision, credential_envelope_enc FROM cf_mcp_app_connections WHERE app_id = ?",
+      )
+      .get("mcp-app") as {
+      status: string;
+      revision: number;
+      credential_envelope_enc: string | null;
+    };
+    expect(connection).toEqual({
+      status: "reauthorize",
+      revision: 2,
+      credential_envelope_enc: null,
+    });
+
+    const replay = await app.request("/v2/cf/apps/mcp/refresh", {
+      method: "POST",
+      body: JSON.stringify({ app_id: "mcp-app" }),
+    });
+    expect(replay.status).toBe(401);
+    await expect(replay.json()).resolves.toEqual({
+      error: "mcp_reauthorization_required",
+    });
+    expect(tokenCalls).toBe(2);
+  });
+
+  it("uses connection revision CAS so concurrent refreshes cannot both commit", async () => {
+    const { env, database } = environment();
+    let refreshCalls = 0;
+    let releaseRefresh!: () => void;
+    const refreshBarrier = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (url.endsWith("/token")) {
+          const body = String(init?.body);
+          if (body.includes("grant_type=refresh_token")) {
+            refreshCalls += 1;
+            if (refreshCalls === 2) releaseRefresh();
+            await refreshBarrier;
+            return Response.json({
+              access_token: `refreshed-access-${refreshCalls}`,
+              refresh_token: `refreshed-refresh-${refreshCalls}`,
+              expires_in: 3_600,
+            });
+          }
+          return Response.json({
+            access_token: "initial-access-token",
+            refresh_token: "initial-refresh-token",
+            expires_in: 3_600,
+          });
+        }
+        if (url.endsWith("/mcp")) {
+          const payload = JSON.parse(String(init?.body)) as { method?: string };
+          if (payload.method === "initialize")
+            return Response.json(
+              {
+                jsonrpc: "2.0",
+                id: 1,
+                result: {
+                  protocolVersion: "2025-03-26",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "cas-fixture", version: "1" },
+                },
+              },
+              { headers: { "Mcp-Session-Id": "cas-session" } },
+            );
+          if (payload.method === "notifications/initialized")
+            return new Response(null, { status: 202 });
+          if (payload.method === "tools/list")
+            return Response.json({
+              jsonrpc: "2.0",
+              id: 2,
+              result: { tools: [{ name: "cas_tool" }] },
+            });
+        }
+        throw new Error(`unexpected provider URL ${url}`);
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 1_788_000_100 });
+    const start = await app.request("/v2/cf/apps/mcp/authorize", {
+      method: "POST",
+      body: JSON.stringify({
+        app_id: "mcp-app",
+        server_url: "https://provider.example.test/mcp",
+        authorization_endpoint: "https://provider.example.test/authorize",
+        token_endpoint: "https://provider.example.test/token",
+        client_id: "client",
+      }),
+    });
+    const authUrl = new URL(
+      ((await start.json()) as { auth_url: string }).auth_url,
+    );
+    await expect(
+      app.request(
+        `/v2/cf/apps/mcp/callback?code=provider-code&state=${encodeURIComponent(authUrl.searchParams.get("state") || "")}`,
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+
+    const refreshRequest = () =>
+      app.request("/v2/cf/apps/mcp/refresh", {
+        method: "POST",
+        body: JSON.stringify({ app_id: "mcp-app" }),
+      });
+    const [first, second] = await Promise.all([
+      refreshRequest(),
+      refreshRequest(),
+    ]);
+    expect([first.status, second.status].sort((a, b) => a - b)).toEqual([
+      200, 409,
+    ]);
+    expect(refreshCalls).toBe(2);
+    const connection = database.database
+      .prepare(
+        "SELECT status, revision, credential_envelope_enc FROM cf_mcp_app_connections WHERE app_id = ?",
+      )
+      .get("mcp-app") as {
+      status: string;
+      revision: number;
+      credential_envelope_enc: string;
+    };
+    expect(connection.status).toBe("authorized");
+    expect(connection.revision).toBe(3);
+    expect(connection.credential_envelope_enc).toMatch(/^v1\./);
+  });
+
   it("requires the Better Auth-derived request context for start", async () => {
     const { env } = environment();
     const app = testApp(env, {}, false);
