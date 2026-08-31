@@ -61,7 +61,12 @@ it never reads Firestore or creates capability rows. The paired
 `POST /memory/admin/users/{uid}/short-term-lifecycle/run` remains legacy-owned:
 its runner still reads Firestore memory items and writes Firestore transition
 records, so no Cloudflare owner is declared until a D1 transition authority,
-lease/idempotency contract, Queue consumer, and backfill exist.
+lease/idempotency contract, Queue consumer, and backfill exist. Jobs now has an
+unpublished shadow boundary backed by `0102_memory_short_term_lifecycle.sql`:
+it requires a generation-bound control row, records an idempotent run and
+Queue lease, and terminal-fails while the policy-equivalent D1 executor is
+absent. The Edge and backend route manifests intentionally remain
+legacy-owned.
 
 `memory_review_routes.py` owns the D1 `cf_memory_review_queue` projection for
 canonical memory conflicts. The `/v3/memories/review-queue*` endpoints are
