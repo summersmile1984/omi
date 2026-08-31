@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 514 already match
-  Cloudflare staging owners and 63 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 526 already match
+  Cloudflare staging owners and 51 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -815,6 +815,13 @@ GET  /v2/integrations/google-calendar/callback
 GET  /v1/calendar/google/events
 POST /v1/tools/calendar-events
                               Edge → Jobs → encrypted D1 grant + Google Calendar API
+POST /v1/import/limitless    Edge → Jobs → bounded ZIP/R2 staging → D1/Queue
+GET  /v1/import/jobs         Edge → Python API Core → uid-scoped D1 import jobs
+GET  /v1/import/jobs/{jobId}
+POST /v1/import/jobs/{jobId}/cancel
+DELETE /v1/import/jobs/{jobId}
+                              Limitless import lifecycle is staging-owned; historical
+                              Firestore import jobs remain outside this projection
 DELETE /v1/import/limitless/conversations
 POST /v1/staged-tasks/migrate
 POST /v1/staged-tasks/migrate-conversation-items
