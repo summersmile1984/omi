@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 65 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 64 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -40,6 +40,7 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 - Conversation reprocess 已完成 D1/Queue 闭环：共享 `cf_conversation_finalization_jobs` 新增 `operation/language_code/app_id`，Jobs 重试/租约恢复时保留参数；API Core 重跑 Workers AI enrichment、按来源替换旧 action/memory 派生行与向量删除/重建 outbox，并支持同一 processing job 幂等返回。staging 正向证据见下方。
 - Conversation reprocess staging live evidence（2026-08-31）：`0095_conversation_reprocess_jobs.sql` 已远端应用；API Core `23cc4631-1942-40eb-b67d-e8c3186d0786`、Jobs `db0f4aa5-cff3-4be8-acd3-6e817f37ab91`、Edge `ebec0033-35af-4c27-8c08-9cee3078fe2c` 已发布。隔离 Better Auth 账号经 Edge 创建会话（200），提交 `POST /v1/conversations/{id}/reprocess?language_code=en&app_id=calendar-app`（200），status 实际经历 `running → completed`（attempt 1）；会话读回 `completed/discarded=false`，action item 派生数据可读，`external_data` 无内部 claim marker。随后 `DELETE /v1/users/delete-account`（200）完成，tombstone 存在且 conversation/action/memory/reprocess job/vector outbox/vector state 残留均为 0。
 - Conversation merge 的 `0096_conversation_merge_jobs.sql` 已于 2026-08-31 应用 staging；API Core `9768ac95-9961-4b1f-ab74-05b788d1993c`、Jobs `6cdc9ccc-ba04-4a8a-8e6e-92d851223f0f`、Edge `839c648a-6c0a-4da5-872b-1ae75bcb1483` 已发布。隔离账号实测两个会话创建、merge admission `200/merging`、Queue 完成后结果会话 `completed` 且来源数为 2；随后删号完成，D1 conversation/merge job/action/memory/vector outbox 残留均为 0，仅保留 deletion tombstone。
+- Calendar staging live recheck（2026-08-31）：本次 API Core `bf77c198-590a-4203-a4c3-64ba1122303a`、Jobs `855a508c-2f5c-4b4c-8b58-40a7923d5727`、Edge `47079a0a-d239-4890-8349-2c2c1c29d045` 已发布。隔离 Better Auth 账号经 Edge 完成 onboarding reset/skip/reset、Calendar integration 状态（underscore 与 hyphen alias）、meeting metadata create/list/get；未连接 events 为 400，OAuth URL 因 staging 未配置 client 为 503。Web Settings 点击连接后显示明确环境提示，浏览器控制台未出现 404；异步清理完成后 Auth account、Calendar onboarding/meeting/integration/OAuth state 与 deletion intent 均为 0，仅保留 1 条预期 tombstone。
 - Agent tool directory staging live evidence（2026-08-31）：API Core `70bd49eb-f0db-4338-a166-0612af37eda7`、Edge `79ba9a42-e9fc-4819-b5ac-778487a5ee8b` 已发布；未认证 `GET /v1/agent/tools` 与 `POST /v1/agent/execute-tool` 均返回 `401`，Better Auth 认证后目录返回 `200` 与 7 个 Cloudflare-native 工具定义，执行 `get_memories_tool` 返回 D1 结果，未迁移的 `get_calendar_events_tool` 返回 `404`，响应不含 `config`，临时账号已提交删号。
 
 ## 本轮 authority 核对（2026-08-31）
