@@ -10,6 +10,30 @@
 | `POST /v1/apps/migrate-owner` | Firebase anonymous source token 证明旧 owner，再把旧 owner 的 Firestore app 迁到目标 uid | 保持 legacy；Better Auth uid 不能证明 Firebase anonymous identity |
 | `GET /v1/personas/twitter/verify-ownership` | RapidAPI timeline 最新 tweet 验证；按 Firebase provider 决定新建 Persona 或关联已有 Persona | 保持 legacy；Twitter verification 与已有 X OAuth connection 不是同一 authority |
 
+## Exact owner audit: `/v1/apps/migrate-owner`
+
+本次 staging owner 复核结论仍为**不可安全切换**。旧 route 的成功契约是
+`POST /v1/apps/migrate-owner?old_id=...` 搭配 body 中的 `source_token`，同步完成
+Firestore app-owner mutation 后返回 HTTP `200` 与
+`{"status":"ok","message":"Migration started"}`；Firebase token 无效、不是
+anonymous provider、source 不存在/被禁用或删号 fence 命中时返回 HTTP `400/403` 的
+旧 `detail` 形状。其余 persona connected-account、memory re-encryption 和 cache
+更新在后台继续执行，不能由“已创建 Queue job”替代。
+
+Cloudflare namespaced seam 使用 Better Auth signed context、hash-only Firebase
+identity evidence、`0127` data projection attestation 和 D1/Queue lease；它的 admission
+是异步 `202`，且当前只覆盖已投影的 D1 app/MCP/payment rows。这些输入、状态转换、
+响应和 Firestore side effects 都不是旧 route 的等价实现，因此不能把
+`/v2/cf/apps/migrate-owner` 直接 alias 成 exact `/v1` owner。
+
+Edge 对 exact route 继续使用 `PERSONA_APPS_STAGING_FAIL_CLOSED=true` 的 fail-closed
+boundary：staging 返回 HTTP `503`、`error=persona_apps_unavailable` 和
+`cache-control: no-store`，不读取 body、不调用 legacy；只有显式关闭该开关的非 staging
+配置才保留 legacy forwarding。现有 Edge regression test 覆盖了携带 opaque Firebase
+token/body 的请求不会回源。完成 Firebase/Firestore 历史回放、memory re-encryption、
+persona/cache side effects、旧 200/400/403 wire conformance 和真实 disposable-account
+重放之前，manifest 必须继续把 exact route 标为 `legacy-owned`。
+
 `migrate-owner` 现在有一个不加入 legacy manifest 的 Edge→Jobs dormant seam：
 `0122_app_owner_migration.sql` 保存已由可信导入流程核验的
 `firebase-anonymous` source projection 和 hash-only proof，并以
