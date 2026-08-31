@@ -82,7 +82,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
   gate. The current inventory contains 577 backend routes: 473 already match
-  Cloudflare staging owners and 104 remain legacy-owned. Edge directly serves
+Cloudflare staging owners and 96 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -1531,7 +1531,12 @@ The `/v1/candidates/control` read is also Cloudflare-owned for isolated staging
 accounts. Until the legacy Firestore task-control document has a D1 projection,
 API Core returns the closed shell (`workflow_mode=off`, generation `0`, and
 `chat_first_ui=false`) so released clients cannot accidentally enable a partial
-task-intelligence surface.
+task-intelligence surface. The remaining candidate list/create/migrate/resolve
+routes now use the same authenticated API Core boundary and return the legacy
+feature-disabled `404 Not found` response; they never attempt a Firestore read
+or accept a candidate write without a projected workflow generation. This keeps
+Cloudflare accounts fail-closed while candidate storage and generation fences
+remain a separate D1 migration surface.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC

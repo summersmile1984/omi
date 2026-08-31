@@ -3313,6 +3313,43 @@ describe("edge gateway", () => {
     expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("keeps candidate lifecycle routes on the fail-closed API Core boundary", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "candidate-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ detail: "Not found" }, { status: 404 });
+      }),
+    };
+
+    const unauthenticated = await edge.fetch(
+      new Request("https://edge.test/v1/candidates/candidate-1", { method: "GET" }),
+      env as never,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/candidates/candidate-1", {
+        headers: { authorization: "Bearer opaque-session", cookie: "session=must-not-forward" },
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(404);
+    expect(new URL(forwarded?.url || "https://invalid").pathname).toBe(
+      "/v1/candidates/candidate-1",
+    );
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("cookie")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
+  });
+
   it("routes the public high-entropy fair-use case lookup without authentication context", async () => {
     let forwarded: Request | undefined;
     const env = {
