@@ -2273,6 +2273,16 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v2/cf/apps/mcp/tools
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /v2/cf/chat-sessions/:sessionId/files
     owner: api-core
     runtime: python-worker

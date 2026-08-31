@@ -1294,6 +1294,7 @@ const proxyAuthenticatedCore = async (
 };
 
 app.get("/v1/personas", proxyAuthenticatedCore);
+app.get("/v2/cf/apps/mcp/tools", proxyAuthenticatedCore);
 app.post("/v1/user/persona", proxyAuthenticatedCore);
 app.get("/v1/personas/twitter/initial-message", proxyAuthenticatedCore);
 app.get("/v1/personas/:personaId", proxyPublicCore);

@@ -72,6 +72,7 @@ from overage_routes import router as overage_router
 from payment_callback_routes import router as payment_callback_router
 from integration_routes import router as integration_router
 from mcp_routes import router as mcp_router
+from mcp_app_projection_routes import router as mcp_app_projection_router
 from developer_routes import router as developer_router
 from developer_mutation_routes import router as developer_mutation_router
 from developer_conversation_create_routes import router as developer_conversation_create_router
@@ -133,6 +134,7 @@ app.include_router(overage_router)
 app.include_router(payment_callback_router)
 app.include_router(integration_router)
 app.include_router(mcp_router)
+app.include_router(mcp_app_projection_router)
 app.include_router(developer_router)
 app.include_router(developer_mutation_router)
 app.include_router(developer_conversation_create_router)
