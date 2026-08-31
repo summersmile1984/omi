@@ -120,7 +120,11 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     "integration:conversations": (10, 3600),
     "integration:memories": (60, 3600),
     # Phone verification uses IP-based rate_limit_dependency (pre-auth, no UID).
-    # Not migrated to per-UID Lua limiter intentionally.
+    # The Cloudflare Edge uses the same limits per Better Auth uid after the
+    # phone routes move to the Jobs Worker.
+    "phone:numbers_verify": (5, 3600),
+    "phone:numbers_verify_check": (30, 60),
+    "phone:token": (30, 3600),
     # Dev API. Read limits are intentionally separate from write limits so a
     # polling client cannot consume the processing/write budget. Developer and
     # MCP API-key contexts are keyed by app/key identity when available.

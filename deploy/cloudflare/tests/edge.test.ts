@@ -213,56 +213,82 @@ describe("edge gateway", () => {
     }
   });
 
-  it("fails closed for legacy Twilio phone paths in staging", async () => {
+  it("forwards authenticated Phone routes to Jobs and preserves the Twilio webhook", async () => {
+    const forwarded: Request[] = [];
     const env = {
-      PHONE_TWILIO_STAGING_FAIL_CLOSED: "true",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service(() =>
+        Response.json({ uid: "phone-user", authority: "better-auth" }),
+      ),
+      API_CORE: service(() =>
+        Response.json({
+          state: "new",
+          client_action: "none",
+          product_traffic_allowed: true,
+          migration: { destination_backend_bound: true },
+        }),
+      ),
+      JOBS: rawService(async (request) => {
+        forwarded.push(request);
+        return Response.json({ ok: true });
+      }),
+      RATE_LIMITS: rateLimits(() => allowRateLimit()),
     };
-    const legacyFetch = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async () => {
-        throw new Error("legacy backend must not be called");
-      });
     const requests = [
       ["GET", "/v1/phone/numbers"],
       ["DELETE", "/v1/phone/numbers/phone-1"],
       ["POST", "/v1/phone/numbers/verify"],
       ["POST", "/v1/phone/numbers/verify/check"],
       ["POST", "/v1/phone/token"],
-      ["POST", "/v1/phone/twiml"],
     ] as const;
 
-    try {
-      for (const [method, path] of requests) {
-        const response = await edge.fetch(
-          new Request(`https://edge.test${path}`, {
-            method,
-            headers: {
-              authorization: "Bearer opaque-session",
-              cookie: "session=opaque",
-              "content-type": "application/x-www-form-urlencoded",
-              "x-twilio-signature": "opaque",
-              "x-omi-auth-context": "caller-controlled",
-            },
-            ...(method === "POST"
-              ? { body: "phone_number=%2B15551234567&To=%2B15551234567" }
-              : {}),
-          }),
-          env as never,
-        );
+    for (const [method, path] of requests) {
+      const response = await edge.fetch(
+        new Request(`https://edge.test${path}`, {
+          method,
+          headers: {
+            authorization: "Bearer opaque-session",
+            cookie: "session=must-not-forward",
+            "content-type": "application/json",
+            "x-omi-auth-context": "caller-controlled",
+          },
+          ...(method === "POST"
+            ? { body: JSON.stringify({ phone_number: "+15551234567" }) }
+            : {}),
+        }),
+        env as never,
+      );
 
-        expect(response.status, `${method} ${path}`).toBe(503);
-        await expect(response.json()).resolves.toEqual({
-          error: "phone_twilio_unavailable",
-          detail:
-            "Legacy Twilio phone verification and calling are unavailable on Cloudflare staging.",
-        });
-        expect(response.headers.get("cache-control")).toBe("no-store");
-      }
-      expect(legacyFetch).not.toHaveBeenCalled();
-    } finally {
-      legacyFetch.mockRestore();
+      expect(response.status, `${method} ${path}`).toBe(200);
+      await expect(response.json()).resolves.toEqual({ ok: true });
     }
+
+    const webhookBody = "To=%2B15551234567&From=client%3Aphone-user&CallSid=CA123";
+    const webhook = await edge.fetch(
+      new Request("https://edge.test/v1/phone/twiml", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-twilio-signature": "opaque-signature",
+          cookie: "must-not-forward",
+        },
+        body: webhookBody,
+      }),
+      env as never,
+    );
+    expect(webhook.status).toBe(200);
+    expect(await webhook.json()).toEqual({ ok: true });
+
+    expect(forwarded).toHaveLength(6);
+    for (const request of forwarded.slice(0, 5)) {
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("x-omi-auth-context")).toBeTruthy();
+      expect(request.headers.get("x-omi-internal-signature")).toBeTruthy();
+    }
+    expect(forwarded[5].headers.get("x-twilio-signature")).toBe("opaque-signature");
+    expect(forwarded[5].headers.get("cookie")).toBeNull();
+    await expect(forwarded[5].text()).resolves.toBe(webhookBody);
   });
 
   it("fails closed for legacy Gemini proxy paths in staging", async () => {
