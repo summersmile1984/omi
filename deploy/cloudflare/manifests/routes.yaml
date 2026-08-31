@@ -3102,6 +3102,17 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/audio-merge-jobs/run
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, r2-assets, queue-jobs, worker-secrets]
+    protocol: http
+    idempotency: payload-fingerprint
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: DELETE
     path: /v1/joan/:memoryId/followup-question
     owner: api-core

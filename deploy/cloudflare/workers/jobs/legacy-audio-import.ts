@@ -14,6 +14,7 @@ import {
   PLAYBACK_CHANNELS,
   PLAYBACK_SAMPLE_RATE,
 } from "./sync-audio";
+import { encodePcm16MonoToMp3 } from "./mp3-encoder";
 
 const MAX_AUDIO_FILES = 100;
 const MAX_LEGACY_OBJECTS = 5_000;
@@ -22,6 +23,7 @@ const MAX_ENCRYPTED_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_LEGACY_OPUS_OBJECT_BYTES = 16 * 1024 * 1024;
 const MAX_CONVERSATION_AUDIO_JSON_BYTES = 1_000_000;
 const MAX_WAV_PCM_BYTES = 0xffff_ffff - 36;
+const MAX_MP3_PCM_BYTES = 64 * 1024 * 1024;
 const PCM_BYTES_PER_SECOND = PLAYBACK_SAMPLE_RATE * PLAYBACK_CHANNELS * 2;
 const ZERO_CHUNK = new Uint8Array(64 * 1024);
 const SAFE_AUDIO_FILE_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -177,6 +179,28 @@ export async function legacyAudioFilesFingerprint(
   return Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+/** Match the twelve-character fingerprint embedded by the legacy v2 task. */
+export async function legacyAudioFilesLegacyFingerprint(
+  audioFiles: LegacyAudioFile[],
+): Promise<string> {
+  const rows = audioFiles
+    .map((file) => [
+      file.id,
+      file.chunk_timestamps.length,
+      Math.round(file.chunk_timestamps.at(-1)! * 1_000) / 1_000,
+    ])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  const digest = await crypto.subtle.digest(
+    "SHA-1",
+    new TextEncoder().encode(JSON.stringify(rows)),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  )
+    .join("")
+    .slice(0, 12);
 }
 
 function parseLegacySource(
@@ -605,6 +629,58 @@ async function planSources(
   return { planned, totalPcmBytes };
 }
 
+/** Materialize one bounded canonical PCM artifact before MP3 encoding. */
+async function collectPcm(
+  env: JobsEnv,
+  planned: PlannedSource[],
+  totalPcmBytes: number,
+  key: CryptoKey | null,
+): Promise<Uint8Array> {
+  if (
+    !Number.isSafeInteger(totalPcmBytes) ||
+    totalPcmBytes <= 0 ||
+    totalPcmBytes > MAX_MP3_PCM_BYTES ||
+    totalPcmBytes % 2 !== 0
+  ) {
+    throw new LegacyAudioSourceError("legacy playback MP3 is too large");
+  }
+  const output = new Uint8Array(totalPcmBytes);
+  let offset = 0;
+  const append = (chunk: Uint8Array): void => {
+    if (chunk.byteLength > output.byteLength - offset)
+      throw new LegacyAudioSourceError("legacy playback PCM length changed");
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  };
+  for (const source of planned) {
+    if (source.gapBytes) {
+      const gap = Math.min(source.gapBytes, output.byteLength - offset);
+      output.fill(0, offset, offset + gap);
+      offset += gap;
+    }
+    for await (const chunk of pcmChunks(env, source, key)) append(chunk);
+  }
+  if (offset !== totalPcmBytes)
+    throw new LegacyAudioSourceError("legacy playback PCM length changed");
+  return output;
+}
+
+async function collectFilePcm(
+  env: JobsEnv,
+  inventory: LegacySource[],
+  sourceFile: LegacyAudioFile,
+  key: CryptoKey | null,
+): Promise<{ pcm: Uint8Array; startedAt: number } | null> {
+  const sources = selectLegacySources(inventory, sourceFile.chunk_timestamps);
+  if (!sources.length) return null;
+  const { planned, totalPcmBytes } = await planSources(env, sources, key);
+  if (!planned.length || !totalPcmBytes) return null;
+  return {
+    pcm: await collectPcm(env, planned, totalPcmBytes, key),
+    startedAt: planned[0].start,
+  };
+}
+
 async function storeLegacyPlaybackFile(
   env: JobsEnv,
   job: PlaybackJob,
@@ -920,5 +996,277 @@ export async function rebuildLegacyConversationAudio(
     rebuilt_audio_file_count: playback.length,
     unavailable_audio_file_ids: unavailableAudioFileIds,
     dense_storage_key: conversationAudio.storage_key,
+  };
+}
+
+export type LegacyMp3RebuildResult = {
+  conversation_id: string;
+  audio_file_id: string;
+  content_type: "audio/mpeg";
+  storage_key: string;
+  bytes: number;
+};
+
+type LegacyMp3Inputs = {
+  row: ConversationRow;
+  sourceFiles: LegacyAudioFile[];
+  inventory: LegacySource[];
+  encryptionKey: CryptoKey | null;
+};
+
+async function legacyMp3Inputs(
+  env: JobsEnv,
+  job: PlaybackJob,
+  conversationId: string,
+  expectedFingerprint: string | null,
+): Promise<LegacyMp3Inputs> {
+  if (
+    !isLegacyAudioPathSegment(job.uid) ||
+    !isLegacyAudioPathSegment(conversationId)
+  )
+    throw new LegacyAudioSourceError("legacy audio identity is invalid");
+  if (!(await recordingStorageEnabled(env, job.uid)))
+    throw new LegacyAudioSourceError("recording storage is disabled");
+  const row = await env.APP_DB.prepare(
+    "SELECT created_at, updated_at, started_at, is_locked, audio_files_json, conversation_audio_json " +
+      "FROM cf_conversations WHERE uid = ? AND id = ?",
+  )
+    .bind(job.uid, conversationId)
+    .first<ConversationRow>();
+  if (!row) throw new LegacyAudioSourceError("conversation no longer exists");
+  if (row.is_locked)
+    throw new LegacyAudioSourceError(
+      "locked conversation cannot rebuild audio",
+    );
+  const sourceFiles = legacyAudioFiles(row.audio_files_json);
+  if (!sourceFiles.length)
+    throw new LegacyAudioSourceError(
+      "conversation has no legacy audio metadata",
+    );
+  if (expectedFingerprint) {
+    const modernFingerprint = await legacyAudioFilesFingerprint(sourceFiles);
+    const legacyFingerprint = await legacyAudioFilesLegacyFingerprint(sourceFiles);
+    if (
+      expectedFingerprint !== modernFingerprint &&
+      expectedFingerprint !== legacyFingerprint
+    )
+      throw new LegacyAudioSourceError(
+        "conversation audio changed before rebuild",
+      );
+  }
+  const inventory = await listLegacySources(env, job.uid, conversationId);
+  if (!inventory.length)
+    throw new LegacyAudioSourceError(
+      "legacy audio chunks are not available in R2",
+    );
+  const needsEncryption = inventory.some((source) => source.encrypted);
+  const encryptionKey = needsEncryption
+    ? await legacyEncryptionKey(
+        env.LEGACY_AUDIO_ENCRYPTION_SECRET || "",
+        job.uid,
+      )
+    : null;
+  return { row, sourceFiles, inventory, encryptionKey };
+}
+
+function validLegacyTimestamps(value: unknown): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= MAX_ENCRYPTED_FRAMES &&
+    value.every(
+      (timestamp) =>
+        typeof timestamp === "number" &&
+        Number.isFinite(timestamp) &&
+        timestamp > 0 &&
+        timestamp <= 4_102_444_800,
+    )
+  );
+}
+
+/** Build the legacy schema-v1 per-file MP3 artifact from R2 chunks. */
+export async function rebuildLegacyAudioFileMp3(
+  env: JobsEnv,
+  job: PlaybackJob,
+  conversationId: string,
+  audioFileId: string,
+  timestamps: number[],
+  now: number,
+): Promise<LegacyMp3RebuildResult> {
+  if (!isLegacyAudioPathSegment(audioFileId) || !validLegacyTimestamps(timestamps))
+    throw new LegacyAudioSourceError("legacy audio file payload is invalid");
+  const { sourceFiles, inventory, encryptionKey } = await legacyMp3Inputs(
+    env,
+    job,
+    conversationId,
+    null,
+  );
+  const sourceFile = sourceFiles.find((file) => file.id === audioFileId);
+  if (!sourceFile)
+    throw new LegacyAudioSourceError("legacy audio file is not in conversation");
+  const source = await collectFilePcm(
+    env,
+    inventory,
+    {
+      ...sourceFile,
+      chunk_timestamps: [...new Set(timestamps)].sort(
+        (left, right) => left - right,
+      ),
+    },
+    encryptionKey,
+  );
+  if (!source)
+    throw new LegacyAudioSourceError(
+      "legacy audio chunks do not match requested timestamps",
+    );
+  const encoded = await encodePcm16MonoToMp3(source.pcm);
+  const storageKey = `playback/${job.uid}/${conversationId}/${audioFileId}.mp3`;
+  await recordPlaybackIntent(
+    env,
+    job,
+    conversationId,
+    audioFileId,
+    storageKey,
+    now,
+  );
+  await env.ASSETS.put(storageKey, encoded, {
+    httpMetadata: { contentType: "audio/mpeg" },
+    customMetadata: {
+      uid: job.uid,
+      conversationId,
+      audioFileId,
+      sampleRate: String(PLAYBACK_SAMPLE_RATE),
+      channels: String(PLAYBACK_CHANNELS),
+      bitrate: "48",
+      importedFrom: "legacy-gcs-chunks",
+    },
+  });
+  await markPlaybackStored(env, job.uid, storageKey, now);
+  return {
+    conversation_id: conversationId,
+    audio_file_id: audioFileId,
+    content_type: "audio/mpeg",
+    storage_key: storageKey,
+    bytes: encoded.byteLength,
+  };
+}
+
+/** Build the legacy schema-v2 dense MP3 and atomically stamp its D1 metadata. */
+export async function rebuildLegacyConversationMp3(
+  env: JobsEnv,
+  job: PlaybackJob,
+  conversationId: string,
+  expectedFingerprint: string | null,
+  now: number,
+): Promise<LegacyAudioRebuildResult> {
+  const { row, sourceFiles, inventory, encryptionKey } =
+    await legacyMp3Inputs(env, job, conversationId, expectedFingerprint);
+  const parts: Array<{ id: string; pcm: Uint8Array; startedAt: number }> = [];
+  for (const sourceFile of sourceFiles) {
+    const part = await collectFilePcm(
+      env,
+      inventory,
+      sourceFile,
+      encryptionKey,
+    );
+    if (part)
+      parts.push({ id: sourceFile.id, pcm: part.pcm, startedAt: part.startedAt });
+  }
+  if (!parts.length)
+    throw new LegacyAudioSourceError(
+      "legacy audio chunks do not match conversation metadata",
+    );
+  const totalPcmBytes = parts.reduce((total, part) => total + part.pcm.byteLength, 0);
+  if (totalPcmBytes > MAX_MP3_PCM_BYTES)
+    throw new LegacyAudioSourceError("legacy conversation MP3 is too large");
+  const pcm = new Uint8Array(totalPcmBytes);
+  let pcmOffset = 0;
+  let artifactOffset = 0;
+  const startedAt = row.started_at ?? row.created_at;
+  const spans = parts.map((part) => {
+    pcm.set(part.pcm, pcmOffset);
+    pcmOffset += part.pcm.byteLength;
+    const length = part.pcm.byteLength / PCM_BYTES_PER_SECOND;
+    const span = {
+      file_id: part.id,
+      wall_offset:
+        Math.round(Math.max(0, part.startedAt - startedAt) * 1_000) / 1_000,
+      artifact_offset: Math.round(artifactOffset * 1_000) / 1_000,
+      len: Math.round(length * 1_000) / 1_000,
+    };
+    artifactOffset += length;
+    return span;
+  });
+  const encoded = await encodePcm16MonoToMp3(pcm);
+  const storageKey = `playback/${job.uid}/${conversationId}/conversation.mp3`;
+  await recordPlaybackIntent(
+    env,
+    job,
+    conversationId,
+    "conversation",
+    storageKey,
+    now,
+  );
+  await env.ASSETS.put(storageKey, encoded, {
+    httpMetadata: { contentType: "audio/mpeg" },
+    customMetadata: {
+      uid: job.uid,
+      conversationId,
+      audioFileId: "conversation",
+      sampleRate: String(PLAYBACK_SAMPLE_RATE),
+      channels: String(PLAYBACK_CHANNELS),
+      bitrate: "48",
+      importedFrom: "legacy-gcs-chunks",
+    },
+  });
+  await markPlaybackStored(env, job.uid, storageKey, now);
+  const currentFingerprint = await legacyAudioFilesLegacyFingerprint(sourceFiles);
+  const conversationAudio = {
+    audio_files_fingerprint: currentFingerprint,
+    duration:
+      Math.round((spans.at(-1)!.wall_offset + spans.at(-1)!.len) * 1_000) /
+      1_000,
+    captured_duration: Math.round(artifactOffset * 1_000) / 1_000,
+    spans,
+    content_type: "audio/mpeg",
+    storage_key: storageKey,
+    built_at: now,
+  };
+  const encodedConversationAudio = JSON.stringify(conversationAudio);
+  if (
+    new TextEncoder().encode(encodedConversationAudio).byteLength >
+    MAX_CONVERSATION_AUDIO_JSON_BYTES
+  )
+    throw new LegacyAudioSourceError(
+      "legacy conversation artifact metadata is too large",
+    );
+  const revision = row.updated_at ?? row.created_at;
+  const nextRevision = Math.max(now, revision + 1);
+  const updated = await env.APP_DB.prepare(
+    "UPDATE cf_conversations SET updated_at = ?, conversation_audio_json = ? " +
+      "WHERE uid = ? AND id = ? AND COALESCE(updated_at, created_at) = ? " +
+      "AND NOT EXISTS (SELECT 1 FROM cf_recording_deletion_intents WHERE uid = ?)",
+  )
+    .bind(
+      nextRevision,
+      encodedConversationAudio,
+      job.uid,
+      conversationId,
+      revision,
+      job.uid,
+    )
+    .run();
+  if (updated.meta?.changes !== 1)
+    throw new Error("legacy conversation metadata changed concurrently");
+  await commitPlaybackObjects(env, job.uid, [storageKey], nextRevision);
+  return {
+    conversation_id: conversationId,
+    audio_files_fingerprint: currentFingerprint,
+    audio_file_count: sourceFiles.length,
+    rebuilt_audio_file_count: parts.length,
+    unavailable_audio_file_ids: sourceFiles
+      .filter((sourceFile) => !parts.some((part) => part.id === sourceFile.id))
+      .map((sourceFile) => sourceFile.id),
+    dense_storage_key: storageKey,
   };
 }

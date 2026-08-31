@@ -1454,6 +1454,7 @@ app.post(
 app.post("/v2/chat/completions", legacyChatCompatibilityStagingBoundary);
 app.post("/v1/files", legacyChatFilesStagingBoundary);
 app.post("/v2/files", legacyChatFilesStagingBoundary);
+app.post("/v2/audio-merge-jobs/run", proxyAuthenticatedJobs);
 app.get("/v1/wrapped/:year", legacyWrappedStagingBoundary);
 app.post("/v1/wrapped/:year/generate", legacyWrappedStagingBoundary);
 app.delete("/v1/staged-tasks", legacyTaskIntelligenceStagingBoundary);
@@ -1571,6 +1572,8 @@ app.get("/v1/cf/chat-files", proxyAuthenticatedJobs);
 app.delete("/v1/cf/chat-files/:fileId", proxyAuthenticatedJobs);
 app.post("/v2/cf/audio-merge-jobs/run", proxyAuthenticatedJobs);
 app.get("/v2/cf/audio-merge-jobs/:jobId", proxyAuthenticatedJobs);
+app.post("/v2/cf/audio-merge-jobs/legacy/run", proxyAuthenticatedJobs);
+app.get("/v2/cf/audio-merge-jobs/legacy/:jobId", proxyAuthenticatedJobs);
 app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedJobs);
 app.get("/v1/sync/audio/:conversationId/urls", proxyAuthenticatedCore);
 app.get("/v3/speech-profile", proxyAuthenticatedCore);

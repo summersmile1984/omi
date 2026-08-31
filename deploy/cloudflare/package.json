@@ -17,6 +17,7 @@
     "rollback:staging": "node scripts/rollback-staging.mjs"
   },
   "dependencies": {
+    "@audio/encode-mp3": "1.2.2",
     "@better-auth/mcp": "1.7.2",
     "@modelcontextprotocol/server": "2.0.0",
     "@noble/hashes": "2.4.0",

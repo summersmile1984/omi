@@ -803,6 +803,8 @@ async function assertStorageKeysBoundToAccount(env: JobsEnv, uid: string) {
     ["cf_chat_files", "storage_key"],
     ["cf_audio_merge_jobs", "source_prefix"],
     ["cf_audio_merge_jobs", "artifact_key"],
+    ["cf_audio_merge_legacy_jobs", "source_prefix"],
+    ["cf_audio_merge_legacy_jobs", "artifact_key"],
   ] as const;
   for (const [table, column] of checks) {
     const columnPrefixPredicate = storagePrefixes

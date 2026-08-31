@@ -524,7 +524,7 @@
     {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/x/sync", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "edge", "path": "/v2/agent/provision", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "edge", "path": "/v2/agent/vm/stop-self", "protocol": "http", "target_runtime": "typescript-worker"},
-    {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/audio-merge-jobs/run", "protocol": "http", "target_runtime": "legacy"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "jobs", "path": "/v2/audio-merge-jobs/run", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v2/chat-sessions", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "legacy-owned", "owner": "legacy", "path": "/v2/chat/completions", "protocol": "http", "target_runtime": "legacy"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v2/chat/generate-reply", "protocol": "http", "target_runtime": "python-worker"},

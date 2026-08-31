@@ -95,6 +95,10 @@ import {
   registerAudioMergeRoutes,
 } from "./audio-merge-boundary";
 import {
+  processLegacyAudioMergeJobMessage,
+  registerLegacyAudioMergeRoutes,
+} from "./audio-merge-legacy-boundary";
+import {
   processMemoryShortTermLifecycleMessage,
   registerMemoryShortTermLifecycleRoutes,
 } from "./memory-short-term-lifecycle";
@@ -172,6 +176,7 @@ registerLimitlessImportRoutes(app, requestContext);
 registerChatFileRoutes(app, requestContext);
 registerPersonaMutationRoutes(app, requestContext);
 registerAudioMergeRoutes(app, requestContext);
+registerLegacyAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);
 registerHumeWebhookRoutes(app);
 
@@ -942,6 +947,10 @@ async function processJobMessage(
 ): Promise<void> {
   if (message.body.kind === "audio_merge") {
     await processAudioMergeJobMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "audio_merge_legacy") {
+    await processLegacyAudioMergeJobMessage(message, env);
     return;
   }
   if (message.body.kind === "memory_short_term_lifecycle") {
