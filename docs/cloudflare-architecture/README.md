@@ -36,7 +36,7 @@
 ## 本轮验证证据
 
 - Cloudflare TypeScript：68 个测试文件、529 个测试通过；类型检查和生产依赖审计通过。
-- `api-core`：371 个测试通过；`api-ai`：100 个测试通过。
+- `api-core`：377 个测试通过；`api-ai`：100 个测试通过。
 - Web：9 个测试文件、41 个测试通过；vinext staging build 与 Worker dry-run 通过。
 - manifest：594 条 Cloudflare 路由、577 条完整 backend 路由和 23 个 staging 资源通过校验；18 条 legacy-owned 路由成为可量化迁移队列。D1 review queue 的三个端点已由 API Core/Edge 承载，并由 canonical memory 写入 producer、source revision/hash projection 和原子 resolve 覆盖；conversation finalize/status/reprocess/merge 已声明 API Core owner，`0094`/`0095`/`0096` staging migration 与 live Queue 验证已完成；`GET/POST /v1/agent/*` 已切到 API Core，并仅声明/执行已具备 D1 authority 的一方工具。
 - 本轮新增两个正向 owner：Wrapped 的两条 `/v1/wrapped/*` 路径由 Jobs 以 `0107_wrapped_jobs.sql`、D1 bounded projection、Workers AI structured output、Queue lease/retry 和 notification outbox 承载；六条 `/v1/phone/*` 路径由 Jobs 以 `0108_phone_twilio.sql`、Twilio REST/Voice JWT、签名 TwiML、quota 与 deletion fence 承载。两组均已通过本地正向/失败/跨账号测试；真实 staging provider probe、历史 Firestore backfill 和 production cutover 尚未完成。
