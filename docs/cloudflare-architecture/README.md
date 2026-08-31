@@ -44,6 +44,7 @@
 - 隔离 smoke 账号的真实公开删号返回 200，随后 live Queue 完成两次零 residual scan；App D1 intent/cutover/conversation/chat/memory 和 Auth user/session/account 均验证为 0，25 小时 tombstone 已落库。
 - `npm run deploy:staging`：健康检查、迁移和 smoke 全部通过；Edge health 为 200。
 - 最新分支发布尝试已通过 backend-route/manifest preflight，但在调用 Wrangler 前因未设置 `CLOUDFLARE_SMOKE_BEARER_TOKEN` 或 `CLOUDFLARE_SMOKE_TOKEN_FILE` 停止；因此本轮 Calendar callback 与 task-goal link 更新尚未进入 staging。
+- 线上 staging 复核（2026-08-31）：`GET /health` 仍返回 Edge `version=cf-01`；canonical Calendar callback 在缺少 OAuth 参数时返回预期的 HTML authentication error，而新加入的 underscore/generic callback alias 尚未随分支发布，当前仍分别返回 `401`。这与发布门禁未取得专用 smoke token 一致，不把旧线上版本误判为本轮代码失败。
 - 浏览器 staging：`/recaps`、`/chat`、`/conversations`、`/memories`、`/my-apps`、`/tasks`、`/settings` 均无新的 API error/404。
 - MCP OAuth 根路径/后缀 discovery 的 `GET/HEAD` 均为 200；grant list 未认证为 401、隔离 Better Auth 账号为 200；撤销后的 token 在 Auth live-consent 检查处立即失效。CIMD 因 Workers 无法满足 DNS pinning transport contract 而明确不广告。
 - MCP OAuth 根路径别名的本地 Edge 验证覆盖 `GET/POST /authorize`、`POST /token`、查询串/body 保留、cookie/Authorization 透传和不可信身份头剥离；下游统一落到 Better Auth `/api/better-auth/oauth2/*`。
