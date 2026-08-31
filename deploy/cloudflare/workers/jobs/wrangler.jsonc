@@ -17,6 +17,7 @@
     "WORKERS_AI_X_MEMORY_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "WORKERS_AI_WRAPPED_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "MCP_APP_OAUTH_STAGING_ENABLED": "false",
+    "CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED": "false",
   },
   // Secrets provisioned with `wrangler secret put`: ADMIN_KEY, APPS_ADMIN_KEY,
   // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets,

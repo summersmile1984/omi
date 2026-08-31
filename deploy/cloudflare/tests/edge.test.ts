@@ -931,6 +931,62 @@ describe("edge gateway", () => {
     expect(jobsRequests).toHaveLength(1);
   });
 
+  it("routes the explicitly enabled attachment completion envelope to Jobs", async () => {
+    const jobsRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED: "true",
+      CHAT_COMPAT_STAGING_FAIL_CLOSED: "true",
+      AUTH: service((request) => {
+        if (new URL(request.url).pathname === "/internal/verify")
+          return Response.json({ uid: "user-1", authority: "better-auth" });
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service(() => Response.json({ status: "ok" })),
+      API_AI: rawService(() => Response.json({ route: "api-ai" })),
+      JOBS: rawService(async (request) => {
+        jobsRequests.push(request);
+        return new Response("data: [DONE]\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }),
+      RATE_LIMITS: rateLimits(() => allowRateLimit()),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v2/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: "Describe this file" }],
+          file_ids: ["file-1"],
+          stream: true,
+        }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    await expect(response.text()).resolves.toBe("data: [DONE]\n\n");
+    expect(jobsRequests).toHaveLength(1);
+    expect(new URL(jobsRequests[0].url).pathname).toBe(
+      "/v2/cf/messages/attachments",
+    );
+    expect(new URL(jobsRequests[0].url).searchParams.get("envelope")).toBe(
+      "openai",
+    );
+    await expect(jobsRequests[0].json()).resolves.toMatchObject({
+      model: "gpt-4o-mini",
+      file_ids: ["file-1"],
+      stream: true,
+    });
+  });
+
   it("routes explicit archive memory search through the authenticated API Core boundary", async () => {
     const coreRequests: Request[] = [];
     const env = {

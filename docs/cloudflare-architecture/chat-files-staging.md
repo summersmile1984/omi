@@ -120,8 +120,13 @@ legacy wire parity。当前只新增了一个默认关闭的附件 bridge：Edge
 API-AI 的 Workers AI text path。Jobs bridge 复用 `cf_chat_session_files`、Assistants
 run/message projection 和 Queue，不读取或信任客户端 provider id；admission 成功返回
 `202` JSON，并通过 `Location` 和 `x-omi-chat-stream: poll` 指向 run polling，而不是旧
-客户端的 SSE。`CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED` 仍必须显式打开，关闭时 bridge
-返回 `404 legacy_route_disabled`。
+客户端的 SSE。另有独立的 `CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED` 开关：打开后，
+`envelope=messages` 只在 Assistants run 已完成且 D1 message projection ready 时返回旧
+`data: ...`/`done: <base64 ResponseMessage>` SSE；`envelope=openai` 对简单字符串
+`messages` 返回 OpenAI sync JSON 或 `stream=true` SSE。任何等待超时仍返回 202/poll，
+不会伪造完成结果。两个开关（`CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED` 和
+`CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED`）都必须显式打开，关闭时 bridge 返回
+`404 legacy_route_disabled`。
 
 因此该 bridge 只是客户端迁移用的 staging contract，不是 `/v2/messages` legacy owner
 切换。未覆盖的 legacy contract 包括 Firestore `users/{uid}/files`/chat session 历史
@@ -145,8 +150,12 @@ Jobs admission 先复用同一 uid 下已有的非 app chat session 和 session-
 且不回落 legacy。响应不包含 provider credential，run 结果通过现有
 `GET /v2/cf/chat-sessions/{sessionId}/assistant-runs/{runId}` 读取。
 
-此 bridge 尚未提供旧 `/v2/messages` 的 SSE、同步 200 response、Firestore session
-连续性或历史 file backfill，因此不能作为 legacy owner 切换证据。验证命令：
+可选 envelope 只覆盖附件、纯文本、单次 bounded response：它没有 provider usage，
+不会映射 tools/BYOK/multimodal/quota，也不提供旧 `/v2/messages` 的完整多轮 SSE、
+同步 response、Firestore session 连续性或历史 file backfill，因此不能作为 legacy
+owner 切换证据。`/v2/chat/completions` 仍仅在 body 含顶层 `file_ids`、无 app/plugin/
+context 且满足上述 gate 时进入该 adapter；普通 text completions 继续 fail-closed。
+验证命令：
 
 ```bash
 npm test -- --run tests/chat-attachments-bridge.test.ts tests/edge.test.ts

@@ -85,6 +85,8 @@ export type JobsEnv = {
   CHAT_FILE_THUMBNAIL_SECRET?: string;
   /** Explicit opt-in while the legacy upload owner is being cut over. */
   LEGACY_CHAT_FILES_STAGING_ENABLED?: string;
+  /** Explicit opt-in for legacy-shaped attachment SSE/JSON envelopes. */
+  CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED?: string;
   SYNC_CONTENT_ID_SECRET?: string;
   LEGACY_AUDIO_ENCRYPTION_SECRET?: string;
   STRIPE_SECRET_KEY?: string;

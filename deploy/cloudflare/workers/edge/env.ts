@@ -35,6 +35,8 @@ export type EdgeEnv = {
   PERSONA_APPS_STAGING_FAIL_CLOSED?: string;
   /** Explicit staging opt-in for the guarded canonical chat-file aliases. */
   LEGACY_CHAT_FILES_STAGING_ENABLED?: string;
+  /** Explicit staging opt-in for legacy-shaped attachment SSE/JSON envelopes. */
+  CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED?: string;
   BYOK_FINGERPRINT_PEPPER?: string;
   ALLOWED_ORIGINS?: string;
 };

@@ -12,6 +12,9 @@ const MAX_IDEMPOTENCY_BYTES = 300;
 const MAX_ATTACHMENTS = 20;
 const MAX_ATTACHMENT_BRIDGE_BODY_BYTES = 128 * 1024;
 const MAX_ATTACHMENT_ID_BYTES = 128;
+const MAX_ATTACHMENT_ENVELOPE_WAIT_MS = 4_000;
+const ATTACHMENT_ENVELOPE_POLL_INTERVAL_MS = 100;
+const DEFAULT_ATTACHMENT_ENVELOPE_MODEL = "cloudflare-assistants";
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type AuthContext = { uid: string; authority?: string };
@@ -416,6 +419,33 @@ function resultText(row: AssistantRunRow): string | null {
   }
 }
 
+async function hydrateCompletedAssistantResult(
+  env: JobsEnv,
+  uid: string,
+  row: AssistantRunRow,
+  now: number,
+): Promise<AssistantRunRow> {
+  if (resultText(row) !== null || !row.provider_run_id) return row;
+  const session = await existingSession(env, uid, row.session_id);
+  if (!session || session.status !== "active")
+    throw new ChatAssistantProviderError(
+      "provider_rejected",
+      "chat assistant session not found",
+    );
+  const messages = await providerJson(
+    env,
+    `/threads/${encodeURIComponent(session.thread_id)}/messages?limit=20`,
+    { method: "GET" },
+  );
+  const answer = assistantText(messages);
+  await env.APP_DB.prepare(
+    "UPDATE cf_chat_assistant_runs SET result_json = ?, updated_at = ? WHERE uid = ? AND run_id = ? AND status = 'completed' AND result_json IS NULL",
+  )
+    .bind(JSON.stringify(answer ? { text: answer } : {}), now, uid, row.run_id)
+    .run();
+  return (await runRow(env, uid, row.run_id)) || row;
+}
+
 async function persistAssistantMessageProjection(
   env: JobsEnv,
   uid: string,
@@ -768,8 +798,9 @@ export async function pollAssistantRun(
     return publicRun(row);
   }
   if (row.status === "completed") {
+    const hydrated = await hydrateCompletedAssistantResult(env, uid, row, now);
     try {
-      await persistAssistantMessageProjection(env, uid, row, resultText(row), now);
+      await persistAssistantMessageProjection(env, uid, hydrated, resultText(hydrated), now);
     } catch {
       throw new ChatAssistantProviderError(
         "provider_unavailable",
@@ -778,7 +809,7 @@ export async function pollAssistantRun(
       );
     }
     const projected = await runRow(env, uid, runId);
-    return publicRun(projected || row);
+    return publicRun(projected || hydrated);
   }
   const session = await existingSession(env, uid, row.session_id);
   if (!session || session.status !== "active") throw new ChatAssistantProviderError("provider_rejected", "chat assistant session not found");
@@ -973,7 +1004,11 @@ type AttachmentBridgePayload = {
   text: string;
   fileIds: string[];
   sessionId?: string;
+  stream: boolean;
+  model: string;
 };
+
+type AttachmentEnvelope = "messages" | "openai";
 
 async function boundedRequestText(c: JobsContext, limit: number): Promise<string> {
   const declared = Number(c.req.header("content-length") || "0");
@@ -1013,7 +1048,18 @@ async function boundedRequestText(c: JobsContext, limit: number): Promise<string
   }
 }
 
-async function parseAttachmentBridgePayload(c: JobsContext): Promise<AttachmentBridgePayload> {
+function validModel(value: string): boolean {
+  return (
+    validSegment(value, 128) &&
+    !/[\u0000-\u001f\u007f]/.test(value) &&
+    new TextEncoder().encode(value).byteLength <= 128
+  );
+}
+
+async function parseAttachmentBridgePayload(
+  c: JobsContext,
+  envelope: AttachmentEnvelope | null = null,
+): Promise<AttachmentBridgePayload> {
   const raw = await boundedRequestText(c, MAX_ATTACHMENT_BRIDGE_BODY_BYTES);
   let decoded: unknown;
   try {
@@ -1024,10 +1070,34 @@ async function parseAttachmentBridgePayload(c: JobsContext): Promise<AttachmentB
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded))
     throw new ChatAssistantProviderError("provider_rejected", "request body must be an object");
   const payload = decoded as Record<string, unknown>;
-  const allowed = new Set(["text", "file_ids", "session_id"]);
+  const allowed = new Set(
+    envelope === "openai"
+      ? ["messages", "file_ids", "session_id", "stream", "model"]
+      : ["text", "file_ids", "session_id"],
+  );
   if (Object.keys(payload).some((key) => !allowed.has(key)))
     throw new ChatAssistantProviderError("provider_rejected", "unsupported attachment request field");
-  const text = typeof payload.text === "string" ? payload.text : "";
+  let text = typeof payload.text === "string" ? payload.text : "";
+  if (envelope === "openai") {
+    const messages = payload.messages;
+    if (!Array.isArray(messages) || messages.length === 0 || messages.length > 64)
+      throw new ChatAssistantProviderError("provider_rejected", "chat messages are invalid");
+    let latestUserMessage = "";
+    for (const message of messages) {
+      if (!message || typeof message !== "object" || Array.isArray(message))
+        throw new ChatAssistantProviderError("provider_rejected", "chat messages are invalid");
+      const entry = message as Record<string, unknown>;
+      if (
+        Object.keys(entry).some((key) => key !== "role" && key !== "content") ||
+        !["system", "user", "assistant"].includes(String(entry.role)) ||
+        typeof entry.content !== "string" ||
+        new TextEncoder().encode(entry.content).byteLength > MAX_TEXT_BYTES
+      )
+        throw new ChatAssistantProviderError("provider_rejected", "chat messages are invalid");
+      if (entry.role === "user") latestUserMessage = entry.content;
+    }
+    text = latestUserMessage;
+  }
   if (!text.trim() || new TextEncoder().encode(text).byteLength > MAX_TEXT_BYTES)
     throw new ChatAssistantProviderError("provider_rejected", "chat question is invalid");
   const rawFileIds = payload.file_ids;
@@ -1046,7 +1116,19 @@ async function parseAttachmentBridgePayload(c: JobsContext): Promise<AttachmentB
   const sessionValue = payload.session_id;
   if (sessionValue !== undefined && (typeof sessionValue !== "string" || !validSegment(sessionValue, 256)))
     throw new ChatAssistantProviderError("provider_rejected", "chat session is invalid");
-  return { text, fileIds, ...(sessionValue === undefined ? {} : { sessionId: sessionValue }) };
+  const stream = payload.stream === undefined ? false : payload.stream;
+  if (typeof stream !== "boolean")
+    throw new ChatAssistantProviderError("provider_rejected", "chat stream option is invalid");
+  const model = payload.model === undefined ? DEFAULT_ATTACHMENT_ENVELOPE_MODEL : payload.model;
+  if (typeof model !== "string" || !validModel(model))
+    throw new ChatAssistantProviderError("provider_rejected", "chat model is invalid");
+  return {
+    text,
+    fileIds,
+    stream,
+    model,
+    ...(sessionValue === undefined ? {} : { sessionId: sessionValue }),
+  };
 }
 
 async function resolveAttachmentSession(
@@ -1111,16 +1193,236 @@ function attachmentResponseHeaders(sessionId: string, runId: string): Record<str
   };
 }
 
+function envelopeResponseHeaders(envelope: AttachmentEnvelope): Record<string, string> {
+  return {
+    "cache-control": "no-store",
+    "x-omi-chat-contract": "cloudflare-assistants-envelope-v1",
+    "x-omi-chat-envelope": `${envelope}-v1`,
+  };
+}
+
+function base64Utf8(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+async function projectedAssistantMessage(
+  env: JobsEnv,
+  uid: string,
+  run: AssistantRunRow,
+): Promise<Record<string, unknown>> {
+  const messageId = run.assistant_message_id;
+  if (!messageId || run.assistant_status !== "ready")
+    throw new ChatAssistantProviderError(
+      "provider_unavailable",
+      "chat assistant message projection is not ready",
+      true,
+    );
+  const row = await env.APP_DB.prepare(
+    "SELECT message_json FROM cf_chat_messages WHERE uid = ? AND id = ? LIMIT 1",
+  )
+    .bind(uid, messageId)
+    .first<{ message_json?: string }>();
+  if (!row?.message_json)
+    throw new ChatAssistantProviderError(
+      "provider_unavailable",
+      "chat assistant message projection is missing",
+      true,
+    );
+  let message: unknown;
+  try {
+    message = JSON.parse(row.message_json);
+  } catch {
+    throw new ChatAssistantProviderError(
+      "invalid_provider_response",
+      "chat assistant message projection is invalid",
+    );
+  }
+  if (
+    !message ||
+    typeof message !== "object" ||
+    Array.isArray(message) ||
+    (message as Record<string, unknown>).sender !== "ai" ||
+    typeof (message as Record<string, unknown>).text !== "string"
+  )
+    throw new ChatAssistantProviderError(
+      "invalid_provider_response",
+      "chat assistant message projection is invalid",
+    );
+  // The legacy ResponseMessage carries this field even when no NPS prompt is
+  // requested.  False is the only honest value available from this adapter;
+  // it is not an assertion of legacy quota/NPS parity.
+  return { ...(message as Record<string, unknown>), ask_for_nps: false };
+}
+
+function messagesEnvelopeBody(answer: string, message: Record<string, unknown>): string {
+  const normalized = answer.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, "__CRLF__");
+  return `data: ${normalized}\n\ndone: ${base64Utf8(JSON.stringify(message))}\n\n`;
+}
+
+function openAiCompletion(
+  run: AssistantRunRow,
+  answer: string,
+  model: string,
+): Record<string, unknown> {
+  const id = `chatcmpl-${run.assistant_message_id || run.run_id}`;
+  return {
+    id,
+    object: "chat.completion",
+    created: run.updated_at || run.created_at,
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: answer },
+        finish_reason: "stop",
+      },
+    ],
+  };
+}
+
+function openAiCompletionSse(
+  run: AssistantRunRow,
+  answer: string,
+  model: string,
+): string {
+  const id = `chatcmpl-${run.assistant_message_id || run.run_id}`;
+  const created = run.updated_at || run.created_at;
+  const chunks = [
+    {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+    },
+    {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta: { content: answer }, finish_reason: null }],
+    },
+    {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    },
+  ];
+  return `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
+}
+
+async function waitForAttachmentEnvelopeRun(
+  env: JobsEnv,
+  uid: string,
+  sessionId: string,
+  runId: string,
+): Promise<AssistantRunRow> {
+  const deadline = Date.now() + MAX_ATTACHMENT_ENVELOPE_WAIT_MS;
+  let row = await runRowForSession(env, uid, sessionId, runId);
+  if (!row)
+    throw new ChatAssistantProviderError("provider_rejected", "chat assistant run not found");
+  while (true) {
+    if (
+      row.status === "failed" ||
+      row.status === "cancelled" ||
+      (row.status === "completed" && resultText(row) !== null && row.assistant_status === "ready")
+    )
+      return row;
+    if (Date.now() >= deadline) return row;
+    try {
+      await pollAssistantRun(env, uid, sessionId, runId);
+    } catch (error) {
+      if (!(error instanceof ChatAssistantProviderError) || !error.retryable) throw error;
+    }
+    row = await runRowForSession(env, uid, sessionId, runId);
+    if (!row)
+      throw new ChatAssistantProviderError("provider_unavailable", "chat assistant run disappeared", true);
+    if (
+      row.status === "failed" ||
+      row.status === "cancelled" ||
+      (row.status === "completed" && resultText(row) !== null && row.assistant_status === "ready")
+    )
+      return row;
+    if (Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, ATTACHMENT_ENVELOPE_POLL_INTERVAL_MS));
+  }
+}
+
+async function attachmentEnvelopeResponse(
+  c: JobsContext,
+  uid: string,
+  sessionId: string,
+  runId: string,
+  envelope: AttachmentEnvelope,
+  stream: boolean,
+  model: string,
+): Promise<Response> {
+  const run = await waitForAttachmentEnvelopeRun(c.env, uid, sessionId, runId);
+  if (run.status === "failed" || run.status === "cancelled")
+    return c.json(
+      { error: "chat_assistant_run_failed", run: publicRun(run) },
+      502,
+      envelopeResponseHeaders(envelope),
+    );
+  if (run.status !== "completed" || resultText(run) === null) {
+    return c.json(
+      { ...publicRun(run), queue_status: "pending" },
+      202,
+      { ...attachmentResponseHeaders(sessionId, runId), ...envelopeResponseHeaders(envelope) },
+    );
+  }
+  const answer = resultText(run) as string;
+  const message = await projectedAssistantMessage(c.env, uid, run);
+  if (envelope === "messages")
+    return new Response(messagesEnvelopeBody(answer, message), {
+      status: 200,
+      headers: {
+        ...envelopeResponseHeaders(envelope),
+        "content-type": "text/event-stream; charset=utf-8",
+        "x-omi-chat-stream": "sse",
+      },
+    });
+  if (stream)
+    return new Response(openAiCompletionSse(run, answer, model), {
+      status: 200,
+      headers: {
+        ...envelopeResponseHeaders(envelope),
+        "content-type": "text/event-stream; charset=utf-8",
+        "x-omi-chat-stream": "sse",
+      },
+    });
+  return c.json(openAiCompletion(run, answer, model), 200, {
+    ...envelopeResponseHeaders(envelope),
+    "content-type": "application/json; charset=utf-8",
+  });
+}
+
+function attachmentEnvelopeEnabled(c: JobsContext): boolean {
+  return stagingEnabled(c) && c.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED === "true";
+}
+
 export function registerChatAssistantRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: (c: JobsContext) => Promise<AuthContext | null>,
 ): void {
   app.post("/v2/cf/messages/attachments", async (c) => {
     if (!stagingEnabled(c)) return c.json({ error: "legacy_route_disabled" }, 404);
+    const envelopeValue = c.req.query("envelope");
+    const envelope: AttachmentEnvelope | null =
+      envelopeValue === "messages" || envelopeValue === "openai" ? envelopeValue : null;
+    if (envelopeValue && !envelope)
+      return c.json({ error: "provider_rejected", message: "unsupported chat envelope" }, 400);
+    if (envelope && !attachmentEnvelopeEnabled(c))
+      return c.json({ error: "legacy_route_disabled" }, 404);
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
-      const payload = await parseAttachmentBridgePayload(c);
+      const payload = await parseAttachmentBridgePayload(c, envelope);
       const now = Math.floor(Date.now() / 1000);
       const sessionId = await resolveAttachmentSession(c.env, context.uid, payload.sessionId, now);
       const idempotencyKey = attachmentIdempotencyKey(c);
@@ -1152,6 +1454,16 @@ export function registerChatAssistantRoutes(
           );
         }
       }
+      if (envelope)
+        return attachmentEnvelopeResponse(
+          c,
+          context.uid,
+          sessionId,
+          runId,
+          envelope,
+          payload.stream,
+          payload.model,
+        );
       return c.json(result, result.created ? 202 : 200, attachmentResponseHeaders(sessionId, runId));
     } catch (error) {
       return errorResponse(c, error);

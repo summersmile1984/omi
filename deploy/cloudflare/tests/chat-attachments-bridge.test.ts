@@ -88,12 +88,28 @@ function testApp(env: JobsEnv) {
   return app;
 }
 
-function provider() {
+function provider(options: { completed?: boolean } = {}) {
+  let messageNumber = 0;
+  let runNumber = 0;
   return vi.fn(async (input: string | URL) => {
     const url = String(input);
     if (url.endsWith("/threads")) return Response.json({ id: "thread-1" });
-    if (url.endsWith("/messages")) return Response.json({ id: "msg-1" });
-    return Response.json({ id: "run-1", status: "queued" });
+    if (url.includes("/messages?limit=")) {
+      return Response.json({
+        data: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: { value: "The file says hello." } }],
+          },
+        ],
+      });
+    }
+    if (url.match(/\/runs\/run-[0-9]+$/)) {
+      const id = url.slice(url.lastIndexOf("/") + 1);
+      return Response.json({ id, status: options.completed ? "completed" : "queued" });
+    }
+    if (url.endsWith("/messages")) return Response.json({ id: `msg-${++messageNumber}` });
+    return Response.json({ id: `run-${++runNumber}`, status: "queued" });
   });
 }
 
@@ -102,9 +118,10 @@ function request(
   env: JobsEnv,
   payload: Record<string, unknown>,
   idempotencyKey = "attachment-request-1",
+  query = "",
 ) {
   return app.request(
-    "https://jobs.test/v2/cf/messages/attachments",
+    `https://jobs.test/v2/cf/messages/attachments${query ? `?${query}` : ""}`,
     {
       method: "POST",
       headers: {
@@ -228,5 +245,86 @@ describe("Cloudflare /v2/messages attachment bridge", () => {
     expect(oversized.status).toBe(413);
     expect(calls).not.toHaveBeenCalled();
     expect(fixture.queue.send).not.toHaveBeenCalled();
+  });
+
+  it("emits the guarded legacy messages SSE envelope only after projection completion", async () => {
+    const fixture = environment();
+    fixture.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED = "true";
+    const app = testApp(fixture.env);
+    vi.stubGlobal("fetch", provider({ completed: true }));
+
+    const response = await request(
+      app,
+      fixture.env,
+      { text: "Summarize this file", file_ids: ["file-1"], session_id: "session-1" },
+      "messages-envelope",
+      "envelope=messages",
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(response.headers.get("x-omi-chat-envelope")).toBe("messages-v1");
+    const body = await response.text();
+    expect(body).toContain("data: The file says hello.\n\n");
+    const encoded = body.match(/done: ([A-Za-z0-9+/=]+)\n\n/)?.[1];
+    expect(encoded).toBeTruthy();
+    const message = JSON.parse(Buffer.from(encoded as string, "base64").toString("utf8"));
+    expect(message).toMatchObject({
+      sender: "ai",
+      text: "The file says hello.",
+      ask_for_nps: false,
+      chat_session_id: "session-1",
+    });
+  });
+
+  it("emits guarded OpenAI sync and SSE envelopes for simple textual messages", async () => {
+    const fixture = environment();
+    fixture.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED = "true";
+    const app = testApp(fixture.env);
+    vi.stubGlobal("fetch", provider({ completed: true }));
+
+    const sync = await request(
+      app,
+      fixture.env,
+      {
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "Describe this file" }],
+        file_ids: ["file-1"],
+        stream: false,
+      },
+      "openai-sync-envelope",
+      "envelope=openai",
+    );
+    expect(sync.status).toBe(200);
+    const syncPayload = await sync.json();
+    expect(syncPayload).toMatchObject({
+      object: "chat.completion",
+      model: "gpt-4o-mini",
+      choices: [
+        {
+          message: { role: "assistant", content: "The file says hello." },
+          finish_reason: "stop",
+        },
+      ],
+    });
+    expect(syncPayload).not.toHaveProperty("usage");
+
+    const stream = await request(
+      app,
+      fixture.env,
+      {
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "Describe this file" }],
+        file_ids: ["file-1"],
+        stream: true,
+      },
+      "openai-stream-envelope",
+      "envelope=openai",
+    );
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    const streamBody = await stream.text();
+    expect(streamBody).toContain('"object":"chat.completion.chunk"');
+    expect(streamBody).toContain('"content":"The file says hello."');
+    expect(streamBody).toContain("data: [DONE]\n\n");
   });
 });

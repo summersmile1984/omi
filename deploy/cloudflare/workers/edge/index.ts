@@ -1486,6 +1486,41 @@ async function inspectChatAttachmentBody(
   return { body: bytes.buffer, hasAttachments };
 }
 
+type ChatAttachmentEnvelope = "messages" | "openai";
+
+const proxyChatAttachmentToJobs = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+  inspected: ChatAttachmentRoutingResult,
+  envelope?: ChatAttachmentEnvelope,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const target = new URL("/v2/cf/messages/attachments", "https://jobs.internal");
+  if (envelope) target.searchParams.set("envelope", envelope);
+  const headers = await authenticatedHeaders(c, auth, "jobs", {
+    method: "POST",
+    url: target,
+  });
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.JOBS.fetch(
+    new Request(target, { method: "POST", headers, body: inspected.body }),
+  );
+  return withRequestId(response, id);
+};
+
 const proxyChatMessages = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -1513,6 +1548,8 @@ const proxyChatMessages = async (
   if (!appChatRequested) inspected = await inspectChatAttachmentBody(c.req.raw);
   if (inspected?.hasAttachments) {
     const target = new URL("/v2/cf/messages/attachments", "https://jobs.internal");
+    if (c.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED === "true")
+      target.searchParams.set("envelope", "messages");
     const headers = await authenticatedHeaders(c, auth, "jobs", {
       method: "POST",
       url: target,
@@ -1527,6 +1564,26 @@ const proxyChatMessages = async (
   if (headers instanceof Response) return withRequestId(headers, id);
   const response = await c.env.API_AI.fetch(new Request(c.req.raw, { headers }));
   return withRequestId(response, id);
+};
+
+// A bounded, explicit adapter for the attachment subset of the released
+// OpenAI-shaped completion route.  Text-only completions and all provider/tool
+// variants remain behind the legacy compatibility boundary.  Jobs owns the
+// envelope serialization only after its Assistants run is complete.
+const legacyChatCompletionsStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED !== "true")
+    return legacyChatCompatibilityStagingBoundary(c);
+  const url = new URL(c.req.url);
+  const appChatRequested = ["app_id", "plugin_id"].some((key) => {
+    const value = url.searchParams.get(key);
+    return value !== null && value !== "" && value !== "null";
+  });
+  if (appChatRequested) return legacyChatCompatibilityStagingBoundary(c);
+  const inspected = await inspectChatAttachmentBody(c.req.raw);
+  if (!inspected?.hasAttachments) return legacyChatCompatibilityStagingBoundary(c);
+  return proxyChatAttachmentToJobs(c, inspected, "openai");
 };
 
 app.get("/v1/config/api-keys", proxyAuthenticatedCore);
@@ -1621,7 +1678,7 @@ app.post(
   "/v2/chat/materialize-prompts",
   legacyChatCompatibilityStagingBoundary,
 );
-app.post("/v2/chat/completions", legacyChatCompatibilityStagingBoundary);
+app.post("/v2/chat/completions", legacyChatCompletionsStagingBoundary);
 app.post("/v1/files", legacyChatFilesStagingBoundary);
 app.post("/v2/files", legacyChatFilesStagingBoundary);
 app.post("/v2/audio-merge-jobs/run", proxyAuthenticatedJobs);
