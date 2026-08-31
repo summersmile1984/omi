@@ -1,6 +1,6 @@
 # Remaining legacy route contract gates
 
-截至 2026-09-01，Cloudflare route inventory 仍有 18 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
+截至 2026-09-01，Cloudflare route inventory 仍有 8 条 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 legacy owner 或返回已记录的 staging fail-closed 错误。
 
 ## 结论
 
@@ -12,13 +12,13 @@
 | External App OAuth | 2 | 部分准备，owner 阻塞 | namespaced `/v2/cf/oauth/*` 已有 Better Auth + App D1 authority；精确 `/v1/oauth/*` 仍需 legacy Firebase token、旧客户端 response、provider/历史 catalog continuity |
 | Phone / Twilio | 0 | staging owner，生产阻塞 | Jobs 已闭合 caller-ID 验证状态、Twilio API/token/webhook contract、quota 和删除清理；仍缺真实 provider 验证、历史回填和 production cutover |
 | Wrapped | 0 | staging owner，生产阻塞 | Jobs 已闭合 D1 recap 聚合、Workers AI structured output、通知和 job/result 状态；仍缺历史 Firestore 回填、真实 provider probe 和 production cutover |
-| Chat compatibility | 3 | 阻塞 | prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract 与 D1 chat session 不是同一语义 |
-| Persona / MCP mutation | 5 | 部分 staging owner | `PATCH /v1/personas/{persona_id}` 已对 D1-owned projection 提供 bounded CAS/R2/deletion-fence update；历史 Firestore prompt/image/cache continuity、Twitter provider identity 和 MCP OAuth token/discovery 仍未迁移 |
+| Chat compatibility | 0 | staging owner，生产阻塞 | Jobs/API-AI 已承载 bounded exact routes；仍需 prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract 与历史 D1 chat session parity |
+| Persona / MCP mutation | 2 | 部分 staging owner | MCP registration/callback/refresh 已由 Jobs exact boundary 承载；Twitter provider identity、Firebase owner migration、历史 Firestore prompt/image/cache continuity 仍未迁移 |
 | Staged tasks / task intelligence | 0 | staging owner，生产阻塞 | API Core/D1 已建立 candidate/recommendation authority、device/open-loop snapshot、LLM receipt、promotion transaction 和 Jobs Queue retry consumer；仍缺 Firestore 历史回放、provider 正向账号探针、旧客户端 continuity 和 production cutover |
-| Gemini proxy | 2 | 部分准备，owner 阻塞 | AI Studio 与显式 Vertex service-account adapter、Edge burst 和 D1 daily ledger 已落地但仅 staging opt-in；Firebase identity continuity、Vertex ADC/PT、完整 BYOK/Redis quota、SSE/usage/error/cost parity 尚未闭合 |
-| Files | 2 | 部分准备 | Worker chat-file adapter 已有 D1/R2/provider contract，但 Assistants/session continuity、旧数据回填和下游 reader 仍未完成 |
+| Gemini proxy | 0 | staging owner，生产阻塞 | API-AI 已承载 bounded JSON/SSE、BYOK enrollment、burst/quota 和 provider alias；Firebase identity continuity、Vertex ADC/PT、完整 Redis quota、SSE/usage/error/cost parity 尚未闭合 |
+| Files | 0 | staging owner，生产阻塞 | Jobs 已承载 exact aliases、D1/R2/provider contract；Assistants/session continuity、旧数据回填和下游 reader 仍未完成 |
 
-上表合计 18 条。`GET /v1/apps/mcp/callback` 计入 Persona/MCP mutation，而不是 Auth / social；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口不计入本表。Task intelligence 的 13 条路径已是 staging owner，因此不再计入 legacy 队列，但其生产门槛仍保留在表内。
+上表合计 8 条：Auth/social 4、External App OAuth 2、Persona/Twitter 2。`GET /v1/apps/mcp/callback`、`POST /v1/apps/mcp` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已由 Jobs staging owner 承载，不再计入 legacy；`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口也不计入本表。Task intelligence 的 13 条路径已是 staging owner，因此不再计入 legacy 队列，但其生产门槛仍保留在表内。
 
 ## Auth / social：不能用 Better Auth session 别名替代
 
@@ -78,19 +78,19 @@ Legacy 入口为：
 - `POST /v2/chat/materialize-prompts`
 - `POST /v2/chat/completions`
 
-这些入口仍依赖旧 Firebase 身份、Firestore chat/materialization continuity，以及桌面端 provider、BYOK、Redis quota、tools、流式 SSE/usage/error 语义。Cloudflare 的 D1 `cf_chat_sessions`、`/v2/chat-sessions` 与无状态 `/v2/chat/generate-reply` 是新 contract：后者不创建 chat session/message，也不提供旧 completions 的流式 wire parity。
+这些入口的历史语义依赖旧 Firebase 身份、Firestore chat/materialization continuity，以及桌面端 provider、BYOK、Redis quota、tools、流式 SSE/usage/error 语义。当前 Cloudflare Jobs/API-AI 已提供 exact staging owner，但 D1 `cf_chat_sessions`、`/v2/chat-sessions` 与无状态 `/v2/chat/generate-reply` 仍是受限新 contract：后者不创建 chat session/message，也不提供旧 completions 的完整流式 wire parity。
 
-要迁移必须先完成 session/message reader 与历史回填，再锁定 provider selection/BYOK/quota/tool invocation/SSE schema 的 conformance fixtures；materialization 还需明确 D1 prompt authority、proactive intent 和跨设备幂等。仅把请求转发给 API AI 或 Workers AI 会丢失至少一个上述语义，继续保持 legacy owner。
+要完成 production cutover 必须补齐 session/message reader 与历史回填，再锁定 provider selection/BYOK/quota/tool invocation/SSE schema 的 conformance fixtures；materialization 还需明确 D1 prompt authority、proactive intent 和跨设备幂等。当前 staging owner 只证明 bounded boundary，不等于旧桌面协议 parity。
 
 ## Persona / MCP mutation：已有 manifest refresh 不是 legacy refresh
 
-本组的逐路由 authority foundation、wire fixture 和切换门槛见 [`mcp-app-migration-gates.md`](mcp-app-migration-gates.md)。当前仅落地 `0112_mcp_app_authority.sql` 的不接管 schema；五条 legacy route 的 owner、manifest 与 fail-closed 开关均保持不变。
+本组的逐路由 authority foundation、wire fixture 和切换门槛见 [`mcp-app-migration-gates.md`](mcp-app-migration-gates.md)。MCP registration/callback/refresh 已由 Jobs exact staging owner 承载；当前仍有 Twitter ownership 与 owner migration 两条 legacy route。生产切换仍需 provider/Firebase identity 与历史 Firestore 回放。
 
 `POST /v1/apps/{app_id}/mcp/refresh` 的 legacy 实现位于 [`backend/routers/apps.py`](../../backend/routers/apps.py)：它读取 Firestore `external_integration.mcp_server_url` 和 OAuth token，必要时刷新 token，再向 MCP server 做 authenticated tool discovery，并更新 `chat_tools` 和 public app cache。
 
 Cloudflare 当前 `POST /v1/apps/{app_id}/refresh-manifest` 只针对 D1 中的 `chat_tools_manifest_url` 做 bounded HTTPS JSON fetch；Jobs app mutation 明确拒绝 `mcp_server_url` / `mcp_oauth_tokens` 写入，避免把 provider secrets 当普通 catalog JSON 存储。两个 endpoint 的输入、认证、token refresh、discovery、错误和返回 shape 不同，不能只做路径 alias。要迁移需要专门的加密/provider-token authority、MCP discovery adapter、CAS/cache invalidation、secret deletion 和 OAuth callback 回放。
 
-同理，`POST /v1/apps/mcp`、`GET /v1/apps/mcp/callback` 和 `POST /v1/apps/migrate-owner` 仍分别依赖 dynamic client registration/PKCE、Firestore app creation/cache 与 Firebase anonymous identity proof，当前没有可证明的 Cloudflare parity。
+`POST /v1/apps/mcp`、`GET /v1/apps/mcp/callback` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已具备 dynamic registration/PKCE、加密 credential、provider discovery、CAS 和 deletion fence 的 staging contract；仍缺真实 provider secret、Firebase identity bridge、历史 Firestore app catalog 回放和 production cutover。`POST /v1/apps/migrate-owner` 仍依赖 Firebase anonymous identity proof 与 legacy memory re-encryption，因此保持 legacy owner。
 
 ## 可执行的迁移准入证据
 
@@ -102,4 +102,4 @@ Cloudflare 当前 `POST /v1/apps/{app_id}/refresh-manifest` 只针对 D1 中的 
 4. 旧客户端或旧 provider wire fixture（包括 redirect/HTML、form、SSE 或 token response，按路由适用）；
 5. staging live probe：先证明新 owner 命中，再证明旧 backend 未被调用，最后完成真实正向/失败/删号探针。
 
-在这些证据出现之前，`AUTH_OAUTH_STAGING_FAIL_CLOSED`、`PHONE_TWILIO_STAGING_FAIL_CLOSED`、`WRAPPED_STAGING_FAIL_CLOSED`、`CHAT_COMPAT_STAGING_FAIL_CLOSED` 和其它现有保护开关应继续保留；它们是泄露/误写防线，不计作迁移进度。
+在这些证据出现之前，`AUTH_OAUTH_STAGING_FAIL_CLOSED`、`PHONE_TWILIO_STAGING_FAIL_CLOSED`、`WRAPPED_STAGING_FAIL_CLOSED`、`CHAT_COMPAT_STAGING_FAIL_CLOSED` 和其它现有保护开关应继续保留；它们是泄露/误写防线，不计作生产迁移完成。已经切到 staging owner 的 Chat/Files/Gemini/MCP exact routes 仍需保持 provider/history fail-closed。
