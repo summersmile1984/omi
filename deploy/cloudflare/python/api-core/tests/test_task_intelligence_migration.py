@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 
-MIGRATION = Path(__file__).parents[3] / "migrations" / "app" / "0109_task_intelligence.sql"
+MIGRATION_DIR = Path(__file__).parents[3] / "migrations" / "app"
 TASK_TABLES = (
     "cf_task_candidates",
     "cf_task_interventions",
@@ -38,7 +38,8 @@ def _database() -> sqlite3.Connection:
         );
         """
     )
-    connection.executescript(MIGRATION.read_text())
+    connection.executescript((MIGRATION_DIR / "0109_task_intelligence.sql").read_text())
+    connection.executescript((MIGRATION_DIR / "0110_task_intelligence_queue.sql").read_text())
     return connection
 
 
@@ -145,4 +146,3 @@ def test_task_tables_have_insert_update_deletion_fences_and_delete_cleanup():
     for table in TASK_TABLES:
         with pytest.raises(sqlite3.IntegrityError, match="account deletion fence"):
             _insert_row(connection, table, "tombstone-user", f"late-tombstone-{table}")
-

@@ -112,6 +112,7 @@ import {
   registerWrappedRoutes,
 } from "./wrapped";
 import { registerPhoneTwilioRoutes } from "./phone-twilio";
+import { processTaskIntelligenceMessage, reconcileTaskIntelligenceJobs } from "./task-intelligence";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -972,6 +973,10 @@ async function processJobMessage(
     await processWrappedJobMessage(message, env);
     return;
   }
+  if (message.body.kind === "task_intelligence_evaluate") {
+    await processTaskIntelligenceMessage(message, env);
+    return;
+  }
   if (message.body.kind === "limitless_import") {
     await processLimitlessImportMessage(message, env);
     return;
@@ -1170,6 +1175,7 @@ export default {
       reconcileVectorProjections(env, now),
       reconcileConversationFinalizations(env, now),
       reconcileConversationMerges(env, now),
+      reconcileTaskIntelligenceJobs(env, now),
       reconcileXConnections(env, now),
       cleanupExpiredTaskIntegrationOAuthStates(env, now),
       cleanupExpiredGoogleCalendarOAuthStates(env, now),

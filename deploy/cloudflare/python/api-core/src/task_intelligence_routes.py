@@ -32,8 +32,10 @@ MAX_EVIDENCE_REFS = 50
 MAX_RECOMMENDATIONS = 3
 EVALUATION_TTL_SECONDS = 15 * 60
 EVALUATION_LEASE_SECONDS = 5 * 60
+EVALUATION_RETRY_DELAY_SECONDS = 10
 MAX_JOB_ATTEMPTS = 3
 WORKERS_AI_MODEL = "@cf/meta/llama-3.2-3b-instruct"
+TASK_INTELLIGENCE_PROCESSOR_PATH = "/internal/task-intelligence/evaluate"
 SUPPORTED_PLATFORMS = frozenset({"android", "ios", "linux", "macos", "web", "windows"})
 VALID_FEEDBACK_ACTIONS = frozenset({"do_now", "later", "dismiss", "accept_candidate", "edit", "complete"})
 VALID_FEEDBACK_REASONS = frozenset({"already_handled", "not_mine", "not_useful"})
@@ -127,6 +129,18 @@ def _iso(value: object) -> str | None:
 
 def _bool(value: object) -> bool:
     return bool(value) and value not in (0, "0", "false", "False", "no")
+
+
+def _changes(result: object) -> int:
+    meta = result.get("meta") if isinstance(result, dict) else getattr(result, "meta", None)
+    if isinstance(meta, dict):
+        value = meta.get("changes")
+    else:
+        value = getattr(meta, "changes", 0)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _json(value: object, default: object) -> object:
@@ -821,63 +835,212 @@ async def _llm_why_now(env: object, descriptions: list[str]) -> tuple[str, str] 
     return text[:160], model
 
 
-async def _evaluate(request: Request, uid: str, generation: int, device_id: str | None, material_hint: str | None) -> dict[str, object] | JSONResponse:
+def _source_snapshot(source_rows: list[tuple[str, dict[str, object]]]) -> list[dict[str, object]]:
+    """Serialize only the bounded provider input needed for a retry."""
+
+    fields = {
+        "candidate": ("candidate_id", "description", "due_at", "relevance_score", "evidence_refs_json"),
+        "task": ("id", "description", "due_at", "provenance_json"),
+    }
+    return [
+        {"kind": kind, "row": {field: row.get(field) for field in fields[kind]}}
+        for kind, row in source_rows
+    ]
+
+
+def _source_rows_from_snapshot(value: object) -> list[tuple[str, dict[str, object]]] | None:
+    if not isinstance(value, list) or len(value) > 12:
+        return None
+    fields = {
+        "candidate": ("candidate_id", "description", "due_at", "relevance_score", "evidence_refs_json"),
+        "task": ("id", "description", "due_at", "provenance_json"),
+    }
+    rows: list[tuple[str, dict[str, object]]] = []
+    for item in value:
+        if not isinstance(item, dict) or item.get("kind") not in fields or not isinstance(item.get("row"), dict):
+            return None
+        kind = str(item["kind"])
+        row = item["row"]
+        identity = "candidate_id" if kind == "candidate" else "id"
+        if not _valid_id(row.get(identity)) or not isinstance(row.get("description"), str):
+            return None
+        rows.append((kind, {field: row.get(field) for field in fields[kind]}))
+    return rows
+
+
+async def _enqueue_evaluation(env: object, uid: str, job_id: str) -> bool:
+    queue = getattr(env, "JOBS", None)
+    if queue is None:
+        return False
+    try:
+        await queue.send({"jobId": job_id, "uid": uid, "kind": "task_intelligence_evaluate", "payload": {}})
+    except Exception:
+        return False
+    return True
+
+
+async def _record_evaluation_failure(
+    env: object,
+    uid: str,
+    job_id: str,
+    generation: int,
+    lease_token: str,
+    error: str,
+) -> str | None:
+    """Release a lease into durable retry or terminal failure exactly once."""
+
+    now = int(time.time())
+    try:
+        row = await env.APP_DB.prepare(
+            "SELECT status, attempts FROM cf_task_intelligence_jobs "
+            "WHERE uid = ? AND job_id = ? AND account_generation = ? AND lease_token = ?"
+        ).bind(uid, job_id, generation, lease_token).first()
+        if not isinstance(row, dict) or row.get("status") != "running":
+            return None
+        attempts = int(row.get("attempts") or 0)
+        retryable = attempts < MAX_JOB_ATTEMPTS
+        status = "queued" if retryable else "failed"
+        next_attempt_at = now + EVALUATION_RETRY_DELAY_SECONDS if retryable else now
+        updated = await env.APP_DB.prepare(
+            "UPDATE cf_task_intelligence_jobs SET status = ?, lease_token = NULL, lease_until = NULL, "
+            "next_attempt_at = ?, last_error = ?, updated_at = ? "
+            "WHERE uid = ? AND job_id = ? AND account_generation = ? AND status = 'running' AND lease_token = ?"
+        ).bind(status, next_attempt_at, error[:256], now, uid, job_id, generation, lease_token).run()
+        if _changes(updated) != 1:
+            return None
+        return status
+    except Exception:
+        return None
+
+
+async def _evaluate(
+    request: Request,
+    uid: str,
+    generation: int,
+    device_id: str | None,
+    material_hint: str | None,
+    *,
+    expected_job_id: str | None = None,
+    enqueue_on_failure: bool = True,
+) -> dict[str, object] | JSONResponse:
     env = request.scope["env"]
     device_scope = device_id or "account"
-    try:
-        candidates = await env.APP_DB.prepare(
-            "SELECT candidate_id, description, due_at, relevance_score, evidence_refs_json FROM cf_task_candidates "
-            "WHERE uid = ? AND account_generation = ? AND status = 'pending' AND (device_id IS NULL OR device_id = ?) "
-            "ORDER BY relevance_score IS NULL ASC, relevance_score DESC, due_at IS NULL ASC, due_at ASC, created_at DESC, candidate_id ASC LIMIT 12"
-        ).bind(uid, generation, device_scope).all()
-        tasks = await env.APP_DB.prepare(
-            "SELECT id, description, due_at, provenance_json FROM cf_action_items WHERE uid = ? AND deleted = 0 AND completed = 0 "
-            "ORDER BY due_at IS NULL ASC, due_at ASC, created_at DESC, id ASC LIMIT 12"
-        ).bind(uid).all()
-    except Exception:
-        return _error("task_intelligence_unavailable", 503)
-    candidate_rows = [row for row in (candidates.get("results", []) if isinstance(candidates, dict) else []) if isinstance(row, dict)]
-    task_rows = [row for row in (tasks.get("results", []) if isinstance(tasks, dict) else []) if isinstance(row, dict)]
-    source_rows = [("candidate", row) for row in candidate_rows] + [("task", row) for row in task_rows]
-    if not source_rows:
-        # An empty projection is a valid Cloudflare-owned result only after the
-        # D1 authority is established; it is not used as a legacy fallback.
-        source_rows = []
+    source_rows: list[tuple[str, dict[str, object]]] | None = None
+    if expected_job_id is not None:
+        try:
+            job_input = await env.APP_DB.prepare(
+                "SELECT account_generation, device_id, input_json FROM cf_task_intelligence_jobs "
+                "WHERE uid = ? AND job_id = ?"
+            ).bind(uid, expected_job_id).first()
+        except Exception:
+            return _error("task_intelligence_unavailable", 503)
+        if not isinstance(job_input, dict):
+            return _error("task_intelligence_job_not_found", 404)
+        try:
+            if int(job_input.get("account_generation")) != generation or str(job_input.get("device_id")) != device_scope:
+                return _error("task_intelligence_job_mismatch", 409)
+        except (TypeError, ValueError):
+            return _error("task_intelligence_job_mismatch", 409)
+        stored_input = _json(job_input.get("input_json"), {})
+        source_rows = _source_rows_from_snapshot(
+            stored_input.get("source_rows") if isinstance(stored_input, dict) else None
+        )
+        if source_rows is None:
+            return _error("task_intelligence_job_input_invalid", 409)
+        stored_hint = stored_input.get("material_hint") if isinstance(stored_input, dict) else None
+        material_hint = stored_hint if isinstance(stored_hint, str) else None
+    if source_rows is None:
+        try:
+            candidates = await env.APP_DB.prepare(
+                "SELECT candidate_id, description, due_at, relevance_score, evidence_refs_json FROM cf_task_candidates "
+                "WHERE uid = ? AND account_generation = ? AND status = 'pending' AND (device_id IS NULL OR device_id = ?) "
+                "ORDER BY relevance_score IS NULL ASC, relevance_score DESC, due_at IS NULL ASC, due_at ASC, created_at DESC, candidate_id ASC LIMIT 12"
+            ).bind(uid, generation, device_scope).all()
+            tasks = await env.APP_DB.prepare(
+                "SELECT id, description, due_at, provenance_json FROM cf_action_items WHERE uid = ? AND deleted = 0 AND completed = 0 "
+                "ORDER BY due_at IS NULL ASC, due_at ASC, created_at DESC, id ASC LIMIT 12"
+            ).bind(uid).all()
+        except Exception:
+            return _error("task_intelligence_unavailable", 503)
+        candidate_rows = [row for row in (candidates.get("results", []) if isinstance(candidates, dict) else []) if isinstance(row, dict)]
+        task_rows = [row for row in (tasks.get("results", []) if isinstance(tasks, dict) else []) if isinstance(row, dict)]
+        source_rows = [("candidate", row) for row in candidate_rows] + [("task", row) for row in task_rows]
     now = int(time.time())
     expires = now + EVALUATION_TTL_SECONDS
     eval_fingerprint = _fingerprint({"uid": uid, "generation": generation, "device_id": device_scope, "material_hint": material_hint, "ids": [str(row.get("candidate_id") or row.get("id")) for _, row in source_rows]})
     evaluation_id = _stable_id("eval", uid, generation, eval_fingerprint)
     job_id = _stable_id("task-job", uid, generation, eval_fingerprint)
-    existing = await env.APP_DB.prepare(
-        "SELECT projection_json FROM cf_task_evaluations WHERE uid = ? AND evaluation_id = ? AND expires_at > ?"
-    ).bind(uid, evaluation_id, now).first()
+    if expected_job_id is not None and expected_job_id != job_id:
+        return _error("task_intelligence_job_mismatch", 409)
+    try:
+        existing = await env.APP_DB.prepare(
+            "SELECT projection_json FROM cf_task_evaluations WHERE uid = ? AND evaluation_id = ? AND expires_at > ?"
+        ).bind(uid, evaluation_id, now).first()
+    except Exception:
+        return _error("task_intelligence_unavailable", 503)
     if isinstance(existing, dict):
         projection = _json(existing.get("projection_json"), None)
+        try:
+            await env.APP_DB.prepare(
+                "UPDATE cf_task_intelligence_jobs SET status = 'completed', lease_token = NULL, lease_until = NULL, "
+                "result_json = ?, updated_at = ? WHERE uid = ? AND job_id = ? AND account_generation = ? AND status <> 'completed'"
+            ).bind(_dump(projection), now, uid, job_id, generation).run()
+        except Exception:
+            # The projection is already durable and can be read again.  A
+            # deletion fence may intentionally reject this best-effort repair.
+            pass
         return projection if isinstance(projection, dict) else _error("task_intelligence_unavailable", 503)
     lease_token = _stable_id("lease", uid, job_id, now)
+    input_json = _dump(
+        {
+            "device_id": device_scope,
+            "material_hint": material_hint,
+            "source_rows": _source_snapshot(source_rows),
+        }
+    )
     try:
         await env.APP_DB.prepare(
-            "INSERT INTO cf_task_intelligence_jobs (uid, job_id, account_generation, device_id, request_fingerprint, status, attempts, lease_token, lease_until, next_attempt_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 'queued', 0, NULL, NULL, ?, ?, ?) ON CONFLICT(uid, job_id) DO NOTHING"
-        ).bind(uid, job_id, generation, device_scope, eval_fingerprint, now, now, now).run()
+            "INSERT INTO cf_task_intelligence_jobs (uid, job_id, account_generation, device_id, request_fingerprint, status, attempts, lease_token, lease_until, next_attempt_at, input_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'queued', 0, NULL, NULL, ?, ?, ?, ?) ON CONFLICT(uid, job_id) DO NOTHING"
+        ).bind(uid, job_id, generation, device_scope, eval_fingerprint, now, input_json, now, now).run()
         claimed = await env.APP_DB.prepare(
             "UPDATE cf_task_intelligence_jobs SET status = 'running', attempts = attempts + 1, lease_token = ?, lease_until = ?, updated_at = ? "
             "WHERE uid = ? AND job_id = ? AND account_generation = ? AND ((status = 'queued' AND next_attempt_at <= ?) OR (status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?))"
         ).bind(lease_token, now + EVALUATION_LEASE_SECONDS, now, uid, job_id, generation, now, now).run()
-        if int((claimed.meta or {}).get("changes") or 0) != 1:
+        if _changes(claimed) != 1:
+            current = await env.APP_DB.prepare(
+                "SELECT status, attempts FROM cf_task_intelligence_jobs WHERE uid = ? AND job_id = ? AND account_generation = ?"
+            ).bind(uid, job_id, generation).first()
+            if isinstance(current, dict) and current.get("status") == "failed":
+                return _error("task_intelligence_provider_unavailable", 503)
             return _error("task_intelligence_evaluation_in_progress", 202)
     except Exception:
         return _error("task_intelligence_unavailable", 503)
     descriptions = [str(row.get("description") or "").strip() for _, row in source_rows]
     why_now_result = await _llm_why_now(env, descriptions) if descriptions else ("No open task requires attention yet.", str(getattr(env, "WORKERS_AI_TASK_INTELLIGENCE_MODEL", WORKERS_AI_MODEL)))
     if why_now_result is None:
-        try:
-            await env.APP_DB.prepare(
-                "UPDATE cf_task_intelligence_jobs SET status = 'failed', lease_token = NULL, lease_until = NULL, last_error = ?, updated_at = ? WHERE uid = ? AND job_id = ? AND lease_token = ?"
-            ).bind("workers AI unavailable", now, uid, job_id, lease_token).run()
-        except Exception:
-            pass
-        return _error("task_intelligence_provider_unavailable", 503)
+        state = await _record_evaluation_failure(
+            env,
+            uid,
+            job_id,
+            generation,
+            lease_token,
+            "workers AI unavailable",
+        )
+        if state is None:
+            return _error("task_intelligence_evaluation_lease_lost", 409)
+        retryable = state == "queued"
+        queued = await _enqueue_evaluation(env, uid, job_id) if retryable and enqueue_on_failure else False
+        return JSONResponse(
+            {
+                "error": "task_intelligence_provider_unavailable",
+                "job_id": job_id,
+                "status": state,
+                "retryable": retryable,
+                "queue_enqueued": queued,
+            },
+            status_code=503,
+        )
     why_now, model = why_now_result
     recommendations: list[dict[str, object]] = []
     decisions: list[dict[str, object]] = []
@@ -916,10 +1079,6 @@ async def _evaluate(request: Request, uid: str, generation: int, device_id: str 
         await env.APP_DB.batch(
             [
                 env.APP_DB.prepare(
-                    "UPDATE cf_task_intelligence_jobs SET status = 'completed', lease_token = NULL, lease_until = NULL, last_error = NULL, result_json = ?, updated_at = ? "
-                    "WHERE uid = ? AND job_id = ? AND account_generation = ? AND status = 'running' AND lease_token = ?"
-                ).bind(_dump(projection), now, uid, job_id, generation, lease_token),
-                env.APP_DB.prepare(
                     "INSERT INTO cf_task_evaluations (uid, evaluation_id, job_id, account_generation, device_id, request_fingerprint, projection_json, decisions_json, generated_at, expires_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uid, evaluation_id) DO UPDATE SET projection_json = excluded.projection_json, decisions_json = excluded.decisions_json, generated_at = excluded.generated_at, expires_at = excluded.expires_at"
                 ).bind(uid, evaluation_id, job_id, generation, device_scope, eval_fingerprint, _dump(projection), _dump(decisions), now, expires),
@@ -929,9 +1088,66 @@ async def _evaluate(request: Request, uid: str, generation: int, device_id: str 
                 ).bind(uid, receipt_id, job_id, evaluation_id, generation, model, eval_fingerprint, response_hash, now),
             ]
         )
+        completed = await env.APP_DB.prepare(
+            "UPDATE cf_task_intelligence_jobs SET status = 'completed', lease_token = NULL, lease_until = NULL, last_error = NULL, result_json = ?, updated_at = ? "
+            "WHERE uid = ? AND job_id = ? AND account_generation = ? AND status = 'running' AND lease_token = ?"
+        ).bind(_dump(projection), now, uid, job_id, generation, lease_token).run()
+        if _changes(completed) != 1:
+            return _error("task_intelligence_evaluation_lease_lost", 409)
     except Exception:
-        return _error("task_intelligence_unavailable", 503)
+        state = await _record_evaluation_failure(
+            env,
+            uid,
+            job_id,
+            generation,
+            lease_token,
+            "task intelligence result persistence unavailable",
+        )
+        if state is None:
+            return _error("task_intelligence_unavailable", 503)
+        queued = await _enqueue_evaluation(env, uid, job_id) if state == "queued" and enqueue_on_failure else False
+        return JSONResponse(
+            {
+                "error": "task_intelligence_unavailable",
+                "job_id": job_id,
+                "status": state,
+                "retryable": state == "queued",
+                "queue_enqueued": queued,
+            },
+            status_code=503,
+        )
     return projection
+
+
+@router.post(TASK_INTELLIGENCE_PROCESSOR_PATH)
+async def process_task_intelligence_evaluation(request: Request):
+    context = _auth_context(request)
+    if not context or context.get("authority") != "internal":
+        return _error("unauthorized", 401)
+    try:
+        body = await _body(request)
+        job_id = body.get("job_id")
+        generation = int(body.get("account_generation"))
+        device_id = body.get("device_id")
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return _error("invalid_task_intelligence_job", 400)
+    if not _valid_id(job_id) or not isinstance(device_id, str) or not _valid_id(device_id):
+        return _error("invalid_task_intelligence_job", 400)
+    uid = str(context["uid"])
+    owned = await _owned_generation(request.scope["env"], uid)
+    if isinstance(owned, JSONResponse):
+        return owned
+    if owned != generation:
+        return _error("account_generation_mismatch", 409)
+    return await _evaluate(
+        request,
+        uid,
+        generation,
+        device_id if device_id != "account" else None,
+        None,
+        expected_job_id=str(job_id),
+        enqueue_on_failure=False,
+    )
 
 
 @router.post("/v1/what-matters-now/evaluate")

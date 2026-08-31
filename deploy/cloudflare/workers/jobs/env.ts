@@ -16,6 +16,7 @@ export type JobMessage = {
     | "conversation_merge"
     | "audio_merge"
     | "audio_merge_legacy"
+    | "task_intelligence_evaluate"
     | "wrapped_generate"
     | "hume_webhook"
     | "limitless_import"
