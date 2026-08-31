@@ -90,6 +90,46 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/desktop/beta/candidates/reserve
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: beta-promotion-token
+    dependencies: [d1-app, worker-secrets, github-api]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/desktop/beta/promote-candidate
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: beta-promotion-token
+    dependencies: [d1-app, worker-secrets, github-api]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PUT
+    path: /v2/desktop/beta/admission
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /v2/desktop/beta/breakglass
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, worker-secrets, github-api]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v2/desktop/update-policy
     owner: api-core

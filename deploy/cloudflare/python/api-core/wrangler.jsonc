@@ -57,7 +57,8 @@
   ],
   "vars": {
     // Secrets provisioned with `wrangler secret put`: ADMIN_KEY,
-    // DESKTOP_PREVIEW_PUBLISH_KEY, RELEASE_SECRET.
+    // DESKTOP_PREVIEW_PUBLISH_KEY, RELEASE_SECRET, BETA_PROMOTION_TOKEN,
+    // GITHUB_TOKEN.
     "ACCOUNT_CUTOVER_PROFILE": "isolated-staging",
     "FREE_CHAT_QUESTIONS_PER_MONTH": "30",
     "NEO_CHAT_QUESTIONS_PER_MONTH": "200",
