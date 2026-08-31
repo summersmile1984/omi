@@ -1,6 +1,6 @@
 # Legacy 路由迁移审计
 
-截至 2026-08-31，`backend-routes.json` 中还有 68 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
+截至 2026-08-31，`backend-routes.json` 中还有 67 条 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。
 
 ## 分组与迁移前置条件
 
@@ -25,7 +25,7 @@
 
 Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生结构化冲突记录；三个 review-queue 端点由 API Core/Edge 承载；每次读取校验来源 `updated_at` revision 与 SHA-256 content hash，来源变化自动 tombstone；accept/reject/correct/timeout 解析具备 D1 原子写入和幂等状态。该阶段的 producer 覆盖 canonical `/v3/memories` 与 `/v3/memories/batch` 写入，手工已确认的 MCP/developer memory 不会重新进入队列。
 
-本轮新增 `GET /v1/agent/tools`：API Core 只返回已由 D1/Workers 实现的对话、记忆和任务工具，动态第三方 App 工具继续留在 legacy 执行面，避免把未实现的能力暴露给模型。每一组迁移都必须同时更新 route manifest、Edge owner、回归测试、删除/残留清理和 staging live evidence；不能仅添加同路径 alias 来降低 legacy 计数。
+本轮新增 `GET/POST /v1/agent/*`：API Core 只返回并执行已由 D1/Workers 实现的对话、记忆和任务工具，动态第三方 App 与未迁移的 provider 工具继续 fail-closed，避免把未实现的能力暴露给模型。每一组迁移都必须同时更新 route manifest、Edge owner、回归测试、删除/残留清理和 staging live evidence；不能仅添加同路径 alias 来降低 legacy 计数。
 
 ## Staging evidence（2026-08-31）
 
@@ -37,7 +37,7 @@ Review queue 已完成第一阶段闭环：D1 canonical memory 写入会产生�
 - Memory review queue staging 数据面已实测：远端应用 `0093_memory_review_queue.sql` 后，API Core `e6e64b52-7215-44c7-9c91-0b5a9d91100a`、Edge `a39cd3d1-3524-472e-8935-8eeabc37e0a2`、Jobs `3f9efdd3-8695-4f16-8ca8-fdeb20df7342` 已发布；临时 Better Auth 账号通过 Edge 连续创建结构化冲突、读取到 `pending` queue、`accept` 得到 `accepted` 与确定性 D1 commit，并提交删号清理。未认证的三个 queue 路由均返回 `401` 而非 `404`。
 - Conversation finalization 的 admission/status、D1 revision/job schema、Jobs lease/retry/reconcile 和 API Core Workers AI processor 已实现并有 Python/TypeScript 回归测试；已完成 staging migration 与正向队列验证，但不宣称生产等价。
 - Conversation finalization staging live evidence（2026-08-31）：远端应用 `0094_conversation_finalization_jobs.sql` 后，API Core `cb1a8271-22f2-4211-9ba4-94d7463c4745`、Jobs `18df02b0-7ad1-4010-a063-46144d584899`、Edge `99eb710f-03c3-41bf-8f29-763630690393` 已发布。隔离 Better Auth 账号经 Edge 完成 `POST /v1/conversations/{id}/finalize`（200），status 实际经历 `queued → running → completed`（attempt 1），会话读回 `status=completed`；随后公开删号完成 Queue 清理，`cf_conversations` 与 `cf_conversation_finalization_jobs` 均为 0，仅保留预期 tombstone。
-- Agent tool directory staging live evidence（2026-08-31）：API Core `06fc798e-332a-453b-8f9a-22ee33ac8df6`、Edge `9e64c5c9-51c1-45c7-8e1a-d7312ded5ccf` 已发布；未认证 `GET /v1/agent/tools` 返回 `401`，Better Auth 认证后返回 `200` 与 7 个 Cloudflare-native 工具定义，响应不含 `config`，临时账号已提交删号。
+- Agent tool directory staging live evidence（2026-08-31）：API Core `70bd49eb-f0db-4338-a166-0612af37eda7`、Edge `79ba9a42-e9fc-4819-b5ac-778487a5ee8b` 已发布；未认证 `GET /v1/agent/tools` 与 `POST /v1/agent/execute-tool` 均返回 `401`，Better Auth 认证后目录返回 `200` 与 7 个 Cloudflare-native 工具定义，执行 `get_memories_tool` 返回 D1 结果，未迁移的 `get_calendar_events_tool` 返回 `404`，响应不含 `config`，临时账号已提交删号。
 
 ## 本轮 authority 核对（2026-08-31）
 

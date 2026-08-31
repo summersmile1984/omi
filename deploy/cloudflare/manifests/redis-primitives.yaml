@@ -390,6 +390,7 @@ families:
       - memories:modify
       - memory_imports:batch
       - stt:transcribe
+      - agent:execute_tool
       - tools:mutate
       - tools:search
       - tts:synthesize
@@ -443,6 +444,7 @@ families:
       - POST /v1/stt/transcribe-async
       - POST /v1/stt/transcribe-workers-ai
       - PATCH /v1/tools/action-items/{action_item_id}
+      - POST /v1/agent/execute-tool
       - POST /v1/tools/action-items
       - POST /v1/tools/conversations/search
       - POST /v1/tools/conversations/search-chunks

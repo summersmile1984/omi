@@ -5225,6 +5225,18 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: POST
+    path: /v1/agent/execute-tool
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: agent:execute_tool
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/tools/conversations
     owner: api-core

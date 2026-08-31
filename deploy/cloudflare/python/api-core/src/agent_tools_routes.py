@@ -12,11 +12,23 @@ claiming an execution capability that would fail after tool selection.
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, ValidationError
 
 from internal_auth import decode_context
+from tool_routes import (
+    create_action_item as _create_action_item,
+    get_action_items as _get_action_items,
+    get_conversations as _get_conversations,
+    get_memories as _get_memories,
+    search_conversations as _search_conversations,
+    search_memories as _search_memories,
+    update_action_item as _update_action_item,
+)
 
 router = APIRouter()
 
@@ -138,6 +150,97 @@ CLOUDFLARE_TOOL_DEFINITIONS: tuple[dict[str, object], ...] = (
 )
 
 
+class ExecuteToolRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    tool_name: str = Field(min_length=1, max_length=128)
+    params: dict[str, object] = Field(default_factory=dict)
+
+
+class ExecuteToolResponse(BaseModel):
+    result: str | None = None
+    error: str | None = None
+
+
+_QUERY_TOOLS = {
+    "get_conversations_tool": _get_conversations,
+    "get_memories_tool": _get_memories,
+    "get_action_items_tool": _get_action_items,
+}
+_BODY_TOOLS = {
+    "search_conversations_tool": _search_conversations,
+    "search_memories_tool": _search_memories,
+    "create_action_item_tool": _create_action_item,
+}
+
+
+def _clone_request(request: Request, *, body: bytes = b"", query: dict[str, object] | None = None) -> Request:
+    """Build a fresh request for a native tool handler without losing auth scope."""
+
+    scope = dict(request.scope)
+    scope.setdefault("type", "http")
+    if "headers" not in scope:
+        scope["headers"] = [
+            (str(name).lower().encode(), str(value).encode()) for name, value in request.headers.items()
+        ]
+    scope["query_string"] = urlencode(query or {}, doseq=True).encode()
+    consumed = False
+
+    async def receive():
+        nonlocal consumed
+        if consumed:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        consumed = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(scope, receive)
+
+
+def _query_values(params: dict[str, object]) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for key, value in params.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            values[key] = "true" if value else "false"
+        else:
+            values[key] = str(value)
+    return values
+
+
+async def _invoke_native(request: Request, body: ExecuteToolRequest) -> dict[str, object] | JSONResponse:
+    tool_name = body.tool_name
+    if tool_name in _QUERY_TOOLS:
+        native_request = _clone_request(request, query=_query_values(body.params))
+        response = await _QUERY_TOOLS[tool_name](native_request)
+    elif tool_name in _BODY_TOOLS:
+        native_request = _clone_request(
+            request,
+            body=json.dumps(body.params, ensure_ascii=False, separators=(",", ":")).encode(),
+        )
+        response = await _BODY_TOOLS[tool_name](native_request)
+    elif tool_name == "update_action_item_tool":
+        action_item_id = body.params.get("action_item_id")
+        if not isinstance(action_item_id, str) or not action_item_id:
+            return JSONResponse({"detail": "action_item_id is required"}, status_code=422)
+        params = {key: value for key, value in body.params.items() if key != "action_item_id"}
+        native_request = _clone_request(
+            request,
+            body=json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode(),
+        )
+        response = await _update_action_item(native_request, action_item_id)
+    else:
+        return JSONResponse({"detail": f"Tool '{tool_name}' not found"}, status_code=404)
+
+    if isinstance(response, JSONResponse):
+        if response.status_code >= 400:
+            return response
+        return {"error": "Tool execution failed"}
+    if isinstance(response, dict) and isinstance(response.get("result_text"), str):
+        return {"result": response["result_text"]}
+    return {"error": "Tool execution failed"}
+
+
 @router.get("/v1/agent/tools")
 async def list_tools(request: Request):
     """Return the authenticated user's Cloudflare-native tool directory."""
@@ -148,4 +251,27 @@ async def list_tools(request: Request):
     return {"tools": deepcopy(CLOUDFLARE_TOOL_DEFINITIONS)}
 
 
-__all__ = ["router", "list_tools", "CLOUDFLARE_TOOL_DEFINITIONS"]
+@router.post("/v1/agent/execute-tool", response_model=ExecuteToolResponse)
+async def execute_tool(request: Request):
+    """Execute a first-party tool through its Cloudflare-native D1 handler."""
+
+    if not _auth_context(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        raw = await request.body()
+        if len(raw) > 64_000:
+            return JSONResponse({"detail": "request body is too large"}, status_code=422)
+        body = ExecuteToolRequest.model_validate(json.loads(raw or b"{}"))
+    except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
+        return JSONResponse({"detail": str(error)}, status_code=422)
+    return await _invoke_native(request, body)
+
+
+__all__ = [
+    "router",
+    "list_tools",
+    "execute_tool",
+    "CLOUDFLARE_TOOL_DEFINITIONS",
+    "ExecuteToolRequest",
+    "ExecuteToolResponse",
+]

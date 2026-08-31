@@ -1309,6 +1309,7 @@ app.post("/v1/staged-tasks/migrate-conversation-items", proxyAuthenticatedCore);
 app.post("/v1/chat-first/blocks/validate", proxyAuthenticatedCore);
 app.post("/v1/chat/deferrals", proxyAuthenticatedCore);
 app.get("/v1/agent/tools", proxyAuthenticatedCore);
+app.post("/v1/agent/execute-tool", proxyAuthenticatedCore);
 app.get("/v1/tools/conversations", proxyAuthenticatedCore);
 app.post("/v1/tools/conversations/search", proxyAuthenticatedCore);
 app.post("/v1/tools/conversations/search-chunks", proxyAuthenticatedCore);

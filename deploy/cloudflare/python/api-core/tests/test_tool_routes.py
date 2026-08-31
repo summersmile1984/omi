@@ -21,6 +21,7 @@ from tool_routes import (  # noqa: E402
     search_memories,
     update_action_item,
 )
+from agent_tools_routes import execute_tool  # noqa: E402
 
 SECRET = "tool-route-test-secret"
 UID = "tool-user"
@@ -331,4 +332,33 @@ def test_tool_action_mutations_share_vector_lifecycle_and_validation_envelope():
     ).fetchone()
     assert tuple(stored) == (1, "completed")
     assert [message["kind"] for message in env.JOBS.messages] == ["vector_project", "vector_project"]
+    database.connection.close()
+
+
+def test_agent_execute_tool_dispatches_to_cloudflare_native_handlers():
+    database, env = environment()
+    insert_fixtures(database)
+
+    response = run(
+        execute_tool(
+            FakeRequest(
+                env,
+                body={"tool_name": "get_memories_tool", "params": {"limit": 1}},
+            )
+        )
+    )
+    assert response == {
+        "result": "User Memories (1 total):\n\n- The user prefers Cloudflare Workers. "
+        "(category: interesting, date: 2026-08-30)"
+    }
+
+    unknown = run(
+        execute_tool(
+            FakeRequest(
+                env,
+                body={"tool_name": "get_calendar_events_tool", "params": {}},
+            )
+        )
+    )
+    assert unknown.status_code == 404
     database.connection.close()
