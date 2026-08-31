@@ -21,4 +21,4 @@ Persona PATCH 的范围仍是“D1-owned projection 的 bounded update”，不�
 
 ## 验证
 
-`deploy/cloudflare/tests/persona-mutations.test.ts` 覆盖认证、图片校验、D1/R2 创建、Workers AI 描述调用、重复 multipart 幂等、无图更新、R2 logo rotation、跨 owner 拒绝和 deletion fence；Edge test 覆盖 PATCH 的 Better Auth→Jobs forwarding，manifest 与 Edge/Jobs route registration 同步更新。2026-08-31 本地 4 个 Persona mutation tests 通过；staging 尚未完成带真实 Better Auth Persona fixture 的 PATCH/provider probe。
+`deploy/cloudflare/tests/persona-mutations.test.ts` 覆盖认证、图片校验、D1/R2 创建、Workers AI 描述调用、重复 multipart 幂等、无图更新、R2 logo rotation、跨 owner 拒绝和 deletion fence；Edge test 覆盖 PATCH 的 Better Auth→Jobs forwarding，manifest 与 Edge/Jobs route registration 同步更新。2026-08-31 本地 4 个 Persona mutation tests 通过；真实 Better Auth 账号创建默认 Persona 后，带 1x1 PNG 的 PATCH 经 staging 返回 `200` 并完成 username 更新，账号随后提交删号并收敛到 Persona residual `0`。历史 Firestore/prompt/cache parity、legacy GCS object mapping 和 production cutover 仍未完成。
