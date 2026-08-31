@@ -188,6 +188,13 @@ async def get_integration_status(request: Request, app_key: str):
                 .first()
             )
             connected = _connected(row)
+        elif app_key == "apple_health":
+            row = (
+                await env.APP_DB.prepare("SELECT connected FROM cf_apple_health WHERE uid = ? LIMIT 1")
+                .bind(uid)
+                .first()
+            )
+            connected = _connected(row)
         elif app_key == "gmail":
             connected = await _google_gmail_connected(env, uid)
         elif app_key in TASK_INTEGRATION_KEYS:

@@ -81,8 +81,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes: 472 already match
-  Cloudflare staging owners and 105 remain legacy-owned. Edge directly serves
+  gate. The current inventory contains 577 backend routes: 473 already match
+  Cloudflare staging owners and 104 remain legacy-owned. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -974,6 +974,9 @@ POST /v1/calendar/meetings
 GET  /v1/calendar/meetings
 GET  /v1/calendar/meetings/{meetingId}
                               Edge → Python API Core → D1 calendar metadata projection
+PUT  /v1/integrations/apple-health/sync
+PUT/DELETE /v1/integrations/apple_health
+                              Edge → Python API Core → D1 Apple Health projection
 GET  /v1/trends              Edge → Python API Core → D1 global trend projection
 ```
 
@@ -1075,6 +1078,11 @@ reported as a bounded `502` without logging credentials or message data.
 Cloudflare Calendar/task-integration projections. It returns only the
 uid-scoped boolean (including Gmail's Calendar grant scope) and treats unknown
 integration keys as disconnected without exposing provider credentials.
+
+Apple Health is device-pushed rather than OAuth-backed. The iOS sync payload is
+bounded and stored in the uid-scoped `cf_apple_health` D1 projection; the
+follow-up connection save and disconnect calls are also routed explicitly to
+API Core so they cannot fall back to the legacy generic integration handler.
 
 `GET /v1/integrations/{app_key}/oauth-url` is also staging-owned by the Jobs
 Worker for the Google Calendar grant and its derived aliases (`gmail`,

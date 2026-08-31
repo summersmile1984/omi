@@ -4699,6 +4699,39 @@ routes:
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
+  - method: PUT
+    path: /v1/integrations/apple-health/sync
+    owner: api-core
+    runtime: edge-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: PUT
+    path: /v1/integrations/apple_health
+    owner: api-core
+    runtime: edge-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: route-resource
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: DELETE
+    path: /v1/integrations/apple_health
+    owner: api-core
+    runtime: edge-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app]
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: edge-route-to-legacy
   - method: GET
     path: /v1/integrations/google_calendar
     owner: jobs

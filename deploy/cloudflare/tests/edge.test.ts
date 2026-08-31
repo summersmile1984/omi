@@ -2505,6 +2505,61 @@ describe("edge gateway", () => {
     expect(coreRequests[0].headers.get("x-omi-auth-context")).toBeTruthy();
   });
 
+  it("routes Apple Health sync and connection lifecycle to the core worker", async () => {
+    const coreRequests: Request[] = [];
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "health-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_CORE: service((request) => {
+        coreRequests.push(request);
+        return request.method === "DELETE"
+          ? new Response(null, { status: 204 })
+          : Response.json({ status: "ok", app_key: "apple_health" });
+      }),
+      API_AI: service(() => Response.json({ status: "ok" })),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const headers = { authorization: "Bearer opaque-session" };
+    const requests = [
+      new Request("https://edge.test/v1/integrations/apple-health/sync", {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ period_days: 7, total_steps: 100 }),
+      }),
+      new Request("https://edge.test/v1/integrations/apple_health", {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      new Request("https://edge.test/v1/integrations/apple_health", {
+        method: "DELETE",
+        headers,
+      }),
+    ];
+    const responses = [];
+    for (const request of requests) responses.push(await edge.fetch(request, env));
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 204]);
+    expect(coreRequests).toHaveLength(3);
+    expect(coreRequests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      "PUT /v1/integrations/apple-health/sync",
+      "PUT /v1/integrations/apple_health",
+      "DELETE /v1/integrations/apple_health",
+    ]);
+    for (const request of coreRequests) {
+      expect(decodeAuthContext(request.headers.get("x-omi-auth-context"))).toMatchObject({
+        uid: "health-user",
+        audience: "api-core",
+      });
+      expect(request.headers.get("authorization")).toBeNull();
+    }
+  });
+
   it("routes Joan follow-up questions to the authenticated core worker", async () => {
     const coreRequests: Request[] = [];
     const env = {
