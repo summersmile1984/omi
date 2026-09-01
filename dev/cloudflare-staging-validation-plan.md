@@ -8,6 +8,30 @@ Web 入口：<https://omi-web-app-staging.summersmile1984.workers.dev>
 
 Edge 入口：<https://omi-cf-edge-staging.summersmile1984.workers.dev>
 
+## 2026-09-01 即时验收记录
+
+独立分支 `codex/cloudflare-adaptation` 的运行时代码候选 `669eda807e` 已通过一次
+完整 `deploy:staging`。这次发布没有合并或变基 `feature/cloud-neutral-shim`，只写入
+`omi-cf-*-staging` 隔离资源；发布前快照为
+`staging-before-2026-09-01T09-55-48-587Z.json`，文件权限为 `0600`。
+
+- 精确 D1 校验确认 `omi-cf-auth-staging` 与 `omi-cf-app-staging` 均无未应用 migration；
+- 发布资格通过 101 个 Cloudflare 测试文件/738 个测试、API Core 389 个测试、
+  API AI 117 个测试、Web 12 个测试文件/47 个测试，以及全部 Worker/Web dry-run；
+- 发布后的 Edge 与 Web readiness 均为 HTTP `200`，认证 smoke 全部通过，包含
+  Web → Edge → Workers AI 的真实文本 chat 和 chat row 清理；
+- 20 轮 benchmark 的六个 warm p95 分别为 `394.56`、`557.58`、`569.75`、
+  `523.99`、`522.07`、`514.89` ms，全部低于 4 秒门槛；
+- 浏览器重新加载 `/conversations` 后系统 folders 正常显示，`/memories`、
+  `/my-apps`、`/tasks` 往返保持登录态，未出现 `API error`，新增 warning/error 为 `0`；
+- 一次性 Better Auth 账号完成耐久删除后，原 token 读取 profile 返回 `401`；本地
+  signup、token 与响应文件随后全部销毁；
+- 仓库 `make preflight` 通过 116 项检查，Calendar Worker 的 2 个聚焦 XCTest 通过。
+
+本记录证明当前候选可在 Cloudflare staging 上启动并完成 P0 即时发布闭环；它不替代
+P4-2 的 1/24/72 小时观察，也不把第 8 节未做 provider 正向验证的能力扩大解释为
+`Product Cohort Ready`。
+
 ## 1. 验证目标与结论口径
 
 本方案用于证明已部署的 Cloudflare Worker slice 在真实 Web 入口、Better Auth、
