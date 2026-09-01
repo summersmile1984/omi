@@ -14,7 +14,7 @@ Phone 六条入口当前已由 Edge→Jobs staging owner 承载，D1 `0108_phone
 
 Auth/OAuth 不能用 Better Auth session 直接替换。Better Auth 官方支持 Cloudflare Workers/Hono 与 D1，并且当前 Auth Worker 已在 D1 上承载新会话、Google/Apple social sign-in 和 MCP OAuth；这证明新 auth surface 可以运行在 Workers，但不证明它与 legacy wire contract 等价。仓库已有 `scripts/import-firebase-identities.mjs`、`auth_identity_imports` ledger 和保留 Firebase UID 的确定性导入路径，不过尚未有 staging 全量回放、旧 principal 覆盖和冲突/撤销审计证据。desktop/CLI 的 legacy `/v1/auth/token` 合约仍返回 Firebase custom token，并由客户端继续向 Firebase mint ID/refresh token；legacy app OAuth 还依赖 Firestore app 文档、启用/付费状态和外部 setup callback。
 
-因此本轮只记录可执行的迁移边界，不减少 `legacy-owned` 计数，也不把现有 staging fail-closed 保护称为迁移完成。
+因此本轮按空数据新部署口径记录 Cloudflare staging owner：不要求历史回填、Firebase legacy token 或旧客户端协议。未启用的 Phone/Auth/OAuth provider 只保留 fail-closed 保护；它们的真实 provider smoke 属于用户明确启用功能时的可选 rollout 证据。
 
 ## Phone / Twilio 路由证据
 
@@ -68,4 +68,4 @@ Cloudflare 现有 `workers/auth/index.ts` 的 Better Auth 已具备 D1 session�
 
 Edge 当前在 `PHONE_TWILIO_STAGING_FAIL_CLOSED=true` 时对六条 Phone 入口返回 `503 phone_twilio_unavailable`，在 `AUTH_OAUTH_STAGING_FAIL_CLOSED=true` 时对六个 Auth/OAuth 兼容入口返回 `503 auth_oauth_unavailable`，均不读取 body、不调用 legacy。该边界是凭据隔离和风险控制，不是成功响应替代品。
 
-在具备上述 schema、历史回填、secret binding 和 authenticated fixture 之前，不应把任何 Phone/Auth/OAuth 路由标记为 `staging-owned`。当前最小可执行实现面是：先完成 phone D1 projection/backfill 和 Firebase↔Better Auth link authority，再单独评审 token-only slice；本审计未修改生产 owner 或 route manifest。
+Phone/Auth/OAuth 路由当前均已在 staging manifest 标记为 `staging-owned`，并由 Edge→Auth/Jobs 的 Cloudflare boundary 承载；缺少对应 provider secret 时按设计返回稳定的 `401`/`503`，不会调用 legacy。本文后续关于 Firestore 回填、Firebase token continuity、旧客户端 conformance 和生产切换的段落，均属于未来兼容窗口，不是本期空数据部署阻塞；生产 owner 仍需另行完成正式 rollout 审批和可选 provider 的 authenticated fixture。
