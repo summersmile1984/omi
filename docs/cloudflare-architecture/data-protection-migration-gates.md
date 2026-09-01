@@ -46,6 +46,22 @@ fail-closed boundary。它们不会调用 legacy，也不会写入伪造的成�
 `deploy/cloudflare/python/api-core/tests/test_migration_routes.py`，覆盖
 single、batch、finalize 以及 plaintext 不变性。
 
+## 已落地的纯契约 slice
+
+`deploy/cloudflare/workers/shared/legacy-data-protection.ts` 现在提供一个未
+接入 route/reader 的 Workers Web Crypto 契约实现：按上述 uid-salted HKDF
+派生 AES-256-GCM key，严格校验 Python 使用的标准 Base64、12-byte nonce 和
+16-byte GCM tag，并在认证或 UTF-8 解码失败时抛出 terminal error。它不会
+把输入 ciphertext 当 plaintext 返回；只有 legacy 对空 optional 字段的表示
+`""` 被显式保留为空值。`deploy/cloudflare/tests/legacy-data-protection.test.ts`
+包含 Python 固定 nonce fixture、随机加密 round-trip、篡改/截断/URL-safe
+Base64 拒绝和无效 secret/uid 测试。
+
+这个 slice 只证明跨运行时的 envelope/失败语义，不证明 D1 已有字段是
+ciphertext，也不提供批量 source replay、reader 适配或 cutover 能力。因此
+在 source representation、所有 reader/derived index 和 Queue executor
+闭合前，仍不可启用数据保护迁移控制行或切换 route owner。
+
 ## 开放 executor 前置条件
 
 需要一个独立可审阅的 migration slice 同时提供：
