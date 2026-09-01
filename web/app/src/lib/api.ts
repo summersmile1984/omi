@@ -105,8 +105,13 @@ async function fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Pr
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'No error body');
-      // Only log non-404 errors (404s are expected for optional endpoints)
-      if (response.status !== 404) {
+      // 404s are expected for optional endpoints.  A missing Calendar OAuth
+      // client is also an intentional staging state; the settings UI turns it
+      // into an actionable environment hint instead of a browser error.
+      const expectedCalendarConfigurationGap =
+        endpoint === '/v1/integrations/google_calendar/oauth-url' &&
+        response.status === 503;
+      if (response.status !== 404 && !expectedCalendarConfigurationGap) {
         console.error('API error response:', response.status, errorText);
       }
 

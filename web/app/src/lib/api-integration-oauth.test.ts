@@ -19,6 +19,7 @@ describe('getIntegrationOAuthUrl', () => {
   });
 
   it('preserves a staging OAuth configuration failure for the settings UI', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -34,6 +35,7 @@ describe('getIntegrationOAuthUrl', () => {
       status: 503,
       message: 'API error: 503 Service Unavailable',
     });
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it('returns the provider URL when OAuth is configured', async () => {

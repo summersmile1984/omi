@@ -1666,7 +1666,6 @@ function IntegrationsSection({
         setTimeout(() => clearInterval(checkConnection), 120000);
       }
     } catch (error) {
-      console.error('Failed to get OAuth URL:', error);
       if (
         integration.id === 'google_calendar' &&
         error instanceof ApiRequestError &&
@@ -1674,6 +1673,7 @@ function IntegrationsSection({
       ) {
         showToast('Google Calendar is not configured for this environment.', 'error');
       } else {
+        console.error('Failed to get OAuth URL:', error);
         showToast(`Unable to connect ${integration.name}. Please try again.`, 'error');
       }
     } finally {
