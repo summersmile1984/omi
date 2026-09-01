@@ -2161,10 +2161,11 @@ routes:
     path: /v1/embeddings
     owner: api-ai
     runtime: python-worker
-    target_runtime: external-api
+    target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [external-embedding-api]
+    dependencies: [workers-ai-binding]
     protocol: http
+    idempotency: optional
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: POST

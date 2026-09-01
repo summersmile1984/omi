@@ -388,42 +388,40 @@ def test_workers_ai_translation_fails_closed_without_binding():
     assert json.loads(response.body) == {"error": "workers ai is not configured"}
 
 
-def test_embeddings_uses_worker_fetch_for_provider(monkeypatch):
+def test_embeddings_uses_workers_ai_without_external_provider_secret():
     secret = "test-secret"
     encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            return {"data": [[0.1, 0.2]]}
+
     request = FakeRequest(
         SimpleNamespace(
             INTERNAL_ASSERTION_SECRET=secret,
-            EMBEDDING_API_BASE_URL="https://embedding.example.test/",
-            EMBEDDING_API_KEY="key",
-            EMBEDDING_MODEL="embed-model",
+            AI=FakeAI(),
+            WORKERS_AI_EMBEDDING_MODEL="@cf/baai/bge-base-en-v1.5",
         ),
         {
             "x-omi-auth-context": encoded,
             "x-omi-internal-signature": signature,
+            "content-type": "application/json",
         },
+        {"input": "hello"},
+        url="https://api.test/v1/embeddings",
     )
 
-    class FakeResponse:
-        status = 200
-
-        async def json(self):
-            return {"data": [{"embedding": [0.1, 0.2]}]}
-
-    calls = {}
-
-    async def fake_fetch(url, **options):
-        calls["url"] = url
-        calls["options"] = options
-        return FakeResponse()
-
-    monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
     response = asyncio.run(entry.embeddings(request))
 
-    assert response.status_code == 200
-    assert json.loads(response.body) == {"data": [{"embedding": [0.1, 0.2]}]}
-    assert calls["url"] == "https://embedding.example.test/v1/embeddings"
-    assert json.loads(calls["options"]["body"]) == {"model": "embed-model", "input": "hello"}
+    assert response == {
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": [0.1, 0.2], "index": 0}],
+        "model": "@cf/baai/bge-base-en-v1.5",
+    }
+    assert calls == {"model": "@cf/baai/bge-base-en-v1.5", "payload": {"text": ["hello"]}}
 
 
 def test_workers_ai_embeddings_returns_openai_style_vectors():

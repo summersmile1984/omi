@@ -6,6 +6,9 @@ policy:
   vectorize_is_authoritative: false
   candidate_ids_must_be_hydrated: true
   max_vectorize_dimensions: 1536
+# source_model/source_dimensions describe historical namespaces only. The
+# staging target re-embeds with the Cloudflare Workers AI target_model and does
+# not call the historical OpenAI/Gemini providers.
 namespaces:
   - id: conversations
     legacy_namespace: ns1

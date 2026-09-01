@@ -692,6 +692,7 @@ POST /v2/sync-capture-manifest
 POST /v2/sync-local-files     Edge → Jobs → R2 → fresh/backfill Queue → Workers AI
 GET  /v2/sync-local-files/{jobId}
                               Edge → Jobs → uid-scoped D1 sync result
+POST /v1/embeddings
 POST /v1/embeddings-workers-ai
                               Edge → Python API AI → Workers AI BGE binding
 POST /v1/translate           Edge → Python API AI → Workers AI m2m100 translation
@@ -2284,10 +2285,11 @@ valid model response. Title generation uses at most ten bounded messages and
 updates only the caller's session. All four helper routes retain the legacy
 `chat:initial` limit of 60 requests per hour and require no local model service.
 
-`/v1/embeddings-workers-ai` is an additive text-embedding seam backed by the
-native `@cf/baai/bge-base-en-v1.5` binding. It accepts a bounded string or batch
-and returns OpenAI-style `data[].embedding` vectors. It remains separate from
-the multilingual 1024-dimensional BGE-M3 model used by the four isolated MCP
+`/v1/embeddings` and `/v1/embeddings-workers-ai` are backed by the native
+`@cf/baai/bge-base-en-v1.5` binding. They accept a bounded string or batch and
+return an OpenAI-style `data[].embedding` envelope for client compatibility;
+neither route reads an external embedding secret. They remain separate from the
+multilingual 1024-dimensional BGE-M3 model used by the four isolated MCP
 semantic-search projections; other embedding/index contracts still require
 their own model, dimension, and retrieval-quality qualification.
 

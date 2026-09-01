@@ -293,27 +293,14 @@ async def health(request: Request) -> Any:
 
 @app.post("/v1/embeddings")
 async def embeddings(request: Request) -> Any:
-    if not auth_context(request):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    env = request.scope["env"]
-    base_url = getattr(env, "EMBEDDING_API_BASE_URL", None)
-    api_key = getattr(env, "EMBEDDING_API_KEY", None)
-    if not base_url or not api_key:
-        return JSONResponse({"error": "embedding provider is not configured"}, status_code=503)
-    body = await request.json()
-    model = body.get("model") or getattr(env, "EMBEDDING_MODEL", "text-embedding-3-small")
-    if worker_fetch is None:
-        return JSONResponse({"error": "worker fetch is unavailable"}, status_code=503)
-    try:
-        response = await worker_fetch(
-            f"{base_url.rstrip('/')}/v1/embeddings",
-            method="POST",
-            headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
-            body=json.dumps({"model": model, "input": body.get("input")}),
-        )
-        return JSONResponse(await response.json(), status_code=int(response.status))
-    except (OSError, TypeError, ValueError):
-        return JSONResponse({"error": "embedding upstream unavailable"}, status_code=502)
+    """Generate embeddings through the native Workers AI binding.
+
+    The route keeps the existing OpenAI-style response envelope for callers,
+    but the model and execution authority are Cloudflare-owned. External
+    embedding API secrets are intentionally not read on this canonical path.
+    """
+
+    return await embeddings_workers_ai(request)
 
 
 def _embedding_input(payload: WorkersAiEmbeddingsRequest) -> list[str] | None:
@@ -347,12 +334,7 @@ def _embedding_vectors(result: object) -> list[list[float]] | None:
 
 @app.post("/v1/embeddings-workers-ai")
 async def embeddings_workers_ai(request: Request):
-    """Generate bounded text embeddings with the native Workers AI BGE binding.
-
-    This route is additive: the existing `/v1/embeddings` provider proxy keeps
-    its configured model and response untouched, while callers can explicitly
-    opt into the fixed 768-dimensional BGE model exposed by Workers AI.
-    """
+    """Generate bounded text embeddings with the native Workers AI BGE binding."""
     if not auth_context(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
