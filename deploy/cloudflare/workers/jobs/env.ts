@@ -20,6 +20,7 @@ export type JobMessage = {
     | "task_intelligence_evaluate"
     | "wrapped_generate"
     | "hume_webhook"
+    | "data_protection_migration"
     | "limitless_import"
     | "chat_assistant_poll"
     | "memory_short_term_lifecycle";
@@ -201,4 +202,8 @@ export type JobsEnv = {
   DLQ_REPLAY_SIGNING_SECRET?: string;
   /** Explicit operator gate for reviewed Hume request_id task projections. */
   HUME_TASK_PROJECTION_STAGING_ENABLED?: string;
+  /** Explicit operator gate for staging-only encrypted payload preparation. */
+  DATA_PROTECTION_EXECUTOR_STAGING_ENABLED?: string;
+  /** UTF-8 master secret matching backend/utils/encryption.py. */
+  DATA_PROTECTION_ENCRYPTION_SECRET?: string;
 };

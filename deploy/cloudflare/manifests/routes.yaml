@@ -4750,6 +4750,28 @@ routes:
     idempotency: request-id
     rollout: staging-only
     rollback: disabled
+  - method: POST
+    path: /internal/data-protection/migrations
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, jobs, worker-secrets]
+    protocol: http
+    idempotency: request-fingerprint
+    rollout: staging-only
+    rollback: disabled
+  - method: GET
+    path: /internal/data-protection/migrations/{runId}
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, worker-secrets]
+    protocol: http
+    idempotency: none
+    rollout: staging-only
+    rollback: disabled
   - method: GET
     path: /memory/vector/search
     owner: api-core

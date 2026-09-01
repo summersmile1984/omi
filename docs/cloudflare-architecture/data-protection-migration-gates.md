@@ -24,16 +24,16 @@ fail-closed boundary。它们不会调用 legacy，也不会写入伪造的成�
 ## 当前 D1 缺口
 
 `0103_data_protection_migration.sql` 只有 capability control 和
-`cf_data_protection_migration_runs` receipt/lease 草案，尚未提供可证明上述
-契约的 source representation：
+`cf_data_protection_migration_runs` receipt/lease 草案。`0137` 现在补充了
+投影 source 的 revision marker，以及 conversation/chat 的 protection-level
+marker；它仍然不把既有 plaintext 当成 ciphertext：
 
-- `cf_memories.content` 是 plaintext，且没有 legacy `evidence` 字段或加密
-  状态列；
-- `cf_conversations` 没有 `data_protection_level`，其
+- `cf_memories.content` 和已投影的 `evidence_json` 仍是 plaintext；
+- `cf_conversations` 的
   `structured_json`、`transcript_segments_json` 和 FTS searchable text
-  没有加密/清除契约；
-- `cf_chat_messages` 没有 `data_protection_level`，`message_json` 内嵌
-  `text` 没有可区分的 encrypted envelope；
+  没有加密/清除契约；新增的 marker 不能替代该契约；
+- `cf_chat_messages` 的 `message_json` 内嵌 `text` 没有可区分的 encrypted
+  envelope；新增的 marker 不能替代该契约；
 - API Core、Jobs、MCP、persona、knowledge-graph、integration 和 FTS
   reader 仍直接把这些列作为 JSON/plaintext 读取。只改写列值会破坏读取，
   保留旧 plaintext 又不能满足 enhanced at-rest protection；
@@ -46,6 +46,25 @@ fail-closed boundary。它们不会调用 legacy，也不会写入伪造的成�
 `deploy/cloudflare/python/api-core/tests/test_migration_routes.py`，覆盖
 single、batch、finalize 以及 plaintext 不变性。
 
+## 已落地的 staging preparation executor
+
+`deploy/cloudflare/workers/jobs/data-protection-executor.ts` 提供了一个更窄的
+内部 staging seam：`POST/GET /internal/data-protection/migrations*` 只接受
+admin key，并且要求 `DATA_PROTECTION_EXECUTOR_STAGING_ENABLED=true` 与至少
+32-byte `DATA_PROTECTION_ENCRYPTION_SECRET`。它读取已经投影到 D1 的
+memory/conversation/chat source，绑定完整 source hash 后写入已有
+`cf_data_protection_migration_runs`，通过 `JOBS` queue 异步处理；consumer
+使用 lease、幂等 request fingerprint、source-drift 检测、重试和 account
+deletion fence。
+
+executor 生成的只是 `result_json` 中的 legacy-compatible
+HKDF/AES-GCM ciphertext preparation artifact（scheme 与
+`backend/utils/encryption.py` 相同），不会改写 canonical D1 rows、FTS 或
+任何 reader。因此它证明了“投影数据可被安全准备”的最小闭环，但不能被
+解释为历史数据迁移、enhanced at-rest cutover 或 `/v1/users/migration/*`
+owner 切换。当前 gate 默认关闭，且 source revision drift、缺字段、无 key
+都会 fail closed。
+
 ## 已落地的纯契约 slice
 
 `deploy/cloudflare/workers/shared/legacy-data-protection.ts` 现在提供一个未
@@ -57,14 +76,15 @@ single、batch、finalize 以及 plaintext 不变性。
 包含 Python 固定 nonce fixture、随机加密 round-trip、篡改/截断/URL-safe
 Base64 拒绝和无效 secret/uid 测试。
 
-这个 slice 只证明跨运行时的 envelope/失败语义，不证明 D1 已有字段是
-ciphertext，也不提供批量 source replay、reader 适配或 cutover 能力。因此
-在 source representation、所有 reader/derived index 和 Queue executor
-闭合前，仍不可启用数据保护迁移控制行或切换 route owner。
+这个 slice 只证明跨运行时的 envelope/失败语义；连同 preparation executor
+也不提供 canonical source replay、reader 适配或 cutover 能力。因此在所有
+reader/derived index 和 canonical write contract 闭合前，仍不可启用数据
+保护迁移控制行或切换 legacy route owner。
 
 ## 开放 executor 前置条件
 
-需要一个独立可审阅的 migration slice 同时提供：
+要把上述准备 artifact 进一步变成正式迁移，还需要一个独立可审阅的
+migration slice 同时提供：
 
 1. D1 source columns/version marker，明确每个 legacy protected field、压缩
    状态、source revision 和 ciphertext scheme；
@@ -77,6 +97,9 @@ ciphertext，也不提供批量 source replay、reader 适配或 cutover 能力�
 5. 经过 checksum 和人工审阅的 Firestore/GCS source export、真实账号回放、
    residual scan，以及旧客户端 wire conformance。
 
+目前尚未完成第 3、5 项，也没有 production provider/Firestore 凭据或真实
+账号 live replay 证据；因此不能宣称 data-protection migration 已完成。
+
 在这些证据齐备前，route owner/manifest 不应切换为 data-protection executor，
 也不能把 D1 projection 存在本身当成历史 Firestore 加密迁移完成。
 
@@ -85,4 +108,6 @@ ciphertext，也不提供批量 source replay、reader 适配或 cutover 能力�
 ```bash
 cd deploy/cloudflare
 python -m pytest python/api-core/tests/test_migration_routes.py
+npx vitest run tests/data-protection-executor.test.ts
+npm run validate:manifest
 ```

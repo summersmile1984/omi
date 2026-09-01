@@ -1361,6 +1361,11 @@ app.post(
 // provider callback or caller identity; Jobs validates the reviewed D1
 // projection and its account-generation/deletion fences.
 app.post("/internal/hume-task-projections/apply", proxyPublicJobs);
+// Staging-only data-protection preparation.  Jobs enforces the admin key and
+// explicit gate; this boundary never claims ownership of the legacy /v1
+// migration routes or mutates canonical source rows.
+app.post("/internal/data-protection/migrations", proxyPublicJobs);
+app.get("/internal/data-protection/migrations/:runId", proxyPublicJobs);
 // Namespaced external MCP App OAuth staging seam. This is intentionally
 // separate from Better Auth's client-to-Omi MCP OAuth and from legacy
 // /v1/apps/mcp; Jobs enforces its explicit staging gate and D1 authority.

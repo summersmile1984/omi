@@ -135,6 +135,10 @@ import {
 } from "./task-intelligence";
 import { captureDlqMessage, registerDlqReplayRoutes } from "./dlq-replay";
 import { registerHumeTaskProjectionRoutes } from "./hume-task-projection";
+import {
+  processDataProtectionMigrationMessage,
+  registerDataProtectionMigrationRoutes,
+} from "./data-protection-executor";
 
 const app = new Hono<{ Bindings: JobsEnv }>();
 const MAX_PAYLOAD_BYTES = 16_000;
@@ -219,6 +223,7 @@ registerLegacyAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);
 registerHumeWebhookRoutes(app);
 registerHumeTaskProjectionRoutes(app);
+registerDataProtectionMigrationRoutes(app);
 registerWrappedRoutes(app, requestContext);
 registerPhoneTwilioRoutes(app, requestContext);
 registerPhoneHistoryImportRoutes(app);
@@ -1013,6 +1018,10 @@ async function processJobMessage(
   }
   if (message.body.kind === "hume_webhook") {
     await processHumeWebhookMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "data_protection_migration") {
+    await processDataProtectionMigrationMessage(message, env);
     return;
   }
   if (message.body.kind === "wrapped_generate") {
