@@ -19,7 +19,11 @@ export function resolveCalendarProbeConfig(env = process.env) {
     fail("set CLOUDFLARE_CALENDAR_PROBE_CONFIRM=1 for the disposable-account mutation");
   }
   if (accessToken.length > 16_000) fail("access token is too long");
-  return Object.freeze({ edgeUrl: resolveEdgeUrl(env.CLOUDFLARE_EDGE_URL), bearer, accessToken });
+  const edgeUrl = resolveEdgeUrl(env.CLOUDFLARE_EDGE_URL);
+  if (!edgeUrl.startsWith("https://")) {
+    fail("CLOUDFLARE_EDGE_URL must use https for provider credentials");
+  }
+  return Object.freeze({ edgeUrl, bearer, accessToken });
 }
 
 async function request(fetchImpl, url, init = {}) {
@@ -142,4 +146,3 @@ if (process.argv[1]?.endsWith("calendar-positive-probe.mjs")) {
     process.exitCode = 1;
   });
 }
-

@@ -25,6 +25,14 @@ describe("Calendar staging positive probe", () => {
         CLOUDFLARE_CALENDAR_PROBE_CONFIRM: "1",
       }),
     ).toThrow("access token is too long");
+    expect(() =>
+      resolveCalendarProbeConfig({
+        CLOUDFLARE_EDGE_URL: "http://edge.example.test",
+        CLOUDFLARE_CALENDAR_PROBE_BEARER_TOKEN: config.bearer,
+        CLOUDFLARE_CALENDAR_PROBE_ACCESS_TOKEN: config.accessToken,
+        CLOUDFLARE_CALENDAR_PROBE_CONFIRM: "1",
+      }),
+    ).toThrow("must use https");
   });
 
   it("verifies save, provider-backed event read, and cleanup without logging tokens", async () => {
