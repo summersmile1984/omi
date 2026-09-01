@@ -89,7 +89,9 @@ describe("independent Cloudflare production environment", () => {
   it("keeps deployment dependency order fail-closed", () => {
     expect(() => assertValidProductionDeploymentOrder()).not.toThrow();
     expect(() =>
-      assertValidProductionDeploymentOrder([...PRODUCTION_DEPLOYMENTS].reverse()),
+      assertValidProductionDeploymentOrder(
+        [...PRODUCTION_DEPLOYMENTS].reverse(),
+      ),
     ).toThrow("must deploy after dependency");
   });
 
@@ -100,7 +102,8 @@ describe("independent Cloudflare production environment", () => {
       () => `secret-${++counter}`,
     );
     const workers = secrets.workers;
-    const internal = workers["omi-cf-auth-production"].INTERNAL_ASSERTION_SECRET;
+    const internal =
+      workers["omi-cf-auth-production"].INTERNAL_ASSERTION_SECRET;
     expect(workers["omi-cf-edge-production"].INTERNAL_ASSERTION_SECRET).toBe(
       internal,
     );
@@ -149,11 +152,24 @@ describe("independent Cloudflare production environment", () => {
       action: "rollback",
       workerName: "omi-cf-auth-production",
       versionId: "11111111-1111-4111-8111-111111111111",
+      queueConsumers: [],
     });
     expect(plan[0]).toEqual({
       action: "delete",
       workerName: "omi-web-app-production",
       versionId: null,
+      queueConsumers: [],
+    });
+    expect(
+      plan.find(({ workerName }) => workerName === "omi-cf-jobs-production"),
+    ).toMatchObject({
+      action: "delete",
+      queueConsumers: [
+        "omi-cf-jobs-production",
+        "omi-cf-jobs-dlq-production",
+        "omi-cf-sync-fresh-production",
+        "omi-cf-sync-backfill-production",
+      ],
     });
   });
 });

@@ -20,36 +20,52 @@ export async function verifyStagingHealth({
   fetchImpl = fetch,
   targets = stagingHealthTargets(),
   timeoutMs = 15_000,
+  attempts = 6,
+  retryDelayMs = 2_000,
+  sleep = (delayMs) =>
+    new Promise((resolve) => globalThis.setTimeout(resolve, delayMs)),
 } = {}) {
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new Error("health attempts must be a positive integer");
+  }
   const statuses = {};
   for (const target of targets) {
-    let response;
-    try {
-      response = await fetchImpl(target.url, {
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-    } catch (error) {
-      throw new Error(
-        `${target.name} health request failed: ${error instanceof Error ? error.message : "unknown error"}`,
-      );
+    let lastError;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const response = await fetchImpl(target.url, {
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        statuses[target.name] = response.status;
+        if (response.status !== 200) {
+          throw new Error(
+            `${target.name} expected HTTP 200, received HTTP ${response.status}`,
+          );
+        }
+        let body;
+        try {
+          body = await response.json();
+        } catch {
+          throw new Error(
+            `${target.name} readiness response was not valid JSON`,
+          );
+        }
+        if (!body || typeof body !== "object" || body.status !== "ready") {
+          throw new Error(
+            `${target.name} readiness response did not report status=ready`,
+          );
+        }
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError =
+          error instanceof Error
+            ? error
+            : new Error(`${target.name} health request failed: unknown error`);
+        if (attempt < attempts) await sleep(retryDelayMs);
+      }
     }
-    statuses[target.name] = response.status;
-    if (response.status !== 200) {
-      throw new Error(
-        `${target.name} expected HTTP 200, received HTTP ${response.status}`,
-      );
-    }
-    let body;
-    try {
-      body = await response.json();
-    } catch {
-      throw new Error(`${target.name} readiness response was not valid JSON`);
-    }
-    if (!body || typeof body !== "object" || body.status !== "ready") {
-      throw new Error(
-        `${target.name} readiness response did not report status=ready`,
-      );
-    }
+    if (lastError) throw lastError;
   }
   return statuses;
 }

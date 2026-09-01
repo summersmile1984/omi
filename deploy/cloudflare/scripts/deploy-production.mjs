@@ -15,6 +15,7 @@ import {
   assertNoPendingD1Migrations,
   createD1MigrationConfig,
   resolveProductionD1Migrations,
+  runD1MigrationWithRetry,
 } from "./d1-migrations.mjs";
 import { verifyStagingHealth } from "./deploy-health.mjs";
 import {
@@ -35,7 +36,10 @@ import { runPreservingGeneratedFile } from "./preserve-generated-file.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = resolve(root, "../../web/app");
 const releaseDirectory = resolve(root, ".wrangler/releases");
-const secretStorePath = resolve(root, ".wrangler/production-operator-secrets.json");
+const secretStorePath = resolve(
+  root,
+  ".wrangler/production-operator-secrets.json",
+);
 const subdomain = resolveWorkersSubdomain();
 const urls = productionUrls(subdomain);
 
@@ -133,7 +137,9 @@ function vectorizeMetadataIndexState(name, property) {
       (entry) => (entry?.propertyName ?? entry?.property_name) === property,
     );
     if (!match) return { exists: false, ready: false };
-    const status = String(match?.status ?? match?.state ?? "ready").toLowerCase();
+    const status = String(
+      match?.status ?? match?.state ?? "ready",
+    ).toLowerCase();
     return { exists: true, ready: status === "ready" };
   } catch {
     return { exists: false, ready: false };
@@ -210,7 +216,9 @@ function ensureResources() {
     }
     waitForVectorizeMetadataIndex(name, "created_at");
   }
-  if (!lifecycleExists("omi-cf-production", "expire-production-transcriptions")) {
+  if (
+    !lifecycleExists("omi-cf-production", "expire-production-transcriptions")
+  ) {
     run("npx", [
       "wrangler",
       "r2",
@@ -264,26 +272,51 @@ function applyMigrations(migrations) {
       { mode: 0o600, flag: "wx" },
     );
     try {
-      run("npx", [
-        "wrangler",
-        "d1",
-        "migrations",
-        "apply",
-        migration.binding,
-        "--remote",
-        "--config",
-        configPath,
-      ]);
-      const verification = runQuiet("npx", [
-        "wrangler",
-        "d1",
-        "migrations",
-        "list",
-        migration.binding,
-        "--remote",
-        "--config",
-        configPath,
-      ]);
+      const migrationResult = runD1MigrationWithRetry(
+        () =>
+          runQuiet("npx", [
+            "wrangler",
+            "d1",
+            "migrations",
+            "apply",
+            migration.binding,
+            "--remote",
+            "--config",
+            configPath,
+          ]),
+        {
+          onRetry: ({ attempt, delayMs }) =>
+            console.warn(
+              `Cloudflare D1 transient migration failure for ${migration.databaseName}; retry ${attempt}/3 in ${delayMs}ms.`,
+            ),
+        },
+      );
+      if (migrationResult.stdout) process.stdout.write(migrationResult.stdout);
+      if (migrationResult.stderr) process.stderr.write(migrationResult.stderr);
+      if (!migrationResult.ok) {
+        throw new Error(
+          `unable to apply ${migration.databaseName} migrations: ${migrationResult.stderr.trim() || "wrangler failed"}`,
+        );
+      }
+      const verification = runD1MigrationWithRetry(
+        () =>
+          runQuiet("npx", [
+            "wrangler",
+            "d1",
+            "migrations",
+            "list",
+            migration.binding,
+            "--remote",
+            "--config",
+            configPath,
+          ]),
+        {
+          onRetry: ({ attempt, delayMs }) =>
+            console.warn(
+              `Cloudflare D1 transient migration verification failure for ${migration.databaseName}; retry ${attempt}/3 in ${delayMs}ms.`,
+            ),
+        },
+      );
       if (!verification.ok) {
         throw new Error(
           `unable to verify ${migration.databaseName} migrations: ${verification.stderr.trim() || "wrangler failed"}`,
@@ -301,7 +334,10 @@ function applyMigrations(migrations) {
 
 function configOptions(migrations) {
   const byName = Object.fromEntries(
-    migrations.map((migration) => [migration.databaseName, migration.databaseId]),
+    migrations.map((migration) => [
+      migration.databaseName,
+      migration.databaseId,
+    ]),
   );
   return {
     appDatabaseId: byName["omi-cf-app-production"],
@@ -385,7 +421,9 @@ function loadOrCreateSecretStore(statuses) {
     if ((statSync(secretStorePath).mode & 0o077) !== 0) {
       throw new Error("Cloudflare production secret store must use mode 0600");
     }
-    return validateSecretStore(JSON.parse(readFileSync(secretStorePath, "utf8")));
+    return validateSecretStore(
+      JSON.parse(readFileSync(secretStorePath, "utf8")),
+    );
   }
   if (Object.values(statuses).some((status) => status !== null)) {
     throw new Error(
@@ -447,7 +485,8 @@ function deployServices(options, statuses, secretStore, deployedWorkers) {
   for (const deployment of PRODUCTION_DEPLOYMENTS) {
     withProductionConfig(deployment.target, options, (configPath) => {
       withSecretsFile(deployment.workerName, secretStore, (secretPath) => {
-        const initialSecrets = statuses[deployment.workerName] === null && secretPath;
+        const initialSecrets =
+          statuses[deployment.workerName] === null && secretPath;
         if (deployment.runtime === "python") {
           const args = [
             "uv==0.12.3",
@@ -482,13 +521,9 @@ function deployWeb(options, deployedWorkers) {
     generatedConfig,
     renderProductionConfig(readFileSync(generatedConfig, "utf8"), options),
   );
-  run("npx", [
-    "wrangler",
-    "deploy",
-    "--dry-run",
-    "--config",
-    generatedConfig,
-  ], { cwd: webRoot });
+  run("npx", ["wrangler", "deploy", "--dry-run", "--config", generatedConfig], {
+    cwd: webRoot,
+  });
   run(
     "npx",
     [
@@ -507,12 +542,36 @@ function rollbackDeployment(snapshot, snapshotPath, deployedWorkers) {
   const failures = [];
   for (const item of productionRollbackPlan(snapshot)) {
     if (!deployedWorkers.has(item.workerName)) continue;
+    let prerequisitesOk = true;
+    for (const queueName of item.queueConsumers) {
+      const consumerRemoval = spawnSync(
+        "npx",
+        [
+          "wrangler",
+          "queues",
+          "consumer",
+          "remove",
+          queueName,
+          item.workerName,
+        ],
+        {
+          cwd: root,
+          stdio: ["ignore", "inherit", "inherit"],
+          env: process.env,
+        },
+      );
+      if (consumerRemoval.status !== 0) prerequisitesOk = false;
+    }
     let result;
     if (item.action === "delete") {
       result = spawnSync(
         "npx",
         ["wrangler", "delete", "--name", item.workerName, "--force"],
-        { cwd: root, stdio: ["ignore", "inherit", "inherit"], env: process.env },
+        {
+          cwd: root,
+          stdio: ["ignore", "inherit", "inherit"],
+          env: process.env,
+        },
       );
     } else {
       result = spawnSync(
@@ -524,16 +583,39 @@ function rollbackDeployment(snapshot, snapshotPath, deployedWorkers) {
           "--name",
           item.workerName,
           "--message",
-          `automatic production rollback: ${snapshotPath.split("/").pop()}`.slice(0, 120),
+          `automatic production rollback: ${snapshotPath.split("/").pop()}`.slice(
+            0,
+            120,
+          ),
           "--yes",
         ],
-        { cwd: root, stdio: ["ignore", "inherit", "inherit"], env: process.env },
+        {
+          cwd: root,
+          stdio: ["ignore", "inherit", "inherit"],
+          env: process.env,
+        },
       );
     }
-    if (result.status !== 0) failures.push(item.workerName);
+    const statusAfterDelete = runQuiet("npx", [
+      "wrangler",
+      "deployments",
+      "status",
+      "--name",
+      item.workerName,
+      "--json",
+    ]);
+    const absentAfterDelete =
+      item.action === "delete" &&
+      !statusAfterDelete.ok &&
+      statusAfterDelete.stderr.includes("[code: 10007]");
+    if ((!prerequisitesOk || result.status !== 0) && !absentAfterDelete) {
+      failures.push(item.workerName);
+    }
   }
   if (failures.length) {
-    throw new Error(`automatic production rollback failed for: ${failures.join(", ")}`);
+    throw new Error(
+      `automatic production rollback failed for: ${failures.join(", ")}`,
+    );
   }
 }
 
@@ -568,11 +650,21 @@ try {
   );
   console.log(`Rollback snapshot: ${snapshotPath}`);
 } catch (error) {
+  console.error(
+    `Production release failed: ${error instanceof Error ? error.message : "unknown error"}`,
+  );
   if (deployedWorkers.size > 0) {
     console.error(
       `Production release failed; restoring the deployment snapshot at ${snapshotPath}.`,
     );
-    rollbackDeployment(snapshot, snapshotPath, deployedWorkers);
+    try {
+      rollbackDeployment(snapshot, snapshotPath, deployedWorkers);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "production release and automatic rollback both failed",
+      );
+    }
   }
   throw error;
 }

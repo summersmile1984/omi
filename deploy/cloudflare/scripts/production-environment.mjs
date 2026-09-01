@@ -178,7 +178,10 @@ export function renderProductionConfig(
   }
   const urls = productionUrls(subdomain);
   const replacements = [
-    ["omi-cf-conversation-recordings-staging", "omi-cf-conversation-recordings-production"],
+    [
+      "omi-cf-conversation-recordings-staging",
+      "omi-cf-conversation-recordings-production",
+    ],
     ["omi-cf-transcript-chunks-v2", "omi-cf-transcript-chunks-production-v1"],
     ["omi-cf-desktop-updates-staging", "omi-cf-desktop-updates-production"],
     ["omi-cf-sync-backfill-staging", "omi-cf-sync-backfill-production"],
@@ -231,11 +234,7 @@ export function renderProductionConfig(
       '"LEGACY_CHAT_FILES_STAGING_ENABLED": "false"',
     );
   if (rendered.includes('"database_name": "omi-cf-app-production"')) {
-    rendered = bindDatabaseId(
-      rendered,
-      "omi-cf-app-production",
-      appDatabaseId,
-    );
+    rendered = bindDatabaseId(rendered, "omi-cf-app-production", appDatabaseId);
   }
   if (rendered.includes('"database_name": "omi-cf-auth-production"')) {
     rendered = bindDatabaseId(
@@ -340,11 +339,19 @@ export function productionRollbackPlan(snapshot) {
   return PRODUCTION_ROLLBACK_ORDER.map((workerName) => {
     const versionId = snapshot.workers[workerName];
     if (versionId === null) {
-      return { action: "delete", workerName, versionId: null };
+      return {
+        action: "delete",
+        workerName,
+        versionId: null,
+        queueConsumers:
+          workerName === "omi-cf-jobs-production"
+            ? [...PRODUCTION_RESOURCES.queues]
+            : [],
+      };
     }
     if (typeof versionId !== "string" || !/^[A-Za-z0-9-]+$/.test(versionId)) {
       throw new Error(`invalid rollback version for ${workerName}`);
     }
-    return { action: "rollback", workerName, versionId };
+    return { action: "rollback", workerName, versionId, queueConsumers: [] };
   });
 }

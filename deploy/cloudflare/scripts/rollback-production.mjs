@@ -22,6 +22,18 @@ const message = `manual production rollback: ${basename(snapshotPath)}`.slice(
   120,
 );
 for (const item of productionRollbackPlan(snapshot)) {
+  let prerequisitesOk = true;
+  for (const queueName of item.queueConsumers) {
+    const consumerRemoval = spawnSync(
+      "npx",
+      ["wrangler", "queues", "consumer", "remove", queueName, item.workerName],
+      {
+        stdio: ["ignore", "inherit", "inherit"],
+        env: process.env,
+      },
+    );
+    if (consumerRemoval.status !== 0) prerequisitesOk = false;
+  }
   const args =
     item.action === "delete"
       ? ["wrangler", "delete", "--name", item.workerName, "--force"]
@@ -39,7 +51,29 @@ for (const item of productionRollbackPlan(snapshot)) {
     stdio: ["ignore", "inherit", "inherit"],
     env: process.env,
   });
-  if (result.status !== 0) {
-    throw new Error(`production rollback failed for ${item.workerName}`);
+  if (!prerequisitesOk || result.status !== 0) {
+    const status = spawnSync(
+      "npx",
+      [
+        "wrangler",
+        "deployments",
+        "status",
+        "--name",
+        item.workerName,
+        "--json",
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: process.env,
+      },
+    );
+    if (
+      item.action !== "delete" ||
+      status.status === 0 ||
+      !String(status.stderr).includes("[code: 10007]")
+    ) {
+      throw new Error(`production rollback failed for ${item.workerName}`);
+    }
   }
 }

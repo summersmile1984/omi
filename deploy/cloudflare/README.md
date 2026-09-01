@@ -62,6 +62,37 @@ CLOUDFLARE_SMOKE_TOKEN_FILE=/secure/production-smoke-token.json \
   npm run smoke:production
 ```
 
+### Independent production evidence (2026-09-01)
+
+The first independent release is live without changing `api.omi.me` or
+`app.omi.me`. Auth D1 has 10 applied migrations and App D1 has 150, with no
+pending migration in either authority. All eight active versions are at 100%:
+
+- Auth `502fa91c-b92a-4d2e-a0ec-a735d7d10e03`
+- Rate Limit `abdf358c-874c-4801-a00a-a4b08ba708cc`
+- API Core `fd80438f-8fd9-4a1a-a118-acbc0db3d832`
+- API AI `bb938ec8-75bf-44b4-a2f2-4c4dd62d3867`
+- Realtime `569055c6-bc88-43a2-9f08-a1e1f72b8531`
+- Jobs `63d79cb4-8a31-4a9a-8798-87bb448c7bab`
+- Edge `d25adeca-01f0-43eb-a81e-a9ec5a0e1f6c`
+- Web `d5321b10-92a6-457a-9be3-ac54db1598ae`
+
+Release qualification passed 102 Cloudflare test files / 755 tests, API Core
+389 tests, API AI 117 tests, and 12 Web test files / 47 tests. Edge and Web
+readiness both returned HTTP 200 with every internal dependency at 200. The
+authenticated production smoke passed, including the Web proxy and one real
+Workers AI chat call. A 20-sample warm-path benchmark passed the 4,000 ms p95
+budget for all six endpoints; the largest observed p95 was 1,847.97 ms.
+
+A real browser signed in through the production Web Worker and rendered
+Conversations, Memories, Apps, and Tasks. CDP captured 187 events across those
+routes with zero console exceptions, failed requests, or HTTP 4xx/5xx
+responses. The dedicated smoke identity was then deleted through the public
+Queue workflow: Auth user/session/account, App cutover/intent, and chat
+session/message residuals were all zero; one expected short-lived deletion
+tombstone remained, the old bearer returned 401, and the browser returned to
+`/login`.
+
 The first staging slice contains:
 
 - `edge`: public routing, request IDs, trusted auth context and legacy fallback.

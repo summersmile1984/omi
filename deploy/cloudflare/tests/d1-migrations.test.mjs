@@ -5,6 +5,7 @@ import {
   resolveD1DatabaseId,
   resolveProductionD1Migrations,
   resolveStagingD1Migrations,
+  runD1MigrationWithRetry,
 } from "../scripts/d1-migrations.mjs";
 
 describe("Cloudflare D1 migration release config", () => {
@@ -77,22 +78,22 @@ describe("Cloudflare D1 migration release config", () => {
         uuid: "22222222-2222-4222-8222-222222222222",
       },
     ]);
-    expect(resolveStagingD1Migrations(output, (path) => `/repo/${path}`)).toEqual(
-      [
-        {
-          databaseName: "omi-cf-auth-staging",
-          databaseId: "11111111-1111-4111-8111-111111111111",
-          binding: "AUTH_DB",
-          migrationsDir: "/repo/migrations/auth",
-        },
-        {
-          databaseName: "omi-cf-app-staging",
-          databaseId: "22222222-2222-4222-8222-222222222222",
-          binding: "APP_DB",
-          migrationsDir: "/repo/migrations/app",
-        },
-      ],
-    );
+    expect(
+      resolveStagingD1Migrations(output, (path) => `/repo/${path}`),
+    ).toEqual([
+      {
+        databaseName: "omi-cf-auth-staging",
+        databaseId: "11111111-1111-4111-8111-111111111111",
+        binding: "AUTH_DB",
+        migrationsDir: "/repo/migrations/auth",
+      },
+      {
+        databaseName: "omi-cf-app-staging",
+        databaseId: "22222222-2222-4222-8222-222222222222",
+        binding: "APP_DB",
+        migrationsDir: "/repo/migrations/app",
+      },
+    ]);
   });
 
   it("builds isolated production migration targets without reusing staging", () => {
@@ -137,5 +138,39 @@ describe("Cloudflare D1 migration release config", () => {
         "omi-cf-app-staging",
       ),
     ).not.toThrow();
+  });
+
+  it("retries transient Cloudflare migration failures before succeeding", () => {
+    const attempts = [
+      { ok: false, stderr: "D1 DB is overloaded. [code: 7429]" },
+      { ok: false, stderr: "internal error [code: 7500]" },
+      { ok: true, stdout: "No migrations to apply!" },
+    ];
+    const delays = [];
+    const retries = [];
+
+    const result = runD1MigrationWithRetry(() => attempts.shift(), {
+      sleep: (delayMs) => delays.push(delayMs),
+      onRetry: (retry) => retries.push(retry),
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(attempts).toHaveLength(0);
+    expect(delays).toEqual([2_000, 4_000]);
+    expect(retries.map(({ attempt }) => attempt)).toEqual([1, 2]);
+  });
+
+  it("does not retry a non-transient migration failure", () => {
+    let attempts = 0;
+    const result = runD1MigrationWithRetry(
+      () => {
+        attempts += 1;
+        return { ok: false, stderr: "SQLITE_ERROR: no such table" };
+      },
+      { sleep: () => expect.unreachable("unexpected retry") },
+    );
+
+    expect(result).toMatchObject({ ok: false });
+    expect(attempts).toBe(1);
   });
 });

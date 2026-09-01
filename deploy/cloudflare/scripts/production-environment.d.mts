@@ -12,7 +12,9 @@ export const PRODUCTION_RESOURCES: {
   vectorize: ReadonlyArray<string>;
 };
 
-export function assertProductionConfirmation(env?: Record<string, string | undefined>): void;
+export function assertProductionConfirmation(
+  env?: Record<string, string | undefined>,
+): void;
 export function resolveWorkersSubdomain(raw?: string): string;
 export function productionUrls(subdomain?: string): {
   auth: string;
@@ -55,4 +57,5 @@ export function productionRollbackPlan(snapshot: object): Array<{
   action: "delete" | "rollback";
   workerName: string;
   versionId: string | null;
+  queueConsumers: string[];
 }>;
