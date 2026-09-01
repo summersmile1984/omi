@@ -741,12 +741,11 @@ export async function uploadChatFiles(
   files: File[],
   appId?: string,
 ): Promise<MessageFile[]> {
-  const queryParams = new URLSearchParams();
-  if (appId) {
-    queryParams.set('app_id', appId);
-  }
-
-  const url = `${API_BASE_URL}/v2/files${queryParams.toString() ? `?${queryParams}` : ''}`;
+  // Chat files are owned by the uid-scoped Cloudflare R2/D1 projection.  The
+  // app id is intentionally not sent here: app/session attachment binding is
+  // a separate mutation boundary after the file is ready.
+  void appId;
+  const url = `${API_BASE_URL}/v1/cf/chat-files`;
 
   const formData = new FormData();
   for (const file of files) {
