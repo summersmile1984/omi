@@ -47,6 +47,7 @@ Firebase legacy token、旧 Cloud Tasks/Assistants wire 和旧客户端逐字节
 - Cloudflare TypeScript：100 个测试文件、729 个测试通过；类型检查和生产依赖审计通过。
 - `api-core`：385 个测试通过；`api-ai`：114 个测试通过。
 - Web：9 个测试文件、41 个测试通过；vinext staging build 与 Worker dry-run 通过。
+- 当前分支执行 `npm run smoke:staging` 的 edge/v1 health、公开页面和安全边界检查均通过；因 shell 未提供 `CLOUDFLARE_SMOKE_BEARER_TOKEN` 或 token 文件，authenticated checks 按脚本约定跳过。本轮最新 FCM 注销修复尚未重新部署到 staging。
 - Rate Limit Durable Object 已增加内部 `/reserve`/`/release` 原子配额预留基础能力，覆盖并发、幂等释放、窗口过期清理和 stale-token 隔离；当前不切换 Redis family 或 legacy caller，后续需按调用方契约逐组迁移。
 - 历史回放输入边界（2026-09-01）：通用 `backfill-d1` 输入上限为 64 MiB，并以 fatal UTF-8 解码；Chat/Files、Memory、Persona、Phone、Wrapped、Audio 七个 reconcile 工具同样拒绝 malformed UTF-8，避免损坏 export 进入迁移计划。该保护不等于已完成真实 Firestore 回放。
 - Calendar provider probe（2026-09-01）：新增显式确认的 staging-only `calendar:positive-probe`，使用一次性 Bearer/access token 验证加密 grant 保存、Google events 读取和自动断开，不创建事件、不输出 token；当前因缺少 Google OAuth client secret 尚未执行真实探针。
