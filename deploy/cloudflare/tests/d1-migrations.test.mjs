@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertNoPendingD1Migrations,
   createD1MigrationConfig,
   resolveD1DatabaseId,
+  resolveStagingD1Migrations,
 } from "../scripts/d1-migrations.mjs";
 
 describe("Cloudflare D1 migration release config", () => {
@@ -61,5 +63,49 @@ describe("Cloudflare D1 migration release config", () => {
         },
       ],
     });
+  });
+
+  it("builds both staging migration targets from one exact database list", () => {
+    const output = JSON.stringify([
+      {
+        name: "omi-cf-auth-staging",
+        uuid: "11111111-1111-4111-8111-111111111111",
+      },
+      {
+        name: "omi-cf-app-staging",
+        uuid: "22222222-2222-4222-8222-222222222222",
+      },
+    ]);
+    expect(resolveStagingD1Migrations(output, (path) => `/repo/${path}`)).toEqual(
+      [
+        {
+          databaseName: "omi-cf-auth-staging",
+          databaseId: "11111111-1111-4111-8111-111111111111",
+          binding: "AUTH_DB",
+          migrationsDir: "/repo/migrations/auth",
+        },
+        {
+          databaseName: "omi-cf-app-staging",
+          databaseId: "22222222-2222-4222-8222-222222222222",
+          binding: "APP_DB",
+          migrationsDir: "/repo/migrations/app",
+        },
+      ],
+    );
+  });
+
+  it("fails verification whenever Wrangler reports pending migrations", () => {
+    expect(() =>
+      assertNoPendingD1Migrations(
+        "Migrations to be applied:\n0148_example.sql",
+        "omi-cf-app-staging",
+      ),
+    ).toThrow("has unapplied migrations");
+    expect(() =>
+      assertNoPendingD1Migrations(
+        "\u001b[32m✅ No migrations to apply!\u001b[0m",
+        "omi-cf-app-staging",
+      ),
+    ).not.toThrow();
   });
 });

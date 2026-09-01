@@ -5,6 +5,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "validate:manifest": "node scripts/validate-manifests.mjs",
+    "verify:migrations": "node scripts/verify-d1-migrations.mjs",
     "validate:backend-routes": "cd ../../backend && scripts/openapi_runner.sh scripts/export_openapi.py --surface cloudflare-route-inventory --check ../deploy/cloudflare/manifests/backend-routes.json",
     "pretest": "npm run validate:manifest",
     "test": "vitest run",

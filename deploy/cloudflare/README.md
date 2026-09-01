@@ -147,6 +147,7 @@ usage in D1, and each route has a 30-per-hour Edge Durable Object rate limit.
 ```bash
 npm test
 npm run typecheck
+npm run verify:migrations
 npm run deploy:staging
 npm run smoke:staging
 ```

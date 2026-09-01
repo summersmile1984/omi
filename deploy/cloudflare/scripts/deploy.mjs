@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  assertNoPendingD1Migrations,
   createD1MigrationConfig,
-  resolveD1DatabaseId,
+  resolveStagingD1Migrations,
 } from "./d1-migrations.mjs";
 import { stagingHealthTargets, verifyStagingHealth } from "./deploy-health.mjs";
 import {
@@ -338,28 +339,15 @@ function applyMigrations() {
       `unable to resolve staging D1 UUIDs: ${listed.stderr.trim() || "wrangler failed"}`,
     );
   }
-  const migrations = [
-    {
-      databaseName: "omi-cf-auth-staging",
-      binding: "AUTH_DB",
-      migrationsDir: resolve(root, "migrations/auth"),
-    },
-    {
-      databaseName: "omi-cf-app-staging",
-      binding: "APP_DB",
-      migrationsDir: resolve(root, "migrations/app"),
-    },
-  ];
+  const migrations = resolveStagingD1Migrations(listed.stdout, (directory) =>
+    resolve(root, directory),
+  );
   for (const migration of migrations) {
-    const databaseId = resolveD1DatabaseId(
-      listed.stdout,
-      migration.databaseName,
-    );
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "omi-cf-d1-migrations-"),
     );
     const configPath = resolve(temporaryDirectory, "wrangler.jsonc");
-    const config = createD1MigrationConfig({ ...migration, databaseId });
+    const config = createD1MigrationConfig(migration);
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, {
       mode: 0o600,
       flag: "wx",
@@ -375,6 +363,25 @@ function applyMigrations() {
         "--config",
         configPath,
       ]);
+      const verification = runQuiet("npx", [
+        "wrangler",
+        "d1",
+        "migrations",
+        "list",
+        migration.binding,
+        "--remote",
+        "--config",
+        configPath,
+      ]);
+      if (!verification.ok) {
+        throw new Error(
+          `unable to verify ${migration.databaseName} migrations: ${verification.stderr.trim() || "wrangler failed"}`,
+        );
+      }
+      assertNoPendingD1Migrations(
+        `${verification.stdout}\n${verification.stderr}`,
+        migration.databaseName,
+      );
     } finally {
       rmSync(temporaryDirectory, { recursive: true, force: true });
     }

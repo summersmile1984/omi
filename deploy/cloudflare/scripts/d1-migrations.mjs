@@ -1,6 +1,19 @@
 const D1_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export const STAGING_D1_MIGRATIONS = Object.freeze([
+  Object.freeze({
+    databaseName: "omi-cf-auth-staging",
+    binding: "AUTH_DB",
+    migrationsDir: "migrations/auth",
+  }),
+  Object.freeze({
+    databaseName: "omi-cf-app-staging",
+    binding: "APP_DB",
+    migrationsDir: "migrations/app",
+  }),
+]);
+
 export function resolveD1DatabaseId(rawList, databaseName) {
   let databases;
   try {
@@ -52,4 +65,25 @@ export function createD1MigrationConfig({
       },
     ],
   };
+}
+
+export function resolveStagingD1Migrations(rawList, resolveDirectory) {
+  if (typeof resolveDirectory !== "function") {
+    throw new Error("D1 migration directory resolver is required");
+  }
+  return STAGING_D1_MIGRATIONS.map((migration) => ({
+    ...migration,
+    databaseId: resolveD1DatabaseId(rawList, migration.databaseName),
+    migrationsDir: resolveDirectory(migration.migrationsDir),
+  }));
+}
+
+export function assertNoPendingD1Migrations(output, databaseName) {
+  const normalized = String(output).replaceAll(
+    /\u001b\[[0-?]*[ -/]*[@-~]/g,
+    "",
+  );
+  if (!normalized.includes("No migrations to apply!")) {
+    throw new Error(`D1 database ${databaseName} has unapplied migrations`);
+  }
 }

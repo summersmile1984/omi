@@ -91,8 +91,7 @@ chmod 700 "$validation_dir"
 ```bash
 cd deploy/cloudflare
 npm run validate:manifest
-npx wrangler d1 migrations list omi-cf-auth-staging --remote --config workers/auth/wrangler.jsonc
-npx wrangler d1 migrations list omi-cf-app-staging --remote --config python/api-core/wrangler.jsonc
+npm run verify:migrations
 ```
 
 通过标准：manifest 中没有重复或 broad `/v1/*` owner；所有已提交 migration 都是已应用
