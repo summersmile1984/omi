@@ -97,8 +97,14 @@ migration slice 同时提供：
 5. 经过 checksum 和人工审阅的 Firestore/GCS source export、真实账号回放、
    residual scan，以及旧客户端 wire conformance。
 
-目前尚未完成第 3、5 项，也没有 production provider/Firestore 凭据或真实
+当前 preparation executor 已按 Python `conversations.py` 的
+`JSON → zlib.compress → bytes.hex() → AES-GCM` transcript 格式生成 artifact，
+并保留 `transcript_segments_compressed=true` marker；跨运行时解压回归已覆盖。
+但仍未完成第 3、5 项，也没有 production provider/Firestore 凭据或真实
 账号 live replay 证据；因此不能宣称 data-protection migration 已完成。
+
+若本期确实从空数据集开始，以上历史加密迁移不属于新部署的上线前置条件；
+`/v1/users/migration/*` 可继续保持默认关闭，待未来导入历史数据时再单独开启。
 
 在这些证据齐备前，route owner/manifest 不应切换为 data-protection executor，
 也不能把 D1 projection 存在本身当成历史 Firestore 加密迁移完成。

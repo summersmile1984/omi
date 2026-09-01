@@ -2,6 +2,8 @@
 
 截至 2026-09-01，`backend-routes.json` 中已没有 `legacy-owned` 路由。这个清单不是把路由简单改成 Cloudflare 代理：只有当数据 authority、认证边界、异步重试和外部 provider 语义都能在 Workers 上闭合时，才允许把 owner 改成 `staging-owned`。auth/oauth、chat compatibility 和 Persona/MCP 的逐路由准入条件见 [`remaining-legacy-contract-gates.md`](remaining-legacy-contract-gates.md)；所有 route 已切到 staging owner，但仍有 provider/backfill/cutover 门槛。
 
+本期按“新部署、空数据、无旧客户端”验收：Firestore/GCS 历史回填与 legacy wire parity 是后续迁移窗口，不阻塞新 Cloudflare 服务；本清单中的硬阻塞仅指新客户端会实际调用的 owner、provider、删除清理和 live deploy 证据。
+
 ## 分组与迁移前置条件
 
 | 路由分组                             |            当前 legacy 条数 | 代表路径                                                                                  | 主要缺口                                                                                                                       | 下一步                                                                                                                                                                                                                                                                             |

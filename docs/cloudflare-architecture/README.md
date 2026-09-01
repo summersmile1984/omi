@@ -14,6 +14,15 @@
 
 剩余 legacy 路由的逐组依赖、阻塞条件和迁移顺序见 [legacy-route-audit.md](./legacy-route-audit.md)。
 
+## 本期验收范围
+
+本期目标是新 Cloudflare 部署：使用 Better Auth、D1/R2/Queues 和外部 API，
+从空数据集开始承载新的 Web/Worker 客户端。因此 Firestore/GCS 历史回填、
+Firebase legacy token、旧 Cloud Tasks/Assistants wire 和旧客户端逐字节兼容
+不属于本期完成条件；这些能力保留为后续迁移窗口。当前仍必须闭合新客户端实际
+使用的 Worker owner、provider secret/API 调用、删除残留、staging live smoke、
+部署凭据和回滚证据。
+
 ## CF-00～CF-13 完成度
 
 | 项目                       | 状态                    | 已有证据                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 尚未闭合                                                                                                                                                              |
@@ -115,7 +124,7 @@
 - Calendar OAuth 配置优先使用专用 client，缺失时回退到 Better Auth 共用的 `GOOGLE_CLIENT_ID/SECRET`；两者都要求登记 staging callback URI。Jobs 同时接受 canonical `google-calendar` 和旧客户端使用的 `google_calendar` 回调路径，二者共享同一 D1 single-use state/token authority。
 - Calendar disconnect 增加 per-user OAuth generation fence：断开时原子删除 integration/pending state 并递增 generation，已消费 state 的 in-flight callback 在写入 provider grant 前执行 D1 CAS；因此 provider exchange 完成于断开之后也不会重新建立连接。该并发回归仅由 mock provider 覆盖，未声称真实 Google provider replay。
 - Apple Health staging 数据面已接入：`PUT /v1/integrations/apple-health/sync`、`GET /v1/integrations/apple_health`、连接保存和断开均由 Edge → API Core → D1 `cf_apple_health` 处理；设备摘要有请求/存储大小上限，账号删除 residual purge 与 mutation fence 同步覆盖。
-- 数据保护迁移 staging 边界已接入 API Core：`GET /v1/users/migration/requests?target_level=enhanced` 经 Edge → API Core → D1 返回 uid 隔离的 conversation/memory/chat 待迁移项，三个写入/批量/finalize 端点也已由 Edge → API Core 接管并在缺少 completed cutover 或加密 executor 时 fail-closed 503；不写入 legacy、不生成伪造 receipt。真正的加密 payload、Queue executor 和生产回放仍未完成。
+- 数据保护迁移 staging 边界已接入 API Core：`GET /v1/users/migration/requests?target_level=enhanced` 经 Edge → API Core → D1 返回 uid 隔离的 conversation/memory/chat 待迁移项，三个写入/批量/finalize 端点也已由 Edge → API Core 接管并在缺少 completed cutover 或加密 executor 时 fail-closed 503；Jobs 现有默认关闭的 preparation executor 会按 Python 兼容的 HKDF/AES-GCM、conversation zlib→hex marker 和 Queue lease/retry 生成 content-bound artifact，但不写入 canonical source/FTS/reader，也不生成伪造 receipt。真正的 reader/derived-index 闭合、生产回放和 cutover 仍未完成。
 - 数据保护迁移清单 live staging 验证：隔离 Better Auth 账号的合法查询返回 200/空清单，未认证为 401，非法 target 为 400；随后通过公开删号完成 Auth user/session/account 清理，App D1 intent 为 0（仅保留预期 tombstone）。
 - 桌面更新公共读取切片已接入 API Core/D1：`/appcast.xml` 返回稳定的 Sparkle XML（按 channel 去重并转义 changelog），`/updates/latest` 和 `/download` 只选择最高 live stable release，`/v2/desktop/update-policy` 保留平台、最大 build 和缺省关闭语义。D1 投影尚未回填发布制品，因此 staging 空表按设计返回空 appcast、latest/download 为 404；发布/晋级写入仍由后续发布流水线迁移负责。
 - 桌面更新的 v2 公共读取也已接入同一 D1 投影：`/v2/desktop/appcast.xml` 严格区分 stable/beta identity，`/v2/desktop/download/latest`、`/beta`、`/windows` 返回受转义保护的下载落地页，并保持 channel 空槽的 404/fallback 约定；发布元数据写入和晋级仍由后续发布流水线迁移负责。
