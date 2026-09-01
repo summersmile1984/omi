@@ -264,7 +264,15 @@ def _token_count(value: int) -> int:
 
 
 def _usage_cost(report: UsageReport) -> float:
-    rates = (4.0, 32.0, 0.4, 24.0, 64.0) if report.provider.lower() == "openai" else (0.75, 3.0, 0.075, 4.5, 12.0)
+    provider = report.provider.lower()
+    if provider in {"workers-ai", "cloudflare-workers-ai"}:
+        # Native Realtime usage is metered by the DO's speech-duration source;
+        # this legacy token-shaped endpoint must not invent an external cost.
+        rates = (0.0, 0.0, 0.0, 0.0, 0.0)
+    elif provider == "openai":
+        rates = (4.0, 32.0, 0.4, 24.0, 64.0)
+    else:
+        rates = (0.75, 3.0, 0.075, 4.5, 12.0)
     values = (
         _token_count(report.input_text_tokens),
         _token_count(report.input_audio_tokens),
@@ -285,7 +293,7 @@ async def report_realtime_usage(request: Request):
     except (ValidationError, ValueError, TypeError):
         return JSONResponse({"error": "invalid realtime usage report"}, status_code=400)
     provider = report.provider.strip().lower()
-    if provider not in {"openai", "gemini"}:
+    if provider not in {"openai", "gemini", "workers-ai", "cloudflare-workers-ai"}:
         return JSONResponse({"error": "unsupported realtime provider"}, status_code=400)
     total = sum(
         _token_count(value)

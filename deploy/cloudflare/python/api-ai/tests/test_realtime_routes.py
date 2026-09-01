@@ -225,3 +225,21 @@ def test_realtime_usage_rejects_unknown_provider():
         )
     )
     assert response.status_code == 400
+
+
+def test_realtime_usage_accepts_native_workers_ai_without_external_cost():
+    secret = "realtime-secret"
+    database = FakeDb()
+    env = type("Env", (), {"INTERNAL_ASSERTION_SECRET": secret, "APP_DB": database})()
+    response = asyncio.run(
+        routes.report_realtime_usage(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                {"provider": "workers-ai", "input_text_tokens": 7, "output_text_tokens": 3},
+            )
+        )
+    )
+    assert response.status_code == 204
+    row = database.connection.execute("SELECT total_tokens, cost_micros FROM cf_realtime_usage").fetchone()
+    assert tuple(row) == (10, 0)
