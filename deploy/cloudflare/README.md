@@ -2253,7 +2253,11 @@ compatibility surface and is not needed by the Workers AI client.
 `/v1/auto/model-pick` no longer queries Artificial Analysis or defaults to a
 Gemini provider. It returns the configured Workers AI chat model from the
 shared D1 cache (with the binding's model as the deterministic fallback), so
-no external AI key is required for model selection.
+no external AI key is required for model selection. This response is for the
+Cloudflare-native client; released desktop clients that still enumerate the
+retired `geminiFlashLive`/`gptRealtime2` IDs remain outside the no-legacy-
+compatibility scope and must be updated separately before they can use this
+selection.
 
 `/v1/ai/*` is an authenticated, fixed-host proxy for OpenAI-compatible AI APIs.
 The client cannot choose the destination: `AI_API_BASE_URL` and `AI_API_KEY` are
