@@ -1,6 +1,6 @@
 # Remaining legacy route contract gates
 
-截至 2026-09-01，Cloudflare route inventory 已没有 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名。当前按“空数据新部署、无旧客户端”验收：历史回填和旧 wire parity 不属于本期完成条件；本期只需闭合新客户端会实际使用的 authority、删除和 live smoke。外部 provider secret 仅在用户明确启用对应业务集成时需要；Workers AI 主路径不依赖 OpenAI/Gemini。
+截至 2026-09-01，Cloudflare route inventory 已没有 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名。当前按“空数据新部署、无旧客户端”验收：历史回填和旧 wire parity 不属于本期完成条件；本期只需闭合新客户端会实际使用的 authority、删除和 live smoke。Workers AI 是唯一的 AI provider；OpenAI/Gemini secret、BYOK 和 Assistants 兼容面不属于本期依赖，也不应配置。只有用户明确启用 Google/Apple、Calendar、Twilio 等业务集成时，才需要对应业务 provider credentials。
 
 ## 结论
 
@@ -8,15 +8,15 @@ Auth/social、External App OAuth 与 Persona/Twitter 已切换到 Cloudflare sta
 
 | 路由组 | 条数 | 当前判断 | 不能切换的硬门槛 |
 | --- | ---: | --- | --- |
-| Auth / social | 0 | 新部署可用，待 provider smoke | Better Auth email/session 已闭合；若启用 Google/Apple，仅需配置对应 provider secret 并完成一次 staging callback smoke |
-| External App OAuth | 0 | 新部署可用，待 provider smoke | D1 app projection、CSRF transaction、install CAS 和删除 fence 已闭合；启用外部应用时需提供真实 provider 配置并做一次 callback/revoke smoke |
+| Auth / social | 0 | 新部署可用；业务 OAuth 可选 | Better Auth email/session 已闭合；只有启用 Google/Apple 登录时才需要对应业务 provider credentials 和 callback smoke |
+| External App OAuth | 0 | 新部署可用；业务 OAuth 可选 | D1 app projection、CSRF transaction、install CAS 和删除 fence 已闭合；只有启用外部应用时才需要真实 provider 配置和 callback/revoke smoke |
 | Phone / Twilio | 0 | 可选，待 provider 配置 | Jobs 已闭合 caller-ID、quota、webhook 和删除清理；只有启用电话功能时才需要 Twilio credentials/号码验证 |
 | Wrapped | 0 | 可选，待 provider smoke | D1 recap/job/notification authority 已闭合；使用 Wrapped 时需验证 Workers AI binding 和 Queue drain |
-| Chat compatibility | 0 | 新客户端受限 contract 已用 | Jobs/API-AI bounded chat routes 默认走 Workers AI；只有显式选择 OpenAI BYOK 或 Assistants/file adapter 时才需要对应 secret，不要求旧桌面 wire parity |
+| Chat compatibility | 0 | Workers AI native contract 已用 | Jobs/API-AI bounded chat routes 只对新客户端承诺 Workers AI；OpenAI BYOK/Assistants adapter 是默认关闭的非目标兼容面，不需要配置也不计入完成阻塞 |
 | Persona / MCP mutation | 0 | 可选，待 provider smoke | MCP registration/callback/refresh 与 D1 projection 已闭合；启用外部 MCP 时需 provider URL/secret 和一次 discovery/tool smoke |
 | Staged tasks / task intelligence | 0 | 可选，待 provider smoke | API Core/D1 candidate authority、LLM receipt 和 Queue retry 已闭合；使用该功能时需做真实 provider/Queue 正向探针 |
-| Gemini proxy | 0 | 可选兼容面，非本期依赖 | API-AI bounded JSON/SSE、BYOK enrollment、quota 和 provider alias 已闭合；只有明确启用 Gemini 兼容入口时才需要 AI Studio/Vertex secret |
-| Files | 0 | 新客户端文本路径可用 | 通用文件上传使用 R2/D1；只有启用文件问答/Assistants adapter 时才需要 OpenAI provider 与 `CHAT_FILES` R2 |
+| Gemini proxy | 0 | 非目标兼容面，默认关闭 | Gemini exact routes 保留 fail-closed boundary 以防误调用；不配置 Gemini secret 不影响任何 Workers AI canonical path，也不计入本期阻塞 |
+| Files | 0 | 新客户端文本路径可用 | 通用文件上传与文本问答使用 R2/D1 + Workers AI；图片/PDF/二进制和旧 Assistants adapter 不属于本期目标，不需要 OpenAI provider |
 
 上表当前 legacy 合计 0 条。`POST /v1/apps/migrate-owner` 已由 Edge→Jobs staging owner 承载，保留旧请求/响应形状但默认 gate 关闭，并要求 Auth anonymous bridge、数据 attestation、generation/deletion fence；它仍受真实 provider、身份连续性、历史回放和生产切换门槛约束。Auth/social 的 4 条 exact 路径与 External App OAuth 的 2 条 exact 路径已由 Auth/Jobs staging owner 承载，但同样不能视为 production parity；`GET /v1/apps/mcp/callback`、`POST /v1/apps/mcp` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已由 Jobs staging owner 承载。Twitter ownership exact route 默认 gate/secret 关闭，生产 provider/data parity 仍保留在表内。`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口也不计入本表。Task intelligence 的 13 条路径已是 staging owner，但其生产门槛仍保留在表内。
 
@@ -90,7 +90,7 @@ Cloudflare 侧现已提供 `deploy/cloudflare/scripts/backfill-d1.mjs` 的 sessi
 
 Cloudflare 当前 `POST /v1/apps/{app_id}/refresh-manifest` 只针对 D1 中的 `chat_tools_manifest_url` 做 bounded HTTPS JSON fetch；Jobs app mutation 明确拒绝 `mcp_server_url` / `mcp_oauth_tokens` 写入，避免把 provider secrets 当普通 catalog JSON 存储。两个 endpoint 的输入、认证、token refresh、discovery、错误和返回 shape 不同，不能只做路径 alias。要迁移需要专门的加密/provider-token authority、MCP discovery adapter、CAS/cache invalidation、secret deletion 和 OAuth callback 回放。
 
-`POST /v1/apps/mcp`、`GET /v1/apps/mcp/callback` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已具备 dynamic registration/PKCE、加密 credential、provider discovery、CAS 和 deletion fence 的 staging contract；仍缺真实 provider secret、Firebase identity bridge、历史 Firestore app catalog 回放和 production cutover。
+`POST /v1/apps/mcp`、`GET /v1/apps/mcp/callback` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已具备 dynamic registration/PKCE、加密 credential、provider discovery、CAS 和 deletion fence 的 staging contract；真实第三方 MCP callback replay 仅在用户启用该业务集成时才需要，Firebase identity bridge、历史 Firestore app catalog 回放和 production cutover 不属于本期空数据目标。
 
 为 owner migration 补了一个独立的 namespaced identity projection seam：`POST /v2/cf/apps/migrate-owner/identity-projection` 由 Jobs 调用 Auth 的 Identity Toolkit 验证，Auth 只返回 HMAC 派生的 `source_ref/source_uid_hash/source_proof_hash`，Jobs 在 D1 `0123_firebase_anonymous_identity_projection.sql` 中绑定目标 Better Auth generation、过期时间和删除 fence。它不保存 Firebase token，也不把 raw Firebase UID 写入 App D1；`FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED=false` 时保持 503。这个 seam 只完成 source-proof admission，尚未实现 Firestore app/persona/memory 回放、memory re-encryption 或 exact owner cutover。
 `0127_app_owner_data_projection_attestation.sql` 进一步要求独立的 content-bound data projection revision；身份投影本身保持 `unverified`，不会创建 owner migration job。memory 数量为零时必须显式声明 `not_required`，否则必须提供 re-encryption revision 和 `completed` 证明，缺证据时返回 `source_data_projection_not_admitted`。

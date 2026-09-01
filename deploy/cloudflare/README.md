@@ -77,15 +77,17 @@ resources and never mutates existing Omi Workers.
 
 ## AI provider policy
 
-Workers AI is the default and required generative-AI surface for this isolated
-deployment. OpenAI/Gemini routes and BYOK/Assistants adapters are optional
-compatibility surfaces; they are not called by the Workers AI paths and their
-secrets are not required for staging or for the new client. Canonical chat files
-use `CHAT_FILES` R2 plus the Workers AI attachment Queue; only private image
-thumbnails require the optional Cloudflare Images binding and HMAC secret.
-Calendar, Twilio,
-and other explicitly enabled business integrations may still use their own
-REST APIs.
+Workers AI is the only generative-AI provider in the target isolated
+deployment. Do not provision `OPENAI_*` or `GEMINI_*` secrets: the canonical
+chat, file-Q&A, ASR, translation, TTS, summary, and embedding paths call the
+bound Cloudflare `AI` service directly. The OpenAI/Gemini/BYOK/Assistants code
+that remains in the tree is an explicitly disabled compatibility boundary; a
+request that selects one of those paths fails closed and must never be used by
+the new client. Canonical chat files use `CHAT_FILES` R2 plus the Workers AI
+attachment Queue; only private image thumbnails require the optional Cloudflare
+Images binding and HMAC secret. Calendar, Twilio, and other explicitly enabled
+business integrations may still use their own REST APIs; those credentials are
+not AI provider dependencies.
 
 ## Migration inventories
 
