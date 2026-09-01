@@ -35,7 +35,7 @@
 
 ## 本轮验证证据
 
-- Cloudflare TypeScript：96 个测试文件、700 个测试通过；类型检查和生产依赖审计通过。
+- Cloudflare TypeScript：97 个测试文件、703 个测试通过；类型检查和生产依赖审计通过。
 - `api-core`：377 个测试通过；`api-ai`：114 个测试通过。
 - Web：9 个测试文件、41 个测试通过；vinext staging build 与 Worker dry-run 通过。
 - 历史回放输入边界（2026-09-01）：通用 `backfill-d1` 输入上限为 64 MiB，并以 fatal UTF-8 解码；Chat/Files、Memory、Persona、Phone、Wrapped、Audio 七个 reconcile 工具同样拒绝 malformed UTF-8，避免损坏 export 进入迁移计划。该保护不等于已完成真实 Firestore 回放。
