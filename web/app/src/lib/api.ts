@@ -769,7 +769,6 @@ async function pollChatAssistantRun(
         from_external_integration: false,
         files: [],
         memories: [],
-        ask_for_nps: false,
       };
       onChunk({ type: 'data', text });
       onChunk({ type: 'done', text: JSON.stringify(message), message });
