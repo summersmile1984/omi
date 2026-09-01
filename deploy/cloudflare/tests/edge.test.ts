@@ -5899,7 +5899,7 @@ describe("edge gateway", () => {
     expect(aiPath).toBe("/v1/translate");
   });
 
-  it("routes realtime mint and usage contracts to the API AI worker", async () => {
+  it("mints a native realtime ticket and keeps external provider usage optional", async () => {
     const aiPaths: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
@@ -5930,9 +5930,51 @@ describe("edge gateway", () => {
         }),
         env,
       );
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(path.endsWith("/session") ? 409 : 200);
     }
-    expect(aiPaths).toEqual(["/v2/realtime/session", "/v2/realtime/usage"]);
+    expect(aiPaths).toEqual(["/v2/realtime/usage"]);
+
+    const nativeResponse = await edge.fetch(
+      new Request("https://edge.test/v2/realtime/session", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "workers-ai" }),
+      }),
+      env,
+    );
+    expect(nativeResponse.status).toBe(200);
+    const nativePayload = (await nativeResponse.json()) as {
+      provider: string;
+      token: string;
+      expires_in: number;
+      websocket_url: string;
+      transport: string;
+    };
+    expect(nativePayload).toMatchObject({
+      provider: "workers-ai",
+      expires_in: 30,
+      websocket_url: "wss://edge.test/v4/web/listen",
+      transport: "cloudflare-realtime",
+    });
+    await expect(
+      verifyRealtimeTicket(nativePayload.token, "test-secret"),
+    ).resolves.toMatchObject({ uid: "user-1", authority: "better-auth" });
+
+    const oversizedResponse = await edge.fetch(
+      new Request("https://edge.test/v2/realtime/session", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "workers-ai", padding: "x".repeat(5_000) }),
+      }),
+      env,
+    );
+    expect(oversizedResponse.status).toBe(413);
   });
 
   it("routes the native Workers AI TTS contract to the API AI worker", async () => {

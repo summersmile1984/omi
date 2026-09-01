@@ -41,6 +41,7 @@ const app = new Hono<{ Bindings: EdgeEnv; Variables: EdgeVariables }>();
 const MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES = 5_000_000;
 const MAX_BYOK_ACTIVATION_BODY_BYTES = 8_192;
 const MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES = 128 * 1024;
+const MAX_REALTIME_SESSION_BODY_BYTES = 4_096;
 const OPENAI_APPS_CHALLENGE_TOKEN =
   "ZsVB_wpc4R35_tHloCZCokY6H2fBkKyBJrz-4MtXjYE";
 
@@ -1932,7 +1933,74 @@ app.get("/v1/apps/enabled", proxyAuthenticatedCore);
 app.post("/v1/apps/enable", proxyAuthenticatedCore);
 app.post("/v1/apps/disable", proxyAuthenticatedCore);
 app.put("/v1/users/preferences/app", proxyAuthenticatedCore);
-app.post("/v2/realtime/session", proxyAuthenticatedAI);
+app.post("/v2/realtime/session", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+
+  // The old endpoint accepted `openai`/`gemini` and minted a provider token.
+  // Cloudflare-native clients use the signed first-message ticket instead;
+  // reject those provider selectors rather than silently minting a token for
+  // an external AI service.
+  const declaredBodyLength = Number(c.req.header("content-length") || "");
+  if (
+    Number.isFinite(declaredBodyLength) &&
+    declaredBodyLength > MAX_REALTIME_SESSION_BODY_BYTES
+  ) {
+    return c.json({ error: "realtime_session_request_too_large" }, 413);
+  }
+  const rawBody = await c.req.text();
+  if (new TextEncoder().encode(rawBody).byteLength > MAX_REALTIME_SESSION_BODY_BYTES) {
+    return c.json({ error: "realtime_session_request_too_large" }, 413);
+  }
+  if (rawBody.trim()) {
+    let body: { provider?: unknown };
+    try {
+      body = JSON.parse(rawBody) as { provider?: unknown };
+    } catch {
+      return c.json({ error: "invalid_realtime_session_request" }, 400);
+    }
+    if (
+      body === null ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      (body.provider !== undefined &&
+        body.provider !== "workers-ai" &&
+        body.provider !== "cloudflare-workers-ai")
+    ) {
+      return c.json(
+        {
+          error: "external_realtime_disabled",
+          reason: "use the Cloudflare Workers AI realtime transport",
+        },
+        409,
+      );
+    }
+  }
+
+  const ticket = await createRealtimeTicket(
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!ticket) return c.json({ error: "realtime unavailable" }, 503);
+  const websocketUrl = new URL("/v4/web/listen", c.req.url);
+  websocketUrl.protocol = websocketUrl.protocol === "https:" ? "wss:" : "ws:";
+  c.header("cache-control", "no-store");
+  return c.json({
+    provider: "workers-ai",
+    token: ticket,
+    expires_in: 30,
+    websocket_url: websocketUrl.toString(),
+    transport: "cloudflare-realtime",
+  });
+});
 app.post("/v2/realtime/usage", proxyAuthenticatedAI);
 app.post("/v2/voice-message/transcribe", proxyAuthenticatedAI);
 app.post("/v2/voice-messages", proxyAuthenticatedAI);
