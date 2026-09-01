@@ -631,6 +631,17 @@ async function createCheckoutSession(
       }
     }
   }
+  // Do not create an external Checkout Session after account deletion has
+  // started. The webhook fence prevents a late session from becoming a D1
+  // entitlement, but it cannot undo the provider-side session or card flow.
+  // Re-check immediately before the Stripe call so the deletion intent is the
+  // authoritative mutation fence for this financial side effect.
+  if (!(await liveCloudflareAccount(c.env, context.uid))) {
+    return c.json(
+      { detail: "Account is not ready for subscription changes." },
+      409,
+    );
+  }
   try {
     const form = new URLSearchParams({
       client_reference_id: context.uid,

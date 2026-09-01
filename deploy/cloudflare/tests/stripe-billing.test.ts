@@ -303,6 +303,7 @@ describe("Cloudflare Stripe billing", () => {
 
   it("creates a hosted subscription Checkout Session from the D1 price authority", async () => {
     const state = testEnvironment();
+    seedCloudflareAccount(state.database);
     seedPrice(state.database);
     const requests: Request[] = [];
     vi.stubGlobal(
@@ -352,6 +353,43 @@ describe("Cloudflare Stripe billing", () => {
       expect(form.get("success_url")).toBe(
         "https://edge.example.test/v1/payments/success?session_id={CHECKOUT_SESSION_ID}",
       );
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("fences Checkout Session creation after account deletion begins", async () => {
+    const state = testEnvironment();
+    seedCloudflareAccount(state.database);
+    seedPrice(state.database);
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_account_deletion_intents
+           (uid, job_id, status, phase, next_attempt_at, created_at, updated_at)
+         VALUES (?, ?, 'pending', 'quiescing', 1, 1, 1)`,
+      )
+      .run("billing-user", "delete-billing-user");
+    const stripeFetch = vi.fn();
+    vi.stubGlobal("fetch", stripeFetch);
+    try {
+      const path = "/v1/payments/checkout-session";
+      const response = await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "POST",
+          headers: {
+            ...(await billingHeaders("billing-user", path)),
+            "idempotency-key": "checkout-after-delete",
+          },
+          body: JSON.stringify({ price_id: "price_testOperator123" }),
+        }),
+        state.env,
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        detail: "Account is not ready for subscription changes.",
+      });
+      expect(stripeFetch).not.toHaveBeenCalled();
     } finally {
       state.database.close();
     }

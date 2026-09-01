@@ -1383,7 +1383,9 @@ the Queue. Queue processing retrieves current Stripe objects instead of trusting
 delivery order, then projects only allowlisted prices for a live
 Cloudflare-cutover account. Missing Stripe credentials fail closed; no staging
 price IDs are synthesized or copied from production.
-This staging endpoint currently projects `checkout.session.completed`,
+Checkout admission re-checks the D1 account-deletion fence immediately before
+calling Stripe, so a deletion intent returns `409` without creating an
+external Checkout Session. This staging endpoint currently projects `checkout.session.completed`,
 subscription created/updated/deleted, and Subscription Schedule
 created/updated/completed/canceled/released events for regular Omi plans and
 Payment Link subscriptions for paid marketplace apps. Schedule processing
