@@ -1,7 +1,7 @@
 version: 2
 name: google-connector-read
 tier: manual
-description: Gmail and Calendar connector reads run through the real BrowserGoogleSession keychain + cookie path and return a classified status instead of crashing or hanging.
+description: Gmail reads use the BrowserGoogleSession keychain path; Calendar reads use the Cloudflare Worker API path. Both return a classified status instead of crashing or hanging.
 app: non-prod
 # Manual tier: exercising a real "connected" read requires a browser signed into
 # Google, so this flow is not hermetic and is not part of the automated CI tier.
@@ -11,6 +11,7 @@ covers:
   - desktop/macos/Desktop/Sources/BrowserGoogleSession.swift
   - desktop/macos/Desktop/Sources/GmailReaderService.swift
   - desktop/macos/Desktop/Sources/CalendarReaderService.swift
+  - desktop/macos/Desktop/Sources/Services/APIClient/APIClient+Calendar.swift
   - desktop/macos/Desktop/Sources/Integrations/GmailAccountSelection.swift
 preconditions:
   - automation_bridge_ready
@@ -33,8 +34,8 @@ steps:
 
   - id: S2
     name: Calendar read probe returns a classified status
-    # Drives CalendarReaderService -> BrowserGoogleSession over the same
-    # keychain + cookie seam.
+    # Drives CalendarReaderService -> APIClient -> Cloudflare Jobs Worker.
+    # Browser cookies are only an explicit legacy-development fallback.
     bridge.action:
       name: calendar_read_probe
       params:
