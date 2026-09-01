@@ -260,6 +260,71 @@ def test_migration_write_shadow_rejects_batch_finalize_and_deletion_fence():
     assert json.loads(fenced.body) == {"error": "account deletion in progress"}
 
 
+def test_ready_capability_never_admits_without_source_and_reader_contract():
+    """A prematurely populated capability row must not turn the shadow into a no-op.
+
+    ``0103`` is only an admission/receipt schema.  It does not prove that the
+    D1 rows have the legacy encrypted-field representation or that every D1
+    reader can decrypt it.  Keep this guard behavioral: a future executor must
+    add that contract before changing any of these responses to success.
+    """
+    env = make_shadow_env()
+    populate_ready_authority(env, generation=7)
+    db = env.APP_DB.connection
+    db.execute(
+        "INSERT INTO cf_memories (uid, id, content, memory_tier, valid_at, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("migration-user", "memory-1", "plaintext-memory", "long_term", 1, 1, 1),
+    )
+    db.execute(
+        "INSERT INTO cf_conversations (uid, id, created_at, structured_json, transcript_segments_json) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("migration-user", "conversation-1", 1, '{"title":"plain"}', '[{"text":"plain"}]'),
+    )
+    db.execute(
+        "INSERT INTO cf_chat_messages (uid, id, created_at, message_json) VALUES (?, ?, ?, ?)",
+        ("migration-user", "chat-1", 1, '{"text":"plain"}'),
+    )
+    db.commit()
+
+    requests = [
+        (
+            handle_migration_requests,
+            shadow_headers("migration-secret", generation=7, key="single-ready"),
+            {"type": "memory", "id": "memory-1", "target_level": "enhanced"},
+        ),
+        (
+            handle_batch_migration_requests,
+            shadow_headers("migration-secret", generation=7, key="batch-ready"),
+            {"requests": [{"type": "conversation", "id": "conversation-1", "target_level": "enhanced"}]},
+        ),
+        (
+            finalize_migration_request,
+            shadow_headers("migration-secret", generation=7, key="finalize-ready"),
+            {"target_level": "enhanced"},
+        ),
+    ]
+    for handler, headers, payload in requests:
+        response = asyncio.run(handler(FakeRequest(env, headers, payload=payload)))
+        assert response.status_code == 503
+        assert json.loads(response.body)["reason"] == "encryption_executor_unavailable"
+
+    assert db.execute("SELECT COUNT(*) FROM cf_data_protection_migration_runs").fetchone()[0] == 0
+    memory = db.execute(
+        "SELECT content FROM cf_memories WHERE uid = ? AND id = ?", ("migration-user", "memory-1")
+    ).fetchone()
+    conversation = db.execute(
+        "SELECT transcript_segments_json FROM cf_conversations WHERE uid = ? AND id = ?",
+        ("migration-user", "conversation-1"),
+    ).fetchone()
+    chat = db.execute(
+        "SELECT message_json FROM cf_chat_messages WHERE uid = ? AND id = ?", ("migration-user", "chat-1")
+    ).fetchone()
+    assert memory[0] == "plaintext-memory"
+    assert conversation[0] == '[{"text":"plain"}]'
+    assert chat[0] == '{"text":"plain"}'
+
+
 def test_migration_write_shadow_preserves_invalid_target_error():
     env = make_shadow_env()
     response = asyncio.run(
