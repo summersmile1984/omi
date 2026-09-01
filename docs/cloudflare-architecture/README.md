@@ -35,9 +35,10 @@
 
 ## 本轮验证证据
 
-- Cloudflare TypeScript：98 个测试文件、714 个测试通过；类型检查和生产依赖审计通过。
+- Cloudflare TypeScript：98 个测试文件、718 个测试通过；类型检查和生产依赖审计通过。
 - `api-core`：384 个测试通过；`api-ai`：114 个测试通过。
 - Web：9 个测试文件、41 个测试通过；vinext staging build 与 Worker dry-run 通过。
+- Rate Limit Durable Object 已增加内部 `/reserve`/`/release` 原子配额预留基础能力，覆盖并发、幂等释放、窗口过期清理和 stale-token 隔离；当前不切换 Redis family 或 legacy caller，后续需按调用方契约逐组迁移。
 - 历史回放输入边界（2026-09-01）：通用 `backfill-d1` 输入上限为 64 MiB，并以 fatal UTF-8 解码；Chat/Files、Memory、Persona、Phone、Wrapped、Audio 七个 reconcile 工具同样拒绝 malformed UTF-8，避免损坏 export 进入迁移计划。该保护不等于已完成真实 Firestore 回放。
 - Calendar provider probe（2026-09-01）：新增显式确认的 staging-only `calendar:positive-probe`，使用一次性 Bearer/access token 验证加密 grant 保存、Google events 读取和自动断开，不创建事件、不输出 token；当前因缺少 Google OAuth client secret 尚未执行真实探针。
 - manifest：620 条 Cloudflare 路由、577 条完整 backend 路由和 23 个 staging 资源通过校验；0 条 legacy-owned 路由。D1 review queue 的三个端点已由 API Core/Edge 承载，并由 canonical memory 写入 producer、source revision/hash projection 和原子 resolve 覆盖；conversation finalize/status/reprocess/merge 已声明 API Core owner，`0094`/`0095`/`0096` staging migration 与 live Queue 验证已完成；`GET/POST /v1/agent/*` 已切到 API Core，并仅声明/执行已具备 D1 authority 的一方工具。
