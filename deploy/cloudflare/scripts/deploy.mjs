@@ -19,6 +19,7 @@ import {
   STAGING_WORKERS,
 } from "./deployment-state.mjs";
 import { assertAuthenticatedSmokeConfigured } from "./smoke-staging.mjs";
+import { runPreservingGeneratedFile } from "./preserve-generated-file.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = resolve(root, "../../web/app");
@@ -74,7 +75,9 @@ function qualifyRelease() {
       cwd: resolve(root, directory),
     });
   }
-  run("npx", ["next", "typegen"], { cwd: webRoot });
+  runPreservingGeneratedFile(resolve(webRoot, "next-env.d.ts"), () =>
+    run("npx", ["next", "typegen"], { cwd: webRoot }),
+  );
   run("npx", ["tsc", "--noEmit"], { cwd: webRoot });
   run("npm", ["test"], { cwd: webRoot });
   run("npm", ["run", "build:vinext:staging"], { cwd: webRoot });
