@@ -84,7 +84,7 @@ describe("memory archive dry-run reconciliation", () => {
     expect(() => planMemoryArchiveReconciliation(sensitive)).toThrow(/unsupported fields|sensitive/);
 
     const restricted = fixture();
-    restricted.memories[0].sensitivity_labels = ["health"];
+    (restricted.memories[0] as unknown as { sensitivity_labels: string[] }).sensitivity_labels = ["health"];
     expect(() => planMemoryArchiveReconciliation(restricted)).toThrow(/restricted sensitivity/);
   });
 });
