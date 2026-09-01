@@ -675,7 +675,7 @@ POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
 POST /v2/voice-message/transcribe
                               Edge → Python API AI → Workers AI binding (Web/Flutter multipart or desktop PCM)
-POST /v2/realtime/session     optional external realtime-token compatibility surface (not required by Workers AI deployment)
+POST /v2/realtime/session     Edge → signed Workers AI ticket → Realtime DO
 POST /v2/realtime/usage       Edge → Python API AI → D1 usage projection
 POST /v1/realtime/web-ticket  Edge cookie session → 30-second signed WebSocket ticket
 POST /v1/stt/transcribe-async
