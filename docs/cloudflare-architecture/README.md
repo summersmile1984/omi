@@ -180,10 +180,21 @@ canonical route 保持一致。
 - Workers AI secret inventory recheck（2026-09-01）：staging 的 API AI、Edge、Jobs 和 Realtime Worker 均未配置 `OPENAI_API_KEY`、`GEMINI_API_KEY`、Vertex service-account 或通用 `AI_API_KEY`；API AI 只保留内部断言 secret，Edge 只保留内部断言/BYOK 指纹 pepper，Jobs 只保留内部断言、业务集成 token 加密和管理类 secret。`GEMINI_PROXY_ENABLED=false`、`GEMINI_PROXY_CLOUDFLARE_ENABLED=false`、`CHAT_FILES_WORKERS_AI_ENABLED=true`、`CHAT_WORKERS_AI_ATTACHMENTS_ENABLED=true` 保证 canonical 路径只使用 Workers AI；外部 AI 兼容 adapter 的 provider secret/positive probe 不属于本期部署依赖。Calendar 的 Google OAuth client 是单独的业务集成凭据，未配置时 OAuth URL 按设计返回 `503`，不影响其它 Workers AI 路径。
 - Calendar configuration UX recheck（2026-09-01）：Web `e44d2f65-25c3-491a-ab83-0caecdcba4aa` 发布后，已登录 Settings → Integrations 在缺少 Google OAuth client 时正常渲染集成卡片；后端 `503 Google Calendar is not configured` 被转换为环境提示，不再写入浏览器 error/warn 日志。真实 OAuth 连接仍只在补齐 Google client 后验证。
 
-## 发布前必须补齐
+## 当前范围内唯一未完成项
 
-1. 对明确启用的 Calendar、Twilio 等外部业务集成按需配置各自 secret 并做成功/失败
-   smoke；Workers AI 是本期默认生成式 AI，不要求 OpenAI/Gemini secret。
+如果要启用真实 Google Calendar 连接，只需在 Jobs Worker 配置
+`GOOGLE_CALENDAR_CLIENT_ID`、`GOOGLE_CALENDAR_CLIENT_SECRET`，并在 Google
+Cloud OAuth client 中登记
+`https://omi-cf-edge-staging.summersmile1984.workers.dev/v2/integrations/google-calendar/callback`；
+随后运行 `npm run calendar:positive-probe` 验证授权、事件读取和断开清理。
+这两个凭据是 Calendar 业务 API 的 OAuth 凭据，不是 OpenAI/Gemini 或任何 AI
+provider secret。当前没有这些凭据时，Calendar OAuth URL 按设计返回
+`503 Google Calendar is not configured`，不会阻塞其它 Workers AI 路径。
+
+## 后续可选发布资格（不阻塞当前空数据部署）
+
+1. Twilio、任务集成等其它外部业务只有在明确启用时才配置各自凭据并做 smoke；
+   Workers AI 是本期默认生成式 AI，不要求 OpenAI/Gemini secret。
 2. authenticated staging R2 multipart probe 已完成；presigned direct-to-R2 只有在
    客户端启用后再补，随后再做中断恢复 live 演练。
 3. 为仍使用 Redis 的 planned family 选择 KV/DO/Queues owner，并完成并发、TTL、锁故障测试。
