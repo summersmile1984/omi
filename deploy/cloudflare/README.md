@@ -582,7 +582,6 @@ printf '%s' "$ASR_API_BASE_URL" | npx wrangler secret put ASR_API_BASE_URL --nam
 printf '%s' "$ASR_API_KEY" | npx wrangler secret put ASR_API_KEY --name omi-cf-api-ai-staging
 printf '%s' "$AI_API_BASE_URL" | npx wrangler secret put AI_API_BASE_URL --name omi-cf-api-ai-staging
 printf '%s' "$AI_API_KEY" | npx wrangler secret put AI_API_KEY --name omi-cf-api-ai-staging
-printf '%s' "$ARTIFICIALANALYSIS_API_KEY" | npx wrangler secret put ARTIFICIALANALYSIS_API_KEY --name omi-cf-api-ai-staging
 ```
 
 `/v1/stt/transcribe-async` is an additive staging route for clients that can
@@ -696,7 +695,7 @@ POST /v1/tts/synthesize      Edge → Python API AI → Workers AI Aura binding
 POST /v1/tts/synthesize-workers-ai
                               Edge → Python API AI → Workers AI Aura binding
 POST /v2/tts/synthesize      Edge → Python API AI → Cloudflare unified ElevenLabs model
-GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
+GET  /v1/auto/model-pick    Edge → Python API AI → Workers AI model policy + D1 cache
 GET/POST /v1/ai/*           optional fixed-host compatibility surface; new client uses Workers AI routes
 WS   /v4/listen               Edge → Realtime → Durable Object → Workers AI streaming path (external fallback optional)
 WS   /v4/web/listen           Edge bootstrap → first-message ticket → isolated DO → Workers AI streaming path (external fallback optional)
@@ -2242,17 +2241,19 @@ limits this route to English, Chinese, French, Spanish, Arabic, Russian, German,
 Japanese, Portuguese, and Hindi; the legacy NLLB service remains the rollback
 target for other languages until quality and coverage are qualified.
 
-`/v2/realtime/session` keeps the desktop ephemeral-token contract but calls the
-configured OpenAI or Gemini mint API through the Python Worker's `workers.fetch`
-FFI. Only a SHA-256 token hash and provider metadata enter D1; the token itself
-is returned once to the authenticated client and is never logged or persisted.
-`/v2/realtime/usage` writes uid/day token and micro-dollar aggregates to D1,
-while the realtime WebSocket protocol remains owned by the separate Realtime
-Worker/DO surface.
+`/v2/realtime/session` is now a native Edge boundary: after Better Auth
+verification it signs a short-lived first-message ticket for the Realtime
+Worker/DO and returns the `wss:///v4/web/listen` transport. It does not call or
+require an OpenAI/Gemini provider secret; explicit `openai`/`gemini` selectors
+are rejected with `409 external_realtime_disabled`. The native WebSocket path
+uses the bound Workers AI model and records speech fair-use usage in D1. The
+older `/v2/realtime/usage` accounting endpoint remains an optional, non-native
+compatibility surface and is not needed by the Workers AI client.
 
-`/v1/auto/model-pick` uses a shared D1 24-hour cache. Without the upstream key,
-an upstream failure, or an unusable model response it returns the existing
-Gemini default with a provenance reason rather than failing the voice session.
+`/v1/auto/model-pick` no longer queries Artificial Analysis or defaults to a
+Gemini provider. It returns the configured Workers AI chat model from the
+shared D1 cache (with the binding's model as the deterministic fallback), so
+no external AI key is required for model selection.
 
 `/v1/ai/*` is an authenticated, fixed-host proxy for OpenAI-compatible AI APIs.
 The client cannot choose the destination: `AI_API_BASE_URL` and `AI_API_KEY` are

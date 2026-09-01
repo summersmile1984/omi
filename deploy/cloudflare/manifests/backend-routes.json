@@ -105,7 +105,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/apps/{app_id}/subscription", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "auth", "path": "/v1/auth/authorize", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "auth", "path": "/v1/auth/callback/google", "protocol": "http", "target_runtime": "typescript-worker"},
-    {"method": "GET", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v1/auto/model-pick", "protocol": "http", "target_runtime": "external-api"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v1/auto/model-pick", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/calendar/google/events", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/calendar/meetings", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/calendar/meetings/{meeting_id}", "protocol": "http", "target_runtime": "python-worker"},

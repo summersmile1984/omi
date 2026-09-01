@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,68 +57,50 @@ def signed_headers(secret: str) -> dict[str, str]:
     }
 
 
-def test_auto_model_pick_defaults_and_reuses_d1_cache(monkeypatch):
-    secret = "test-secret"
-    env = SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, APP_DB=FakeDb())
-    request = FakeRequest(env, signed_headers(secret))
-
-    first = asyncio.run(routes.auto_model_pick(request))
-    assert first["provider"] == "geminiFlashLive"
-    assert first["detail"] == {"reason": "no ARTIFICIALANALYSIS_API_KEY; default to Gemini"}
-    assert first["attribution"] == "https://artificialanalysis.ai/"
-
-    async def unexpected_fetch(*args, **kwargs):
-        raise AssertionError("fresh D1 cache should avoid upstream fetch")
-
-    monkeypatch.setattr(routes, "worker_fetch", unexpected_fetch)
-    second = asyncio.run(routes.auto_model_pick(request))
-    assert second == first
-
-
-def test_auto_model_pick_scores_provider_models_and_persists_result(monkeypatch):
+def test_auto_model_pick_uses_workers_ai_and_reuses_d1_cache():
     secret = "test-secret"
     env = SimpleNamespace(
         INTERNAL_ASSERTION_SECRET=secret,
         APP_DB=FakeDb(),
-        ARTIFICIALANALYSIS_API_KEY="key",
-        ARTIFICIALANALYSIS_API_URL="https://aa.example.test/models",
+        WORKERS_AI_CHAT_MODEL="@cf/meta/llama-3.2-3b-instruct",
     )
     request = FakeRequest(env, signed_headers(secret))
 
-    class FakeResponse:
-        status = 200
+    first = asyncio.run(routes.auto_model_pick(request))
+    assert first["provider"] == "workers-ai"
+    assert first["detail"] == {
+        "model": "@cf/meta/llama-3.2-3b-instruct",
+        "reason": "workers-ai-native",
+    }
+    assert first["attribution"] == "https://developers.cloudflare.com/workers-ai/"
 
-        async def json(self):
-            return {
-                "data": [
-                    {
-                        "slug": "gemini-3-5-flash",
-                        "evaluations": {"artificial_analysis_intelligence_index": 95},
-                        "median_output_tokens_per_second": 200,
-                    },
-                    {
-                        "slug": "gpt-5",
-                        "evaluations": {"artificial_analysis_intelligence_index": 90},
-                        "median_output_tokens_per_second": 250,
-                    },
-                ]
-            }
+    second = asyncio.run(routes.auto_model_pick(request))
+    assert second == first
 
-    calls = {}
 
-    async def fake_fetch(url, **options):
-        calls["url"] = url
-        calls["options"] = options
-        return FakeResponse()
+def test_auto_model_pick_refreshes_legacy_cache_without_external_fetch():
+    secret = "test-secret"
+    database = FakeDb()
+    database.row = {
+        "provider": "geminiFlashLive",
+        "detail_json": json.dumps({"reason": "legacy"}),
+        "updated_at": time.time(),
+    }
+    env = SimpleNamespace(
+        INTERNAL_ASSERTION_SECRET=secret,
+        APP_DB=database,
+        WORKERS_AI_CHAT_MODEL="@cf/meta/llama-3.2-3b-instruct",
+    )
+    request = FakeRequest(env, signed_headers(secret))
 
-    monkeypatch.setattr(routes, "worker_fetch", fake_fetch)
     result = asyncio.run(routes.auto_model_pick(request))
 
-    assert result["provider"] == "gptRealtime2"
-    assert result["detail"]["scores"] == {"geminiFlashLive": 0.8975, "gptRealtime2": 0.935}
-    assert calls["url"] == "https://aa.example.test/models"
-    assert calls["options"]["headers"]["x-api-key"] == "key"
-    assert env.APP_DB.row["provider"] == "gptRealtime2"
+    assert result["provider"] == "workers-ai"
+    assert result["detail"] == {
+        "model": "@cf/meta/llama-3.2-3b-instruct",
+        "reason": "workers-ai-native",
+    }
+    assert env.APP_DB.row["provider"] == "workers-ai"
 
 
 def test_auto_model_pick_rejects_missing_auth():
