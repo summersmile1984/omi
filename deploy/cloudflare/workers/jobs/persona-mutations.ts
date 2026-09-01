@@ -456,11 +456,24 @@ async function createPersona(c: JobsContext, context: SignedAuthContext) {
     const encoded = JSON.stringify(payload);
     if (new TextEncoder().encode(encoded).byteLength > MAX_PERSONA_DATA_BYTES)
       throw new PersonaMutationError(413, "Persona data is too large");
-    await c.env.APP_DB.prepare(
-      "INSERT INTO cf_app_catalog (id, approved, status, disabled, is_popular, installs, rating_avg, rating_count, data_json, updated_at, owner_uid) VALUES (?, 0, 'under-review', 0, 0, 0, NULL, 0, ?, ?, ?)",
-    )
-      .bind(personaId, encoded, now, context.uid)
-      .run();
+    try {
+      await c.env.APP_DB.prepare(
+        "INSERT INTO cf_app_catalog (id, approved, status, disabled, is_popular, installs, rating_avg, rating_count, data_json, updated_at, owner_uid) VALUES (?, 0, 'under-review', 0, 0, 0, NULL, 0, ?, ?, ?)",
+      )
+        .bind(personaId, encoded, now, context.uid)
+        .run();
+    } catch (error) {
+      // The catalog's partial unique index owns username uniqueness; a
+      // concurrent create that won the race surfaces here, after the
+      // check-then-write SELECT above already passed.
+      if (String(error).includes("UNIQUE constraint failed")) {
+        throw new PersonaMutationError(
+          409,
+          "Persona username is already taken",
+        );
+      }
+      throw error;
+    }
     committed = true;
     return c.json({
       status: "ok",
@@ -707,25 +720,36 @@ async function updatePersona(
       throw new PersonaMutationError(413, "Persona data is too large");
     }
     const now = Math.floor(Date.now() / 1_000);
-    const result = await c.env.APP_DB.prepare(
-      `UPDATE cf_app_catalog SET data_json = ?, updated_at = ?
-         WHERE id = ? AND owner_uid = ? AND data_json = ?
-           AND NOT EXISTS (
-             SELECT 1 FROM cf_app_catalog duplicate
-              WHERE duplicate.id != ?
-                AND json_extract(duplicate.data_json, '$.username') = ?
-           )`,
-    )
-      .bind(
-        encoded,
-        now,
-        personaId,
-        context.uid,
-        current.data_json,
-        personaId,
-        nextUsername,
+    let result;
+    try {
+      result = await c.env.APP_DB.prepare(
+        `UPDATE cf_app_catalog SET data_json = ?, updated_at = ?
+           WHERE id = ? AND owner_uid = ? AND data_json = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM cf_app_catalog duplicate
+                WHERE duplicate.id != ?
+                  AND json_extract(duplicate.data_json, '$.username') = ?
+             )`,
       )
-      .run();
+        .bind(
+          encoded,
+          now,
+          personaId,
+          context.uid,
+          current.data_json,
+          personaId,
+          nextUsername,
+        )
+        .run();
+    } catch (error) {
+      if (String(error).includes("UNIQUE constraint failed")) {
+        throw new PersonaMutationError(
+          409,
+          "Persona username is already taken",
+        );
+      }
+      throw error;
+    }
     if (Number(result.meta?.changes) !== 1) {
       throw new PersonaMutationError(409, "Persona changed during update");
     }

@@ -372,4 +372,52 @@ describe("Cloudflare Persona creation boundary", () => {
       .get(personaId) as { data_json: string };
     expect(JSON.parse(row.data_json).name).toBe("Fenced persona");
   });
+
+  it("enforces username uniqueness at the catalog authority, not just the pre-check", async () => {
+    const state = await environment();
+    const headers = {
+      "x-omi-auth-context": state.signed.encoded,
+      "x-omi-internal-signature": state.signed.signature,
+    };
+    const created = await jobs.fetch(
+      new Request("https://jobs.test/v1/personas", {
+        method: "POST",
+        headers,
+        body: form({ name: "Unique Persona", username: "uniquename" }),
+      }),
+      state.env,
+    );
+    expect(created.status).toBe(200);
+
+    // The route-level pre-check refuses a visible duplicate...
+    const viaRoute = await jobs.fetch(
+      new Request("https://jobs.test/v1/personas", {
+        method: "POST",
+        headers,
+        body: form({ name: "Copycat", username: "uniquename" }),
+      }),
+      state.env,
+    );
+    expect(viaRoute.status).toBe(409);
+
+    // ...and the partial unique index refuses the write itself, which is what
+    // the 409 mapping in the create/update paths relies on when two creates
+    // race past the pre-check simultaneously.
+    expect(() =>
+      state.database.database
+        .prepare(
+          "INSERT INTO cf_app_catalog (id, approved, status, disabled, is_popular, installs, rating_avg, rating_count, data_json, updated_at, owner_uid) VALUES ('cf_persona_racer', 0, 'under-review', 0, 0, 0, NULL, 0, ?, 1, 'someone-else')",
+        )
+        .run(
+          JSON.stringify({ id: "cf_persona_racer", username: "uniquename" }),
+        ),
+    ).toThrow(/UNIQUE constraint failed/);
+    expect(() =>
+      state.database.database
+        .prepare(
+          "INSERT INTO cf_app_catalog (id, approved, status, disabled, is_popular, installs, rating_avg, rating_count, data_json, updated_at, owner_uid) VALUES ('cf_app_plain', 1, 'approved', 0, 0, 0, NULL, 0, ?, 1, NULL)",
+        )
+        .run(JSON.stringify({ id: "cf_app_plain", name: "No username app" })),
+    ).not.toThrow();
+  });
 });
