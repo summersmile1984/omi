@@ -1345,10 +1345,15 @@ The default-model price variables follow Cloudflare's published
 [Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/),
 and the synchronous model response exposes the required
 [`usage` object](https://developers.cloudflare.com/workers-ai/models/llama-3.2-3b-instruct/).
-The first staging slice intentionally rejects app/persona chat, attachments,
-and page context with typed `409` responses; RAG/tools, BYOK request overrides,
-and provider-streamed token delivery remain separate
-qualification boundaries rather than silently degrading to generic chat.
+The native text-chat path also accepts an optional public/private app projection
+and bounded page context. App sessions, history, prompts, and message rows stay
+scoped by `(uid, app_id)`; unavailable or disabled apps return a deterministic
+`404` before quota/provider work. Page context is inserted as explicitly
+untrusted reference data and is never persisted as an instruction. Attachments
+still return a typed `409 attachments_not_migrated` on this Workers AI path;
+the separate Jobs attachment bridge remains the opt-in provider boundary.
+RAG/tools, BYOK request overrides, and provider-streamed token delivery remain
+separate qualification boundaries rather than silently degrading to generic chat.
 
 Historical Firestore chat session/message replay has a separate reviewed
 planner (`npm run chat:reconcile -- --input <manifest.json>`). It accepts only

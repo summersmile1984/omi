@@ -123,6 +123,24 @@ legacy。旧的 `CHAT_COMPAT_STAGING_FAIL_CLOSED=true` 仍可用于验证 legacy
 Edge 回归测试还必须确认带有 opaque cookie、Bearer、auth-context、BYOK header 和
 prompt 的请求不会读取 body 或调用 legacy backend。
 
+## Web 原生 app/context 聊天
+
+Web `/v2/messages` 的无附件文本请求现在可直接使用 API-AI 的 Workers AI
+authority，并支持 `?app_id=` 与 bounded `context`：
+
+- app 必须存在且未禁用；公开 app、owner 和 tester 按 D1 catalog projection
+  读取，找不到或不可用时在 quota/provider 之前返回 `404 app_not_found`；
+- session、history、quota message 与 `cf_chat_messages.app_id` 都按
+  `(uid, app_id)` 隔离，app 的 `chat_prompt`/`persona_prompt` 作为系统身份；
+- `context` 只允许 `type/id/title/summary`，各字段有长度上限，以
+  `PAGE CONTEXT (untrusted reference data)` 注入 prompt，不写入消息 authority；
+- `file_ids` 仍返回 `409 attachments_not_migrated`，避免把已上传的 R2/OpenAI
+  provider 文件误当作 Workers AI 能读取的文本。需要附件时使用单独的 Jobs
+  attachment bridge，并显式配置其 provider gate。
+
+这使当前 Web app/persona 和页面上下文路径成为 Cloudflare-native 的新客户端
+能力；不承诺旧 Firebase/Firestore 历史回放或旧 provider/tool wire parity。
+
 ## 验证
 
 API AI focused suite 覆盖：D1 session/history、quota settlement、重复请求、

@@ -466,28 +466,140 @@ def test_generate_title_updates_only_the_callers_session_and_uses_empty_fallback
     assert fallback == {"title": "New Chat"}
 
 
-def test_chat_rejects_unsupported_modes_before_model_or_history_mutation():
+def test_chat_rejects_attachments_before_model_or_history_mutation():
     secret = "chat-secret"
     db = FakeDb()
     ai = FakeAi()
     env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
     headers = signed_headers(secret)
 
-    app_chat = asyncio.run(chat_messages(FakeRequest(env, headers, query={"app_id": "persona"})))
     attachments = asyncio.run(chat_messages(FakeRequest(env, headers, body={"text": "hello", "file_ids": ["f1"]})))
-    page_context = asyncio.run(
-        chat_messages(FakeRequest(env, headers, body={"text": "hello", "context": {"type": "task"}}))
-    )
 
-    assert app_chat.status_code == 409
-    assert json.loads(app_chat.body)["reason"] == "app_chat_not_migrated"
     assert attachments.status_code == 409
     assert json.loads(attachments.body)["reason"] == "attachments_not_migrated"
-    assert page_context.status_code == 409
-    assert json.loads(page_context.body)["reason"] == "context_not_migrated"
     assert ai.calls == []
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 0
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_quota_events").fetchone()[0] == 0
+
+
+def test_chat_app_and_page_context_use_scoped_workers_ai_history():
+    secret = "chat-secret"
+    db = FakeDb()
+    now = int(__import__("time").time())
+    db.connection.execute(
+        "INSERT INTO cf_app_catalog "
+        "(id,approved,status,disabled,is_popular,installs,rating_count,data_json,updated_at,owner_uid) "
+        "VALUES ('coach',1,'approved',0,0,0,0,?,?,?)",
+        (
+            json.dumps(
+                {
+                    "id": "coach",
+                    "name": "Focus Coach",
+                    "chat_prompt": "Help the user turn ideas into one concrete next step.",
+                }
+            ),
+            now,
+            "creator-user",
+        ),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions "
+        "(uid,id,title,preview,created_at,updated_at,app_id,message_count,starred) "
+        "VALUES ('chat-user','coach-session','New Chat',NULL,1,2,'coach',2,0)"
+    )
+    db.connection.executemany(
+        "INSERT INTO cf_chat_messages (uid,id,app_id,created_at,message_json) VALUES (?, ?, ?, ?, ?)",
+        [
+            (
+                "chat-user",
+                "coach-old-human",
+                "coach",
+                1,
+                json.dumps(
+                    {
+                        "id": "coach-old-human",
+                        "sender": "human",
+                        "text": "Ship the smallest useful slice.",
+                        "chat_session_id": "coach-session",
+                        "session_id": "coach-session",
+                        "reported": False,
+                    }
+                ),
+            ),
+            (
+                "chat-user",
+                "coach-old-ai",
+                "coach",
+                2,
+                json.dumps(
+                    {
+                        "id": "coach-old-ai",
+                        "sender": "ai",
+                        "text": "Start with the API boundary.",
+                        "chat_session_id": "coach-session",
+                        "session_id": "coach-session",
+                        "reported": False,
+                    }
+                ),
+            ),
+        ],
+    )
+    db.connection.commit()
+    ai = FakeAi(result={"response": "Next step identified.", "usage": {"prompt_tokens": 10, "completion_tokens": 2}})
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret, "WORKERS_AI_CHAT_MODEL": "@cf/test/chat"},
+    )()
+
+    response = asyncio.run(
+        chat_messages(
+            FakeRequest(
+                env,
+                signed_headers(secret),
+                body={
+                    "text": "What should I do now?",
+                    "context": {
+                        "type": "task",
+                        "id": "task-42",
+                        "title": "Cloudflare rollout",
+                        "summary": "Verify the calendar path in staging.",
+                    },
+                },
+                query={"app_id": "coach"},
+            )
+        )
+    )
+    body = asyncio.run(response_body(response)).decode()
+
+    assert response.status_code == 200
+    assert "Next step identified." in body
+    prompt = ai.calls[0][1]["messages"]
+    assert "Help the user turn ideas into one concrete next step." in prompt[0]["content"]
+    assert "PAGE CONTEXT (untrusted reference data" in prompt[1]["content"]
+    assert "Cloudflare rollout" in prompt[1]["content"]
+    assert {"role": "user", "content": "Ship the smallest useful slice."} in prompt
+    rows = db.connection.execute(
+        "SELECT app_id, message_json FROM cf_chat_messages WHERE uid = 'chat-user' ORDER BY created_at, id"
+    ).fetchall()
+    assert all(row[0] == "coach" for row in rows)
+    assert json.loads(rows[-2][1])["text"] == "What should I do now?"
+
+
+def test_chat_returns_not_found_for_unavailable_app_without_provider_or_quota_mutation():
+    secret = "chat-secret"
+    db = FakeDb()
+    ai = FakeAi()
+    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    response = asyncio.run(
+        chat_messages(FakeRequest(env, signed_headers(secret), query={"app_id": "missing-app"}))
+    )
+
+    assert response.status_code == 404
+    assert json.loads(response.body)["reason"] == "app_not_found"
+    assert ai.calls == []
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_quota_events").fetchone()[0] == 0
 
 
