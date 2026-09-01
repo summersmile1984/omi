@@ -1,7 +1,7 @@
 # Cloudflare chat compatibility staging contract
 
 截至 2026-09-01，Cloudflare staging 已将下面三个 exact 入口交给 Jobs
-Worker；生产仍需完成 provider/backfill 回放后再切换：
+Worker；本期按空数据新部署验收，不要求历史回填或旧客户端 wire parity：
 
 - `POST /v1/chat/materialize-prompts`
 - `POST /v2/chat/materialize-prompts`
@@ -48,7 +48,7 @@ runtime。完整 tool schema、上游 credential/session、JSON-RPC `tools/call`
 结果回写、重试和旧桌面 tool/SSE parity 仍未完成；这些字段在 exact
 completion route 仍会得到 `409 unsupported_chat_feature`。
 
-## 为什么生产入口仍未切换
+## 旧协议边界（本期不阻塞）
 
 旧 `/v2/chat/completions` 的请求者依赖 Anthropic model alias、client/server
 tool calls、web-search policy、BYOK/Redis quota、pause-turn continuation，
@@ -78,20 +78,21 @@ thread/run，并由 Jobs Queue 轮询；入口是
 - text-only `/v2/cf/chat/completions` 和 Assistants adapter 的响应时序、provider
   及文件/tool 语义都不同，不能通过 Edge alias 伪装成旧客户端兼容。
 
-因此 0113/0114 只扩大了可验证的 Cloudflare 前置；本次 Jobs owner 仅适用于
-staging，不构成 `/v2/chat/completions` 的 production parity 或历史切换证据。
+因此 0113/0114 只扩大了可验证的 Cloudflare provider 前置；本期不把旧
+Anthropic/gateway、工具、旧 Firestore 历史或 byte-for-byte SSE parity 作为
+新部署阻塞项。若未来要继续支持旧桌面客户端，再单独开启兼容迁移窗口。
 
 ## 逐路由闭合审计（2026-09-01）
 
 本轮对三个入口完成了 bounded Cloudflare owner slice。D1/Workers AI/OpenAI
-REST 的可用 subset 已切到 staging；这不是完整 legacy parity，且 production
-仍需 provider/backfill 回放证据。
+REST 的可用 subset 已切到 staging；新部署只需配置实际使用的 provider 并做
+authenticated smoke，不要求历史回填或 legacy parity。
 
 | 入口 | 已有 Cloudflare 能力 | 仍缺的 authority / wire contract | 决策 |
 | --- | --- | --- | --- |
-| `POST /v1/chat/materialize-prompts` | D1 `cf_chat_first_intents`、canonical goals/tasks、foreground/initial-page admission、receipt CAS、deferral release、daily opener 和 deletion fence | 历史 Firestore intent replay、完整 cold-start source/eligibility 及旧客户端 fixture 尚未 backfill；v1 仍过滤 `conversationLink` | staging Jobs owner；生产切换前需 replay fixture |
-| `POST /v2/chat/materialize-prompts` | 同上，并保留 v2 完整 block union（包括 `conversationLink`） | 历史 Firestore intent replay、旧客户端 wire conformance 和完整 entity availability fixture 尚未 backfill | staging Jobs owner；生产切换前需 replay fixture |
-| `POST /v2/chat/completions` | Jobs D1 session/history/quota、Workers AI 或已验证 OpenAI/BYOK REST、持久化、OpenAI JSON 和 buffered SSE | 旧 `desktop_chat.py` 的 Anthropic managed/gateway、web-search、tool calls、pause-turn、历史 Firestore、旧 SSE/usage/error byte parity 未闭合 | staging Jobs owner；生产仅承诺 text-only subset |
+| `POST /v1/chat/materialize-prompts` | D1 `cf_chat_first_intents`、canonical goals/tasks、foreground/initial-page admission、receipt CAS、deferral release、daily opener 和 deletion fence | v1 仍过滤 `conversationLink`；旧 Firestore replay/旧客户端 fixture 不在本期 | staging Jobs owner；启用前做 provider/Queue smoke |
+| `POST /v2/chat/materialize-prompts` | 同上，并保留 v2 完整 block union（包括 `conversationLink`） | 旧 Firestore replay/旧客户端 wire fixture 不在本期 | staging Jobs owner；启用前做 provider/Queue smoke |
+| `POST /v2/chat/completions` | Jobs D1 session/history/quota、Workers AI 或已验证 OpenAI/BYOK REST、持久化、OpenAI JSON 和 buffered SSE | 旧 provider/tool/pause-turn parity 不在本期 | staging Jobs owner；新客户端仅使用 text/app/context/attachment subset |
 
 审计对应的实现边界如下：旧 materialization 的请求/响应模型和 Firestore 读取/确认
 在 [`backend/routers/chat_first.py`](../../backend/routers/chat_first.py) 与
@@ -106,20 +107,18 @@ Edge 只转发经过 Better Auth、cutover 和 rate-limit 检查的请求；因�
 Jobs implementation。它仍拒绝不支持的工具、web-search、结构化输出和历史 provider
 alias，不伪造成功。
 
-### owner 切换前必须具备的 replay fixtures
+### 本期启用前必须具备的 fixtures
 
-后续若要切换任一 legacy owner，提交中必须附带可重复执行的 fixture，而不是只测
-HTTP 状态码：
+本期启用任一 Cloudflare owner，提交中必须附带可重复执行的 fixture，而不是只测
+HTTP 状态码；旧协议 fixture 只在未来兼容窗口需要：
 
-1. **Materialization authority fixture**：每个 proactive source（daily opener、capture arrival、deferral re-raise、agent judgment、cold-start rich/sparse）的 Firestore 导出行，包含完整 block union、account generation、foreground/initial-page 窗口、重复/过期/跨 uid receipt；回放到 D1 后必须证明 ready→delivered 是单次原子转移。
-2. **Desktop completion fixture**：managed Anthropic/gateway、直接 Anthropic BYOK、不同 model alias、web search、tool call、pause-turn continuation、非流式和流式成功，以及 401/402/429/502/usage 缺失等 provider/quota 错误；fixture 要保留旧 SSE data frame、usage 和 error envelope，而不是只比较 assistant 文本。
-3. **Session/backfill fixture**：Firebase UID 到 Better Auth uid 的映射、历史 Firestore chat/session/message、文件引用和 app/persona scope；重复 replay、跨 uid、旧 session id、缺失/损坏历史行都必须得到确定结果。
+1. **Materialization authority fixture**：新客户端的 daily opener、deferral 和 cold-start source，覆盖 block union、foreground/initial-page 窗口、重复/过期/跨 uid receipt；必须证明 ready→delivered 是单次原子转移。
+2. **Provider fixture**：Workers AI、已启用的 OpenAI/Gemini/Twilio/Calendar provider，覆盖成功和 401/402/429/502/usage 缺失等错误；新客户端只需验证当前 JSON/SSE/Queue contract。
+3. **Session/app fixture**：Better Auth uid、D1 chat/session/message、文件引用和 app/persona scope；重复请求、跨 uid、缺失/损坏行都必须得到确定结果。
 4. **Mutation/deletion fixture**：quota reservation/settlement、provider failure rollback、重复 Idempotency-Key、并发同一 session，以及 account deletion fence；删除后 D1 chat/session/quota/materialization/provider receipt 残留必须为零或有明确 tombstone。
 
-在上述 fixture 具备前，生产必须保持关闭 `CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED`
-或仅以可删除 staging 账号运行；provider 不可用时 Jobs 固定返回 503，不回落
-legacy。旧的 `CHAT_COMPAT_STAGING_FAIL_CLOSED=true` 仍可用于验证 legacy rollback
-路径。
+provider secret 尚未配置时 Jobs 固定返回 503，不回落 legacy；旧的
+`CHAT_COMPAT_STAGING_FAIL_CLOSED=true` 仅用于验证显式 rollback 路径。
 Edge 回归测试还必须确认带有 opaque cookie、Bearer、auth-context、BYOK header 和
 prompt 的请求不会读取 body 或调用 legacy backend。
 
