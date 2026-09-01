@@ -176,6 +176,7 @@ canonical route 保持一致。
 
 - Memory Archive reviewed projection seam（2026-09-01，默认关闭）：Jobs 提供 POST /internal/memory-archive/reviews 与 POST /internal/memory-archive/reviews/:reviewId/apply，仅接受外部人工审阅的 Firestore memory plan；每行重算 source-row/import/plan hash，签名绑定 manifest，写入 cf_memory_archive_items 与 cf_memory_archive_applies，重复 apply 幂等，并在 review/apply 两阶段复核 global gate、memory control、cutover generation 和 account-deletion fence。该 seam 不读取 Firestore/GCS/provider、不生成 legacy 数据，远端 backfill、真实 export、历史账号连续性和 production cutover 仍未完成。
 - Memory Archive executor staging 发布（2026-09-01）：远端 App D1 已应用 `0135_memory_archive_executor.sql` 与 Hume trigger cleanup `0136_hume_task_projection_trigger_cleanup.sql`；Jobs `22c35c52-f42f-4fa8-9b64-e98b4cc09045` 已发布，Edge/Web readiness 依赖检查均为 `200 status=ready`。`MEMORY_ARCHIVE_IMPORT_STAGING_ENABLED=false` 保持默认关闭，因此未执行真实 Firestore export/apply；新增只读 `memory-archive-reconcile.mjs` 生成与 Jobs handler 同算法的 deterministic plan，验证覆盖 93 个 Worker 文件、689 个测试、typecheck 与 manifest，重复 review 并发幂等也有回归覆盖，真实 backfill、历史账号连续性和 production cutover 仍是 blocker。
+- Auth smoke fixture recheck（2026-09-01）：`/auth-issue` 只签发用于 JWT 验证的 identity-only token，不创建 Better Auth `user` 行；因此用该 token 访问 `/v1/users/profile` 得到预期 `410 User not found`，不能作为完整 authenticated smoke 的用户 fixture。用真实 `/api/better-auth/sign-up/email` 创建隔离 Better Auth 用户后，同一路径返回 `200`；两种验证均不需要 OpenAI/Gemini provider secret。
 
 ## 发布前必须补齐
 

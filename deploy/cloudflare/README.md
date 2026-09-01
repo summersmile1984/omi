@@ -314,6 +314,13 @@ an explicit JSON token file:
 CLOUDFLARE_SMOKE_TOKEN_FILE=/tmp/cf-auth-signup.json npm run smoke:staging
 ```
 
+The authenticated smoke token must come from a Better Auth sign-up/sign-in
+response. The staging-only `/auth-issue` bridge is useful for testing JWT
+verification, but it deliberately signs an identity without creating a Better
+Auth `user` row; an identity-only token therefore returns the expected `410`
+from `/v1/users/profile` and is not a valid full-smoke fixture. Neither form of
+token requires an OpenAI or Gemini provider secret.
+
 Repeat smoke runs may reach the two-per-hour knowledge-graph rebuild fence.
 That probe accepts a `429` only when Edge returns a numeric `Retry-After`
 header; all non-rate-limited runs must still return the canonical `409` fence.
