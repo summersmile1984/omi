@@ -307,17 +307,25 @@ Cloudflare `1042`、连续两次 readiness degraded、5 分钟窗口 5xx 超过 
 
 ## 8. 当前未迁移能力与验证处理
 
-以下能力目前不属于已部署 Worker slice 的成功路径：
+以下能力目前不属于已完成正向验证的 Worker slice 成功路径（路由可以已由 Worker
+承载，但不能因此扩大验收结论）：
 
-- generic conversation finalization、merge、reprocess、custom prompt；预转写 bounded
-  conversation projection 的创建/更新已迁移；
-- transcript speaker bulk assignment 及 speech sample 副作用；
-- 旧 GCS chunk 的 R2 导入与缺失历史 artifact 重建；Worker 原生 WAL 的
-  `/v1/sync/audio/*` 多段 WAV 与 dense conversation WAV 已经迁移；
-- cascade conversation deletion、memory extraction、downstream integration fanout；
-- Calendar OAuth、speaker sample、截图/workstream 等尚未迁移的 vector lifecycle，以及 MCP OAuth/hosted transport；MCP memory/conversation/action-item semantic search 已由 staging Vectorize + D1 authoritative hydrate 接管；
-- Better Auth Google/Apple 真实 callback/link 资格检查；服务端契约已部署，但 staging
-  OAuth client 凭据未配置前 capability 必须返回空 provider 列表并隐藏对应入口。
+- generic conversation 的 finalization/merge/reprocess 已有 D1/Queue staging contract，
+  但 custom prompt、历史 provider continuity 和 downstream fan-out 尚未完成正向验证；
+- transcript speaker bulk assignment、speech sample 副作用与 memory extraction；
+- 旧 GCS chunk 的 R2 导入、缺失历史 artifact 重建，以及生产历史音频回放；Worker 原生
+  WAL 的 `/v1/sync/audio/*` 多段 WAV、dense conversation WAV 和 audio-merge MP3
+  staging contract 已部署；
+- cascade conversation deletion 与 downstream integration fan-out；账户删号 residual
+  fence 已在 staging 闭合，但不等于所有历史 conversation 副作用都已回放；
+- Calendar OAuth route、断开竞态 fence 和凭据配置已部署；本轮按用户要求跳过 Google
+  consent/callback 正向流程，因此真实授权、事件读取和 provider disconnect smoke 仍待
+  单独验证；speaker sample 仍未迁移；
+- 截图/workstream 的完整 vector lifecycle，以及 CIMD/hosted external transport；MCP
+  memory/conversation/action-item semantic search 与 MCP OAuth grant 管理面已由 staging
+  Vectorize + D1/Better Auth 接管，但不宣称外部 provider metadata parity；
+- Better Auth Google/Apple 真实 callback/link 资格检查；无完整 provider 凭据时 capability
+  必须返回空 provider 列表并隐藏对应入口。
 
 验证时必须确认这些路径不会返回假成功或完成一半。若 UI 向测试 cohort 暴露对应按钮，
 则 **Product Cohort Ready 失败**；处理方式只能是迁移完整 authoritative workflow，或由
