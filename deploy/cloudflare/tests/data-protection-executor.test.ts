@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { inflateSync } from "node:zlib";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -216,7 +217,9 @@ describe("Cloudflare data-protection encrypted preparation executor", () => {
       const byType = new Map(result.items.map((item) => [item.type, item.fields]));
       expect(await decrypt(env.DATA_PROTECTION_ENCRYPTION_SECRET!, "protection-user", byType.get("memory")!.content)).toBe("memory plaintext");
       expect(await decrypt(env.DATA_PROTECTION_ENCRYPTION_SECRET!, "protection-user", byType.get("memory")!.evidence_json)).toBe('[{"source_id":"conversation-1"}]');
-      expect(await decrypt(env.DATA_PROTECTION_ENCRYPTION_SECRET!, "protection-user", byType.get("conversation")!.transcript_segments_json)).toBe('[{"text":"transcript plaintext"}]');
+      const encryptedTranscript = await decrypt(env.DATA_PROTECTION_ENCRYPTION_SECRET!, "protection-user", byType.get("conversation")!.transcript_segments_json);
+      expect(byType.get("conversation")!.transcript_segments_compressed).toBe("true");
+      expect(new TextDecoder().decode(inflateSync(Buffer.from(encryptedTranscript, "hex")))).toBe('[{"text":"transcript plaintext"}]');
       const photos = JSON.parse(byType.get("conversation")!.photos_json) as Array<{ base64: string }>;
       expect(await decrypt(env.DATA_PROTECTION_ENCRYPTION_SECRET!, "protection-user", photos[0].base64)).toBe("photo plaintext");
       const chat = JSON.parse(byType.get("chat")!.message_json) as { text: string };

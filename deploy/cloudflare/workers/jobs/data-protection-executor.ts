@@ -136,6 +136,27 @@ function base64Standard(value: Uint8Array): string {
   return btoa(binary);
 }
 
+function bytesHex(value: Uint8Array): string {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Match backend/database/conversations.py's zlib-wrapped transcript format. */
+async function compressTranscriptJson(value: string): Promise<string> {
+  const input = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(value));
+      controller.close();
+    },
+  });
+  const compressed = input.pipeThrough(
+    new CompressionStream("deflate") as unknown as TransformStream<
+      Uint8Array,
+      Uint8Array
+    >,
+  );
+  return bytesHex(new Uint8Array(await new Response(compressed).arrayBuffer()));
+}
+
 async function encryptionKey(env: JobsEnv, uid: string): Promise<CryptoKey> {
   const secret = new TextEncoder().encode(String(env.DATA_PROTECTION_ENCRYPTION_SECRET || ""));
   if (secret.byteLength < 32) throw new PreparationError("encryption key unavailable");
@@ -422,7 +443,14 @@ async function preparedFields(env: JobsEnv, uid: string, key: CryptoKey, row: So
       encryptedPhotos.push(copy);
     }
     return {
-      transcript_segments_json: await encryptLegacyString(key, String(row.source.transcript_segments_json)),
+      // Python writes JSON -> zlib.compress -> bytes.hex() before AES-GCM and
+      // sets this marker.  Encrypting the JSON directly would make the legacy
+      // reader attempt zlib.decompress on an uncompressed payload.
+      transcript_segments_json: await encryptLegacyString(
+        key,
+        await compressTranscriptJson(String(row.source.transcript_segments_json)),
+      ),
+      transcript_segments_compressed: "true",
       photos_json: JSON.stringify(encryptedPhotos),
     };
   }
