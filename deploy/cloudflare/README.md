@@ -2097,7 +2097,12 @@ the Edge matcher. Limits and one-hour windows mirror
 available as staging Worker vars. The object serializes concurrent increments
 and persists the fixed window; a limiter dependency failure preserves the
 legacy first-party fail-open behavior and emits bounded `recordFallback`
-telemetry.
+telemetry. The same Durable Object also exposes an internal-only `/reserve` →
+`/release` primitive for future reversible quota callers: each reservation gets
+a one-time token, release is atomic and idempotent, stale tokens cannot
+decrement a later window, and reservation storage is reclaimed by the window
+alarm. This is a foundational seam only; no legacy route or manifest owner is
+changed until a caller-specific reservation contract is migrated.
 
 The TTS fine-grained limiters are also Redis-free in staging. After the Python
 API AI Worker validates the provider-specific request and confirms its provider

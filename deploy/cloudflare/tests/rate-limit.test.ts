@@ -23,8 +23,21 @@ class FakeDurableObjectStorage {
     return this.values.delete(key);
   }
 
+  async list<T>(options?: { prefix?: string }): Promise<Map<string, T>> {
+    const prefix = options?.prefix || "";
+    return new Map(
+      [...this.values.entries()]
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, value]) => [key, structuredClone(value) as T]),
+    );
+  }
+
   async setAlarm(timestamp: number): Promise<void> {
     this.alarmAt = timestamp;
+  }
+
+  async deleteAlarm(): Promise<void> {
+    this.alarmAt = undefined;
   }
 
   async transaction<T>(
@@ -75,6 +88,26 @@ function ttsCheckRequest(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ char_count: charCount, profile }),
+  });
+}
+
+function reserveRequest(maxRequests: number, windowSeconds: number) {
+  return new Request("https://rate-limit.internal/reserve", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      policy: "desktop_reasoning",
+      max_requests: maxRequests,
+      window_seconds: windowSeconds,
+    }),
+  });
+}
+
+function releaseRequest(reservationId: unknown) {
+  return new Request("https://rate-limit.internal/release", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reservation_id: reservationId }),
   });
 }
 
@@ -146,6 +179,112 @@ describe("SharedRateLimitDurableObject", () => {
 
     expect(malformed.status).toBe(400);
     expect(unbounded.status).toBe(400);
+  });
+
+  it("atomically reserves concurrent slots and returns a release token", async () => {
+    const { limiter, storage } = createLimiter();
+    const responses = await Promise.all(
+      Array.from({ length: 101 }, () => limiter.fetch(reserveRequest(100, 60))),
+    );
+    const results = await Promise.all(
+      responses.map(
+        (response) =>
+          response.json() as Promise<{
+            reserved: boolean;
+            reservationId: string | null;
+            remaining: number;
+          }>,
+      ),
+    );
+
+    const admitted = results.filter((result) => result.reserved);
+    expect(admitted).toHaveLength(100);
+    expect(new Set(admitted.map((result) => result.reservationId))).toHaveLength(100);
+    expect(results.filter((result) => !result.reserved)).toEqual([
+      expect.objectContaining({ remaining: 0, reservationId: null }),
+    ]);
+    expect((await storage.get("window")) as { count: number }).toMatchObject({
+      count: 100,
+    });
+  });
+
+  it("releases only its own reservation, is idempotent, and admits a replacement", async () => {
+    const { limiter } = createLimiter();
+    const first = (await (await limiter.fetch(reserveRequest(2, 60))).json()) as {
+      reservationId: string;
+    };
+    const second = (await (await limiter.fetch(reserveRequest(2, 60))).json()) as {
+      reservationId: string;
+    };
+    expect(
+      (await (await limiter.fetch(reserveRequest(2, 60))).json()) as {
+        reserved: boolean;
+      },
+    ).toMatchObject({ reserved: false });
+
+    expect(
+      await (await limiter.fetch(releaseRequest(first.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: true, remaining: 1 }));
+    expect(
+      await (await limiter.fetch(releaseRequest(first.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: false, remaining: 1 }));
+
+    const replacement = (await (await limiter.fetch(reserveRequest(2, 60))).json()) as {
+      reserved: boolean;
+      reservationId: string;
+      remaining: number;
+    };
+    expect(replacement).toMatchObject({ reserved: true, remaining: 0 });
+    expect(replacement.reservationId).not.toBe(first.reservationId);
+    expect(
+      await (await limiter.fetch(releaseRequest(second.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: true, remaining: 1 }));
+  });
+
+  it("does not release a stale token into a new window and cleans expired markers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T00:00:00Z"));
+    const { limiter, storage } = createLimiter();
+    const first = (await (await limiter.fetch(reserveRequest(1, 60))).json()) as {
+      reservationId: string;
+    };
+
+    vi.advanceTimersByTime(60_001);
+    await limiter.alarm();
+    expect(await storage.get(`reservation:${first.reservationId}`)).toBeUndefined();
+    expect(await storage.get("window")).toBeUndefined();
+
+    const next = (await (await limiter.fetch(reserveRequest(1, 60))).json()) as {
+      reserved: boolean;
+      reservationId: string;
+    };
+    expect(next.reserved).toBe(true);
+    expect(
+      await (await limiter.fetch(releaseRequest(first.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: false, remaining: 1 }));
+    expect(
+      await (await limiter.fetch(releaseRequest(next.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: true, remaining: 0 }));
+  });
+
+  it("rejects malformed release requests and fails closed on storage errors", async () => {
+    const { limiter } = createLimiter();
+    expect((await limiter.fetch(releaseRequest("bad token"))).status).toBe(400);
+    expect((await limiter.fetch(releaseRequest(""))).status).toBe(400);
+
+    const failingStorage = {
+      transaction: async () => {
+        throw new Error("storage unavailable");
+      },
+    };
+    const failingLimiter = new SharedRateLimitDurableObject(
+      { storage: failingStorage } as unknown as DurableObjectState,
+      {} as never,
+    );
+    expect((await failingLimiter.fetch(reserveRequest(1, 60))).status).toBe(503);
+    expect(
+      (await failingLimiter.fetch(releaseRequest("reservation-1"))).status,
+    ).toBe(503);
   });
 
   it("serializes the TTS rolling burst window without oversubscription", async () => {
