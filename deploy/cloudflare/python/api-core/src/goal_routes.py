@@ -2,9 +2,10 @@
 
 This goal slice owns the durable metadata, metric projection, daily progress
 history, focus-cap mutations, retain-only lifecycle transitions, and progress
-event feed used by the released clients. Relationship detach and AI
-advice/suggestion routes remain on the legacy owner until their stronger
-workflow contracts are migrated.
+event feed used by the released clients. AI advice and suggestion routes are
+implemented separately in ``goal_ai_routes.py`` on the Workers AI boundary;
+relationship detach remains explicitly fail-closed until its independent
+Cloudflare authority is designed.
 """
 
 from __future__ import annotations
