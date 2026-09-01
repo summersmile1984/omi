@@ -2370,6 +2370,24 @@ app.all("/*", async (c) => {
   const auth = await verifyBearer(c.req.raw, c.env, id);
 
   if (
+    c.env.AI_COMPAT_STAGING_FAIL_CLOSED === "true" &&
+    c.req.path.startsWith("/v1/ai/")
+  ) {
+    if (!auth) return c.json({ error: "unauthorized" }, 401);
+    return withRequestId(
+      Response.json(
+        {
+          error: "external_ai_disabled",
+          detail:
+            "The generic external AI compatibility path is disabled on Cloudflare staging; use Workers AI routes.",
+        },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+
+  if (
     c.req.path.startsWith("/v1/ai/") ||
     c.req.path.startsWith("/v1/embeddings") ||
     c.req.path.startsWith("/v1/stt/")

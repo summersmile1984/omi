@@ -696,7 +696,7 @@ POST /v1/tts/synthesize-workers-ai
                               Edge → Python API AI → Workers AI Aura binding
 POST /v2/tts/synthesize      Edge → Python API AI → Cloudflare unified ElevenLabs model
 GET  /v1/auto/model-pick    Edge → Python API AI → Workers AI model policy + D1 cache
-GET/POST /v1/ai/*           optional fixed-host compatibility surface; new client uses Workers AI routes
+GET/POST /v1/ai/*           staging-disabled legacy compatibility surface; new client uses Workers AI routes
 WS   /v4/listen               Edge → Realtime → Durable Object → Workers AI streaming path (external fallback optional)
 WS   /v4/web/listen           Edge bootstrap → first-message ticket → isolated DO → Workers AI streaming path (external fallback optional)
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata/checksum
@@ -2259,11 +2259,11 @@ retired `geminiFlashLive`/`gptRealtime2` IDs remain outside the no-legacy-
 compatibility scope and must be updated separately before they can use this
 selection.
 
-`/v1/ai/*` is an authenticated, fixed-host proxy for OpenAI-compatible AI APIs.
-The client cannot choose the destination: `AI_API_BASE_URL` and `AI_API_KEY` are
-Worker secrets, and the proxy only forwards `content-type`/`accept` plus the
-request path after `/v1/ai`. Requests and responses are bounded to keep model
-payloads from turning the Python Worker into an unbounded buffer.
+`/v1/ai/*` is retained only as a non-staging compatibility implementation. The
+staging Edge guard returns `503 external_ai_disabled` before reading the body or
+calling API-AI, so `AI_API_BASE_URL`/`AI_API_KEY` are not deployment
+requirements. New clients must use the bounded Workers AI routes; re-enabling
+this legacy proxy is outside the current no-OpenAI/Gemini scope.
 
 Default `POST /v2/messages` text chat uses the native
 `@cf/meta/llama-3.2-3b-instruct` binding with a bounded 24-message/32,000-character

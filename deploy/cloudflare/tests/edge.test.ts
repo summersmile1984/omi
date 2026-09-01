@@ -842,6 +842,45 @@ describe("edge gateway", () => {
     }
   });
 
+  it("fails closed for the generic external AI compatibility path in staging", async () => {
+    let apiAiCalls = 0;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AI_COMPAT_STAGING_FAIL_CLOSED: "true",
+      AUTH: service((request) => {
+        if (request.url.endsWith("/internal/verify")) {
+          return Response.json({ uid: "ai-user", authority: "better-auth" });
+        }
+        return Response.json({ status: "ok" });
+      }),
+      API_AI: service(() => {
+        apiAiCalls += 1;
+        return Response.json({ owner: "unexpected" });
+      }),
+      REALTIME: service(() => Response.json({ status: "ok" })),
+    };
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/ai/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          cookie: "must-not-forward",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "external", messages: [{ role: "user", content: "secret" }] }),
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "external_ai_disabled",
+      detail:
+        "The generic external AI compatibility path is disabled on Cloudflare staging; use Workers AI routes.",
+    });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(apiAiCalls).toBe(0);
+  });
+
   it("routes enabled Gemini exact paths to the API-AI owner", async () => {
     const apiAiRequests: Request[] = [];
     const env = {

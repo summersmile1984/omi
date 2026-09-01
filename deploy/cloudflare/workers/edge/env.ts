@@ -31,6 +31,8 @@ export type EdgeEnv = {
   GEMINI_PROXY_CLOUDFLARE_ENABLED?: string;
   /** Staging-only deny switch for legacy chat completion/materialization paths. */
   CHAT_COMPAT_STAGING_FAIL_CLOSED?: string;
+  /** Staging-only deny switch for the generic fixed-host AI compatibility path. */
+  AI_COMPAT_STAGING_FAIL_CLOSED?: string;
   /** Cloudflare Jobs owner for the text/materialization compatibility routes. */
   CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED?: string;
   /** Staging-only deny switch for legacy staged-task/task-intelligence paths. */

@@ -2240,9 +2240,9 @@ routes:
     path: /v1/ai/*
     owner: api-ai
     runtime: python-worker
-    target_runtime: external-api
+    target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [external-ai-api]
+    dependencies: [d1-app, worker-secrets]
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -2250,9 +2250,9 @@ routes:
     path: /v1/proxy/gemini/*
     owner: api-ai
     runtime: python-worker
-    target_runtime: external-api
+    target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-gemini-api, rate-limit-do, worker-secrets]
+    dependencies: [d1-app, rate-limit-do, worker-secrets]
     rate_limit_policy: gemini:proxy
     protocol: http
     idempotency: optional
@@ -2262,9 +2262,9 @@ routes:
     path: /v1/proxy/gemini-stream/*
     owner: api-ai
     runtime: python-worker
-    target_runtime: external-api
+    target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-gemini-api, rate-limit-do, worker-secrets]
+    dependencies: [d1-app, rate-limit-do, worker-secrets]
     rate_limit_policy: gemini:proxy
     protocol: http
     idempotency: optional
