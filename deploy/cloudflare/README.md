@@ -184,6 +184,11 @@ exposes email/password sign-up and sign-in. Google/Apple buttons are driven by
 the Auth Worker's capability response and remain hidden unless the matching
 staging OAuth client ID and secret are both configured.
 
+The integrations page opens the provider window synchronously before fetching
+the OAuth URL, then navigates that window after the request completes. This is
+required for browsers that block a popup opened after an asynchronous request;
+if a popup is blocked, the flow falls back to the current tab.
+
 Better Auth browser sessions are cookie-only: the same-origin auth proxy
 forwards `Set-Cookie` but removes the session token from successful sign-in and
 sign-up JSON. The public Better Auth base path is `/api/better-auth`; keeping

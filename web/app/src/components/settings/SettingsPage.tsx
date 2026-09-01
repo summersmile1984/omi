@@ -94,6 +94,7 @@ import {
   ApiRequestError,
 } from '@/lib/api';
 import { SUPPORTED_LANGUAGES, API_KEY_SCOPES } from '@/types/user';
+import { closeOAuthPopup, navigateOAuthPopup, openOAuthPopup } from '@/lib/oauth-window';
 import type {
   DailySummarySettings,
   UserUsage,
@@ -1651,12 +1652,17 @@ function IntegrationsSection({
   const handleConnect = async (integration: Integration) => {
     if (integration.coming_soon || loadingId) return;
 
+    // Open the OAuth window synchronously from the user gesture. Waiting for
+    // the URL request before calling window.open causes browsers (especially
+    // the in-app browser) to block the popup because the gesture has ended.
+    const oauthWindow = typeof window !== 'undefined' ? openOAuthPopup(window) : null;
     setLoadingId(integration.id);
     try {
       const authUrl = await getIntegrationOAuthUrl(integration.id);
       if (authUrl) {
-        // Open OAuth URL in new window
-        window.open(authUrl, '_blank', 'width=600,height=700');
+        // If the browser still blocks popups, the helper falls back to the
+        // current tab instead of silently dropping the authorization URL.
+        navigateOAuthPopup(window, oauthWindow, authUrl);
         // Note: User will complete OAuth in the popup, then we need to refresh
         // Set up a listener for when they return
         const checkConnection = setInterval(async () => {
@@ -1666,6 +1672,7 @@ function IntegrationsSection({
         setTimeout(() => clearInterval(checkConnection), 120000);
       }
     } catch (error) {
+      closeOAuthPopup(oauthWindow);
       if (
         integration.id === 'google_calendar' &&
         error instanceof ApiRequestError &&
