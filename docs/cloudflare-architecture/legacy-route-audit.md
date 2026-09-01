@@ -22,7 +22,7 @@
 
 ## 当前可执行顺序
 
-Archive projection writer note（2026-09-01）：0135 增加默认关闭的 Jobs reviewed review/apply seam。它只接受外部人工审阅、HMAC content-bound 且逐行重算 hash 的 Firestore memory plan，写入 D1 archive items 与 apply receipts，并在 review/apply 两阶段复核 global read gate、memory control、cutover generation 和 account-deletion fence；不读取 Firestore/GCS/provider、不伪造历史数据，因此真实 export/backfill、历史账号连续性和 production cutover 仍是 blocker。
+Archive projection writer note（2026-09-01）：0135 增加默认关闭的 Jobs reviewed review/apply seam。它只接受外部人工审阅、HMAC content-bound 且逐行重算 hash 的 Firestore memory plan，写入 D1 archive items 与 apply receipts，并在 review/apply 两阶段复核 global read gate、memory control、cutover generation 和 account-deletion fence；配套 `memory-archive-reconcile.mjs` 只读校验外部 export 并生成相同 hash 算法的 apply plan，不读取 Firestore/GCS/provider、不伪造历史数据，因此真实 export/backfill、历史账号连续性和 production cutover 仍是 blocker。
 
 Archive executor staging 发布（2026-09-01）：远端 App D1 已应用 `0135_memory_archive_executor.sql` 与 `0136_hume_task_projection_trigger_cleanup.sql`；Jobs `22c35c52-f42f-4fa8-9b64-e98b4cc09045` 已发布，Edge `/ready` 与 Web `/api/worker-ready` 均为 `200 status=ready`。`MEMORY_ARCHIVE_IMPORT_STAGING_ENABLED=false` 保持默认关闭；重复 review 并发幂等已有回归覆盖，真实 Firestore export/apply、历史账号连续性与 production cutover 仍未完成。
 
