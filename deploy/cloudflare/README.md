@@ -1306,9 +1306,14 @@ multi-range and unsatisfiable requests return `416`. Logical asset keys point
 to immutable R2 storage keys, so an overwrite cannot destroy the previous
 object before its D1 pointer commits. Superseded, deleted, or uncommitted
 objects are tracked in D1 and retried by the Jobs Worker's 15-minute cleanup
-sweep. R2 reads stream through the Python ASGI response; uploads retain the
-bounded 25 MB compatibility surface. Large-object multipart migration and
-signed URL issuance remain separate R2 cutover work.
+sweep. R2 reads stream through the Python ASGI response; ordinary uploads retain
+the bounded 25 MB surface. Larger clients can use the authenticated
+`action=mpu-create`, `action=mpu-uploadpart`, `action=mpu-complete`, and
+`action=mpu-abort` operations on the same route. D1 records the uid-scoped
+upload/part ledger and completion verifies the assembled SHA-256 before the
+canonical pointer is committed; failed completion is sent to the existing R2
+cleanup ledger. Presigned direct-to-R2 URLs remain intentionally unexposed
+until a client actually needs that boundary.
 
 The folder routes migrate system/custom folder metadata and ordering to D1.
 Folder conversation listing and single-conversation moves now use the D1

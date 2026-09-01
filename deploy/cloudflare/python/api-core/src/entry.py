@@ -160,6 +160,12 @@ app.include_router(sentry_router)
 app.include_router(conversation_test_prompt_router)
 app.include_router(metrics_router)
 MAX_ASSET_BODY_BYTES = 25_000_000
+MAX_ASSET_MULTIPART_PART_BYTES = 25_000_000
+MAX_ASSET_MULTIPART_TOTAL_BYTES = 512_000_000
+MIN_ASSET_MULTIPART_PART_BYTES = 5 * 1024 * 1024
+MAX_ASSET_MULTIPART_PARTS = 10_000
+ASSET_MULTIPART_EXPIRY_SECONDS = 7 * 24 * 60 * 60
+MAX_ASSET_MULTIPART_JSON_BYTES = 512_000
 ASSET_CLEANUP_GRACE_SECONDS = 15 * 60
 ASSET_CLEANUP_BATCH_SIZE = 10
 MAX_VOCABULARY_ITEMS = 100
@@ -1579,16 +1585,165 @@ def _asset_storage_key(uid: str, checksum: str) -> str:
     return f"cf-assets/{uid}/{checksum}/{uuid.uuid4().hex}"
 
 
-async def _read_bounded_asset_body(request: Request) -> tuple[bytes, str] | None:
+def _asset_multipart_storage_key(uid: str) -> str:
+    return f"cf-assets/{uid}/multipart/{uuid.uuid4().hex}"
+
+
+def _r2_attribute(value: object, *names: str) -> object | None:
+    for name in names:
+        try:
+            result = getattr(value, name)
+        except AttributeError:
+            continue
+        if result is not None:
+            return result
+    return None
+
+
+def _r2_method(value: object, camel_name: str, snake_name: str | None = None):
+    try:
+        return getattr(value, camel_name)
+    except AttributeError:
+        if snake_name is None:
+            raise
+        return getattr(value, snake_name)
+
+
+def _asset_multipart_upload_id(value: object) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return None
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        return None
+    return value
+
+
+def _request_query_param(request: Request, name: str) -> str | None:
+    query_params = getattr(request, "query_params", None)
+    if query_params is None:
+        return None
+    value = query_params.get(name)
+    return str(value) if value is not None else None
+
+
+def _asset_multipart_checksum(value: object, *, required: bool = False) -> str | None:
+    if value is None or value == "":
+        return "" if not required else None
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        return None
+    return value.lower()
+
+
+async def _read_bounded_body(request: Request, limit: int) -> tuple[bytes, str] | None:
     body = bytearray()
     digest = hashlib.sha256()
     async for chunk in request.stream():
         data = bytes(chunk)
-        if len(body) + len(data) > MAX_ASSET_BODY_BYTES:
+        if len(body) + len(data) > limit:
             return None
         body.extend(data)
         digest.update(data)
     return bytes(body), digest.hexdigest()
+
+
+async def _read_bounded_json(request: Request, limit: int) -> dict[str, object] | None:
+    bounded = await _read_bounded_body(request, limit)
+    if bounded is None:
+        return None
+    body, _checksum = bounded
+    try:
+        value = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _asset_multipart_response(
+    row: dict[str, object], *, status: str = "created", status_code: int = 200
+) -> JSONResponse:
+    payload: dict[str, object] = {
+        "status": status,
+        "key": str(row.get("object_key") or "").split("/", 1)[-1],
+        "upload_id": str(row.get("upload_id") or ""),
+        "content_type": str(row.get("content_type") or "application/octet-stream"),
+        "expires_at": int(row.get("expires_at") or 0),
+    }
+    expected_size = row.get("expected_size")
+    if expected_size is not None:
+        payload["expected_size"] = int(expected_size)
+    expected_checksum = str(row.get("expected_checksum_sha256") or "")
+    if expected_checksum:
+        payload["expected_checksum_sha256"] = expected_checksum
+    return JSONResponse(payload, status_code=status_code)
+
+
+async def _schedule_asset_multipart_cleanup(
+    env: object,
+    *,
+    uid: str,
+    logical_key: str,
+    storage_key: str,
+    content_type: str,
+    now: int,
+) -> None:
+    await env.APP_DB.prepare(
+        "INSERT OR IGNORE INTO cf_asset_cleanup_tasks "
+        "(storage_key, uid, logical_key, content_type, reason, not_before, attempts, last_error, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, 'uncommitted-upload', ?, 0, NULL, ?, ?)"
+    ).bind(storage_key, uid, logical_key, content_type, now, now, now).run()
+
+
+async def _discard_asset_multipart(
+    env: object,
+    *,
+    uid: str,
+    upload_id: str,
+    storage_key: str,
+    logical_key: str,
+    content_type: str,
+    now: int,
+    abort_r2: bool,
+) -> None:
+    if abort_r2:
+        try:
+            multipart = _r2_method(env.ASSETS, "resumeMultipartUpload", "resume_multipart_upload")(
+                storage_key, upload_id
+            )
+            await _r2_method(multipart, "abort")()
+        except Exception:
+            # R2's seven-day abandoned-upload lifecycle and the cleanup ledger
+            # are the durable recovery paths when an abort races an outage.
+            pass
+    try:
+        await env.ASSETS.delete(storage_key)
+    except Exception:
+        try:
+            await _schedule_asset_multipart_cleanup(
+                env,
+                uid=uid,
+                logical_key=logical_key,
+                storage_key=storage_key,
+                content_type=content_type,
+                now=now,
+            )
+        except Exception:
+            pass
+    try:
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare("DELETE FROM cf_asset_multipart_parts WHERE uid = ? AND upload_id = ?").bind(
+                    uid, upload_id
+                ),
+                env.APP_DB.prepare("DELETE FROM cf_asset_multipart_uploads WHERE uid = ? AND upload_id = ?").bind(
+                    uid, upload_id
+                ),
+            ]
+        )
+    except Exception:
+        pass
+
+
+async def _read_bounded_asset_body(request: Request) -> tuple[bytes, str] | None:
+    return await _read_bounded_body(request, MAX_ASSET_BODY_BYTES)
 
 
 async def _r2_body_chunks(stored: object):
@@ -1648,8 +1803,412 @@ async def _drain_asset_cleanup(env: object, uid: str, logical_key: str) -> None:
         ).run()
 
 
+@app.post("/v1/cf/assets/{requested_key:path}")
+async def post_asset(requested_key: str, request: Request):
+    """Create or complete a resumable R2 multipart upload.
+
+    The R2 upload id is intentionally usable only with the uid-scoped D1 row
+    created here.  The Edge assertion supplies the uid on every request, so a
+    leaked id cannot be resumed by another account.
+    """
+
+    action = _request_query_param(request, "action")
+    if action not in {"mpu-create", "mpu-complete"}:
+        return JSONResponse({"error": "invalid multipart action"}, status_code=400)
+    context, env = _asset_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if env is None:
+        return JSONResponse({"error": "asset storage is not configured"}, status_code=503)
+    uid = str(context["uid"])
+    key = _asset_key(uid, requested_key)
+    if not key:
+        return JSONResponse({"error": "invalid asset key"}, status_code=400)
+    now = int(time.time())
+
+    if action == "mpu-create":
+        idempotency_key = request.headers.get("idempotency-key", "").strip()
+        if (
+            not idempotency_key
+            or len(idempotency_key) > 256
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in idempotency_key)
+        ):
+            return JSONResponse({"error": "invalid idempotency key"}, status_code=400)
+        content_type = request.headers.get("content-type", "application/octet-stream")[:200]
+        if not content_type or "\r" in content_type or "\n" in content_type:
+            return JSONResponse({"error": "invalid content type"}, status_code=400)
+        if content_type.startswith("audio/") and not await _recording_storage_enabled(env, uid):
+            return JSONResponse({"error": "recording storage is disabled"}, status_code=409)
+
+        expected_size: int | None = None
+        raw_size = request.headers.get("x-asset-size")
+        if raw_size:
+            try:
+                expected_size = int(raw_size)
+            except (TypeError, ValueError):
+                return JSONResponse({"error": "invalid asset size"}, status_code=400)
+            if expected_size <= 0 or expected_size > MAX_ASSET_MULTIPART_TOTAL_BYTES:
+                return JSONResponse({"error": "invalid asset size"}, status_code=413)
+        expected_checksum = _asset_multipart_checksum(request.headers.get("x-content-sha256"))
+        if expected_checksum is None:
+            return JSONResponse({"error": "invalid asset checksum"}, status_code=400)
+
+        # Expired rows no longer protect an object key.  R2 independently
+        # expires abandoned multipart uploads after seven days.
+        try:
+            await env.APP_DB.prepare("DELETE FROM cf_asset_multipart_uploads WHERE uid = ? AND expires_at <= ?").bind(
+                uid, now
+            ).run()
+            existing = (
+                await env.APP_DB.prepare(
+                    "SELECT uid, upload_id, object_key, content_type, expected_size, "
+                    "expected_checksum_sha256, expires_at FROM cf_asset_multipart_uploads "
+                    "WHERE uid = ? AND idempotency_key = ? AND state = 'pending' AND expires_at > ?"
+                )
+                .bind(uid, idempotency_key, now)
+                .first()
+            )
+            if isinstance(existing, dict):
+                return _asset_multipart_response(existing, status="existing", status_code=200)
+            same_key = (
+                await env.APP_DB.prepare(
+                    "SELECT uid, upload_id, object_key, content_type, expected_size, "
+                    "expected_checksum_sha256, expires_at FROM cf_asset_multipart_uploads "
+                    "WHERE uid = ? AND object_key = ? AND state = 'pending' AND expires_at > ?"
+                )
+                .bind(uid, key, now)
+                .first()
+            )
+            if isinstance(same_key, dict):
+                return JSONResponse({"error": "asset multipart upload already exists"}, status_code=409)
+        except Exception:
+            return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+
+        storage_key = _asset_multipart_storage_key(uid)
+        try:
+            multipart = await _r2_method(env.ASSETS, "createMultipartUpload", "create_multipart_upload")(
+                storage_key,
+                {"httpMetadata": {"contentType": content_type}},
+            )
+            upload_id = _asset_multipart_upload_id(_r2_attribute(multipart, "uploadId", "upload_id"))
+            if upload_id is None:
+                raise RuntimeError("R2 returned an invalid multipart upload id")
+        except Exception:
+            return JSONResponse({"error": "asset storage is unavailable"}, status_code=503)
+        expires_at = now + ASSET_MULTIPART_EXPIRY_SECONDS
+        try:
+            await env.APP_DB.prepare(
+                "INSERT INTO cf_asset_multipart_uploads "
+                "(uid, upload_id, object_key, storage_key, content_type, idempotency_key, "
+                "expected_size, expected_checksum_sha256, state, expires_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)"
+            ).bind(
+                uid,
+                upload_id,
+                key,
+                storage_key,
+                content_type,
+                idempotency_key,
+                expected_size,
+                expected_checksum,
+                expires_at,
+                now,
+                now,
+            ).run()
+        except Exception:
+            try:
+                await _r2_method(multipart, "abort")()
+            except Exception:
+                pass
+            try:
+                existing = (
+                    await env.APP_DB.prepare(
+                        "SELECT uid, upload_id, object_key, content_type, expected_size, "
+                        "expected_checksum_sha256, expires_at FROM cf_asset_multipart_uploads "
+                        "WHERE uid = ? AND idempotency_key = ? AND state = 'pending' AND expires_at > ?"
+                    )
+                    .bind(uid, idempotency_key, now)
+                    .first()
+                )
+            except Exception:
+                existing = None
+            if isinstance(existing, dict):
+                return _asset_multipart_response(existing, status="existing", status_code=200)
+            return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+        return JSONResponse(
+            {
+                "status": "created",
+                "key": requested_key.strip("/"),
+                "upload_id": upload_id,
+                "expires_at": expires_at,
+                "expected_size": expected_size,
+                "expected_checksum_sha256": expected_checksum,
+            },
+            status_code=201,
+        )
+
+    upload_id = _asset_multipart_upload_id(_request_query_param(request, "uploadId"))
+    if upload_id is None:
+        return JSONResponse({"error": "invalid upload id"}, status_code=400)
+    existing_asset = None
+    try:
+        row = (
+            await env.APP_DB.prepare(
+                "SELECT uid, upload_id, object_key, storage_key, content_type, expected_size, "
+                "expected_checksum_sha256, state, expires_at FROM cf_asset_multipart_uploads "
+                "WHERE uid = ? AND upload_id = ?"
+            )
+            .bind(uid, upload_id)
+            .first()
+        )
+    except Exception:
+        return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+    if not isinstance(row, dict):
+        # A successful completion removes the upload ledger.  Returning the
+        # canonical object makes a retried completion idempotent.
+        existing_asset = (
+            await env.APP_DB.prepare(
+                "SELECT storage_key, content_type, size, etag, checksum_sha256 "
+                "FROM cf_asset_objects WHERE uid = ? AND object_key = ?"
+            )
+            .bind(uid, key)
+            .first()
+        )
+        if isinstance(existing_asset, dict):
+            return {
+                "status": "ok",
+                "key": requested_key.strip("/"),
+                "size": int(existing_asset.get("size") or 0),
+                "etag": str(existing_asset.get("etag") or ""),
+                "checksum_sha256": str(existing_asset.get("checksum_sha256") or ""),
+            }
+        return JSONResponse({"error": "multipart upload not found"}, status_code=404)
+    if str(row.get("state")) != "pending" or int(row.get("expires_at") or 0) <= now:
+        return JSONResponse({"error": "multipart upload is no longer active"}, status_code=409)
+    body = await _read_bounded_json(request, MAX_ASSET_MULTIPART_JSON_BYTES)
+    if body is None or not isinstance(body.get("parts"), list):
+        return JSONResponse({"error": "invalid multipart completion"}, status_code=400)
+    supplied_parts = body["parts"]
+    if not supplied_parts or len(supplied_parts) > MAX_ASSET_MULTIPART_PARTS:
+        return JSONResponse({"error": "invalid multipart parts"}, status_code=400)
+    try:
+        ledger_result = (
+            await env.APP_DB.prepare(
+                "SELECT part_number, size, etag, checksum_sha256 FROM cf_asset_multipart_parts "
+                "WHERE uid = ? AND upload_id = ? ORDER BY part_number"
+            )
+            .bind(uid, upload_id)
+            .all()
+        )
+        ledger_rows = ledger_result.get("results", []) if isinstance(ledger_result, dict) else []
+    except Exception:
+        return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+    if len(ledger_rows) != len(supplied_parts):
+        return JSONResponse({"error": "multipart parts are incomplete"}, status_code=422)
+    normalized_parts: list[dict[str, object]] = []
+    total_size = 0
+    for index, supplied in enumerate(supplied_parts):
+        if not isinstance(supplied, dict):
+            return JSONResponse({"error": "invalid multipart part"}, status_code=422)
+        try:
+            part_number = int(supplied.get("part_number", supplied.get("partNumber")))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "invalid multipart part number"}, status_code=422)
+        etag = supplied.get("etag")
+        ledger = ledger_rows[index] if isinstance(ledger_rows[index], dict) else {}
+        if (
+            part_number != int(ledger.get("part_number") or 0)
+            or not isinstance(etag, str)
+            or etag != str(ledger.get("etag") or "")
+        ):
+            return JSONResponse({"error": "multipart part ledger mismatch"}, status_code=422)
+        size = int(ledger.get("size") or 0)
+        if index < len(ledger_rows) - 1 and size < MIN_ASSET_MULTIPART_PART_BYTES:
+            return JSONResponse({"error": "multipart part is smaller than the R2 minimum"}, status_code=422)
+        total_size += size
+        if total_size > MAX_ASSET_MULTIPART_TOTAL_BYTES:
+            return JSONResponse({"error": "asset is too large"}, status_code=413)
+        normalized_parts.append({"partNumber": part_number, "etag": etag})
+    expected_size = row.get("expected_size")
+    if expected_size is not None and int(expected_size) != total_size:
+        return JSONResponse({"error": "asset size mismatch"}, status_code=422)
+    supplied_checksum = _asset_multipart_checksum(body.get("checksum_sha256"))
+    if supplied_checksum is None:
+        return JSONResponse({"error": "invalid asset checksum"}, status_code=422)
+    expected_checksum = str(row.get("expected_checksum_sha256") or "")
+    if expected_checksum and supplied_checksum and expected_checksum != supplied_checksum:
+        return JSONResponse({"error": "asset checksum mismatch"}, status_code=422)
+
+    storage_key = str(row.get("storage_key") or "")
+    content_type = str(row.get("content_type") or "application/octet-stream")
+    try:
+        multipart = _r2_method(env.ASSETS, "resumeMultipartUpload", "resume_multipart_upload")(
+            storage_key, upload_id
+        )
+        completed = await _r2_method(multipart, "complete")(normalized_parts)
+        etag = str(_r2_attribute(completed, "httpEtag", "etag") or "")
+        stored = await env.ASSETS.get(storage_key)
+        if not stored:
+            raise RuntimeError("completed asset is unavailable")
+        digest = hashlib.sha256()
+        verified_size = 0
+        async for chunk in _r2_body_chunks(stored):
+            verified_size += len(chunk)
+            if verified_size > MAX_ASSET_MULTIPART_TOTAL_BYTES:
+                raise ValueError("completed asset is too large")
+            digest.update(chunk)
+        checksum = digest.hexdigest()
+        if verified_size != total_size:
+            raise ValueError("completed asset size mismatch")
+        if expected_checksum and checksum != expected_checksum:
+            raise ValueError("completed asset checksum mismatch")
+        if supplied_checksum and checksum != supplied_checksum:
+            raise ValueError("completed asset checksum mismatch")
+        if not etag:
+            # Some test doubles and older bindings expose only the object key;
+            # a stable checksum still gives the canonical metadata a validator.
+            etag = f'"{checksum}"'
+    except ValueError as error:
+        await _discard_asset_multipart(
+            env,
+            uid=uid,
+            upload_id=upload_id,
+            storage_key=storage_key,
+            logical_key=key,
+            content_type=content_type,
+            now=now,
+            abort_r2=False,
+        )
+        return JSONResponse({"error": str(error)}, status_code=422)
+    except Exception:
+        await _discard_asset_multipart(
+            env,
+            uid=uid,
+            upload_id=upload_id,
+            storage_key=storage_key,
+            logical_key=key,
+            content_type=content_type,
+            now=now,
+            abort_r2=False,
+        )
+        return JSONResponse({"error": "asset storage is unavailable"}, status_code=503)
+
+    cleanup_previous = env.APP_DB.prepare(
+        "INSERT OR IGNORE INTO cf_asset_cleanup_tasks "
+        "(storage_key, uid, logical_key, content_type, reason, not_before, attempts, last_error, "
+        "created_at, updated_at) "
+        "SELECT storage_key, uid, object_key, content_type, 'superseded', ?, 0, NULL, ?, ? FROM cf_asset_objects "
+        "WHERE uid = ? AND object_key = ? AND storage_key IS NOT NULL AND storage_key <> ?"
+    ).bind(now, now, now, uid, key, storage_key)
+    upsert_metadata = env.APP_DB.prepare(
+        "INSERT INTO cf_asset_objects "
+        "(uid, object_key, storage_key, content_type, size, etag, checksum_sha256, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(uid, object_key) DO UPDATE SET storage_key = excluded.storage_key, "
+        "content_type = excluded.content_type, size = excluded.size, etag = excluded.etag, "
+        "checksum_sha256 = excluded.checksum_sha256, updated_at = excluded.updated_at"
+    ).bind(uid, key, storage_key, content_type, total_size, etag, checksum, now, now)
+    delete_parts = env.APP_DB.prepare("DELETE FROM cf_asset_multipart_parts WHERE uid = ? AND upload_id = ?").bind(
+        uid, upload_id
+    )
+    delete_upload = env.APP_DB.prepare("DELETE FROM cf_asset_multipart_uploads WHERE uid = ? AND upload_id = ?").bind(
+        uid, upload_id
+    )
+    try:
+        await env.APP_DB.batch([cleanup_previous, upsert_metadata, delete_parts, delete_upload])
+    except Exception:
+        try:
+            await _schedule_asset_multipart_cleanup(
+                env,
+                uid=uid,
+                logical_key=key,
+                storage_key=storage_key,
+                content_type=content_type,
+                now=now,
+            )
+        except Exception:
+            pass
+        return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+    try:
+        await _drain_asset_cleanup(env, uid, key)
+    except Exception:
+        pass
+    return {
+        "status": "ok",
+        "key": requested_key.strip("/"),
+        "size": total_size,
+        "etag": etag,
+        "checksum_sha256": checksum,
+    }
+
+
 @app.put("/v1/cf/assets/{requested_key:path}")
 async def put_asset(requested_key: str, request: Request):
+    action = _request_query_param(request, "action")
+    if action:
+        if action != "mpu-uploadpart":
+            return JSONResponse({"error": "invalid multipart action"}, status_code=400)
+        context, env = _asset_context(request)
+        if not context:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        if env is None:
+            return JSONResponse({"error": "asset storage is not configured"}, status_code=503)
+        uid = str(context["uid"])
+        key = _asset_key(uid, requested_key)
+        if not key:
+            return JSONResponse({"error": "invalid asset key"}, status_code=400)
+        upload_id = _asset_multipart_upload_id(_request_query_param(request, "uploadId"))
+        if upload_id is None:
+            return JSONResponse({"error": "invalid upload id"}, status_code=400)
+        try:
+            part_number = int(_request_query_param(request, "partNumber") or "")
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "invalid multipart part number"}, status_code=400)
+        if not 1 <= part_number <= MAX_ASSET_MULTIPART_PARTS:
+            return JSONResponse({"error": "invalid multipart part number"}, status_code=400)
+        now = int(time.time())
+        try:
+            row = (
+                await env.APP_DB.prepare(
+                    "SELECT storage_key, object_key, content_type, expires_at FROM cf_asset_multipart_uploads "
+                    "WHERE uid = ? AND upload_id = ? AND object_key = ? AND state = 'pending'"
+                )
+                .bind(uid, upload_id, key)
+                .first()
+            )
+        except Exception:
+            return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+        if not isinstance(row, dict) or int(row.get("expires_at") or 0) <= now:
+            return JSONResponse({"error": "multipart upload not found"}, status_code=404)
+        bounded = await _read_bounded_body(request, MAX_ASSET_MULTIPART_PART_BYTES)
+        if bounded is None:
+            return JSONResponse({"error": "asset part too large"}, status_code=413)
+        body, checksum = bounded
+        if not body:
+            return JSONResponse({"error": "asset part is empty"}, status_code=400)
+        try:
+            multipart = _r2_method(env.ASSETS, "resumeMultipartUpload", "resume_multipart_upload")(
+                str(row.get("storage_key") or ""), upload_id
+            )
+            uploaded = await _r2_method(multipart, "uploadPart", "upload_part")(part_number, body)
+            etag = _r2_attribute(uploaded, "etag", "httpEtag")
+            if not isinstance(etag, str) or not etag:
+                raise RuntimeError("R2 returned an invalid part etag")
+            await env.APP_DB.prepare(
+                "INSERT INTO cf_asset_multipart_parts "
+                "(uid, upload_id, part_number, size, etag, checksum_sha256, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(uid, upload_id, part_number) DO UPDATE SET size = excluded.size, "
+                "etag = excluded.etag, checksum_sha256 = excluded.checksum_sha256, updated_at = excluded.updated_at"
+            ).bind(uid, upload_id, part_number, len(body), etag, checksum, now, now).run()
+        except Exception:
+            return JSONResponse({"error": "asset storage or metadata is unavailable"}, status_code=503)
+        return {
+            "part_number": part_number,
+            "etag": etag,
+            "size": len(body),
+            "checksum_sha256": checksum,
+        }
     context, env = _asset_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1803,6 +2362,56 @@ async def get_asset(requested_key: str, request: Request):
 
 @app.delete("/v1/cf/assets/{requested_key:path}")
 async def delete_asset(requested_key: str, request: Request):
+    action = _request_query_param(request, "action")
+    if action:
+        if action != "mpu-abort":
+            return JSONResponse({"error": "invalid multipart action"}, status_code=400)
+        context, env = _asset_context(request)
+        if not context:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        if env is None:
+            return JSONResponse({"error": "asset storage is not configured"}, status_code=503)
+        uid = str(context["uid"])
+        key = _asset_key(uid, requested_key)
+        if not key:
+            return JSONResponse({"error": "invalid asset key"}, status_code=400)
+        upload_id = _asset_multipart_upload_id(_request_query_param(request, "uploadId"))
+        if upload_id is None:
+            return JSONResponse({"error": "invalid upload id"}, status_code=400)
+        try:
+            row = (
+                await env.APP_DB.prepare(
+                    "SELECT storage_key, content_type, expires_at FROM cf_asset_multipart_uploads "
+                    "WHERE uid = ? AND upload_id = ? AND object_key = ? AND state = 'pending'"
+                )
+                .bind(uid, upload_id, key)
+                .first()
+            )
+        except Exception:
+            return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+        if not isinstance(row, dict):
+            return Response(status_code=204)
+        try:
+            multipart = _r2_method(env.ASSETS, "resumeMultipartUpload", "resume_multipart_upload")(
+                str(row.get("storage_key") or ""), upload_id
+            )
+            await _r2_method(multipart, "abort")()
+        except Exception:
+            return JSONResponse({"error": "asset storage is unavailable"}, status_code=503)
+        try:
+            await env.APP_DB.batch(
+                [
+                    env.APP_DB.prepare("DELETE FROM cf_asset_multipart_parts WHERE uid = ? AND upload_id = ?").bind(
+                        uid, upload_id
+                    ),
+                    env.APP_DB.prepare("DELETE FROM cf_asset_multipart_uploads WHERE uid = ? AND upload_id = ?").bind(
+                        uid, upload_id
+                    ),
+                ]
+            )
+        except Exception:
+            return JSONResponse({"error": "asset metadata is unavailable"}, status_code=503)
+        return Response(status_code=204)
     context, env = _asset_context(request)
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)

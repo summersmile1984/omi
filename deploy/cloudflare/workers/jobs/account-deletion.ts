@@ -796,6 +796,7 @@ async function assertStorageKeysBoundToAccount(env: JobsEnv, uid: string) {
   ];
   const checks = [
     ["cf_asset_objects", "storage_key"],
+    ["cf_asset_multipart_uploads", "storage_key"],
     ["cf_asset_cleanup_tasks", "storage_key"],
     ["cf_sync_playback_objects", "storage_key"],
     ["cf_sync_job_files", "object_key"],
