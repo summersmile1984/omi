@@ -203,7 +203,9 @@ function validRedirectUri(value: string): boolean {
     return (
       !parsed.username &&
       !parsed.password &&
-      LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())
+      // WHATWG URL exposes IPv6 hostnames as `[::1]`, while the loopback
+      // allowlist intentionally stores the canonical host without brackets.
+      LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase().replace(/^\[|\]$/g, ""))
     );
   }
   return true;

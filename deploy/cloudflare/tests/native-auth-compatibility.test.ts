@@ -269,6 +269,25 @@ describe("namespaced native auth compatibility seam", () => {
     }
   });
 
+  it("accepts RFC 8252 IPv6 loopback redirect URIs", async () => {
+    const fixture = harness(vi.fn());
+    try {
+      const challenge = await pkceChallengeForVerifier(VERIFIER);
+      const url = new URL(`${BASE_URL}/v2/cf/auth/authorize`);
+      url.search = new URLSearchParams({
+        provider: "google",
+        redirect_uri: "http://[::1]:5000/callback",
+        state: "ipv6-loopback-state",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      }).toString();
+      const response = await fixture.app.request(url, {}, fixture.env);
+      expect(response.status).toBe(302);
+    } finally {
+      fixture.database.close();
+    }
+  });
+
   it("keeps the exact auth error envelope compatible with FastAPI", async () => {
     const database = new SqliteD1();
     const app = new Hono<{ Bindings: AuthEnv }>();
