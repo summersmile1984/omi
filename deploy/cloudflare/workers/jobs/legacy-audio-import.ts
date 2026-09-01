@@ -860,6 +860,8 @@ export async function rebuildLegacyConversationAudio(
     throw new LegacyAudioSourceError("legacy audio identity is invalid");
   if (!(await recordingStorageEnabled(env, job.uid)))
     throw new LegacyAudioSourceError("recording storage is disabled");
+  if (await accountDeletionActive(env, job.uid))
+    throw new LegacyAudioSourceError("account deletion is active");
   const initial = await env.APP_DB.prepare(
     "SELECT created_at, updated_at, started_at, is_locked, audio_files_json, conversation_audio_json " +
       "FROM cf_conversations WHERE uid = ? AND id = ?",
@@ -1019,6 +1021,16 @@ export type LegacyMp3RebuildResult = {
   bytes: number;
 };
 
+async function accountDeletionActive(env: JobsEnv, uid: string): Promise<boolean> {
+  const row = await env.APP_DB.prepare(
+    "SELECT EXISTS(SELECT 1 FROM cf_account_deletion_intents WHERE uid = ?) " +
+      "OR EXISTS(SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = ?) AS active",
+  )
+    .bind(uid, uid)
+    .first<{ active?: unknown }>();
+  return Number(row?.active) === 1;
+}
+
 type LegacyMp3Inputs = {
   row: ConversationRow;
   sourceFiles: LegacyAudioFile[];
@@ -1039,6 +1051,8 @@ async function legacyMp3Inputs(
     throw new LegacyAudioSourceError("legacy audio identity is invalid");
   if (!(await recordingStorageEnabled(env, job.uid)))
     throw new LegacyAudioSourceError("recording storage is disabled");
+  if (await accountDeletionActive(env, job.uid))
+    throw new LegacyAudioSourceError("account deletion is active");
   const row = await env.APP_DB.prepare(
     "SELECT created_at, updated_at, started_at, is_locked, audio_files_json, conversation_audio_json " +
       "FROM cf_conversations WHERE uid = ? AND id = ?",

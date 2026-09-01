@@ -1689,9 +1689,15 @@ remain a separate D1 migration surface.
 
 The `/v1/sync/audio/*` Worker boundary serves those already-materialized WAV
 windows without ffmpeg or a local media service. `/urls` returns one-hour HMAC
-URLs; the download route rechecks the signed uid/conversation/audio identity,
-locked state, D1 ownership, and R2 key prefix, then streams full or single-range
-responses. Tokenless downloads still require Better Auth. Existing imported
+URLs for cached objects; a cache miss is reported as `pending` and admits one
+fingerprinted `legacy_audio_rebuild` job to the shared Jobs queue (it never
+decodes PCM in the request). Repeated polls reuse the same `cf_jobs` row and
+message identity, while queue publication failures are recorded as a failed
+job and return a retryable 503. Admission and processing are fenced by the
+uid-scoped conversation, recording/account deletion state, and R2 playback
+metadata. The download route rechecks the signed uid/conversation/audio
+identity, locked state, D1 ownership, and R2 key prefix, then streams full or
+single-range responses. Tokenless downloads still require Better Auth. Existing imported
 `playback/*.mp3` and `merged/*.wav` objects are readable after the reviewed R2
 copy. Worker-native conversations also return the dense WAV through
 `conversation_audio`, so Flutter can use its spans-aware single-artifact path

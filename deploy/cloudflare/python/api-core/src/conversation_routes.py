@@ -15,6 +15,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import re
 from datetime import datetime, timezone
 import time
@@ -42,9 +43,11 @@ MAX_SEGMENTS = 2_000
 MAX_SEARCH_QUERY_LENGTH = 500
 MAX_SEARCH_TERMS = 20
 MAX_AUDIO_FILES = 100
+MAX_AUDIO_TIMESTAMPS = 20_000
 MAX_SUGGESTED_APP_IDS = 100
 MAX_APP_PAYLOAD_BYTES = 500_000
 AUDIO_URL_TTL_SECONDS = 60 * 60
+AUDIO_URLS_POLL_AFTER_MS = 3_000
 CONVERSATION_STATUSES = frozenset({"in_progress", "processing", "merging", "completed", "failed"})
 CONVERSATION_SOURCES = frozenset(
     {
@@ -684,12 +687,201 @@ async def _recording_access_enabled(env: object, uid: str) -> bool:
             "WHERE uid = ? AND store_recording_permission = 1"
             ") AND NOT EXISTS("
             "SELECT 1 FROM cf_recording_deletion_intents WHERE uid = ?"
+            ") AND NOT EXISTS("
+            "SELECT 1 FROM cf_account_deletion_intents WHERE uid = ?"
+            ") AND NOT EXISTS("
+            "SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = ?"
             ") AS allowed"
         )
-        .bind(uid, uid)
+        .bind(uid, uid, uid, uid)
         .first()
     )
     return isinstance(row, dict) and bool(row.get("allowed"))
+
+
+_SAFE_AUDIO_FILE_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+class _AudioQueueUnavailable(Exception):
+    """Raised when a durable audio rebuild could not be published."""
+
+
+def _d1_changes(result: object) -> int:
+    meta = result.get("meta") if isinstance(result, dict) else getattr(result, "meta", None)
+    value = meta.get("changes") if isinstance(meta, dict) else getattr(meta, "changes", 0)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalised_audio_timestamp(value: object) -> float | int | None:
+    """Match the bounded timestamp normalization used by the Jobs consumer."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(float(value)) or value <= 0:
+        return None
+    normalised = math.floor(float(value) * 1_000 + 0.5) / 1_000
+    return int(normalised) if normalised.is_integer() else normalised
+
+
+def _legacy_audio_files(audio_files: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Return the same safe audio metadata accepted by legacy-audio-import.ts."""
+
+    result: list[dict[str, object]] = []
+    for value in audio_files[:MAX_AUDIO_FILES]:
+        audio_file_id = value.get("id")
+        if not isinstance(audio_file_id, str) or not _SAFE_AUDIO_FILE_ID.fullmatch(audio_file_id):
+            continue
+        timestamps = value.get("chunk_timestamps")
+        if not isinstance(timestamps, list):
+            continue
+        normalised = {
+            timestamp
+            for timestamp in (_normalised_audio_timestamp(item) for item in timestamps[:MAX_AUDIO_TIMESTAMPS])
+            if timestamp is not None
+        }
+        if not normalised:
+            continue
+        result.append(
+            {
+                **value,
+                "id": audio_file_id,
+                "chunk_timestamps": sorted(normalised),
+            }
+        )
+    return result
+
+
+def _legacy_audio_fingerprint(audio_files: list[dict[str, object]]) -> str:
+    """Build the 64-character fingerprint consumed by legacy_audio_rebuild."""
+
+    rows: list[list[object]] = []
+    for audio_file in _legacy_audio_files(audio_files):
+        timestamps = audio_file["chunk_timestamps"]
+        if not isinstance(timestamps, list) or not timestamps:
+            continue
+        rows.append([str(audio_file["id"]), len(timestamps), timestamps[-1], timestamps[0]])
+    rows.sort(key=lambda row: str(row[0]))
+    encoded = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _legacy_audio_job_fingerprint(payload: dict[str, object]) -> str:
+    """Match Jobs' kind + stable JSON request fingerprint."""
+
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(f"legacy_audio_rebuild\0{encoded}".encode("utf-8")).hexdigest()
+
+
+async def _publish_legacy_audio_rebuild(env: object, uid: str, job_id: str, payload: dict[str, object]) -> None:
+    queue = getattr(env, "JOBS", None)
+    send = getattr(queue, "send", None) if queue is not None else None
+
+    async def mark_queue_failed() -> None:
+        try:
+            await env.APP_DB.prepare(
+                "UPDATE cf_jobs SET status = 'failed', last_error = ?, updated_at = ? "
+                "WHERE job_id = ? AND uid = ? AND status = 'queued'"
+            ).bind("queue unavailable", int(time.time()), job_id, uid).run()
+        except Exception:
+            # A deletion/recording fence may deliberately reject this update.
+            # The request still fails closed and no pending response is emitted.
+            pass
+
+    if not callable(send):
+        await mark_queue_failed()
+        raise _AudioQueueUnavailable
+    try:
+        await send({"jobId": job_id, "uid": uid, "kind": "legacy_audio_rebuild", "payload": payload})
+    except Exception as error:
+        await mark_queue_failed()
+        raise _AudioQueueUnavailable from error
+
+
+async def _ensure_legacy_audio_rebuild(
+    env: object,
+    uid: str,
+    conversation_id: str,
+    audio_files_fingerprint: str,
+) -> str:
+    """Create or reuse one fenced cf_jobs row and publish it at most once per state."""
+
+    identity_digest = hashlib.sha256(f"{uid}\0{conversation_id}\0{audio_files_fingerprint}".encode()).hexdigest()
+    job_id = f"legacy-audio-{identity_digest[:48]}"
+    idempotency_key = f"legacy-audio:{identity_digest}"
+    payload: dict[str, object] = {
+        "conversationId": conversation_id,
+        "audioFilesFingerprint": audio_files_fingerprint,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    request_fingerprint = _legacy_audio_job_fingerprint(payload)
+    existing = (
+        await env.APP_DB.prepare(
+            "SELECT job_id, status, last_error, request_fingerprint FROM cf_jobs "
+            "WHERE uid = ? AND kind = 'legacy_audio_rebuild' AND idempotency_key = ?"
+        )
+        .bind(uid, idempotency_key)
+        .first()
+    )
+    if isinstance(existing, dict):
+        if existing.get("request_fingerprint") != request_fingerprint:
+            raise ValueError("legacy audio job fingerprint conflict")
+        existing_job_id = str(existing.get("job_id") or "")
+        status = str(existing.get("status") or "")
+        if existing_job_id != job_id:
+            raise ValueError("legacy audio job identity conflict")
+        if status not in {"failed", "completed"}:
+            return job_id
+        repaired = (
+            await env.APP_DB.prepare(
+                "UPDATE cf_jobs SET payload_json = ?, status = 'queued', attempts = 0, result_json = NULL, "
+                "last_error = NULL, updated_at = ? WHERE job_id = ? AND uid = ? AND status = ? "
+                "AND request_fingerprint = ?"
+            )
+            .bind(payload_json, int(time.time()), job_id, uid, status, request_fingerprint)
+            .run()
+        )
+        if _d1_changes(repaired) != 1:
+            current = (
+                await env.APP_DB.prepare(
+                    "SELECT job_id, status, request_fingerprint FROM cf_jobs WHERE job_id = ? AND uid = ?"
+                )
+                .bind(job_id, uid)
+                .first()
+            )
+            if not isinstance(current, dict) or current.get("request_fingerprint") != request_fingerprint:
+                raise ValueError("legacy audio job identity conflict")
+            if str(current.get("status") or "") not in {"failed", "completed"}:
+                return job_id
+            return job_id
+        await _publish_legacy_audio_rebuild(env, uid, job_id, payload)
+        return job_id
+
+    now = int(time.time())
+    inserted = (
+        await env.APP_DB.prepare(
+            "INSERT INTO cf_jobs (job_id, uid, kind, payload_json, status, attempts, created_at, updated_at, "
+            "idempotency_key, request_fingerprint) VALUES (?, ?, 'legacy_audio_rebuild', ?, 'queued', 0, ?, ?, ?, ?) "
+            "ON CONFLICT DO NOTHING"
+        )
+        .bind(job_id, uid, payload_json, now, now, idempotency_key, request_fingerprint)
+        .run()
+    )
+    if _d1_changes(inserted) != 1:
+        current = (
+            await env.APP_DB.prepare(
+                "SELECT job_id, status, request_fingerprint FROM cf_jobs WHERE job_id = ? AND uid = ?"
+            )
+            .bind(job_id, uid)
+            .first()
+        )
+        if not isinstance(current, dict) or current.get("request_fingerprint") != request_fingerprint:
+            raise ValueError("legacy audio job identity conflict")
+        return job_id
+    await _publish_legacy_audio_rebuild(env, uid, job_id, payload)
+    return job_id
 
 
 def _b64url(value: bytes) -> str:
@@ -1722,7 +1914,12 @@ async def get_conversation_analytics(request: Request, conversation_id: str):
 
 @router.get("/v1/sync/audio/{conversation_id}/urls")
 async def get_conversation_audio_urls(request: Request, conversation_id: str):
-    """Return short-lived Worker URLs for uid-scoped R2 playback objects."""
+    """Return short-lived URLs and queue one deterministic rebuild on a miss.
+
+    The route is intentionally metadata-only: it never decodes audio in the
+    request.  A cache miss is reported as ``pending`` while the existing Jobs
+    ``legacy_audio_rebuild`` consumer materializes the R2 playback objects.
+    """
 
     context = _auth_context(request)
     if not context:
@@ -1745,8 +1942,11 @@ async def get_conversation_audio_urls(request: Request, conversation_id: str):
         bucket = getattr(env, "ASSETS", None)
         if bucket is None or not callable(getattr(bucket, "head", None)):
             return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
+        audio_files = _legacy_audio_files(_audio_files(row))
+        audio_files_fingerprint = _legacy_audio_fingerprint(audio_files) if audio_files else None
         results: list[dict[str, object]] = []
-        for audio_file in _audio_files(row):
+        needs_rebuild = False
+        for audio_file in audio_files:
             audio_file_id = str(audio_file.get("id") or "")
             if not audio_file_id:
                 continue
@@ -1755,11 +1955,12 @@ async def get_conversation_audio_urls(request: Request, conversation_id: str):
                 results.append(
                     {
                         "id": audio_file_id,
-                        "status": "unavailable",
+                        "status": "pending",
                         "signed_url": None,
                         "duration": float(audio_file.get("duration") or 0),
                     }
                 )
+                needs_rebuild = True
                 continue
             signed_url = _signed_audio_url(request, env, uid, conversation_id, audio_file_id)
             if signed_url is None:
@@ -1782,7 +1983,11 @@ async def get_conversation_audio_urls(request: Request, conversation_id: str):
                 conversation_id,
                 {**conversation_audio, "id": "conversation"},
             )
-            if stored is not None:
+            stamp_matches = (
+                audio_files_fingerprint is not None
+                and conversation_audio.get("audio_files_fingerprint") == audio_files_fingerprint
+            )
+            if stored is not None and stamp_matches:
                 signed_url = _signed_audio_url(request, env, uid, conversation_id, "conversation")
                 if signed_url is None:
                     return JSONResponse({"error": "audio URL signing is not configured"}, status_code=503)
@@ -1794,6 +1999,26 @@ async def get_conversation_audio_urls(request: Request, conversation_id: str):
                     "captured_duration": conversation_audio.get("captured_duration"),
                     "spans": conversation_audio.get("spans", []),
                 }
+            else:
+                needs_rebuild = True
+        elif audio_files:
+            needs_rebuild = True
+        if needs_rebuild and audio_files_fingerprint:
+            try:
+                await _ensure_legacy_audio_rebuild(env, uid, conversation_id, audio_files_fingerprint)
+            except _AudioQueueUnavailable:
+                return JSONResponse({"error": "recordings unavailable"}, status_code=503)
+            except Exception:
+                return JSONResponse({"error": "recordings unavailable"}, status_code=503)
+            if conversation_result is None:
+                conversation_result = {"status": "pending", "signed_url": None, "spans": []}
+            else:
+                conversation_result = {**conversation_result, "status": "pending", "signed_url": None}
+            return {
+                "audio_files": results,
+                "conversation_audio": conversation_result,
+                "poll_after_ms": AUDIO_URLS_POLL_AFTER_MS,
+            }
     except Exception:
         return JSONResponse({"error": "recordings unavailable"}, status_code=503)
     return {"audio_files": results, "conversation_audio": conversation_result, "poll_after_ms": None}

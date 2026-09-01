@@ -68,7 +68,11 @@ function fakeAssets(initial: Record<string, Uint8Array>) {
   };
 }
 
-function fakeDatabase(initial: ConversationRow) {
+function fakeDatabase(
+  initial: ConversationRow,
+  recordingDeletionActive = false,
+  accountDeletionActive = false,
+) {
   const row = { ...initial };
   const playback = new Map<string, PlaybackObject>();
   return {
@@ -78,7 +82,9 @@ function fakeDatabase(initial: ConversationRow) {
       bind: (...args: unknown[]) => ({
         first: async () => {
           if (sql.includes("FROM cf_user_privacy_settings"))
-            return { enabled: 1 };
+            return { enabled: recordingDeletionActive ? 0 : 1 };
+          if (sql.includes("FROM cf_account_deletion_intents"))
+            return { active: accountDeletionActive ? 1 : 0 };
           if (!sql.includes("FROM cf_conversations")) return null;
           return args[0] === row.uid && args[1] === row.id ? { ...row } : null;
         },
@@ -158,8 +164,10 @@ function environment(
   row: ConversationRow,
   initialObjects: Record<string, Uint8Array>,
   encryptionSecret?: string,
+  recordingDeletionActive = false,
+  accountDeletionActive = false,
 ) {
-  const database = fakeDatabase(row);
+  const database = fakeDatabase(row, recordingDeletionActive, accountDeletionActive);
   const assets = fakeAssets(initialObjects);
   const env = {
     APP_DB: database,
@@ -338,5 +346,33 @@ describe("legacy audio import", () => {
     expect(database.row.updated_at).toBeNull();
     expect(database.row.conversation_audio_json).toBeNull();
     expect(assets.objects.size).toBe(0);
+  });
+
+  it("does not write R2 playback after an account deletion fence", async () => {
+    const audioFiles = [
+      { id: "audio-1", provider: "gcs", chunk_timestamps: [1_000] },
+    ];
+    const pcm = bytes(new Int16Array([10, 20, 30, 40]));
+    const { env, database, assets } = environment(
+      fixture(audioFiles),
+      { "chunks/user-1/conversation-1/1000.bin": pcm },
+      undefined,
+      false,
+      true,
+    );
+    const fingerprint = await legacyAudioFilesFingerprint(
+      legacyAudioFiles(database.row.audio_files_json),
+    );
+
+    await expect(
+      rebuildLegacyConversationAudio(
+        env,
+        { uid: "user-1", job_id: "job-account-deleted" },
+        "conversation-1",
+        fingerprint,
+        2_000,
+      ),
+    ).rejects.toThrow("account deletion is active");
+    expect(assets.objects.size).toBe(1);
   });
 });

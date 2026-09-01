@@ -37,6 +37,7 @@ from conversation_routes import (  # noqa: E402
     set_conversation_starred,
     set_conversation_visibility,
     store_conversation_projection,
+    _legacy_audio_fingerprint,
 )
 
 
@@ -59,6 +60,13 @@ class FakeDb:
             "CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);"
             "CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);"
             "CREATE TABLE cf_recording_deletion_intents (uid TEXT PRIMARY KEY);"
+            "CREATE TABLE cf_jobs ("
+            "job_id TEXT PRIMARY KEY NOT NULL, uid TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, "
+            "status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, result_json TEXT, "
+            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, idempotency_key TEXT, request_fingerprint TEXT"
+            ");"
+            "CREATE UNIQUE INDEX cf_jobs_uid_kind_idempotency_idx ON cf_jobs(uid, kind, idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL;"
         )
         self.connection.executescript((migration_dir / "0068_vector_projection_outbox.sql").read_text())
         self.connection.executescript((migration_dir / "0070_conversation_shares.sql").read_text())
@@ -117,8 +125,11 @@ class FakeStoredObject:
 class FakeQueue:
     def __init__(self):
         self.messages = []
+        self.fail = False
 
     async def send(self, message):
+        if self.fail:
+            raise RuntimeError("queue unavailable")
         self.messages.append(message)
 
 
@@ -704,7 +715,7 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
             }
         ],
         conversation_audio={
-            "audio_files_fingerprint": "fingerprint",
+            "audio_files_fingerprint": "e70dfe6d2c445ba3e14caafbfac1dcbbea3b52bdf39531badc92db4616a4c229",
             "duration": 1.25,
             "captured_duration": 1.25,
             "spans": [{"file_id": "audio-1", "wall_offset": 0, "artifact_offset": 0, "len": 1.25}],
@@ -716,7 +727,11 @@ def test_worker_audio_urls_are_uid_scoped_signed_and_range_streamable():
     bucket = FakeBucket()
     bucket.objects[storage_key] = b"RIFFworker-audio"
     bucket.objects[dense_key] = b"RIFFdense-worker-audio"
-    env = type("Env", (), {"APP_DB": db, "ASSETS": bucket, "INTERNAL_ASSERTION_SECRET": secret})()
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "ASSETS": bucket, "JOBS": FakeQueue(), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
 
     urls = asyncio.run(
         get_conversation_audio_urls(
@@ -845,7 +860,11 @@ def test_worker_audio_urls_fail_closed_for_locked_and_missing_objects():
         audio_files=[{**audio_file, "conversation_id": "missing-audio"}],
     )
     bucket = FakeBucket()
-    env = type("Env", (), {"APP_DB": db, "ASSETS": bucket, "INTERNAL_ASSERTION_SECRET": secret})()
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "ASSETS": bucket, "JOBS": FakeQueue(), "INTERNAL_ASSERTION_SECRET": secret},
+    )()
 
     locked = asyncio.run(
         get_conversation_audio_urls(
@@ -860,8 +879,160 @@ def test_worker_audio_urls_fail_closed_for_locked_and_missing_objects():
             "missing-audio",
         )
     )
-    assert missing["audio_files"][0]["status"] == "unavailable"
+    assert missing["audio_files"][0]["status"] == "pending"
     assert missing["audio_files"][0]["signed_url"] is None
+
+
+def test_worker_audio_urls_admit_one_idempotent_rebuild_on_cache_miss():
+    secret = "conversation-secret"
+    db = FakeDb()
+    audio_file = {
+        "id": "audio-1",
+        "uid": "conversation-user",
+        "conversation_id": "pending-audio",
+        "chunk_timestamps": [200, 201],
+        "duration": 2,
+        "storage_key": "sync-playback/conversation-user/pending-audio/audio-1.wav",
+        "content_type": "audio/wav",
+    }
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="pending-audio",
+        created_at=200,
+        audio_files=[audio_file],
+    )
+    queue = FakeQueue()
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "ASSETS": FakeBucket(), "JOBS": queue, "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+    request = FakeRequest(
+        env,
+        signed_headers(secret),
+        url="https://edge.test/v1/sync/audio/pending-audio/urls",
+    )
+
+    first = asyncio.run(get_conversation_audio_urls(request, "pending-audio"))
+    assert first["poll_after_ms"] == 3_000
+    assert first["audio_files"][0]["status"] == "pending"
+    assert first["conversation_audio"] == {"status": "pending", "signed_url": None, "spans": []}
+    assert len(queue.messages) == 1
+    message = queue.messages[0]
+    assert message["uid"] == "conversation-user"
+    assert message["kind"] == "legacy_audio_rebuild"
+    assert message["payload"] == {
+        "conversationId": "pending-audio",
+        "audioFilesFingerprint": _legacy_audio_fingerprint([audio_file]),
+    }
+    job = db.connection.execute("SELECT job_id, status, idempotency_key, request_fingerprint FROM cf_jobs").fetchone()
+    assert job["status"] == "queued"
+    assert job["idempotency_key"].startswith("legacy-audio:")
+    assert len(job["request_fingerprint"]) == 64
+
+    duplicate = asyncio.run(get_conversation_audio_urls(request, "pending-audio"))
+    assert duplicate["audio_files"][0]["status"] == "pending"
+    assert len(queue.messages) == 1
+
+
+def test_worker_audio_urls_marks_queue_failure_and_repairs_on_next_poll():
+    secret = "conversation-secret"
+    db = FakeDb()
+    audio_file = {
+        "id": "audio-1",
+        "chunk_timestamps": [200],
+        "duration": 1,
+        "storage_key": "sync-playback/conversation-user/queue-failure/audio-1.wav",
+    }
+    insert_conversation(
+        db,
+        uid="conversation-user",
+        conversation_id="queue-failure",
+        created_at=200,
+        audio_files=[audio_file],
+    )
+    queue = FakeQueue()
+    queue.fail = True
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "ASSETS": FakeBucket(), "JOBS": queue, "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+    request = FakeRequest(env, signed_headers(secret))
+
+    failed = asyncio.run(get_conversation_audio_urls(request, "queue-failure"))
+    assert failed.status_code == 503
+    row = db.connection.execute("SELECT status, last_error FROM cf_jobs").fetchone()
+    assert dict(row) == {"status": "failed", "last_error": "queue unavailable"}
+
+    queue.fail = False
+    repaired = asyncio.run(get_conversation_audio_urls(request, "queue-failure"))
+    assert repaired["audio_files"][0]["status"] == "pending"
+    assert len(queue.messages) == 1
+    row = db.connection.execute("SELECT status, attempts, last_error FROM cf_jobs").fetchone()
+    assert dict(row) == {"status": "queued", "attempts": 0, "last_error": None}
+
+
+def test_worker_audio_urls_do_not_admit_during_recording_or_account_deletion():
+    secret = "conversation-secret"
+    db = FakeDb()
+    audio_file = {"id": "audio-1", "chunk_timestamps": [200], "duration": 1}
+    insert_conversation(
+        db, uid="conversation-user", conversation_id="fenced-audio", created_at=200, audio_files=[audio_file]
+    )
+    queue = FakeQueue()
+    env = type(
+        "Env",
+        (),
+        {"APP_DB": db, "ASSETS": FakeBucket(), "JOBS": queue, "INTERNAL_ASSERTION_SECRET": secret},
+    )()
+    request = FakeRequest(env, signed_headers(secret))
+
+    db.connection.execute("INSERT INTO cf_recording_deletion_intents (uid) VALUES (?)", ("conversation-user",))
+    db.connection.commit()
+    recording_fenced = asyncio.run(get_conversation_audio_urls(request, "fenced-audio"))
+    assert recording_fenced == {"audio_files": [], "conversation_audio": None, "poll_after_ms": None}
+    assert queue.messages == []
+
+    db.connection.execute("DELETE FROM cf_recording_deletion_intents WHERE uid = ?", ("conversation-user",))
+    db.connection.execute("INSERT INTO cf_account_deletion_intents (uid) VALUES (?)", ("conversation-user",))
+    db.connection.commit()
+    account_fenced = asyncio.run(get_conversation_audio_urls(request, "fenced-audio"))
+    assert account_fenced == {"audio_files": [], "conversation_audio": None, "poll_after_ms": None}
+    assert queue.messages == []
+
+
+def test_recording_job_fence_migration_blocks_late_cf_jobs_mutations():
+    migration_dir = Path(__file__).parents[3] / "migrations/app"
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        "CREATE TABLE cf_jobs ("
+        "job_id TEXT PRIMARY KEY, uid TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, "
+        "status TEXT NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at INTEGER NOT NULL, "
+        "updated_at INTEGER NOT NULL, idempotency_key TEXT, request_fingerprint TEXT, result_json TEXT"
+        ");"
+        "CREATE TABLE cf_recording_deletion_intents (uid TEXT PRIMARY KEY);"
+    )
+    connection.executescript((migration_dir / "0140_recording_job_fence.sql").read_text())
+    connection.execute(
+        "INSERT INTO cf_jobs (job_id, uid, kind, payload_json, status, attempts, created_at, updated_at) "
+        "VALUES ('job-1', 'recording-user', 'legacy_audio_rebuild', '{}', 'queued', 0, 1, 1)"
+    )
+    connection.execute("INSERT INTO cf_recording_deletion_intents (uid) VALUES ('recording-user')")
+    try:
+        connection.execute(
+            "INSERT INTO cf_jobs (job_id, uid, kind, payload_json, status, attempts, created_at, updated_at) "
+            "VALUES ('job-2', 'recording-user', 'legacy_audio_rebuild', '{}', 'queued', 0, 1, 1)"
+        )
+        raise AssertionError("recording deletion should fence new jobs")
+    except sqlite3.IntegrityError as error:
+        assert "recording deletion fence" in str(error)
+    try:
+        connection.execute("UPDATE cf_jobs SET status = 'failed' WHERE job_id = 'job-1'")
+        raise AssertionError("recording deletion should fence job updates")
+    except sqlite3.IntegrityError as error:
+        assert "recording deletion fence" in str(error)
 
 
 def test_canonical_transcripts_group_imported_providers_and_fail_closed_for_locked_rows():
