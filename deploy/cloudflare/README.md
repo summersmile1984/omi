@@ -574,22 +574,19 @@ flutter run --flavor prod \
 ```
 
 The AI and realtime paths are API-first; no ASR/model process runs inside a
-Worker. Realtime uses the native Workers AI binding without an API key for mono
-`linear16`/`pcm16`, converted unsigned `pcm8`, and raw `mulaw` streams. An
-external WebSocket provider remains an optional compatibility fallback for
-stereo, AAC, LC3, device-frame Opus, unsupported languages, or a Workers AI
-connection failure. The Python Workers use Cloudflare's native `workers.fetch`
-for outbound calls so they do not depend on Pyodide socket/DNS support. Add only
-the external providers deliberately selected for the remaining seams:
+Worker. Realtime, transcription, chat, embeddings, translation and TTS use
+Cloudflare's native Workers AI binding and require no OpenAI, Gemini, generic
+`AI_API_KEY`, or external ASR key. The staging configuration intentionally
+leaves those secrets unset. Unsupported codecs or formats return a typed
+failure; they do not silently fall back to an external AI provider. The Python
+Workers use Cloudflare's native `workers.fetch` only for explicitly selected
+business APIs (for example Google Calendar), not for the AI inference path.
 
-```bash
-printf '%s' "$ASR_WS_URL" | npx wrangler secret put ASR_WS_URL --name omi-cf-realtime-staging
-printf '%s' "$ASR_API_KEY" | npx wrangler secret put ASR_API_KEY --name omi-cf-realtime-staging
-printf '%s' "$ASR_API_BASE_URL" | npx wrangler secret put ASR_API_BASE_URL --name omi-cf-api-ai-staging
-printf '%s' "$ASR_API_KEY" | npx wrangler secret put ASR_API_KEY --name omi-cf-api-ai-staging
-printf '%s' "$AI_API_BASE_URL" | npx wrangler secret put AI_API_BASE_URL --name omi-cf-api-ai-staging
-printf '%s' "$AI_API_KEY" | npx wrangler secret put AI_API_KEY --name omi-cf-api-ai-staging
-```
+The repository still contains compatibility-only external-provider adapters so
+that a future, separately approved migration window can fail closed at its
+boundary. They are disabled for this deployment and are not setup steps. Do
+not run `wrangler secret put` for `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+`AI_API_KEY`, `ASR_API_KEY`, or an external AI base URL for the native path.
 
 `/v1/stt/transcribe-async` is an additive staging route for clients that can
 send a raw audio body. It accepts at most 5 MB, stages the bytes under an
