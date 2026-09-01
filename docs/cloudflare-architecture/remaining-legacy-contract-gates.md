@@ -11,10 +11,10 @@ Auth/social、External App OAuth 与 Persona/Twitter 已切换到 Cloudflare sta
 | Auth / social | 0 | 新部署可用；业务 OAuth 可选 | Better Auth email/session 已闭合；只有启用 Google/Apple 登录时才需要对应业务 provider credentials 和 callback smoke |
 | External App OAuth | 0 | 新部署可用；业务 OAuth 可选 | D1 app projection、CSRF transaction、install CAS 和删除 fence 已闭合；只有启用外部应用时才需要真实 provider 配置和 callback/revoke smoke |
 | Phone / Twilio | 0 | 可选，待 provider 配置 | Jobs 已闭合 caller-ID、quota、webhook 和删除清理；只有启用电话功能时才需要 Twilio credentials/号码验证 |
-| Wrapped | 0 | 可选，待 provider smoke | D1 recap/job/notification authority 已闭合；使用 Wrapped 时需验证 Workers AI binding 和 Queue drain |
+| Wrapped | 0 | 可选，待 Workers AI/Queue smoke | D1 recap/job/notification authority 已闭合；使用 Wrapped 时只需验证 Workers AI binding 和 Queue drain，不需要 OpenAI/Gemini secret |
 | Chat compatibility | 0 | Workers AI native contract 已用 | Jobs/API-AI bounded chat routes 只对新客户端承诺 Workers AI；OpenAI BYOK/Assistants adapter 是默认关闭的非目标兼容面，不需要配置也不计入完成阻塞 |
 | Persona / MCP mutation | 0 | 可选，待 provider smoke | MCP registration/callback/refresh 与 D1 projection 已闭合；启用外部 MCP 时需 provider URL/secret 和一次 discovery/tool smoke |
-| Staged tasks / task intelligence | 0 | 可选，待 provider smoke | API Core/D1 candidate authority、LLM receipt 和 Queue retry 已闭合；使用该功能时需做真实 provider/Queue 正向探针 |
+| Staged tasks / task intelligence | 0 | 可选，待 Workers AI/Queue smoke | API Core/D1 candidate authority、Workers AI receipt 和 Queue retry 已闭合；使用该功能时需做 Workers AI/Queue 正向探针，不需要 OpenAI/Gemini secret |
 | Gemini proxy | 0 | 非目标兼容面，默认关闭 | Gemini exact routes 保留 fail-closed boundary 以防误调用；不配置 Gemini secret 不影响任何 Workers AI canonical path，也不计入本期阻塞 |
 | Files | 0 | 新客户端文本路径可用 | 通用文件上传与文本问答使用 R2/D1 + Workers AI；图片/PDF/二进制和旧 Assistants adapter 不属于本期目标，不需要 OpenAI provider |
 

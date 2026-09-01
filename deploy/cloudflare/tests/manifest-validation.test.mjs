@@ -176,6 +176,28 @@ describe("Cloudflare migration manifests", () => {
     }
   });
 
+  it("does not make OpenAI a dependency of canonical Workers AI routes", async () => {
+    const routes = await loadYaml("routes.yaml");
+    const nativePaths = new Set([
+      "POST /v2/messages",
+      "POST /v1/cf/chat-files",
+      "POST /v1/files",
+      "POST /v2/files",
+      "DELETE /v1/cf/chat-files/:fileId",
+      "DELETE /v2/cf/chat-sessions/:sessionId/assistant",
+      "POST /v2/cf/messages/attachments",
+      "GET /v2/cf/chat-sessions/:sessionId/assistant-runs/:runId",
+      "POST /v2/cf/chat-sessions/:sessionId/assistant-runs",
+      "POST /v2/cf/chat/completions",
+      "POST /v2/chat/completions",
+    ]);
+    for (const route of routes.routes) {
+      const key = `${route.method} ${route.path}`;
+      if (!nativePaths.has(key)) continue;
+      expect(route.dependencies || [], key).not.toContain("external-openai-api");
+    }
+  });
+
   it("fails when a Redis source symbol or a direct Worker Redis dependency is introduced", async () => {
     const [manifest, routes] = await Promise.all([
       loadYaml("redis-primitives.yaml"),

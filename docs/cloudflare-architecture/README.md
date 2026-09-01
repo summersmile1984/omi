@@ -1,6 +1,6 @@
 # Cloudflare 适配架构与完成度审计
 
-本目录保存 Cloudflare Workers 适配的架构视图，以及截至 2026-09-01 的 staging 完成度审计。结论先行：当前已完成的是一条可运行、可验证的 Cloudflare 空数据新部署切片。生产身份/provider 凭据、正式域名 rollout 和旧基础设施清理仍需单独发布门槛；生产数据回填与旧协议兼容不在本期范围。
+本目录保存 Cloudflare Workers 适配的架构视图，以及截至 2026-09-01 的 staging 完成度审计。结论先行：当前已完成的是一条可运行、可验证的 Cloudflare 空数据新部署切片。可选业务集成凭据、正式域名 rollout 和旧基础设施清理仍需单独发布门槛；生产数据回填与旧协议兼容不在本期范围。Workers AI 主路径不需要 OpenAI/Gemini secret。
 
 ## 架构图
 

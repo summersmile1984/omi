@@ -2277,7 +2277,7 @@ routes:
     target_runtime: python-worker
     auth_authority: better-auth
     dependencies:
-      [d1-app, workers-ai-binding, external-openai-api, rate-limit-do]
+      [d1-app, workers-ai-binding, rate-limit-do]
     rate_limit_policy: chat:send_message
     protocol: http
     idempotency: optional
@@ -2386,7 +2386,7 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, r2-chat-files, external-openai-api, worker-secrets]
+    dependencies: [d1-app, r2-chat-files, worker-secrets]
     protocol: http
     idempotency: required
     rollout: staging-only
@@ -2397,7 +2397,7 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, r2-chat-files, external-openai-api, worker-secrets]
+    dependencies: [d1-app, r2-chat-files, worker-secrets]
     protocol: http
     idempotency: required
     rollout: staging-only
@@ -3398,7 +3398,7 @@ routes:
     runtime: typescript-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, r2-chat-files, external-openai-api, worker-secrets]
+    dependencies: [d1-app, r2-chat-files, worker-secrets]
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -3418,7 +3418,7 @@ routes:
     runtime: typescript-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, r2-chat-files, external-openai-api, worker-secrets]
+    dependencies: [d1-app, r2-chat-files, worker-secrets]
     protocol: http
     rollout: staging-only
     rollback: edge-route-to-legacy
@@ -3428,7 +3428,7 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-openai-api, worker-secrets]
+    dependencies: [d1-app, worker-secrets]
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -3439,7 +3439,7 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-openai-api, queue-jobs, worker-secrets]
+    dependencies: [d1-app, queue-jobs, worker-secrets]
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -3450,7 +3450,7 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-openai-api, worker-secrets]
+    dependencies: [d1-app, worker-secrets]
     protocol: http
     idempotency: optional
     rollout: staging-only
@@ -3461,7 +3461,7 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, external-openai-api, queue-jobs, worker-secrets]
+    dependencies: [d1-app, queue-jobs, worker-secrets]
     protocol: http
     idempotency: required
     rollout: staging-only
@@ -6491,7 +6491,7 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app, workers-ai-binding, external-openai-api, rate-limit-do]
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
     rate_limit_policy: chat:send_message
     protocol: http
     idempotency: required
@@ -6503,7 +6503,7 @@ routes:
     runtime: edge-worker
     target_runtime: typescript-worker
     auth_authority: better-auth
-    dependencies: [d1-app, workers-ai-binding, external-openai-api, rate-limit-do]
+    dependencies: [d1-app, workers-ai-binding, rate-limit-do]
     rate_limit_policy: chat:send_message
     protocol: http
     idempotency: required
