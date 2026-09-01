@@ -224,6 +224,104 @@ describe("realtime gateway", () => {
     expect(names[0]).not.toContain("default");
   });
 
+  it("bounds per-uid session creation regardless of the session-id header", async () => {
+    const signed = await realtimeContext();
+    const sessionNames: string[] = [];
+    const rateLimitNames: string[] = [];
+    let allowed = true;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      REALTIME_SESSIONS: {
+        idFromName(name: string) {
+          sessionNames.push(name);
+          return name;
+        },
+        get() {
+          return { fetch: () => Response.json({ status: "forwarded" }) };
+        },
+      },
+      RATE_LIMITS: {
+        idFromName(name: string) {
+          rateLimitNames.push(name);
+          return name;
+        },
+        get() {
+          return {
+            fetch: async () =>
+              new Response(
+                JSON.stringify({ allowed, retryAfter: allowed ? 0 : 42 }),
+                { status: 200 },
+              ),
+          };
+        },
+      },
+    };
+    const connect = (sessionId: string) =>
+      realtime.fetch(
+        new Request("https://realtime.test/v4/listen", {
+          headers: {
+            upgrade: "websocket",
+            "x-omi-auth-context": signed?.encoded || "",
+            "x-omi-internal-signature": signed?.signature || "",
+            "x-omi-session-id": sessionId,
+          },
+        }),
+        env as never,
+      );
+
+    const first = await connect("session-a");
+    expect(first.status).toBe(200);
+    expect(rateLimitNames[0]).toBe("realtime:session_admission:user-1");
+
+    allowed = false;
+    const flooded = await connect("session-b");
+    expect(flooded.status).toBe(429);
+    expect(flooded.headers.get("retry-after")).toBe("42");
+    // The session DO was only reached by the admitted connection.
+    expect(sessionNames).toEqual(["user-1:session-a"]);
+  });
+
+  it("fails open with fallback telemetry when the rate-limit binding is unavailable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const signed = await realtimeContext();
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      REALTIME_SESSIONS: {
+        idFromName(name: string) {
+          return name;
+        },
+        get() {
+          return { fetch: () => Response.json({ status: "forwarded" }) };
+        },
+      },
+    };
+    const response = await realtime.fetch(
+      new Request("https://realtime.test/v4/listen", {
+        headers: {
+          upgrade: "websocket",
+          "x-omi-auth-context": signed?.encoded || "",
+          "x-omi-internal-signature": signed?.signature || "",
+        },
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(200);
+    const fallback = warn.mock.calls
+      .map(([line]) => {
+        try {
+          return JSON.parse(String(line));
+        } catch {
+          return null;
+        }
+      })
+      .find((entry) => entry?.event === "fallback");
+    expect(fallback).toMatchObject({
+      component: "rate_limit",
+      to: "unlimited",
+      reason: "dependency_unavailable",
+    });
+  });
+
   it("uses the accepted server socket and waits for provider readiness", async () => {
     installFakeWebSockets();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
