@@ -48,6 +48,77 @@ RATE_LIMITS = {
     "memory_create": 60,
 }
 
+# Hard ceiling on proactive notifications per user per UTC day, shared across
+# every integration app (legacy MAX_DAILY_NOTIFICATIONS, #4859). Overridable
+# per environment, clamped so a typo cannot disable notifications or remove
+# throttling entirely.
+DAILY_NOTIFICATION_CAP_DEFAULT = 9
+DAILY_NOTIFICATION_CAP_MIN = 1
+DAILY_NOTIFICATION_CAP_MAX = 1_000
+
+
+def _daily_notification_cap(env: object) -> int:
+    raw = getattr(env, "MAX_DAILY_NOTIFICATIONS", None)
+    if raw is None:
+        return DAILY_NOTIFICATION_CAP_DEFAULT
+    try:
+        return max(DAILY_NOTIFICATION_CAP_MIN, min(int(raw), DAILY_NOTIFICATION_CAP_MAX))
+    except (TypeError, ValueError):
+        return DAILY_NOTIFICATION_CAP_DEFAULT
+
+
+async def _daily_notification_limit(env: object, uid: str, now: int) -> JSONResponse | None:
+    """Advance the per-user daily budget, or return the refusal response.
+
+    Developers are exempt (legacy #3346): owning any developer API key marks
+    the account as a developer. The counter is a bounded conditional upsert on
+    one uid+day row, so all of a user's apps share one aggregate budget.
+    """
+    cap = _daily_notification_cap(env)
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    seconds_until_next_day = 86_400 - (now % 86_400)
+    try:
+        developer = (
+            await env.APP_DB.prepare("SELECT 1 AS present FROM cf_developer_api_keys WHERE uid = ? LIMIT 1")
+            .bind(uid)
+            .first()
+        )
+        if isinstance(developer, dict):
+            return None
+        row = (
+            await env.APP_DB.prepare(
+                "INSERT INTO cf_user_notification_daily_usage "
+                "(uid, day, notification_count, updated_at) "
+                "VALUES (?, ?, 1, ?) "
+                "ON CONFLICT(uid, day) DO UPDATE SET "
+                "notification_count = cf_user_notification_daily_usage.notification_count + 1, "
+                "updated_at = excluded.updated_at "
+                "WHERE cf_user_notification_daily_usage.notification_count < ? "
+                "RETURNING notification_count"
+            )
+            .bind(uid, day, now, cap)
+            .first()
+        )
+        # Traffic-bounded cleanup mirrors cf_integration_hourly_usage; account
+        # deletion still purges the current uid exhaustively.
+        await env.APP_DB.prepare("DELETE FROM cf_user_notification_daily_usage WHERE day < ?").bind(
+            time.strftime("%Y-%m-%d", time.gmtime(now - 2 * 86_400))
+        ).run()
+    except Exception:
+        return JSONResponse({"error": "integration rate limit unavailable"}, status_code=503)
+    if isinstance(row, dict):
+        return None
+    return JSONResponse(
+        {"detail": f"Daily notification limit reached. Maximum {cap} notifications per day."},
+        status_code=429,
+        headers={
+            "X-RateLimit-Limit": str(cap),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(seconds_until_next_day),
+            "Retry-After": str(seconds_until_next_day),
+        },
+    )
+
 TASK_INTEGRATION_KEYS = frozenset({"apple_reminders", "todoist", "asana", "google_tasks", "clickup"})
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
@@ -1167,6 +1238,9 @@ async def _notification(request: Request, app_id: str, uid: str, message: str) -
     if isinstance(limited, JSONResponse):
         return limited
     remaining, reset = limited
+    daily_limited = await _daily_notification_limit(env, uid, int(time.time()))
+    if daily_limited is not None:
+        return daily_limited
     external = app.get("external_integration")
     chat_enabled = isinstance(external, dict) and _flag(external.get("chat_messages_enabled"))
     target = "main" if chat_enabled and external.get("chat_messages_target") == "main" else "app"

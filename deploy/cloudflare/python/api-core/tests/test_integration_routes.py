@@ -416,6 +416,9 @@ def test_integration_reads_enforce_app_key_installation_capabilities_and_redacti
 
 def test_integration_notifications_share_outbox_chat_and_durable_hourly_limit():
     db, _, env = environment()
+    # Raise the aggregate daily cap so this test exercises the per-app hourly
+    # limiter in isolation; the daily budget has its own test below.
+    env.MAX_DAILY_NOTIFICATIONS = "30"
     for index in range(10):
         response = asyncio.run(
             send_notification(
@@ -458,3 +461,68 @@ def test_integration_notifications_share_outbox_chat_and_durable_hourly_limit():
     )
     assert v1.status_code == 200
     assert response_json(v1) == {"status": "Ok"}
+
+
+def test_daily_notification_cap_is_shared_across_apps_and_exempts_developers():
+    db, _, env = environment()
+    # Second app with the same raw key so one bearer credential can exercise
+    # two independent hourly budgets against the shared daily budget.
+    second = {
+        "id": "integration-app-2",
+        "name": "Second App",
+        "capabilities": ["external_integration"],
+        "external_integration": {"actions": []},
+    }
+    db.connection.execute(
+        "INSERT INTO cf_app_catalog (id, approved, status, disabled, data_json, updated_at, owner_uid) "
+        "VALUES ('integration-app-2', 1, 'approved', 0, ?, 1, 'owner-user')",
+        (json.dumps(second),),
+    )
+    db.connection.execute(
+        "INSERT INTO cf_user_enabled_apps (uid, app_id, created_at) VALUES ('integration-user', 'integration-app-2', 1)"
+    )
+    db.connection.execute(
+        "INSERT INTO cf_app_api_keys (app_id, key_id, key_hash, label, created_at) VALUES (?, ?, ?, ?, 1)",
+        (
+            "integration-app-2",
+            "key-2",
+            hashlib.sha256(b"integrationsecret").hexdigest(),
+            "sk_inte...cret",
+        ),
+    )
+    db.connection.commit()
+
+    def send(app_id, message):
+        return asyncio.run(
+            send_notification(
+                FakeRequest(env, query={"uid": "integration-user", "message": message}),
+                app_id,
+            )
+        )
+
+    # Default cap is 9 across every app: 5 through the first app and 4 through
+    # the second all pass while each stays inside its own 10/hour budget.
+    for index in range(5):
+        assert send("integration-app", f"app1 {index}").status_code == 200
+    for index in range(4):
+        assert send("integration-app-2", f"app2 {index}").status_code == 200
+
+    capped = send("integration-app-2", "the tenth")
+    assert capped.status_code == 429
+    assert response_json(capped)["detail"].startswith("Daily notification limit reached")
+    assert capped.headers["x-ratelimit-limit"] == "9"
+    assert capped.headers["retry-after"]
+    row = db.connection.execute(
+        "SELECT notification_count FROM cf_user_notification_daily_usage WHERE uid = 'integration-user'"
+    ).fetchone()
+    assert row[0] == 9
+
+    # Developer accounts are exempt (legacy #3346): after enrolling a developer
+    # API key the same user sends beyond the cap.
+    db.connection.execute(
+        "INSERT INTO cf_developer_api_keys (uid, key_id, name, key_hash, key_prefix, scopes_json, created_at) "
+        "VALUES ('integration-user', 'dev-key-1', 'dev', ?, 'omi_dev_legacy', '[]', 1)",
+        (hashlib.sha256(b"devkey").hexdigest(),),
+    )
+    db.connection.commit()
+    assert send("integration-app", "developer exempt").status_code == 200
