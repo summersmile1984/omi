@@ -1,22 +1,22 @@
 # Remaining legacy route contract gates
 
-截至 2026-09-01，Cloudflare route inventory 已没有 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名；任何一项 wire contract、authority 或删除边界未闭合，都必须继续保持 staging fail-closed，不能据此宣称 production parity。
+截至 2026-09-01，Cloudflare route inventory 已没有 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名。当前按“空数据新部署、无旧客户端”验收：历史回填和旧 wire parity 不属于本期完成条件；本期只需闭合新客户端会实际使用的 authority、provider、删除和 live smoke。
 
 ## 结论
 
-Auth/social、External App OAuth 与 Persona/Twitter 已切换到 Cloudflare staging owner；当前没有 `legacy-owned` 路由。以下表格记录已经切换但仍未达到生产准入的组：
+Auth/social、External App OAuth 与 Persona/Twitter 已切换到 Cloudflare staging owner；当前没有 `legacy-owned` 路由。以下表格记录新部署仍需按功能启用的 provider/live 验证；历史数据和旧协议只作为后续窗口记录：
 
 | 路由组 | 条数 | 当前判断 | 不能切换的硬门槛 |
 | --- | ---: | --- | --- |
-| Auth / social | 0 | staging owner，生产阻塞 | staging exact handler 已覆盖 Redis session/auth-code、Google/Apple callback、PKCE 和 fail-closed bridge；仍需真实 Firebase identity import、provider replay、custom-token exchange、旧客户端 wire parity 和生产身份连续性 |
-| External App OAuth | 0 | staging owner，生产阻塞 | staging Jobs handler 已覆盖 Firebase-context gate、CSRF transaction、app admission/install CAS；仍需真实 Firebase token、旧客户端 response、provider/历史 catalog continuity 和删除回放 |
-| Phone / Twilio | 0 | staging owner，生产阻塞 | Jobs 已闭合 caller-ID 验证状态、Twilio API/token/webhook contract、quota 和删除清理；仍缺真实 provider 验证、历史回填和 production cutover |
-| Wrapped | 0 | staging owner，生产阻塞 | Jobs 已闭合 D1 recap 聚合、Workers AI structured output、通知和 job/result 状态；仍缺历史 Firestore 回填、真实 provider probe 和 production cutover |
-| Chat compatibility | 0 | staging owner，生产阻塞 | Jobs/API-AI 已承载 bounded exact routes；`backfill-d1.mjs` 现已支持有界、去敏的 `cf_chat_sessions`/`cf_chat_messages` 回放输入，但仍需实际 Firestore export 回放、prompt materialization、desktop provider/BYOK/quota/tools/stream wire contract |
-| Persona / MCP mutation | 0 | staging owner，生产阻塞 | MCP registration/callback/refresh、Twitter ownership exact metadata projection 与 app-owner exact adapter 已由 Jobs staging boundary 承载；Firebase owner migration、历史 Firestore prompt/image/cache continuity 和 Twitter production provider parity 仍未闭合 |
-| Staged tasks / task intelligence | 0 | staging owner，生产阻塞 | API Core/D1 已建立 candidate/recommendation authority、device/open-loop snapshot、LLM receipt、promotion transaction 和 Jobs Queue retry consumer；仍缺 Firestore 历史回放、provider 正向账号探针、旧客户端 continuity 和 production cutover |
-| Gemini proxy | 0 | staging owner，生产阻塞 | API-AI 已承载 bounded JSON/SSE、BYOK enrollment、burst/quota 和 provider alias；Firebase identity continuity、Vertex ADC/PT、完整 Redis quota、SSE/usage/error/cost parity 尚未闭合 |
-| Files | 0 | staging owner，生产阻塞 | Jobs 已承载 exact aliases、D1/R2/provider contract；Assistants/session continuity、旧数据回填和下游 reader 仍未完成 |
+| Auth / social | 0 | 新部署可用，待 provider smoke | Better Auth email/session 已闭合；若启用 Google/Apple，仅需配置对应 provider secret 并完成一次 staging callback smoke |
+| External App OAuth | 0 | 新部署可用，待 provider smoke | D1 app projection、CSRF transaction、install CAS 和删除 fence 已闭合；启用外部应用时需提供真实 provider 配置并做一次 callback/revoke smoke |
+| Phone / Twilio | 0 | 可选，待 provider 配置 | Jobs 已闭合 caller-ID、quota、webhook 和删除清理；只有启用电话功能时才需要 Twilio credentials/号码验证 |
+| Wrapped | 0 | 可选，待 provider smoke | D1 recap/job/notification authority 已闭合；使用 Wrapped 时需验证 Workers AI binding 和 Queue drain |
+| Chat compatibility | 0 | 新客户端受限 contract 已用 | Jobs/API-AI bounded chat/attachment routes 已承载；需按实际使用的 AI provider 配置 secret 并做 authenticated JSON/SSE smoke，不要求旧桌面 wire parity |
+| Persona / MCP mutation | 0 | 可选，待 provider smoke | MCP registration/callback/refresh 与 D1 projection 已闭合；启用外部 MCP 时需 provider URL/secret 和一次 discovery/tool smoke |
+| Staged tasks / task intelligence | 0 | 可选，待 provider smoke | API Core/D1 candidate authority、LLM receipt 和 Queue retry 已闭合；使用该功能时需做真实 provider/Queue 正向探针 |
+| Gemini proxy | 0 | 可选，待 provider 配置 | API-AI bounded JSON/SSE、BYOK enrollment、quota 和 provider alias 已闭合；启用 Gemini 时需配置 AI Studio 或 Vertex secret |
+| Files | 0 | 新客户端可用，待 provider smoke | Jobs 已承载 R2/D1 文件 contract；使用文件问答时需配置 OpenAI provider 和 `CHAT_FILES` R2，并完成上传/读取 smoke |
 
 上表当前 legacy 合计 0 条。`POST /v1/apps/migrate-owner` 已由 Edge→Jobs staging owner 承载，保留旧请求/响应形状但默认 gate 关闭，并要求 Auth anonymous bridge、数据 attestation、generation/deletion fence；它仍受真实 provider、身份连续性、历史回放和生产切换门槛约束。Auth/social 的 4 条 exact 路径与 External App OAuth 的 2 条 exact 路径已由 Auth/Jobs staging owner 承载，但同样不能视为 production parity；`GET /v1/apps/mcp/callback`、`POST /v1/apps/mcp` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已由 Jobs staging owner 承载。Twitter ownership exact route 默认 gate/secret 关闭，生产 provider/data parity 仍保留在表内。`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口也不计入本表。Task intelligence 的 13 条路径已是 staging owner，但其生产门槛仍保留在表内。
 
