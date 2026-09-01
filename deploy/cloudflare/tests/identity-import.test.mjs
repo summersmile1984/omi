@@ -599,4 +599,55 @@ describe("Firebase identity import", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects malformed UTF-8 and oversized private inputs before JSON parsing", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "omi-d1-auth-bounds-"));
+    const users = path.join(root, "users.json");
+    const config = path.join(root, "hash-config.json");
+    try {
+      const malformed = Buffer.from(JSON.stringify(source()));
+      const ownerOffset = malformed.indexOf(Buffer.from("Owner"));
+      expect(ownerOffset).toBeGreaterThanOrEqual(0);
+      malformed[ownerOffset] = 0xff;
+      await writeFile(users, malformed, { mode: 0o600 });
+      await writeFile(config, JSON.stringify(FIREBASE_SAMPLE.config), {
+        mode: 0o600,
+      });
+      const malformedResult = spawnSync(
+        process.execPath,
+        [
+          path.resolve("scripts/import-firebase-identities.mjs"),
+          "validate",
+          "--users",
+          users,
+          "--hash-config",
+          config,
+        ],
+        { cwd: path.resolve("."), encoding: "utf8" },
+      );
+      expect(malformedResult.status).toBe(2);
+      expect(malformedResult.stderr).toMatch(/not valid UTF-8 JSON/);
+
+      await writeFile(users, JSON.stringify(source()), { mode: 0o600 });
+      await writeFile(config, Buffer.alloc(128 * 1024 + 1, 0x20), {
+        mode: 0o600,
+      });
+      const oversizedResult = spawnSync(
+        process.execPath,
+        [
+          path.resolve("scripts/import-firebase-identities.mjs"),
+          "validate",
+          "--users",
+          users,
+          "--hash-config",
+          config,
+        ],
+        { cwd: path.resolve("."), encoding: "utf8" },
+      );
+      expect(oversizedResult.status).toBe(2);
+      expect(oversizedResult.stderr).toMatch(/exceeds 131072 bytes/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

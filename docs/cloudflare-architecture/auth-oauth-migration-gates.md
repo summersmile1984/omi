@@ -70,6 +70,12 @@ checksum 一致、所有支持的 provider 均配置且没有 conflict/revoked p
 才允许该 projection 作为 legacy auth 的身份准入。未出现在 projection 的旧 UID
 必须返回不可用，而不能创建一个新的 Better Auth 用户或按 email 猜测合并。
 
+The importer reads the private Firebase user export with a 64 MiB bound and the
+hash configuration with a 128 KiB bound. It uses fatal UTF-8 decoding before
+JSON parsing, so replacement characters cannot silently change the reviewed
+source image. These bounds protect the offline operator tool only; they are not
+evidence of a production export replay.
+
 Migration `0010_firebase_identity_provenance.sql` additionally records a
 deterministic SHA-256 digest for each imported user plus its Better Auth account
 rows. The digest contains no Firebase export data and is checked during

@@ -481,7 +481,11 @@ after the complete identity checksum has passed so nullable pre-0010 rows are
 backfilled. A conflicting existing digest fails closed.
 
 Both input files must be regular, non-symlinked files with mode `0600` or
-stricter. Validate without network access first:
+stricter. The user export is bounded to 64 MiB and the hash configuration to
+128 KiB; the reader also rejects malformed UTF-8 before JSON parsing. This is
+an operator-side resource and source-integrity boundary, not a claim that a
+large production export has already been replayed. Validate without network
+access first:
 
 ```bash
 npm run identity:import -- validate \

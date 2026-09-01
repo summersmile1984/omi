@@ -44,6 +44,12 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const DATABASE_ID = /^[0-9a-f-]{36}$/i;
 const IMPORT_LEDGER_ID = "firebase";
 const IMPORT_BATCH_SIZE = 50;
+// Firebase Auth exports are read into memory before deterministic planning.
+// Keep that operator-side boundary explicit so a malformed or unexpectedly
+// large private export cannot turn validation into an unbounded allocation.
+const MAX_FIREBASE_EXPORT_BYTES = 64 * 1024 * 1024;
+const MAX_HASH_CONFIG_BYTES = 128 * 1024;
+const FILE_READ_CHUNK_BYTES = 64 * 1024;
 const MAX_MEM_COST = 18;
 const MAX_ROUNDS = 8;
 const MAX_ESTIMATED_SCRYPT_MEMORY_BYTES = 32 * 1024 * 1024;
@@ -71,8 +77,19 @@ function stableJson(value) {
 }
 
 function parseJson(raw, label) {
+  let text;
   try {
-    return JSON.parse(raw.toString("utf8"));
+    // Buffer#toString replaces malformed UTF-8 with U+FFFD.  That would let
+    // a byte-different source image pass validation and make the source hash
+    // disagree with the bytes the operator actually reviewed.
+    text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    throw new FirebaseIdentityMigrationError(
+      `${label} is not valid UTF-8 JSON`,
+    );
+  }
+  try {
+    return JSON.parse(text);
   } catch {
     throw new FirebaseIdentityMigrationError(
       `${label} is not valid UTF-8 JSON`,
@@ -1060,7 +1077,7 @@ function parseArguments(argv) {
   };
 }
 
-async function readPrivateInput(filePath, label) {
+async function readPrivateInput(filePath, label, maximumBytes) {
   let pathMetadata;
   try {
     pathMetadata = await lstat(filePath);
@@ -1098,7 +1115,31 @@ async function readPrivateInput(filePath, label) {
         `${label} must be mode 0600 or stricter`,
       );
     }
-    return await handle.readFile();
+    if (metadata.size > maximumBytes) {
+      throw new FirebaseIdentityMigrationError(
+        `${label} exceeds ${maximumBytes} bytes`,
+      );
+    }
+    const chunks = [];
+    let total = 0;
+    while (total <= maximumBytes) {
+      // Read at most one byte beyond the declared bound. This also catches a
+      // file that grows after the initial stat without allocating its full
+      // contents.
+      const buffer = Buffer.alloc(
+        Math.min(FILE_READ_CHUNK_BYTES, maximumBytes + 1 - total),
+      );
+      const result = await handle.read(buffer, 0, buffer.length, null);
+      if (result.bytesRead === 0) break;
+      total += result.bytesRead;
+      chunks.push(buffer.subarray(0, result.bytesRead));
+      if (total > maximumBytes) {
+        throw new FirebaseIdentityMigrationError(
+          `${label} exceeds ${maximumBytes} bytes`,
+        );
+      }
+    }
+    return Buffer.concat(chunks, total);
   } finally {
     await handle.close();
   }
@@ -1106,8 +1147,16 @@ async function readPrivateInput(filePath, label) {
 
 async function loadPlan(usersPath, hashConfigPath) {
   const [usersRaw, configRaw] = await Promise.all([
-    readPrivateInput(usersPath, "Firebase user export"),
-    readPrivateInput(hashConfigPath, "Firebase hash configuration"),
+    readPrivateInput(
+      usersPath,
+      "Firebase user export",
+      MAX_FIREBASE_EXPORT_BYTES,
+    ),
+    readPrivateInput(
+      hashConfigPath,
+      "Firebase hash configuration",
+      MAX_HASH_CONFIG_BYTES,
+    ),
   ]);
   const source = parseJson(usersRaw, "Firebase user export");
   const configDocument = parseJson(configRaw, "Firebase hash configuration");
