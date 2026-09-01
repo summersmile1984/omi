@@ -32,12 +32,17 @@ python3 .github/scripts/windows_release_history.py \
 
 The default operation is always dry-run. The script does not call GitHub, copy
 the `.exe`, `.blockmap`, or `latest.yml`, write D1/R2, create a channel pointer,
-or promote Beta to Stable. A future reviewed apply executor must independently
-verify the artifact bytes/ETags in R2 and the release fingerprint before making
-any Windows row readable; this plan alone is not a data migration or production
-cutover.
+or promote Beta to Stable. A reviewed staging executor now accepts this plan
+through `/internal/windows-release-history/reviews`, records a D1 review ledger,
+and after explicit apply mirrors exactly the three assets into the isolated
+`DESKTOP_UPDATES` R2 namespace. Jobs follows only canonical GitHub URLs and
+trusted signed CDN redirects, streams a bounded SHA-256 check, verifies R2
+metadata/size, and retries or terminally rejects digest conflicts. It remains
+an artifact transfer ledger only: it does not make a Windows row publicly
+readable, create a channel pointer, or mutate desktop release authority.
 
 The release workflow's real provider credentials and GitHub release history are
-not present in CI fixtures, so this slice intentionally stops at deterministic
-export verification. It does not claim historical artifact replay, channel
-promotion, or production parity.
+not present in CI fixtures. Staging tests cover fail-closed review, idempotent
+queueing/copy, signed-redirect handling, and digest mismatch cleanup, but this
+slice does not claim historical artifact replay, channel promotion, public
+download cutover, or production parity.

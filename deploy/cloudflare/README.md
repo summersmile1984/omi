@@ -275,6 +275,16 @@ pointer. Stable promotion and the four macOS Beta control endpoints are
 API Core/D1 CAS operations in staging. Production release-pipeline cutover
 remains legacy-owned until its Firestore authority is projected and replayed.
 
+Windows release history uses the same reviewed-only staging discipline but a
+separate plan contract. Run `.github/scripts/windows_release_history.py` to
+produce a deterministic plan, then submit it to
+`/internal/windows-release-history/reviews`, explicitly apply it, and request
+`/artifacts/apply` to queue the exact installer, blockmap, and `latest.yml`
+mirror into `DESKTOP_UPDATES`. The Jobs consumer verifies bounded bytes,
+SHA-256 and R2 metadata on every transfer. This does not promote a Windows
+channel or change public download URLs; production GitHub history and release
+authority still require a separate cutover.
+
 Before applying D1 migrations, the release resolves each exact staging
 database name through `wrangler d1 list --json` and writes a mode-`0600`
 temporary config containing its UUID. This avoids Wrangler 4.127 treating a

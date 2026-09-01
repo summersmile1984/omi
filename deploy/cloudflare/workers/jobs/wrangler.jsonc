@@ -33,6 +33,7 @@
     "MEMORY_ARCHIVE_IMPORT_STAGING_ENABLED": "false",
     "WRAPPED_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "WINDOWS_RELEASE_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "PERSONA_APP_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "HUME_TASK_PROJECTION_STAGING_ENABLED": "false",
     "DLQ_REPLAY_STAGING_ENABLED": "false",
@@ -58,6 +59,9 @@
   // DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED remains false by default;
   // the reviewed apply route only calls API Core's immutable manifest contract
   // after an operator-approved plan.
+  // WINDOWS_RELEASE_HISTORY_IMPORT_STAGING_ENABLED remains false by default;
+  // its reviewed plan only mirrors Windows artifacts into DESKTOP_UPDATES and
+  // never mutates a public channel pointer or release authority.
   // PERSONA_APP_HISTORY_IMPORT_STAGING_ENABLED remains false by default;
   // PERSONA_APP_HISTORY_IMPORT_SIGNING_SECRET must be at least 32 bytes when
   // the reviewed public Persona/App catalog apply route is enabled.

@@ -132,6 +132,11 @@ import {
   DESKTOP_ARTIFACT_MIRROR_KIND,
   processDesktopReleaseArtifactMessage,
 } from "./desktop-release-artifact-mirror";
+import {
+  WINDOWS_ARTIFACT_MIRROR_KIND,
+  processWindowsReleaseArtifactMessage,
+  registerWindowsReleaseHistoryRoutes,
+} from "./windows-release-artifact-mirror";
 import { registerPersonaAppHistoryImportRoutes } from "./persona-app-history-import";
 import {
   processTaskIntelligenceMessage,
@@ -236,6 +241,7 @@ registerChatFileHistoryImportRoutes(app);
 registerWrappedHistoryImportRoutes(app);
 registerMemoryArchiveImportRoutes(app);
 registerDesktopReleaseHistoryImportRoutes(app);
+registerWindowsReleaseHistoryRoutes(app);
 registerPersonaAppHistoryImportRoutes(app);
 registerDlqReplayRoutes(app);
 
@@ -1006,6 +1012,10 @@ async function processJobMessage(
 ): Promise<void> {
   if (message.body.kind === DESKTOP_ARTIFACT_MIRROR_KIND) {
     await processDesktopReleaseArtifactMessage(message, env);
+    return;
+  }
+  if (message.body.kind === WINDOWS_ARTIFACT_MIRROR_KIND) {
+    await processWindowsReleaseArtifactMessage(message, env);
     return;
   }
   if (message.body.kind === "audio_merge") {

@@ -24,7 +24,8 @@ export type JobMessage = {
     | "limitless_import"
     | "chat_assistant_poll"
     | "memory_short_term_lifecycle"
-    | "desktop_release_artifact_mirror";
+    | "desktop_release_artifact_mirror"
+    | "windows_release_artifact_mirror";
   payload: Record<string, unknown>;
 };
 
@@ -64,6 +65,8 @@ export type JobsEnv = {
   ASSETS: R2Bucket;
   /** Reviewed desktop release artifact mirror; absent until the bucket is provisioned. */
   DESKTOP_UPDATES?: R2Bucket;
+  /** Reviewed Windows release artifact mirror; shares the isolated desktop bucket. */
+  WINDOWS_RELEASE_HISTORY_IMPORT_STAGING_ENABLED?: string;
   CHAT_FILES?: R2Bucket;
   CONVERSATION_RECORDINGS: R2Bucket;
   SPEECH_PROFILES: R2Bucket;

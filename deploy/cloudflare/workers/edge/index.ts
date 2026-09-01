@@ -1361,6 +1361,15 @@ app.post(
   "/internal/desktop-release-history/reviews/:review_id/artifacts/apply",
   proxyPublicJobs,
 );
+app.post("/internal/windows-release-history/reviews", proxyPublicJobs);
+app.post(
+  "/internal/windows-release-history/reviews/:review_id/apply",
+  proxyPublicJobs,
+);
+app.post(
+  "/internal/windows-release-history/reviews/:review_id/artifacts/apply",
+  proxyPublicJobs,
+);
 // Hume task ownership is operator-attested only. This route never accepts a
 // provider callback or caller identity; Jobs validates the reviewed D1
 // projection and its account-generation/deletion fences.
