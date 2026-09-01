@@ -60,6 +60,7 @@ type OAuthStateRow = {
   verifier_enc: string;
   success_redirect_url: string;
   expires_at: number;
+  oauth_generation: number;
 };
 
 type XPost = {
@@ -82,6 +83,12 @@ type SyncResult = {
 class ProviderResponseError extends Error {
   constructor(readonly status: number) {
     super(`X provider returned HTTP ${status}`);
+  }
+}
+
+class OAuthConnectionRevokedError extends Error {
+  constructor() {
+    super("X OAuth connection was revoked");
   }
 }
 
@@ -1131,6 +1138,7 @@ async function saveOAuthConnection(
   xUserId: string | null,
   syncToken: string,
   now: number,
+  oauthGeneration: number,
 ) {
   const accessTokenEnc = await encryptCredential(
     env,
@@ -1141,18 +1149,20 @@ async function saveOAuthConnection(
   const refreshTokenEnc = tokens.refreshToken
     ? await encryptCredential(env, uid, "refresh-token", tokens.refreshToken)
     : null;
-  await env.APP_DB.prepare(
+  const result = await env.APP_DB.prepare(
     "INSERT INTO cf_x_connections " +
       "(uid, connected, access_token_enc, refresh_token_enc, token_expires_at, scope, handle, x_user_id, " +
       "syncing, sync_token, sync_started_at, created_at, updated_at) " +
-      "VALUES (?, 1, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?) " +
+      "SELECT ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ? " +
+      "FROM cf_x_oauth_fences WHERE uid = ? AND oauth_generation = ? " +
       "ON CONFLICT(uid) DO UPDATE SET connected = 1, access_token_enc = excluded.access_token_enc, " +
       "refresh_token_enc = COALESCE(excluded.refresh_token_enc, cf_x_connections.refresh_token_enc), " +
       "token_expires_at = excluded.token_expires_at, " +
       "scope = excluded.scope, handle = COALESCE(excluded.handle, cf_x_connections.handle), " +
       "x_user_id = COALESCE(excluded.x_user_id, cf_x_connections.x_user_id), syncing = 1, " +
       "sync_token = excluded.sync_token, sync_started_at = excluded.sync_started_at, " +
-      "updated_at = excluded.updated_at",
+      "updated_at = excluded.updated_at WHERE EXISTS (" +
+      "SELECT 1 FROM cf_x_oauth_fences WHERE uid = ? AND oauth_generation = ?)",
   )
     .bind(
       uid,
@@ -1166,8 +1176,13 @@ async function saveOAuthConnection(
       now,
       now,
       now,
+      uid,
+      oauthGeneration,
+      uid,
+      oauthGeneration,
     )
     .run();
+  if (result.meta?.changes !== 1) throw new OAuthConnectionRevokedError();
 }
 
 async function oauthUrl(
@@ -1194,23 +1209,31 @@ async function oauthUrl(
     `oauth-verifier:${stateHash}`,
     verifier,
   );
-  await c.env.APP_DB.batch([
+  const results = await c.env.APP_DB.batch([
     c.env.APP_DB.prepare(
       "DELETE FROM cf_x_oauth_states WHERE expires_at <= ?",
     ).bind(now),
     c.env.APP_DB.prepare(
+      "INSERT INTO cf_x_oauth_fences (uid, oauth_generation, updated_at) VALUES (?, 0, ?) " +
+        "ON CONFLICT(uid) DO NOTHING",
+    ).bind(context.uid, now),
+    c.env.APP_DB.prepare(
       "INSERT INTO cf_x_oauth_states " +
-        "(state_hash, uid, verifier_enc, success_redirect_url, expires_at, created_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "(state_hash, uid, verifier_enc, success_redirect_url, expires_at, created_at, oauth_generation) " +
+        "SELECT ?, uid, ?, ?, ?, ?, oauth_generation " +
+        "FROM cf_x_oauth_fences WHERE uid = ?",
     ).bind(
       stateHash,
-      context.uid,
       verifierEnc,
       redirect,
       now + OAUTH_STATE_TTL_SECONDS,
       now,
+      context.uid,
     ),
   ]);
+  if (results[2]?.meta?.changes !== 1) {
+    throw new Error("X OAuth state is unavailable");
+  }
   const url = new URL(AUTHORIZE_URL);
   for (const [key, value] of Object.entries({
     response_type: "code",
@@ -1232,7 +1255,7 @@ async function consumeOAuthState(env: JobsEnv, state: string) {
   const stateHash = await sha256Hex(state);
   const row = await env.APP_DB.prepare(
     "DELETE FROM cf_x_oauth_states WHERE state_hash = ? " +
-      "RETURNING uid, verifier_enc, success_redirect_url, expires_at",
+      "RETURNING uid, verifier_enc, success_redirect_url, expires_at, oauth_generation",
   )
     .bind(stateHash)
     .first<OAuthStateRow>();
@@ -1305,6 +1328,7 @@ async function oauthCallback(
       identity.id,
       syncToken,
       now,
+      consumed.oauth_generation,
     );
     c.executionCtx.waitUntil(
       syncXForUser(c.env, consumed.uid, dependencies, syncToken).then(
@@ -1317,7 +1341,14 @@ async function oauthCallback(
       true,
       "X connected",
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof OAuthConnectionRevokedError) {
+      return htmlResponse(
+        deepLink(redirect, "error", "invalid_state"),
+        false,
+        "Connection cancelled",
+      );
+    }
     return htmlResponse(
       deepLink(redirect, "error", "exchange_failed"),
       false,
@@ -1485,14 +1516,21 @@ export function registerXConnectorRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       const now = nowSeconds(dependencies);
-      await c.env.APP_DB.prepare(
-        "INSERT INTO cf_x_connections (uid, connected, syncing, post_count, memory_count, created_at, updated_at) " +
-          "VALUES (?, 0, 0, 0, 0, ?, ?) ON CONFLICT(uid) DO UPDATE SET connected = 0, " +
-          "access_token_enc = NULL, refresh_token_enc = NULL, token_expires_at = NULL, syncing = 0, " +
-          "sync_token = NULL, sync_started_at = NULL, updated_at = excluded.updated_at",
-      )
-        .bind(context.uid, now, now)
-        .run();
+      await c.env.APP_DB.batch([
+        c.env.APP_DB.prepare(
+          "DELETE FROM cf_x_oauth_states WHERE uid = ?",
+        ).bind(context.uid),
+        c.env.APP_DB.prepare(
+          "INSERT INTO cf_x_oauth_fences (uid, oauth_generation, updated_at) VALUES (?, 1, ?) " +
+            "ON CONFLICT(uid) DO UPDATE SET oauth_generation = oauth_generation + 1, updated_at = excluded.updated_at",
+        ).bind(context.uid, now),
+        c.env.APP_DB.prepare(
+          "INSERT INTO cf_x_connections (uid, connected, syncing, post_count, memory_count, created_at, updated_at) " +
+            "VALUES (?, 0, 0, 0, 0, ?, ?) ON CONFLICT(uid) DO UPDATE SET connected = 0, " +
+            "access_token_enc = NULL, refresh_token_enc = NULL, token_expires_at = NULL, syncing = 0, " +
+            "sync_token = NULL, sync_started_at = NULL, updated_at = excluded.updated_at",
+        ).bind(context.uid, now, now),
+      ]);
       return c.json({ success: true });
     } catch {
       return c.json({ error: "x_disconnect_unavailable" }, 503);

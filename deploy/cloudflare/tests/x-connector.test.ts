@@ -478,6 +478,88 @@ describe("Cloudflare X connector", () => {
     );
   });
 
+  it("fences an in-flight OAuth callback after X is disconnected", async () => {
+    const { database, env, external } = environment();
+    let releaseExchange!: () => void;
+    let exchangeStarted!: () => void;
+    const exchangeReady = new Promise<void>((resolve) => {
+      exchangeStarted = resolve;
+    });
+    const exchangeRelease = new Promise<void>((resolve) => {
+      releaseExchange = resolve;
+    });
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (url === "https://api.x.com/2/oauth2/token") {
+          exchangeStarted();
+          await exchangeRelease;
+          return Response.json({
+            access_token: "late-access",
+            refresh_token: "late-refresh",
+            expires_in: 3_600,
+            scope: "tweet.read users.read bookmark.read offline.access",
+          });
+        }
+        return external.fetchImpl(input, init);
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 1_000 }, []);
+    const oauth = (await (
+      await app.request("/v1/x/oauth-url")
+    ).json()) as { auth_url: string };
+    const state = new URL(oauth.auth_url).searchParams.get("state")!;
+
+    const callbackPromise = app.request(
+      `/v1/x/oauth/callback?code=late-code&state=${encodeURIComponent(state)}`,
+      {},
+      false,
+    );
+    await exchangeReady;
+
+    // The callback has consumed its one-time state. Disconnect must still
+    // advance the generation before the provider exchange can commit.
+    const disconnected = await app.request("/v1/x/disconnect", {
+      method: "POST",
+    });
+    expect(disconnected.status).toBe(200);
+    releaseExchange();
+
+    const callback = await callbackPromise;
+    expect(await callback.text()).toContain("invalid_state");
+    expect(
+      database.database
+        .prepare(
+          "SELECT connected, access_token_enc, refresh_token_enc FROM cf_x_connections WHERE uid = ?",
+        )
+        .get("x-user"),
+    ).toEqual({
+      connected: 0,
+      access_token_enc: null,
+      refresh_token_enc: null,
+    });
+    expect(
+      database.database
+        .prepare(
+          "SELECT oauth_generation FROM cf_x_oauth_fences WHERE uid = ?",
+        )
+        .get("x-user"),
+    ).toEqual({ oauth_generation: 1 });
+    expect(
+      database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_x_oauth_states WHERE uid = ?",
+        )
+        .get("x-user"),
+    ).toEqual({ count: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("fails closed when credentials or auth are absent and rejects untrusted deep links", async () => {
     const state = environment({ configured: false });
     const waits: Promise<unknown>[] = [];
