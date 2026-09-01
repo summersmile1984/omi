@@ -475,6 +475,11 @@ describe("SharedRateLimitDurableObject", () => {
       ["PATCH", "/v3/memories/memory-1/read", "memories:modify"],
       ["PATCH", "/v3/memories/memory-1/baseline", "memories:modify"],
       ["POST", "/v3/memories/memory-1/review", "memories:modify"],
+      [
+        "POST",
+        "/v1/users/daily-summaries/summary-1/regenerate",
+        "daily_summary:regenerate",
+      ],
       ["POST", "/v1/tts/synthesize", "tts:synthesize"],
       ["POST", "/v1/tts/synthesize-workers-ai", "tts:synthesize"],
       ["POST", "/v2/tts/synthesize", "tts:synthesize"],

@@ -102,6 +102,10 @@ RATE_POLICIES: dict[str, tuple[int, int]] = {
     "goals:suggest": (30, 3600),
     "goals:advice": (30, 3600),
     "goals:extract": (30, 3600),
+    # Daily-summary regenerate double-tap guard. Legacy also holds a 30s
+    # per-summary generic-cache cooldown; the Cloudflare Edge enforces this
+    # per-uid window as the durable equivalent.
+    "daily_summary:regenerate": (2, 60),
     # Search
     "conversations:search": (60, 3600),
     # Expensive background ops

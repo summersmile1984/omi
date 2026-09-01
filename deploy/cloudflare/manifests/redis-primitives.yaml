@@ -373,6 +373,7 @@ families:
       - conversations:reprocess
       - conversations:merge
       - conversations:search
+      - daily_summary:regenerate
       - dev:conversations
       - dev:goals_write
       - knowledge_graph:canonical
@@ -414,6 +415,7 @@ families:
       - POST /v1/conversations/merge
       - POST /v1/conversations/search
       - POST /v3/memory-imports/batch
+      - POST /v1/users/daily-summaries/:summaryId/regenerate
       - GET /v3/memories/review-queue
       - GET /v3/memories/review-queue/:reviewId
       - POST /v3/memories/review-queue/:reviewId/resolve

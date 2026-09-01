@@ -37,6 +37,13 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 60,
     windowSeconds: 3600,
   },
+  // Double-tap guard for user-initiated recap regeneration (legacy kept a
+  // 30s per-summary cooldown in the generic cache before the LLM call).
+  "daily_summary:regenerate": {
+    name: "daily_summary:regenerate",
+    maxRequests: 2,
+    windowSeconds: 60,
+  },
   // Gemini's legacy contract is a per-user 30 requests / 60 seconds burst
   // window.  The API-AI D1 ledger owns the daily admission limit; this DO
   // policy owns only the short-lived edge burst window.
@@ -419,6 +426,13 @@ export function edgeRateLimitPolicyForRequest(
 
   if (normalizedMethod === "GET" && /^\/v1\/goals\/[^/]+\/advice$/.test(path)) {
     return EDGE_RATE_LIMIT_POLICIES["goals:advice"];
+  }
+
+  if (
+    normalizedMethod === "POST" &&
+    /^\/v1\/users\/daily-summaries\/[^/]+\/regenerate$/.test(path)
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["daily_summary:regenerate"];
   }
 
   if (

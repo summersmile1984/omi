@@ -3166,7 +3166,8 @@ routes:
     runtime: python-worker
     target_runtime: python-worker
     auth_authority: better-auth
-    dependencies: [d1-app]
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: daily_summary:regenerate
     protocol: http
     idempotency: optional
     rollout: staging-only
