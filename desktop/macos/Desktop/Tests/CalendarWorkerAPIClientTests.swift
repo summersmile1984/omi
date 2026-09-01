@@ -14,12 +14,17 @@ private final class CalendarWorkerURLProtocol: URLProtocol, @unchecked Sendable 
 
   override func startLoading() {
     Self.requests.append(request)
-    let response = HTTPURLResponse(
-      url: request.url!,
-      statusCode: Self.responseStatus,
-      httpVersion: nil,
-      headerFields: ["Content-Type": "application/json"]
-    )!
+    guard let url = request.url,
+      let response = HTTPURLResponse(
+        url: url,
+        statusCode: Self.responseStatus,
+        httpVersion: nil,
+        headerFields: ["Content-Type": "application/json"]
+      )
+    else {
+      client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+      return
+    }
     client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
     client?.urlProtocol(self, didLoad: Self.responseBody)
     client?.urlProtocolDidFinishLoading(self)
