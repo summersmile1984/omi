@@ -3,9 +3,35 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { normalizeRow, renderBackfillSql } from "../scripts/backfill-d1.mjs";
+import {
+  MAX_BACKFILL_INPUT_BYTES,
+  normalizeRow,
+  parseBackfillInput,
+  renderBackfillSql,
+} from "../scripts/backfill-d1.mjs";
 
 describe("D1 backfill SQL generator", () => {
+  it("bounds and strictly decodes NDJSON input before parsing rows", () => {
+    expect(
+      parseBackfillInput(
+        new TextEncoder().encode(
+          '{"table":"cf_trend_categories","row":{"id":"one"}}\n',
+        ),
+      ),
+    ).toEqual([
+      { table: "cf_trend_categories", row: { id: "one" } },
+    ]);
+    expect(() => parseBackfillInput(new Uint8Array([0xc3, 0x28]))).toThrow(
+      "input is not valid UTF-8",
+    );
+    expect(() =>
+      parseBackfillInput(new Uint8Array(MAX_BACKFILL_INPUT_BYTES + 1)),
+    ).toThrow(`input exceeds ${MAX_BACKFILL_INPUT_BYTES} bytes`);
+    expect(() => parseBackfillInput('{"table":\n')).toThrow(
+      "line 1 is not valid JSON",
+    );
+  });
+
   it("normalizes Firestore-shaped values into whitelisted D1 ingestion upserts", () => {
     const sql = renderBackfillSql([
       {

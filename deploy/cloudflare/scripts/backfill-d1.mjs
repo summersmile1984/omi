@@ -1,4 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
+
+// Backfill input is an operator-supplied export, not a trusted stream. Keep
+// the generator bounded before parsing JSON so a malformed or accidentally
+// huge export cannot consume the operator process's memory.
+export const MAX_BACKFILL_INPUT_BYTES = 64 * 1024 * 1024;
 
 const TABLES = {
   cf_announcements: {
@@ -807,6 +812,74 @@ function fail(message) {
   throw new Error(`backfill input: ${message}`);
 }
 
+/**
+ * Decode and parse newline-delimited JSON without accepting replacement
+ * characters for malformed UTF-8. The byte limit is checked before JSON
+ * parsing, and is intentionally independent of the --max-rows limit.
+ */
+export function parseBackfillInput(input, { maxBytes = MAX_BACKFILL_INPUT_BYTES } = {}) {
+  const bytes =
+    input instanceof Uint8Array
+      ? input
+      : typeof input === "string"
+        ? new TextEncoder().encode(input)
+        : null;
+  if (!bytes) fail("input must be UTF-8 bytes or text");
+  if (bytes.byteLength > maxBytes) fail(`input exceeds ${maxBytes} bytes`);
+  let raw;
+  try {
+    raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    fail("input is not valid UTF-8");
+  }
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        fail(`line ${index + 1} is not valid JSON`);
+      }
+    });
+}
+
+async function readBoundedInput(inputPath) {
+  if (inputPath) {
+    const handle = await open(inputPath, "r");
+    const chunks = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const chunk = Buffer.allocUnsafe(64 * 1024);
+        const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, null);
+        if (!bytesRead) break;
+        total += bytesRead;
+        if (total > MAX_BACKFILL_INPUT_BYTES) {
+          fail(`input exceeds ${MAX_BACKFILL_INPUT_BYTES} bytes`);
+        }
+        chunks.push(chunk.subarray(0, bytesRead));
+      }
+    } finally {
+      await handle.close();
+    }
+    return Buffer.concat(chunks, total);
+  }
+
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.byteLength;
+    if (total > MAX_BACKFILL_INPUT_BYTES) {
+      fail(`input exceeds ${MAX_BACKFILL_INPUT_BYTES} bytes`);
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks, total);
+}
+
 function epochSeconds(value, column) {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number" && Number.isSafeInteger(value)) return value;
@@ -1574,26 +1647,7 @@ async function main() {
   ) {
     fail("--max-rows must be an integer between 1 and 5000");
   }
-  const raw = inputPath
-    ? await readFile(inputPath, "utf8")
-    : await new Promise((resolve, reject) => {
-        const chunks = [];
-        process.stdin.setEncoding("utf8");
-        process.stdin.on("data", (chunk) => chunks.push(chunk));
-        process.stdin.on("end", () => resolve(chunks.join("")));
-        process.stdin.on("error", reject);
-      });
-  const records = raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        fail(`line ${index + 1} is not valid JSON`);
-      }
-    });
+  const records = parseBackfillInput(await readBoundedInput(inputPath));
   process.stdout.write(renderBackfillSql(records, { table, maxRows }));
 }
 

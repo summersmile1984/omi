@@ -1193,7 +1193,9 @@ whitelisted D1 tables (including `cf_conversations` and the provider-only
 `cf_app_payment_links` mapping) and carries
 `{ "table": "cf_action_items", "row": { ... } }`;
 the generator validates uid/id, normalizes timestamps/booleans/JSON, escapes SQL,
-and uses uid+id upserts. It only writes SQL to stdout. Review the output and
+and uses uid+id upserts. Input is capped at 64 MiB and decoded as fatal UTF-8;
+oversized or malformed exports fail before any JSON/SQL processing. It only
+writes SQL to stdout. Review the output and
 apply it explicitly to the isolated staging database with Wrangler `--file`;
 the command does not connect to Firestore or production by itself. Generated
 files intentionally omit manual `BEGIN`/`COMMIT`: [D1 remote import is already

@@ -1,3 +1,8 @@
+export const MAX_BACKFILL_INPUT_BYTES: number;
+export function parseBackfillInput(
+  input: Uint8Array | string,
+  options?: { maxBytes?: number },
+): unknown[];
 export function normalizeRow(table: string, input: Record<string, unknown>): Record<string, unknown>;
 export function normalizeRows(
   records: unknown[],
