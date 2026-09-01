@@ -1660,7 +1660,10 @@ and the legacy underscore callback alias share the same single-use D1 state and
 encrypted-token authority. Calendar-event creation and other
 conversation links (including auto-link) and the calendar-event tool also run in
 Jobs. The Calendar-only OAuth grant accepts attendee email addresses; contact
-lookup and non-Calendar integrations remain outside this cutover.
+lookup and non-Calendar integrations remain outside this cutover. Explicit
+Calendar disconnects revoke all pending states and advance a per-user OAuth
+generation; the callback uses a D1 compare-and-set before persisting a grant,
+so an in-flight provider exchange cannot restore a connection after disconnect.
 
 The data-protection migration inventory now runs in API Core over D1 at
 `GET /v1/users/migration/requests?target_level=enhanced`. It preserves the

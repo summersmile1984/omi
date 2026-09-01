@@ -112,6 +112,7 @@
 - 通用 integration status live 验证：`todoist`、未知 `whoop`、`google_calendar`、`gmail` 均返回 200 且只含连接布尔值，未认证请求为 401；验证账号删除后 App-D1 intent 清零、保留预期 tombstone，Auth user/session/account 均为 0。
 - Google-derived integration OAuth URL staging 边界已接入 Jobs Worker：`gmail` 等别名复用 Calendar 的 D1 哈希 state，未知 provider 保留 400，未认证请求保留 401；真实 Google 授权仍受 Worker client secret 配置门槛约束。
 - Calendar OAuth 配置优先使用专用 client，缺失时回退到 Better Auth 共用的 `GOOGLE_CLIENT_ID/SECRET`；两者都要求登记 staging callback URI。Jobs 同时接受 canonical `google-calendar` 和旧客户端使用的 `google_calendar` 回调路径，二者共享同一 D1 single-use state/token authority。
+- Calendar disconnect 增加 per-user OAuth generation fence：断开时原子删除 integration/pending state 并递增 generation，已消费 state 的 in-flight callback 在写入 provider grant 前执行 D1 CAS；因此 provider exchange 完成于断开之后也不会重新建立连接。该并发回归仅由 mock provider 覆盖，未声称真实 Google provider replay。
 - Apple Health staging 数据面已接入：`PUT /v1/integrations/apple-health/sync`、`GET /v1/integrations/apple_health`、连接保存和断开均由 Edge → API Core → D1 `cf_apple_health` 处理；设备摘要有请求/存储大小上限，账号删除 residual purge 与 mutation fence 同步覆盖。
 - 数据保护迁移 staging 边界已接入 API Core：`GET /v1/users/migration/requests?target_level=enhanced` 经 Edge → API Core → D1 返回 uid 隔离的 conversation/memory/chat 待迁移项，三个写入/批量/finalize 端点也已由 Edge → API Core 接管并在缺少 completed cutover 或加密 executor 时 fail-closed 503；不写入 legacy、不生成伪造 receipt。真正的加密 payload、Queue executor 和生产回放仍未完成。
 - 数据保护迁移清单 live staging 验证：隔离 Better Auth 账号的合法查询返回 200/空清单，未认证为 401，非法 target 为 400；随后通过公开删号完成 Auth user/session/account 清理，App D1 intent 为 0（仅保留预期 tombstone）。

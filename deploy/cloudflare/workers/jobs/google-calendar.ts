@@ -66,7 +66,7 @@ type CalendarCredentials = {
 
 class GoogleCalendarError extends Error {
   constructor(
-    readonly status: 400 | 401 | 402 | 404 | 413 | 422 | 502 | 503,
+    readonly status: 400 | 401 | 402 | 404 | 409 | 413 | 422 | 502 | 503,
     readonly detail: string,
   ) {
     super(detail);
@@ -261,19 +261,26 @@ async function syncOnboardingProjection(
   uid: string,
   projection: CalendarOnboardingProjection,
   now: number,
+  expectedOAuthGeneration?: number,
 ) {
   const current = await env.APP_DB.prepare(
-    "SELECT onboarding_skipped, created_at FROM cf_user_calendar_onboarding WHERE uid = ?",
+    "SELECT onboarding_skipped, created_at, oauth_generation FROM cf_user_calendar_onboarding WHERE uid = ?",
   )
     .bind(uid)
-    .first<{ onboarding_skipped: number; created_at: number }>();
+    .first<{
+      onboarding_skipped: number;
+      created_at: number;
+      oauth_generation?: number;
+    }>();
+  const oauthGeneration = expectedOAuthGeneration ?? current?.oauth_generation ?? 0;
   await env.APP_DB.prepare(
     "INSERT INTO cf_user_calendar_onboarding " +
-      "(uid, connected, onboarding_skipped, reauth_required, has_access_token, reauth_reason, created_at, updated_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+      "(uid, connected, onboarding_skipped, reauth_required, has_access_token, reauth_reason, oauth_generation, created_at, updated_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
       "ON CONFLICT(uid) DO UPDATE SET connected = excluded.connected, " +
       "reauth_required = excluded.reauth_required, has_access_token = excluded.has_access_token, " +
-      "reauth_reason = excluded.reauth_reason, updated_at = excluded.updated_at",
+      "reauth_reason = excluded.reauth_reason, updated_at = excluded.updated_at " +
+      "WHERE cf_user_calendar_onboarding.oauth_generation = ?",
   )
     .bind(
       uid,
@@ -282,8 +289,10 @@ async function syncOnboardingProjection(
       projection.reauthRequired ? 1 : 0,
       projection.hasAccessToken ? 1 : 0,
       projection.reauthReason,
+      oauthGeneration,
       current?.created_at ?? now,
       now,
+      oauthGeneration,
     )
     .run();
 }
@@ -478,6 +487,7 @@ async function storeGoogleConnection(
   env: JobsEnv,
   uid: string,
   tokenData: Record<string, unknown>,
+  oauthGeneration: number,
   dependencies?: GoogleCalendarDependencies,
 ) {
   const now = nowSeconds(dependencies);
@@ -501,10 +511,11 @@ async function storeGoogleConnection(
           new Set(tokenData.scope.split(/\s+/).filter((scope) => scope)),
         )
       : [GOOGLE_CALENDAR_SCOPE];
-  await env.APP_DB.prepare(
+  const result = await env.APP_DB.prepare(
     "INSERT INTO cf_google_calendar_integrations " +
       "(uid, connected, access_token_enc, refresh_token_enc, token_expires_at, granted_scopes_json, created_at, updated_at) " +
-      "VALUES (?, 1, ?, ?, ?, ?, ?, ?) " +
+      "SELECT ?, 1, ?, ?, ?, ?, ?, ? " +
+      "WHERE COALESCE((SELECT oauth_generation FROM cf_user_calendar_onboarding WHERE uid = ?), 0) = ? " +
       "ON CONFLICT(uid) DO UPDATE SET connected = 1, access_token_enc = excluded.access_token_enc, " +
       "refresh_token_enc = excluded.refresh_token_enc, token_expires_at = excluded.token_expires_at, " +
       "granted_scopes_json = excluded.granted_scopes_json, updated_at = excluded.updated_at",
@@ -517,8 +528,16 @@ async function storeGoogleConnection(
       JSON.stringify(scopes),
       current?.created_at ?? now,
       now,
+      uid,
+      oauthGeneration,
     )
     .run();
+  if (result.meta?.changes !== 1) {
+    throw new GoogleCalendarError(
+      409,
+      "Google Calendar authorization was revoked",
+    );
+  }
   await syncOnboardingProjection(
     env,
     uid,
@@ -529,6 +548,7 @@ async function storeGoogleConnection(
       reauthReason: null,
     },
     now,
+    oauthGeneration,
   );
 }
 
@@ -826,13 +846,14 @@ async function oauthCallback(
     return oauthResponse(false, "config_error");
   }
   const stateRow = await c.env.APP_DB.prepare(
-    "DELETE FROM cf_google_calendar_oauth_states WHERE state_hash = ? RETURNING uid, expires_at, success_redirect_url",
+    "DELETE FROM cf_google_calendar_oauth_states WHERE state_hash = ? RETURNING uid, expires_at, success_redirect_url, oauth_generation",
   )
     .bind(await sha256Hex(state))
     .first<{
       uid: string;
       expires_at: number;
       success_redirect_url: string | null;
+      oauth_generation?: number;
     }>();
   if (!stateRow || stateRow.expires_at <= nowSeconds(dependencies)) {
     return oauthResponse(false, "invalid_state");
@@ -842,6 +863,7 @@ async function oauthCallback(
       c.env,
       stateRow.uid,
       await exchangeGoogleCode(c.env, code, dependencies),
+      stateRow.oauth_generation ?? 0,
       dependencies,
     );
     return oauthResponse(true, undefined, stateRow.success_redirect_url || undefined);
@@ -1463,18 +1485,31 @@ export function registerGoogleCalendarRoutes(
       const configuration = googleConfiguration(c.env);
       const state = randomToken(32);
       const now = nowSeconds(dependencies);
+      const onboarding = await c.env.APP_DB.prepare(
+        "SELECT oauth_generation FROM cf_user_calendar_onboarding WHERE uid = ?",
+      )
+        .bind(context.uid)
+        .first<{ oauth_generation?: number }>();
+      const oauthGeneration = onboarding?.oauth_generation ?? 0;
       await c.env.APP_DB.batch([
         c.env.APP_DB.prepare(
           "DELETE FROM cf_google_calendar_oauth_states WHERE expires_at <= ?",
         ).bind(now),
         c.env.APP_DB.prepare(
-          "INSERT INTO cf_google_calendar_oauth_states (state_hash, uid, expires_at, created_at, success_redirect_url) VALUES (?, ?, ?, ?, ?)",
+          "INSERT INTO cf_user_calendar_onboarding " +
+            "(uid, connected, onboarding_skipped, reauth_required, has_access_token, reauth_reason, oauth_generation, created_at, updated_at) " +
+            "VALUES (?, 0, 0, 0, 0, NULL, ?, ?, ?) " +
+            "ON CONFLICT(uid) DO NOTHING",
+        ).bind(context.uid, oauthGeneration, now, now),
+        c.env.APP_DB.prepare(
+          "INSERT INTO cf_google_calendar_oauth_states (state_hash, uid, expires_at, created_at, success_redirect_url, oauth_generation) VALUES (?, ?, ?, ?, ?, ?)",
         ).bind(
           await sha256Hex(state),
           context.uid,
           now + OAUTH_STATE_TTL_SECONDS,
           now,
           successRedirectURL,
+          oauthGeneration,
         ),
       ]);
       return c.json({
@@ -1558,6 +1593,16 @@ export function registerGoogleCalendarRoutes(
         c.env.APP_DB.prepare(
           "DELETE FROM cf_google_calendar_oauth_states WHERE uid = ?",
         ).bind(context.uid),
+        // Advance the generation even when there is no current integration.
+        // A callback that already consumed its state can then prove it was
+        // revoked before it writes the provider grant.
+        c.env.APP_DB.prepare(
+          "INSERT INTO cf_user_calendar_onboarding " +
+            "(uid, connected, onboarding_skipped, reauth_required, has_access_token, reauth_reason, oauth_generation, created_at, updated_at) " +
+            "VALUES (?, 0, 0, 0, 0, NULL, 1, ?, ?) " +
+            "ON CONFLICT(uid) DO UPDATE SET connected = 0, reauth_required = 0, has_access_token = 0, " +
+            "reauth_reason = NULL, oauth_generation = cf_user_calendar_onboarding.oauth_generation + 1, updated_at = excluded.updated_at",
+        ).bind(context.uid, nowSeconds(dependencies), nowSeconds(dependencies)),
       ]);
       if (result.meta?.changes !== 1) {
         return c.json({ detail: "Integration not found" }, 404);

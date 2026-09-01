@@ -573,6 +573,61 @@ describe("Google Calendar Worker routes", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("does not restore a grant when disconnect races an in-flight OAuth exchange", async () => {
+    const { database, env, fetchImpl } = environment();
+    let app: ReturnType<typeof testApp>;
+    fetchImpl.mockImplementation(async (input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url !== "https://oauth2.googleapis.com/token") {
+        throw new Error(`unexpected Google URL ${url}`);
+      }
+      const disconnected = await app.request(
+        "/v1/integrations/google_calendar",
+        { method: "DELETE" },
+      );
+      expect(disconnected.status).toBe(204);
+      return Response.json({
+        access_token: "calendar-access-raced",
+        refresh_token: "calendar-refresh-raced",
+        expires_in: 3_600,
+      });
+    });
+    app = testApp(env, { fetchImpl, now: () => 1_000 });
+    await app.request("/v1/integrations/google_calendar", {
+      method: "PUT",
+      body: JSON.stringify({
+        connected: true,
+        access_token: "calendar-access",
+      }),
+    });
+    const oauth = await app.request(
+      "/v1/integrations/google_calendar/oauth-url",
+    );
+    const authURL = new URL((await oauth.json<{ auth_url: string }>()).auth_url);
+    const callback = await app.request(
+      `/v2/integrations/google-calendar/callback?code=calendar-code&state=${encodeURIComponent(authURL.searchParams.get("state")!)}`,
+      {},
+      false,
+    );
+    expect(await callback.text()).toContain("Google could not complete authentication");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(
+      database.database
+        .prepare("SELECT COUNT(*) AS count FROM cf_google_calendar_integrations WHERE uid = ?")
+        .get("calendar-user"),
+    ).toEqual({ count: 0 });
+    expect(
+      database.database
+        .prepare("SELECT connected, oauth_generation FROM cf_user_calendar_onboarding WHERE uid = ?")
+        .get("calendar-user"),
+    ).toEqual({ connected: 0, oauth_generation: 1 });
+  });
+
   it("rejects open redirect targets for Calendar OAuth", async () => {
     const { env } = environment();
     const app = testApp(env, {});
