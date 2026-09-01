@@ -3,6 +3,7 @@ import {
   assertNoPendingD1Migrations,
   createD1MigrationConfig,
   resolveD1DatabaseId,
+  resolveProductionD1Migrations,
   resolveStagingD1Migrations,
 } from "../scripts/d1-migrations.mjs";
 
@@ -92,6 +93,35 @@ describe("Cloudflare D1 migration release config", () => {
         },
       ],
     );
+  });
+
+  it("builds isolated production migration targets without reusing staging", () => {
+    const output = JSON.stringify([
+      {
+        name: "omi-cf-auth-production",
+        uuid: "33333333-3333-4333-8333-333333333333",
+      },
+      {
+        name: "omi-cf-app-production",
+        uuid: "44444444-4444-4444-8444-444444444444",
+      },
+    ]);
+    expect(
+      resolveProductionD1Migrations(output, (path) => `/repo/${path}`),
+    ).toEqual([
+      {
+        databaseName: "omi-cf-auth-production",
+        databaseId: "33333333-3333-4333-8333-333333333333",
+        binding: "AUTH_DB",
+        migrationsDir: "/repo/migrations/auth",
+      },
+      {
+        databaseName: "omi-cf-app-production",
+        databaseId: "44444444-4444-4444-8444-444444444444",
+        binding: "APP_DB",
+        migrationsDir: "/repo/migrations/app",
+      },
+    ]);
   });
 
   it("fails verification whenever Wrangler reports pending migrations", () => {

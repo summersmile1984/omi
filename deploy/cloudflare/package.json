@@ -13,6 +13,7 @@
     "backfill:d1": "node scripts/backfill-d1.mjs",
     "benchmark:staging": "node scripts/benchmark-staging.mjs",
     "smoke:staging": "node scripts/smoke-staging.mjs",
+    "smoke:production": "CLOUDFLARE_EDGE_URL=${CLOUDFLARE_EDGE_URL:-https://omi-cf-edge-production.summersmile1984.workers.dev} CLOUDFLARE_WEB_URL=${CLOUDFLARE_WEB_URL:-https://omi-web-app-production.summersmile1984.workers.dev} node scripts/smoke-staging.mjs",
     "calendar:positive-probe": "node scripts/calendar-positive-probe.mjs",
     "dlq:positive-probe": "node scripts/dlq-positive-probe.mjs",
     "identity:import": "node scripts/import-firebase-identities.mjs",
@@ -26,7 +27,9 @@
     "wrapped:export-verify": "node scripts/wrapped-history-export-verify.mjs",
     "chat:export-verify": "node scripts/chat-history-export-verify.mjs",
     "deploy:staging": "npm run validate:backend-routes && npm run validate:manifest && node scripts/deploy.mjs staging",
-    "rollback:staging": "node scripts/rollback-staging.mjs"
+    "rollback:staging": "node scripts/rollback-staging.mjs",
+    "deploy:production": "npm run validate:backend-routes && npm run validate:manifest && node scripts/deploy-production.mjs",
+    "rollback:production": "node scripts/rollback-production.mjs"
   },
   "dependencies": {
     "@audio/encode-mp3": "1.2.2",

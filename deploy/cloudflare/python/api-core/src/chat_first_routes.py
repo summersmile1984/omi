@@ -179,7 +179,10 @@ async def _bounded_json(request: Request) -> object:
 
 async def _cutover_generation(request: Request, uid: str) -> int | None:
     env = request.scope["env"]
-    if getattr(env, "ACCOUNT_CUTOVER_PROFILE", None) != "isolated-staging":
+    if str(getattr(env, "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED", "")).lower() not in {"1", "true", "yes"}:
+        return None
+    manifest_id = getattr(env, "ACCOUNT_CUTOVER_MANIFEST_ID", None)
+    if not isinstance(manifest_id, str) or not manifest_id:
         return None
     row = (
         await env.APP_DB.prepare(
@@ -194,7 +197,7 @@ async def _cutover_generation(request: Request, uid: str) -> int | None:
     if (
         row.get("state") != "new"
         or row.get("checkpoint_phase") != "completed"
-        or row.get("manifest_id") != "isolated-staging-v1"
+        or row.get("manifest_id") != manifest_id
         or int(row.get("destination_backend_bound") or 0) != 1
     ):
         return None

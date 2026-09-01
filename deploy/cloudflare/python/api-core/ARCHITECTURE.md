@@ -125,8 +125,10 @@ free-plan chat quota remains the cost gate for user-initiated extraction;
 suggestion and advice retain their independent Edge limits and safe defaults.
 
 `account_cutover_routes.py` is the routing authority consumed by Edge. Only
-`ACCOUNT_CUTOVER_PROFILE=isolated-staging` may initialize a missing Better Auth
-principal directly as `new`; the initializer writes a completed,
+`ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED=true` plus an exact
+`ACCOUNT_CUTOVER_MANIFEST_ID` may initialize a missing Better Auth principal
+directly as `new`; staging uses `isolated-staging-v1` and the independent
+Cloudflare production deployment uses `isolated-production-v1`. The initializer writes a completed,
 destination-bound row before returning. Every other missing principal stays
 `legacy`, and malformed or incomplete `new` rows fail closed. A durable account
 deletion intent or live deletion tombstone takes precedence over the cutover

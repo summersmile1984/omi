@@ -13,6 +13,7 @@
   "limits": { "cpu_ms": 300000 },
   "vars": {
     "PUBLIC_API_BASE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev",
+    "ACCOUNT_CUTOVER_MANIFEST_ID": "isolated-staging-v1",
     "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
     "WORKERS_AI_X_MEMORY_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "WORKERS_AI_WRAPPED_MODEL": "@cf/meta/llama-3.2-3b-instruct",

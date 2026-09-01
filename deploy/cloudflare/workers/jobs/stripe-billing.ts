@@ -7,6 +7,7 @@ import {
   StripeResponseError,
   stripeRequest,
 } from "./stripe-client";
+import { isolatedCutoverManifestId } from "./cutover-manifest";
 
 const MAX_PAYMENT_REQUEST_BYTES = 4_096;
 const MAX_WEBHOOK_BYTES = 128 * 1_024;
@@ -14,7 +15,6 @@ const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 const WEBHOOK_RETRY_SECONDS = 60;
 const WEBHOOK_RECONCILE_LIMIT = 50;
 const WEBHOOK_MAX_SCHEDULED_ATTEMPTS = 10;
-const ISOLATED_STAGING_MANIFEST = "isolated-staging-v1";
 const SUPPORTED_WEBHOOK_TYPES = new Set([
   "checkout.session.completed",
   "customer.subscription.created",
@@ -1361,7 +1361,7 @@ async function liveCloudflareAccount(env: JobsEnv, uid: string) {
   return (
     row?.state === "new" &&
     row.checkpoint_phase === "completed" &&
-    row.manifest_id === ISOLATED_STAGING_MANIFEST &&
+    row.manifest_id === isolatedCutoverManifestId(env) &&
     Number(row.destination_backend_bound) === 1 &&
     Number(row.deleting) === 0 &&
     Number(row.deleted) === 0

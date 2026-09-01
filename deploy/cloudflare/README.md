@@ -8,6 +8,60 @@ Post-deploy acceptance, test identities, evidence capture, observation windows,
 known product gaps, and rollback criteria are defined in
 [`dev/cloudflare-staging-validation-plan.md`](../../dev/cloudflare-staging-validation-plan.md).
 
+## Independent Cloudflare production release
+
+This branch also owns a production release that is isolated from both staging
+and the legacy Google serving plane. It creates `omi-cf-*-production` D1, R2,
+Queue, Vectorize, Worker, and Web resources and publishes these public origins:
+
+- `https://omi-cf-edge-production.summersmile1984.workers.dev`
+- `https://omi-web-app-production.summersmile1984.workers.dev`
+
+The release does not merge another adaptation branch, reuse any staging
+resource or secret, or change `api.omi.me` / `app.omi.me` DNS. It starts with an
+empty Better Auth/D1 data plane for new Cloudflare-native accounts. Existing
+Firebase identities and Firestore/GCS history are not silently copied or
+reclassified; routing an existing production-family client remains a separate
+`INV-DATA-1` + `INV-CUTOVER-1` migration ceremony.
+
+The command requires an exact operator confirmation, runs the full Cloudflare,
+Python Worker, and Web qualification suites, creates only missing production
+resources, applies and verifies both production D1 migration authorities,
+dry-runs every rendered production config, deploys dependencies before Edge,
+then deploys Web and verifies both readiness endpoints:
+
+```bash
+CLOUDFLARE_PRODUCTION_CONFIRM=deploy-independent-cloudflare-production \
+  npm run deploy:production
+```
+
+The first release generates new per-boundary secrets plus one shared internal
+assertion secret. The non-committed operator copy is written to
+`.wrangler/production-operator-secrets.json` with mode `0600`; it is never
+printed and must be retained for disaster recovery. Existing production
+Workers fail closed if that local store is unexpectedly missing. Optional
+Google Calendar, Stripe, Twilio, and social OAuth provider credentials remain
+unset until their own provider qualification is complete.
+
+Every release records a mode-`0600`
+`.wrangler/releases/production-before-*.json` snapshot. A failed first release
+removes only Workers created by that attempt; a failed update restores the
+previous active versions. Manual rollback uses the same exact confirmation:
+
+```bash
+CLOUDFLARE_PRODUCTION_CONFIRM=deploy-independent-cloudflare-production \
+  npm run rollback:production -- \
+  .wrangler/releases/production-before-<timestamp>.json
+```
+
+Authenticated acceptance uses a dedicated empty Better Auth account and the
+production URLs. Never reuse an operator or customer token:
+
+```bash
+CLOUDFLARE_SMOKE_TOKEN_FILE=/secure/production-smoke-token.json \
+  npm run smoke:production
+```
+
 The first staging slice contains:
 
 - `edge`: public routing, request IDs, trusted auth context and legacy fallback.
@@ -352,7 +406,7 @@ qualification. `deploy:staging` requires one of the two token inputs above and
 refuses to begin qualification when neither is configured; standalone
 `smoke:staging` may still run its public-only checks.
 
-The deployment script requires an already authenticated Wrangler session or a
+The staging deployment script requires an already authenticated Wrangler session or a
 scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; it never prints
 secret values. It creates/applies only the isolated `omi-cf-*-staging`
 resources.

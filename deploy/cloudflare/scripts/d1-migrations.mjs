@@ -14,6 +14,19 @@ export const STAGING_D1_MIGRATIONS = Object.freeze([
   }),
 ]);
 
+export const PRODUCTION_D1_MIGRATIONS = Object.freeze([
+  Object.freeze({
+    databaseName: "omi-cf-auth-production",
+    binding: "AUTH_DB",
+    migrationsDir: "migrations/auth",
+  }),
+  Object.freeze({
+    databaseName: "omi-cf-app-production",
+    binding: "APP_DB",
+    migrationsDir: "migrations/app",
+  }),
+]);
+
 export function resolveD1DatabaseId(rawList, databaseName) {
   let databases;
   try {
@@ -68,10 +81,18 @@ export function createD1MigrationConfig({
 }
 
 export function resolveStagingD1Migrations(rawList, resolveDirectory) {
+  return resolveD1Migrations(rawList, resolveDirectory, STAGING_D1_MIGRATIONS);
+}
+
+export function resolveProductionD1Migrations(rawList, resolveDirectory) {
+  return resolveD1Migrations(rawList, resolveDirectory, PRODUCTION_D1_MIGRATIONS);
+}
+
+function resolveD1Migrations(rawList, resolveDirectory, migrations) {
   if (typeof resolveDirectory !== "function") {
     throw new Error("D1 migration directory resolver is required");
   }
-  return STAGING_D1_MIGRATIONS.map((migration) => ({
+  return migrations.map((migration) => ({
     ...migration,
     databaseId: resolveD1DatabaseId(rawList, migration.databaseName),
     migrationsDir: resolveDirectory(migration.migrationsDir),

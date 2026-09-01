@@ -27,6 +27,7 @@ import {
   stripeSecretKey,
 } from "./stripe-client";
 import { purgeAccountVectorProjections } from "./vector-projection";
+import { isolatedCutoverManifestId } from "./cutover-manifest";
 
 const MAX_REQUEST_BODY_BYTES = 4_096;
 const FENCE_QUIESCENCE_SECONDS = 60;
@@ -39,7 +40,6 @@ const TOMBSTONE_SECONDS = 25 * 60 * 60;
 const R2_DELETE_BATCH_SIZE = 1_000;
 const D1_DELETE_BATCH_SIZE = 250;
 const RECONCILE_BATCH_SIZE = 50;
-const ISOLATED_STAGING_MANIFEST = "isolated-staging-v1";
 const STRIPE_SUBSCRIPTION_ID = /^sub_[A-Za-z0-9]{8,128}$/;
 const STRIPE_SCHEDULE_ID = /^sub_sched_[A-Za-z0-9]{8,128}$/;
 const STRIPE_CUSTOMER_ID = /^cus_[A-Za-z0-9]{8,128}$/;
@@ -248,7 +248,7 @@ async function assertCloudflareOwnedAccount(env: JobsEnv, uid: string) {
   if (
     row?.state !== "new" ||
     row.checkpoint_phase !== "completed" ||
-    row.manifest_id !== ISOLATED_STAGING_MANIFEST ||
+    row.manifest_id !== isolatedCutoverManifestId(env) ||
     Number(row.destination_backend_bound) !== 1
   ) {
     throw new Error("account deletion target is not Cloudflare-owned");

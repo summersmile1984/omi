@@ -78,7 +78,7 @@ def test_missing_cutover_row_projects_legacy_control():
     assert len(control["minimum_supported_builds"]) == 6
 
 
-def test_isolated_staging_better_auth_account_is_bound_before_product_traffic():
+def test_isolated_better_auth_account_uses_configured_manifest_before_product_traffic():
     secret = "cutover-secret"
     db = FakeDb()
     env = type(
@@ -87,7 +87,8 @@ def test_isolated_staging_better_auth_account_is_bound_before_product_traffic():
         {
             "APP_DB": db,
             "INTERNAL_ASSERTION_SECRET": secret,
-            "ACCOUNT_CUTOVER_PROFILE": "isolated-staging",
+            "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED": "true",
+            "ACCOUNT_CUTOVER_MANIFEST_ID": "isolated-production-v1",
         },
     )()
 
@@ -99,7 +100,7 @@ def test_isolated_staging_better_auth_account_is_bound_before_product_traffic():
     assert control["legacy_writes_allowed"] is False
     assert control["product_traffic_allowed"] is True
     assert control["migration"] == {
-        "manifest_id": "isolated-staging-v1",
+        "manifest_id": "isolated-production-v1",
         "schema_version": 1,
         "checkpoint_phase": "completed",
         "checkpoint_token": None,
@@ -114,7 +115,7 @@ def test_isolated_staging_better_auth_account_is_bound_before_product_traffic():
     assert db.connection.total_changes == changes_after_initialization
 
 
-def test_isolated_staging_does_not_reclassify_firebase_principals():
+def test_isolated_bootstrap_does_not_reclassify_firebase_principals():
     secret = "cutover-secret"
     db = FakeDb()
     env = type(
@@ -123,7 +124,8 @@ def test_isolated_staging_does_not_reclassify_firebase_principals():
         {
             "APP_DB": db,
             "INTERNAL_ASSERTION_SECRET": secret,
-            "ACCOUNT_CUTOVER_PROFILE": "isolated-staging",
+            "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED": "true",
+            "ACCOUNT_CUTOVER_MANIFEST_ID": "isolated-production-v1",
         },
     )()
     headers = signed_headers(secret)

@@ -273,6 +273,7 @@ function environment(
   });
   const env = {
     APP_DB: database as unknown as D1Database,
+    ACCOUNT_CUTOVER_MANIFEST_ID: "isolated-staging-v1",
     ASSETS: bucket.binding,
     CONVERSATION_RECORDINGS: conversationBucket.binding,
     SPEECH_PROFILES: speechProfileBucket.binding,

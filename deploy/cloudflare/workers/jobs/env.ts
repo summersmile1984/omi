@@ -82,6 +82,8 @@ export type JobsEnv = {
   SYNC_FRESH: Queue<JobMessage>;
   SYNC_BACKFILL: Queue<JobMessage>;
   INTERNAL_ASSERTION_SECRET?: string;
+  /** Exact destination manifest admitted by this isolated deployment. */
+  ACCOUNT_CUTOVER_MANIFEST_ID?: string;
   OPENAI_API_KEY?: string;
   /**
    * Canonical chat files use R2 plus Workers AI by default. Set false only

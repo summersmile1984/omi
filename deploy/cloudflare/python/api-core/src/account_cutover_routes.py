@@ -38,8 +38,6 @@ CHECKPOINT_PHASES = frozenset(
 PLATFORMS = ("android", "ios", "linux", "macos", "web", "windows")
 MAX_TOKEN_LENGTH = 128
 STABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-ISOLATED_STAGING_PROFILE = "isolated-staging"
-ISOLATED_STAGING_MANIFEST = "isolated-staging-v1"
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -204,8 +202,18 @@ def _deletion_control(state: str) -> dict[str, object]:
     }
 
 
-async def _initialize_isolated_staging_account(env: object, context: dict[str, object], uid: str) -> bool:
-    if getattr(env, "ACCOUNT_CUTOVER_PROFILE", None) != ISOLATED_STAGING_PROFILE:
+def _isolated_cutover_manifest(env: object) -> str | None:
+    if not _bool(getattr(env, "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED", None)):
+        return None
+    manifest_id = getattr(env, "ACCOUNT_CUTOVER_MANIFEST_ID", None)
+    if not isinstance(manifest_id, str) or not STABLE_ID.fullmatch(manifest_id):
+        return None
+    return manifest_id
+
+
+async def _initialize_isolated_account(env: object, context: dict[str, object], uid: str) -> bool:
+    manifest_id = _isolated_cutover_manifest(env)
+    if manifest_id is None:
         return False
     if context.get("authority") != "better-auth":
         return False
@@ -216,7 +224,7 @@ async def _initialize_isolated_staging_account(env: object, context: dict[str, o
         "offline_queue_instruction, checkpoint_phase, checkpoint_token, manifest_id, destination_backend_bound, "
         "updated_at) VALUES (?, 1, 'new', 1, 1, 1, 0, 'none', 'completed', NULL, ?, 1, ?) "
         "ON CONFLICT(uid) DO NOTHING"
-    ).bind(uid, ISOLATED_STAGING_MANIFEST, now).run()
+    ).bind(uid, manifest_id, now).run()
     return True
 
 
@@ -269,7 +277,7 @@ async def get_account_cutover_control(request: Request):
         if deletion_state is not None:
             return _deletion_control(deletion_state)
         row = await _read_cutover_row(env, uid)
-        if row is None and await _initialize_isolated_staging_account(env, context, uid):
+        if row is None and await _initialize_isolated_account(env, context, uid):
             row = await _read_cutover_row(env, uid)
         return _control(
             row,

@@ -115,6 +115,7 @@ function environment() {
   const database = new SqliteD1();
   const env = {
     APP_DB: database as unknown as D1Database,
+    ACCOUNT_CUTOVER_MANIFEST_ID: "isolated-staging-v1",
     INTERNAL_ASSERTION_SECRET: "creator-payments-internal-secret",
     STRIPE_SECRET_KEY: "sk_test_creator_payments",
     STRIPE_CONNECT_WEBHOOK_SECRET: "whsec_creator_payments",

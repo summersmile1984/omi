@@ -104,7 +104,12 @@ def make_env(secret: str, *, broken: bool = False):
     return type(
         "Env",
         (),
-        {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret, "ACCOUNT_CUTOVER_PROFILE": "isolated-staging"},
+        {
+            "APP_DB": db,
+            "INTERNAL_ASSERTION_SECRET": secret,
+            "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED": "true",
+            "ACCOUNT_CUTOVER_MANIFEST_ID": "isolated-staging-v1",
+        },
     )()
 
 

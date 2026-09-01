@@ -8,6 +8,7 @@ import {
   stripeRequest,
 } from "./stripe-client";
 import { verifyStripeWebhookSignature } from "./stripe-billing";
+import { isolatedCutoverManifestId } from "./cutover-manifest";
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type RequestContext = (c: JobsContext) => Promise<SignedAuthContext | null>;
@@ -39,7 +40,6 @@ const COUNTRY_CODE = /^[A-Z]{2}$/;
 const MAX_JSON_BYTES = 16_000;
 const MAX_WEBHOOK_BYTES = 256_000;
 const REFRESH_TOKEN_SECONDS = 24 * 60 * 60;
-const ISOLATED_STAGING_MANIFEST = "isolated-staging-v1";
 
 let countryCache: {
   expiresAt: number;
@@ -708,7 +708,7 @@ async function liveCloudflareAccount(env: JobsEnv, uid: string) {
   return (
     row?.state === "new" &&
     row.checkpoint_phase === "completed" &&
-    row.manifest_id === ISOLATED_STAGING_MANIFEST &&
+    row.manifest_id === isolatedCutoverManifestId(env) &&
     Number(row.destination_backend_bound) === 1 &&
     Number(row.deleting) === 0 &&
     Number(row.deleted) === 0
