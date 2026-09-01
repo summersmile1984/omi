@@ -1547,11 +1547,18 @@ export function registerGoogleCalendarRoutes(
     const context = await requestContext(c);
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
-      const result = await c.env.APP_DB.prepare(
-        "DELETE FROM cf_google_calendar_integrations WHERE uid = ?",
-      )
-        .bind(context.uid)
-        .run();
+      const [result] = await c.env.APP_DB.batch([
+        c.env.APP_DB.prepare(
+          "DELETE FROM cf_google_calendar_integrations WHERE uid = ?",
+        ).bind(context.uid),
+        // A pending OAuth callback must not be able to reconnect a grant after
+        // the user explicitly disconnected Calendar.  Keep this deletion in
+        // the same D1 batch as the integration removal so a disconnect cannot
+        // leave a usable state behind if the two writes race.
+        c.env.APP_DB.prepare(
+          "DELETE FROM cf_google_calendar_oauth_states WHERE uid = ?",
+        ).bind(context.uid),
+      ]);
       if (result.meta?.changes !== 1) {
         return c.json({ detail: "Integration not found" }, 404);
       }

@@ -526,6 +526,53 @@ describe("Google Calendar Worker routes", () => {
     expect(html).toContain("omi-computer-dev://google_calendar/callback?success=true");
   });
 
+  it("invalidates pending OAuth callbacks when Calendar is disconnected", async () => {
+    const { database, env, fetchImpl } = environment();
+    const app = testApp(env, { fetchImpl, now: () => 1_000 });
+    await app.request("/v1/integrations/google_calendar", {
+      method: "PUT",
+      body: JSON.stringify({
+        connected: true,
+        access_token: "calendar-access",
+      }),
+    });
+    const oauth = await app.request(
+      "/v1/integrations/google_calendar/oauth-url",
+    );
+    const authURL = new URL(
+      (await oauth.json<{ auth_url: string }>()).auth_url,
+    );
+    const state = authURL.searchParams.get("state");
+    expect(state).toBeTruthy();
+    expect(
+      database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_google_calendar_oauth_states",
+        )
+        .get(),
+    ).toEqual({ count: 1 });
+
+    const disconnected = await app.request("/v1/integrations/google_calendar", {
+      method: "DELETE",
+    });
+    expect(disconnected.status).toBe(204);
+    expect(
+      database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_google_calendar_oauth_states",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+
+    const callback = await app.request(
+      `/v2/integrations/google-calendar/callback?code=calendar-code&state=${encodeURIComponent(state!)}`,
+      {},
+      false,
+    );
+    expect(await callback.text()).toContain("invalid or expired");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("rejects open redirect targets for Calendar OAuth", async () => {
     const { env } = environment();
     const app = testApp(env, {});
