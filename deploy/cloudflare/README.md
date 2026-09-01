@@ -1237,6 +1237,21 @@ an optional p95 budget (`CLOUDFLARE_BENCHMARK_P95_MS`, default 4 seconds). It is
 report-only by default; set `CLOUDFLARE_BENCHMARK_ENFORCE=1` to make a budget
 exceedance fail the command.
 
+For a provider-backed Calendar check, use only a disposable staging account and
+a short-lived Google access token:
+
+```bash
+CLOUDFLARE_CALENDAR_PROBE_BEARER_TOKEN='…' \
+CLOUDFLARE_CALENDAR_PROBE_ACCESS_TOKEN='…' \
+CLOUDFLARE_CALENDAR_PROBE_CONFIRM=1 \
+npm run calendar:positive-probe
+```
+
+The probe verifies encrypted integration save, Google events read, and cleanup;
+it never creates an event, prints the access token, or targets production. It
+does not replace the interactive Google OAuth callback probe, which still
+requires the staging client ID/secret and registered callback URI.
+
 The People routes migrate uid-scoped person id/name metadata with idempotent
 create, list, rename, and delete operations. The response keeps the existing
 Person shape, but speech sample URLs are empty until sample objects and signed
