@@ -367,7 +367,7 @@ async function readInput(filename) {
   if (buffer.byteLength > MAX_INPUT_BYTES) fail(`input exceeds ${MAX_INPUT_BYTES} bytes`);
   let parsed;
   try {
-    parsed = JSON.parse(buffer.toString("utf8"));
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer));
   } catch {
     fail("input is not valid JSON");
   }

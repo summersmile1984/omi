@@ -273,7 +273,7 @@ async function readJson(filename) {
   const raw = await readFile(filename);
   if (raw.byteLength > MAX_INPUT_BYTES) fail(`input exceeds ${MAX_INPUT_BYTES} bytes`);
   try {
-    return JSON.parse(raw.toString("utf8"));
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
   } catch {
     fail("input is not valid JSON");
   }

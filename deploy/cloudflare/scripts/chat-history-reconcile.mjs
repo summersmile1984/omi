@@ -512,7 +512,7 @@ async function readManifest(filename) {
   if (raw.byteLength > MAX_INPUT_BYTES) fail(`input exceeds ${MAX_INPUT_BYTES} bytes`);
   let parsed;
   try {
-    parsed = JSON.parse(raw.toString("utf8"));
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
   } catch {
     fail("input is not valid JSON");
   }

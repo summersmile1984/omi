@@ -503,7 +503,7 @@ async function readJson(filename) {
   if (buffer.byteLength > MAX_INPUT_BYTES)
     fail(`input exceeds ${MAX_INPUT_BYTES} bytes`);
   try {
-    return JSON.parse(buffer.toString("utf8"));
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer));
   } catch {
     fail("input is not valid JSON");
   }
