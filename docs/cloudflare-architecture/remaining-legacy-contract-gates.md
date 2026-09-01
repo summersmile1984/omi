@@ -1,6 +1,6 @@
 # Remaining legacy route contract gates
 
-截至 2026-09-01，Cloudflare route inventory 已没有 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名。当前按“空数据新部署、无旧客户端”验收：历史回填和旧 wire parity 不属于本期完成条件；本期只需闭合新客户端会实际使用的 authority、provider、删除和 live smoke。
+截至 2026-09-01，Cloudflare route inventory 已没有 `legacy-owned` 路由。本文件记录本轮对 auth/oauth、phone、wrapped、task intelligence、chat compatibility 和 Persona/MCP 相关入口的独立审计结果。它是迁移准入清单，不是把 legacy 路由改成一个返回成功的兼容别名。当前按“空数据新部署、无旧客户端”验收：历史回填和旧 wire parity 不属于本期完成条件；本期只需闭合新客户端会实际使用的 authority、删除和 live smoke。外部 provider secret 仅在用户明确启用对应业务集成时需要；Workers AI 主路径不依赖 OpenAI/Gemini。
 
 ## 结论
 
@@ -12,11 +12,11 @@ Auth/social、External App OAuth 与 Persona/Twitter 已切换到 Cloudflare sta
 | External App OAuth | 0 | 新部署可用，待 provider smoke | D1 app projection、CSRF transaction、install CAS 和删除 fence 已闭合；启用外部应用时需提供真实 provider 配置并做一次 callback/revoke smoke |
 | Phone / Twilio | 0 | 可选，待 provider 配置 | Jobs 已闭合 caller-ID、quota、webhook 和删除清理；只有启用电话功能时才需要 Twilio credentials/号码验证 |
 | Wrapped | 0 | 可选，待 provider smoke | D1 recap/job/notification authority 已闭合；使用 Wrapped 时需验证 Workers AI binding 和 Queue drain |
-| Chat compatibility | 0 | 新客户端受限 contract 已用 | Jobs/API-AI bounded chat/attachment routes 已承载；需按实际使用的 AI provider 配置 secret 并做 authenticated JSON/SSE smoke，不要求旧桌面 wire parity |
+| Chat compatibility | 0 | 新客户端受限 contract 已用 | Jobs/API-AI bounded chat routes 默认走 Workers AI；只有显式选择 OpenAI BYOK 或 Assistants/file adapter 时才需要对应 secret，不要求旧桌面 wire parity |
 | Persona / MCP mutation | 0 | 可选，待 provider smoke | MCP registration/callback/refresh 与 D1 projection 已闭合；启用外部 MCP 时需 provider URL/secret 和一次 discovery/tool smoke |
 | Staged tasks / task intelligence | 0 | 可选，待 provider smoke | API Core/D1 candidate authority、LLM receipt 和 Queue retry 已闭合；使用该功能时需做真实 provider/Queue 正向探针 |
-| Gemini proxy | 0 | 可选，待 provider 配置 | API-AI bounded JSON/SSE、BYOK enrollment、quota 和 provider alias 已闭合；启用 Gemini 时需配置 AI Studio 或 Vertex secret |
-| Files | 0 | 新客户端可用，待 provider smoke | Jobs 已承载 R2/D1 文件 contract；使用文件问答时需配置 OpenAI provider 和 `CHAT_FILES` R2，并完成上传/读取 smoke |
+| Gemini proxy | 0 | 可选兼容面，非本期依赖 | API-AI bounded JSON/SSE、BYOK enrollment、quota 和 provider alias 已闭合；只有明确启用 Gemini 兼容入口时才需要 AI Studio/Vertex secret |
+| Files | 0 | 新客户端文本路径可用 | 通用文件上传使用 R2/D1；只有启用文件问答/Assistants adapter 时才需要 OpenAI provider 与 `CHAT_FILES` R2 |
 
 上表当前 legacy 合计 0 条。`POST /v1/apps/migrate-owner` 已由 Edge→Jobs staging owner 承载，保留旧请求/响应形状但默认 gate 关闭，并要求 Auth anonymous bridge、数据 attestation、generation/deletion fence；它仍受真实 provider、身份连续性、历史回放和生产切换门槛约束。Auth/social 的 4 条 exact 路径与 External App OAuth 的 2 条 exact 路径已由 Auth/Jobs staging owner 承载，但同样不能视为 production parity；`GET /v1/apps/mcp/callback`、`POST /v1/apps/mcp` 和 `POST /v1/apps/{app_id}/mcp/refresh` 已由 Jobs staging owner 承载。Twitter ownership exact route 默认 gate/secret 关闭，生产 provider/data parity 仍保留在表内。`/v1/mcp/*` 和 `/api/better-auth/*` 已迁移的 MCP OAuth/会话入口也不计入本表。Task intelligence 的 13 条路径已是 staging owner，但其生产门槛仍保留在表内。
 
@@ -107,4 +107,4 @@ Cloudflare 当前 `POST /v1/apps/{app_id}/refresh-manifest` 只针对 D1 中的 
 4. 旧客户端或旧 provider wire fixture（包括 redirect/HTML、form、SSE 或 token response，按路由适用）；
 5. staging live probe：先证明新 owner 命中，再证明旧 backend 未被调用，最后完成真实正向/失败/删号探针。
 
-在这些证据出现之前，`AUTH_OAUTH_STAGING_FAIL_CLOSED`、`PHONE_TWILIO_STAGING_FAIL_CLOSED`、`WRAPPED_STAGING_FAIL_CLOSED`、`CHAT_COMPAT_STAGING_FAIL_CLOSED` 和其它现有保护开关应继续保留；它们是泄露/误写防线，不计作生产迁移完成。已经切到 staging owner 的 Chat/Files/Gemini/MCP exact routes 仍需保持 provider/history fail-closed。
+在这些证据出现之前，`AUTH_OAUTH_STAGING_FAIL_CLOSED`、`PHONE_TWILIO_STAGING_FAIL_CLOSED`、`WRAPPED_STAGING_FAIL_CLOSED`、`CHAT_COMPAT_STAGING_FAIL_CLOSED` 和其它现有保护开关应继续保留；它们是泄露/误写防线，不计作生产迁移完成。已经切到 staging owner 的 Chat/Files/Gemini/MCP exact routes 仍需保持 provider/history fail-closed；缺少可选 provider 时只拒绝该可选请求，不影响 Workers AI 主路径。

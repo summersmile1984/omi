@@ -6,7 +6,8 @@
 指纹校验和 30/60 burst，API-AI Worker 负责 Gemini JSON/SSE provider
 adapter、D1 daily ledger 与 usage accounting。生产 owner promotion 仍需
 完成旧客户端兼容和真实 Vertex/provider 验证；不能把 staging owner 当成
-生产 parity。
+生产 parity。该 proxy 是可选的桌面兼容面，不是 Workers AI 新部署的生成式
+AI 依赖；不启用时不需要任何 Gemini secret。
 
 ## 结论
 
@@ -16,8 +17,9 @@ Cloudflare Worker 可以通过 `fetch` 调用 Gemini REST API；Gemini 官方 RE
 Better Auth 也原生支持把 D1 作为数据库，因此新建的 Cloudflare-only
 Gemini surface 可以使用 Better Auth session、Edge signed context 和 D1。
 
-Cloudflare staging owner 已经可以在配置了 provider secret 的环境中真正发起
-Gemini 请求；缺少 secret 时 API-AI 明确返回 `503`，不会回退到 legacy。生产
+Cloudflare staging owner 仅在显式启用且配置 provider secret 的环境中发起
+Gemini 请求；缺少 secret 时 API-AI 明确返回 `503`，不会回退到 legacy。新
+客户端的 Workers AI 路径不读取这些 secret，也不依赖该 proxy。生产
 兼容仍有以下未闭合项：
 
 1. 旧 Firebase principal 到 Better Auth user 的可回滚 identity bridge。Auth

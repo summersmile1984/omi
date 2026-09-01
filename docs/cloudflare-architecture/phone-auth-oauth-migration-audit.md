@@ -4,7 +4,7 @@
 
 ## 本期范围修订（2026-09-01）
 
-本期按空数据 Cloudflare 新部署验收：没有生产 Firestore/GCS 数据需要回填，也不要求 Firebase legacy token、旧客户端或旧 provider wire 兼容。下文保留的历史 authority 与回放步骤只适用于未来需要承接存量账号或旧客户端的独立迁移窗口，不构成本期发布阻塞。本期以 Better Auth + D1/R2/Jobs 的新 surface 为准，实际未完成项是启用功能所需的 provider secret、authenticated smoke、删除残留检查和正式 rollout。
+本期按空数据 Cloudflare 新部署验收：没有生产 Firestore/GCS 数据需要回填，也不要求 Firebase legacy token、旧客户端或旧 provider wire 兼容。下文保留的历史 authority 与回放步骤只适用于未来需要承接存量账号或旧客户端的独立迁移窗口，不构成本期发布阻塞。本期以 Better Auth + D1/R2/Jobs 的新 surface 为准；Workers AI 主路径不需要 OpenAI/Gemini secret，只有明确启用 Google/Apple、Calendar、Twilio 等外部业务集成时才配置对应 provider 并做 authenticated smoke、删除残留检查和正式 rollout。
 
 ## 结论
 
