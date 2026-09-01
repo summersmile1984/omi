@@ -295,3 +295,14 @@ receipt。apply 在一个 D1 batch 中先写 `cf_chat_history_import_ledger`，�
 该 endpoint 是审阅后的 staging apply seam，不会读取 Firestore/GCS，也不会自动发现或执行
 导出文件；当前 gate 默认关闭，尚未做真实历史 export、远端正向 apply 或生产 owner cutover。
 启用前必须人工审阅 planner 输出并先完成独立 chat-file/provider continuity 验证。
+
+### Chat-file history reviewed apply（Jobs-direct）
+
+历史文件的 reviewed apply endpoint 只注册在 Jobs Worker 的内部面，故意不进入
+`routes.yaml` 或 Edge proxy。它不是面向客户端的 owner alias；调用方必须在受控 Jobs
+网络边界内提供 operator key、content-bound plan 和 provider attestation。即使 gate
+打开，executor 也会在写入 canonical `cf_chat_files.status='ready'` 前重新执行
+`CHAT_FILES.head()` 的 size/checksum、provider HMAC、account-generation、cutover 与
+deletion-fence 检查；缺任一条件只返回稳定错误，不会创建 ready row。若未来需要从 Edge
+调用，必须另行加入受保护的 manifest route、签名转发和 live negative/positive probe，不能
+把 Jobs-direct endpoint 视为已经完成 Edge owner 切换。

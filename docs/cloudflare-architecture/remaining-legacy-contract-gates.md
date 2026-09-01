@@ -4,7 +4,7 @@
 
 ## 结论
 
-Auth/social 与 External App OAuth 已切换到 Cloudflare staging owner；本轮剩余 legacy 仅为 Persona/Twitter 组。以下表格同时记录已经切换但仍未达到生产准入的组：
+Auth/social、External App OAuth 与 Persona/Twitter 已切换到 Cloudflare staging owner；当前没有 `legacy-owned` 路由。以下表格记录已经切换但仍未达到生产准入的组：
 
 | 路由组 | 条数 | 当前判断 | 不能切换的硬门槛 |
 | --- | ---: | --- | --- |
