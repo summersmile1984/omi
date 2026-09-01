@@ -679,6 +679,16 @@ export async function sendMessageStream(
     throw new Error(`Failed to send message: ${response.status}`);
   }
 
+  // File questions use the Cloudflare Jobs Assistant bridge.  Its durable
+  // provider run is intentionally admitted with 202 + Location, so the Web
+  // client polls the canonical run resource and adapts the terminal result
+  // back into the same data/done callbacks used by Workers AI text chat.
+  const location = response.headers.get('location');
+  if (location && response.headers.get('x-omi-chat-stream') === 'poll') {
+    await pollChatAssistantRun(location, onChunk);
+    return;
+  }
+
   if (!response.body) {
     throw new Error('No response body');
   }
@@ -717,6 +727,60 @@ export async function sendMessageStream(
   } finally {
     reader.releaseLock();
   }
+}
+
+async function pollChatAssistantRun(
+  location: string,
+  onChunk: (chunk: MessageChunk) => void,
+): Promise<void> {
+  if (
+    !/^\/v2\/cf\/chat-sessions\/[A-Za-z0-9_-]+\/assistant-runs\/[A-Za-z0-9_-]+$/.test(
+      location,
+    )
+  ) {
+    throw new Error('Invalid chat assistant polling location');
+  }
+  const endpoint = `${API_BASE_URL}${location}`;
+  const maxAttempts = 60;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const headers = await createAuthenticatedHeaders({ Accept: 'application/json' });
+    const response = await fetch(endpoint, { headers, credentials: 'include' });
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'No error body');
+      throw new ApiRequestError(
+        response.status,
+        `Failed to poll chat assistant: ${errorText}`,
+      );
+    }
+    const payload = (await response.json()) as {
+      status?: string;
+      result?: { text?: unknown };
+      assistant_message_id?: string;
+    };
+    if (payload.status === 'completed') {
+      const text = typeof payload.result?.text === 'string' ? payload.result.text : '';
+      if (!text.trim()) throw new Error('Chat assistant returned no text');
+      const message: ServerMessage = {
+        id: payload.assistant_message_id || `assistant-${Date.now()}`,
+        created_at: new Date().toISOString(),
+        text,
+        sender: 'ai',
+        type: 'text',
+        from_external_integration: false,
+        files: [],
+        memories: [],
+        ask_for_nps: false,
+      };
+      onChunk({ type: 'data', text });
+      onChunk({ type: 'done', text: JSON.stringify(message), message });
+      return;
+    }
+    if (payload.status === 'failed' || payload.status === 'cancelled') {
+      throw new Error('Chat assistant run failed');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error('Chat assistant run timed out');
 }
 
 /**

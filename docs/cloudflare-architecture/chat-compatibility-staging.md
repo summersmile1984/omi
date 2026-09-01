@@ -134,9 +134,11 @@ authority，并支持 `?app_id=` 与 bounded `context`：
   `(uid, app_id)` 隔离，app 的 `chat_prompt`/`persona_prompt` 作为系统身份；
 - `context` 只允许 `type/id/title/summary`，各字段有长度上限，以
   `PAGE CONTEXT (untrusted reference data)` 注入 prompt，不写入消息 authority；
-- `file_ids` 仍返回 `409 attachments_not_migrated`，避免把已上传的 R2/OpenAI
-  provider 文件误当作 Workers AI 能读取的文本。需要附件时使用单独的 Jobs
-  attachment bridge，并显式配置其 provider gate。
+- `file_ids` 走单独的 Jobs Assistant bridge：先返回 `202` + `Location`，Web
+  客户端轮询 run 资源，并在 terminal result 后适配回同一 `data:/done:` 回调；
+  该路径要求 `OPENAI_API_KEY`、`OPENAI_ASSISTANT_ID` 和
+  `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED=true`，缺少 provider 时稳定返回
+  `503`，不会回落 legacy。Workers AI 仍不直接读取 R2 文件。
 
 这使当前 Web app/persona 和页面上下文路径成为 Cloudflare-native 的新客户端
 能力；不承诺旧 Firebase/Firestore 历史回放或旧 provider/tool wire parity。
