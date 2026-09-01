@@ -3,13 +3,14 @@
 截至 2026-09-01，Cloudflare staging 已将 `/v1/files` 与 `/v2/files` 两个
 exact upload 入口交给 Jobs Worker；canonical `/v1/cf/chat-files` 仍保留供
 迁移客户端使用。历史回放和旧客户端 conformance 仅属于未来兼容窗口，不阻塞
-本期空数据部署；本期仅需配置实际使用的 OpenAI/R2 provider 并完成 authenticated
-upload/read smoke。
+本期空数据部署。Workers AI 文本聊天不依赖文件 provider；若启用文件问答，
+需要单独打开可选的 provider adapter 并完成 authenticated upload/read smoke。
 
 Edge 只在 Better Auth、account cutover、rate-limit 和 signed Jobs assertion
 都通过后转发；Jobs 的 `LEGACY_CHAT_FILES_STAGING_ENABLED=true` 是 staging
 owner 开关。缺少 OpenAI Files secret、CHAT_FILES R2 或 Images thumbnail 能力
-时返回明确 `503`，不会回落本机/legacy 上传。
+时返回明确 `503`，不会回落本机/legacy 上传；OpenAI/Gemini secret 不是本期
+Workers AI 主路径的必需依赖。
 
 本轮发布同时应用了 `0113_chat_assistant_provider.sql` 与 `0114_gemini_proxy.sql`，API-AI `15a48911-bc8a-41f1-bd40-7a671f5d24e5`、Jobs `969c6d84-1cd3-4c8f-8781-914c44366349`、Edge `261cf422-4a28-4841-b316-cea5711f9d7a` 已上线。Assistant continuity adapter 仍由 `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED` 显式开启；当前未配置 OpenAI provider secret，临时 Better Auth 账号命中关闭开关时返回 `404 legacy_route_disabled`，因此不代表 legacy owner 已切换。
 
@@ -42,7 +43,9 @@ Pillow 不能直接在 Worker 重放。配置 Cloudflare Images `IMAGES` binding
 当前闭合的是新上传 authority，不是历史 backfill 或完整 Assistants session
 parity。
 
-当前边界是同步的 Jobs provider admission，不是旧 API 的兼容 alias，也不宣称历史数据已迁移。`OPENAI_API_KEY` 需要以 Jobs Worker secret 注入 staging；缺失时请求 fail-closed。
+当前边界是同步的 Jobs provider admission，不是旧 API 的兼容 alias，也不宣称历史数据已迁移。
+`OPENAI_API_KEY` 只用于显式启用的 Assistants/file provider adapter；缺失时该
+可选分支 fail-closed，不影响 Workers AI text-only 主路径或通用 R2 asset upload。
 
 本轮补上了最小的 D1 session attachment projection（migration `0111_chat_session_files.sql`），并由 API Core 提供显式 staging-only contract：
 

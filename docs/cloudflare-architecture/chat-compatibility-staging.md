@@ -9,8 +9,9 @@ Worker；本期按空数据新部署验收，不要求历史回填或旧客户�
 
 Edge 通过 Better Auth assertion、产品 cutover fence 和
 `chat:send_message` Durable Object rate limit 转发到 Jobs。Jobs 仅在
-`CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED=true` 的部署中注册 owner；缺少
-provider secret 时明确返回 `503 provider_not_configured`，不会回落 legacy。
+`CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED=true` 的部署中注册 owner；默认只调用
+Workers AI。若 Workers AI binding/model 不可用，明确返回
+`503 provider_not_configured`，不会回落 legacy，也不会尝试 OpenAI/Gemini。
 
 ## 已闭合的前置能力
 
@@ -21,7 +22,7 @@ Exact `/v2/chat/completions` 使用同一 Better Auth assertion，并在 Jobs Wo
 - D1 `cf_chat_quota_events` 的预留与 provider usage 结算；
 - Workers AI 文本 provider（`workers-ai` / `cloudflare-workers-ai`）；
 - 可选的、经过 Edge enrollment 校验的 `openai-byok` 请求（validated
-  `x-byok-openai` header 不落 D1）；
+  `x-byok-openai` header 不落 D1）；该分支不是本期依赖，默认新客户端不使用；
 - deterministic message IDs、重复请求读取已持久化的 assistant response；
 - OpenAI JSON response，以及 buffered `data:` SSE + `[DONE]` framing；
 - account-deletion D1 triggers 继承的写入 fence。
@@ -84,15 +85,15 @@ Anthropic/gateway、工具、旧 Firestore 历史或 byte-for-byte SSE parity �
 
 ## 逐路由闭合审计（2026-09-01）
 
-本轮对三个入口完成了 bounded Cloudflare owner slice。D1/Workers AI/OpenAI
-REST 的可用 subset 已切到 staging；新部署只需配置实际使用的 provider 并做
-authenticated smoke，不要求历史回填或 legacy parity。
+本轮对三个入口完成了 bounded Cloudflare owner slice。D1/Workers AI 的可用
+subset 已切到 staging；OpenAI REST 仅作为显式 BYOK/兼容选项保留。新部署不
+需要 OpenAI/Gemini secret，不要求历史回填或 legacy parity。
 
 | 入口 | 已有 Cloudflare 能力 | 仍缺的 authority / wire contract | 决策 |
 | --- | --- | --- | --- |
 | `POST /v1/chat/materialize-prompts` | D1 `cf_chat_first_intents`、canonical goals/tasks、foreground/initial-page admission、receipt CAS、deferral release、daily opener 和 deletion fence | v1 仍过滤 `conversationLink`；旧 Firestore replay/旧客户端 fixture 不在本期 | staging Jobs owner；启用前做 provider/Queue smoke |
 | `POST /v2/chat/materialize-prompts` | 同上，并保留 v2 完整 block union（包括 `conversationLink`） | 旧 Firestore replay/旧客户端 wire fixture 不在本期 | staging Jobs owner；启用前做 provider/Queue smoke |
-| `POST /v2/chat/completions` | Jobs D1 session/history/quota、Workers AI 或已验证 OpenAI/BYOK REST、持久化、OpenAI JSON 和 buffered SSE | 旧 provider/tool/pause-turn parity 不在本期 | staging Jobs owner；新客户端仅使用 text/app/context/attachment subset |
+| `POST /v2/chat/completions` | Jobs D1 session/history/quota、Workers AI、持久化、JSON 和 buffered SSE；显式 BYOK 另有可选 REST 分支 | 旧 provider/tool/pause-turn parity 不在本期 | staging Jobs owner；新客户端仅使用 Workers AI text/app/context subset |
 
 审计对应的实现边界如下：旧 materialization 的请求/响应模型和 Firestore 读取/确认
 在 [`backend/routers/chat_first.py`](../../backend/routers/chat_first.py) 与
@@ -113,12 +114,15 @@ alias，不伪造成功。
 HTTP 状态码；旧协议 fixture 只在未来兼容窗口需要：
 
 1. **Materialization authority fixture**：新客户端的 daily opener、deferral 和 cold-start source，覆盖 block union、foreground/initial-page 窗口、重复/过期/跨 uid receipt；必须证明 ready→delivered 是单次原子转移。
-2. **Provider fixture**：Workers AI、已启用的 OpenAI/Gemini/Twilio/Calendar provider，覆盖成功和 401/402/429/502/usage 缺失等错误；新客户端只需验证当前 JSON/SSE/Queue contract。
+2. **Provider fixture**：Workers AI 成功/失败与 usage 结算；只有在显式启用
+   Calendar/Twilio 等业务集成时，才额外提供对应 provider fixture。OpenAI/Gemini
+   不属于新客户端的必需 fixture。
 3. **Session/app fixture**：Better Auth uid、D1 chat/session/message、文件引用和 app/persona scope；重复请求、跨 uid、缺失/损坏行都必须得到确定结果。
 4. **Mutation/deletion fixture**：quota reservation/settlement、provider failure rollback、重复 Idempotency-Key、并发同一 session，以及 account deletion fence；删除后 D1 chat/session/quota/materialization/provider receipt 残留必须为零或有明确 tombstone。
 
-provider secret 尚未配置时 Jobs 固定返回 503，不回落 legacy；旧的
-`CHAT_COMPAT_STAGING_FAIL_CLOSED=true` 仅用于验证显式 rollback 路径。
+Workers AI binding/model 尚未配置时 Jobs 固定返回 503，不回落 legacy；OpenAI/Gemini
+secret 缺失不会阻塞 Workers AI 主路径。旧的 `CHAT_COMPAT_STAGING_FAIL_CLOSED=true`
+仅用于验证显式 rollback 路径。
 Edge 回归测试还必须确认带有 opaque cookie、Bearer、auth-context、BYOK header 和
 prompt 的请求不会读取 body 或调用 legacy backend。
 
@@ -133,11 +137,11 @@ authority，并支持 `?app_id=` 与 bounded `context`：
   `(uid, app_id)` 隔离，app 的 `chat_prompt`/`persona_prompt` 作为系统身份；
 - `context` 只允许 `type/id/title/summary`，各字段有长度上限，以
   `PAGE CONTEXT (untrusted reference data)` 注入 prompt，不写入消息 authority；
-- `file_ids` 走单独的 Jobs Assistant bridge：先返回 `202` + `Location`，Web
+- `file_ids` 走单独的可选 Jobs Assistant bridge：先返回 `202` + `Location`，Web
   客户端轮询 run 资源，并在 terminal result 后适配回同一 `data:/done:` 回调；
-  该路径要求 `OPENAI_API_KEY`、`OPENAI_ASSISTANT_ID` 和
-  `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED=true`，缺少 provider 时稳定返回
-  `503`，不会回落 legacy。Workers AI 仍不直接读取 R2 文件。
+  该路径只有在显式配置 OpenAI Assistants 时才启用，不是本期 Workers AI 主路径
+  的依赖。未配置时应保持明确的 4xx/503，不回落 legacy；Workers AI 文本路径
+  不直接读取 R2 文件。
 
 这使当前 Web app/persona 和页面上下文路径成为 Cloudflare-native 的新客户端
 能力；不承诺旧 Firebase/Firestore 历史回放或旧 provider/tool wire parity。

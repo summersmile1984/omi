@@ -75,6 +75,15 @@ The deploy script only deploys the named staging environment. It applies D1
 migrations before Workers and deploys Edge last. It never creates production
 resources and never mutates existing Omi Workers.
 
+## AI provider policy
+
+Workers AI is the default and required generative-AI surface for this isolated
+deployment. OpenAI/Gemini routes and BYOK/Assistants adapters are optional
+compatibility surfaces; they are not called by the Workers AI paths and their
+secrets are not required for staging or for the new client. Calendar, Twilio,
+and other explicitly enabled business integrations may still use their own
+REST APIs.
+
 ## Migration inventories
 
 Four reviewed inventories keep the remaining legacy infrastructure explicit:
@@ -666,7 +675,7 @@ POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
 POST /v2/voice-message/transcribe
                               Edge → Python API AI → Workers AI binding (Web/Flutter multipart or desktop PCM)
-POST /v2/realtime/session     Edge → Python API AI → OpenAI/Gemini ephemeral token API
+POST /v2/realtime/session     optional external realtime-token compatibility surface (not required by Workers AI deployment)
 POST /v2/realtime/usage       Edge → Python API AI → D1 usage projection
 POST /v1/realtime/web-ticket  Edge cookie session → 30-second signed WebSocket ticket
 POST /v1/stt/transcribe-async
@@ -681,14 +690,14 @@ GET  /v2/sync-local-files/{jobId}
 POST /v1/embeddings-workers-ai
                               Edge → Python API AI → Workers AI BGE binding
 POST /v1/translate           Edge → Python API AI → Workers AI m2m100 translation
-POST /v1/tts/synthesize      Edge → Python API AI → hosted OpenAI-compatible TTS API
+POST /v1/tts/synthesize      optional hosted TTS compatibility surface
 POST /v1/tts/synthesize-workers-ai
                               Edge → Python API AI → Workers AI Aura binding
 POST /v2/tts/synthesize      Edge → Python API AI → Cloudflare unified ElevenLabs model
 GET  /v1/auto/model-pick    Edge → Python API AI → Artificial Analysis API + D1 cache
-GET/POST /v1/ai/*           Edge → Python API AI → fixed OpenAI-compatible AI API
-WS   /v4/listen               Edge → Realtime → Durable Object → ASR API seam
-WS   /v4/web/listen           Edge bootstrap → first-message ticket → isolated DO → ASR API seam
+GET/POST /v1/ai/*           optional fixed-host compatibility surface; new client uses Workers AI routes
+WS   /v4/listen               Edge → Realtime → Durable Object → Workers AI streaming path (external fallback optional)
+WS   /v4/web/listen           Edge bootstrap → first-message ticket → isolated DO → Workers AI streaming path (external fallback optional)
 R2   /v1/cf/assets/{key}      Edge → Python API Core → R2 + D1 metadata/checksum
 JOB  /v1/cf/jobs              Edge → Jobs Worker → Queue → idempotent D1 ledger
 GET  /v1/cf/jobs/{jobId}      Edge → Jobs Worker → uid-scoped D1 job status
