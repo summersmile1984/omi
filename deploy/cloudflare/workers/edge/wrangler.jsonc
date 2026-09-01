@@ -16,6 +16,7 @@
     {
       "binding": "APP_DB",
       "database_name": "omi-cf-app-staging",
+      "database_id": "995078e7-d4f2-4efd-ad81-22f85ccaf1c8",
       "migrations_dir": "../../migrations/app",
     },
   ],
