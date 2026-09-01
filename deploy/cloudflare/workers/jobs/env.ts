@@ -191,6 +191,10 @@ export type JobsEnv = {
   MEMORY_ARCHIVE_IMPORT_SIGNING_SECRET?: string;
   /** Explicit operator gate for reviewed historical desktop manifest promotion. */
   DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED?: string;
+  /** Explicit operator gate for reviewed public Persona/App history promotion. */
+  PERSONA_APP_HISTORY_IMPORT_STAGING_ENABLED?: string;
+  /** HMAC secret for content-bound public Persona/App history plans. */
+  PERSONA_APP_HISTORY_IMPORT_SIGNING_SECRET?: string;
   /** Explicit operator gate for the D1-indexed Queue DLQ replay boundary. */
   DLQ_REPLAY_STAGING_ENABLED?: string;
   /** HMAC secret for bounded, content-bound DLQ replay requests. */

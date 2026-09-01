@@ -121,6 +121,9 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_memory_archive_review_batches", column: "uid" },
   { table: "cf_memory_archive_review_items", column: "uid" },
   { table: "cf_memory_archive_applies", column: "uid" },
+  { table: "cf_persona_app_history_review_batches", column: "uid" },
+  { table: "cf_persona_app_history_review_items", column: "uid" },
+  { table: "cf_persona_app_history_applies", column: "uid" },
   { table: "cf_memory_non_active_routes", column: "uid" },
   { table: "cf_memory_short_term_lifecycle_control", column: "uid" },
   { table: "cf_memory_short_term_lifecycle_runs", column: "uid" },
@@ -249,6 +252,11 @@ const PURGE_PRIORITY = Object.freeze([
   "cf_memory_archive_review_batches.uid",
   "cf_memory_archive_review_items.uid",
   "cf_memory_archive_applies.uid",
+  // Review children reference the batch; purge them before the parent so
+  // D1 foreign-key enforcement cannot strand an account-deletion intent.
+  "cf_persona_app_history_applies.uid",
+  "cf_persona_app_history_review_items.uid",
+  "cf_persona_app_history_review_batches.uid",
   "cf_audio_merge_jobs.uid",
   "cf_audio_merge_legacy_jobs.uid",
   "cf_audio_chunk_import_ledger.uid",

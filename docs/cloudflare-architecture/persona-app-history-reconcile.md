@@ -87,17 +87,44 @@ passed directly to `wrangler d1 execute`.
 `verifyPersonaAppHistory(plan, actualRows)` is available to a later offline
 verification step. It compares an operator-exported D1 catalog snapshot by
 owner, app id, generation, and canonical public metadata, and reports missing,
-drifted, or duplicate rows. The apply implementation is intentionally not
-part of this slice: it must re-check the account generation/deletion fence and
-provision the private-envelope key authority at commit time.
+drifted, or duplicate rows.
+
+## Reviewed public-catalog apply
+
+The Jobs Worker now has an explicit, disabled-by-default apply seam for the
+safe subset of this plan:
+
+```text
+POST /internal/persona-app-history/reviews
+POST /internal/persona-app-history/reviews/:review_id/apply
+```
+
+Both requests require `APPS_ADMIN_KEY` and an HMAC-SHA256
+`x-persona-app-plan-signature` over the canonical plan (the apply signature
+also includes `review_id`). The plan must be the planner's schema-v1 dry-run
+shape, with CLI-only `operations` removed. The executor accepts only a
+hash-only `fb-anon-<sha256>` source, a source row present in
+`cf_app_owner_migration_sources` with `projection_status=imported` and
+`data_projection_status=verified`, a completed destination-bound cutover, and
+an unexpired target account generation. It rechecks those facts at apply time,
+uses a D1 transaction, and records review/apply receipts for retry-safe
+idempotency. Account-deletion intent/tombstone triggers fence review and apply
+rows, and the deletion worker purges review children before their batch parent.
+
+The only canonical mutation is a hidden (`approved=0`) `cf_app_catalog` row
+with `status=historical_import`, the reviewed public metadata, target owner,
+and target generation. Private envelopes, prompts, provider credentials,
+Twitter state, and legacy GCS logo bytes are rejected; this is not a claim of
+Persona private-data or provider continuity. The gate and signing secret are
+configured in the Jobs Wrangler vars/secrets and remain false/unset until an
+operator has reviewed a real export and source attestation.
 
 ## Current migration boundary
 
 The existing `backfill-d1.mjs` safely handles public `cf_app_catalog.data_json`
 only and rejects private fields; it cannot map the Firestore `plugins_data`
 authority, private persona prompt, Twitter state, or legacy GCS logo to the
-Cloudflare owner. This planner makes that gap auditable without claiming that
-historical data has been replayed. Firebase identity continuity, memory
-re-encryption, provider/cache side effects, and production cutover remain
-separate gates.
-
+Cloudflare owner. The reviewed public apply above closes only the D1 catalog
+mutation after an independently attested source projection. Firebase identity
+continuity, memory re-encryption, provider/cache side effects, private-data
+replay, logo copy, and production cutover remain separate gates.

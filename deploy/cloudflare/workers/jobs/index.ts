@@ -128,6 +128,7 @@ import { registerChatFileHistoryImportRoutes } from "./chat-file-history-import"
 import { registerWrappedHistoryImportRoutes } from "./wrapped-history-import";
 import { registerMemoryArchiveImportRoutes } from "./memory-archive-import";
 import { registerDesktopReleaseHistoryImportRoutes } from "./desktop-release-history-import";
+import { registerPersonaAppHistoryImportRoutes } from "./persona-app-history-import";
 import {
   processTaskIntelligenceMessage,
   reconcileTaskIntelligenceJobs,
@@ -226,6 +227,7 @@ registerChatFileHistoryImportRoutes(app);
 registerWrappedHistoryImportRoutes(app);
 registerMemoryArchiveImportRoutes(app);
 registerDesktopReleaseHistoryImportRoutes(app);
+registerPersonaAppHistoryImportRoutes(app);
 registerDlqReplayRoutes(app);
 
 // The same exhaustive product-D1/R2 residual boundary is used by the local
