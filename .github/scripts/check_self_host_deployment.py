@@ -65,7 +65,6 @@ REQUIRED_FIXED_BACKEND_ENV = {
     'TRANSLATION_PROVIDER': 'generic',
     'EMBEDDING_PROVIDER': 'generic',
     'FILE_CHAT_TRANSPORT': 'local_extraction',
-    'PUSH_PROVIDER': 'disabled',
     'DESKTOP_VENDOR_PROXY_TRANSPORT': 'disabled',
     'EMBEDDING_CAPABILITY_TRANSPORT': 'direct',
     'PROACTIVE_TOOL_TRANSPORT': 'completion',
@@ -779,6 +778,15 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
     for name, expected in OPTIONAL_BACKEND_ENV_BINDINGS.items():
         if backend_env.get(name) != expected:
             errors.append(f'backend {name} must use exact optional binding {expected!r}')
+    if backend_env.get('PUSH_PROVIDER') != '${PUSH_PROVIDER:-disabled}':
+        errors.append('backend PUSH_PROVIDER must default to disabled and allow an explicit operator provider')
+    for name, expected in {
+        'PUSH_WEBHOOK_URL': '${PUSH_WEBHOOK_URL-}',
+        'PUSH_WEBHOOK_SECRET': '${PUSH_WEBHOOK_SECRET-}',
+        'PUSH_WEBHOOK_TIMEOUT_SECONDS': '${PUSH_WEBHOOK_TIMEOUT_SECONDS:-5}',
+    }.items():
+        if backend_env.get(name) != expected:
+            errors.append(f'backend {name} must use exact optional binding {expected!r}')
     if backend_env.get('AUTH_JWKS_URL') != 'http://auth-server:3000/api/auth/jwks':
         errors.append('backend AUTH_JWKS_URL must use the private auth-server service endpoint')
     if backend_env.get('AUTH_SERVER_INTERNAL_URL') != 'http://auth-server:3000':
@@ -797,10 +805,18 @@ def validate(compose_path: Path, env_path: Path) -> list[str]:
         'TYPESENSE_PROTOCOL': 'http',
         'MEMORY_TYPESENSE_COLLECTION': 'canonical_memory_atoms',
         'CONVERSATION_TYPESENSE_COLLECTION': 'omi_conversations',
-        'PUSH_PROVIDER': 'disabled',
     }.items():
         if queue_worker_env.get(name) != expected:
             errors.append(f'queue-worker {name} must be literal {expected!r}')
+    if queue_worker_env.get('PUSH_PROVIDER') != '${PUSH_PROVIDER:-disabled}':
+        errors.append('queue-worker PUSH_PROVIDER must default to disabled and allow an explicit operator provider')
+    for name, expected in {
+        'PUSH_WEBHOOK_URL': '${PUSH_WEBHOOK_URL-}',
+        'PUSH_WEBHOOK_SECRET': '${PUSH_WEBHOOK_SECRET-}',
+        'PUSH_WEBHOOK_TIMEOUT_SECONDS': '${PUSH_WEBHOOK_TIMEOUT_SECONDS:-5}',
+    }.items():
+        if queue_worker_env.get(name) != expected:
+            errors.append(f'queue-worker {name} must use exact optional binding {expected!r}')
     for name in ('AUTH_JWT_ISSUER', 'AUTH_JWT_AUDIENCE'):
         if backend_env.get(name) != '${PUBLIC_AUTH_URL:?PUBLIC_AUTH_URL is required}':
             errors.append(f'backend {name} must use the same PUBLIC_AUTH_URL origin')

@@ -17,6 +17,7 @@ from models.other import FcmTokenResponse, SaveFcmTokenRequest
 from models.integrations import IntegrationNotificationResponse
 from utils.notifications import (
     push_capability_unavailable,
+    push_delivery_enabled,
     push_notifications_enabled,
     send_notification,
 )
@@ -98,7 +99,7 @@ def save_token(
 def send_notification_to_user(data: Dict[str, Any], secret_key: str = Header(...)) -> Dict[str, str]:
     if secret_key != os.getenv('ADMIN_KEY'):
         raise HTTPException(status_code=403, detail='You are not authorized to perform this action')
-    if not push_notifications_enabled():
+    if not push_delivery_enabled():
         raise HTTPException(status_code=503, detail=push_capability_unavailable())
     if not data.get('uid'):
         raise HTTPException(status_code=400, detail='uid is required')
@@ -124,7 +125,7 @@ def send_app_notification_to_user(
 
     if not data.get('uid'):
         raise HTTPException(status_code=400, detail='uid is required')
-    if not push_notifications_enabled():
+    if not push_delivery_enabled():
         raise HTTPException(status_code=503, detail=push_capability_unavailable())
     uid = cast(str, data['uid'])
 

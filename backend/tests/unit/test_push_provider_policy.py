@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from config.push_provider import selected_push_provider, validate_push_provider
+from config.push_provider import (
+    PushProviderConfigurationError,
+    push_webhook_config,
+    selected_push_provider,
+    validate_push_provider,
+)
 
 
 def test_neutral_profile_omitted_push_provider_fails_closed() -> None:
@@ -21,19 +26,37 @@ def test_explicit_provider_wins_profile_default() -> None:
 
 
 def test_unknown_provider_is_rejected() -> None:
-    with pytest.raises(ValueError, match="unsupported PUSH_PROVIDER='webhook'"):
-        validate_push_provider({'PUSH_PROVIDER': 'webhook'})
+    with pytest.raises(PushProviderConfigurationError, match="unsupported PUSH_PROVIDER='unknown'"):
+        validate_push_provider({'PUSH_PROVIDER': 'unknown'})
 
 
-def test_operator_webhook_is_reserved_instead_of_becoming_an_unsigned_fallback() -> None:
-    with pytest.raises(ValueError, match='reserved but not implemented') as error:
+def test_operator_webhook_requires_explicit_public_https_contract() -> None:
+    env = {
+        'OMI_DEPLOYMENT_PROFILE': 'self_hosted',
+        'PUSH_PROVIDER': 'webhook',
+        'PUSH_WEBHOOK_URL': 'https://notify.example.test/omi',
+        'PUSH_WEBHOOK_SECRET': 'operator-secret-1234',
+    }
+    assert validate_push_provider(env) == 'webhook'
+    config = push_webhook_config(env)
+    assert config.url == env['PUSH_WEBHOOK_URL']
+    assert config.timeout_seconds == 5
+
+
+@pytest.mark.parametrize(
+    'url',
+    [
+        'http://notify.example.test/omi',
+        'https://user:password@notify.example.test/omi',
+        'https://notify.example.test/omi?secret=leak',
+    ],
+)
+def test_operator_webhook_rejects_unsafe_url_shapes(url: str) -> None:
+    with pytest.raises(PushProviderConfigurationError, match='PUSH_WEBHOOK_URL'):
         validate_push_provider(
             {
-                'OMI_DEPLOYMENT_PROFILE': 'self_hosted',
                 'PUSH_PROVIDER': 'webhook',
-                'PUSH_WEBHOOK_URL': 'http://10.0.0.4/push',
-                'PUSH_WEBHOOK_SECRET': 'must-not-be-logged',
+                'PUSH_WEBHOOK_URL': url,
+                'PUSH_WEBHOOK_SECRET': 'operator-secret-1234',
             }
         )
-
-    assert 'must-not-be-logged' not in str(error.value)
