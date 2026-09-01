@@ -258,6 +258,12 @@ class FakeStatement:
                 "updated_at": updated_at,
             }
             return
+        if self.sql.startswith("DELETE FROM cf_user_fcm_tokens"):
+            uid, device_key, token = self.args
+            row = self.db.fcm_token_row
+            if row and row["uid"] == uid and row["device_key"] == device_key and row["token"] == token:
+                self.db.fcm_token_row = None
+            return
         if self.sql.startswith("INSERT INTO cf_user_developer_webhooks"):
             uid, webhook_type, url, enabled, created_at, updated_at = self.args
             self.db.webhook_rows[(uid, webhook_type)] = {
@@ -951,6 +957,38 @@ def test_fcm_token_registration_scopes_and_sanitizes_device_key():
         entry.save_fcm_token(FakeRequest(env, headers, {"fcm_token": "", "time_zone": "Asia/Shanghai"}))
     )
     assert invalid.status_code == 400
+
+
+def test_fcm_token_delete_is_uid_and_device_scoped_and_idempotent():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret, uid="notification-token-user")
+    headers = {
+        "x-omi-auth-context": encoded,
+        "x-omi-internal-signature": signature,
+        "x-app-platform": "Web/1",
+        "x-device-id-hash": "Device+Hash==",
+    }
+    database = FakeDb()
+    env = SimpleNamespace(APP_DB=database, INTERNAL_ASSERTION_SECRET=secret)
+
+    asyncio.run(
+        entry.save_fcm_token(
+            FakeRequest(env, headers, {"fcm_token": "fcm-token-value", "time_zone": "UTC"})
+        )
+    )
+    assert database.fcm_token_row is not None
+
+    assert asyncio.run(entry.delete_fcm_token(FakeRequest(env, headers, {"fcm_token": "fcm-token-value"}))) == {
+        "status": "Ok"
+    }
+    assert database.fcm_token_row is None
+    # DELETE is intentionally idempotent for sign-out retries.
+    assert asyncio.run(entry.delete_fcm_token(FakeRequest(env, headers, {"fcm_token": "fcm-token-value"}))) == {
+        "status": "Ok"
+    }
+
+    unauthorized = asyncio.run(entry.delete_fcm_token(FakeRequest(env, {}, {"fcm_token": "fcm-token-value"})))
+    assert unauthorized.status_code == 401
 
 
 def test_developer_webhook_configuration_and_toggle_state_round_trip():

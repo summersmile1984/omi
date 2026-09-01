@@ -2125,6 +2125,7 @@ app.post("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
 app.get("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.post("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.post("/v1/users/fcm-token", proxyAuthenticatedCore);
+app.delete("/v1/users/fcm-token", proxyAuthenticatedCore);
 app.patch("/v1/users/geolocation", proxyAuthenticatedCore);
 app.get("/v1/announcements/pending", proxyAuthenticatedCore);
 app.post("/v1/announcements/:announcementId/dismiss", proxyAuthenticatedCore);

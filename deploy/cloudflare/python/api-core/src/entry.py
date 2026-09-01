@@ -293,6 +293,10 @@ class FcmTokenUpdate(BaseModel):
     time_zone: str = Field(min_length=1, max_length=MAX_TIME_ZONE_LENGTH)
 
 
+class FcmTokenDelete(BaseModel):
+    fcm_token: str = Field(min_length=1, max_length=MAX_FCM_TOKEN_LENGTH)
+
+
 class DeveloperWebhookUpdate(BaseModel):
     url: str = Field(max_length=MAX_WEBHOOK_URL_LENGTH)
 
@@ -974,6 +978,32 @@ async def save_fcm_token(request: Request):
     device_hash = _device_key_component(request.headers.get("x-device-id-hash"), "default")
     device_key = f"{platform}_{device_hash}"
     await _save_fcm_token(request.scope["env"], str(context["uid"]), device_key, update.fcm_token, update.time_zone)
+    return {"status": "Ok"}
+
+
+@app.delete("/v1/users/fcm-token")
+async def delete_fcm_token(request: Request):
+    """Remove one device-scoped FCM token from the D1 notification authority.
+
+    The web client unregisters its token during sign-out.  The legacy backend
+    only exposed registration, which made that client call a deterministic
+    404 and left stale tokens behind.  Keep the delete narrow: both the
+    authenticated uid and the sanitized device identity must match, and a
+    replay is idempotent.
+    """
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        update = FcmTokenDelete.model_validate(await _bounded_json(request, 8_192))
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid FCM token"}, status_code=400)
+    platform = _device_key_component(request.headers.get("x-app-platform"), "unknown")
+    device_hash = _device_key_component(request.headers.get("x-device-id-hash"), "default")
+    device_key = f"{platform}_{device_hash}"
+    await request.scope["env"].APP_DB.prepare(
+        "DELETE FROM cf_user_fcm_tokens WHERE uid = ? AND device_key = ? AND token = ?"
+    ).bind(str(context["uid"]), device_key, update.fcm_token).run()
     return {"status": "Ok"}
 
 

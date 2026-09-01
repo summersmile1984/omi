@@ -915,6 +915,7 @@ POST /v1/users/private-cloud-sync
 GET  /v1/users/training-data-opt-in
 POST /v1/users/training-data-opt-in
 POST /v1/users/fcm-token
+DELETE /v1/users/fcm-token   Edge → Python API Core → uid/device-scoped D1 delete (idempotent)
 ANY  /v1/users/developer/webhook/*
 GET  /v1/users/developer/webhooks/status
 GET  /v1/users/notification-settings
@@ -2355,6 +2356,10 @@ response. Tokens are not returned by any public route. Fair-use, app moderation,
 and app-integration delivery read this D1 token authority through the shared
 leased Jobs outbox and FCM HTTP v1 adapter described above; other notification
 producers remain on their legacy sender.
+
+`DELETE /v1/users/fcm-token` removes the matching uid/device/token row and is
+idempotent, so web sign-out retries do not leave stale notification targets or
+surface a 404.
 
 The memory-summary and chat-message feedback routes store uid-scoped ratings
 in `cf_user_feedback`. Chat feedback also updates the matching D1 message JSON

@@ -5080,6 +5080,43 @@ describe("edge gateway", () => {
     ).toMatchObject({ uid: "user-1" });
   });
 
+  it("routes FCM token deletion to authenticated API Core", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      INTERNAL_ASSERTION_SECRET: "test-secret",
+      AUTH: service(() =>
+        Response.json({ uid: "user-1", authority: "better-auth" }),
+      ),
+      API_CORE: service((request) => {
+        forwarded = request;
+        return Response.json({ status: "Ok" });
+      }),
+    };
+
+    const response = await edge.fetch(
+      new Request("https://edge.test/v1/users/fcm-token", {
+        method: "DELETE",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+          "x-app-platform": "web",
+          "x-device-id-hash": "device-hash",
+        },
+        body: JSON.stringify({ fcm_token: "fcm-token" }),
+      }),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(new URL(forwarded?.url || "https://missing").pathname).toBe(
+      "/v1/users/fcm-token",
+    );
+    expect(forwarded?.method).toBe("DELETE");
+    expect(forwarded?.headers.get("authorization")).toBeNull();
+    expect(forwarded?.headers.get("x-omi-auth-context")).toBeTruthy();
+    await expect(forwarded?.json()).resolves.toEqual({ fcm_token: "fcm-token" });
+  });
+
   it("routes the authenticated fair-use status read to API Core", async () => {
     let forwarded: Request | undefined;
     const env = {

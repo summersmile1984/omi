@@ -68,5 +68,5 @@ npm test -- --run tests/desktop-release-history-import.test.ts
 
 This focused suite has 6 tests covering the manifest-apply prerequisite,
 signed CDN redirect, idempotent GitHub→R2 transfer, digest mismatch, and retry
-behavior. The current Cloudflare suite passes 100 files/728 tests, together
+behavior. The current Cloudflare suite passes 100 files/729 tests, together
 with `npm run typecheck` and `npm run validate:manifest`.
