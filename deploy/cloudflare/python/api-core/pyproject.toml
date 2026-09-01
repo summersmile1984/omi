@@ -8,6 +8,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "httpx",
   "workers-py",
   "workers-runtime-sdk",
   "pytest",
