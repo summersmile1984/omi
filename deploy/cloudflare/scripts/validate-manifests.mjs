@@ -620,7 +620,28 @@ export function discoverR2LegacyEnvs(storageSource) {
     .sort();
 }
 
-export function validateR2NamespaceManifest(manifest, storageSource) {
+const ACTIVE_R2_STATES = new Set([
+  "copying",
+  "staging-owned",
+  "production-owned",
+]);
+
+export function discoverWranglerR2Bindings(wranglerSources) {
+  const bindings = new Set();
+  for (const source of wranglerSources) {
+    const block = source.match(/"r2_buckets"\s*:\s*\[([\s\S]*?)\n\s*\]/);
+    if (!block) continue;
+    for (const match of block[1].matchAll(
+      /"binding"\s*:\s*"([A-Z][A-Z0-9_]*)"/g,
+    )) {
+      bindings.add(match[1]);
+    }
+  }
+  return bindings;
+}
+
+export function validateR2NamespaceManifest(manifest, storageSource, options = {}) {
+  const { resourceManifest, wranglerSources } = options;
   if (manifest?.policy?.dual_write_allowed !== false) {
     throw new Error("r2-namespaces.yaml must forbid dual write");
   }
@@ -636,10 +657,49 @@ export function validateR2NamespaceManifest(manifest, storageSource) {
     namespaces.map((namespace) => namespace.legacy_env),
     "R2 legacy bucket env",
   );
-  assertUnique(
-    namespaces.map((namespace) => namespace.target_binding),
-    "R2 target binding",
-  );
+  const byBinding = new Map();
+  for (const namespace of namespaces) {
+    const members = byBinding.get(namespace.target_binding) || [];
+    members.push(namespace);
+    byBinding.set(namespace.target_binding, members);
+  }
+  for (const [binding, members] of byBinding) {
+    if (members.length < 2) continue;
+    const prefixes = [];
+    for (const namespace of members) {
+      requiredStringArray(
+        namespace.target_key_prefixes,
+        `R2 namespace ${namespace.id} shares binding ${binding} and must declare target_key_prefixes`,
+      );
+      for (const prefix of namespace.target_key_prefixes) {
+        prefixes.push({ id: namespace.id, prefix });
+      }
+      for (const pattern of namespace.object_patterns || []) {
+        if (
+          !namespace.target_key_prefixes.some((prefix) =>
+            pattern.startsWith(prefix),
+          )
+        ) {
+          throw new Error(
+            `R2 namespace ${namespace.id} object pattern ${pattern} is outside its declared key prefixes`,
+          );
+        }
+      }
+    }
+    for (let i = 0; i < prefixes.length; i += 1) {
+      for (let j = i + 1; j < prefixes.length; j += 1) {
+        if (prefixes[i].id === prefixes[j].id) continue;
+        if (
+          prefixes[i].prefix.startsWith(prefixes[j].prefix) ||
+          prefixes[j].prefix.startsWith(prefixes[i].prefix)
+        ) {
+          throw new Error(
+            `R2 namespaces ${prefixes[i].id} and ${prefixes[j].id} declare overlapping key prefixes on binding ${binding}`,
+          );
+        }
+      }
+    }
+  }
   for (const namespace of namespaces) {
     requiredString(namespace.id, "R2 namespace is missing id");
     requiredString(
@@ -678,6 +738,32 @@ export function validateR2NamespaceManifest(manifest, storageSource) {
       throw new Error(
         `R2 namespace ${namespace.id} has unsupported migration_state: ${namespace.migration_state}`,
       );
+    }
+    if (ACTIVE_R2_STATES.has(namespace.migration_state)) {
+      if (resourceManifest) {
+        const provisioned = resourceManifest.resources?.some(
+          (resource) =>
+            resource.kind === "r2" &&
+            resource.name ===
+              namespace.target_bucket_pattern.replace(
+                "{environment}",
+                resource.environment,
+              ),
+        );
+        if (!provisioned) {
+          throw new Error(
+            `R2 namespace ${namespace.id} is active without a provisioned resource`,
+          );
+        }
+      }
+      if (wranglerSources) {
+        const bindings = discoverWranglerR2Bindings(wranglerSources);
+        if (!bindings.has(namespace.target_binding)) {
+          throw new Error(
+            `R2 namespace ${namespace.id} is active but binding ${namespace.target_binding} is not declared in any wrangler config`,
+          );
+        }
+      }
     }
   }
   const declared = namespaces.map((namespace) => namespace.legacy_env).sort();
@@ -771,6 +857,18 @@ async function loadWorkerSources() {
   return sources;
 }
 
+async function loadWranglerSources() {
+  const roots = [resolve(root, "workers"), resolve(root, "python")];
+  const sources = [];
+  for (const sourceRoot of roots) {
+    for (const path of await walkFiles(sourceRoot)) {
+      if (!path.endsWith("wrangler.jsonc")) continue;
+      sources.push(await readFile(path, "utf8"));
+    }
+  }
+  return sources;
+}
+
 export async function validateManifests() {
   const [
     routeManifest,
@@ -798,10 +896,9 @@ export async function validateManifests() {
       readFile(resolve(repoRoot, path), "utf8"),
     ),
   );
-  const [directCallerPaths, workerSources] = await Promise.all([
-    discoverDirectRedisCallers(),
-    loadWorkerSources(),
-  ]);
+  const [directCallerPaths, workerSources, wranglerSources] = await Promise.all(
+    [discoverDirectRedisCallers(), loadWorkerSources(), loadWranglerSources()],
+  );
 
   const backendRoutes = validateBackendRouteInventory(
     backendRouteInventory,
@@ -823,7 +920,10 @@ export async function validateManifests() {
       vectorSources,
       resourceManifest,
     ),
-    r2Namespaces: validateR2NamespaceManifest(r2Manifest, storageSource),
+    r2Namespaces: validateR2NamespaceManifest(r2Manifest, storageSource, {
+      resourceManifest,
+      wranglerSources,
+    }),
   };
   console.log(
     `Manifest validation passed: ${counts.routes} Cloudflare routes, ${counts.backendRoutes} backend routes ` +

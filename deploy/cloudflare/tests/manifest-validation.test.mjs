@@ -386,4 +386,74 @@ describe("Cloudflare migration manifests", () => {
       "must use an isolated environment bucket pattern",
     );
   });
+
+  it("requires shared-binding R2 namespaces to declare disjoint key prefixes", async () => {
+    const manifest = await loadYaml("r2-namespaces.yaml");
+    const storageSource = await readFile(
+      resolve(repoRoot, manifest.source),
+      "utf8",
+    );
+
+    const missingPrefixes = structuredClone(manifest);
+    const temporalSync = missingPrefixes.namespaces.find(
+      (namespace) => namespace.id === "temporal-sync",
+    );
+    delete temporalSync.target_key_prefixes;
+    expect(() =>
+      validateR2NamespaceManifest(missingPrefixes, storageSource),
+    ).toThrow("must declare target_key_prefixes");
+
+    const overlapping = structuredClone(manifest);
+    const overlappingThumbnails = overlapping.namespaces.find(
+      (namespace) => namespace.id === "app-thumbnails",
+    );
+    overlappingThumbnails.target_key_prefixes = ["cf-app-logos/"];
+    overlappingThumbnails.object_patterns = [
+      "cf-app-logos/{thumbnail_id}.jpg",
+    ];
+    expect(() =>
+      validateR2NamespaceManifest(overlapping, storageSource),
+    ).toThrow("overlapping key prefixes");
+
+    const strayPattern = structuredClone(manifest);
+    strayPattern.namespaces
+      .find((namespace) => namespace.id === "app-logos")
+      .object_patterns.push("logos/{app_id}.png");
+    expect(() =>
+      validateR2NamespaceManifest(strayPattern, storageSource),
+    ).toThrow("outside its declared key prefixes");
+  });
+
+  it("rejects active R2 namespaces without a provisioned bucket or declared binding", async () => {
+    const [manifest, resources] = await Promise.all([
+      loadYaml("r2-namespaces.yaml"),
+      loadYaml("resources.yaml"),
+    ]);
+    const storageSource = await readFile(
+      resolve(repoRoot, manifest.source),
+      "utf8",
+    );
+
+    const unprovisioned = structuredClone(resources);
+    unprovisioned.resources = unprovisioned.resources.filter(
+      (resource) => resource.name !== "omi-cf-speech-profiles-staging",
+    );
+    expect(() =>
+      validateR2NamespaceManifest(manifest, storageSource, {
+        resourceManifest: unprovisioned,
+      }),
+    ).toThrow("speech-profiles is active without a provisioned resource");
+
+    expect(() =>
+      validateR2NamespaceManifest(manifest, storageSource, {
+        wranglerSources: ['"r2_buckets": [\n  { "binding": "ASSETS" }\n  ]'],
+      }),
+    ).toThrow("is not declared in any wrangler config");
+
+    expect(() =>
+      validateR2NamespaceManifest(manifest, storageSource, {
+        resourceManifest: resources,
+      }),
+    ).not.toThrow();
+  });
 });

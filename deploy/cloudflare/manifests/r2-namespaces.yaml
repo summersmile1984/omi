@@ -38,6 +38,8 @@ namespaces:
     legacy_env: BUCKET_PRIVATE_CLOUD_SYNC
     target_binding: ASSETS
     target_bucket_pattern: omi-cf-{environment}
+    target_key_prefixes:
+      ["chunks/", "merged/", "playback/", "sync-playback/", "imports/"]
     object_patterns:
       [
         "chunks/{uid}/{conversation_id}/{timestamp}.{extension}",
@@ -51,29 +53,41 @@ namespaces:
     lifecycle: prefix-specific
     migration_state: copying
   - id: temporal-sync
+    # Substituted, not ported: the Worker plane stages sync uploads under the
+    # shared ASSETS bucket's cf-sync/ prefix (sync-local-files.ts) with a
+    # one-day R2 lifecycle rule instead of a dedicated staging bucket.
     legacy_env: BUCKET_TEMPORAL_SYNC_LOCAL
-    target_binding: TEMPORAL_SYNC
-    target_bucket_pattern: omi-cf-temporal-sync-{environment}
-    object_patterns: ["{staged_path}"]
+    target_binding: ASSETS
+    target_bucket_pattern: omi-cf-{environment}
+    target_key_prefixes: ["cf-sync/"]
+    object_patterns: ["cf-sync/{uid}/{job_id}/{ordinal}"]
     data_classification: customer-audio
     lifecycle: one-day
-    migration_state: inventory-only
+    migration_state: staging-owned
   - id: app-logos
+    # Substituted: Worker-owned logos are versioned, uid-scoped keys under the
+    # shared ASSETS bucket (app-logo.ts); legacy {app_id}.png history import
+    # remains a separate persona-app-history executor step.
     legacy_env: BUCKET_PLUGINS_LOGOS
-    target_binding: APP_LOGOS
-    target_bucket_pattern: omi-cf-app-logos-{environment}
-    object_patterns: ["{app_id}.png"]
+    target_binding: ASSETS
+    target_bucket_pattern: omi-cf-{environment}
+    target_key_prefixes: ["cf-app-logos/"]
+    object_patterns: ["cf-app-logos/{owner_uid}/{app_id}/{version}"]
     data_classification: public-product-asset
     lifecycle: permanent
-    migration_state: inventory-only
+    migration_state: staging-owned
   - id: app-thumbnails
+    # Substituted: Worker-owned thumbnails live under the shared ASSETS bucket
+    # (app-thumbnail.ts); keys are not uid-scoped, so account-deletion residual
+    # scans intentionally exclude this prefix.
     legacy_env: BUCKET_APP_THUMBNAILS
-    target_binding: APP_THUMBNAILS
-    target_bucket_pattern: omi-cf-app-thumbnails-{environment}
-    object_patterns: ["{thumbnail_id}.jpg"]
+    target_binding: ASSETS
+    target_bucket_pattern: omi-cf-{environment}
+    target_key_prefixes: ["cf-app-thumbnails/"]
+    object_patterns: ["cf-app-thumbnails/{thumbnail_id}.jpg"]
     data_classification: public-product-asset
     lifecycle: permanent
-    migration_state: inventory-only
+    migration_state: staging-owned
   - id: chat-files
     legacy_env: BUCKET_CHAT_FILES
     target_binding: CHAT_FILES
