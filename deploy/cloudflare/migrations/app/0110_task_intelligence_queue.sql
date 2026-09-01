@@ -3,4 +3,3 @@
 -- is delayed, duplicated, or the scheduled reconciler has to republish it.
 ALTER TABLE cf_task_intelligence_jobs
   ADD COLUMN input_json TEXT NOT NULL DEFAULT '{}';
-
