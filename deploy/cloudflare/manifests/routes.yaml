@@ -4740,6 +4740,17 @@ routes:
     rollout: staging-only
     rollback: disabled
   - method: POST
+    path: /internal/desktop-release-history/reviews/{review_id}/artifacts/apply
+    owner: jobs
+    runtime: jobs-queue
+    target_runtime: typescript-worker
+    auth_authority: admin-key
+    dependencies: [d1-app, jobs, r2-desktop-updates, worker-secrets]
+    protocol: http
+    idempotency: release-id-artifact
+    rollout: staging-only
+    rollback: disabled
+  - method: POST
     path: /internal/hume-task-projections/apply
     owner: jobs
     runtime: jobs-queue

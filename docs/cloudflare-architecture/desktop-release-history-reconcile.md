@@ -36,7 +36,37 @@ CAS/marker and never write a channel pointer; channel promotion remains a
 separate explicit CAS operation.
 
 This is a staging handoff, not production parity. It does not fetch Firestore
-directly, copy release artifacts, promote Stable/Beta, or establish a
-production release-pipeline authority. The executor has no account-scoped
-payload, so account-deletion fences are not applicable; immutable manifest
-triggers and the release-id apply marker are the relevant authority fences.
+directly, promote Stable/Beta, or establish a production release-pipeline
+authority. After the immutable manifest has been reviewed and applied, the
+Jobs executor exposes an explicit reviewed-only artifact step:
+`POST /internal/desktop-release-history/reviews/:review_id/artifacts/apply`.
+Migration `0143_desktop_release_artifact_mirror.sql` records a separate,
+content-bound transfer ledger for exactly the macOS `Omi.zip`, `omi.dmg`, and
+qualification-evidence assets. Jobs follows only the canonical GitHub release
+URL and trusted signed CDN redirects, streams the response to the staging
+`DESKTOP_UPDATES` R2 bucket while computing SHA-256, and marks an item copied
+only after complete R2 metadata/size verification. Retries are idempotent and
+conflicting existing objects fail closed. This is a GitHub→R2 staging mirror;
+it does not rewrite public download URLs, channel pointers, or production
+ownership, and it does not fabricate historical Firestore data. The executor
+has no account-scoped payload, so account-deletion fences are not applicable;
+immutable manifest triggers and the release-id apply marker are the relevant
+authority fences.
+
+The default `DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED` gate remains off,
+and the artifact endpoint additionally requires the prior immutable manifest
+apply receipt. A successful mirror receipt is not a public feed/download
+cutover: production GitHub/Firestore credentials, historical replay, Windows
+manifest/artifact parity, channel promotion, and rollback/cutover evidence
+remain separate follow-up work.
+
+Local contract coverage is provided by:
+
+```bash
+npm test -- --run tests/desktop-release-history-import.test.ts
+```
+
+This focused suite has 6 tests covering the manifest-apply prerequisite,
+signed CDN redirect, idempotent GitHub→R2 transfer, digest mismatch, and retry
+behavior. The current Cloudflare suite passes 99 files/724 tests, together
+with `npm run typecheck` and `npm run validate:manifest`.

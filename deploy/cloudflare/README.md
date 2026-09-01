@@ -63,8 +63,9 @@ Resource names are deliberately isolated from existing account resources:
 - Jobs Worker: `omi-cf-jobs-staging`
 - Queues: `omi-cf-jobs-staging`, `omi-cf-sync-fresh-staging`,
   `omi-cf-sync-backfill-staging`, and `omi-cf-jobs-dlq-staging`
-- R2: `omi-cf-staging`, `omi-cf-conversation-recordings-staging`, and the
-  biometric-isolated `omi-cf-speech-profiles-staging`
+- R2: `omi-cf-staging`, `omi-cf-conversation-recordings-staging`, the
+  biometric-isolated `omi-cf-speech-profiles-staging`, and the reviewed desktop
+  artifact mirror `omi-cf-desktop-updates-staging`
 - Durable Objects: Realtime sessions and standalone rate-limit windows
 - Vectorize: `omi-cf-conversations-v2`, `omi-cf-memories-v2`,
   `omi-cf-action-items-v2`, `omi-cf-transcript-chunks-v2`, and

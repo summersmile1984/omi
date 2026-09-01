@@ -89,4 +89,4 @@ namespaces:
     object_patterns: ["{release_path}"]
     data_classification: public-release-artifact
     lifecycle: permanent
-    migration_state: inventory-only
+    migration_state: copying

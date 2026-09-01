@@ -1,5 +1,14 @@
 import type { Context, Hono } from "hono";
 import type { JobsEnv } from "./env";
+import {
+  artifactJobId,
+  artifactPayload,
+  desktopArtifactSpecs,
+  type DesktopArtifactSpec,
+  DESKTOP_ARTIFACT_MIRROR_KIND,
+  DESKTOP_ARTIFACT_SYSTEM_UID,
+  DESKTOP_ARTIFACT_LEASE_SECONDS,
+} from "./desktop-release-artifact-mirror";
 
 const REVIEW_PATH = "/internal/desktop-release-history/reviews";
 const MAX_BODY_BYTES = 256 * 1024;
@@ -110,6 +119,31 @@ type ApplyMarker = {
   manifest_sha256: string;
   plan_hash: string;
   status: "applied";
+};
+
+type AppliedReview = {
+  review_id: string;
+  source_endpoint: string;
+  release_id: string;
+  manifest_sha256: string;
+  plan_hash: string;
+  batch_status: string;
+  apply_status: string;
+  manifest_json: string;
+};
+
+type ArtifactLedgerRow = {
+  release_id: string;
+  asset_name: string;
+  review_id: string;
+  plan_hash: string;
+  manifest_sha256: string;
+  source_url: string;
+  object_key: string;
+  expected_sha256: string;
+  content_type: string;
+  status: string;
+  last_queued_at: number | null;
 };
 
 function objectValue(value: unknown): JsonObject | null {
@@ -285,7 +319,7 @@ function sourceEndpoint(value: unknown, releaseId: string): string | null {
   }
 }
 
-async function normalizePlan(value: unknown): Promise<ReviewPlan | null> {
+export async function normalizeDesktopReleasePlan(value: unknown): Promise<ReviewPlan | null> {
   const plan = objectValue(value);
   const source = objectValue(plan?.source);
   const manifest = validateManifest(plan?.manifest);
@@ -314,7 +348,7 @@ async function normalizePlan(value: unknown): Promise<ReviewPlan | null> {
 }
 
 async function review(c: JobsContext): Promise<Response> {
-  const plan = await normalizePlan(await readBody(c));
+  const plan = await normalizeDesktopReleasePlan(await readBody(c));
   if (!plan) return c.json({ error: "invalid_desktop_release_history_plan" }, 422, noStoreHeaders());
   const now = Math.floor(Date.now() / 1_000);
   try {
@@ -351,7 +385,7 @@ async function apply(c: JobsContext): Promise<Response> {
     } catch {
       return c.json({ error: "desktop_release_history_review_incomplete" }, 409, noStoreHeaders());
     }
-    const normalizedStoredPlan = await normalizePlan({
+    const normalizedStoredPlan = await normalizeDesktopReleasePlan({
       mode: "dry-run",
       schema_version: 1,
       source: {
@@ -393,6 +427,86 @@ async function apply(c: JobsContext): Promise<Response> {
   }
 }
 
+async function appliedReview(c: JobsContext, reviewId: string): Promise<AppliedReview | null> {
+  return c.env.APP_DB.prepare(
+    "SELECT b.review_id, b.source_endpoint, b.release_id, b.manifest_sha256, b.plan_hash, b.status AS batch_status, a.status AS apply_status, i.manifest_json " +
+      "FROM cf_desktop_release_import_review_batches AS b " +
+      "JOIN cf_desktop_release_import_review_items AS i ON i.review_id = b.review_id " +
+      "JOIN cf_desktop_release_import_applies AS a ON a.release_id = b.release_id AND a.review_id = b.review_id AND a.manifest_sha256 = b.manifest_sha256 AND a.plan_hash = b.plan_hash " +
+      "WHERE b.review_id = ? LIMIT 1",
+  ).bind(reviewId).first<AppliedReview>();
+}
+
+async function applyArtifacts(c: JobsContext, reviewId: string): Promise<Response> {
+  if (!c.env.DESKTOP_UPDATES) return c.json({ error: "desktop_release_artifact_mirror_unavailable" }, 503, noStoreHeaders());
+  const review = await appliedReview(c, reviewId);
+  if (!review) return c.json({ error: "desktop_release_history_review_incomplete" }, 409, noStoreHeaders());
+  if (review.batch_status !== "applied" || review.apply_status !== "applied") return c.json({ error: "desktop_release_history_apply_required" }, 409, noStoreHeaders());
+
+  let manifest: JsonObject;
+  try {
+    manifest = JSON.parse(review.manifest_json) as JsonObject;
+  } catch {
+    return c.json({ error: "desktop_release_history_review_incomplete" }, 409, noStoreHeaders());
+  }
+  const normalized = await normalizeDesktopReleasePlan({
+    mode: "dry-run",
+    schema_version: 1,
+    source: { kind: "legacy-api", endpoint: review.source_endpoint, release_id: review.release_id, manifest_sha256: review.manifest_sha256 },
+    manifest,
+    manifest_sha256: review.manifest_sha256,
+    plan_hash: review.plan_hash,
+    action: "stage",
+    status: "planned",
+  });
+  if (!normalized || stableJson(normalized.manifest) !== review.manifest_json) return c.json({ error: "desktop_release_history_review_incomplete" }, 409, noStoreHeaders());
+
+  let specs: DesktopArtifactSpec[];
+  try {
+    specs = desktopArtifactSpecs(normalized.manifest);
+  } catch {
+    return c.json({ error: "desktop_release_history_review_incomplete" }, 409, noStoreHeaders());
+  }
+  const now = Math.floor(Date.now() / 1_000);
+  try {
+    await c.env.APP_DB.batch(specs.map((spec) => {
+      const payload = artifactPayload(spec, review.review_id, review.manifest_sha256);
+      return c.env.APP_DB.prepare(
+        "INSERT INTO cf_desktop_release_artifacts (release_id, asset_name, review_id, plan_hash, manifest_sha256, source_url, object_key, expected_sha256, content_type, status, attempts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?) ON CONFLICT(release_id, asset_name) DO NOTHING",
+      ).bind(spec.releaseId, spec.assetName, review.review_id, review.plan_hash, review.manifest_sha256, spec.sourceUrl, spec.objectKey, spec.expectedSha256, spec.contentType, now, now);
+    }));
+    const rows = await c.env.APP_DB.prepare(
+      "SELECT release_id, asset_name, review_id, plan_hash, manifest_sha256, source_url, object_key, expected_sha256, content_type, status, last_queued_at FROM cf_desktop_release_artifacts WHERE release_id = ? ORDER BY asset_name",
+    ).bind(review.release_id).all<ArtifactLedgerRow>();
+    const ledger = rows.results || [];
+    if (ledger.length !== specs.length || ledger.some((row) => {
+      const spec = specs.find((entry) => entry.assetName === row.asset_name);
+      return !spec || row.release_id !== spec.releaseId || row.review_id !== review.review_id || row.plan_hash !== review.plan_hash || row.manifest_sha256 !== review.manifest_sha256 || row.source_url !== spec.sourceUrl || row.object_key !== spec.objectKey || row.expected_sha256 !== spec.expectedSha256 || row.content_type !== spec.contentType;
+    })) return c.json({ error: "desktop_release_artifact_mirror_conflict" }, 409, noStoreHeaders());
+
+    const queued = ledger.filter((row) => row.status !== "copied" && row.status !== "failed" && (row.last_queued_at === null || row.last_queued_at < now - DESKTOP_ARTIFACT_LEASE_SECONDS));
+    await Promise.all(queued.map(async (row) => {
+      const spec = specs.find((entry) => entry.assetName === row.asset_name)!;
+      const payload = artifactPayload(spec, review.review_id, review.manifest_sha256);
+      await c.env.JOBS.send({ jobId: artifactJobId(payload), uid: DESKTOP_ARTIFACT_SYSTEM_UID, kind: DESKTOP_ARTIFACT_MIRROR_KIND, payload });
+      await c.env.APP_DB.prepare("UPDATE cf_desktop_release_artifacts SET last_queued_at = ?, last_error = NULL, updated_at = ? WHERE release_id = ? AND asset_name = ? AND status IN ('queued', 'copying')").bind(now, now, row.release_id, row.asset_name).run();
+    }));
+    return c.json({
+      status: queued.length ? "queued" : "copied",
+      release_id: review.release_id,
+      artifact_count: specs.length,
+      queued_count: queued.length,
+      copied_count: ledger.filter((row) => row.status === "copied").length,
+      artifacts: ledger.map((row) => ({ asset_name: row.asset_name, status: row.status })),
+    }, queued.length ? 202 : 200, noStoreHeaders());
+  } catch {
+    try {
+      await c.env.APP_DB.prepare("UPDATE cf_desktop_release_artifacts SET last_error = 'queue unavailable', updated_at = ? WHERE release_id = ? AND status = 'queued'").bind(now, review.release_id).run();
+    } catch { /* leave the durable ledger for the next operator retry */ }
+    return c.json({ error: "desktop_release_artifact_mirror_unavailable" }, 503, noStoreHeaders());
+  }
+}
+
 export function registerDesktopReleaseHistoryImportRoutes(app: Hono<{ Bindings: JobsEnv }>): void {
   app.post(REVIEW_PATH, async (c) => {
     const denied = gate(c);
@@ -403,6 +517,13 @@ export function registerDesktopReleaseHistoryImportRoutes(app: Hono<{ Bindings: 
     const denied = gate(c);
     if (denied) return denied;
     return apply(c);
+  });
+  app.post(`${REVIEW_PATH}/:reviewId/artifacts/apply`, async (c) => {
+    const denied = gate(c);
+    if (denied) return denied;
+    const reviewId = c.req.param("reviewId") || "";
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reviewId)) return c.json({ error: "invalid_request" }, 400, noStoreHeaders());
+    return applyArtifacts(c, reviewId);
   });
 }
 

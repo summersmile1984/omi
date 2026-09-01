@@ -4,9 +4,84 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Message } from "@cloudflare/workers-types";
 import type { JobsEnv } from "../workers/jobs/env";
 import { registerDesktopReleaseHistoryImportRoutes } from "../workers/jobs/desktop-release-history-import";
+import { processDesktopReleaseArtifactMessage } from "../workers/jobs/desktop-release-artifact-mirror";
+import type { JobMessage } from "../workers/jobs/env";
+
+type StoredObject = {
+  bytes: Uint8Array;
+  customMetadata: Record<string, string>;
+  contentType: string;
+};
+
+class FakeDesktopUpdates {
+  readonly objects = new Map<string, StoredObject>();
+  failPut = false;
+
+  async head(key: string): Promise<R2Object | null> {
+    const stored = this.objects.get(key);
+    if (!stored) return null;
+    return {
+      key,
+      version: "1",
+      size: stored.bytes.byteLength,
+      etag: "etag",
+      httpEtag: '"etag"',
+      uploaded: new Date(1),
+      httpMetadata: { contentType: stored.contentType },
+      customMetadata: stored.customMetadata,
+      checksums: {},
+      range: undefined,
+    } as unknown as R2Object;
+  }
+
+  async put(key: string, value: ReadableStream<Uint8Array>, options?: R2PutOptions): Promise<void> {
+    if (this.failPut) throw new Error("storage unavailable");
+    const reader = value.getReader();
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      while (true) {
+        const item = await reader.read();
+        if (item.done) break;
+        chunks.push(item.value);
+        length += item.value.byteLength;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    this.objects.set(key, {
+      bytes,
+      customMetadata: { ...(options?.customMetadata || {}) },
+      contentType: options?.httpMetadata && "contentType" in options.httpMetadata
+        ? options.httpMetadata.contentType || "application/octet-stream"
+        : "application/octet-stream",
+    });
+  }
+
+  async delete(key: string): Promise<void> {
+    this.objects.delete(key);
+  }
+}
+
+class FakeDesktopQueue {
+  readonly messages: JobMessage[] = [];
+  fail = false;
+
+  async send(message: JobMessage): Promise<void> {
+    if (this.fail) throw new Error("queue unavailable");
+    this.messages.push(message);
+  }
+}
 
 class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
@@ -144,10 +219,14 @@ function plan() {
 function environment(enabled = true) {
   const database = new SqliteD1();
   const calls: Request[] = [];
+  const desktopUpdates = new FakeDesktopUpdates();
+  const jobs = new FakeDesktopQueue();
   const env = {
     APP_DB: database,
     ADMIN_KEY: "desktop-release-history-admin",
     DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED: enabled ? "true" : "false",
+    DESKTOP_UPDATES: desktopUpdates,
+    JOBS: jobs,
     API_CORE: {
       fetch: async (request: Request) => {
         calls.push(request);
@@ -169,7 +248,7 @@ function environment(enabled = true) {
   } as unknown as JobsEnv;
   const app = new Hono<{ Bindings: JobsEnv }>();
   registerDesktopReleaseHistoryImportRoutes(app);
-  return { app, database, env, calls };
+  return { app, database, env, calls, desktopUpdates, jobs };
 }
 
 function adminHeaders() {
@@ -262,6 +341,143 @@ describe("Cloudflare reviewed desktop release history executor", () => {
       expect(expired.status).toBe(409);
       expect(calls).toHaveLength(0);
     } finally {
+      database.close();
+    }
+  });
+
+  it("requires the immutable manifest receipt before queueing its R2 artifacts", async () => {
+    const { app, database, env, jobs } = environment();
+    try {
+      const reviewed = await app.request(
+        "/internal/desktop-release-history/reviews",
+        { method: "POST", headers: adminHeaders(), body: JSON.stringify(plan()) },
+        env,
+      );
+      const reviewId = ((await reviewed.json()) as { review_id: string }).review_id;
+      const response = await app.request(
+        `/internal/desktop-release-history/reviews/${reviewId}/artifacts/apply`,
+        { method: "POST", headers: { "secret-key": "desktop-release-history-admin" } },
+        env,
+      );
+      expect(response.status).toBe(409);
+      expect(jobs.messages).toHaveLength(0);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("queues each reviewed artifact once and marks it copied only after digest verification", async () => {
+    const bodyByAsset = new Map([
+      ["Omi.zip", new TextEncoder().encode("zip-bytes")],
+      ["omi.dmg", new TextEncoder().encode("dmg-bytes")],
+      ["qualification-evidence-v1.2.3+10203-macos.json", new TextEncoder().encode('{"passed":true}')],
+    ]);
+    const releasePlan = plan();
+    for (const [assetName, body] of bodyByAsset) {
+      const digest = createHash("sha256").update(body).digest("hex");
+      if (assetName === "Omi.zip") releasePlan.manifest.zip_sha256 = `sha256:${digest}`;
+      else if (assetName === "omi.dmg") releasePlan.manifest.dmg_sha256 = `sha256:${digest}`;
+      else releasePlan.manifest.qualification_evidence_sha256 = `sha256:${digest}`;
+    }
+    releasePlan.manifest_sha256 = sha256(stableJson(releasePlan.manifest));
+    releasePlan.source.manifest_sha256 = releasePlan.manifest_sha256;
+    releasePlan.plan_hash = sha256(stableJson({ schema_version: 1, source: releasePlan.source, manifest_sha256: releasePlan.manifest_sha256 }));
+    const { app, database, env, jobs, desktopUpdates } = environment();
+    const redirected = new Set<string>();
+    const fetchMock = vi.fn(async (url: string) => {
+      const assetName = decodeURIComponent(new URL(url).pathname.split("/").at(-1) || "");
+      const body = bodyByAsset.get(assetName);
+      if (new URL(url).hostname === "github.com" && !redirected.has(assetName)) {
+        redirected.add(assetName);
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: `https://release-assets.githubusercontent.com/omi/${assetName}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20260901T000000Z&X-Amz-Expires=300&X-Amz-Signature=${"a".repeat(64)}`,
+          },
+        });
+      }
+      return body
+        ? new Response(body, { status: 200, headers: { "content-type": "application/octet-stream", "content-length": String(body.byteLength) } })
+        : new Response("missing", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const reviewed = await app.request(
+        "/internal/desktop-release-history/reviews",
+        { method: "POST", headers: adminHeaders(), body: JSON.stringify(releasePlan) },
+        env,
+      );
+      const reviewId = ((await reviewed.json()) as { review_id: string }).review_id;
+      const applied = await app.request(
+        `/internal/desktop-release-history/reviews/${reviewId}/apply`,
+        { method: "POST", headers: { "secret-key": "desktop-release-history-admin" } },
+        env,
+      );
+      expect(applied.status).toBe(200);
+      const mirrored = await app.request(
+        `/internal/desktop-release-history/reviews/${reviewId}/artifacts/apply`,
+        { method: "POST", headers: { "secret-key": "desktop-release-history-admin" } },
+        env,
+      );
+      expect(mirrored.status).toBe(202);
+      expect(jobs.messages).toHaveLength(3);
+
+      for (const [index, queued] of jobs.messages.entries()) {
+        let acknowledged = false;
+        const message = {
+          id: `artifact-${index}`,
+          body: queued,
+          attempts: 1,
+          ack: () => { acknowledged = true; },
+          retry: () => { throw new Error("unexpected retry"); },
+        } as unknown as Message<JobMessage>;
+        await processDesktopReleaseArtifactMessage(message, env);
+        expect(acknowledged).toBe(true);
+      }
+      expect(desktopUpdates.objects).toHaveLength(3);
+      expect(database.database.prepare("SELECT COUNT(*) AS count FROM cf_desktop_release_artifacts WHERE status = 'copied'").get()).toMatchObject({ count: 3 });
+
+      const repeated = await app.request(
+        `/internal/desktop-release-history/reviews/${reviewId}/artifacts/apply`,
+        { method: "POST", headers: { "secret-key": "desktop-release-history-admin" } },
+        env,
+      );
+      expect(repeated.status).toBe(200);
+      expect(jobs.messages).toHaveLength(3);
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.unstubAllGlobals();
+      database.close();
+    }
+  });
+
+  it("permanently rejects an artifact whose bytes do not match the reviewed digest", async () => {
+    const releasePlan = plan();
+    const { app, database, env, jobs, desktopUpdates } = environment();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("wrong-bytes", { status: 200 })));
+    try {
+      const reviewed = await app.request(
+        "/internal/desktop-release-history/reviews",
+        { method: "POST", headers: adminHeaders(), body: JSON.stringify(releasePlan) },
+        env,
+      );
+      const reviewId = ((await reviewed.json()) as { review_id: string }).review_id;
+      expect((await app.request(`/internal/desktop-release-history/reviews/${reviewId}/apply`, { method: "POST", headers: { "secret-key": "desktop-release-history-admin" } }, env)).status).toBe(200);
+      expect((await app.request(`/internal/desktop-release-history/reviews/${reviewId}/artifacts/apply`, { method: "POST", headers: { "secret-key": "desktop-release-history-admin" } }, env)).status).toBe(202);
+      const queued = jobs.messages[0];
+      let acknowledged = false;
+      await processDesktopReleaseArtifactMessage({
+        id: "artifact-mismatch",
+        body: queued,
+        attempts: 1,
+        ack: () => { acknowledged = true; },
+        retry: () => { throw new Error("unexpected retry"); },
+      } as unknown as Message<JobMessage>, env);
+      expect(acknowledged).toBe(true);
+      expect(database.database.prepare("SELECT status, last_error FROM cf_desktop_release_artifacts WHERE asset_name = 'Omi.zip'").get()).toMatchObject({ status: "failed", last_error: "artifact_digest_mismatch" });
+      expect(desktopUpdates.objects).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
       database.close();
     }
   });

@@ -128,6 +128,10 @@ import { registerChatFileHistoryImportRoutes } from "./chat-file-history-import"
 import { registerWrappedHistoryImportRoutes } from "./wrapped-history-import";
 import { registerMemoryArchiveImportRoutes } from "./memory-archive-import";
 import { registerDesktopReleaseHistoryImportRoutes } from "./desktop-release-history-import";
+import {
+  DESKTOP_ARTIFACT_MIRROR_KIND,
+  processDesktopReleaseArtifactMessage,
+} from "./desktop-release-artifact-mirror";
 import { registerPersonaAppHistoryImportRoutes } from "./persona-app-history-import";
 import {
   processTaskIntelligenceMessage,

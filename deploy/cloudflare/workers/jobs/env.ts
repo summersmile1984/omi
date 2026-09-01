@@ -23,7 +23,8 @@ export type JobMessage = {
     | "data_protection_migration"
     | "limitless_import"
     | "chat_assistant_poll"
-    | "memory_short_term_lifecycle";
+    | "memory_short_term_lifecycle"
+    | "desktop_release_artifact_mirror";
   payload: Record<string, unknown>;
 };
 
@@ -61,6 +62,8 @@ export type JobsEnv = {
   API_CORE?: Fetcher;
   APP_DB: D1Database;
   ASSETS: R2Bucket;
+  /** Reviewed desktop release artifact mirror; absent until the bucket is provisioned. */
+  DESKTOP_UPDATES?: R2Bucket;
   CHAT_FILES?: R2Bucket;
   CONVERSATION_RECORDINGS: R2Bucket;
   SPEECH_PROFILES: R2Bucket;

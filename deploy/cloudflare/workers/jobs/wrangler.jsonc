@@ -102,6 +102,10 @@
       "binding": "SPEECH_PROFILES",
       "bucket_name": "omi-cf-speech-profiles-staging",
     },
+    {
+      "binding": "DESKTOP_UPDATES",
+      "bucket_name": "omi-cf-desktop-updates-staging",
+    },
   ],
   "ai": { "binding": "AI" },
   // Cloudflare Images transforms private R2 bytes into the 128px JPEG

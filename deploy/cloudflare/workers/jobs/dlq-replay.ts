@@ -80,6 +80,7 @@ const JOB_KINDS: ReadonlySet<JobMessage["kind"]> = new Set([
   "limitless_import",
   "chat_assistant_poll",
   "memory_short_term_lifecycle",
+  "desktop_release_artifact_mirror",
 ]);
 
 function noStoreHeaders(): Record<string, string> {
