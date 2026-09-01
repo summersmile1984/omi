@@ -431,6 +431,20 @@ class TestModulatePrerecorded(unittest.TestCase):
         self.assertEqual(words[0]['speaker'], 'SPEAKER_00')
         self.assertEqual(words[1]['speaker'], 'SPEAKER_01')
 
+    @patch.dict(
+        'os.environ',
+        {'MODULATE_API_KEY': 'test-key', 'OMI_DEPLOYMENT_PROFILE': 'self_hosted'},
+        clear=False,
+    )
+    @patch('utils.stt.pre_recorded.httpx.Client')
+    def test_neutral_profile_denies_modulate_before_http(self, mock_client_cls):
+        from utils.egress_policy import EgressPolicyUnavailable
+        from utils.stt.pre_recorded import modulate_prerecorded_from_bytes
+
+        with self.assertRaisesRegex(EgressPolicyUnavailable, 'official_endpoint_forbidden'):
+            modulate_prerecorded_from_bytes(b'\x00' * 100, 16000)
+        mock_client_cls.assert_not_called()
+
     @patch.dict('os.environ', {'MODULATE_API_KEY': 'test-key'})
     @patch('utils.stt.pre_recorded.httpx.Client')
     def test_return_language(self, mock_client_cls):

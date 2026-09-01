@@ -41,6 +41,7 @@ from utils.byok import get_byok_key
 from utils.mlx_moss_diarize.prerecorded_provider import MlxMossDiarizePrerecordedProvider
 from utils.other.endpoints import timeit
 from utils.stt.outcomes import TranscriptionFailure
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.stt.speaker_embedding import SPEAKER_MATCH_THRESHOLD, compare_embeddings, extract_embedding_from_bytes
 
 _DG_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -609,8 +610,11 @@ def modulate_prerecorded_from_bytes(
     require_provider_environment(PrerecordedSTTService.MODULATE)
     api_key = os.environ['MODULATE_API_KEY']
 
+    url = 'https://modulate-developer-apis.com/api/velma-2-stt-batch'
+    # This provider path uses a synchronous client and must not bypass the
+    # neutral deployment authority before sending customer audio.
+    assert_http_endpoint_allowed(url)
     try:
-        url = 'https://modulate-developer-apis.com/api/velma-2-stt-batch'
         headers = {'X-API-Key': api_key}
         files = {'upload_file': ('audio.wav', BytesIO(audio_bytes), 'audio/wav')}
         data = {'speaker_diarization': str(diarize).lower()}

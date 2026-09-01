@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from utils.egress_policy import EgressPolicyUnavailable
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, infer_audio_format
 from utils.mimo_pipeline.socket import MimoSttSocket, mimo_available, pcm16_to_wav
 from config.prerecorded_stt import PrerecordedSTTService
@@ -197,6 +198,20 @@ def test_transcribe_audio_builds_input_audio_and_parses_response(monkeypatch):
     assert captured['payload']['asr_options'] == {'language': 'zh'}
     assert captured['payload']['model'] == 'mimo-v2.5-asr'
     assert captured['payload']['stream'] is False
+
+
+def test_transcribe_audio_denies_unallowlisted_neutral_endpoint_before_http(monkeypatch):
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+    import utils.mimo_pipeline.mimo_client as mod
+
+    calls = []
+    monkeypatch.setattr(mod.httpx, 'post', lambda *args, **kwargs: calls.append(args[0]))
+    client = MimoClient(api_key='test-key', base_url=OPERATOR_BASE)
+
+    with pytest.raises(EgressPolicyUnavailable, match='egress_allowlist_not_configured'):
+        client.transcribe_audio(b'\x00\x01')
+    assert calls == []
 
 
 def test_transcribe_audio_rejects_oversized(monkeypatch):

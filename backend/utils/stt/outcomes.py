@@ -7,6 +7,7 @@ from typing import Any, Iterator
 import httpx
 
 from config.prerecorded_stt import PrerecordedSTTConfigurationError, PrerecordedSTTService, TranscriptionOutcome
+from utils.egress_policy import EgressPolicyUnavailable
 
 _KNOWN_PROVIDERS = {
     PrerecordedSTTService.DEEPGRAM,
@@ -116,6 +117,8 @@ def failure_from_exception(error: BaseException, *, provider: str | None = None)
             provider=configuration_error.provider,
             retryable=False,
         )
+    if any(isinstance(item, EgressPolicyUnavailable) for item in chain):
+        return TranscriptionFailure(TranscriptionOutcome.CONFIG_ERROR, provider=provider, retryable=False)
     if any(isinstance(item, (TimeoutError, httpx.TimeoutException)) for item in chain):
         return TranscriptionFailure(TranscriptionOutcome.TIMEOUT, provider=provider)
     if isinstance(error, (ValueError, TypeError)):

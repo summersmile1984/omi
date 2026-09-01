@@ -7,6 +7,7 @@ import httpx
 from pydub import AudioSegment  # pydub is untyped
 
 from utils.executors import storage_executor, run_blocking
+from utils.egress_policy import assert_http_endpoint_allowed
 from utils.http_client import get_stt_client
 from utils.log_sanitizer import sanitize
 from utils.other.storage import (
@@ -62,8 +63,11 @@ def get_speech_profile_matching_predictions(
         files = [
             ('audio_file', (os.path.basename(audio_file_path), audio_f, 'audio/wav')),
         ]
+        endpoint = _get_speech_profile_api_url()
+        # The sync path does not use the shared httpx client hook.
+        assert_http_endpoint_allowed(endpoint)
         response = httpx.post(
-            _get_speech_profile_api_url() + f'?uid={uid}',
+            endpoint + f'?uid={uid}',
             data={'segments': json.dumps(segments)},
             files=files,
             timeout=120.0,
@@ -105,8 +109,10 @@ async def async_get_speech_profile_matching_predictions(
 
     try:
         client = get_stt_client()
+        endpoint = _get_speech_profile_api_url()
+        assert_http_endpoint_allowed(endpoint)
         response = await client.post(
-            _get_speech_profile_api_url() + f'?uid={uid}',
+            endpoint + f'?uid={uid}',
             data={'segments': json.dumps(segments)},
             files=files,
         )

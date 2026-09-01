@@ -211,11 +211,19 @@ def test_speech_profile_closes_audio_file_handle(monkeypatch, tmp_path):
             return response
 
         monkeypatch.setenv("HOSTED_SPEECH_PROFILE_API_URL", "http://speech.test/match")
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "omi_cloud")
         monkeypatch.setattr(module.httpx, "post", fake_post)
 
         module.get_speech_profile_matching_predictions("uid-1", str(audio_path), [{"text": "hi"}])
 
         assert captured["fh"].closed is True
+
+        from utils.egress_policy import EgressPolicyUnavailable
+
+        monkeypatch.setenv("OMI_DEPLOYMENT_PROFILE", "self_hosted")
+        monkeypatch.delenv("SELF_HOST_EGRESS_ALLOWLIST", raising=False)
+        with pytest.raises(EgressPolicyUnavailable, match="egress_allowlist_not_configured"):
+            module.get_speech_profile_matching_predictions("uid-1", str(audio_path), [{"text": "hi"}])
     finally:
         sys.modules.pop(module_name, None)
 

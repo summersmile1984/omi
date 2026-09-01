@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from .mimo_client import MIMO_TRUE_VALUES, MimoAPIError, configured_mimo_endpoint
+from utils.egress_policy import assert_http_endpoint_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +111,12 @@ class MimoTTSClient:
             "messages": messages,
             "audio": {"format": fmt, "voice": voice_id},
         }
+        endpoint = self._endpoint()
+        # MiMo TTS uses the synchronous compatibility client, so it must
+        # perform the same pre-transport neutral egress check explicitly.
+        assert_http_endpoint_allowed(endpoint)
         resp = httpx.post(
-            self._endpoint(),
+            endpoint,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",

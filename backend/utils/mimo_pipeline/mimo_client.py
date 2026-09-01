@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from config.prerecorded_stt import is_private_operator_hostname, is_unsafe_network_hostname
+from utils.egress_policy import assert_http_endpoint_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -240,8 +241,13 @@ class MimoClient:
         # Official quick-start passes the language via asr_options.
         if language:
             payload["asr_options"] = {"language": language}
+        endpoint = self._endpoint()
+        # This synchronous compatibility path bypasses the shared async
+        # client hook; enforce the same neutral deployment authority before
+        # handing customer audio and credentials to httpx.
+        assert_http_endpoint_allowed(endpoint)
         resp = httpx.post(
-            self._endpoint(),
+            endpoint,
             headers=self._headers(),
             json=payload,
             timeout=self._timeout,
