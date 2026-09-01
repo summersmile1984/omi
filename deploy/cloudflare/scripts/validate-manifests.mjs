@@ -355,10 +355,10 @@ export function validateRedisPrimitiveManifest(
     }
     if (
       family.target === "none" &&
-      family.migration_state !== "exempt-tooling"
+      !["exempt-tooling", "retired"].includes(family.migration_state)
     ) {
       throw new Error(
-        `Redis family ${family.id} may target none only as exempt tooling`,
+        `Redis family ${family.id} may target none only as exempt tooling or retired`,
       );
     }
     if (family.migration_state === "staging-partial") {

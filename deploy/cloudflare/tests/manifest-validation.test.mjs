@@ -373,6 +373,27 @@ describe("Cloudflare migration manifests", () => {
     );
   });
 
+  it("allows target none only for exempt tooling or retired Redis families", async () => {
+    const manifest = await loadYaml("redis-primitives.yaml");
+    const retired = manifest.families.find(
+      (family) => family.migration_state === "retired",
+    );
+    expect(retired?.target).toBe("none");
+
+    const invalid = structuredClone(manifest);
+    invalid.families.find(
+      (family) => family.migration_state === "retired",
+    ).migration_state = "planned";
+    expect(() =>
+      validateRedisPrimitiveManifest(invalid, {
+        redisSource: null,
+        directCallerPaths: null,
+        workerSources: [],
+        routeManifest: null,
+      }),
+    ).toThrow("may target none only as exempt tooling or retired");
+  });
+
   it("requires every R2 target bucket to be isolated by environment", async () => {
     const manifest = await loadYaml("r2-namespaces.yaml");
     const storageSource = await readFile(

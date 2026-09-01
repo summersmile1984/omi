@@ -11,9 +11,13 @@ families:
     key_patterns: ["cache:{base64(path)}"]
     legacy_features: [get, set, delete, ttl, fail-open]
     consistency: stale-ok
-    target: kv
+    # No cache tier exists on Workers: stripe_price -> cf_subscription_prices,
+    # approved-apps -> cf_app_catalog, desktop releases -> cf_desktop_releases/
+    # cf_desktop_channel_pointers, and the daily-summary regenerate cooldown is
+    # the daily_summary:regenerate edge rate-limit policy.
+    target: d1
     target_owner: api-core
-    migration_state: planned
+    migration_state: staging-owned
   - id: app-object-cache
     source_symbols:
       [
@@ -39,17 +43,24 @@ families:
       ]
     legacy_features: [get, set, delete, ttl, mget]
     consistency: stale-ok
-    target: kv
+    # cf_app_catalog is the direct D1 authority (installs is a column); the
+    # usage/money analytics sub-keys have no Worker counterpart because the
+    # creator-analytics computation itself is not part of the Cloudflare
+    # surface, so there is nothing to cache.
+    target: d1
     target_owner: api-core
-    migration_state: planned
+    migration_state: staging-owned
   - id: username-identity
     source_symbols: [is_username_taken, get_uid_by_username, save_username]
     key_patterns: ["username:{username}:uid", "uid:{uid}:usernames"]
     legacy_features: [exists, get, set, set-membership]
     consistency: strongly-consistent-unique
+    # Persona usernames live in cf_app_catalog data_json; uniqueness is
+    # enforced by the partial unique index in 0149 plus the 409 mapping in
+    # persona-mutations.ts and persona_routes.py.
     target: d1
-    target_owner: auth
-    migration_state: planned
+    target_owner: jobs
+    migration_state: staging-owned
   - id: app-reviews
     source_symbols:
       [
@@ -89,9 +100,12 @@ families:
       ]
     legacy_features: [get, set, ttl]
     consistency: durable-authoritative
+    # cf_app_subscriptions (0060) owns paid-app and Stripe customer state;
+    # entitlement gates read it directly in app_install_routes.py and
+    # integration_routes.py.
     target: d1
     target_owner: api-core
-    migration_state: planned
+    migration_state: staging-owned
   - id: enabled-apps-and-installs
     source_symbols:
       [
@@ -115,17 +129,22 @@ families:
     key_patterns: ["users:{uid}:name"]
     legacy_features: [set, ttl]
     consistency: stale-ok
-    target: kv
-    target_owner: api-core
-    migration_state: planned
+    # Better Auth's D1 user table is the display-name authority, served over
+    # the signed GET /internal/profile boundary; there is no Firestore read
+    # left to cache.
+    target: d1
+    target_owner: auth
+    migration_state: staging-owned
   - id: signed-url-cache
     source_symbols: [cache_signed_url, get_cached_signed_url]
     key_patterns: ["urls:{blob_path}"]
     legacy_features: [get, set, ttl]
     consistency: stale-ok
-    target: kv
+    # Obsolete by architecture: Workers stream objects through R2 bindings;
+    # no GCS signed URLs are minted, so there is nothing to cache.
+    target: none
     target_owner: api-core
-    migration_state: planned
+    migration_state: retired
   - id: user-geolocation-cache
     source_symbols:
       [
@@ -136,9 +155,11 @@ families:
     key_patterns: ["users:{uid}:geolocation"]
     legacy_features: [get, set, delete, ttl, fail-open]
     consistency: bounded-stale
-    target: kv
+    # cf_user_geolocation (0015) stores the value with expires_at; the api-core
+    # accessors delete on expiry, reproducing the TTL semantics in D1.
+    target: d1
     target_owner: api-core
-    migration_state: planned
+    migration_state: staging-owned
   - id: daily-summary-owner
     source_symbols:
       [
@@ -183,9 +204,12 @@ families:
       ]
     legacy_features: [get, set, delete, ttl]
     consistency: per-user-strong
-    target: durable-object
-    target_owner: realtime
-    migration_state: planned
+    # in_progress state is cf_conversations.status='in_progress'; meeting ids
+    # live on cf_conversations.calendar_event_json with cf_calendar_meetings
+    # as the meeting authority — no separate ephemeral store exists.
+    target: d1
+    target_owner: api-core
+    migration_state: staging-owned
   - id: developer-webhooks
     source_symbols:
       [
@@ -210,17 +234,21 @@ families:
     key_patterns: ["users:{uid}:filters:{category}"]
     legacy_features: [set-membership, random-member]
     consistency: durable-authoritative
-    target: d1
+    # Obsolete: the only legacy reader is commented out; the writers are
+    # write-only accumulation with no Cloudflare product behavior behind them.
+    target: none
     target_owner: api-core
-    migration_state: planned
+    migration_state: retired
   - id: retrieval-migration-checkpoint
     source_symbols: [save_migrated_retrieval_conversation_id]
     key_patterns: [migrated_retrieval_memory_ids]
     legacy_features: [set-membership, ttl]
     consistency: job-checkpoint
-    target: d1
+    # Obsolete: checkpoint for a one-off legacy backfill script; Cloudflare
+    # vector projection is ledger-driven (vector-projection.ts + outbox).
+    target: none
     target_owner: jobs
-    migration_state: planned
+    migration_state: retired
   - id: proactive-notification-rate-state
     source_symbols:
       [
@@ -234,9 +262,13 @@ families:
       ["{uid}:{app_id}:proactive_noti_sent_at", "{uid}:daily_noti_count:{date}"]
     legacy_features: [get, set, counter, ttl]
     consistency: per-user-strong
-    target: durable-object
-    target_owner: jobs
-    migration_state: planned
+    # Per-app hourly buckets: cf_integration_hourly_usage (0064); shared
+    # per-user daily budget with developer exemption:
+    # cf_user_notification_daily_usage (0148). Both are bounded conditional
+    # upserts in integration_routes.py.
+    target: d1
+    target_owner: api-core
+    migration_state: staging-owned
   - id: user-preferred-app
     source_symbols: [set_user_preferred_app, get_user_preferred_app]
     key_patterns: ["user:{uid}:preferred_app"]
@@ -269,9 +301,11 @@ families:
     key_patterns: ["mcp_api_key:{hash}", "mcp_api_key_auth:{hash}"]
     legacy_features: [get, set, delete, ttl, fail-open]
     consistency: revocation-aware
+    # cf_mcp_api_keys (0065-0067) is read by hash on every verification with
+    # no cache tier, so revocation (DELETE in mcp-api-keys.ts) is instant.
     target: d1
-    target_owner: auth
-    migration_state: planned
+    target_owner: api-core
+    migration_state: staging-owned
   - id: developer-api-key-cache
     source_symbols:
       [
@@ -283,17 +317,21 @@ families:
     key_patterns: ["dev_api_key:{hash}"]
     legacy_features: [get, set, delete, ttl, fail-open]
     consistency: revocation-aware
+    # cf_developer_api_keys (0078): direct D1 verification, instant revocation
+    # through developer-api-keys.ts — no cache tier to invalidate.
     target: d1
-    target_owner: auth
-    migration_state: planned
+    target_owner: api-core
+    migration_state: staging-owned
   - id: migration-status
     source_symbols: [set_migration_status]
     key_patterns: ["migration_status:{uid}"]
     legacy_features: [set, ttl]
     consistency: job-checkpoint
+    # cf_data_protection_migration_control / _runs (0103) own leased,
+    # fingerprinted migration state served by migration_routes.py.
     target: d1
     target_owner: jobs
-    migration_state: planned
+    migration_state: staging-owned
   - id: auth-exchange-state
     source_symbols:
       [
@@ -306,9 +344,13 @@ families:
     key_patterns: ["auth_session:{session_id}", "auth_code:{code}"]
     legacy_features: [get, set, delete, ttl, single-use]
     consistency: strongly-consistent
+    # cf_legacy_auth_transactions (auth 0007) owns single-use consume with
+    # UNIQUE lookupHash, expiry sweep, and status transitions in
+    # legacy-compatibility.ts; app-consent OAuth uses the sibling
+    # cf_external_oauth_transactions.
     target: d1
     target_owner: auth
-    migration_state: planned
+    migration_state: staging-owned
   - id: notification-deduplication
     source_symbols:
       [
@@ -330,9 +372,12 @@ families:
       ]
     legacy_features: [exists, set, delete, ttl, set-if-absent]
     consistency: per-user-strong
-    target: durable-object
+    # Obsolete: none of the four deduplicated legacy notification producers
+    # exists on the Cloudflare surface; every CF producer already dedupes via
+    # UNIQUE (source_kind, source_id) on cf_notification_outbox.
+    target: none
     target_owner: jobs
-    migration_state: planned
+    migration_state: retired
   - id: conversation-summary-app-set
     source_symbols:
       [
@@ -517,17 +562,23 @@ families:
       ]
     legacy_features: [set-if-absent, ttl, fail-open]
     consistency: per-user-strong
+    # The legacy 7s listen lock has no live caller; Cloudflare instead bounds
+    # per-uid session creation with the realtime:session_admission policy on
+    # the shared rate-limit DO. The two Firestore write-throttles guard
+    # client-device telemetry that has no Cloudflare counterpart.
     target: durable-object
-    target_owner: realtime
-    migration_state: planned
+    target_owner: rate-limit
+    migration_state: staging-owned
   - id: persona-update-window
     source_symbols: [set_persona_update_timestamp, can_update_persona]
     key_patterns: ["users:{uid}:persona_updated"]
     legacy_features: [exists, set, ttl]
     consistency: per-user-strong
-    target: durable-object
+    # Obsolete: the daily-throttled background persona-prompt refresh does not
+    # exist on Cloudflare; prompts are computed only at create/update time.
+    target: none
     target_owner: api-ai
-    migration_state: planned
+    migration_state: retired
   - id: speech-profile-duration
     source_symbols: [set_speech_profile_duration, get_speech_profile_duration]
     key_patterns: ["users:{uid}:speech_profile_duration"]
@@ -570,18 +621,24 @@ families:
     key_patterns: ["users:{uid}:daily_summary_lock:{date}"]
     legacy_features: [set-if-absent, ttl]
     consistency: strongly-consistent
-    target: durable-object
-    target_owner: jobs
-    migration_state: planned
+    # UNIQUE (uid, date) on cf_daily_summaries (0041) makes generation
+    # idempotent per user-day; there is no scheduled fan-out to contend.
+    target: d1
+    target_owner: api-core
+    migration_state: staging-owned
   - id: credit-invalidation-signal
     source_symbols:
       [set_credits_invalidation_signal, check_credits_invalidation]
     key_patterns: ["credits_invalidated:{uid}"]
     legacy_features: [get, set, ttl, multi-reader]
     consistency: per-user-strong
-    target: durable-object
+    # Obsolete: the signal existed to punch through a per-stream in-process
+    # credits cache; RealtimeSession holds no such cache and re-reads policy
+    # from D1 on a fixed cadence, so Stripe writes become visible without an
+    # invalidation channel.
+    target: none
     target_owner: realtime
-    migration_state: planned
+    migration_state: retired
   - id: goal-extraction-locks
     source_symbols:
       [try_acquire_goal_extraction_lock, try_acquire_conversation_goal_lock]
@@ -592,51 +649,67 @@ families:
       ]
     legacy_features: [set-if-absent, ttl]
     consistency: strongly-consistent
+    # Extraction is the explicit goals:extract route policy on the shared
+    # rate-limit DO plus UNIQUE (uid, goal_id, sequence) on progress events;
+    # CF conversation finalization performs no goal extraction, so the
+    # per-conversation lock has no counterpart to hold.
     target: durable-object
-    target_owner: jobs
-    migration_state: planned
+    target_owner: rate-limit
+    migration_state: staging-owned
 direct_legacy_callers:
+  # Process-local cache + pubsub invalidation for a multi-instance FastAPI
+  # fleet; Workers read D1 per request, so the tier is obsolete.
   - {
       path: backend/database/cache.py,
-      target: kv,
+      target: none,
       target_owner: api-core,
-      migration_state: planned,
+      migration_state: retired,
     }
+  # Read-through cache over Firestore projections; D1 is authoritative on
+  # Cloudflare, so there is no remote read to cache.
   - {
       path: backend/database/firestore_cache.py,
-      target: kv,
+      target: none,
       target_owner: api-core,
-      migration_state: planned,
+      migration_state: retired,
     }
+  # cf_phone_call_usage / _attempts / _policy (0108) owned by phone-twilio.ts.
   - {
       path: backend/database/phone_call_usage.py,
-      target: durable-object,
-      target_owner: api-core,
-      migration_state: planned,
+      target: d1,
+      target_owner: jobs,
+      migration_state: staging-owned,
     }
+  # Cross-instance cache invalidation channel; no cache tier exists to
+  # invalidate on Workers.
   - {
       path: backend/database/redis_pubsub.py,
-      target: durable-object,
+      target: none,
       target_owner: realtime,
-      migration_state: planned,
+      migration_state: retired,
     }
+  # cf_sync_jobs / cf_sync_job_files / cf_sync_content_ledger (0050) plus the
+  # sync queues, owned by sync-local-files.ts.
   - {
       path: backend/database/sync_jobs.py,
       target: queue,
       target_owner: jobs,
-      migration_state: planned,
+      migration_state: staging-owned,
     }
+  # Outbox retry/lease/last_error exist (0064, 0079); per-endpoint health
+  # scoring and auto-disable remain unimplemented.
   - {
       path: backend/database/webhook_health.py,
       target: d1,
       target_owner: jobs,
       migration_state: planned,
     }
+  # Redis readiness probe endpoint; Workers expose plain /health routes.
   - {
       path: backend/routers/desktop_core.py,
-      target: durable-object,
+      target: none,
       target_owner: edge,
-      migration_state: planned,
+      migration_state: retired,
     }
   - {
       path: backend/routers/integrations.py,
@@ -656,23 +729,28 @@ direct_legacy_callers:
       target_owner: tooling,
       migration_state: exempt-tooling,
     }
+  # One-off legacy backfill script (see retrieval-migration-checkpoint).
   - {
       path: backend/scripts/users/retrieval.py,
-      target: d1,
+      target: none,
       target_owner: jobs,
-      migration_state: planned,
+      migration_state: retired,
     }
+  # 48h reverse-geocode result cache; Cloudflare stores the resolved location
+  # on cf_user_geolocation / cf_conversations rows and its only location
+  # routes are consent, so the cache has no counterpart.
   - {
       path: backend/utils/conversations/location.py,
-      target: kv,
+      target: none,
       target_owner: api-core,
-      migration_state: planned,
+      migration_state: retired,
     }
+  # Opt-in Redis queue backend replaced by Cloudflare Queues + DLQ replay.
   - {
       path: backend/utils/cloud_tasks_redis.py,
       target: queue,
       target_owner: jobs,
-      migration_state: planned,
+      migration_state: staging-owned,
     }
   - {
       path: backend/utils/fair_use.py,
@@ -680,39 +758,50 @@ direct_legacy_callers:
       target_owner: jobs,
       migration_state: staging-owned,
     }
+  # check_rate_limit is the shared rate-limit DO; the 7s listen lock has no
+  # live legacy caller and maps to realtime:session_admission.
   - {
       path: backend/utils/other/endpoints.py,
       target: durable-object,
-      target_owner: edge,
-      migration_state: planned,
+      target_owner: rate-limit,
+      migration_state: staging-owned,
     }
+  # The SETNX in-flight slot is the partial unique index
+  # cf_sync_backfill_inflight_uid_idx (0050).
   - {
       path: backend/utils/sync/backfill.py,
-      target: durable-object,
+      target: d1,
       target_owner: jobs,
-      migration_state: planned,
+      migration_state: staging-owned,
     }
+  # SETNX fingerprint claims are cf_sync_capture_claims (0050).
   - {
       path: backend/utils/sync/capture_manifest.py,
       target: d1,
       target_owner: jobs,
-      migration_state: planned,
+      migration_state: staging-owned,
     }
+  # Cloudflare translation currently runs uncached through Workers AI on
+  # every call; a cache remains an open cost optimization.
   - {
       path: backend/utils/translation_core/cache.py,
       target: kv,
       target_owner: api-ai,
       migration_state: planned,
     }
+  # The rolling duration budget is the D1 fair-use meter/enforcer consumed by
+  # voice_transcription_routes.py, not a Durable Object.
   - {
       path: backend/utils/voice_duration_limiter.py,
-      target: durable-object,
-      target_owner: realtime,
-      migration_state: planned,
+      target: d1,
+      target_owner: api-ai,
+      migration_state: staging-owned,
     }
+  # cf_x_oauth_states (0072) with expiry sweep and the disconnect generation
+  # fence cf_x_oauth_fences (0142), owned by x-connector.ts.
   - {
       path: backend/utils/x_connector.py,
-      target: durable-object,
-      target_owner: auth,
-      migration_state: planned,
+      target: d1,
+      target_owner: jobs,
+      migration_state: staging-owned,
     }
