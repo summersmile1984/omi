@@ -2,7 +2,9 @@
 
 截至 2026-09-01，Cloudflare staging 已将 `/v1/files` 与 `/v2/files` 两个
 exact upload 入口交给 Jobs Worker；canonical `/v1/cf/chat-files` 仍保留供
-迁移客户端使用。生产切换仍需历史回放和旧客户端 conformance 证据。
+迁移客户端使用。历史回放和旧客户端 conformance 仅属于未来兼容窗口，不阻塞
+本期空数据部署；本期仅需配置实际使用的 OpenAI/R2 provider 并完成 authenticated
+upload/read smoke。
 
 Edge 只在 Better Auth、account cutover、rate-limit 和 signed Jobs assertion
 都通过后转发；Jobs 的 `LEGACY_CHAT_FILES_STAGING_ENABLED=true` 是 staging

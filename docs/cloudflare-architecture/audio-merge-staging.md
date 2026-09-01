@@ -3,8 +3,9 @@
 The staging `POST /v2/audio-merge-jobs/run` route is now owned by the Jobs
 Worker. It accepts the historical schema-v1/schema-v2 JSON payloads and emits
 MP3 through a pinned Worker-safe encoder. The Edge boundary requires a verified
-Better Auth principal; historical Cloud Tasks/OIDC callers must be migrated to
-that signed boundary before production use.
+Better Auth principal. Historical Cloud Tasks/OIDC dispatch parity is a future
+compatibility window; it is not required for the current empty-data staging
+deployment.
 
 ## Staging contract
 

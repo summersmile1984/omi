@@ -2,11 +2,15 @@
 
 审计日期：2026-08-31
 
+## 本期范围修订（2026-09-01）
+
+本期按空数据 Cloudflare 新部署验收：没有生产 Firestore/GCS 数据需要回填，也不要求 Firebase legacy token、旧客户端或旧 provider wire 兼容。下文保留的历史 authority 与回放步骤只适用于未来需要承接存量账号或旧客户端的独立迁移窗口，不构成本期发布阻塞。本期以 Better Auth + D1/R2/Jobs 的新 surface 为准，实际未完成项是启用功能所需的 provider secret、authenticated smoke、删除残留检查和正式 rollout。
+
 ## 结论
 
-当前没有一组可以安全直接切换 owner 的剩余 Phone/Twilio 或 legacy Auth/OAuth 路由。
+在本期空数据范围下，Phone/Twilio 与 Auth/OAuth 的 exact 路由均已有 Cloudflare staging owner；它们仍需 provider 配置和 authenticated smoke 才能启用。旧 Firestore authority、Firebase token 与旧客户端协议不属于本期完成条件。
 
-Phone 中最接近闭环的是 `POST /v1/phone/token`：Workers 可以用 Web Crypto 生成 Twilio Voice Access Token，且不需要调用 Twilio API。但它仍必须先读取“该 uid 是否有 verified caller ID”的权威数据；现在这份数据在 Firestore，Cloudflare 没有 phone schema、历史回填或删号残留 fence。因此只迁移 token 签发会把没有历史号码的用户误判为未配置，或者为了返回成功而绕过 caller-ID 检查，二者都不是 parity。
+Phone 六条入口当前已由 Edge→Jobs staging owner 承载，D1 `0108_phone_twilio.sql` 提供 caller-ID、verification、quota 与 deletion fence。Workers 可用 Web Crypto 生成 Twilio Voice Access Token；本期只需在启用电话功能时配置 Twilio secret，并用 disposable verified number 完成一次 authenticated smoke。历史号码回放与旧客户端 parity 仍保留在未来窗口，不影响空数据部署。
 
 Auth/OAuth 不能用 Better Auth session 直接替换。Better Auth 官方支持 Cloudflare Workers/Hono 与 D1，并且当前 Auth Worker 已在 D1 上承载新会话、Google/Apple social sign-in 和 MCP OAuth；这证明新 auth surface 可以运行在 Workers，但不证明它与 legacy wire contract 等价。仓库已有 `scripts/import-firebase-identities.mjs`、`auth_identity_imports` ledger 和保留 Firebase UID 的确定性导入路径，不过尚未有 staging 全量回放、旧 principal 覆盖和冲突/撤销审计证据。desktop/CLI 的 legacy `/v1/auth/token` 合约仍返回 Firebase custom token，并由客户端继续向 Firebase mint ID/refresh token；legacy app OAuth 还依赖 Firestore app 文档、启用/付费状态和外部 setup callback。
 

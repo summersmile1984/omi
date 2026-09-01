@@ -8,6 +8,11 @@ Auth Worker 已经使用这条组合承载 `/api/better-auth/*`。这里的阻�
 Workers 不能运行 Better Auth，而是 Better Auth 的 session/OAuth wire 与 Omi
 现有 Firebase 客户端协议不同。
 
+本期范围是空数据的新 Cloudflare 部署：Firebase identity 回放、旧客户端
+token/wire 兼容和历史 catalog 不作为当前发布条件。本文后续关于这些内容的
+要求仅适用于未来需要承接存量账号或旧客户端的兼容窗口；本期启用只需配置
+实际使用的 provider，并完成 authenticated success/error smoke。
+
 ## 当前 route decision
 
 以下六条入口已经切到 Auth/Jobs staging owner；缺少 provider/identity
