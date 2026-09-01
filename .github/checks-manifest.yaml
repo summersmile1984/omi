@@ -14,6 +14,11 @@ checks:
     triggers: [".github/scripts/probe_windows_update_feed.py", ".github/scripts/test_probe_windows_update_feed.py", ".github/workflows/desktop_windows_release.yml", ".github/checks-manifest.yaml"]
     lanes: ["local", "ci"]
     reason: "Windows releases must not tag while production is missing /v2/desktop/update-feed/windows; the probe's trust-boundary validation is the release-lane guard"
+  - id: windows-release-history-verifier-tests
+    command: ["python3", ".github/scripts/test_windows_release_history.py"]
+    triggers: [".github/scripts/windows_release_history.py", ".github/scripts/test_windows_release_history.py", "docs/cloudflare-architecture/windows-release-history-reconcile.md", ".github/checks-manifest.yaml"]
+    lanes: ["local", "ci"]
+    reason: "Windows historical release exports must remain bounded, credential-free, and bound to exact GitHub artifacts before any future Cloudflare replay"
   - id: pre-push-final-pr-diff
     command: ["bash", "scripts/test-pre-push-diff-base.sh"]
     triggers: ["scripts/pre-push", "scripts/pre-push-diff-base", "scripts/test-pre-push-diff-base.sh", ".github/checks-manifest.yaml"]
