@@ -58,6 +58,11 @@ function environment(withSession = true) {
   databases.push(database);
   database.database.exec(`
     ${withSession ? "INSERT INTO cf_chat_sessions (uid, id, title, created_at, updated_at) VALUES ('attachment-user', 'session-1', 'Test', 1, 1);" : ""}
+    INSERT INTO cf_app_catalog
+      (id, approved, status, disabled, is_popular, installs, rating_count, data_json, updated_at)
+    VALUES
+      ('app-1', 1, 'approved', 0, 0, 0, 0,
+       '{"id":"app-1","name":"Reader","chat_prompt":"Use concise citations."}', 1);
     INSERT INTO cf_chat_files
       (uid, file_id, request_fingerprint, provider, provider_file_id, name,
        mime_type, size, checksum_sha256, storage_key, status,
@@ -208,6 +213,58 @@ describe("Cloudflare /v2/messages attachment bridge", () => {
     });
     expect(calls).toHaveBeenCalledTimes(3);
     expect(fixture.queue.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps app-scoped attachments and page context in an app session", async () => {
+    const fixture = environment();
+    const app = testApp(fixture.env);
+    const calls = provider();
+    vi.stubGlobal("fetch", calls);
+
+    const response = await request(
+      app,
+      fixture.env,
+      {
+        text: "Summarize this for the reader app",
+        file_ids: ["file-1"],
+        context: {
+          type: "conversation",
+          id: "conversation-1",
+          title: "Meeting notes",
+          summary: "A bounded page summary",
+        },
+      },
+      "app-scoped-request",
+      "app_id=app-1",
+    );
+    expect(response.status).toBe(202);
+    const payload = (await response.json()) as { session_id: string };
+    expect(payload.session_id).not.toBe("session-1");
+    expect(
+      fixture.database.database
+        .prepare("SELECT app_id FROM cf_chat_sessions WHERE id = ?")
+        .get(payload.session_id),
+    ).toEqual({ app_id: "app-1" });
+    expect(
+      fixture.database.database
+        .prepare("SELECT json_extract(message_json, '$.app_id') AS app_id FROM cf_chat_messages WHERE id LIKE 'chat-human-%'")
+        .get(),
+    ).toEqual({ app_id: "app-1" });
+    expect(
+      fixture.database.database
+        .prepare("SELECT file_id FROM cf_chat_session_files WHERE session_id = ?")
+        .get(payload.session_id),
+    ).toEqual({ file_id: "file-1" });
+
+    const missing = await request(
+      app,
+      fixture.env,
+      { text: "Question", file_ids: ["file-1"] },
+      "missing-app-request",
+      "app_id=missing-app",
+    );
+    expect(missing.status).toBe(404);
+    expect(calls).toHaveBeenCalledTimes(3);
   });
 
   it("fails closed for unbounded, duplicate, unsupported, and unavailable attachments", async () => {

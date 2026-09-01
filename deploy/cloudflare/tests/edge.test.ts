@@ -1323,10 +1323,31 @@ describe("edge gateway", () => {
       }),
       env as never,
     );
-    expect(contextualResponse.status).toBe(200);
-    await expect(contextualResponse.json()).resolves.toEqual({ route: "api-ai" });
-    expect(aiRequests).toHaveLength(2);
-    expect(jobsRequests).toHaveLength(1);
+    expect(contextualResponse.status).toBe(202);
+    await expect(contextualResponse.json()).resolves.toEqual({ route: "jobs" });
+    expect(aiRequests).toHaveLength(1);
+    expect(jobsRequests).toHaveLength(2);
+    await expect(jobsRequests[1].json()).resolves.toEqual({
+      text: "Contextual attachment",
+      file_ids: ["file-1"],
+      context: { screen: "settings" },
+    });
+
+    const appResponse = await edge.fetch(
+      new Request("https://edge.test/v2/messages?app_id=app-1", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer opaque-session",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ text: "App attachment", file_ids: ["file-1"] }),
+      }),
+      env as never,
+    );
+    expect(appResponse.status).toBe(202);
+    await expect(appResponse.json()).resolves.toEqual({ route: "jobs" });
+    expect(jobsRequests).toHaveLength(3);
+    expect(new URL(jobsRequests[2].url).searchParams.get("app_id")).toBe("app-1");
   });
 
   it("routes the explicitly enabled attachment completion envelope to Jobs", async () => {

@@ -1644,7 +1644,7 @@ async function inspectChatAttachmentBody(
   const payload = decoded as Record<string, unknown>;
   const fileIds = payload.file_ids;
   const hasAttachments =
-    Array.isArray(fileIds) && fileIds.length > 0 && !("context" in payload);
+    Array.isArray(fileIds) && fileIds.length > 0;
   return { body: bytes.buffer, hasAttachments };
 }
 
@@ -1654,6 +1654,7 @@ const proxyChatAttachmentToJobs = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
   inspected: ChatAttachmentRoutingResult,
   envelope?: ChatAttachmentEnvelope,
+  appId?: string | null,
 ) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
@@ -1675,6 +1676,7 @@ const proxyChatAttachmentToJobs = async (
     "https://jobs.internal",
   );
   if (envelope) target.searchParams.set("envelope", envelope);
+  if (appId) target.searchParams.set("app_id", appId);
   const headers = await authenticatedHeaders(c, auth, "jobs", {
     method: "POST",
     url: target,
@@ -1705,27 +1707,22 @@ const proxyChatMessages = async (
     if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
   }
   const url = new URL(c.req.url);
-  const appChatRequested = ["app_id", "plugin_id"].some((key) => {
-    const value = url.searchParams.get(key);
-    return value !== null && value !== "" && value !== "null";
-  });
-  let inspected: ChatAttachmentRoutingResult | null = null;
-  if (!appChatRequested) inspected = await inspectChatAttachmentBody(c.req.raw);
+  const appId = url.searchParams.get("app_id") || url.searchParams.get("plugin_id");
+  const inspected = await inspectChatAttachmentBody(c.req.raw);
   if (inspected?.hasAttachments) {
     const target = new URL(
       "/v2/cf/messages/attachments",
       "https://jobs.internal",
     );
-    if (c.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED === "true")
+    if (c.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED === "true" && !appId)
       target.searchParams.set("envelope", "messages");
+    if (appId && appId !== "null") target.searchParams.set("app_id", appId);
     const headers = await authenticatedHeaders(c, auth, "jobs", {
       method: "POST",
       url: target,
     });
     if (headers instanceof Response) return withRequestId(headers, id);
-    const response = await c.env.JOBS.fetch(
-      new Request(target, { method: "POST", headers, body: inspected.body }),
-    );
+    const response = await c.env.JOBS.fetch(new Request(target, { method: "POST", headers, body: inspected.body }));
     return withRequestId(response, id);
   }
   const headers = await authenticatedHeaders(c, auth, "api-ai");
