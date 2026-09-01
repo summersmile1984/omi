@@ -45,7 +45,7 @@ Firebase legacy token、旧 Cloud Tasks/Assistants wire 和旧客户端逐字节
 ## 本轮验证证据
 
 - Cloudflare TypeScript：100 个测试文件、729 个测试通过；类型检查和生产依赖审计通过。
-- `api-core`：384 个测试通过；`api-ai`：114 个测试通过。
+- `api-core`：385 个测试通过；`api-ai`：114 个测试通过。
 - Web：9 个测试文件、41 个测试通过；vinext staging build 与 Worker dry-run 通过。
 - Rate Limit Durable Object 已增加内部 `/reserve`/`/release` 原子配额预留基础能力，覆盖并发、幂等释放、窗口过期清理和 stale-token 隔离；当前不切换 Redis family 或 legacy caller，后续需按调用方契约逐组迁移。
 - 历史回放输入边界（2026-09-01）：通用 `backfill-d1` 输入上限为 64 MiB，并以 fatal UTF-8 解码；Chat/Files、Memory、Persona、Phone、Wrapped、Audio 七个 reconcile 工具同样拒绝 malformed UTF-8，避免损坏 export 进入迁移计划。该保护不等于已完成真实 Firestore 回放。
