@@ -23,7 +23,9 @@ Workers AI，从空数据集开始承载新的 Web/Worker 客户端。Calendar�
 Firebase legacy token、旧 Cloud Tasks/Assistants wire 和旧客户端逐字节兼容不
 属于本期完成条件；这些能力保留为后续迁移窗口。当前必须闭合新客户端实际使用
 的 Worker owner、Workers AI 调用、删除残留、staging live smoke、部署凭据和
-回滚证据。
+回滚证据。Web app 表单的通知 scope 元数据调用使用
+`/v1/app/proactive-notification-scopes`（单数 `app`），与 Edge/API Core
+canonical route 保持一致。
 
 ## CF-00～CF-13 完成度
 

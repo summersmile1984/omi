@@ -1155,13 +1155,10 @@ export async function getNotificationScopes(): Promise<NotificationScope[]> {
       'Content-Type': 'application/json',
       'X-App-Platform': 'web',
     });
-    const response = await fetch(
-      `${API_BASE_URL}/v1/apps/proactive-notification-scopes`,
-      {
-        headers,
-        credentials: 'include',
-      },
-    );
+    const response = await fetch(`${API_BASE_URL}/v1/app/proactive-notification-scopes`, {
+      headers,
+      credentials: 'include',
+    });
 
     if (!response.ok) return [];
     return response.json();
