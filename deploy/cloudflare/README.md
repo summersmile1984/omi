@@ -580,12 +580,8 @@ printf '%s' "$ASR_WS_URL" | npx wrangler secret put ASR_WS_URL --name omi-cf-rea
 printf '%s' "$ASR_API_KEY" | npx wrangler secret put ASR_API_KEY --name omi-cf-realtime-staging
 printf '%s' "$ASR_API_BASE_URL" | npx wrangler secret put ASR_API_BASE_URL --name omi-cf-api-ai-staging
 printf '%s' "$ASR_API_KEY" | npx wrangler secret put ASR_API_KEY --name omi-cf-api-ai-staging
-printf '%s' "$EMBEDDING_API_BASE_URL" | npx wrangler secret put EMBEDDING_API_BASE_URL --name omi-cf-api-ai-staging
-printf '%s' "$EMBEDDING_API_KEY" | npx wrangler secret put EMBEDDING_API_KEY --name omi-cf-api-ai-staging
 printf '%s' "$AI_API_BASE_URL" | npx wrangler secret put AI_API_BASE_URL --name omi-cf-api-ai-staging
 printf '%s' "$AI_API_KEY" | npx wrangler secret put AI_API_KEY --name omi-cf-api-ai-staging
-printf '%s' "$TTS_API_BASE_URL" | npx wrangler secret put TTS_API_BASE_URL --name omi-cf-api-ai-staging
-printf '%s' "$TTS_API_KEY" | npx wrangler secret put TTS_API_KEY --name omi-cf-api-ai-staging
 printf '%s' "$ARTIFICIALANALYSIS_API_KEY" | npx wrangler secret put ARTIFICIALANALYSIS_API_KEY --name omi-cf-api-ai-staging
 ```
 
@@ -696,7 +692,7 @@ POST /v1/embeddings
 POST /v1/embeddings-workers-ai
                               Edge → Python API AI → Workers AI BGE binding
 POST /v1/translate           Edge → Python API AI → Workers AI m2m100 translation
-POST /v1/tts/synthesize      optional hosted TTS compatibility surface
+POST /v1/tts/synthesize      Edge → Python API AI → Workers AI Aura binding
 POST /v1/tts/synthesize-workers-ai
                               Edge → Python API AI → Workers AI Aura binding
 POST /v2/tts/synthesize      Edge → Python API AI → Cloudflare unified ElevenLabs model
@@ -2112,7 +2108,7 @@ OAuth, hosted transport, key lifecycle, and REST data tools are
 Cloudflare-owned.
 
 The migrated TTS surfaces now include both the desktop
-`/v1/tts/synthesize` OpenAI-compatible contract and the mobile
+`/v1/tts/synthesize` request shape and the mobile
 `/v2/tts/synthesize` ElevenLabs contract. The mobile route runs through the
 Python Worker's `AI` binding using Cloudflare's unified third-party model
 catalog, so it needs no local TTS process, ElevenLabs SDK, or provider API key.
@@ -2142,8 +2138,8 @@ alarm. This is a foundational seam only; no legacy route or manifest owner is
 changed until a caller-specific reservation contract is migrated.
 
 The TTS fine-grained limiters are also Redis-free in staging. After the Python
-API AI Worker validates the provider-specific request and confirms its provider
-binding, it calls the internal `omi-cf-rate-limit-staging` Durable Object
+API AI Worker validates the request and confirms its Workers AI binding, it
+calls the internal `omi-cf-rate-limit-staging` Durable Object
 directly through a cross-Worker `RATE_LIMITS` binding. Edge uses the same object
 without creating a circular service dependency. Both `/v1/tts/synthesize`
 variants share a 20-request rolling 60-second window and a 50,000-character
@@ -2156,12 +2152,11 @@ mobile fail-open behavior; the latter emits bounded fallback telemetry. API AI
 `/health` exercises a non-mutating DO RPC so staging readiness verifies the
 Python-to-TypeScript binding without a billable synthesis.
 
-`/v1/tts/synthesize-workers-ai` is an additive raw-MP3 route backed by the
-native `@cf/deepgram/aura-1` binding. It accepts bounded `{text, speaker}` JSON
-using the model's documented speaker set and deliberately does not pretend to
-support the existing provider-specific voice IDs. The existing
-`/v1/tts/synthesize` route remains the voice-compatible external API seam until
-voice parity and quality are qualified.
+Both `/v1/tts/synthesize` and `/v1/tts/synthesize-workers-ai` are backed by the
+native `@cf/deepgram/aura-1` binding. The desktop request's historical voice IDs
+are mapped to the Aura speaker set; this preserves a usable request shape but
+does not claim the retired provider's voice-quality parity. Neither route reads
+`TTS_API_KEY` or calls an external TTS API.
 
 `/v1/stt/transcribe-workers-ai` is an additive raw-audio route backed by the
 Python Worker's native `AI` binding and `@cf/openai/whisper-large-v3-turbo`.

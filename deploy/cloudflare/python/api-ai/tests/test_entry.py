@@ -557,18 +557,25 @@ def test_ai_proxy_fails_closed_when_provider_is_missing():
     assert json.loads(response.body) == {"error": "ai provider is not configured"}
 
 
-def test_tts_validates_contract_and_returns_provider_audio(monkeypatch):
+def test_tts_validates_contract_and_returns_workers_ai_audio():
     secret = "test-secret"
     encoded, signature = signed_context(secret)
     limiter = FakeRateLimits()
+    calls = {}
+
+    class FakeResponse:
+        async def bytes(self):
+            return b"ID3-mp3"
+
+    class FakeAI:
+        async def run(self, model, payload, options):
+            calls["model"] = model
+            calls["payload"] = payload
+            calls["options"] = options
+            return FakeResponse()
+
     request = FakeRequest(
-        SimpleNamespace(
-            INTERNAL_ASSERTION_SECRET=secret,
-            TTS_API_BASE_URL="https://tts.example.test/",
-            TTS_API_KEY="key",
-            TTS_MODEL="tts-model",
-            RATE_LIMITS=limiter,
-        ),
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), RATE_LIMITS=limiter),
         {
             "x-omi-auth-context": encoded,
             "x-omi-internal-signature": signature,
@@ -576,32 +583,15 @@ def test_tts_validates_contract_and_returns_provider_audio(monkeypatch):
         {"text": " hello ", "voice_id": "sage", "instructions": "be warm"},
     )
 
-    class FakeResponse:
-        status = 200
-
-        async def arrayBuffer(self):
-            return b"ID3-mp3"
-
-    calls = {}
-
-    async def fake_fetch(url, **options):
-        calls["url"] = url
-        calls["options"] = options
-        return FakeResponse()
-
-    monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
     response = asyncio.run(tts_synthesize(request))
 
     assert response.status_code == 200
     assert response.media_type == "audio/mpeg"
     assert response.body == b"ID3-mp3"
-    assert calls["url"] == "https://tts.example.test/v1/audio/speech"
-    assert json.loads(calls["options"]["body"]) == {
-        "model": "tts-model",
-        "input": "hello",
-        "voice": "sage",
-        "response_format": "mp3",
-        "instructions": "be warm",
+    assert calls == {
+        "model": "@cf/deepgram/aura-1",
+        "payload": {"text": "hello", "speaker": "perseus", "encoding": "mp3"},
+        "options": {"returnRawResponse": True},
     }
     assert limiter.calls == [("tts:fine:user-1", 5, "desktop")]
 
@@ -611,7 +601,7 @@ def test_tts_rejects_unsupported_voice_before_provider_call():
     encoded, signature = signed_context(secret)
     request = FakeRequest(
         SimpleNamespace(
-            INTERNAL_ASSERTION_SECRET=secret, TTS_API_BASE_URL="https://tts.example.test", TTS_API_KEY="key"
+            INTERNAL_ASSERTION_SECRET=secret,
         ),
         {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
         {"text": "hello", "voice_id": "not-a-voice"},
@@ -669,7 +659,7 @@ def test_workers_ai_tts_fails_closed_without_binding():
     secret = "test-secret"
     encoded, signature = signed_context(secret)
     request = FakeRequest(
-        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, RATE_LIMITS=FakeRateLimits()),
         {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
         {"text": "hello"},
         url="https://api.test/v1/tts/synthesize-workers-ai",
@@ -899,18 +889,12 @@ def test_tts_fine_limit_rejects_burst_before_provider_call(monkeypatch):
     request = FakeRequest(
         SimpleNamespace(
             INTERNAL_ASSERTION_SECRET=secret,
-            TTS_API_BASE_URL="https://tts.example.test",
-            TTS_API_KEY="key",
             RATE_LIMITS=limiter,
         ),
         {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
         {"text": "hello", "voice_id": "sage"},
     )
 
-    async def unexpected_fetch(*_args, **_kwargs):
-        raise AssertionError("provider must not be called")
-
-    monkeypatch.setattr(entry, "worker_fetch", unexpected_fetch)
     response = asyncio.run(tts_synthesize(request))
 
     assert response.status_code == 429
@@ -948,8 +932,6 @@ def test_tts_fine_limit_fails_closed_when_durable_object_is_unavailable():
     request = FakeRequest(
         SimpleNamespace(
             INTERNAL_ASSERTION_SECRET=secret,
-            TTS_API_BASE_URL="https://tts.example.test",
-            TTS_API_KEY="key",
             RATE_LIMITS=limiter,
         ),
         {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},

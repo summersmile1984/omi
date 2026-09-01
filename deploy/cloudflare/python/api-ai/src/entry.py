@@ -79,9 +79,26 @@ DEFAULT_WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 WORKERS_AI_TTS_SPEAKERS = frozenset(
     {"angus", "asteria", "arcas", "orion", "orpheus", "athena", "luna", "zeus", "perseus", "helios", "hera", "stella"}
 )
-OPENAI_TTS_VOICES = frozenset(
-    {"alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse", "marin", "cedar"}
-)
+# The old desktop surface names voices after an OpenAI catalog, but the
+# Cloudflare-native Aura model exposes a different speaker catalog.  Keep the
+# request shape usable for the new Worker deployment without making the old
+# provider a runtime dependency; voice quality is intentionally not claimed to
+# be byte-for-byte compatible with the retired provider.
+WORKERS_AI_VOICE_ALIASES = {
+    "alloy": "angus",
+    "ash": "asteria",
+    "ballad": "arcas",
+    "coral": "orion",
+    "echo": "orpheus",
+    "fable": "athena",
+    "nova": "luna",
+    "onyx": "zeus",
+    "sage": "perseus",
+    "shimmer": "helios",
+    "verse": "hera",
+    "marin": "stella",
+    "cedar": "angus",
+}
 
 
 class TtsSynthesizeRequest(BaseModel):
@@ -742,90 +759,20 @@ async def transcribe(request: Request):
     return JSONResponse({"error": "transcription upstream returned unsupported content"}, status_code=502)
 
 
-@app.post("/v1/tts/synthesize")
-async def tts_synthesize(request: Request):
-    """Proxy the desktop OpenAI-compatible TTS contract to a hosted API."""
-    context = auth_context(request)
-    if not context:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    try:
-        payload = TtsSynthesizeRequest.model_validate(await request.json())
-    except (ValidationError, ValueError, TypeError):
-        return JSONResponse({"error": "invalid tts request"}, status_code=400)
-    text = payload.text.strip()
-    if not text:
-        return JSONResponse({"error": "text is required"}, status_code=400)
-    if len(text) > MAX_TTS_CHARS:
-        return JSONResponse({"error": "text is too long"}, status_code=400)
-    voice_id = payload.voice_id.strip()
-    if voice_id not in OPENAI_TTS_VOICES:
-        return JSONResponse({"error": "voice_id is not supported"}, status_code=400)
-
+async def _workers_ai_tts_response(
+    request: Request,
+    context: dict[str, object],
+    text: str,
+    speaker: str,
+) -> Response | JSONResponse:
+    """Run the bounded native Aura request shared by both TTS surfaces."""
     env = request.scope["env"]
-    base_url = getattr(env, "TTS_API_BASE_URL", None)
-    api_key = getattr(env, "TTS_API_KEY", None)
-    if not base_url or not api_key:
-        return JSONResponse({"error": "tts provider is not configured"}, status_code=503)
     rate_limit_denial = await _enforce_tts_fine_rate_limit(request, context, len(text))
     if rate_limit_denial is not None:
         return rate_limit_denial
-    if worker_fetch is None:
-        return JSONResponse({"error": "worker fetch is unavailable"}, status_code=503)
-    provider_payload = {
-        "model": getattr(env, "TTS_MODEL", "gpt-4o-mini-tts"),
-        "input": text,
-        "voice": voice_id,
-        "response_format": "mp3",
-    }
-    if payload.instructions and payload.instructions.strip():
-        provider_payload["instructions"] = payload.instructions.strip()
-    try:
-        response = await worker_fetch(
-            f"{base_url.rstrip('/')}/v1/audio/speech",
-            method="POST",
-            headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
-            body=json.dumps(provider_payload),
-        )
-        if int(response.status) >= 400:
-            return JSONResponse({"error": "tts upstream request failed"}, status_code=502)
-        audio = bytes(await response.arrayBuffer())
-    except (OSError, TypeError, ValueError):
-        return JSONResponse({"error": "tts upstream unavailable"}, status_code=502)
-    if not audio:
-        return JSONResponse({"error": "tts upstream returned empty audio"}, status_code=502)
-    return Response(content=audio, media_type="audio/mpeg")
-
-
-@app.post("/v1/tts/synthesize-workers-ai")
-async def tts_synthesize_workers_ai(request: Request):
-    """Synthesize bounded text using the native Workers AI Aura binding.
-
-    This is additive because Aura exposes its own speaker IDs rather than the
-    existing provider-specific voice IDs. The legacy `/v1/tts/synthesize`
-    contract stays on the external provider until voice parity and quality are
-    qualified.
-    """
-    context = auth_context(request)
-    if not context:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    try:
-        payload = WorkersAiTtsRequest.model_validate(await request.json())
-    except (ValidationError, ValueError, TypeError):
-        return JSONResponse({"error": "invalid workers ai tts request"}, status_code=400)
-    text = payload.text.strip()
-    if not text:
-        return JSONResponse({"error": "text is required"}, status_code=400)
-    speaker = payload.speaker.strip().lower()
-    if speaker not in WORKERS_AI_TTS_SPEAKERS:
-        return JSONResponse({"error": "unsupported speaker"}, status_code=400)
-
-    env = request.scope["env"]
     ai = getattr(env, "AI", None)
     if ai is None:
         return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
-    rate_limit_denial = await _enforce_tts_fine_rate_limit(request, context, len(text))
-    if rate_limit_denial is not None:
-        return rate_limit_denial
     model = getattr(env, "WORKERS_AI_TTS_MODEL", "@cf/deepgram/aura-1")
     try:
         # `returnRawResponse` keeps the model's MPEG stream intact instead of
@@ -844,6 +791,50 @@ async def tts_synthesize_workers_ai(request: Request):
     if not audio:
         return JSONResponse({"error": "workers ai tts returned empty audio"}, status_code=502)
     return Response(content=audio, media_type="audio/mpeg")
+
+
+@app.post("/v1/tts/synthesize")
+async def tts_synthesize(request: Request):
+    """Synthesize desktop TTS through the native Workers AI Aura binding."""
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = TtsSynthesizeRequest.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid tts request"}, status_code=400)
+    text = payload.text.strip()
+    if not text:
+        return JSONResponse({"error": "text is required"}, status_code=400)
+    if len(text) > MAX_TTS_CHARS:
+        return JSONResponse({"error": "text is too long"}, status_code=400)
+    voice_id = payload.voice_id.strip().lower()
+    speaker = WORKERS_AI_VOICE_ALIASES.get(voice_id, voice_id)
+    if speaker not in WORKERS_AI_TTS_SPEAKERS:
+        return JSONResponse({"error": "voice_id is not supported"}, status_code=400)
+    # Aura has no separate instructions field.  The native surface therefore
+    # accepts the field for request compatibility but intentionally ignores it.
+    return await _workers_ai_tts_response(request, context, text, speaker)
+
+
+@app.post("/v1/tts/synthesize-workers-ai")
+async def tts_synthesize_workers_ai(request: Request):
+    """Synthesize bounded text using the native Workers AI Aura binding."""
+    context = auth_context(request)
+    if not context:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = WorkersAiTtsRequest.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        return JSONResponse({"error": "invalid workers ai tts request"}, status_code=400)
+    text = payload.text.strip()
+    if not text:
+        return JSONResponse({"error": "text is required"}, status_code=400)
+    speaker = payload.speaker.strip().lower()
+    if speaker not in WORKERS_AI_TTS_SPEAKERS:
+        return JSONResponse({"error": "unsupported speaker"}, status_code=400)
+
+    return await _workers_ai_tts_response(request, context, text, speaker)
 
 
 @app.post("/v2/tts/synthesize")
