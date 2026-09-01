@@ -133,6 +133,12 @@ WHEN EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid = NEW.uid)
    )
 BEGIN SELECT RAISE(ABORT, 'chat file history authority changed'); END;
 
+CREATE TRIGGER IF NOT EXISTS adf_i_chat_file_history_applies
+BEFORE INSERT ON cf_chat_file_history_applies
+WHEN EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid = NEW.uid)
+   OR EXISTS (SELECT 1 FROM cf_account_deletion_tombstones WHERE uid = NEW.uid)
+BEGIN SELECT RAISE(ABORT, 'account deletion fence'); END;
+
 CREATE TRIGGER IF NOT EXISTS adf_u_chat_file_history_applies
 BEFORE UPDATE ON cf_chat_file_history_applies
 WHEN EXISTS (SELECT 1 FROM cf_account_deletion_intents WHERE uid IN (OLD.uid, NEW.uid))
