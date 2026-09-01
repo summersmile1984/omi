@@ -29,8 +29,9 @@ The first staging slice contains:
   streamed directly to the Workers AI Nova-3 binding and no model runs locally.
 - `jobs`: durable background work plus D1-backed X, task-provider, and Google
   Calendar connectors.
-  X OAuth uses PKCE and the task integrations use one-time, ten-minute D1 state;
-  both store only hashed OAuth state and AES-GCM-encrypted tokens. Todoist,
+  X OAuth uses PKCE and the task integrations use one-time, ten-minute D1 state
+  with a provider-scoped disconnect generation fence; both store only hashed
+  OAuth state and AES-GCM-encrypted tokens. Todoist,
   Asana, Google Tasks, and ClickUp calls run over their hosted HTTPS APIs, so no
   task-provider service runs locally or in another container. Google Calendar
   uses a dedicated one-scope OAuth grant, encrypted D1 tokens, automatic token

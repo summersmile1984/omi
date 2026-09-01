@@ -367,6 +367,95 @@ describe("task integration routes", () => {
     expect(await replay.text()).toContain("invalid_state");
   });
 
+  it("fences an in-flight OAuth callback after disconnect", async () => {
+    const { database, env, external } = environment();
+    let releaseExchange!: () => void;
+    let exchangeStarted!: () => void;
+    const exchangeReady = new Promise<void>((resolve) => {
+      exchangeStarted = resolve;
+    });
+    const exchangeRelease = new Promise<void>((resolve) => {
+      releaseExchange = resolve;
+    });
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (url === "https://oauth2.googleapis.com/token") {
+          exchangeStarted();
+          await exchangeRelease;
+          return Response.json({
+            access_token: "late-access",
+            refresh_token: "late-refresh",
+            expires_in: 3_600,
+          });
+        }
+        return external.fetchImpl(input, init);
+      },
+    );
+    const app = testApp(env, { fetchImpl, now: () => 3500 });
+    const oauth = (await (
+      await app.request("/v1/task-integrations/google_tasks/oauth-url")
+    ).json()) as { auth_url: string };
+    const state = new URL(oauth.auth_url).searchParams.get("state")!;
+
+    const callbackPromise = app.request(
+      `/v2/integrations/google-tasks/callback?code=late-code&state=${encodeURIComponent(state)}`,
+      {},
+      false,
+    );
+    await exchangeReady;
+
+    // The callback has already consumed its one-time state. Disconnect must
+    // still revoke the provider generation before the exchange can commit.
+    const disconnected = await app.request(
+      "/v1/task-integrations/google_tasks",
+      { method: "DELETE" },
+    );
+    expect(disconnected.status).toBe(404);
+    releaseExchange();
+    const callback = await callbackPromise;
+    expect(await callback.text()).toContain("invalid_state");
+    expect(
+      database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_task_integrations WHERE uid = ? AND app_key = ?",
+        )
+        .get("task-user", "google_tasks"),
+    ).toEqual({ count: 0 });
+    expect(
+      database.database
+        .prepare(
+          "SELECT oauth_generation FROM cf_task_integration_fences WHERE uid = ? AND app_key = ?",
+        )
+        .get("task-user", "google_tasks"),
+    ).toEqual({ oauth_generation: 1 });
+    expect(
+      database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_task_integration_oauth_states WHERE uid = ? AND app_key = ?",
+        )
+        .get("task-user", "google_tasks"),
+    ).toEqual({ count: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(
+      fetchImpl.mock.calls.map(([input]) =>
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url,
+      ),
+    ).toEqual([
+      "https://oauth2.googleapis.com/token",
+      "https://tasks.googleapis.com/tasks/v1/users/@me/lists",
+    ]);
+  });
+
   it("fails closed when OAuth configuration is absent", async () => {
     const { env, external } = environment(false);
     const app = testApp(env, {

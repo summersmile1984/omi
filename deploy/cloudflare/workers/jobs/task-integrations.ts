@@ -824,6 +824,7 @@ async function storeOAuthConnection(
   uid: string,
   provider: Provider,
   tokenData: Record<string, unknown>,
+  oauthGeneration: number,
   dependencies?: TaskIntegrationDependencies,
 ) {
   const accessToken = tokenData.access_token as string;
@@ -845,13 +846,17 @@ async function storeOAuthConnection(
       dependencies,
     )),
   };
-  await env.APP_DB.prepare(
+  const result = await env.APP_DB.prepare(
     "INSERT INTO cf_task_integrations " +
       "(uid, app_key, connected, access_token_enc, refresh_token_enc, token_expires_at, configuration_json, created_at, updated_at) " +
-      "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?) " +
+      "SELECT ?, ?, 1, ?, ?, ?, ?, ?, ? " +
+      "FROM cf_task_integration_fences " +
+      "WHERE uid = ? AND app_key = ? AND oauth_generation = ? " +
       "ON CONFLICT(uid, app_key) DO UPDATE SET connected = 1, access_token_enc = excluded.access_token_enc, " +
       "refresh_token_enc = excluded.refresh_token_enc, token_expires_at = excluded.token_expires_at, " +
-      "configuration_json = excluded.configuration_json, updated_at = excluded.updated_at",
+      "configuration_json = excluded.configuration_json, updated_at = excluded.updated_at " +
+      "WHERE EXISTS (SELECT 1 FROM cf_task_integration_fences " +
+      "WHERE uid = ? AND app_key = ? AND oauth_generation = ?)",
   )
     .bind(
       uid,
@@ -870,8 +875,17 @@ async function storeOAuthConnection(
       JSON.stringify(configuration),
       current?.created_at ?? nowSeconds(dependencies),
       nowSeconds(dependencies),
+      uid,
+      provider,
+      oauthGeneration,
+      uid,
+      provider,
+      oauthGeneration,
     )
     .run();
+  if (result.meta?.changes !== 1) {
+    throw new TaskIntegrationError(409, "OAuth connection was revoked");
+  }
 }
 
 function deepLink(provider: Provider, success: boolean, error?: string) {
@@ -945,10 +959,15 @@ async function oauthCallback(
   }
   const stateRow = await c.env.APP_DB.prepare(
     "DELETE FROM cf_task_integration_oauth_states " +
-      "WHERE state_hash = ? RETURNING uid, app_key, expires_at",
+      "WHERE state_hash = ? RETURNING uid, app_key, expires_at, oauth_generation",
   )
     .bind(await sha256Hex(state))
-    .first<{ uid: string; app_key: string; expires_at: number }>();
+    .first<{
+      uid: string;
+      app_key: string;
+      expires_at: number;
+      oauth_generation: number;
+    }>();
   if (
     !stateRow ||
     stateRow.app_key !== provider ||
@@ -968,10 +987,14 @@ async function oauthCallback(
       stateRow.uid,
       provider,
       tokenData,
+      stateRow.oauth_generation,
       dependencies,
     );
     return oauthResponse(provider, true);
-  } catch {
+  } catch (error) {
+    if (error instanceof TaskIntegrationError && error.status === 409) {
+      return oauthResponse(provider, false, "invalid_state");
+    }
     return oauthResponse(provider, false, "token_exchange_failed");
   }
 }
@@ -1344,20 +1367,30 @@ export function registerTaskIntegrationRoutes(
       const configuration = providerConfiguration(c.env, provider);
       const state = randomToken(32);
       const now = nowSeconds(dependencies);
-      await c.env.APP_DB.batch([
+      const results = await c.env.APP_DB.batch([
         c.env.APP_DB.prepare(
           "DELETE FROM cf_task_integration_oauth_states WHERE expires_at <= ?",
         ).bind(now),
         c.env.APP_DB.prepare(
-          "INSERT INTO cf_task_integration_oauth_states (state_hash, uid, app_key, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+          "INSERT INTO cf_task_integration_fences (uid, app_key, oauth_generation, updated_at) VALUES (?, ?, 0, ?) " +
+            "ON CONFLICT(uid, app_key) DO NOTHING",
+        ).bind(context.uid, provider, now),
+        c.env.APP_DB.prepare(
+          "INSERT INTO cf_task_integration_oauth_states " +
+            "(state_hash, uid, app_key, oauth_generation, expires_at, created_at) " +
+            "SELECT ?, uid, app_key, oauth_generation, ?, ? " +
+            "FROM cf_task_integration_fences WHERE uid = ? AND app_key = ?",
         ).bind(
           await sha256Hex(state),
-          context.uid,
-          provider,
           now + OAUTH_STATE_TTL_SECONDS,
           now,
+          context.uid,
+          provider,
         ),
       ]);
+      if (results[2]?.meta?.changes !== 1) {
+        throw new TaskIntegrationError(503, "Task integration state is unavailable");
+      }
       return c.json({
         auth_url: oauthAuthorizationUrl(provider, configuration, state),
       });
@@ -1422,8 +1455,15 @@ export function registerTaskIntegrationRoutes(
           "DELETE FROM cf_task_integrations WHERE uid = ? AND app_key = ?",
         ).bind(context.uid, appKey),
         c.env.APP_DB.prepare(
+          "DELETE FROM cf_task_integration_oauth_states WHERE uid = ? AND app_key = ?",
+        ).bind(context.uid, appKey),
+        c.env.APP_DB.prepare(
           "UPDATE cf_task_integration_defaults SET default_app = NULL, updated_at = ? WHERE uid = ? AND default_app = ?",
         ).bind(nowSeconds(dependencies), context.uid, appKey),
+        c.env.APP_DB.prepare(
+          "INSERT INTO cf_task_integration_fences (uid, app_key, oauth_generation, updated_at) VALUES (?, ?, 1, ?) " +
+            "ON CONFLICT(uid, app_key) DO UPDATE SET oauth_generation = oauth_generation + 1, updated_at = excluded.updated_at",
+        ).bind(context.uid, appKey, nowSeconds(dependencies)),
       ]);
       if (results[0].meta?.changes !== 1) {
         throw new TaskIntegrationError(404, "Task integration not found");
