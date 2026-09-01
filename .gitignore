@@ -284,3 +284,9 @@ dev/.env.dev
 .loopx/
 .opencode/
 .pilot/
+
+# Wrangler local state at repo root (deploy/cloudflare has its own ignore)
+.wrangler/
+
+# TypeScript incremental build caches
+*.tsbuildinfo

@@ -4,8 +4,15 @@
 
 ## 架构图
 
+完整的可交互、响应式和可打印版本见
+[cloudflare-production-architecture.html](./cloudflare-production-architecture.html)。
+
 | 图                                                                 | 内容                                                                      |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| [06-production-overview-gpt-image.png](./06-production-overview-gpt-image.png) | 最新独立 Cloudflare production 总体拓扑                                   |
+| [07-request-auth-route-gpt-image.png](./07-request-auth-route-gpt-image.png) | 请求、Better Auth、账户切换、限流与 Worker 路由链路                       |
+| [08-data-async-lifecycle-gpt-image.png](./08-data-async-lifecycle-gpt-image.png) | D1/R2/Vectorize/Queues/Jobs 数据流、搜索投影与删号生命周期                 |
+| [09-production-isolation-release-gpt-image.png](./09-production-isolation-release-gpt-image.png) | Legacy、staging、production 隔离，以及发布与回滚顺序                      |
 | [01-overview-current-target.png](./01-overview-current-target.png) | 当前 staging、迁移窗口和稳定目标架构                                      |
 | [02-request-auth-flow.png](./02-request-auth-flow.png)             | HTTP、WebSocket、异步任务和认证边界                                       |
 | [03-data-async-plane.png](./03-data-async-plane.png)               | D1、R2、DO、Queues/DLQ、Workers AI、外部 API 与 Vectorize 的数据/异步平面 |
