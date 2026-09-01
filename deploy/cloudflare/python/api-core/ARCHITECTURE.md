@@ -165,8 +165,12 @@ Conversation list/detail/search and default deletion share the
 structured metadata, and transcript text into a uid-token-partitioned search
 index. The SQL uid predicate remains authoritative after FTS candidate lookup.
 Default deletion matches the legacy `cascade=false` boundary and updates folder
-counts in the same D1 batch; the Worker rejects cascade deletion until memory
-retraction and audio cleanup have moved to the same authority.
+counts in the same D1 batch. `cascade=true` retracts derived data in the same
+atomic batch — conversation-derived memories are soft-deleted, derived action
+items removed, and vector retraction outbox entries written for every derived
+row — then enqueues an idempotent per-conversation R2 audio purge job
+(`conversation_audio_purge` in Jobs); the route refuses with 503 when the
+queue binding is absent rather than silently dropping audio cleanup.
 Visibility writes maintain `cf_shared_conversation_index` in the same D1 batch.
 The index rejects cross-account conversation-id collisions, and public reads
 join back through both uid and id before stripping location, external metadata,

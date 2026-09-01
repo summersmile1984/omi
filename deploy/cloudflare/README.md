@@ -1760,14 +1760,19 @@ Conversation search uses a D1 FTS5 index maintained by insert/update/delete
 triggers over IDs, titles, summaries, categories, and transcript text. Search
 remains uid-scoped, excludes locked rows, and supports the Web pagination,
 discarded, date, and speaker filters. Default conversation deletion removes the
-D1 projection and refreshes folder counts; `cascade=true` fails closed because
-memory retraction and audio cleanup are not yet Worker-owned. The first-party
+D1 projection and refreshes folder counts; `cascade=true` soft-deletes the
+conversation's derived memories, removes its action items, writes vector
+retraction outbox entries for each, and enqueues an idempotent
+`conversation_audio_purge` Jobs message that deletes the conversation's
+`chunks/`, `merged/`, `playback/` and `sync-playback/` ASSETS prefixes plus
+its `{uid}/{conversation_id}.wav` recording. The first-party
 pre-transcribed `/v1/conversations/from-segments` route now uses the same
 Workers AI enrichment, D1 batch, client-session-id claim, app/Developer webhook
 fanout, usage, and vector outboxes as Developer ingest, with device provenance
 resolved from the released headers. Conversation finalization, reprocess, and
-merge now use D1/Queue leases and API Core; cascade deletion, audio deletion,
-realtime/audio integration fanout, and finalization-triggered fanout remain legacy-owned;
+merge now use D1/Queue leases and API Core; cascade deletion and its audio
+cleanup are Worker-owned, while realtime/audio integration fanout and
+finalization-triggered fanout remain legacy-owned;
 production reader cutover still requires those write authorities and readers to
 move together. App-key conversation/memory ingest is a separate migrated
 boundary described below. The isolated `/v2/sync-local-files` finalizer is the exception:

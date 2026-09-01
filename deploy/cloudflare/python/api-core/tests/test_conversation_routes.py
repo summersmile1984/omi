@@ -492,9 +492,93 @@ def test_conversation_delete_is_uid_scoped_updates_folder_counts_and_fts():
                 "missing",
             )
         ).status_code
-        == 409
+        == 404
     )
     assert asyncio.run(delete_conversation(FakeRequest(env, {}), "delete-me")).status_code == 401
+
+
+def test_cascade_delete_retracts_derived_data_and_enqueues_audio_purge():
+    secret = "conversation-secret"
+    db = FakeDb()
+    insert_conversation(db, uid="conversation-user", conversation_id="cascade-me", created_at=200)
+    insert_conversation(db, uid="conversation-user", conversation_id="keep-me", created_at=201)
+    db.connection.execute(
+        "INSERT INTO cf_memories (uid, id, content, memory_tier, valid_at, conversation_id, created_at, updated_at) "
+        "VALUES ('conversation-user', 'memory-1', 'derived fact', 'long_term', 100, 'cascade-me', 100, 100), "
+        "('conversation-user', 'memory-2', 'unrelated fact', 'long_term', 100, 'keep-me', 100, 100)"
+    )
+    db.connection.execute(
+        "INSERT INTO cf_action_items (uid, id, description, status, completed, conversation_id, created_at, updated_at) "
+        "VALUES ('conversation-user', 'item-1', 'derived task', 'active', 0, 'cascade-me', 200, 200), "
+        "('conversation-user', 'item-2', 'unrelated task', 'active', 0, 'keep-me', 200, 200)"
+    )
+    db.connection.commit()
+    queue = FakeQueue()
+    env = type("Env", (), {"APP_DB": db, "JOBS": queue, "INTERNAL_ASSERTION_SECRET": secret})()
+
+    deleted = asyncio.run(
+        delete_conversation(
+            FakeRequest(env, signed_headers(secret), query={"cascade": "true"}),
+            "cascade-me",
+        )
+    )
+    assert deleted == {"status": "Ok"}
+
+    # Derived memories are soft-deleted; unrelated memories stay live.
+    memories = {
+        row["id"]: row["deleted_at"]
+        for row in db.connection.execute(
+            "SELECT id, deleted_at FROM cf_memories WHERE uid = 'conversation-user'"
+        ).fetchall()
+    }
+    assert memories["memory-1"] is not None
+    assert memories["memory-2"] is None
+    # Derived action items are removed like the legacy cascade; others stay.
+    remaining_items = [
+        row["id"]
+        for row in db.connection.execute(
+            "SELECT id FROM cf_action_items WHERE uid = 'conversation-user'"
+        ).fetchall()
+    ]
+    assert remaining_items == ["item-2"]
+    # Vector retraction is queued for the conversation and every derived row.
+    outbox = {
+        (row["source_kind"], row["source_id"]): row["operation"]
+        for row in db.connection.execute(
+            "SELECT source_kind, source_id, operation FROM cf_vector_projection_outbox WHERE uid = 'conversation-user'"
+        ).fetchall()
+    }
+    assert outbox == {
+        ("conversation", "cascade-me"): "delete",
+        ("memory", "memory-1"): "delete",
+        ("action_item", "item-1"): "delete",
+    }
+    # Exactly one idempotent audio purge job plus the vector publications.
+    purges = [m for m in queue.messages if m["kind"] == "conversation_audio_purge"]
+    assert len(purges) == 1
+    assert purges[0]["uid"] == "conversation-user"
+    assert purges[0]["payload"] == {"conversationId": "cascade-me"}
+    assert purges[0]["jobId"].startswith("conv-audio-purge-")
+    projected = {
+        (m["payload"]["sourceKind"], m["payload"]["sourceId"])
+        for m in queue.messages
+        if m["kind"] == "vector_project"
+    }
+    assert projected == {
+        ("conversation", "cascade-me"),
+        ("memory", "memory-1"),
+        ("action_item", "item-1"),
+    }
+
+    # Without the jobs queue the cascade refuses instead of dropping cleanup.
+    no_queue_env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
+    refused = asyncio.run(
+        delete_conversation(
+            FakeRequest(no_queue_env, signed_headers(secret), query={"cascade": "true"}),
+            "keep-me",
+        )
+    )
+    assert refused.status_code == 503
 
 
 def test_conversation_detail_honors_source_and_discarded_filters():

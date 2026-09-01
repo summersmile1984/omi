@@ -115,6 +115,7 @@ import {
   processMemoryShortTermLifecycleMessage,
   registerMemoryShortTermLifecycleRoutes,
 } from "./memory-short-term-lifecycle";
+import { processConversationAudioPurgeMessage } from "./conversation-audio-purge";
 import {
   cleanupExpiredHumeWebhookEvents,
   processHumeWebhookMessage,
@@ -1032,6 +1033,10 @@ async function processJobMessage(
   }
   if (message.body.kind === "memory_short_term_lifecycle") {
     await processMemoryShortTermLifecycleMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "conversation_audio_purge") {
+    await processConversationAudioPurgeMessage(message, env);
     return;
   }
   if (message.body.kind === "hume_webhook") {

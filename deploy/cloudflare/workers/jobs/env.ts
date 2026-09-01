@@ -24,6 +24,7 @@ export type JobMessage = {
     | "limitless_import"
     | "chat_assistant_poll"
     | "memory_short_term_lifecycle"
+    | "conversation_audio_purge"
     | "desktop_release_artifact_mirror"
     | "windows_release_artifact_mirror";
   payload: Record<string, unknown>;

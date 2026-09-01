@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from internal_auth import decode_context
 from account_routes import usage_source_statement
+from fallback import record_fallback
 from vector_search import publish_vector_projection, vector_outbox_statement
 
 router = APIRouter()
@@ -1434,9 +1435,19 @@ async def search_conversations(request: Request):
     }
 
 
+CASCADE_DERIVED_OUTBOX_LIMIT = 400
+
+
 @router.delete("/v1/conversations/{conversation_id}")
 async def delete_conversation(request: Request, conversation_id: str):
-    """Delete only the uid-owned D1 projection, matching legacy cascade=false."""
+    """Delete the uid-owned D1 projection; cascade=true also retracts derived data.
+
+    Legacy cascade semantics: derived memories and action items are removed
+    before the conversation document so a partial failure cannot orphan
+    derived data, and audio files are cleaned up in the background. Here the
+    D1 batch is atomic, and the per-conversation R2 purge is an idempotent
+    queued job.
+    """
 
     context = _auth_context(request)
     if not context:
@@ -1446,21 +1457,71 @@ async def delete_conversation(request: Request, conversation_id: str):
     raw_cascade = request.query_params.get("cascade", "false").lower()
     if raw_cascade not in {"true", "false"}:
         return JSONResponse({"error": "invalid cascade flag"}, status_code=400)
-    if raw_cascade == "true":
-        return JSONResponse(
-            {"error": "cascade conversation deletion is not migrated"},
-            status_code=409,
-        )
+    cascade = raw_cascade == "true"
 
     uid = str(context["uid"])
     env = request.scope["env"]
+    if cascade and getattr(env, "JOBS", None) is None:
+        # Without the queue the audio purge would be silently dropped; refuse
+        # instead of pretending the cascade completed.
+        return JSONResponse(
+            {"error": "cascade conversation deletion unavailable"},
+            status_code=503,
+        )
     try:
         conversation = await _first_conversation(env, uid, conversation_id)
         if conversation is None:
             return JSONResponse({"error": "conversation not found"}, status_code=404)
+        now = int(time.time())
         previous_version = int(conversation.get("updated_at") or conversation.get("created_at") or 0)
-        desired_version = max(int(time.time()), previous_version + 1)
-        await env.APP_DB.batch(
+        desired_version = max(now, previous_version + 1)
+        statements = []
+        derived: list[tuple[str, str]] = []
+        if cascade:
+            memory_rows = (
+                await env.APP_DB.prepare(
+                    "SELECT id FROM cf_memories WHERE uid = ? AND conversation_id = ? "
+                    "AND deleted_at IS NULL AND invalid_at IS NULL LIMIT ?"
+                )
+                .bind(uid, conversation_id, CASCADE_DERIVED_OUTBOX_LIMIT)
+                .all()
+            )
+            action_rows = (
+                await env.APP_DB.prepare(
+                    "SELECT id FROM cf_action_items WHERE uid = ? AND conversation_id = ? AND deleted = 0 LIMIT ?"
+                )
+                .bind(uid, conversation_id, CASCADE_DERIVED_OUTBOX_LIMIT)
+                .all()
+            )
+            for row in (memory_rows or {}).get("results", []):
+                if isinstance(row, dict) and row.get("id"):
+                    derived.append(("memory", str(row["id"])))
+            for row in (action_rows or {}).get("results", []):
+                if isinstance(row, dict) and row.get("id"):
+                    derived.append(("action_item", str(row["id"])))
+            statements.append(
+                env.APP_DB.prepare(
+                    "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
+                    "WHERE uid = ? AND conversation_id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
+                ).bind(now, now, uid, conversation_id)
+            )
+            statements.append(
+                env.APP_DB.prepare(
+                    "DELETE FROM cf_action_items WHERE uid = ? AND conversation_id = ?"
+                ).bind(uid, conversation_id)
+            )
+            for source_kind, source_id in derived:
+                statements.append(
+                    vector_outbox_statement(
+                        env,
+                        uid=uid,
+                        source_kind=source_kind,
+                        source_id=source_id,
+                        desired_version=desired_version,
+                        operation="delete",
+                    )
+                )
+        statements.extend(
             [
                 env.APP_DB.prepare(
                     "DELETE FROM cf_shared_conversation_index WHERE conversation_id = ? AND uid = ?"
@@ -1482,9 +1543,34 @@ async def delete_conversation(request: Request, conversation_id: str):
                 ),
             ]
         )
+        await env.APP_DB.batch(statements)
     except Exception:
         return JSONResponse({"error": "conversations unavailable"}, status_code=503)
+    if cascade:
+        digest = hashlib.sha256(f"{uid}\0{conversation_id}".encode()).hexdigest()
+        try:
+            await env.JOBS.send(
+                {
+                    "jobId": f"conv-audio-purge-{digest[:40]}",
+                    "uid": uid,
+                    "kind": "conversation_audio_purge",
+                    "payload": {"conversationId": conversation_id},
+                }
+            )
+        except Exception:
+            # The D1 cascade already committed; failing the whole delete now
+            # would strand the client against a 404 on retry. Match the legacy
+            # background-task semantics and record the degraded audio cleanup.
+            record_fallback(
+                component="other",
+                from_mode="queue",
+                to_mode="none",
+                reason="dependency_unavailable",
+                outcome="degraded",
+            )
     await publish_vector_projection(env, uid=uid, source_kind="conversation", source_id=conversation_id)
+    for source_kind, source_id in derived if cascade else []:
+        await publish_vector_projection(env, uid=uid, source_kind=source_kind, source_id=source_id)
     return {"status": "Ok"}
 
 
