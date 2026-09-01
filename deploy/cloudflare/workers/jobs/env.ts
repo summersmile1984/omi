@@ -177,6 +177,12 @@ export type JobsEnv = {
   CHAT_HISTORY_IMPORT_STAGING_ENABLED?: string;
   /** HMAC secret for content-bound chat-history apply plans. */
   CHAT_HISTORY_IMPORT_SIGNING_SECRET?: string;
+  /** Explicit operator gate for reviewed historical chat-file promotion. */
+  CHAT_FILE_HISTORY_IMPORT_STAGING_ENABLED?: string;
+  /** HMAC secret for content-bound chat-file review/apply plans. */
+  CHAT_FILE_HISTORY_IMPORT_SIGNING_SECRET?: string;
+  /** HMAC secret for external provider-object existence attestations. */
+  CHAT_FILE_HISTORY_PROVIDER_ATTESTATION_SECRET?: string;
   /** Explicit operator gate for reviewed historical Wrapped result promotion. */
   WRAPPED_HISTORY_IMPORT_STAGING_ENABLED?: string;
   /** Explicit operator gate for reviewed Firestore Archive projection import. */

@@ -29,6 +29,7 @@
     "PHONE_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED": "false",
     "CHAT_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "CHAT_FILE_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "MEMORY_ARCHIVE_IMPORT_STAGING_ENABLED": "false",
     "WRAPPED_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED": "false",
@@ -58,6 +59,11 @@
   // after an operator-approved plan.
   // CHAT_HISTORY_IMPORT_SIGNING_SECRET is required together with the explicit
   // chat-history apply staging gate; it must be at least 32 bytes.
+  // CHAT_FILE_HISTORY_IMPORT_SIGNING_SECRET and
+  // CHAT_FILE_HISTORY_PROVIDER_ATTESTATION_SECRET are required together with
+  // the explicit chat-file history review/apply gate; both must be at least
+  // 32 bytes. Provider attestations bind the historical OpenAI file id to the
+  // uid, R2 key, checksum, size and account generation.
   // MEMORY_ARCHIVE_IMPORT_SIGNING_SECRET is required together with the
   // explicit memory Archive review/apply gate; it must be at least 32 bytes.
   // DLQ_REPLAY_SIGNING_SECRET is required together with the explicit DLQ
