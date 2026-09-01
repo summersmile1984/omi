@@ -410,6 +410,19 @@ def test_goal_focus_cap_lifecycle_and_idempotency_are_d1_scoped():
     )
     assert ended["status"] == "achieved"
     assert ended["is_active"] is False
+
+    now = 1_700_000_000
+    env.APP_DB.connection.executemany(
+        "INSERT INTO cf_action_items (uid, id, description, status, completed, goal_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, 'active', 0, ?, ?, ?)",
+        [("goal-user", "detach-task", "Task", created[5]["id"], now, now)],
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_workstreams (uid, id, goal_id, title, objective, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, 'open', ?, ?)",
+        ("goal-user", "detach-workstream", created[5]["id"], "Thread", "Advance", now, now),
+    )
+    env.APP_DB.connection.commit()
     detached = asyncio.run(
         transition_goal_lifecycle(
             FakeRequest(
@@ -420,6 +433,54 @@ def test_goal_focus_cap_lifecycle_and_idempotency_are_d1_scoped():
             created[5]["id"],
         )
     )
-    assert detached.status_code == 409
+    assert detached["status"] == "abandoned"
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT relationship_disposition FROM cf_goals WHERE uid = ? AND id = ?",
+            ("goal-user", created[5]["id"]),
+        ).fetchone()[0]
+        == "detach"
+    )
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT goal_id FROM cf_action_items WHERE uid = ? AND id = ?",
+            ("goal-user", "detach-task"),
+        ).fetchone()[0]
+        is None
+    )
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT goal_id FROM cf_workstreams WHERE uid = ? AND id = ?",
+            ("goal-user", "detach-workstream"),
+        ).fetchone()[0]
+        is None
+    )
     missing_headers = asyncio.run(focus_goal(FakeRequest(env, signed_headers(secret), {}), created[1]["id"]))
     assert missing_headers.status_code == 400
+
+
+def test_goal_lifecycle_detach_rejects_unbounded_relationship_sets():
+    secret = "goal-secret"
+    env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    created = asyncio.run(create_goal(FakeRequest(env, signed_headers(secret), {"title": "Bounded detach"})))
+    now = 1_700_000_000
+    env.APP_DB.connection.executemany(
+        "INSERT INTO cf_action_items (uid, id, description, status, completed, goal_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, 'active', 0, ?, ?, ?)",
+        [("goal-user", f"detach-task-{index}", "Task", created["id"], now, now) for index in range(450)],
+    )
+    env.APP_DB.connection.commit()
+
+    response = asyncio.run(
+        transition_goal_lifecycle(
+            FakeRequest(
+                env,
+                mutation_headers(secret, "detach-too-many"),
+                {"status": "abandoned", "relationship_disposition": "detach"},
+            ),
+            created["id"],
+        )
+    )
+    assert response.status_code == 409
+    assert response.body == b'{"error":"too many relationships to detach atomically"}'
+    assert asyncio.run(get_goal(FakeRequest(env, signed_headers(secret)), created["id"]))["status"] == "background"

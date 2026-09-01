@@ -4,8 +4,8 @@ This goal slice owns the durable metadata, metric projection, daily progress
 history, focus-cap mutations, retain-only lifecycle transitions, and progress
 event feed used by the released clients. AI advice and suggestion routes are
 implemented separately in ``goal_ai_routes.py`` on the Workers AI boundary;
-relationship detach remains explicitly fail-closed until its independent
-Cloudflare authority is designed.
+relationship detach is applied atomically to the D1 goal, action-item, and
+workstream projections.
 """
 
 from __future__ import annotations
@@ -975,8 +975,6 @@ async def transition_goal_lifecycle(request: Request, goal_id: str):
     if mutation is None:
         return JSONResponse({"error": "Idempotency-Key and X-Account-Generation are required"}, status_code=400)
     key, account_generation, request_hash = mutation
-    if update.relationship_disposition == GoalRelationshipDisposition.detach:
-        return JSONResponse({"error": "relationship detach requires the legacy workstream authority"}, status_code=409)
     env = request.scope["env"]
     uid = str(context["uid"])
     operation = f"goal-lifecycle:{goal_id}"
@@ -989,6 +987,24 @@ async def transition_goal_lifecycle(request: Request, goal_id: str):
         target = await _first_goal(env, uid, goal_id)
         if target is None:
             return JSONResponse({"error": "goal not found"}, status_code=404)
+        detached_action_items = 0
+        detached_workstreams = 0
+        if update.relationship_disposition == GoalRelationshipDisposition.detach:
+            # Keep the legacy transaction's bounded relationship guarantee:
+            # refusing at 450 avoids an unbounded D1 batch while still allowing
+            # the normal product-sized goal to detach in one atomic commit.
+            action_items = await env.APP_DB.prepare(
+                "SELECT id FROM cf_action_items WHERE uid = ? AND goal_id = ? LIMIT 451"
+            ).bind(uid, goal_id).all()
+            workstreams = await env.APP_DB.prepare(
+                "SELECT id FROM cf_workstreams WHERE uid = ? AND goal_id = ? LIMIT 451"
+            ).bind(uid, goal_id).all()
+            action_rows = action_items.get("results", []) if isinstance(action_items, dict) else []
+            workstream_rows = workstreams.get("results", []) if isinstance(workstreams, dict) else []
+            detached_action_items = len(action_rows) if isinstance(action_rows, list) else 0
+            detached_workstreams = len(workstream_rows) if isinstance(workstream_rows, list) else 0
+            if detached_action_items + detached_workstreams >= 450:
+                return JSONResponse({"error": "too many relationships to detach atomically"}, status_code=409)
         now = int(time.time())
         terminal = update.status in {GoalStatus.achieved, GoalStatus.abandoned}
         patched_target = dict(target)
@@ -997,17 +1013,39 @@ async def transition_goal_lifecycle(request: Request, goal_id: str):
                 "status": update.status.value,
                 "focus_rank": None,
                 "is_active": 0 if terminal else 1,
-                "relationship_disposition": GoalRelationshipDisposition.retain.value,
+                "relationship_disposition": update.relationship_disposition.value,
                 "updated_at": now,
                 "ended_at": now if terminal else None,
             }
         )
         result = _response(patched_target)
         statements = [
+            *(
+                [
+                    env.APP_DB.prepare(
+                        "UPDATE cf_action_items SET goal_id = NULL, updated_at = ? "
+                        "WHERE uid = ? AND goal_id = ?"
+                    ).bind(now, uid, goal_id),
+                    env.APP_DB.prepare(
+                        "UPDATE cf_workstreams SET goal_id = NULL, updated_at = ? "
+                        "WHERE uid = ? AND goal_id = ?"
+                    ).bind(now, uid, goal_id),
+                ]
+                if update.relationship_disposition == GoalRelationshipDisposition.detach
+                else []
+            ),
             env.APP_DB.prepare(
-                "UPDATE cf_goals SET status = ?, focus_rank = NULL, is_active = ?, relationship_disposition = 'retain', "
+                "UPDATE cf_goals SET status = ?, focus_rank = NULL, is_active = ?, relationship_disposition = ?, "
                 "updated_at = ?, ended_at = ? WHERE uid = ? AND id = ?"
-            ).bind(update.status.value, 0 if terminal else 1, now, now if terminal else None, uid, goal_id),
+            ).bind(
+                update.status.value,
+                0 if terminal else 1,
+                update.relationship_disposition.value,
+                now,
+                now if terminal else None,
+                uid,
+                goal_id,
+            ),
             _mutation_statement(env, uid, operation, key, account_generation, request_hash, result, now),
         ]
         await env.APP_DB.batch(statements)

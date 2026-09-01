@@ -1301,24 +1301,25 @@ and metric events to a uid/goal sequence in D1; explicit event writes use a D1
 mutation receipt, while the existing progress route emits a `metric_update`
 event in the same batch as the metric and daily-history projection. Focus-cap and
 retain-only lifecycle mutations are stored in a D1 mutation receipt and applied
-as one batch. Relationship detach and AI advice/suggestion remain on legacy
-until their stronger workflow contracts are migrated. Focus/unfocus/lifecycle
-writes require
+as one batch. Relationship `detach` now clears uid-scoped action-item and
+workstream links in the same D1 batch, preserving the legacy 450-link safety
+bound and the goal mutation receipt; AI advice/suggestion use the Workers AI
+route in `goal_ai_routes.py`. Focus/unfocus/lifecycle writes require
 `Idempotency-Key` and `X-Account-Generation`; the five-slot focus cap and
-replacement rule are enforced in a D1 batch, while relationship `detach` fails
-closed until the workstream projection also moves. This route group is
-staging-only pending goal/event backfill and downstream reader cutover.
+replacement rule are enforced in a D1 batch. This route group is staging-only
+pending historical goal/event backfill and downstream reader cutover.
 
 The workstream routes migrate canonical workflow metadata, journal events,
 artifact descriptors, continuation checkpoints, and task/goal-origin work
 intents to D1. The task-goal link migration preserves imported/unchanged/failed
 outcomes and records a generation-scoped idempotency receipt. Mutating operations use generation-scoped idempotency receipts;
 artifact revisions and checkpoints enforce their monotonic version/sequence
-rules. Workstream search/index refresh and candidate automation remain legacy
-owned. The goal detail reader now composes the bounded
-goal/workstream/task/progress-event projections in D1; relationship detach and
-AI advice/suggestion remain legacy-owned. This group is staging-only pending
-workstream backfill and downstream reader cutover.
+rules. Workstream search/index refresh and candidate automation remain outside
+the current native scope. The goal detail reader now composes the bounded
+goal/workstream/task/progress-event projections in D1; relationship detach is
+part of the same D1 authority and AI advice/suggestion run through Workers AI.
+This group is staging-only pending historical workstream backfill and
+downstream reader cutover.
 
 The R2 asset route stores a SHA-256 integrity projection in D1 alongside the
 uid-scoped object metadata. Uploads can supply `X-Content-SHA256` for fail-closed
