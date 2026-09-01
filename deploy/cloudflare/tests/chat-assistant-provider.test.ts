@@ -61,7 +61,7 @@ class SqliteD1 {
 
 const databases: SqliteD1[] = [];
 
-function environment() {
+function environment(workersAi = false) {
   const database = new SqliteD1();
   databases.push(database);
   database.database.exec(`
@@ -83,14 +83,30 @@ function environment() {
       ('assistant-user', 'session-1', 'file-text', 1),
       ('assistant-user', 'session-1', 'file-image', 1);
   `);
-  return {
-    database,
-    env: {
+  const env: Record<string, unknown> = {
       APP_DB: database,
       OPENAI_API_KEY: "test-openai-key",
       OPENAI_ASSISTANT_ID: "asst-test-1",
-    } as never,
+      CHAT_FILES_WORKERS_AI_ENABLED: workersAi ? "true" : "false",
   };
+  if (workersAi) {
+    database.database.exec(
+      "UPDATE cf_chat_files SET provider = 'cloudflare-workers-ai', provider_file_id = NULL WHERE uid = 'assistant-user' AND file_id = 'file-text'",
+    );
+    env.CHAT_FILES = {
+      get: async (key: string) => {
+        if (key !== "assistant-user/file-text") return null;
+        return {
+          arrayBuffer: async () =>
+            new TextEncoder().encode("meeting notes: ship Workers AI").buffer,
+        };
+      },
+    };
+    env.AI = {
+      run: async () => ({ response: "The notes say to ship Workers AI." }),
+    };
+  }
+  return { database, env: env as never };
 }
 
 afterEach(() => {
@@ -406,5 +422,42 @@ describe("Cloudflare OpenAI Assistants continuity adapter", () => {
       ),
     ).rejects.toMatchObject({ code: "provider_rejected" });
     expect(provider).toHaveBeenCalledTimes(callsBeforeInvalid);
+  });
+
+  it("answers text attachments through Workers AI without calling OpenAI", async () => {
+    const { env, database } = environment(true);
+    const provider = vi.fn(async () => {
+      throw new Error("OpenAI must not be called");
+    });
+    vi.stubGlobal("fetch", provider);
+    const admitted = await createAssistantRun(
+      env,
+      "assistant-user",
+      "session-1",
+      "workers-ai-request",
+      "What should we ship?",
+      ["file-text"],
+      100,
+    );
+    expect(admitted).toMatchObject({ created: true, status: "queued" });
+    const message = {
+      body: {
+        uid: "assistant-user",
+        payload: { sessionId: "session-1", runId: admitted.run_id },
+      },
+      attempts: 1,
+      ack: vi.fn(),
+      retry: vi.fn(),
+    };
+    await processChatAssistantRunMessage(message as never, env);
+    expect(message.ack).toHaveBeenCalledTimes(1);
+    expect(message.retry).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+    await expect(
+      pollAssistantRun(env, "assistant-user", "session-1", admitted.run_id as string),
+    ).resolves.toMatchObject({
+      status: "completed",
+      result: { text: "The notes say to ship Workers AI." },
+    });
   });
 });

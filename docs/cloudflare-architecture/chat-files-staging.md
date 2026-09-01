@@ -1,51 +1,55 @@
 # Chat-file staging boundary
 
-截至 2026-09-01，Cloudflare staging 已将 `/v1/files` 与 `/v2/files` 两个
-exact upload 入口交给 Jobs Worker；canonical `/v1/cf/chat-files` 仍保留供
-迁移客户端使用。历史回放和旧客户端 conformance 仅属于未来兼容窗口，不阻塞
-本期空数据部署。Workers AI 文本聊天不依赖文件 provider；若启用文件问答，
-需要单独打开可选的 provider adapter 并完成 authenticated upload/read smoke。
+截至 2026-09-01，Cloudflare staging 的 canonical `/v1/cf/chat-files` 已由 Jobs
+Worker 使用 R2 + D1 承载，文件问答默认由 Workers AI Queue 执行；不需要
+`OPENAI_API_KEY`、`GEMINI_API_KEY` 或任何外部 AI provider secret。生产数据回填
+和旧客户端 conformance 已按本期“空数据新部署”范围移出验收条件。
 
 Edge 只在 Better Auth、account cutover、rate-limit 和 signed Jobs assertion
-都通过后转发；Jobs 的 `LEGACY_CHAT_FILES_STAGING_ENABLED=true` 是 staging
-owner 开关。缺少 OpenAI Files secret、CHAT_FILES R2 或 Images thumbnail 能力
-时返回明确 `503`，不会回落本机/legacy 上传；OpenAI/Gemini secret 不是本期
-Workers AI 主路径的必需依赖。
+都通过后转发。Jobs 的 `CHAT_FILES_WORKERS_AI_ENABLED=true` 和
+`CHAT_WORKERS_AI_ATTACHMENTS_ENABLED=true` 开启 Cloudflare-native 路径；
+`LEGACY_CHAT_FILES_STAGING_ENABLED=false` 使旧 `/v1/files`、`/v2/files` aliases
+明确返回 404，而不是回落本机/legacy。缺少 `CHAT_FILES` R2 或 Workers AI
+binding 时返回明确 503；图片缩略图另需 Cloudflare Images binding 和 HMAC secret。
 
-本轮发布同时应用了 `0113_chat_assistant_provider.sql` 与 `0114_gemini_proxy.sql`，API-AI `15a48911-bc8a-41f1-bd40-7a671f5d24e5`、Jobs `969c6d84-1cd3-4c8f-8781-914c44366349`、Edge `261cf422-4a28-4841-b316-cea5711f9d7a` 已上线。Assistant continuity adapter 仍由 `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED` 显式开启；当前未配置 OpenAI provider secret，临时 Better Auth 账号命中关闭开关时返回 `404 legacy_route_disabled`，因此不代表 legacy owner 已切换。
+`0146_chat_files_workers_ai.sql` 允许 provider-neutral 文件 authority，
+`0147_chat_runs_workers_ai.sql` 允许同一 D1 Queue run projection 由 Workers AI
+执行。OpenAI Assistants continuity adapter 仍保留为显式、默认关闭的兼容代码，
+不会被 canonical 路径调用。
 
 ## Session attachment staging evidence（2026-08-31）
 
-远端 App D1 已应用 `0111_chat_session_files.sql`。API Core `c4305fe3-aea6-450d-ac52-b0be2fcd340c`、Jobs `a5d71c63-8c1f-4b68-a614-5f344b785bba`、Edge `02680195-2ab7-43fe-ae8f-de93ef354ffd` 已发布。隔离 Better Auth 账号创建 chat session 返回 `200`；`GET /v2/cf/chat-sessions/{session_id}/files` 返回 `200 []`，不存在或跨账号 file id 的 attach/detach 返回 `404`，未配置 OpenAI Files provider 时上传返回 `503 provider_unavailable`。公开删号请求返回 `200`，session-file 关联没有残留；本次即时检查仍看到 deletion intent，最终 tombstone 交由异步 residual sweep 完成。
+远端 App D1 已应用 `0111_chat_session_files.sql`、`0146_chat_files_workers_ai.sql`
+和 `0147_chat_runs_workers_ai.sql`。隔离 Better Auth 账号创建 chat session 返回
+`200`；`GET /v2/cf/chat-sessions/{session_id}/files` 返回 `200 []`，不存在或跨账号
+file id 的 attach/detach 返回 `404`。无外部 AI secret 时，canonical text upload
+和 Workers AI attachment run 仍可工作；仅缺少 R2/AI binding 才返回 503。
 
-这次只闭合 D1 的 uid/session/ready/deletion-fence reader，不代表历史
-Firestore/GCS 回放已完成；Assistants thread/file_search/run 由已有显式
-`/v2/cf/chat-sessions/.../assistant-runs` seam 提供，exact upload 不会把
-provider id 交给客户端。
+这次闭合了 D1 的 uid/session/ready/deletion-fence reader 和 Workers AI run；
+canonical response 的 `provider` 为 `cloudflare-workers-ai`，`openai_file_id` 为
+`null`，不会向客户端伪造外部 provider id。
 
 ## 已闭合的 staging 子面
 
 - Jobs Worker 校验 Better Auth signed context，并用 bounded multipart parser 限制 10 个文件、单文件 50 MiB、请求总量 100 MiB。
-- D1 `cf_chat_files` 保存 uid、稳定请求指纹、provider file id、大小、SHA-256、状态和私有对象 key；唯一指纹使同一用户的重复上传返回同一 provider 记录。
-- 文件先写专用 `CHAT_FILES` R2 bucket 的 `{uid}/{file_id}` 私有 key，再通过 direct OpenAI Files REST（文档 `purpose=assistants`、图片 `purpose=vision`）取得 provider id；API Core 不绑定该 bucket，也不复制 metadata writer。
-- provider/R2/metadata 失败时标记 failed 并尽力清理对象/provider；账号删除会扫描并清除 D1 行及 `CHAT_FILES` 的 uid 前缀。
+- D1 `cf_chat_files` 保存 uid、稳定请求指纹、provider-neutral 状态、大小、SHA-256 和私有对象 key；唯一指纹使同一用户的重复上传返回同一 canonical 记录。
+- 文件写入专用 `CHAT_FILES` R2 bucket 的 `{uid}/{file_id}` 私有 key；文本/JSON/XML/YAML/CSV 内容在有界 Queue job 中读取并提交给 Workers AI，完全不经过 OpenAI/Gemini。
+- R2/D1/Workers AI 失败时标记 failed 并由 Queue 重试；账号删除会扫描并清除 D1 行及 `CHAT_FILES` 的 uid 前缀。
 - GET 列表和 DELETE 都按 signed uid 隔离；跨账号 file id 返回 404，不暴露 R2 对象 key；仅在已认证的 metadata response 中返回 provider file id。
 
-## 仍未完成
+## 当前限制（非本期阻塞）
 
-`/v1/files`、`/v2/files` 的 staging owner 已调用同一个 canonical handler：
-旧的六字段列表 response（`id`、`name`、`thumbnail`、`mime_type`、
-`openai_file_id`、`created_at`）保持不变；重复请求按 uid+内容指纹返回同一个
-row。旧 `FileChatTool` 的历史 Firestore `users/{uid}/files`、GCS 缩略图和
-Pillow 不能直接在 Worker 重放。配置 Cloudflare Images `IMAGES` binding 和
+旧 `/v1/files`、`/v2/files` aliases 已明确关闭（旧协议不在本期范围）。
+canonical `/v1/cf/chat-files` 按 uid+内容指纹幂等写入 R2/D1；文本类附件由
+Workers AI 读取并回答。配置 Cloudflare Images `IMAGES` binding 和
 `CHAT_FILE_THUMBNAIL_SECRET` 时，图片会转成 128px JPEG 写入私有 R2，并用
 短期 HMAC URL 提供读取；缺少任一能力时明确返回 `503 thumbnail_unavailable`。
-当前闭合的是新上传 authority，不是历史 backfill 或完整 Assistants session
-parity。
+图片问答和 PDF/二进制解析暂不在 native text slice 内，会返回有界的
+`provider_rejected`，而不会偷偷调用 OpenAI/Gemini。
 
-当前边界是同步的 Jobs provider admission，不是旧 API 的兼容 alias，也不宣称历史数据已迁移。
-`OPENAI_API_KEY` 只用于显式启用的 Assistants/file provider adapter；缺失时该
-可选分支 fail-closed，不影响 Workers AI text-only 主路径或通用 R2 asset upload。
+当前边界是 Jobs admission + Queue + Workers AI executor；不依赖外部 provider secret。
+`OPENAI_API_KEY` 仅供显式、默认关闭的旧 Assistants 兼容 adapter，缺失时该分支
+fail-closed，不影响 canonical 文件上传、文件问答或普通 Workers AI 聊天。
 
 本轮补上了最小的 D1 session attachment projection（migration `0111_chat_session_files.sql`），并由 API Core 提供显式 staging-only contract：
 
@@ -54,11 +58,10 @@ parity。
 - `DELETE /v2/cf/chat-sessions/{session_id}/files/{file_id}` 只解除 session 关联，不删除文件 authority；删 session、删文件和账号删除 residual sweep 都会清理关联。
 
 这组 route 证明了 D1 attachment reader 的 uid/session/deletion fence。带有 app/context
-参数且含非空 `file_ids` 的 `/v2/messages` 现在也由 Edge 路由到 Jobs Assistant adapter；
-Jobs 按 app-scoped session 校验应用投影，并把 page context 作为有界、不可信参考数据
-注入 provider prompt。没有附件的 app/context 请求仍由 API-AI 处理。因此 exact
-`/v1/files`、`/v2/files` 和新 Web app 文件问答均可在 staging 使用；旧桌面 wire
-parity 仍属于未来兼容窗口。
+参数且含非空 `file_ids` 的 `/v2/messages` 现在由 Edge 路由到 Jobs Workers AI
+attachment run；Jobs 按 app-scoped session 校验应用投影，文本内容在有界 prompt
+中作为不可信参考数据注入。没有附件的 app/context 请求仍由 API-AI 处理。
+新 Web 文件问答不需要任何 OpenAI/Gemini secret。
 
 另外，API Core 的 staging-only `POST /v2/desktop/messages` 现在可以接收
 `file_ids`：它只接受当前 uid 下 `cf_chat_files.status = 'ready'` 的 canonical
@@ -70,28 +73,28 @@ rows，在同一 D1 batch 中写入 `cf_chat_session_files`（带
 可回读文件 metadata，但不调用 Assistants、file_search 或任何 provider，所以
 仍不等价于旧 `/v2/messages` 的附件聊天。
 
-## Legacy owner 切换门槛
+## 可选旧协议兼容窗口（不属于本期）
 
-当前不能据此宣称 production parity。旧上传接口的返回值会被后续桌面聊天请求继续使用，至少还需要以下闭合证据：
+以下只描述未来若重新启用旧客户端兼容时的额外工作，不构成本期 Cloudflare
+部署阻塞；本期明确不做旧协议切换：
 
-1. `cf_chat_files` 的 canonical row 必须有一个 Cloudflare chat-session reader。该 reader
-   已由 `/v2/cf/chat-sessions/{session_id}/files` 提供；exact `/v2/messages` 的附件
-   bridge 是 202/poll staging contract，仍不提供旧 response/SSE parity；旧协议 parity
-   属于后续兼容窗口，不是本期空数据新部署的验收条件。
-2. 非图片文件需要保留旧 Assistants `thread → message attachment → file_search → run` 的会话连续性；图片需要保留旧 vision 读取语义。显式 staging adapter 已闭合新 run 的 Worker-side Assistants thread/assistant authority 和 D1 thread/file/message projection，但 exact legacy `/v2/messages` 仍未接入该 adapter。
-3. 旧 Firestore `users/{uid}/files` 的历史 rows 以及其中的 `openai_file_id`、`thumb_name`、GCS thumbnail URL 必须先回放到 canonical D1/R2/provider 记录，并能验证重复上传、provider 删除和删号残留。`cf_chat_files` 目前只覆盖新上传 authority，不能让历史 id 在切换后凭空变成可读。
-4. 兼容验证需要同时覆盖 legacy 多文件 200 response、session attachment 消费、图片缩略图 URL 过期/跨 uid 隔离，以及 provider/R2/D1 任一失败时的原子回滚。现有测试覆盖 canonical Files、session attachment 和显式 Assistants adapter 的 provider/message projection，但不证明旧客户端 response/SSE/session parity。
+1. 若未来需要旧客户端，才需要额外的 response/SSE parity；当前只接受 Cloudflare
+   native response 和 202/poll contract。
+2. 旧 Assistants `thread → file_search → run` 和 vision 语义不再作为目标；native
+   文本问答使用 Workers AI，图片/PDF 等超出当前 bounded parser 的类型显式拒绝。
+3. 旧 Firestore `users/{uid}/files` 的历史 rows、GCS thumbnail 和 provider object
+   只在未来兼容窗口才需要审计；当前没有生产数据，因此不做回填。
+4. 若未来启用旧 aliases，才需要 legacy 多文件 200 response 和旧客户端回归；
+   当前 aliases 在 provider 调用前返回 404。
 
-因此，`LEGACY_CHAT_FILES_STAGING_ENABLED` 当前是隔离 staging owner 开关，不是
-production cutover 证明。完成门槛后仍应先用一批可删除的 Better Auth 账号做旧
-客户端回归，再执行历史 Firestore/GCS/provider object backfill、残留扫描，并同步
-更新 production rollout policy。
+因此，`LEGACY_CHAT_FILES_STAGING_ENABLED=false` 是本期预期配置，而不是待修复
+的 provider secret blocker。未来若重新打开旧 aliases，必须另行设计兼容窗口。
 
 ## 代码证据
 
 - Legacy upload 与持久化：`backend/routers/chat.py` 的 `/v1/files`、`/v2/files` 写本机临时文件，经 `FileChatTool.upload` 调用 Pillow/OpenAI Files，再把 FileChat rows 写入 Firestore chat database。
 - Legacy 消费：`backend/routers/chat.py` 的 `/v2/messages` 将 `file_ids` 加入 Firestore chat session，随后由 `FileChatTool` 创建或恢复 OpenAI Assistants thread/assistant 并运行 file search；Cloudflare exact `/v2/messages` 现在在显式 staging bridge 开启时把含附件的分支（包括 app/context）转到 Jobs，显式 `/v2/cf/chat-sessions/{session_id}/assistant-runs` 仍是底层 projection contract。
-- Cloudflare 新 authority：`deploy/cloudflare/workers/jobs/chat-file-routes.ts` 写 `cf_chat_files` 与专用 `CHAT_FILES` R2，并通过 direct OpenAI Files REST；`0111`/`0113`/`0118` 共同提供 session attachment、Assistants provider state 和 D1 message projection，但仍没有历史 Firestore/GCS backfill。
+- Cloudflare 新 authority：`deploy/cloudflare/workers/jobs/chat-file-routes.ts` 写 `cf_chat_files` 与专用 `CHAT_FILES` R2；`0111`/`0118`/`0146`/`0147` 提供 session attachment、Workers AI run state 和 D1 message projection，不读取 Firestore/GCS，也不需要外部 AI secret。
 
 ## 历史回放与 legacy owner 切换设计
 
@@ -121,11 +124,14 @@ attachment bridge；bridge 的 app/context 分支会创建或复用对应 app-sc
 并在首次请求时幂等关联 ready file。旧客户端 conformance 属于后续兼容窗口，当前
 新 Web/Worker 部署不依赖它。
 
-## Assistants continuity adapter（显式 staging opt-in）
+## 旧 Assistants adapter（显式、默认关闭）
 
-本轮补上了一个不影响 legacy owner 的 OpenAI Assistants continuity adapter。migration `0113_chat_assistant_provider.sql` 新增 `cf_chat_assistant_sessions`（D1 uid/session 到 OpenAI thread/assistant）和 `cf_chat_assistant_runs`（provider message/run、状态、幂等键、lease、错误及结果）。Jobs 提供三个显式 staging contract：
+`0113_chat_assistant_provider.sql` 和 `0118_chat_assistant_message_projection.sql` 仍保留
+旧 OpenAI Assistants continuity adapter 的 schema，供明确的历史兼容实验使用；它不是
+canonical Cloudflare 路径的依赖。`0147_chat_runs_workers_ai.sql` 让相同 Queue
+projection 可使用 `cloudflare-workers-ai` provider，而不创建外部 thread。
 
-- `POST /v2/cf/chat-sessions/{session_id}/assistant-runs`：校验当前 Better Auth uid、D1 ready attachment projection 和 `Idempotency-Key`，通过 OpenAI Assistants v2 创建 thread/message/run，成功 admission 返回 `202`。
+- `POST /v2/cf/chat-sessions/{session_id}/assistant-runs`：校验当前 Better Auth uid、D1 ready attachment projection 和 `Idempotency-Key`，默认创建 Workers AI Queue run，成功 admission 返回 `202`。
 - `GET /v2/cf/chat-sessions/{session_id}/assistant-runs/{run_id}`：只读取同一 uid/session 的 run，并在 completed 时读取 assistant 文本结果。
 - `DELETE /v2/cf/chat-sessions/{session_id}/assistant`：先删除 provider thread，再删除 D1 provider state；账号删除 residual sweep 同样覆盖两张表。
 
@@ -137,7 +143,10 @@ D1 ready file 的安全 metadata（不会让客户端提供 provider id），ses
 按 D1 message projection 重算，因此重复 Queue delivery 或 GET poll 不会重复计数。该
 projection 与 run/session 一样有 account-deletion fence，并由 residual audit 覆盖。
 
-该 adapter 只有在 Jobs secrets `OPENAI_API_KEY`、`OPENAI_ASSISTANT_ID` 和 `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED=true` 同时配置时启用。provider REST 调用使用固定 Assistants v2 header、短重试预算和幂等键；Queue 的 `chat_assistant_poll` consumer 对 in-progress/transient 状态最多轮询 12 次，超出后把 D1 run 标记为 failed。队列 admission 失败不会丢失已创建的 provider run，客户端可用相同幂等键重试或直接 GET poll。
+Workers AI native branch 只要求 Jobs 的 `AI` binding 和 `CHAT_FILES` R2；文本内容在
+Queue 中有界读取后调用 `env.AI.run`，结果写回 D1。旧 OpenAI Assistants branch
+只有在 `CHAT_FILES_WORKERS_AI_ENABLED=false` 且 `CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED=true`
+时才会读取 `OPENAI_API_KEY`/`OPENAI_ASSISTANT_ID`，缺失时 fail-closed。
 
 在显式 staging 开关打开时，Jobs exact aliases 已能返回 legacy `FileChat.model_dump()` 的六个
 字段（`id`、`name`、`thumbnail`、`mime_type`、`openai_file_id`、`created_at`）；内部
@@ -146,19 +155,13 @@ projection 与 run/session 一样有 account-deletion fence，并由 residual au
 seam；在 staging route inventory 中已登记为 Jobs owner。它仍不是 production
 parity 或历史数据切换证明。
 
-这仍然不是 exact `/v2/messages` 的 legacy wire parity。当前只新增了一个 staging
-附件 bridge：Edge 会在 exact `POST /v2/messages` 检出非空 `file_ids`（包括 app/context
-请求）后，把同一份有界 JSON body 转发到 Jobs 的 `/v2/cf/messages/attachments`；无附件
-请求仍原样进入 API-AI 的 Workers AI text path。Jobs bridge 复用 `cf_chat_session_files`、Assistants
-run/message projection 和 Queue，不读取或信任客户端 provider id；admission 成功返回
-`202` JSON，并通过 `Location` 和 `x-omi-chat-stream: poll` 指向 run polling，而不是旧
-客户端的 SSE。另有独立的 `CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED` 开关：打开后，
-`envelope=messages` 只在 Assistants run 已完成且 D1 message projection ready 时返回旧
-`data: ...`/`done: <base64 ResponseMessage>` SSE；`envelope=openai` 对简单字符串
-`messages` 返回 OpenAI sync JSON 或 `stream=true` SSE。任何等待超时仍返回 202/poll，
-不会伪造完成结果。两个开关（`CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED` 和
-`CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED`）都必须显式打开，关闭时 bridge 返回
-`404 legacy_route_disabled`。
+这仍然不是旧客户端 wire parity。当前 exact `POST /v2/messages` 检出非空 `file_ids`
+（包括 app/context）后，把同一份有界 JSON body 转发到 Jobs 的
+`/v2/cf/messages/attachments`；无附件请求仍进入 API-AI 的 Workers AI text path。
+Jobs bridge 复用 `cf_chat_session_files`、Workers AI run/message projection 和 Queue，
+不读取或信任客户端 provider id；admission 成功返回 `202` JSON，并通过 `Location` 和
+`x-omi-chat-stream: poll` 指向 run polling。旧 `envelope=openai` 与 Assistants SSE
+只在显式兼容开关打开时存在，默认关闭且不影响 native path。
 
 因此该 bridge 只是客户端迁移用的 staging contract，不是 `/v2/messages` legacy owner
 切换。未覆盖的 legacy contract 包括 Firestore `users/{uid}/files`/chat session 历史

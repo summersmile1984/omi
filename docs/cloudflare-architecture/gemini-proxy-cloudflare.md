@@ -1,13 +1,10 @@
 # Gemini desktop proxy on Cloudflare
 
-截至 2026-09-01，`POST /v1/proxy/gemini/{path}` 和
-`POST /v1/proxy/gemini-stream/{path}` 已登记为 Cloudflare
-`staging-owned`：Edge 负责 Better Auth/Firebase bridge 身份验证、BYOK
-指纹校验和 30/60 burst，API-AI Worker 负责 Gemini JSON/SSE provider
-adapter、D1 daily ledger 与 usage accounting。生产 owner promotion 仍需
-完成旧客户端兼容和真实 Vertex/provider 验证；不能把 staging owner 当成
-生产 parity。该 proxy 是可选的桌面兼容面，不是 Workers AI 新部署的生成式
-AI 依赖；不启用时不需要任何 Gemini secret。
+截至 2026-09-01，Gemini proxy 代码仍作为可选兼容面保留，但 staging
+`GEMINI_PROXY_CLOUDFLARE_ENABLED=false`、API-AI `GEMINI_PROXY_ENABLED=false`。
+因此新部署不会调用 Gemini，也不需要 `GEMINI_API_KEY` 或 Vertex secret；普通
+聊天、文件问答和摘要统一走 Workers AI。若未来明确需要 Gemini 旧客户端兼容，
+才按下文单独配置 provider 并做正向验证。
 
 ## 结论
 
@@ -38,12 +35,12 @@ Gemini 请求；缺少 secret 时 API-AI 明确返回 `503`，不会回退到 le
 5. 非流式 JSON、Gemini SSE 分块、`usageMetadata`、Vertex `trafficType`、
    `X-Omi-*` 错误头和 timeout/retry 语义的旧客户端 conformance fixture。
 
-staging 使用 `GEMINI_PROXY_CLOUDFLARE_ENABLED=true` 将 exact route 送入
-Cloudflare owner；API-AI 的 `GEMINI_PROXY_ENABLED`、provider 选择和 provider
-secret 仍独立控制实际 provider dispatch。关闭 Cloudflare switch 或缺少
-secret 时返回 `503 gemini_proxy_unavailable`/provider-specific error，带
-`cache-control: no-store`，不向 legacy 转发 prompt、cookie、Firebase token
-或 BYOK key。生产环境仍需单独的 rollout 与回滚证据。
+如需临时兼容验证，才使用 `GEMINI_PROXY_CLOUDFLARE_ENABLED=true` 将 exact
+route 送入 Cloudflare owner；API-AI 的 `GEMINI_PROXY_ENABLED`、provider 选择和
+provider secret 仍独立控制实际 provider dispatch。默认关闭或缺少 secret 时返回
+`503 gemini_proxy_unavailable`/provider-specific error，带 `cache-control: no-store`，
+不向 legacy 转发 prompt、cookie、Firebase token 或 BYOK key。该可选开关不属于
+Workers AI 主部署验收。
 
 ## 已落地的 Cloudflare staging owner
 

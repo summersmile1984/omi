@@ -17,6 +17,7 @@ const MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const MAX_FILES = 10;
 const MAX_NAME_BYTES = 512;
 const PROVIDER_URL = "https://api.openai.com/v1/files";
+const WORKERS_AI_PROVIDER = "cloudflare-workers-ai";
 
 type JobsContext = Context<{ Bindings: JobsEnv }>;
 type AuthContext = { uid: string; authority?: string };
@@ -104,7 +105,9 @@ function response(
   // projection for diagnostics, but make the opt-in exact aliases match the
   // released `/v1/files` and `/v2/files` response keys byte-for-byte at the
   // object shape boundary.
-  return legacy ? value : { ...value, thumb_name: "" };
+  return legacy
+    ? value
+    : { ...value, provider: row.provider || WORKERS_AI_PROVIDER, thumb_name: "" };
 }
 
 const THUMBNAIL_TTL_SECONDS = 15 * 60;
@@ -431,6 +434,12 @@ async function uploadOne(
   uid: string,
   file: FileUpload,
 ): Promise<UploadedChatFile> {
+  // New Cloudflare clients use R2 as the file authority and Workers AI for
+  // questions.  The OpenAI upload remains available only when an operator
+  // explicitly sets CHAT_FILES_WORKERS_AI_ENABLED=false for a compatibility
+  // environment; it is never needed by the default path.
+  const workersAi = env.CHAT_FILES_WORKERS_AI_ENABLED !== "false";
+  const provider = workersAi ? WORKERS_AI_PROVIDER : "openai";
   const name = safeName(file.name || "upload");
   const mime = mimeType(file);
   const image = mime.startsWith("image/");
@@ -461,13 +470,14 @@ async function uploadOne(
       "file metadata is invalid",
     );
   const metadata = await env.APP_DB.prepare(
-    "INSERT INTO cf_chat_files (uid, file_id, request_fingerprint, provider, provider_file_id, name, mime_type, size, checksum_sha256, storage_key, thumbnail_key, status, thumbnail_status, created_at, updated_at) VALUES (?, ?, ?, 'openai', NULL, ?, ?, ?, ?, ?, ?, 'staging', ?, ?, ?) " +
+    "INSERT INTO cf_chat_files (uid, file_id, request_fingerprint, provider, provider_file_id, name, mime_type, size, checksum_sha256, storage_key, thumbnail_key, status, thumbnail_status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'staging', ?, ?, ?) " +
       "ON CONFLICT(uid, request_fingerprint) DO UPDATE SET provider_file_id = NULL, name = excluded.name, mime_type = excluded.mime_type, size = excluded.size, checksum_sha256 = excluded.checksum_sha256, storage_key = excluded.storage_key, thumbnail_key = excluded.thumbnail_key, status = 'staging', thumbnail_status = excluded.thumbnail_status, last_error = NULL, updated_at = excluded.updated_at",
   )
     .bind(
       uid,
       fileId,
       fingerprint,
+      provider,
       name,
       mime,
       bytes.length,
@@ -503,13 +513,15 @@ async function uploadOne(
         customMetadata: { uid, fileId, kind: "thumbnail" },
       });
     }
-    providerId = await providerUpload(
-      env,
-      bytes,
-      name,
-      mime,
-      image ? "vision" : "assistants",
-    );
+    if (!workersAi) {
+      providerId = await providerUpload(
+        env,
+        bytes,
+        name,
+        mime,
+        image ? "vision" : "assistants",
+      );
+    }
     await env.APP_DB.prepare(
       "UPDATE cf_chat_files SET provider_file_id = ?, status = 'ready', thumbnail_status = ?, updated_at = ?, last_error = NULL WHERE uid = ? AND file_id = ? AND status = 'staging'",
     )

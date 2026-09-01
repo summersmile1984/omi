@@ -80,7 +80,10 @@ resources and never mutates existing Omi Workers.
 Workers AI is the default and required generative-AI surface for this isolated
 deployment. OpenAI/Gemini routes and BYOK/Assistants adapters are optional
 compatibility surfaces; they are not called by the Workers AI paths and their
-secrets are not required for staging or for the new client. Calendar, Twilio,
+secrets are not required for staging or for the new client. Canonical chat files
+use `CHAT_FILES` R2 plus the Workers AI attachment Queue; only private image
+thumbnails require the optional Cloudflare Images binding and HMAC secret.
+Calendar, Twilio,
 and other explicitly enabled business integrations may still use their own
 REST APIs.
 

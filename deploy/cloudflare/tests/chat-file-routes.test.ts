@@ -62,7 +62,7 @@ async function headers(
   };
 }
 
-function environment(openaiKey = "provider-key", withImages = false) {
+function environment(openaiKey = "provider-key", withImages = false, workersAi = false) {
   const database = new SqliteD1();
   const objects = new Map<string, Uint8Array>();
   const deleted: string[] = [];
@@ -70,6 +70,7 @@ function environment(openaiKey = "provider-key", withImages = false) {
     APP_DB: database,
     INTERNAL_ASSERTION_SECRET: "chat-file-secret",
     OPENAI_API_KEY: openaiKey,
+    CHAT_FILES_WORKERS_AI_ENABLED: workersAi ? "true" : "false",
     PUBLIC_API_BASE_URL: "https://edge.test",
     CHAT_FILE_THUMBNAIL_SECRET: withImages ? "thumbnail-secret" : undefined,
     CHAT_FILES: {
@@ -322,6 +323,31 @@ describe("Cloudflare private chat-file boundary", () => {
     );
     expect(removed.status).toBe(200);
     expect(objects.size).toBe(0);
+    database.database.close();
+  });
+
+  it("stores canonical files in R2 with no OpenAI request when Workers AI is enabled", async () => {
+    const { database, env, objects } = environment("", false, true);
+    const provider = vi.fn(async () => Response.json({ id: "must-not-upload" }));
+    vi.stubGlobal("fetch", provider);
+    const form = new FormData();
+    form.set("files", new File(["workers ai notes"], "notes.txt", { type: "text/plain" }));
+    const response = await jobs.fetch(
+      new Request("https://jobs.test/v1/cf/chat-files", {
+        method: "POST",
+        headers: await headers("chat-file-secret", "POST", "/v1/cf/chat-files"),
+        body: form,
+      }),
+      env as never,
+    );
+    expect(response.status).toBe(201);
+    const [file] = (await response.json()) as Array<Record<string, unknown>>;
+    expect(file).toMatchObject({
+      provider: "cloudflare-workers-ai",
+      openai_file_id: null,
+    });
+    expect(objects.size).toBe(1);
+    expect(provider).not.toHaveBeenCalled();
     database.database.close();
   });
 

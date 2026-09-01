@@ -78,6 +78,7 @@ function environment(withSession = true) {
     APP_DB: database,
     JOBS: queue,
     CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED: "true",
+    CHAT_FILES_WORKERS_AI_ENABLED: "false",
     OPENAI_API_KEY: "test-openai-key",
     OPENAI_ASSISTANT_ID: "asst-test-1",
   } as never as JobsEnv;

@@ -83,6 +83,11 @@ export type JobsEnv = {
   SYNC_BACKFILL: Queue<JobMessage>;
   INTERNAL_ASSERTION_SECRET?: string;
   OPENAI_API_KEY?: string;
+  /**
+   * Canonical chat files use R2 plus Workers AI by default. Set false only
+   * for an explicitly reviewed OpenAI Files compatibility deployment.
+   */
+  CHAT_FILES_WORKERS_AI_ENABLED?: string;
   /** Explicit opt-in for the direct OpenAI Assistants continuity adapter. */
   CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED?: string;
   /** OpenAI Assistant id used by the explicit staging adapter. */
@@ -91,6 +96,8 @@ export type JobsEnv = {
   CHAT_FILE_THUMBNAIL_SECRET?: string;
   /** Explicit opt-in while the legacy upload owner is being cut over. */
   LEGACY_CHAT_FILES_STAGING_ENABLED?: string;
+  /** Cloudflare-native file questions using R2 content and Workers AI. */
+  CHAT_WORKERS_AI_ATTACHMENTS_ENABLED?: string;
   /** Cloudflare-owned exact Chat compatibility routes in isolated staging. */
   CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED?: string;
   /** Explicit opt-in for legacy-shaped attachment SSE/JSON envelopes. */

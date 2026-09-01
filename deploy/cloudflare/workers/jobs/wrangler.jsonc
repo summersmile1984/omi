@@ -37,8 +37,9 @@
     "PERSONA_APP_HISTORY_IMPORT_STAGING_ENABLED": "false",
     "HUME_TASK_PROJECTION_STAGING_ENABLED": "false",
     "DLQ_REPLAY_STAGING_ENABLED": "false",
-    "LEGACY_CHAT_FILES_STAGING_ENABLED": "true",
-    "CHAT_ASSISTANT_PROVIDER_STAGING_ENABLED": "true",
+    "LEGACY_CHAT_FILES_STAGING_ENABLED": "false",
+    "CHAT_WORKERS_AI_ATTACHMENTS_ENABLED": "true",
+    "CHAT_FILES_WORKERS_AI_ENABLED": "true",
     "WORKERS_AI_CHAT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "FREE_CHAT_QUESTIONS_PER_MONTH": "30",
   },
@@ -52,8 +53,10 @@
   // TODOIST_CLIENT_ID/TODOIST_CLIENT_SECRET, ASANA_CLIENT_ID/ASANA_CLIENT_SECRET,
   // GOOGLE_TASKS_CLIENT_ID/GOOGLE_TASKS_CLIENT_SECRET,
   // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, HUME_WEBHOOK_SIGNING_KEY,
-  // optional OPENAI_API_KEY and CHAT_FILE_THUMBNAIL_SECRET for the chat-file
-  // provider/thumbnail boundary, and optional RAPID_API_HOST/RAPID_API_KEY.
+  // CHAT_FILE_THUMBNAIL_SECRET is optional and only needed for private image
+  // thumbnails. OpenAI secrets are not required by the canonical chat-file or
+  // Workers AI attachment paths; RAPID_API_HOST/RAPID_API_KEY remains an
+  // optional explicitly enabled integration.
   // WRAPPED_HISTORY_IMPORT_STAGING_ENABLED remains false by default; the
   // reviewed Wrapped history apply route uses ADMIN_KEY and never reads a
   // Firestore export or invokes a provider.

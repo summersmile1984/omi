@@ -163,6 +163,12 @@ export type { MessageSender, MessageType } from '@/lib/omiApi.generated';
  */
 export type MessageFile = FileChat;
 
+/** Cloudflare-native upload projection; no external provider id is required. */
+export type CloudflareChatFile = Omit<FileChat, 'openai_file_id'> & {
+  openai_file_id: string | null;
+  provider?: 'cloudflare-workers-ai' | 'openai';
+};
+
 /**
  * `MessageMemory` matches the generated `MessageConversation` schema exactly.
  */

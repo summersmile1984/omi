@@ -21,6 +21,7 @@ import type {
   MessageChunk,
   MessageChunkType,
   MessageFile,
+  CloudflareChatFile,
   AudioFileUrlInfo,
 } from '@/types/conversation';
 // Generated REST response envelopes (backend OpenAPI authority).
@@ -803,7 +804,7 @@ export async function clearMessages(appId?: string): Promise<void> {
 export async function uploadChatFiles(
   files: File[],
   appId?: string,
-): Promise<MessageFile[]> {
+): Promise<CloudflareChatFile[]> {
   // Chat files are owned by the uid-scoped Cloudflare R2/D1 projection.  The
   // app id is intentionally not sent here: app/session attachment binding is
   // a separate mutation boundary after the file is ready.
