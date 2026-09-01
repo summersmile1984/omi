@@ -1004,6 +1004,10 @@ async function processJobMessage(
   message: Message<JobMessage>,
   env: JobsEnv,
 ): Promise<void> {
+  if (message.body.kind === DESKTOP_ARTIFACT_MIRROR_KIND) {
+    await processDesktopReleaseArtifactMessage(message, env);
+    return;
+  }
   if (message.body.kind === "audio_merge") {
     await processAudioMergeJobMessage(message, env);
     return;
