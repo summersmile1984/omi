@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import inspect
 import json
 import math
@@ -547,6 +548,69 @@ def _normalize_workers_ai_language(raw: object) -> tuple[str, str] | None:
     return code, WORKERS_AI_TRANSLATION_LANGUAGES[code]
 
 
+# Content-addressed cache policy shared with the legacy translation store:
+# 14-day TTL, silent bypass on storage errors (a broken cache is a miss, never
+# a failed translation).
+TRANSLATION_CACHE_TTL_SECONDS = 14 * 86_400
+
+
+def _translation_fingerprint(model: str, source_name: str, content: str) -> str:
+    return hashlib.sha256(f"{model}\0{source_name}\0{content}".encode("utf-8")).hexdigest()
+
+
+async def _cached_translations(env: object, fingerprints: list[str], target_name: str, now: int) -> dict[str, dict]:
+    db = getattr(env, "APP_DB", None)
+    if db is None or not fingerprints:
+        return {}
+    placeholders = ", ".join("?" for _ in fingerprints)
+    try:
+        rows = (
+            await db.prepare(
+                "SELECT fingerprint, translated_text, detected_language FROM cf_translation_cache "
+                f"WHERE target_language = ? AND expires_at > ? AND fingerprint IN ({placeholders})"
+            )
+            .bind(target_name, now, *fingerprints)
+            .all()
+        )
+    except Exception:
+        return {}
+    cached: dict[str, dict] = {}
+    for row in (rows or {}).get("results", []):
+        if isinstance(row, dict) and isinstance(row.get("translated_text"), str):
+            cached[str(row["fingerprint"])] = {
+                "translated_text": row["translated_text"],
+                "detected_language_code": str(row.get("detected_language") or ""),
+            }
+    return cached
+
+
+async def _store_translations(env: object, entries: list[tuple[str, dict]], target_name: str, now: int) -> None:
+    db = getattr(env, "APP_DB", None)
+    if db is None or not entries:
+        return
+    try:
+        statements = [
+            db.prepare(
+                "INSERT OR REPLACE INTO cf_translation_cache "
+                "(fingerprint, target_language, translated_text, detected_language, expires_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)"
+            ).bind(
+                fingerprint,
+                target_name,
+                entry["translated_text"],
+                entry["detected_language_code"],
+                now + TRANSLATION_CACHE_TTL_SECONDS,
+                now,
+            )
+            for fingerprint, entry in entries
+        ]
+        # Traffic-bounded pruning keeps expired rows from accumulating.
+        statements.append(db.prepare("DELETE FROM cf_translation_cache WHERE expires_at <= ?").bind(now))
+        await db.batch(statements)
+    except Exception:
+        return
+
+
 @app.post("/v1/translate")
 async def translate_workers_ai(request: Request):
     """Translate a bounded batch using the native Workers AI m2m100 binding.
@@ -588,9 +652,17 @@ async def translate_workers_ai(request: Request):
     source_code, source_name = source or ("", "english")
     _, target_name = target
     started = time.perf_counter()
+    now = int(time.time())
+    fingerprints = [_translation_fingerprint(model, source_name, content) for content in payload.contents]
+    cached = await _cached_translations(env, fingerprints, target_name, now)
     translations: list[dict[str, str]] = []
+    fresh: list[tuple[str, dict]] = []
     try:
-        for content in payload.contents:
+        for content, fingerprint in zip(payload.contents, fingerprints):
+            hit = cached.get(fingerprint)
+            if hit is not None:
+                translations.append(dict(hit))
+                continue
             result = await ai.run(
                 model,
                 {"text": content, "source_lang": source_name, "target_lang": target_name},
@@ -599,14 +671,15 @@ async def translate_workers_ai(request: Request):
             translated = result_payload.get("translated_text")
             if not isinstance(translated, str):
                 return JSONResponse({"error": "workers ai returned an invalid translation"}, status_code=502)
-            translations.append(
-                {
-                    "translated_text": translated,
-                    "detected_language_code": source_code,
-                }
-            )
+            entry = {
+                "translated_text": translated,
+                "detected_language_code": source_code,
+            }
+            translations.append(entry)
+            fresh.append((fingerprint, entry))
     except Exception:
         return JSONResponse({"error": "workers ai translation unavailable"}, status_code=502)
+    await _store_translations(env, fresh, target_name, now)
 
     return {
         "translations": translations,

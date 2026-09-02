@@ -783,13 +783,13 @@ direct_legacy_callers:
       target_owner: jobs,
       migration_state: staging-owned,
     }
-  # Cloudflare translation currently runs uncached through Workers AI on
-  # every call; a cache remains an open cost optimization.
+  # cf_translation_cache (0151): content-addressed D1 cache with the legacy
+  # 14-day TTL, wired into /v1/translate with silent bypass on storage errors.
   - {
       path: backend/utils/translation_core/cache.py,
-      target: kv,
+      target: d1,
       target_owner: api-ai,
-      migration_state: planned,
+      migration_state: staging-owned,
     }
   # The rolling duration budget is the D1 fair-use meter/enforcer consumed by
   # voice_transcription_routes.py, not a Durable Object.

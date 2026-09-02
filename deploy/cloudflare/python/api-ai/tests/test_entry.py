@@ -942,3 +942,111 @@ def test_tts_fine_limit_fails_closed_when_durable_object_is_unavailable():
 
     assert response.status_code == 503
     assert json.loads(response.body) == {"detail": "TTS rate limiting is unavailable"}
+
+
+class TranslationCacheDb:
+    """sqlite-backed APP_DB fake exercising the real 0151 cache schema."""
+
+    def __init__(self):
+        import sqlite3
+
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.row_factory = sqlite3.Row
+        migration = Path(__file__).parents[3] / "migrations/app/0151_translation_cache.sql"
+        self.connection.executescript(migration.read_text())
+
+    def prepare(self, sql):
+        db = self
+
+        class Statement:
+            def __init__(self, args=()):
+                self.args = args
+
+            def bind(self, *values):
+                return Statement(values)
+
+            async def all(self):
+                rows = db.connection.execute(sql, self.args).fetchall()
+                return {"results": [dict(row) for row in rows]}
+
+            async def run(self):
+                db.connection.execute(sql, self.args)
+                db.connection.commit()
+                return {"meta": {"changes": db.connection.total_changes}}
+
+            def execute(self):
+                db.connection.execute(sql, self.args)
+                return {"results": [], "meta": {"changes": 0}}
+
+        return Statement()
+
+    async def batch(self, statements):
+        results = [statement.execute() for statement in statements]
+        self.connection.commit()
+        return results
+
+
+def test_workers_ai_translation_caches_repeated_content():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = []
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls.append(payload["text"])
+            return {"translated_text": f"zh:{payload['text']}"}
+
+    database = TranslationCacheDb()
+    env = SimpleNamespace(
+        INTERNAL_ASSERTION_SECRET=secret,
+        AI=FakeAI(),
+        APP_DB=database,
+        WORKERS_AI_TRANSLATION_MODEL="@cf/meta/m2m100-1.2b",
+    )
+
+    def translate(contents):
+        request = FakeRequest(
+            env,
+            {
+                "x-omi-auth-context": encoded,
+                "x-omi-internal-signature": signature,
+                "content-type": "application/json",
+            },
+            {
+                "contents": contents,
+                "source_language_code": "en-US",
+                "target_language_code": "zh-Hans",
+            },
+            url="https://api.test/v1/translate",
+        )
+        return asyncio.run(translate_workers_ai(request))
+
+    first = translate(["hello", "world"])
+    assert [t["translated_text"] for t in first["translations"]] == ["zh:hello", "zh:world"]
+    assert calls == ["hello", "world"]
+
+    # The repeated segment is served from D1; only the new one reaches the AI.
+    second = translate(["hello", "fresh"])
+    assert [t["translated_text"] for t in second["translations"]] == ["zh:hello", "zh:fresh"]
+    assert second["translations"][0]["detected_language_code"] == "en"
+    assert calls == ["hello", "world", "fresh"]
+    assert (
+        database.connection.execute("SELECT COUNT(*) FROM cf_translation_cache").fetchone()[0]
+        == 3
+    )
+
+    # An expired row is a miss and traffic prunes it away.
+    database.connection.execute("UPDATE cf_translation_cache SET expires_at = 1 WHERE fingerprint IN "
+                                "(SELECT fingerprint FROM cf_translation_cache LIMIT 1)")
+    database.connection.commit()
+    translate(["hello", "world", "fresh"])
+    assert len(calls) >= 4
+    assert (
+        database.connection.execute("SELECT COUNT(*) FROM cf_translation_cache WHERE expires_at <= 1").fetchone()[0]
+        == 0
+    )
+
+    # A cache-less environment still translates (silent bypass).
+    env.APP_DB = None
+    bypass = translate(["hello"])
+    assert bypass["translations"][0]["translated_text"] == "zh:hello"
