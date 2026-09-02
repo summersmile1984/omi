@@ -43,7 +43,7 @@ done
 | `fork-brand-apply-clean` | `python3 scripts/brand/apply.py --brand ${BRAND:-omi-upstream} --check-clean` | `brand/**`, `scripts/brand/**`, 各注入点文件 | 生成物与清单一致 |
 | `fork-brand-leak-scan` | `python3 scripts/brand/check.py --brand ${BRAND:-omi-upstream}` | `app/lib/**`, `desktop/**`, `backend/**`, `web/**`, `docs/**`, `omi/firmware/**` | 用户可见面零上游品牌词（`omi-upstream` 品牌下为基线 ratchet） |
 | `fork-upstream-touch` | `python3 scripts/fork/check-upstream-touch.py --base upstream/main` | `all` | 上游文件改动 ≤5 行且不在禁改清单（见 `06-upstream-sync.md` §4） |
-| `fork-profile-consistency` | `python3 scripts/fork/check-profile-tables.py` | `deploy/profiles/**`, 各端生成的 profile 表 | Flutter/Swift/TS/Python 四份 profile 表由同一源生成且一致（见 `02-deployment-profile.md`） |
+| `fork-profile-consistency` | `python3 scripts/profiles/check_tables.py` | `deploy/profiles/**`, 各端生成的 profile 表 | Flutter/Swift/TS/Python 四份 profile 表由同一源生成且一致（见 `02-deployment-profile.md`） |
 | `fork-selfhost-compose-valid` | `docker compose -f deploy/self-host/compose.production.yml config -q` | `deploy/self-host/**` | compose 可解析、无缺失变量 |
 | `fork-cloudflare-config-valid` | `bash -c 'cd deploy/cloudflare && npm run validate:manifest && npm run verify:migrations && npm run validate:backend-routes'` | `deploy/cloudflare/**`, `backend/routers/**` | 沿用 CF 分支已有脚本：`validate-manifests.mjs`（路由/原语清单字段与枚举）、`d1-migrations.mjs`（迁移全部已应用）、`export_openapi.py --surface cloudflare-route-inventory --check`（新上游路由必须分类）；wrangler `--dry-run` 由 `scripts/deploy.mjs` 的资格流程覆盖 |
 | `fork-agents-doc-refs` | `python3 .github/scripts/check_agent_doc_references.py --extra AGENTS.fork.md backend/AGENTS.fork.md app/AGENTS.fork.md desktop/macos/AGENTS.fork.md` | `**/AGENTS*.md` | fork 规则文档引用可解析（上游脚本按文件名精确匹配 `AGENTS.md`，`AGENTS.fork.md` 默认不可见，需显式传入） |
