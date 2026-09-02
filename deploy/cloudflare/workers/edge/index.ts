@@ -889,6 +889,7 @@ app.get("/v2/desktop/download/latest", proxyPublicCore);
 app.get("/v2/desktop/download/beta", proxyPublicCore);
 app.get("/v2/desktop/download/windows", proxyPublicCore);
 app.get("/v2/desktop/update-feed/windows", proxyPublicCore);
+app.get("/v2/desktop/artifacts/:releaseId/:assetName", proxyPublicJobs);
 app.get("/v2/desktop/previews/:slug", proxyPublicCore);
 app.get("/v2/desktop/previews/:slug/:source_sha", proxyPublicCore);
 app.delete("/v2/desktop/previews/:slug", proxyPublicCore);

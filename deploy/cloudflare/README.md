@@ -387,8 +387,19 @@ produce a deterministic plan, then submit it to
 `/artifacts/apply` to queue the exact installer, blockmap, and `latest.yml`
 mirror into `DESKTOP_UPDATES`. The Jobs consumer verifies bounded bytes,
 SHA-256 and R2 metadata on every transfer. This does not promote a Windows
-channel or change public download URLs; production GitHub history and release
-authority still require a separate cutover.
+channel; release authority (which build is live) remains the D1 pointer/CAS
+contract above.
+
+Mirrored artifacts are served publicly from
+`GET /v2/desktop/artifacts/{releaseId}/{assetName}` (Jobs worker, range
+requests and immutable edge caching, digest-etagged, only ledger rows in
+`status='copied'`). The macOS feeds and the Windows update feed rewrite their
+download URLs to that route automatically once the exact asset is mirrored —
+`PUBLIC_API_BASE_URL` on API Core mints the origin, and an unmirrored or
+half-copied release keeps its reviewed GitHub source URL instead of 404ing.
+electron-updater resolves installers relative to the feed directory, so a
+mirrored `latest.yml` also routes the sibling `.exe`/`.blockmap` downloads
+through R2.
 
 Before applying D1 migrations, the release resolves each exact staging
 database name through `wrangler d1 list --json` and writes a mode-`0600`

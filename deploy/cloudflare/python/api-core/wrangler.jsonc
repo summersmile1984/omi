@@ -63,6 +63,9 @@
     // provisioned; the route remains fail-closed while it is absent).
     "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED": "true",
     "ACCOUNT_CUTOVER_MANIFEST_ID": "isolated-staging-v1",
+    // Public origin used to mint R2-backed desktop artifact download URLs;
+    // when unset, release feeds keep the reviewed GitHub source URLs.
+    "PUBLIC_API_BASE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev",
     "FREE_CHAT_QUESTIONS_PER_MONTH": "30",
     "NEO_CHAT_QUESTIONS_PER_MONTH": "200",
     "PLUS_CHAT_QUESTIONS_PER_MONTH": "200",

@@ -34,6 +34,7 @@ from desktop_release_routes import (  # noqa: E402
     PromoteReleaseRequest,
     create_compat_release,
     promote_compat_release,
+    _live_releases,
 )
 
 
@@ -818,3 +819,129 @@ def test_stable_pointer_becomes_authority_for_mac_release_feeds():
     assert latest["download_url"] == manifest["zip_url"]
     redirect = asyncio.run(download_redirect(FakeRequest(env)))
     assert redirect.headers["location"] == manifest["dmg_url"]
+
+
+def _apply_mirror_migrations(env, *names):
+    migration_dir = Path(__file__).parents[3] / "migrations/app"
+    for name in names:
+        env.APP_DB.connection.executescript((migration_dir / name).read_text())
+    env.APP_DB.connection.commit()
+
+
+def test_live_release_urls_prefer_mirrored_r2_artifacts():
+    env = make_env()
+    env.PUBLIC_API_BASE_URL = "https://edge.example.test"
+    _apply_mirror_migrations(
+        env,
+        "0134_desktop_release_history_executor.sql",
+        "0143_desktop_release_artifact_mirror.sql",
+    )
+    payload = desktop_manifest_payload()
+    release_id = payload["release_id"]
+    request = FakeRequest(env, {"secret-key": "admin-secret"})
+    assert asyncio.run(register_desktop_release_manifest(request, payload))["success"] is True
+    asyncio.run(
+        promote_desktop_channel(
+            request,
+            {"platform": "macos", "channel": "stable", "release_id": release_id},
+        )
+    )
+
+    # Without mirrored artifacts the reviewed GitHub URLs stay authoritative.
+    before = asyncio.run(_live_releases(FakeRequest(env)))
+    assert before[-1]["download_url"] == payload["zip_url"]
+    assert before[-1]["manual_download_url"] == payload["dmg_url"]
+
+    review_id = "123e4567-e89b-42d3-a456-426614174000"
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_desktop_release_import_review_batches "
+        "(review_id, source_endpoint, release_id, manifest_sha256, plan_hash, status, reviewed_at, expires_at, updated_at) "
+        "VALUES (?, 'https://api.example.test', ?, ?, ?, 'applied', 1, 2, 1)",
+        (review_id, release_id, "a" * 64, "b" * 64),
+    )
+
+    def insert_artifact(asset_name, status):
+        env.APP_DB.connection.execute(
+            "INSERT INTO cf_desktop_release_artifacts "
+            "(release_id, asset_name, review_id, plan_hash, manifest_sha256, source_url, object_key, "
+            "expected_sha256, content_type, size_bytes, status, created_at, updated_at, copied_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'application/octet-stream', 5, ?, 1, 1, 1)",
+            (
+                release_id,
+                asset_name,
+                review_id,
+                "b" * 64,
+                "a" * 64,
+                f"https://github.com/BasedHardware/omi/releases/download/{release_id}/{asset_name}",
+                f"desktop-releases/{release_id}/{asset_name}",
+                "sha256:" + "c" * 64 if asset_name != "omi.dmg" else "sha256:" + "d" * 64,
+                status,
+            ),
+        )
+        env.APP_DB.connection.commit()
+
+    # A copied zip rewrites the update URL while the dmg (still queued) keeps
+    # its reviewed source URL.
+    insert_artifact("Omi.zip", "copied")
+    insert_artifact("omi.dmg", "queued")
+    partial = asyncio.run(_live_releases(FakeRequest(env)))
+    expected_zip = f"https://edge.example.test/v2/desktop/artifacts/{release_id.replace('+', '%2B')}/Omi.zip"
+    assert partial[-1]["download_url"] == expected_zip
+    assert partial[-1]["manual_download_url"] == payload["dmg_url"]
+
+    env.APP_DB.connection.execute(
+        "UPDATE cf_desktop_release_artifacts SET status = 'copied' WHERE asset_name = 'omi.dmg'"
+    )
+    env.APP_DB.connection.commit()
+    both = asyncio.run(_live_releases(FakeRequest(env)))
+    assert both[-1]["manual_download_url"].endswith("/omi.dmg")
+    assert both[-1]["manual_download_url"].startswith("https://edge.example.test/v2/desktop/artifacts/")
+
+    # A landing page then advertises the Cloudflare URL end to end.
+    redirect = asyncio.run(download_redirect(FakeRequest(env)))
+    assert redirect.headers["location"].startswith("https://edge.example.test/v2/desktop/artifacts/")
+
+    # Without the public base URL the rewrite is inert.
+    env.PUBLIC_API_BASE_URL = None
+    inert = asyncio.run(_live_releases(FakeRequest(env)))
+    assert inert[-1]["download_url"] == payload["zip_url"]
+
+
+def test_windows_update_feed_prefers_mirrored_latest_yml():
+    env = make_env()
+    env.PUBLIC_API_BASE_URL = "https://edge.example.test"
+    _apply_mirror_migrations(env, "0144_windows_release_artifact_mirror.sql")
+    feed_url = "https://github.com/BasedHardware/omi/releases/download/windows-v1.0.10/latest.yml"
+    insert_release(
+        env,
+        release_id="windows-v1.0.10",
+        version="1.0.10",
+        build_number=10,
+        channel="stable",
+        windows_feed_url=feed_url,
+    )
+
+    before = asyncio.run(get_windows_update_feed(FakeRequest(env), channel="stable"))
+    assert json.loads(before.body)["feed_url"] == feed_url
+
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_windows_release_artifact_review_batches "
+        "(review_id, release_id, source_fingerprint, plan_hash, status, reviewed_at, expires_at, updated_at) "
+        "VALUES ('223e4567-e89b-42d3-a456-426614174000', 'windows-v1.0.10', ?, ?, 'applied', 1, 2, 1)",
+        ("e" * 64, "f" * 64),
+    )
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_windows_release_artifacts "
+        "(release_id, asset_name, review_id, source_fingerprint, plan_hash, source_url, object_key, "
+        "expected_sha256, content_type, size_bytes, status, created_at, updated_at, copied_at) "
+        "VALUES ('windows-v1.0.10', 'latest.yml', '223e4567-e89b-42d3-a456-426614174000', ?, ?, ?, "
+        "'desktop-windows-releases/windows-v1.0.10/latest.yml', ?, 'text/yaml', 5, 'copied', 1, 1, 1)",
+        ("e" * 64, "f" * 64, feed_url, "c" * 64),
+    )
+    env.APP_DB.connection.commit()
+
+    after = asyncio.run(get_windows_update_feed(FakeRequest(env), channel="stable"))
+    assert (
+        json.loads(after.body)["feed_url"]
+        == "https://edge.example.test/v2/desktop/artifacts/windows-v1.0.10/latest.yml"
+    )

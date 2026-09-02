@@ -201,6 +201,16 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v2/desktop/artifacts/{releaseId}/{assetName}
+    owner: jobs
+    runtime: edge-worker
+    target_runtime: typescript-worker
+    auth_authority: public
+    dependencies: [d1-app, r2-desktop-updates]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /v2/desktop/previews/{slug}
     owner: api-core
     runtime: python-worker

@@ -116,6 +116,7 @@ import {
   registerMemoryShortTermLifecycleRoutes,
 } from "./memory-short-term-lifecycle";
 import { processConversationAudioPurgeMessage } from "./conversation-audio-purge";
+import { registerDesktopArtifactServingRoutes } from "./desktop-artifact-serving";
 import {
   cleanupExpiredHumeWebhookEvents,
   processHumeWebhookMessage,
@@ -231,6 +232,7 @@ registerExternalAppOauthRoutes(app, requestContext, {}, { surface: "legacy" });
 registerAudioMergeRoutes(app, requestContext);
 registerLegacyAudioMergeRoutes(app, requestContext);
 registerMemoryShortTermLifecycleRoutes(app);
+registerDesktopArtifactServingRoutes(app);
 registerHumeWebhookRoutes(app);
 registerHumeTaskProjectionRoutes(app);
 registerDataProtectionMigrationRoutes(app);

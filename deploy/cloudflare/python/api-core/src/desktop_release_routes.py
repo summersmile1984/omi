@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -326,6 +326,58 @@ def _manual_download_url(release: dict[str, object]) -> str:
     if download_url.endswith("/Omi.zip"):
         return f"{download_url[:-len('Omi.zip')]}Omi.dmg"
     return download_url
+
+
+def _public_base_url(env: object) -> str | None:
+    raw = getattr(env, "PUBLIC_API_BASE_URL", None)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    parsed = urlparse(raw.strip())
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        return None
+    return raw.strip().rstrip("/")
+
+
+async def _mirrored_artifact_url(
+    env: object,
+    table: str,
+    release_id: str,
+    source_url: object,
+) -> str | None:
+    """Return the Cloudflare artifact URL when this exact asset is mirrored.
+
+    Only ledger rows in status='copied' (digest-verified by the mirror jobs)
+    rewrite; anything else keeps the reviewed source URL, so a half-copied or
+    unmirrored release keeps downloading from GitHub instead of 404ing.
+    """
+    if table not in {"cf_desktop_release_artifacts", "cf_windows_release_artifacts"}:
+        raise ValueError("unknown desktop artifact ledger")
+    base = _public_base_url(env)
+    if base is None or not isinstance(source_url, str) or not source_url:
+        return None
+    asset_name = unquote(urlparse(source_url).path.rsplit("/", 1)[-1])
+    if not asset_name or "/" in asset_name or len(asset_name) > 256:
+        return None
+    try:
+        row = (
+            await env.APP_DB.prepare(
+                f"SELECT 1 AS copied FROM {table} WHERE release_id = ? AND asset_name = ? AND status = 'copied' LIMIT 1"
+            )
+            .bind(release_id, asset_name)
+            .first()
+        )
+    except Exception:
+        record_fallback(
+            component="other",
+            from_mode="desktop_artifact_r2",
+            to_mode="desktop_artifact_source_url",
+            reason="dependency_unavailable",
+            outcome="degraded",
+        )
+        return None
+    if not isinstance(row, dict):
+        return None
+    return f"{base}/v2/desktop/artifacts/{quote(release_id, safe='')}/{quote(asset_name, safe='')}"
 
 
 def _download_landing_html(url: str, *, platform: str, channel: str, version: str, notice: str = "") -> str:
@@ -959,12 +1011,20 @@ async def _live_releases(request: Request) -> list[dict[str, object]]:
             or manifest["build_number"] != pointer["build_number"]
         ):
             raise ValueError("desktop channel pointer does not match its manifest")
+        env = request.scope["env"]
+        release_id = str(pointer["release_id"])
+        mirrored_zip = await _mirrored_artifact_url(
+            env, "cf_desktop_release_artifacts", release_id, manifest["zip_url"]
+        )
+        mirrored_dmg = await _mirrored_artifact_url(
+            env, "cf_desktop_release_artifacts", release_id, manifest["dmg_url"]
+        )
         projected.append(
             {
                 "version": manifest["version"],
                 "build_number": manifest["build_number"],
-                "download_url": manifest["zip_url"],
-                "manual_download_url": manifest["dmg_url"],
+                "download_url": mirrored_zip or manifest["zip_url"],
+                "manual_download_url": mirrored_dmg or manifest["dmg_url"],
                 "ed_signature": manifest["ed_signature"],
                 "published_at": manifest.get("published_at") or manifest["created_at"],
                 "changelog": list(manifest.get("changelog") or []),
@@ -1514,6 +1574,19 @@ async def get_windows_update_feed(request: Request, channel: str = Query(default
             detail=f"No Windows update feed found for channel: {channel}",
             headers={"Cache-Control": "no-store"},
         )
+    # electron-updater resolves installer URLs relative to the feed directory,
+    # so serving a mirrored latest.yml from the artifact route also serves the
+    # sibling .exe/.blockmap objects mirrored under the same release id.
+    feed_segments = [segment for segment in urlparse(feed_url).path.split("/") if segment]
+    if len(feed_segments) >= 2 and feed_segments[-1] == "latest.yml":
+        mirrored_feed = await _mirrored_artifact_url(
+            request.scope["env"],
+            "cf_windows_release_artifacts",
+            unquote(feed_segments[-2]),
+            feed_url,
+        )
+        if mirrored_feed is not None:
+            feed_url = mirrored_feed
     return JSONResponse(
         {
             "requested_channel": channel,
