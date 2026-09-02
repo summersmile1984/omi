@@ -12,14 +12,14 @@
 
 三个数字说明为什么：
 
-| 度量（今天实测，`git merge-tree` 干跑） | 结果 |
+| 度量（今天实测，`git merge-tree` 干跑，只计真实冲突文件，不含自动合并成功的文件） | 结果 |
 |---|---|
-| 把 `upstream/main` 合进 `main` 的冲突文件数 | 63 |
-| 合进 `codex/cloudflare-adaptation` | 103 |
-| 合进 `feature/cloud-neutral-shim` | 204 |
-| 两条分支互相合并的冲突文件数 | 43 |
+| 把 `upstream/main` 合进 `main` 的冲突文件数 | 13 |
+| 合进 `codex/cloudflare-adaptation` | 30 |
+| 合进 `feature/cloud-neutral-shim` | 46 |
+| 两条分支互相合并的冲突文件数 | 20 |
 
-双分支意味着每次同步上游付 103 + 204 的代价，而且每个通用修复都要 cherry-pick 两次；拆两个 repo 是同样的代价再加上丢失跨组件原子提交与共享 CI。单主线只付一次 63（且可以压到 20 以下，见"减冲突战术"）。
+双分支意味着每次同步上游付 30 + 46 的代价，而且每个通用修复都要 cherry-pick 两次；拆两个 repo 是同样的代价再加上丢失跨组件原子提交与共享 CI。单主线只付一次 13（且可以压到 5 以下，见"减冲突战术"）。
 
 ## 分一：两条分支到底分叉在哪里
 
@@ -31,7 +31,7 @@
 
 两条分支不互相包含；`main` 领先 shim 分支仅 2 个提交（每周 pulse），即 shim 分支 ≈ main 的超集 + 更新的上游。
 
-**43 个互相冲突的文件是同一条接缝**（各自改法不同，目的相同）：
+**20 个互相冲突的文件是同一条接缝**（各自改法不同，目的相同）：
 
 | 文件 | Cloudflare 改动 | 自托管改动 | 共同目的 |
 |---|---|---|---|
@@ -75,7 +75,7 @@ memweft（fork of BasedHardware/omi，单一 main）
 
 ## 分三：为什么不是另外两条路
 
-**长期双分支**：每次上游同步付两倍冲突（今天 103 + 204）；通用修复（品牌、安全、STT 供应商）要 cherry-pick 两遍并各自验证；接缝代码天然分叉（已经发生：43 文件）；白牌再叠一层就是 2 × N 个分支。
+**长期双分支**：每次上游同步付两倍冲突（今天 30 + 46）；通用修复（品牌、安全、STT 供应商）要 cherry-pick 两遍并各自验证；接缝代码天然分叉（已经发生：20 文件）；白牌再叠一层就是 2 × N 个分支。
 
 **拆两个 repo 各自 fork 上游**：双分支的全部缺点，再加上：丢失上游跨组件原子变更（上游经常一个 PR 同时改 `app/`+`backend/`+`contracts/parity`，拆 repo 后要靠 `git subtree split` 逐次对齐）；两套 CI、两套 `AGENTS.md`、两套检查清单；客户端要么复制两份要么做成第三个 repo。上游是 monorepo 这件事对 fork 是**优势**（原子性），不是负担；大仓库的开发体验用 `git sparse-checkout`（cone 模式，按角色只检出 `app/` 或 `backend/`）+ 每任务一个 worktree（已在用）+ CI 路径过滤（上游已有 `detect-changes` action）解决。
 
@@ -86,23 +86,24 @@ memweft（fork of BasedHardware/omi，单一 main）
 1. **冻结**：两分支停止接新功能，打 tag（`archive/cloudflare-2026-09`、`archive/self-host-2026-09`）。
 2. **先落接缝**（从 shim 分支抽取，重写为两目标通用，独立 PR 进 `main`）：客户端部署 profile 抽象（Flutter/Web/桌面）、Better Auth 契约与 `auth_service.dart` 单一实现、`rate_limit_config.py` 外置、`checks-manifest.yaml` 的 fork 检查条目。验收：同一客户端二进制仅靠 profile 切换即可登录自托管与 Cloudflare 两个 staging。
 3. **再合自托管**：`deploy/self-host/`、`backend/firestore_pg/` 补齐（main 上 11 个文件 → 16）、`auth-server/`、STT 管线（MiMo/MOSS/SenseVoice）→ `main`。这些几乎全是新增文件，冲突极少。
-4. **最后合 Cloudflare**：`deploy/cloudflare/` 与 `docs/cloudflare-architecture/` 整体新增；其对约 40 个共享文件的改动**重写到新接缝上**（分支自己的计划书就写了"选择性移植认证契约，不能整分支合并"）；`web/app` 的 Workers 构建改为 profile/target 条件化而非替换 Next.js 配置。预期冲突范围就是那 43 个文件，只付一次。
+4. **最后合 Cloudflare**：`deploy/cloudflare/` 与 `docs/cloudflare-architecture/` 整体新增；其对约 40 个共享文件的改动**重写到新接缝上**（分支自己的计划书就写了"选择性移植认证契约，不能整分支合并"）；`web/app` 的 Workers 构建改为 profile/target 条件化而非替换 Next.js 配置。预期冲突范围就是那 20 个文件，只付一次。
 5. **CI 矩阵**：`target ∈ {selfhost, cloudflare}` × `brand ∈ {…}`；`contracts/` 一致性套件对两个后端都跑（自托管用 compose，Cloudflare 用 `wrangler dev`）。
 6. **删除长期分支**，在 `AGENTS.md`（fork 段）写入规则：**不允许长期目标分支；部署目标 = 目录 + profile。**
 
 ## 分五：与上游同步的常态流程与减冲突战术
 
 - **节律**：每周一次 `upstream/main → main` 合并（merge 而非 rebase，保留历史、不 force push），由定时工作流开 "upstream-sync" PR，人只解冲突。
-- **"不修改上游文件"清单**（今天 63 个冲突里的大头，全部可消）：
+- **"不修改上游文件"清单**（今天 13 个冲突文件里的大头，全部可消）：
   - `.github/guardrail-pulse-history.jsonl`：fork 的每周 pulse 机器人与上游的机器人各自提交同一文件，**每周必冲突** → 在 fork 里禁用该工作流，或让它写 fork 专属文件。
   - `backend/pylock*.toml`、`requirements.txt`：fork 依赖放 `backend/requirements-fork.txt`，由 `deploy/self-host` 的 Dockerfile 叠加安装，不动上游锁文件。
   - `AGENTS.md`、`backend/AGENTS.md`：fork 规则放 `AGENTS.fork.md`，上游文件里只加一行指针。
   - `.github/checks-manifest.yaml`：fork 检查放 `checks-manifest.fork.yaml`，运行器合并读取（一次性小改，可回推上游）。
   - `.gitignore`：用 `.git/info/exclude` 或目录级 `.gitignore`（`deploy/*/.gitignore`）。
+  - **格式化提交**：`main` 上 13 个冲突里有 6 个（`web/admin/**`）来自 fork 自己的 `style(admin): format …` 提交——pre-commit 钩子用与上游不同版本的 prettier/black 重排了上游文件。规则：**永不提交只含格式变化的上游文件**；把 fork 的格式化工具版本钉到与上游 `.pre-commit-config.yaml` 一致，钩子只格式化 fork 自有路径。
   - GCP 工作流：**不删**（删除 = 每次上游改动都冲突），在 GitHub Actions 界面禁用即可，零文件改动。
 - **接缝改动尽量回推上游**：部署 profile 抽象、认证提供方接口、限流参数外置、`{product_name}` 插值，对上游都是无害的可配置化；每接受一个，fork 的长期冲突面就少一块。
-- **度量**：每次同步记录冲突文件数；目标从 63 降到 20 以下并保持；若某次超过 50，先找"谁又修改了上游文件"。
+- **度量**：每次同步记录冲突文件数；目标从 13 降到 5 以下并保持；若某次超过 15，先找"谁又修改了上游文件"。
 
 ## 总：一句话
 
-**分支是用来做"短暂的工作副本"的，不是用来表达"产品有几种部署方式"的。** 部署方式与品牌都是矩阵维度，矩阵用目录和配置表达，由一条 `main` 承载、由一次上游合并喂养。当前两条分支的 640 个新增文件都已经在正确的目录里，缺的只是把那 43 个文件的接缝设计一次；做完这件事，"维护两条线"就变成"维护一条线上的两个目录"。
+**分支是用来做"短暂的工作副本"的，不是用来表达"产品有几种部署方式"的。** 部署方式与品牌都是矩阵维度，矩阵用目录和配置表达，由一条 `main` 承载、由一次上游合并喂养。当前两条分支的 640 个新增文件都已经在正确的目录里，缺的只是把那 20 个文件的接缝设计一次；做完这件事，"维护两条线"就变成"维护一条线上的两个目录"。
