@@ -42,7 +42,7 @@ done
 |---|---|---|---|
 | `fork-brand-apply-clean` | `python3 scripts/brand/apply.py --brand ${BRAND:-omi-upstream} --check-clean` | `brand/**`, `scripts/brand/**`, 各注入点文件 | 生成物与清单一致 |
 | `fork-brand-leak-scan` | `python3 scripts/brand/check.py --brand ${BRAND:-omi-upstream}` | `app/lib/**`, `desktop/**`, `backend/**`, `web/**`, `docs/**`, `omi/firmware/**` | 用户可见面零上游品牌词（`omi-upstream` 品牌下为基线 ratchet） |
-| `fork-upstream-touch` | `python3 scripts/fork/check-upstream-touch.py --base upstream/main` | `all` | 上游文件改动 ≤5 行且不在禁改清单（见 `06-upstream-sync.md` §4） |
+| `fork-upstream-touch` | `python3 scripts/fork/check-upstream-touch.py --base upstream/main --allowlist dev/unified-main/upstream-touch-allowlist.yaml` | `all` | **默认零个上游文件被修改**；例外只能来自 T1 白名单（逐条限行数、附上游 PR 链接）；命中 T2 类别（上游测试/锁文件/生成文件/机器人文件/CI/格式化）直接失败。见 `00-upstream-touch-policy.md` |
 | `fork-profile-consistency` | `python3 scripts/profiles/check_tables.py` | `deploy/profiles/**`, 各端生成的 profile 表 | Flutter/Swift/TS/Python 四份 profile 表由同一源生成且一致（见 `02-deployment-profile.md`） |
 | `fork-selfhost-compose-valid` | `docker compose -f deploy/self-host/compose.production.yml config -q` | `deploy/self-host/**` | compose 可解析、无缺失变量 |
 | `fork-cloudflare-config-valid` | `bash -c 'cd deploy/cloudflare && npm run validate:manifest && npm run verify:migrations && npm run validate:backend-routes'` | `deploy/cloudflare/**`, `backend/routers/**` | 沿用 CF 分支已有脚本：`validate-manifests.mjs`（路由/原语清单字段与枚举）、`d1-migrations.mjs`（迁移全部已应用）、`export_openapi.py --surface cloudflare-route-inventory --check`（新上游路由必须分类）；wrangler `--dry-run` 由 `scripts/deploy.mjs` 的资格流程覆盖 |
@@ -125,6 +125,7 @@ runs:
 - 上游 `repo-checks.yml` 的 hygiene 通道继续跑上游清单；fork 清单由 `fork-checks.yml` 跑。两者互不包含，PR 必须两者都绿。
 - `mobile-app-checks.yml` 会用空 `.dev.env` 与 `firebase_options_local.dart` 覆盖 dev/prod 配置（`:130-141`），对 fork 的 profile 表无副作用，但 **fork 的 Flutter 构建矩阵必须用生成后的品牌配置**（`fork-build-matrix.yml` 先跑 `apply.py`）。
 - `openapi-contract.yml` 校验的三份 OpenAPI 由 `export_openapi.py` 生成，B4 之后其标题/contact 读 `brand.py`：在 `omi-upstream` 品牌下输出必须与上游字节一致，否则该上游工作流会红——这是"上游等价性"的天然守卫。
+- **两条测试通道**：上游组件测试（`backend/test.sh`、`app/test.sh`、Swift/Windows 测试、`web-checks`）在"上游模式"运行，不设任何 shim/profile 环境变量、不启用 `pubspec_overrides`/`vite.fork.config`，证明 fork 未改变上游行为；fork 测试目录在 `self_hosted`/`cloudflare` 模式运行。上游测试文件永不修改。
 - `release-eligibility.yml` 沿用：它证明 `main` 上每个提交通过了全部 ci 通道检查；fork 的部署工作流以它为前置（`workflow_run` 或读取其 check-run 状态）。
 
 ## 8. 落地 PR（对应 `07-pr-plan.md` 的 C 系列）

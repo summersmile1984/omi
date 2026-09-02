@@ -113,6 +113,8 @@ api: { key_prefix: "mw_", header_prefix: "X-Mw-" }   # header 属于两端契约
 
 ## 4. 一次性代码改动（让注入点存在），按 PR 拆分
 
+先说约束（`00-upstream-touch-policy.md`）：下表里凡涉及上游文件的改动，优先走 T0（生成文件、包/模块别名、运行时委托、导入时补丁），无法 T0 的进 T1 白名单并同时提上游 PR。特别是：后端 prompt 里的品牌词首选向上游提 `{product_name}` 参数化 PR，在被接受之前由 `backend/fork/patches/brand.py` 在导入时替换上游 prompt 模块中的常量，`check.py` 以运行时导出的 prompt 文本为扫描对象；Flutter 的 190 个 ARB 键同理（运行时 `LocalizationsDelegate` 委托 + 上游 `{appName}` PR），不直接改 ARB。
+
 | PR | 范围 | 关键文件 | 验收 |
 |---|---|---|---|
 | B0 | `brand/` 骨架 + schema + `omi-upstream/manifest.yaml` + `apply.py`/`check.py` 空实现 + `lexicon.yaml` + `checks-manifest.fork.yaml` 登记 | 新增路径 | `apply.py --brand omi-upstream` 后 `git diff` 为空；`check.py --brand omi-upstream` 报告当前泄漏数作为基线 |

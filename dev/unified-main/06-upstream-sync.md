@@ -11,11 +11,11 @@
 | `.github/guardrail-pulse-history.jsonl` | fork 与上游的 `guardrail-baseline-pulse.yml` 机器人各自每周追加同一文件 | 在 fork 的 GitHub Actions 界面**禁用** `guardrail-baseline-pulse.yml`；同步时该文件一律取上游版本（`git checkout --theirs`） |
 | `.gitignore` | fork 追加了本地代理工具目录（`.codex/.loopx/...`，提交 `19e82722f4`） | 移到 `.git/info/exclude`（不入库）或 `dev/.gitignore`；根 `.gitignore` 恢复上游版本 |
 | `backend/AGENTS.md` | fork 在上游文件里加了 shim 说明 | 改为一行指针 `> Fork 规则见 backend/AGENTS.fork.md`；正文移入新文件 |
-| `backend/config/stt_provider_policy.py`、`backend/utils/stt/streaming.py` | fork 加了 MiMo/MOSS/SenseVoice provider（`cc80aefad5`、`5c1dcd346f`、`ba3adaf967`） | 把 provider 注册改为**注册表 + 独立模块**：上游文件只保留一行 `register_fork_providers()` 钩子（可回推上游）；provider 实现在 `backend/utils/stt/providers_fork/` |
-| `backend/utils/cloud_tasks.py` | fork 插入 `QUEUE_BACKEND=redis` 分发（`83e627b428`） | 同上：上游文件只留一个 `get_queue_backend()` 工厂调用，实现放 `backend/utils/cloud_tasks_redis.py`（已存在） |
+| `backend/config/stt_provider_policy.py`、`backend/utils/stt/streaming.py` | fork 加了 MiMo/MOSS/SenseVoice provider（`cc80aefad5`、`5c1dcd346f`、`ba3adaf967`） | provider 实现迁到 `backend/fork/stt/`，由 `backend/fork/main.py` 的补丁注册表在导入时注入到上游的 provider 表；**上游文件恢复原样（零改动）**；同时向上游提"provider 注册表"PR |
+| `backend/utils/cloud_tasks.py` | fork 插入 `QUEUE_BACKEND=redis` 分发（`83e627b428`） | 同上：`backend/fork/patches/queue.py` 在导入时替换 `utils.cloud_tasks` 的派发函数，实现在 `backend/fork/cloud_tasks_redis.py`；上游文件零改动 |
 | `backend/tests/unit/test_conversation_notes_v2.py` | fork 改了上游测试以适配 shim | 不改上游测试；shim 差异用 fork 自有测试文件覆盖（`backend/tests/unit/fork/`） |
 
-预期：处置完毕后真实冲突降到 **0~3**（剩余只会是上游恰好改到注入点所在行）。
+预期：处置完毕后 `backend/**` 上游文件改动为 0，真实冲突降到 **0**（此后冲突只可能来自 T1 白名单那十来行，见 `00-upstream-touch-policy.md` §4）。
 
 ## 2. 每周流程（约 30~60 分钟）
 
@@ -69,9 +69,9 @@ gh pr create --title "sync: upstream/main $(date +%F)" --body-file dev/unified-m
 5. **CI 工作流**：上游 `gcp_*.yml`、`desktop_*release*.yml`、`mobile_internal_build.yml`、`publish_omi_cli.yml` **不删不改**，在 GitHub Actions 界面禁用；fork 工作流用新文件名 `fork-*.yml`。
 6. **格式化**：`.pre-commit-config.yaml` 与上游一致；fork 钩子只对 `deploy/ brand/ backend/firestore_pg/ auth-server/ dev/ backend/utils/*_fork*` 等 fork 路径格式化。任何"style: format upstream files"提交禁止合入 `main`（检查脚本：若一次提交只改变空白/格式且触及非 fork 路径 → 失败）。
 7. **上游测试**：不修改上游测试断言；fork 行为差异写 fork 自有测试（`backend/tests/unit/fork/`、`app/test/fork/`、`desktop/macos/Desktop/Tests/Fork*`），并保证被各组件 runner 发现（`backend-test-discovery` 清单检查会强制）。
-8. **注入点最小化**：每个上游文件里的 fork 改动 ≤ 5 行，且形如"调用 fork 钩子/读配置"，业务逻辑全部在 fork 路径。超过就重构。
+8. **上游文件零改动为默认**：fork 行为通过新文件、包/模块别名、入口封装、导入时补丁、构建期生成文件与环境变量实现（技术目录见 `00-upstream-touch-policy.md` §3）。确实无法做到的（Swift 常量、Next 根配置、C 字面量）进 T1 白名单：单点、≤3 行、附上游 PR 链接，白名单只减不增。
 
-守卫脚本 `scripts/fork/check-upstream-touch.py`（进 `checks-manifest.fork.yaml`，PR 触发）：对 PR diff 中属于"上游文件"（存在于 `upstream/main` 树）的每个文件，报告改动行数；超过 5 行或命中清单 1/2 → 失败，并提示对应的 fork 路径做法。
+守卫脚本 `scripts/fork/check-upstream-touch.py --allowlist dev/unified-main/upstream-touch-allowlist.yaml`（进 `checks-manifest.fork.yaml`，PR 触发）：对 PR diff 中属于"上游文件"（存在于 `upstream/main` 树）的每个文件——不在白名单 → 失败；在白名单但超过其行数上限 → 失败；命中清单 1/2/7 的 T2 类别 → 失败；并输出对应的 T0 做法提示。
 
 ## 5. 度量与告警
 
