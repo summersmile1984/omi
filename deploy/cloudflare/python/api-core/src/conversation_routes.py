@@ -2160,12 +2160,25 @@ async def download_conversation_audio(
             if audio_file_id == "conversation"
             else _audio_file(row, audio_file_id)
         )
-        if audio_file is None:
-            return JSONResponse({"error": "audio file not found"}, status_code=404)
         bucket = getattr(env, "ASSETS", None)
         if bucket is None or not callable(getattr(bucket, "get", None)):
             return JSONResponse({"error": "recording storage is not configured"}, status_code=503)
-        resolved = await _stored_audio(bucket, uid, conversation_id, audio_file)
+        resolved = None
+        source_bucket = bucket
+        if audio_file is not None:
+            resolved = await _stored_audio(bucket, uid, conversation_id, audio_file)
+        if resolved is None and audio_file_id == "conversation":
+            # Imported legacy recordings live at uid/id.wav in the dedicated
+            # CONVERSATION_RECORDINGS binding with no audio_files projection —
+            # the same namespace the has_recording probe reports, so playback
+            # must serve it too instead of answering 404 after a true probe.
+            recordings_bucket = getattr(env, "CONVERSATION_RECORDINGS", None)
+            if recordings_bucket is not None and callable(getattr(recordings_bucket, "get", None)):
+                legacy_key = f"{uid}/{conversation_id}.wav"
+                legacy_metadata = await recordings_bucket.head(legacy_key)
+                if legacy_metadata is not None:
+                    resolved = (legacy_key, "audio/wav", legacy_metadata)
+                    source_bucket = recordings_bucket
         if resolved is None:
             return JSONResponse({"error": "audio file not found"}, status_code=404)
         storage_key, content_type, metadata = resolved
@@ -2185,7 +2198,9 @@ async def download_conversation_audio(
             status_code = 206
         elif size:
             headers["content-length"] = str(size)
-        stored = await bucket.get(storage_key, options) if options else await bucket.get(storage_key)
+        stored = (
+            await source_bucket.get(storage_key, options) if options else await source_bucket.get(storage_key)
+        )
         if stored is None:
             return JSONResponse({"error": "audio file not found"}, status_code=404)
     except Exception:

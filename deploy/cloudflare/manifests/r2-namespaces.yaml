@@ -27,13 +27,17 @@ namespaces:
     lifecycle: short-lived
     migration_state: inventory-only
   - id: conversation-recordings
+    # Worker-owned surfaces: has_recording probe, playback fallback for the
+    # canonical uid/id.wav object, per-conversation cascade purge, and the
+    # per-uid recording/account deletion flows. Legacy byte copy remains the
+    # documented Super Slurper runbook before the state can advance.
     legacy_env: BUCKET_MEMORIES_RECORDINGS
     target_binding: CONVERSATION_RECORDINGS
     target_bucket_pattern: omi-cf-conversation-recordings-{environment}
     object_patterns: ["{uid}/{conversation_id}.wav"]
     data_classification: customer-audio
     lifecycle: account-lifetime
-    migration_state: inventory-only
+    migration_state: copying
   - id: private-cloud-sync
     legacy_env: BUCKET_PRIVATE_CLOUD_SYNC
     target_binding: ASSETS

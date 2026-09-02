@@ -1975,3 +1975,76 @@ def test_canonical_conversation_metadata_mutations_are_uid_scoped():
         asyncio.run(get_conversation(FakeRequest(env, signed_headers(secret)), "conv-1"))["structured"]["title"]
         == "Updated title"
     )
+
+
+def test_playback_falls_back_to_imported_conversation_recording():
+    secret = "conversation-secret"
+    db = FakeDb()
+    # An imported legacy conversation has no audio_files projection at all;
+    # its audio lives only at uid/id.wav in the recordings binding.
+    insert_conversation(db, uid="conversation-user", conversation_id="imported-conv", created_at=200)
+    assets = FakeBucket()
+    recordings = FakeBucket()
+    recordings.objects["conversation-user/imported-conv.wav"] = b"RIFFimported-legacy-audio"
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": db,
+            "ASSETS": assets,
+            "CONVERSATION_RECORDINGS": recordings,
+            "JOBS": FakeQueue(),
+            "INTERNAL_ASSERTION_SECRET": secret,
+        },
+    )()
+
+    probe = asyncio.run(
+        conversation_has_recording(FakeRequest(env, signed_headers(secret)), "imported-conv")
+    )
+    assert probe == {"has_recording": True}
+
+    response = asyncio.run(
+        download_conversation_audio(
+            FakeRequest(env, signed_headers(secret)),
+            "imported-conv",
+            "conversation",
+        )
+    )
+    assert response.status_code == 200
+    assert response.headers["content-length"] == "25"
+
+    async def response_body(streaming_response):
+        return b"".join([chunk async for chunk in streaming_response.body_iterator])
+
+    assert asyncio.run(response_body(response)) == b"RIFFimported-legacy-audio"
+
+    ranged = asyncio.run(
+        download_conversation_audio(
+            FakeRequest(env, {**signed_headers(secret), "range": "bytes=4-11"}),
+            "imported-conv",
+            "conversation",
+        )
+    )
+    assert ranged.status_code == 206
+    assert ranged.headers["content-range"] == "bytes 4-11/25"
+    assert asyncio.run(response_body(ranged)) == b"imported"
+
+    # The fallback is scoped to the canonical id; named audio files still 404.
+    named = asyncio.run(
+        download_conversation_audio(
+            FakeRequest(env, signed_headers(secret)),
+            "imported-conv",
+            "audio-1",
+        )
+    )
+    assert named.status_code == 404
+    # Another user's identical conversation id cannot reach the object.
+    insert_conversation(db, uid="other-user", conversation_id="imported-conv", created_at=201)
+    foreign = asyncio.run(
+        download_conversation_audio(
+            FakeRequest(env, signed_headers(secret, "other-user")),
+            "imported-conv",
+            "conversation",
+        )
+    )
+    assert foreign.status_code == 404
