@@ -1,5 +1,10 @@
 import { publicHttpsUrl } from "./app-mutations";
 import type { JobsEnv } from "./env";
+import {
+  readDisabledWebhookApps,
+  recordAppWebhookFailure,
+  recordAppWebhookSuccess,
+} from "./webhook-health";
 
 const BATCH_SIZE = 25;
 const LEASE_SECONDS = 5 * 60;
@@ -201,6 +206,7 @@ async function deliver(
     });
   } catch {
     await markFailure(env, row, now, true, "webhook request failed");
+    await recordAppWebhookFailure(env, row.app_id, 0, "webhook request failed", now);
     return;
   }
   if (!response.ok) {
@@ -208,6 +214,13 @@ async function deliver(
     const retryable =
       response.status >= 500 || RETRYABLE_STATUSES.has(response.status);
     await markFailure(env, row, now, retryable, `HTTP ${response.status}`);
+    await recordAppWebhookFailure(
+      env,
+      row.app_id,
+      response.status,
+      `HTTP ${response.status}`,
+      now,
+    );
     return;
   }
   const body = await boundedResponseJson(response);
@@ -217,6 +230,7 @@ async function deliver(
   } else {
     await finishWithoutMessage(env, row.delivery_id, now);
   }
+  await recordAppWebhookSuccess(env, row.app_id, now);
 }
 
 export async function drainIntegrationWebhooks(
@@ -241,7 +255,22 @@ export async function drainIntegrationWebhooks(
   )
     .bind(MAX_ATTEMPTS, now, now, BATCH_SIZE)
     .all<WebhookRow>();
+  const disabledApps = await readDisabledWebhookApps(
+    env,
+    (result.results || []).map((row) => row.app_id),
+  );
   for (const row of result.results || []) {
+    if (disabledApps.has(row.app_id)) {
+      // The health boundary auto-disabled this app after three days of
+      // failures; drop its deliveries terminally instead of calling out.
+      await env.APP_DB.prepare(
+        "UPDATE cf_integration_webhook_outbox SET status = 'failed', lease_until = NULL, " +
+          "last_error = 'webhook auto-disabled', updated_at = ? WHERE delivery_id = ? AND status != 'sent'",
+      )
+        .bind(now, row.delivery_id)
+        .run();
+      continue;
+    }
     const leased = await env.APP_DB.prepare(
       "UPDATE cf_integration_webhook_outbox SET status = 'sending', attempts = attempts + 1, " +
         "lease_until = ?, updated_at = ? WHERE delivery_id = ? AND " +

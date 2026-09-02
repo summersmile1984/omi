@@ -696,13 +696,15 @@ direct_legacy_callers:
       target_owner: jobs,
       migration_state: staging-owned,
     }
-  # Outbox retry/lease/last_error exist (0064, 0079); per-endpoint health
-  # scoring and auto-disable remain unimplemented.
+  # cf_app_webhook_health (0150) ports the graduated contract: continuous
+  # failure window, day-1/day-2 owner warnings, three-day auto-disable, reset
+  # on success or owner webhook-config change (webhook-health.ts wired into
+  # the integration webhook drain).
   - {
       path: backend/database/webhook_health.py,
       target: d1,
       target_owner: jobs,
-      migration_state: planned,
+      migration_state: staging-owned,
     }
   # Redis readiness probe endpoint; Workers expose plain /health routes.
   - {

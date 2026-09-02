@@ -1160,6 +1160,15 @@ async function updateApp(
           ).bind(now, appId, context.uid),
         );
       }
+      if (parsed.input.external_integration !== undefined) {
+        // A webhook-config change is the owner's re-enable action: it resets
+        // the graduated failure window and lifts an auto-disable.
+        statements.push(
+          c.env.APP_DB.prepare(
+            "DELETE FROM cf_app_webhook_health WHERE app_id = ?",
+          ).bind(appId),
+        );
+      }
       const results = await c.env.APP_DB.batch(statements);
       if (Number(results[0]?.meta?.changes) < 1) {
         throw new Error("app update lost its catalog authority");

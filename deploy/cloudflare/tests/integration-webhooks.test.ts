@@ -236,4 +236,127 @@ describe("integration webhook outbox", () => {
       last_error: "retry limit exceeded",
     });
   });
+
+  it("opens a failure window on failure and resets it on success", async () => {
+    const { database, env } = environment();
+    database.seed("delivery-h1", "https://hooks.example.test/conversation");
+    await drainIntegrationWebhooks(
+      env,
+      1_000,
+      vi.fn(async () => new Response(null, { status: 503 })) as typeof fetch,
+    );
+    expect(
+      database.database
+        .prepare(
+          "SELECT first_failure_at, failure_count, last_status, disabled FROM cf_app_webhook_health",
+        )
+        .get(),
+    ).toEqual({
+      first_failure_at: 1_000,
+      failure_count: 1,
+      last_status: 503,
+      disabled: 0,
+    });
+
+    // A later success stamps the window; the next failure restarts it.
+    database.database
+      .prepare("UPDATE cf_integration_webhook_outbox SET status = 'pending', not_before = 0")
+      .run();
+    await drainIntegrationWebhooks(
+      env,
+      2_000,
+      vi.fn(async () => Response.json({})) as typeof fetch,
+    );
+    database.database.prepare("DELETE FROM cf_integration_webhook_outbox").run();
+    database.seed("delivery-h2", "https://hooks.example.test/conversation");
+    await drainIntegrationWebhooks(
+      env,
+      3_000,
+      vi.fn(async () => new Response(null, { status: 500 })) as typeof fetch,
+    );
+    expect(
+      database.database
+        .prepare(
+          "SELECT first_failure_at, failure_count, notified_day1 FROM cf_app_webhook_health",
+        )
+        .get(),
+    ).toEqual({ first_failure_at: 3_000, failure_count: 1, notified_day1: 0 });
+  });
+
+  it("warns the owner after a day and auto-disables delivery after three", async () => {
+    const { database, env } = environment();
+    database.seed("delivery-warn", "https://hooks.example.test/conversation");
+    database.database
+      .prepare(
+        "INSERT INTO cf_app_webhook_health (app_id, endpoint, first_failure_at, last_failure_at, " +
+          "failure_count, last_status, last_error, updated_at) " +
+          "VALUES ('webhook-app', 'integration', 100, 100, 1, 503, 'HTTP 503', 100)",
+      )
+      .run();
+    const day1Now = 100 + 86_400;
+    await drainIntegrationWebhooks(
+      env,
+      day1Now,
+      vi.fn(async () => new Response(null, { status: 503 })) as typeof fetch,
+    );
+    expect(
+      database.database
+        .prepare("SELECT notified_day1, disabled FROM cf_app_webhook_health")
+        .get(),
+    ).toEqual({ notified_day1: 1, disabled: 0 });
+    const warn = database.database
+      .prepare(
+        "SELECT uid, source_id FROM cf_notification_outbox WHERE source_id LIKE 'webhook-health:%'",
+      )
+      .get() as { uid: string; source_id: string };
+    expect(warn.uid).toBe("webhook-owner");
+    expect(warn.source_id).toBe("webhook-health:webhook-app:100:day1");
+
+    // Past three days the next failure disables the app...
+    database.database
+      .prepare("UPDATE cf_integration_webhook_outbox SET status = 'pending', not_before = 0, attempts = 0")
+      .run();
+    const disableNow = 100 + 259_200;
+    await drainIntegrationWebhooks(
+      env,
+      disableNow,
+      vi.fn(async () => new Response(null, { status: 503 })) as typeof fetch,
+    );
+    expect(
+      database.database
+        .prepare("SELECT disabled FROM cf_app_webhook_health")
+        .get(),
+    ).toEqual({ disabled: 1 });
+    expect(
+      database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_notification_outbox WHERE source_id = 'webhook-health:webhook-app:100:disable'",
+        )
+        .get(),
+    ).toEqual({ count: 1 });
+
+    // ...and later deliveries are dropped without calling out.
+    database.database.prepare("DELETE FROM cf_integration_webhook_outbox").run();
+    database.seed("delivery-after-disable", "https://hooks.example.test/conversation");
+    const fetcher = vi.fn();
+    await drainIntegrationWebhooks(env, disableNow + 10, fetcher as typeof fetch);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(
+      database.database
+        .prepare(
+          "SELECT status, last_error FROM cf_integration_webhook_outbox WHERE delivery_id = 'delivery-after-disable'",
+        )
+        .get(),
+    ).toEqual({ status: "failed", last_error: "webhook auto-disabled" });
+
+    // An owner webhook-config change re-enables delivery.
+    database.database
+      .prepare("DELETE FROM cf_app_webhook_health WHERE app_id = 'webhook-app'")
+      .run();
+    database.database.prepare("DELETE FROM cf_integration_webhook_outbox").run();
+    database.seed("delivery-reenabled", "https://hooks.example.test/conversation");
+    const revived = vi.fn(async () => Response.json({}));
+    await drainIntegrationWebhooks(env, disableNow + 20, revived as typeof fetch);
+    expect(revived).toHaveBeenCalledTimes(1);
+  });
 });
