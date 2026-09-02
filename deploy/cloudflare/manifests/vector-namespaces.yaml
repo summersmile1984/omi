@@ -35,16 +35,18 @@ namespaces:
     migration_state: staging-owned
     candidate_only: true
   - id: workstream-associations
+    # Reembedded on the shared multilingual model (product text is not
+    # English-only) so the single-model projection/query path stays intact.
     legacy_namespace: workstream-association-v1
     authoritative_source: workstream-repository
     source_model: openai/text-embedding-3-large
     source_dimensions: 3072
     target: vectorize
     target_index: omi-cf-workstreams-v1
-    target_model: "@cf/baai/bge-base-en-v1.5"
-    target_dimensions: 768
+    target_model: "@cf/baai/bge-m3"
+    target_dimensions: 1024
     migration_mode: reembed
-    migration_state: qualification-required
+    migration_state: staging-owned
     candidate_only: true
   - id: x-posts
     legacy_namespace: ns_x
@@ -59,16 +61,18 @@ namespaces:
     migration_state: staging-owned
     candidate_only: true
   - id: screen-activity
+    # Reembedded on the shared multilingual model; the legacy timestamp range
+    # filter maps to the created_at metadata index.
     legacy_namespace: ns3
     authoritative_source: screen-activity-repository
     source_model: google/gemini-embedding-001
     source_dimensions: 3072
     target: vectorize
     target_index: omi-cf-screen-activity-v1
-    target_model: "@cf/baai/bge-base-en-v1.5"
-    target_dimensions: 768
+    target_model: "@cf/baai/bge-m3"
+    target_dimensions: 1024
     migration_mode: reembed
-    migration_state: qualification-required
+    migration_state: staging-owned
     candidate_only: true
   - id: action-items
     legacy_namespace: ns4

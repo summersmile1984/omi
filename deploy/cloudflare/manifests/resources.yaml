@@ -93,6 +93,14 @@ resources:
     owner: jobs
     environment: staging
   - kind: vectorize
+    name: omi-cf-workstreams-v1
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-screen-activity-v1
+    owner: jobs
+    environment: staging
+  - kind: vectorize
     name: omi-cf-x-posts-v2
     owner: jobs
     environment: staging

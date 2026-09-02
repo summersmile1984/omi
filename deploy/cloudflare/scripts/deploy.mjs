@@ -271,6 +271,8 @@ function ensureResources() {
     "omi-cf-action-items-v2",
     "omi-cf-transcript-chunks-v2",
     "omi-cf-x-posts-v2",
+    "omi-cf-workstreams-v1",
+    "omi-cf-screen-activity-v1",
   ]) {
     if (!vectorizeExists(name)) {
       run("npx", [
@@ -290,6 +292,7 @@ function ensureResources() {
   for (const name of [
     "omi-cf-conversations-v2",
     "omi-cf-transcript-chunks-v2",
+    "omi-cf-screen-activity-v1",
   ]) {
     if (!vectorizeMetadataIndexState(name, "created_at").exists) {
       run("npx", [

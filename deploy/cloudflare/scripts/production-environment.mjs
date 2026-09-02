@@ -67,6 +67,8 @@ export const PRODUCTION_RESOURCES = Object.freeze({
     "omi-cf-action-items-production-v1",
     "omi-cf-transcript-chunks-production-v1",
     "omi-cf-x-posts-production-v1",
+    "omi-cf-workstreams-production-v1",
+    "omi-cf-screen-activity-production-v1",
   ]),
 });
 
@@ -200,6 +202,8 @@ export function renderProductionConfig(
     ["omi-cf-edge-staging", "omi-cf-edge-production"],
     ["omi-cf-memories-v2", "omi-cf-memories-production-v1"],
     ["omi-cf-x-posts-v2", "omi-cf-x-posts-production-v1"],
+    ["omi-cf-workstreams-v1", "omi-cf-workstreams-production-v1"],
+    ["omi-cf-screen-activity-v1", "omi-cf-screen-activity-production-v1"],
     ["omi-cf-app-staging", "omi-cf-app-production"],
     ["omi-cf-staging", "omi-cf-production"],
     ["omi-web-app-staging", "omi-web-app-production"],

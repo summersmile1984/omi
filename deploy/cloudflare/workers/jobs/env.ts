@@ -79,6 +79,8 @@ export type JobsEnv = {
   CONVERSATION_VECTORS: VectorizeBinding;
   TRANSCRIPT_CHUNK_VECTORS: VectorizeBinding;
   X_POST_VECTORS: VectorizeBinding;
+  WORKSTREAM_VECTORS: VectorizeBinding;
+  SCREEN_ACTIVITY_VECTORS: VectorizeBinding;
   JOBS: Queue<JobMessage>;
   SYNC_FRESH: Queue<JobMessage>;
   SYNC_BACKFILL: Queue<JobMessage>;

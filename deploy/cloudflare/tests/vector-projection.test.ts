@@ -117,6 +117,8 @@ function environment(options: { failAi?: boolean } = {}) {
   const conversation = new FakeVectorize();
   const transcript = new FakeVectorize();
   const xPost = new FakeVectorize();
+  const workstream = new FakeVectorize();
+  const screenActivity = new FakeVectorize();
   const ai = {
     run: vi.fn(async (_model: string, input: Record<string, unknown>) => {
       if (options.failAi) throw new Error("simulated Workers AI failure");
@@ -136,6 +138,8 @@ function environment(options: { failAi?: boolean } = {}) {
     CONVERSATION_VECTORS: conversation,
     TRANSCRIPT_CHUNK_VECTORS: transcript,
     X_POST_VECTORS: xPost,
+    WORKSTREAM_VECTORS: workstream,
+    SCREEN_ACTIVITY_VECTORS: screenActivity,
     WORKERS_AI_VECTOR_MODEL: VECTOR_EMBEDDING_MODEL,
   } as unknown as JobsEnv;
   return {
@@ -147,6 +151,8 @@ function environment(options: { failAi?: boolean } = {}) {
     conversation,
     transcript,
     xPost,
+    workstream,
+    screenActivity,
   };
 }
 
@@ -236,6 +242,61 @@ describe("Vectorize rebuildable D1 projection", () => {
     expect(
       state.database.database
         .prepare("SELECT COUNT(*) AS count FROM cf_vector_projection_outbox")
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("projects open workstreams and screen activity as reembedded candidates", async () => {
+    const state = environment();
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_workstreams
+         (uid, id, goal_id, title, objective, status, current_state_summary,
+          last_meaningful_progress_at, latest_event_sequence, account_generation, created_at, updated_at)
+         VALUES ('vector-user', 'ws-1', NULL, 'Ship search', 'Ship semantic search', 'open',
+                 'Reembedding underway', 10, 1, 1, 10, 10)`,
+      )
+      .run();
+    state.database.database
+      .prepare(
+        `INSERT INTO cf_screen_activity
+         (uid, id, timestamp, app_name, window_title, ocr_text, updated_at)
+         VALUES ('vector-user', 'shot-1', '2026-01-02 03:04:05.000', 'Xcode', 'Omi.xcodeproj',
+                 'building the desktop app', NULL)`,
+      )
+      .run();
+
+    await expect(reconcileVectorProjections(state.env, 100)).resolves.toBe(2);
+    expect(state.workstream.upserts).toHaveLength(1);
+    expect(state.screenActivity.upserts).toHaveLength(1);
+    const namespace = await vectorNamespace("vector-user");
+    expect(state.workstream.upserts[0][0]).toMatchObject({
+      namespace,
+      metadata: { created_at: 10 },
+    });
+    // Legacy timestamp range filters map onto created_at metadata parsed from
+    // the naive capture timestamp.
+    expect(state.screenActivity.upserts[0][0]).toMatchObject({
+      namespace,
+      metadata: { created_at: Math.floor(Date.parse("2026-01-02T03:04:05.000Z") / 1000) },
+    });
+
+    // Closing the workstream and blanking the OCR text retracts both.
+    state.database.database
+      .prepare("UPDATE cf_workstreams SET status = 'archived', updated_at = 20")
+      .run();
+    state.database.database
+      .prepare("UPDATE cf_screen_activity SET ocr_text = '', updated_at = 20")
+      .run();
+    await reconcileVectorProjections(state.env, 200);
+    await reconcileVectorProjections(state.env, 300);
+    expect(state.workstream.deletes.flat()).toHaveLength(1);
+    expect(state.screenActivity.deletes.flat()).toHaveLength(1);
+    expect(
+      state.database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_vector_projection_state WHERE projection_kind IN ('workstream', 'screen_activity')",
+        )
         .get(),
     ).toEqual({ count: 0 });
   });

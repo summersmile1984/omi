@@ -1,15 +1,17 @@
 """D1-backed text-only screen activity routes for the Cloudflare profile.
 
 The migrated surface stores bounded app/window/OCR events and serves the
-first-party list and aggregate APIs. It intentionally drops client embeddings:
-semantic screen search, vector lifecycle, and paid entitlement checks remain
-legacy-owned until their own data and billing contracts move.
+first-party list and aggregate APIs. Client-computed embeddings are still
+dropped: the Cloudflare vector lifecycle reembeds the stored OCR text with the
+shared Workers AI model through the projection outbox written on sync. Paid
+entitlement checks remain legacy-owned until their billing contracts move.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
@@ -17,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from internal_auth import decode_context
+from vector_search import vector_outbox_statement
 
 router = APIRouter()
 
@@ -149,26 +152,45 @@ async def sync_screen_activity(request: Request):
     if not payload.rows:
         return {"synced": 0, "last_id": 0}
     uid = str(context["uid"])
+    env = request.scope["env"]
+    now = int(time.time())
     try:
         for row in payload.rows:
-            await request.scope["env"].APP_DB.prepare(
-                "INSERT INTO cf_screen_activity "
-                "(uid, id, timestamp, app_name, window_title, ocr_text, device_name, client_device_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(uid, id) DO UPDATE SET timestamp = excluded.timestamp, "
-                "app_name = excluded.app_name, window_title = excluded.window_title, "
-                "ocr_text = excluded.ocr_text, device_name = excluded.device_name, "
-                "client_device_id = excluded.client_device_id"
-            ).bind(
-                uid,
-                row.storage_id(),
-                row.timestamp,
-                row.app_name,
-                row.window_title,
-                row.ocr_text[:1000],
-                row.device_name,
-                row.client_device_id,
-            ).run()
+            statements = [
+                env.APP_DB.prepare(
+                    "INSERT INTO cf_screen_activity "
+                    "(uid, id, timestamp, app_name, window_title, ocr_text, device_name, client_device_id, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(uid, id) DO UPDATE SET timestamp = excluded.timestamp, "
+                    "app_name = excluded.app_name, window_title = excluded.window_title, "
+                    "ocr_text = excluded.ocr_text, device_name = excluded.device_name, "
+                    "client_device_id = excluded.client_device_id, updated_at = excluded.updated_at"
+                ).bind(
+                    uid,
+                    row.storage_id(),
+                    row.timestamp,
+                    row.app_name,
+                    row.window_title,
+                    row.ocr_text[:1000],
+                    row.device_name,
+                    row.client_device_id,
+                    now,
+                )
+            ]
+            if row.ocr_text.strip():
+                # Bulk sync relies on the scheduled reconciler to drain the
+                # outbox instead of one queue message per screenshot.
+                statements.append(
+                    vector_outbox_statement(
+                        env,
+                        uid=uid,
+                        source_kind="screen_activity",
+                        source_id=row.storage_id(),
+                        desired_version=now,
+                        operation="upsert",
+                    )
+                )
+            await env.APP_DB.batch(statements)
     except Exception:
         return JSONResponse({"error": "screen activity unavailable"}, status_code=503)
     return {"synced": len(payload.rows), "last_id": max(row.id for row in payload.rows)}

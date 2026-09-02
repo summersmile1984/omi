@@ -29,16 +29,8 @@ class FakeDb:
     def __init__(self):
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
-        migrations = [
-            "0016_action_items.sql",
-            "0018_goals.sql",
-            "0023_goal_progress_history.sql",
-            "0024_goal_mutations.sql",
-            "0025_goal_progress_events.sql",
-            "0026_workstreams.sql",
-        ]
-        for name in migrations:
-            migration = Path(__file__).parents[3] / f"migrations/app/{name}"
+        migration_dir = Path(__file__).parents[3] / "migrations/app"
+        for migration in sorted(migration_dir.glob("*.sql")):
             self.connection.executescript(migration.read_text())
 
     def prepare(self, sql):
@@ -177,6 +169,13 @@ def test_goal_work_intent_workstream_events_artifacts_and_checkpoints_are_d1_bac
         )
     )
     assert updated["title"] == "Write the full book"
+    # Workstream writes keep the vector projection outbox current.
+    assert (
+        env.APP_DB.connection.execute(
+            "SELECT COUNT(*) FROM cf_vector_projection_outbox WHERE source_kind = 'workstream'"
+        ).fetchone()[0]
+        == 1
+    )
     assert (
         asyncio.run(
             update_workstream(

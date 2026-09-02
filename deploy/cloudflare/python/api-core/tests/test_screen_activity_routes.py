@@ -17,10 +17,14 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        self.connection.executescript((migration_dir / "0021_screen_activity.sql").read_text())
+        for migration in sorted(migration_dir.glob("*.sql")):
+            self.connection.executescript(migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
+
+    async def batch(self, statements):
+        return [await statement.run() for statement in statements]
 
 
 class FakeStatement:
@@ -93,6 +97,11 @@ def test_screen_activity_sync_upserts_text_and_serves_summary():
     }
     synced = asyncio.run(sync_screen_activity(FakeRequest(env, headers, body)))
     assert synced["synced"] == 2
+    # Every synced screenshot with OCR text also queued a vector projection.
+    outbox = env.APP_DB.connection.execute(
+        "SELECT COUNT(*) FROM cf_vector_projection_outbox WHERE source_kind = 'screen_activity'"
+    ).fetchone()[0]
+    assert outbox == 2
     assert synced["last_id"] == 2
 
     updated = asyncio.run(

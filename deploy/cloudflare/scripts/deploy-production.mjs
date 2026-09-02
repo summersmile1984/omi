@@ -201,6 +201,7 @@ function ensureResources() {
   for (const name of [
     "omi-cf-conversations-production-v1",
     "omi-cf-transcript-chunks-production-v1",
+    "omi-cf-screen-activity-production-v1",
   ]) {
     if (!vectorizeMetadataIndexState(name, "created_at").exists) {
       run("npx", [

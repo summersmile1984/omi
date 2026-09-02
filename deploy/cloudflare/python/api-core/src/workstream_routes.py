@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_valid
 
 from action_item_routes import _response as _action_item_response
 from goal_routes import EvidenceRef
+from vector_search import vector_outbox_statement
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -551,6 +552,14 @@ async def append_workstream_event(request: Request, workstream_id: str):
                 "WHERE uid = ? AND id = ?"
             ).bind(sequence, now, now, uid, workstream_id),
             _mutation_statement(env, uid, operation, key, generation, request_hash, result, now),
+            vector_outbox_statement(
+                env,
+                uid=uid,
+                source_kind="workstream",
+                source_id=workstream_id,
+                desired_version=now,
+                operation="upsert",
+            ),
         ]
         await env.APP_DB.batch(statements)
         return result
@@ -610,6 +619,16 @@ async def update_workstream(request: Request, workstream_id: str):
                 *values.values(), uid, workstream_id
             ),
             _mutation_statement(env, uid, operation, key, generation, request_hash, result, now),
+            # A non-open status projects to a retraction: the reconciler sees
+            # the closed row and deletes the candidate vector.
+            vector_outbox_statement(
+                env,
+                uid=uid,
+                source_kind="workstream",
+                source_id=workstream_id,
+                desired_version=now,
+                operation="upsert",
+            ),
         ]
         await env.APP_DB.batch(statements)
         return result
@@ -1016,6 +1035,14 @@ async def _insert_initial_workstream(
                 and "Work initiated from a goal by the user"
                 or "Work initiated by the user",
                 now,
+            ),
+            vector_outbox_statement(
+                env,
+                uid=uid,
+                source_kind="workstream",
+                source_id=workstream_id,
+                desired_version=now,
+                operation="upsert",
             ),
         ]
     )

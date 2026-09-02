@@ -13,7 +13,12 @@ const RECONCILE_OUTBOX_BATCH_SIZE = 20;
 const MAX_PROJECTION_ATTEMPTS = 20;
 
 export type VectorSourceKind =
-  "memory" | "action_item" | "conversation" | "x_post";
+  | "memory"
+  | "action_item"
+  | "conversation"
+  | "x_post"
+  | "workstream"
+  | "screen_activity";
 export type VectorProjectionKind = VectorSourceKind | "transcript_chunk";
 
 type VectorProjectionOutboxRow = {
@@ -54,7 +59,9 @@ function sourceKind(value: unknown): VectorSourceKind | null {
   return value === "memory" ||
     value === "action_item" ||
     value === "conversation" ||
-    value === "x_post"
+    value === "x_post" ||
+    value === "workstream" ||
+    value === "screen_activity"
     ? value
     : null;
 }
@@ -62,6 +69,18 @@ function sourceKind(value: unknown): VectorSourceKind | null {
 function safeInteger(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+// cf_screen_activity timestamps are 23-char naive "YYYY-MM-DD HH:MM:SS.mmm"
+// strings; parse as UTC to get a stable epoch for created_at metadata and the
+// version fallback of rows written before updated_at existed.
+function screenActivityEpoch(value: unknown): number | null {
+  if (typeof value !== "string" || !value) return null;
+  const normalized = value.replace(" ", "T");
+  const parsed = Date.parse(
+    normalized.endsWith("Z") ? normalized : `${normalized}Z`,
+  );
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1_000) : null;
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -236,6 +255,8 @@ function vectorBinding(
   if (kind === "action_item") return env.ACTION_ITEM_VECTORS;
   if (kind === "conversation") return env.CONVERSATION_VECTORS;
   if (kind === "x_post") return env.X_POST_VECTORS;
+  if (kind === "workstream") return env.WORKSTREAM_VECTORS;
+  if (kind === "screen_activity") return env.SCREEN_ACTIVITY_VECTORS;
   return env.TRANSCRIPT_CHUNK_VECTORS;
 }
 
@@ -318,6 +339,60 @@ async function sourceDocuments(
       documents: chunkDocuments("x_post", row.text, createdAt),
     };
   }
+  if (kind === "workstream") {
+    const row = await env.APP_DB.prepare(
+      `SELECT objective, current_state_summary, status, created_at, updated_at
+       FROM cf_workstreams WHERE uid = ? AND id = ?`,
+    )
+      .bind(uid, sourceId)
+      .first<Record<string, unknown>>();
+    const version = safeInteger(row?.updated_at);
+    const createdAt = safeInteger(row?.created_at);
+    if (
+      !row ||
+      version === null ||
+      row.status !== "open" ||
+      typeof row.objective !== "string"
+    ) {
+      return null;
+    }
+    // Legacy parity: only open workstreams are projected, and the embedded
+    // text is the objective plus the rolling state summary.
+    const summary =
+      typeof row.current_state_summary === "string"
+        ? row.current_state_summary
+        : "";
+    const text = `Objective: ${row.objective}\nCurrent state: ${summary}`.trim();
+    return {
+      version,
+      documents: chunkDocuments("workstream", text, createdAt ?? undefined),
+    };
+  }
+  if (kind === "screen_activity") {
+    const row = await env.APP_DB.prepare(
+      `SELECT app_name, window_title, ocr_text, timestamp, updated_at
+       FROM cf_screen_activity WHERE uid = ? AND id = ?`,
+    )
+      .bind(uid, sourceId)
+      .first<Record<string, unknown>>();
+    if (!row || typeof row.ocr_text !== "string" || !row.ocr_text.trim()) {
+      return null;
+    }
+    const capturedAt = screenActivityEpoch(row.timestamp);
+    const version = safeInteger(row.updated_at) ?? capturedAt;
+    if (version === null) return null;
+    const text = [row.app_name, row.window_title, row.ocr_text]
+      .filter((value) => typeof value === "string" && value.trim())
+      .join("\n");
+    return {
+      version,
+      documents: chunkDocuments(
+        "screen_activity",
+        text,
+        capturedAt ?? undefined,
+      ),
+    };
+  }
   const row = await env.APP_DB.prepare(
     `SELECT structured_json, transcript_segments_json, created_at,
             COALESCE(updated_at, created_at) AS source_version,
@@ -374,7 +449,9 @@ async function existingState(
         row.projection_kind === "action_item" ||
         row.projection_kind === "conversation" ||
         row.projection_kind === "transcript_chunk" ||
-        row.projection_kind === "x_post"),
+        row.projection_kind === "x_post" ||
+        row.projection_kind === "workstream" ||
+        row.projection_kind === "screen_activity"),
   );
 }
 
@@ -728,6 +805,48 @@ async function seedMissingProjections(
        ORDER BY x.updated_at, x.uid, x.id LIMIT ?`,
     ).bind(model, now, RECONCILE_SOURCE_BATCH_SIZE),
     env.APP_DB.prepare(
+      `SELECT w.uid, 'workstream' AS source_kind, w.id AS source_id,
+              w.updated_at AS desired_version, 'upsert' AS operation
+       FROM cf_workstreams w
+       LEFT JOIN cf_vector_projection_state s
+         ON s.uid = w.uid AND s.projection_kind = 'workstream'
+        AND s.source_id = w.id AND s.sub_id = '000000'
+       WHERE w.status = 'open' AND length(trim(w.objective)) > 0
+         AND (
+           s.source_version IS NULL OR s.source_version < w.updated_at OR
+           s.model != ?
+         )
+         AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents d WHERE d.uid = w.uid)
+         AND NOT EXISTS (
+           SELECT 1 FROM cf_account_deletion_tombstones t
+           WHERE t.uid = w.uid AND t.expires_at > ?
+         )
+       ORDER BY w.updated_at, w.uid, w.id LIMIT ?`,
+    ).bind(model, now, RECONCILE_SOURCE_BATCH_SIZE),
+    env.APP_DB.prepare(
+      `SELECT sa.uid, 'screen_activity' AS source_kind, sa.id AS source_id,
+              COALESCE(sa.updated_at,
+                CAST(strftime('%s', replace(sa.timestamp, 'T', ' ')) AS INTEGER)
+              ) AS desired_version, 'upsert' AS operation
+       FROM cf_screen_activity sa
+       LEFT JOIN cf_vector_projection_state s
+         ON s.uid = sa.uid AND s.projection_kind = 'screen_activity'
+        AND s.source_id = sa.id AND s.sub_id = '000000'
+       WHERE length(trim(sa.ocr_text)) > 0
+         AND (
+           s.source_version IS NULL OR
+           s.source_version < COALESCE(sa.updated_at,
+             CAST(strftime('%s', replace(sa.timestamp, 'T', ' ')) AS INTEGER)) OR
+           s.model != ?
+         )
+         AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents d WHERE d.uid = sa.uid)
+         AND NOT EXISTS (
+           SELECT 1 FROM cf_account_deletion_tombstones t
+           WHERE t.uid = sa.uid AND t.expires_at > ?
+         )
+       ORDER BY sa.timestamp, sa.uid, sa.id LIMIT ?`,
+    ).bind(model, now, RECONCILE_SOURCE_BATCH_SIZE),
+    env.APP_DB.prepare(
       `SELECT s.uid,
               CASE WHEN s.projection_kind = 'transcript_chunk'
                    THEN 'conversation' ELSE s.projection_kind END AS source_kind,
@@ -746,11 +865,19 @@ async function seedMissingProjections(
        LEFT JOIN cf_x_posts x
          ON s.projection_kind = 'x_post' AND x.uid = s.uid AND x.id = s.source_id
            AND length(trim(x.text)) > 0
+       LEFT JOIN cf_workstreams w
+         ON s.projection_kind = 'workstream' AND w.uid = s.uid AND w.id = s.source_id
+           AND w.status = 'open' AND length(trim(w.objective)) > 0
+       LEFT JOIN cf_screen_activity sa
+         ON s.projection_kind = 'screen_activity' AND sa.uid = s.uid AND sa.id = s.source_id
+           AND length(trim(sa.ocr_text)) > 0
        WHERE (
          (s.projection_kind = 'memory' AND m.id IS NULL) OR
          (s.projection_kind = 'action_item' AND a.id IS NULL) OR
          (s.projection_kind IN ('conversation', 'transcript_chunk') AND c.id IS NULL) OR
-         (s.projection_kind = 'x_post' AND x.id IS NULL)
+         (s.projection_kind = 'x_post' AND x.id IS NULL) OR
+         (s.projection_kind = 'workstream' AND w.id IS NULL) OR
+         (s.projection_kind = 'screen_activity' AND sa.id IS NULL)
        )
          AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents d WHERE d.uid = s.uid)
          AND NOT EXISTS (
