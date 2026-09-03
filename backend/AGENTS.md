@@ -1,7 +1,5 @@
 # Backend (Python) — Developer Guide
 
-> **Fork:** cloud-neutral / self-hosted rules live in [`AGENTS.fork.md`](./AGENTS.fork.md).
-
 Inherits all rules from the root `../AGENTS.md`. This file adds backend-specific development guidance.
 
 ## Setup

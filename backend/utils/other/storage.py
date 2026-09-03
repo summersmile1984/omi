@@ -64,9 +64,9 @@ _storage_client_lock = threading.Lock()
 def _get_storage_client() -> Any:
     """Return the GCS client lazily so importing this module never probes ADC/GCE metadata."""
     global storage_client
-    # MinIO object-storage shim for self-hosted local dev (see storage_minio.py).
+    # MinIO object-storage shim for self-hosted local dev (see fork/storage_minio.py).
     if os.environ.get('STORAGE_BACKEND', '').strip().lower() == 'minio':
-        from utils.other.storage_minio import get_minio_client
+        from fork.storage_minio import get_minio_client
 
         return get_minio_client()
     if storage_client is None:

@@ -19,6 +19,7 @@ def test_pusher_auto_deploy_tracks_its_shared_lifecycle_and_observability_import
         'backend/config/**',
         'backend/database/**',
         'backend/firestore_pg/**',
+        'backend/fork/**',
         'backend/models/**',
         'backend/routers/**',
         'backend/services/**',

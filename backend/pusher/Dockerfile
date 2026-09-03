@@ -46,6 +46,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY backend/config/ ./config/
 COPY backend/database/ ./database/
 COPY backend/firestore_pg/ ./firestore_pg/
+COPY backend/fork/ ./fork/
 COPY backend/models/ ./models/
 COPY backend/routers/ ./routers/
 COPY backend/services/ ./services/
