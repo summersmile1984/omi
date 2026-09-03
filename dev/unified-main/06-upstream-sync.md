@@ -144,3 +144,17 @@ scripts/pr-preflight --lane local --base origin/main --pr-body-file <draft>.md 2
 
 - 系统 `python3` 若低于 3.10，`check-manifest-contract` 会因 `.github/scripts/git_bash.py` 的 `str | None` 语法直接崩溃。用 3.12 跑：`ln -sf $(command -v python3.12) /tmp/py312bin/python3 && PATH=/tmp/py312bin:$PATH scripts/pr-preflight …`
 - `backend/test.sh` 的 fast-unit CPU 时间守卫（fail 阈值 0.30s）在全量并行下会因机器争用误报。判定方法：单独跑该文件；若通过即为争用，**不要**去改上游的 `tests/fast_unit_duration_allowlist.txt`。
+
+## 10. 推送门禁：本机工具链缺口与格式化陷阱（2026-09-03 实测）
+
+`make setup` 刻意不装 app/desktop 工具链，因此 `git push` 的 pre-push 门禁会在这些阶段卡住。逐个处置（全部是门禁自己披露的开关）：
+
+| 阶段 | 本机原因 | 处置 |
+|---|---|---|
+| `check_flutter_generated_if_needed` | 本机 Flutter 3.38.9 < 上游 `pubspec.yaml` 要求的 3.47.2，`flutter pub get` 解析失败 | `PRE_PUSH_SKIP_FLUTTER_GENERATED=1`；CI 跑真检查 |
+| `dart format --set-exit-if-changed` | 本机 Dart 3.10.8 比上游钉的版本旧，会重排 **289 个中的 180 个上游文件** | `PRE_PUSH_SKIP_DART_FORMAT=1`。**这是本次最危险的一步**：若放任提交，等于重新制造刚从 `web/admin` 清掉的格式化漂移。跳过后务必 `git status` 确认工作区未被改动 |
+| `check_windows_kgworker_native_closure_if_needed` | 缺 pnpm 依赖 | `cd desktop/windows && pnpm install --frozen-lockfile`（24 秒），**真跑**而非跳过 |
+| `check_desktop_swift_if_needed` | SwiftPM 找不到上游新钉的依赖 commit | 刷新两处缓存仍无效，须删包内工作副本：`rm -rf desktop/macos/Desktop/.build/repositories/<Pkg>-*`，再 `swift package resolve` |
+| `pinned backend Python format check` | fork 早期用别的 black 改过 7 个上游文件 | **必须真修**：`scripts/backend-python-format --write <files>`。这里用的是仓库钉住的 black 24.4.2，是权威版本；修完这 7 个文件与上游**完全一致**，冲突面直接减少 |
+
+判定原则：**版本比上游旧的格式化工具一律跳过（否则制造漂移）；仓库钉住的格式化工具一律真跑（它让文件收敛回上游）。** 二者方向相反，不可混为一谈。
