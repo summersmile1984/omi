@@ -1,0 +1,71 @@
+name: Fork Checks
+
+# Fork-owned CI lane. Upstream workflows are left byte-identical and disabled in
+# this fork's Actions settings; anything this fork needs lives in fork-*.yml.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fork-gate:
+    name: Fork gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The guard classifies a file as "upstream" by its presence in
+      # upstream/main, so without this ref it can only skip. Fetch it explicitly
+      # rather than letting the check pass on an empty definition.
+      - name: Fetch upstream ref
+        run: |
+          git remote add upstream https://github.com/BasedHardware/omi.git 2>/dev/null || true
+          git config remote.upstream.tagOpt --no-tags
+          git fetch --no-tags --depth=1 upstream main
+          git update-ref refs/remotes/upstream/main FETCH_HEAD
+          echo "upstream/main = $(git rev-parse --short refs/remotes/upstream/main)"
+
+      - name: Resolve diff base
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags origin "${{ github.base_ref }}"
+            echo "ref=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fork manifest (ci lane)
+        run: |
+          python3 .github/scripts/run_checks.py \
+            --manifest .github/checks-manifest.fork.yaml \
+            --lane ci --base "${{ steps.base.outputs.ref }}"
+
+      - name: Report upstream divergence
+        if: always()
+        run: |
+          git diff --name-only refs/remotes/upstream/main HEAD | sort -u > /tmp/changed.txt
+          git ls-tree -r --name-only refs/remotes/upstream/main | sort -u > /tmp/upstream.txt
+          n=$(comm -12 /tmp/changed.txt /tmp/upstream.txt | wc -l | tr -d ' ')
+          echo "### Fork divergence" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Upstream files this branch differs from upstream on: **$n**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "This number should only fall. It counts everything, including" >> "$GITHUB_STEP_SUMMARY"
+          echo "upstream commits not yet merged here, so read it as a trend." >> "$GITHUB_STEP_SUMMARY"

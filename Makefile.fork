@@ -1,0 +1,27 @@
+# Fork-owned make targets. Kept out of the upstream Makefile so that file stays
+# byte-identical on every sync. Use: make -f Makefile.fork <target>
+BASE ?= origin/main
+BRAND ?= omi-upstream
+
+.PHONY: help setup-fork preflight-fork upstream-touch sync-probe
+
+help:
+	@echo "make -f Makefile.fork setup-fork       # fork-local git config (no upstream tags)"
+	@echo "make -f Makefile.fork preflight-fork   # upstream gate + fork gate"
+	@echo "make -f Makefile.fork upstream-touch   # zero-upstream-touch guard only"
+	@echo "make -f Makefile.fork sync-probe       # real conflict count against upstream/main"
+
+setup-fork:
+	@git config remote.upstream.tagOpt --no-tags && \
+	 echo "upstream remote set to --no-tags (upstream release tags stay out of this fork)"
+
+preflight-fork:
+	@scripts/fork/preflight --base $(BASE)
+
+upstream-touch:
+	@python3 scripts/fork/check-upstream-touch.py --base $(BASE)
+
+sync-probe:
+	@git fetch upstream --prune -q || true
+	@printf 'real conflicts merging upstream/main into %s: ' "$$(git rev-parse --abbrev-ref HEAD)"
+	@git merge-tree --write-tree HEAD upstream/main | grep -c '^CONFLICT' || true

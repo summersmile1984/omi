@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Fork preflight: the upstream contract gate, then the fork-owned one.
+#
+# `make preflight` runs only the upstream manifest (its runner hardcodes that
+# path). This wrapper runs both, so a fork PR is checked by the same two lanes
+# CI uses. Usage: scripts/fork/preflight [--base REF]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
+BASE="origin/main"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2 ;;
+    *) echo "usage: scripts/fork/preflight [--base REF]" >&2; exit 2 ;;
+  esac
+done
+
+PYTHON_BIN="${PYTHON:-python3}"
+# .github/scripts/git_bash.py uses PEP 604 unions, so the runner needs >= 3.10.
+if ! "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+  for candidate in python3.13 python3.12 python3.11; do
+    if command -v "$candidate" >/dev/null 2>&1; then PYTHON_BIN="$candidate"; break; fi
+  done
+fi
+if ! "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+  echo "FAIL: need Python >= 3.10 for the check runner; found $("$PYTHON_BIN" --version 2>&1)" >&2
+  echo "      Install a newer python3 (brew install python@3.12) and re-run." >&2
+  exit 2
+fi
+
+# Checks spawn their own `python3` (e.g. check-manifest-contract runs
+# .github/scripts/test_run_checks.py, which imports git_bash.py and its PEP 604
+# unions). Selecting the interpreter for this script is not enough: it has to be
+# the `python3` those child processes resolve. macOS ships 3.9 as `python3`.
+if [ "$(command -v python3)" != "$(command -v "$PYTHON_BIN")" ]; then
+  SHIM_DIR="$(mktemp -d)"
+  trap 'rm -rf "$SHIM_DIR"' EXIT
+  ln -sf "$(command -v "$PYTHON_BIN")" "$SHIM_DIR/python3"
+  PATH="$SHIM_DIR:$PATH"
+  export PATH
+  echo "note: using $("$PYTHON_BIN" --version 2>&1) as python3 for this run"
+fi
+
+echo "==> upstream contract gate (.github/checks-manifest.yaml)"
+"$PYTHON_BIN" .github/scripts/pr_preflight.py --lane local --base "$BASE"
+
+echo
+echo "==> fork gate (.github/checks-manifest.fork.yaml)"
+"$PYTHON_BIN" .github/scripts/run_checks.py \
+  --manifest .github/checks-manifest.fork.yaml --lane local --base "$BASE"
