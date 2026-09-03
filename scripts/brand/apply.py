@@ -5,15 +5,12 @@ Idempotent: running twice produces zero diff on the second run. `--only`
 restricts to one category (flutter, desktop, windows, backend, firmware,
 web, docs, ci); omit it to render everything a brand needs.
 
-B0 ships the registry and validation path with zero generators registered --
-every category in `--only`'s own choices exists as a name today, but none
-has a renderer yet (that's B1 through B7, one category each; see
-dev/unified-main/04-brand-layer.md §4). Until a generator is registered,
-`apply.py --brand <any>` is a manifest-validation dry run: it proves the
-manifest is well-formed and reachable, and touches no files -- which is also
-why `apply.py --brand omi-upstream` producing a zero diff is not yet a
-meaningful regression guarantee, only a vacuous one. It becomes real the
-first time a generator lands.
+B0 shipped the registry and validation path with zero generators registered.
+B1 adds the first one (`desktop`, and only its app-config.sh slice -- see
+scripts/brand/generators/desktop.py's own docstring for what it does NOT yet
+cover). Categories with no generator yet are still a validation dry run: the
+manifest is well-formed and reachable, but nothing is written. See
+dev/unified-main/04-brand-layer.md §4 for the full B1-B7 breakdown.
 
 Usage:
     scripts/brand/apply.py --brand <id> [--only CATEGORY ...] [--check-clean]
@@ -30,12 +27,13 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from schema_validate import validate  # noqa: E402
 from yaml_lite import load_yaml  # noqa: E402
+from generators import desktop as _desktop  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "brand/_schema/manifest.schema.json"
 BRAND_ROOT = REPO_ROOT / "brand"
 
-# One entry per B1-B7 PR. A generator is `(manifest: dict, repo_root: Path) -> list[Path]`,
+# One entry per B1-B7 PR. A generator is `(brand_id: str, manifest: dict, repo_root: Path) -> list[Path]`,
 # returning every path it wrote so --check-clean can verify idempotency without
 # re-deriving what "this category's output" means.
 CATEGORIES: tuple[str, ...] = (
@@ -49,7 +47,9 @@ CATEGORIES: tuple[str, ...] = (
     "ci",
 )
 
-GENERATORS: dict[str, Callable[[dict, Path], list[Path]]] = {}
+GENERATORS: dict[str, Callable[[str, dict, Path], list[Path]]] = {
+    "desktop": _desktop.render,
+}
 
 
 class ApplyError(RuntimeError):
@@ -72,7 +72,7 @@ def load_manifest(brand_id: str) -> dict:
     return manifest
 
 
-def render(manifest: dict, only: list[str] | None) -> list[Path]:
+def render(brand_id: str, manifest: dict, only: list[str] | None) -> list[Path]:
     categories = only or list(CATEGORIES)
     unknown = [c for c in categories if c not in CATEGORIES]
     if unknown:
@@ -87,7 +87,7 @@ def render(manifest: dict, only: list[str] | None) -> list[Path]:
         if generator is None:
             skipped.append(category)
             continue
-        written.extend(generator(manifest, REPO_ROOT))
+        written.extend(generator(brand_id, manifest, REPO_ROOT))
 
     if skipped:
         print(
@@ -118,7 +118,7 @@ def main() -> int:
             before = subprocess.run(
                 ["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
             ).stdout
-        written = render(manifest, args.only)
+        written = render(args.brand, manifest, args.only)
         if args.check_clean:
             after = subprocess.run(
                 ["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True, check=True

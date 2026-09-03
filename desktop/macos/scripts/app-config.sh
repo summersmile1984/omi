@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Derive the macOS desktop dev app identity from OMI_APP_NAME.
 # Sourced by run.sh and by tests; keep this file side-effect-light.
+[ -f "$(dirname "${BASH_SOURCE[0]}")/app-config.brand.sh" ] && source "$(dirname "${BASH_SOURCE[0]}")/app-config.brand.sh"
 
 slugify_identifier() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
@@ -29,13 +30,13 @@ derive_omi_app_config() {
             return 1
         fi
         case "$app_slug" in
-            omi-*) ;;
+            "${OMI_NAMED_BUNDLE_SLUG_PREFIX:-omi}"-*) ;;
             *)
                 echo "ERROR: named OMI_APP_NAME values must use the omi- prefix (got '$app_name' -> '$app_slug')" >&2
                 return 1
                 ;;
         esac
-        expected_bundle_id="com.omi.$app_slug"
+        expected_bundle_id="${OMI_NAMED_BUNDLE_ID_PREFIX:-com.omi.}$app_slug"
         expected_url_scheme="omi-$app_slug"
     fi
 

@@ -146,6 +146,9 @@ class RepoFixture:
 
         for name in ("apply.py", "check.py", "schema_validate.py", "yaml_lite.py", "lexicon.yaml"):
             (root / "scripts/brand" / name).write_text((BRAND_SCRIPTS / name).read_text())
+        (root / "scripts/brand/generators").mkdir()
+        for generator_file in (BRAND_SCRIPTS / "generators").glob("*.py"):
+            (root / "scripts/brand/generators" / generator_file.name).write_text(generator_file.read_text())
 
         (root / "brand/_allow.yaml").write_text(
             "schema_version: 1\nexemptions:\n"
@@ -175,6 +178,39 @@ class RepoFixture:
             capture_output=True,
             text=True,
         )
+
+
+class DesktopGeneratorTests(unittest.TestCase):
+    def render(self, prefix: str, tmp: Path):
+        sys.path.insert(0, str(BRAND_SCRIPTS))
+        from generators import desktop
+
+        manifest = {"brand": {"id": "test-brand"}, "identifiers": {"macos_named_bundle_prefix": prefix}}
+        written = desktop.render("test-brand", manifest, tmp)
+        return written, (tmp / desktop.APP_CONFIG_BRAND_PATH).read_text()
+
+    def test_renders_both_prefix_forms_from_one_manifest_field(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(tmp)]))
+        written, content = self.render("com.acme.", tmp)
+        self.assertEqual(len(written), 1)
+        self.assertIn('OMI_NAMED_BUNDLE_ID_PREFIX="com.acme."', content)
+        self.assertIn('OMI_NAMED_BUNDLE_SLUG_PREFIX="acme"', content)
+
+    def test_matches_the_real_omi_upstream_manifest(self):
+        # The actual value app-config.sh's fallback must keep matching.
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(tmp)]))
+        _, content = self.render("com.omi.", tmp)
+        self.assertIn('OMI_NAMED_BUNDLE_ID_PREFIX="com.omi."', content)
+        self.assertIn('OMI_NAMED_BUNDLE_SLUG_PREFIX="omi"', content)
+
+    def test_rejects_a_prefix_with_no_segments(self):
+        sys.path.insert(0, str(BRAND_SCRIPTS))
+        from generators import desktop
+
+        with self.assertRaises(ValueError):
+            desktop._named_bundle_slug_prefix(".")
 
 
 class BrandToolingTests(unittest.TestCase):
