@@ -22,7 +22,11 @@ from config.prerecorded_stt import TranscriptionOutcome
 from utils.observability.fallback import record_fallback
 from utils.stt.outcomes import TranscriptionFailure
 from utils.stt.speaker_embedding import MIN_EMBEDDING_AUDIO_DURATION, compare_embeddings, extract_embedding_from_bytes
-from fork.speaker_embedding import SpeakerEmbeddingUnavailable, speaker_embedding_provider, validate_speaker_embedding_configuration
+from fork.speaker_embedding import (
+    SpeakerEmbeddingUnavailable,
+    speaker_embedding_provider,
+    validate_speaker_embedding_configuration,
+)
 
 SENSEVOICE_SPEAKER_MODE_ENV = 'SENSEVOICE_SPEAKER_MODE'
 SENSEVOICE_SPEAKER_THRESHOLD_ENV = 'SENSEVOICE_SPEAKER_CLUSTER_THRESHOLD'
