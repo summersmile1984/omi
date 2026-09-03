@@ -26,3 +26,9 @@ checks:
     triggers: ["deploy/profiles/**", "scripts/profiles/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]
     lanes: ["local", "ci"]
     reason: "one profile source drives four platforms; omi_cloud must still reproduce upstream's environment_profile.dart literals, so upstream retuning them fails here on the next sync instead of drifting silently"
+
+  - id: fork-backend-seams
+    command: ["bash", "-c", "cd backend && printf '%s\\n' fork/tests/test_patch_registry.py fork/tests/test_real_seams.py fork/tests/test_profile_selection.py > /tmp/omi-fork-seams.txt && BACKEND_UNIT_TEST_FILE_LIST=/tmp/omi-fork-seams.txt bash test.sh"]
+    triggers: ["backend/fork/**", "backend/utils/other/storage.py", "backend/utils/cloud_tasks.py", "deploy/profiles/**"]
+    lanes: ["local", "ci"]
+    reason: "the fork patches upstream symbols instead of editing them, so an upstream rename must fail here by name rather than leave a self-hosted deployment calling a cloud it cannot reach"

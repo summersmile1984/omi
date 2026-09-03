@@ -51,6 +51,21 @@ jobs:
             echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # fork-backend-seams runs the real backend suite through test.sh, which
+      # needs the pinned interpreter. Without it the check silently degrades to
+      # "no module named pytest" -- a dead check is worse than no check, since
+      # the whole point is catching an upstream rename.
+      # Same pinned action and cache key shape upstream's backend-unit-tests
+      # workflow uses, so the fork gate provisions the identical interpreter.
+      - name: Install uv
+        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
+
+      - name: Provision backend environment
+        run: make setup-backend
+
       - name: Fork manifest (ci lane)
         run: |
           python3 .github/scripts/run_checks.py \
