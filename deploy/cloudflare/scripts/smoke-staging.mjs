@@ -1356,7 +1356,7 @@ export async function runSmoke({
     {
       method: "POST",
       headers: { ...authHeaders, "content-type": "application/json" },
-      body: JSON.stringify({ price_id: "price_cfSmokeUnavailable" }),
+      body: JSON.stringify({ price_id: "price_smoke_na" }),
     },
   );
   expectStatus("checkout price allowlist", checkoutBoundary, 400);
@@ -1378,7 +1378,7 @@ export async function runSmoke({
     {
       method: "POST",
       headers: { ...authHeaders, "content-type": "application/json" },
-      body: JSON.stringify({ price_id: "price_cfSmokeUnavailable" }),
+      body: JSON.stringify({ price_id: "price_smoke_na" }),
     },
   );
   expectStatus("subscription upgrade price allowlist", upgradeBoundary, 400);
