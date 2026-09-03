@@ -51,6 +51,19 @@ jobs:
             echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # fork-backend-seams runs the real backend suite through test.sh, which
+      # needs the pinned interpreter. Without it the check silently degrades to
+      # "no module named pytest" -- a dead check is worse than no check, since
+      # the whole point is catching an upstream rename.
+      - name: Cache backend venv
+        uses: actions/cache@v4
+        with:
+          path: backend/.venv
+          key: fork-backend-venv-${{ runner.os }}-${{ hashFiles('backend/pylock.toml') }}
+
+      - name: Provision backend environment
+        run: make setup-backend
+
       - name: Fork manifest (ci lane)
         run: |
           python3 .github/scripts/run_checks.py \
