@@ -21,6 +21,9 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optio
 
 logger = logging.getLogger(__name__)
 
+from .codec import decode_value
+from .field_path import parse_field_path
+
 # ---------------------------------------------------------------------------
 # Field transforms (Firestore API-compatible sentinels)
 # ---------------------------------------------------------------------------
@@ -97,6 +100,7 @@ class FieldFilter:
     def __init__(self, field_path: str, op_string: str, value: Any) -> None:
         if op_string not in _OPERATORS:
             raise ValueError(f"Unsupported filter operator: {op_string!r}")
+        parse_field_path(field_path)
         self.field_path = field_path
         self.op_string = op_string
         self.value = value
@@ -151,20 +155,10 @@ def _ensure_filter(filter_like: Any) -> FieldFilter:
 def _coerce_value_for_read(value: Any) -> Any:
     """Normalize a value read from JSONB into the shapes business code expects.
 
-    The real SDK returns ``datetime`` for timestamp fields and keeps lists/dicts
-    as-is. We store datetimes as ISO-8601 strings in JSONB, so convert strings
-    that carry a time component (``...T...``) back to ``datetime`` here.
+    Special Firestore values use explicit tagged JSON. Plain strings, including
+    ISO-8601-looking user text, are never inferred or changed.
     """
-    if isinstance(value, str) and "T" in value:
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return value
-    if isinstance(value, list):
-        return [_coerce_value_for_read(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _coerce_value_for_read(v) for k, v in value.items()}
-    return value
+    return decode_value(value)
 
 
 # ---------------------------------------------------------------------------

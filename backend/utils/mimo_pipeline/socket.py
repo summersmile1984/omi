@@ -2,7 +2,7 @@
 
 Implements the upstream ``STTSocket`` contract so the live listen path can
 select MiMo-V2.5-ASR as the streaming STT provider (``STT_SERVICE_MODELS``
-contains ``mimo`` and ``MIMO_API_KEY`` is set).
+contains ``mimo`` and the operator endpoint/key contract is set).
 
 MiMo's ASR API is a chat-completions endpoint (not a WebSocket): it accepts
 base64 audio and returns the transcript. The socket therefore accumulates
@@ -14,23 +14,28 @@ audio transcoding to MiMo's server side instead of a local sherpa-onnx model.
 from __future__ import annotations
 
 import logging
-import os
 import tempfile
 import wave
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient
+from .mimo_client import MimoAPIError, MimoClient, mimo_configuration_ready
 from utils.stt.socket import STTSocket
 
 logger = logging.getLogger(__name__)
 
 
 def mimo_available() -> bool:
-    """True when MiMo streaming STT is configured (key set)."""
-    return bool(os.getenv("MIMO_API_KEY"))
+    """True when MiMo streaming STT can actually be reached.
+
+    The name the live-selection path imports. It delegates rather than
+    re-deriving, because MiMo ships no vendor endpoint default: a runtime with
+    ``MIMO_API_KEY`` but no operator ``MIMO_API_BASE`` would be selected and then
+    fail at connect time.
+    """
+    return mimo_configuration_ready()
 
 
-def _pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
+def pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
     """Wrap raw PCM16 little-endian audio in a WAV container (MiMo wants wav)."""
     with tempfile.SpooledTemporaryFile() as tmp:
         with wave.open(tmp, "wb") as w:
@@ -49,7 +54,7 @@ class MimoSttSocket(STTSocket):
         self,
         sample_rate: int = 16000,
         channels: int = 1,
-        transcript_callback: Optional[Callable[[str, float], None]] = None,
+        transcript_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
         client: Any = None,
     ) -> None:
         self._sample_rate = sample_rate
@@ -74,13 +79,24 @@ class MimoSttSocket(STTSocket):
             return
         self._finished = True
         try:
-            audio = _pcm16_to_wav(bytes(self._pcm), self._sample_rate, self._channels)
+            audio = pcm16_to_wav(bytes(self._pcm), self._sample_rate, self._channels)
             client = self._client or MimoClient()
             transcription = client.transcribe_audio(audio, audio_format="wav")
             text = (transcription.text or "").strip()
             duration = len(self._pcm) / (2 * self._sample_rate)
-            if self._callback:
-                self._callback(text, duration)
+            if self._callback and text:
+                self._callback(
+                    [
+                        {
+                            'speaker': 'SPEAKER_00',
+                            'start': 0.0,
+                            'end': duration,
+                            'text': text,
+                            'is_user': False,
+                            'person_id': None,
+                        }
+                    ]
+                )
             logger.info("MiMo STT transcript: %r (%.1fs)", text, duration)
         except MimoAPIError as exc:
             logger.error("MiMo STT finish failed: %s", exc)

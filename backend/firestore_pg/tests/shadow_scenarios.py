@@ -14,8 +14,10 @@ Scenarios avoid behavior that legitimately differs across backends (ordering of
 ``in`` results, server-generated ids, commit timestamps).
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List
+
+from google.api_core.datetime_helpers import DatetimeWithNanoseconds
 
 Scenario = Callable[[Any], Any]
 
@@ -124,6 +126,7 @@ def scenario_increment(db: Any) -> Any:
     _ref(db, "cnt").set({"n": 10})
     _ref(db, "cnt").update({"n": Increment(5)})
     _ref(db, "cnt").update({"n": Increment(-3)})
+    _ref(db, "cnt").update({"n": Increment(0.5), "marker": "mixed-transform"})
     return _norm(_ref(db, "cnt").get())
 
 
@@ -290,6 +293,157 @@ def scenario_select_projection(db: Any) -> Any:
     return docs
 
 
+def scenario_nested_parent_isolation_and_group_paths(db: Any) -> Any:
+    """Sibling parent documents must never share a nested collection namespace."""
+    refs = [
+        db.collection("shadow_parent_users")
+        .document("u1")
+        .collection("threads")
+        .document("t1")
+        .collection("shadow_nested_leaf")
+        .document("same"),
+        db.collection("shadow_parent_users")
+        .document("u1")
+        .collection("threads")
+        .document("t2")
+        .collection("shadow_nested_leaf")
+        .document("same"),
+        db.collection("shadow_parent_users")
+        .document("u2")
+        .collection("threads")
+        .document("t1")
+        .collection("shadow_nested_leaf")
+        .document("same"),
+    ]
+    for ref, marker in zip(refs, ("u1-t1", "u1-t2", "u2-t1")):
+        ref.set({"marker": marker})
+    direct = [[snap.to_dict()["marker"] for snap in ref.parent.stream()] for ref in refs]
+    grouped_paths = sorted(snap.reference.path for snap in db.collection_group("shadow_nested_leaf").stream())
+    collection_ids = sorted(
+        collection.id
+        for collection in db.collection("shadow_parent_users")
+        .document("u1")
+        .collection("threads")
+        .document("t1")
+        .collections()
+    )
+    return {"direct": direct, "grouped_paths": grouped_paths, "collection_ids": collection_ids}
+
+
+def scenario_atomic_batch_failure(db: Any) -> Any:
+    first = db.collection("shadow_atomic_batch").document("first")
+    missing = db.collection("shadow_atomic_batch").document("missing")
+    first.delete()
+    missing.delete()
+    batch = db.batch()
+    batch.set(first, {"landed": True})
+    batch.update(missing, {"must": "fail"})
+    failed = False
+    try:
+        batch.commit()
+    except Exception:
+        failed = True
+    return {"failed": failed, "first_exists": first.get().exists}
+
+
+def scenario_cursor_numeric_and_missing_order(db: Any) -> Any:
+    collection = db.collection("shadow_cursor_numeric")
+    for doc_id, score in (("two", 2), ("ten", 10), ("hundred", 100)):
+        collection.document(doc_id).set({"score": score})
+    collection.document("missing").set({"other": True})
+    ordered = list(collection.order_by("score").stream())
+    after_snapshot = list(collection.order_by("score").start_after(ordered[0]).stream())
+    after_mapping = list(collection.order_by("score").start_after({"score": 10}).stream())
+    return {
+        "ordered": [(snap.id, snap.to_dict()["score"]) for snap in ordered],
+        "after_snapshot": [snap.id for snap in after_snapshot],
+        "after_mapping": [snap.id for snap in after_mapping],
+    }
+
+
+def scenario_update_time_cas(db: Any) -> Any:
+    ref = db.collection("shadow_cas").document("doc")
+    ref.set({"version": 1})
+    original = ref.get()
+    ref.update({"version": 2}, option=db.write_option(last_update_time=original.update_time))
+    stale_update_failed = False
+    stale_delete_failed = False
+    try:
+        ref.update({"version": 3}, option=db.write_option(last_update_time=original.update_time))
+    except Exception:
+        stale_update_failed = True
+    try:
+        ref.delete(option=db.write_option(last_update_time=original.update_time))
+    except Exception:
+        stale_delete_failed = True
+    return {
+        "stale_update_failed": stale_update_failed,
+        "stale_delete_failed": stale_delete_failed,
+        "data": ref.get().to_dict(),
+    }
+
+
+def scenario_transaction_create_and_explicit_add_id(db: Any) -> Any:
+    from google.cloud import firestore
+
+    created = db.collection("shadow_transaction_create").document("created")
+    added = db.collection("shadow_explicit_add").document("stable")
+    created.delete()
+    added.delete()
+
+    @firestore.transactional
+    def create_in_transaction(tx):
+        tx.create(created, {"via": "transaction"})
+
+    create_in_transaction(db.transaction())
+    update_time, added_ref = db.collection("shadow_explicit_add").add({"via": "add"}, "stable")
+    return {
+        "created": created.get().to_dict(),
+        "added": added_ref.get().to_dict(),
+        "added_id": added_ref.id,
+        "has_update_time": isinstance(update_time, datetime),
+    }
+
+
+def scenario_mixed_collection_group_document_names(db: Any) -> Any:
+    from google.cloud.firestore_v1 import FieldFilter as SDKFieldFilter
+
+    collection = db.collection('Shadow-Mixed')
+    first = collection.document('one')
+    second = collection.document('two')
+    first.set({'rank': 1})
+    second.set({'rank': 2})
+    group = db.collection_group('Shadow-Mixed')
+    ordered = list(group.order_by('__name__').stream())
+    equality = list(group.where(filter=SDKFieldFilter('__name__', '==', first)).stream())
+    included = list(group.where(filter=SDKFieldFilter('__name__', 'in', [first, second])).stream())
+    after = list(group.order_by('__name__').start_after(ordered[0]).stream())
+    return {
+        'ordered': [item.reference.path for item in ordered],
+        'equality': [item.reference.path for item in equality],
+        'in': [item.reference.path for item in included],
+        'after': [item.reference.path for item in after],
+    }
+
+
+def scenario_timestamp_nanosecond_order_range_cursor(db: Any) -> Any:
+    """Firestore timestamps retain ordering below PostgreSQL microseconds."""
+    collection = db.collection('shadow_timestamp_nanos')
+    low = DatetimeWithNanoseconds(2026, 8, 21, 12, 35, tzinfo=timezone.utc, nanosecond=123456000)
+    high = DatetimeWithNanoseconds(2026, 8, 21, 12, 35, tzinfo=timezone.utc, nanosecond=123456789)
+    collection.document('a').set({'timestamp': low})
+    collection.document('b').set({'timestamp': high})
+    ordered = list(collection.order_by('timestamp').stream())
+    ranged = list(collection.where('timestamp', '>', low).stream())
+    after = list(collection.order_by('timestamp').start_after(ordered[0]).stream())
+    return {
+        'inputs': [low.nanosecond, high.nanosecond],
+        'ordered': [(item.id, item.to_dict()['timestamp'].microsecond) for item in ordered],
+        'range': [item.id for item in ranged],
+        'after': [item.id for item in after],
+    }
+
+
 SCENARIOS: Dict[str, Scenario] = {
     "set_get": scenario_set_get,
     "set_merge": scenario_set_merge,
@@ -313,4 +467,11 @@ SCENARIOS: Dict[str, Scenario] = {
     "doc_get_projection": scenario_doc_get_projection,
     "doc_id_range": scenario_doc_id_range,
     "select_projection": scenario_select_projection,
+    "nested_parent_isolation_and_group_paths": scenario_nested_parent_isolation_and_group_paths,
+    "atomic_batch_failure": scenario_atomic_batch_failure,
+    "cursor_numeric_and_missing_order": scenario_cursor_numeric_and_missing_order,
+    "update_time_cas": scenario_update_time_cas,
+    "transaction_create_and_explicit_add_id": scenario_transaction_create_and_explicit_add_id,
+    "mixed_collection_group_document_names": scenario_mixed_collection_group_document_names,
+    "timestamp_nanosecond_order_range_cursor": scenario_timestamp_nanosecond_order_range_cursor,
 }

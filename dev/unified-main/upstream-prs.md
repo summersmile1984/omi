@@ -17,6 +17,8 @@
 | 10 | 检查清单支持多文件 | `.github/scripts/run_checks.py`、`pr_preflight.py` | 支持 `include:` 或多 `--manifest`，让下游追加检查而不改上游清单 | 无（C7） | 待提 |
 | 11 | 文档引用检查支持额外文件 | `.github/scripts/check_agent_doc_references.py` | `--extra` 参数 | 无（C7） | 待提 |
 | 12 | 部署设置分类支持额外文件 | `.github/scripts/check_deployment_secret_boundary.py` | `--extra` 参数 | 无（C7） | 待提 |
+| 13 | `desktop-beta-admission-firestore-contention` 缺依赖 | `backend/testing/desktop_beta_admission/run.sh` | `--with "fastapi==0.121.0"`（导入链经 `database.staged_tasks` → `utils.observability.fallback` → `utils.metrics` 到达 `fastapi`） | 无（fork 不能改 `backend/**`） | 待提 · **bug 修复** |
+| 14 | 检查触发器把嵌套同名文件也算上 | `.github/scripts/run_checks.py` | `_matches` 里的 `PurePath(path).match(pattern)` 让 `package.json` 匹配任意目录下的同名文件；应把无斜杠的模式限定为仓库根 | 无 | 待提 · **bug 修复** |
 
 ## 提交约定
 

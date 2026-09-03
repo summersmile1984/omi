@@ -9,17 +9,19 @@ from __future__ import annotations
 import pytest
 
 import routers.tts as tts_mod
+from fork.egress_policy import EgressPolicyUnavailable
 from utils.mimo_pipeline.tts import MimoTTSAPIError, MimoTTSClient
+
+OPERATOR_BASE = 'https://mimo.operator.example'
 
 
 def test_client_requires_api_key():
-    client = MimoTTSClient(api_key='')
     with pytest.raises(MimoTTSAPIError, match='MIMO_API_KEY'):
-        client.synthesize('你好')
+        MimoTTSClient(api_key='', base_url='http://operator.example.test/mimo')
 
 
 def test_client_rejects_empty_text():
-    client = MimoTTSClient(api_key='key')
+    client = MimoTTSClient(api_key='key', base_url='http://operator.example.test/mimo')
     with pytest.raises(MimoTTSAPIError, match='empty'):
         client.synthesize('   ')
 
@@ -54,7 +56,7 @@ def test_synthesize_builds_payload_and_decodes_audio(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(mod.httpx, 'post', _post)
-    client = MimoTTSClient(api_key='test-key', voice='冰糖')
+    client = MimoTTSClient(api_key='test-key', base_url='http://operator.example.test/mimo', voice='冰糖')
     result = client.synthesize('你好', voice='茉莉')
     assert result == audio_bytes
     assert captured['payload']['model'] == 'mimo-v2.5-tts'
@@ -62,6 +64,18 @@ def test_synthesize_builds_payload_and_decodes_audio(monkeypatch):
     # assistant message carries the text
     assert captured['payload']['messages'][-1]['role'] == 'assistant'
     assert captured['payload']['messages'][-1]['content'] == '你好'
+
+
+def test_synthesize_rejects_undeclared_neutral_endpoint_before_network(monkeypatch):
+    """The sync MiMo TTS client must honor the neutral egress boundary."""
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted')
+    monkeypatch.delenv('SELF_HOST_EGRESS_ALLOWLIST', raising=False)
+    import utils.mimo_pipeline.tts as mod
+
+    monkeypatch.setattr(mod.httpx, 'post', lambda *args, **kwargs: pytest.fail('network call'))
+    client = MimoTTSClient(api_key='test-key', base_url=OPERATOR_BASE)
+    with pytest.raises(EgressPolicyUnavailable, match='egress_allowlist_not_configured'):
+        client.synthesize('你好')
 
 
 def test_synthesize_with_style_instruction(monkeypatch):
@@ -82,7 +96,7 @@ def test_synthesize_with_style_instruction(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(mod.httpx, 'post', _post)
-    client = MimoTTSClient(api_key='k')
+    client = MimoTTSClient(api_key='k', base_url='http://operator.example.test/mimo')
     client.synthesize('text', style_instruction='用轻快语调')
     # style instruction goes in the user message
     assert captured['payload']['messages'][0] == {'role': 'user', 'content': '用轻快语调'}
@@ -100,7 +114,7 @@ def test_synthesize_raises_on_error_response(monkeypatch):
             return {'error': {'message': 'bad key'}}
 
     monkeypatch.setattr(mod.httpx, 'post', lambda *a, **kw: _ErrResp())
-    client = MimoTTSClient(api_key='wrong')
+    client = MimoTTSClient(api_key='wrong', base_url='http://operator.example.test/mimo')
     with pytest.raises(MimoTTSAPIError, match='bad key'):
         client.synthesize('你好')
 
@@ -115,7 +129,7 @@ def test_synthesize_raises_on_unexpected_shape(monkeypatch):
             return {'choices': []}
 
     monkeypatch.setattr(mod.httpx, 'post', lambda *a, **kw: _FakeResp())
-    client = MimoTTSClient(api_key='k')
+    client = MimoTTSClient(api_key='k', base_url='http://operator.example.test/mimo')
     with pytest.raises(MimoTTSAPIError, match='unexpected'):
         client.synthesize('你好')
 
@@ -130,7 +144,28 @@ def test_mimo_enabled_flag(monkeypatch):
     assert tts_mod._is_mimo_enabled() is False  # no key
 
     monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
     assert tts_mod._is_mimo_enabled() is True
 
     monkeypatch.setenv('TTS_PROVIDER', 'elevenlabs')
     assert tts_mod._is_mimo_enabled() is False
+
+
+@pytest.mark.skip(
+    reason="MiMo prerecorded/TTS policy registration is not wired yet: it must come from the S5 patch registry, not from editing config/stt_provider_policy.py or routers/tts.py. This test is the spec for that follow-up."
+)
+def test_explicit_mimo_selection_does_not_fall_through_to_elevenlabs(monkeypatch):
+    import routers.tts as tts_mod
+    from fastapi import HTTPException
+    from models.tts import TtsSynthesizeRequest
+
+    monkeypatch.setenv('TTS_PROVIDER', 'mimo')
+    monkeypatch.setenv('MIMO_API_KEY', 'key')
+    monkeypatch.delenv('MIMO_API_BASE', raising=False)
+    monkeypatch.setenv('ELEVENLABS_API_KEY', 'must-not-be-used')
+
+    with pytest.raises(HTTPException) as exc_info:
+        import asyncio
+
+        asyncio.run(tts_mod.tts_synthesize(TtsSynthesizeRequest(text='hello'), uid='user'))
+    assert exc_info.value.status_code == 503
