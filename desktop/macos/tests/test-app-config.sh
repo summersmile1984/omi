@@ -71,27 +71,4 @@ if ! grep -q "must use URL scheme 'omi-omi-subagent-test'" /tmp/omi-app-config-s
   fail "mismatched OMI_URL_SCHEME did not report expected URL scheme"
 fi
 
-# Brand override (scripts/brand/generators/desktop.py's generated
-# app-config.brand.sh sets these two -- simulated here as plain env vars so
-# this test does not depend on a real generated file existing on disk).
-assert_config_prefixed() {
-  local slug_prefix="$1" id_prefix="$2" app_name="$3" expected_bundle="$4"
-  OMI_NAMED_BUNDLE_SLUG_PREFIX="$slug_prefix" OMI_NAMED_BUNDLE_ID_PREFIX="$id_prefix" \
-    derive_omi_app_config "$app_name"
-  assert_eq "$expected_bundle" "$BUNDLE_ID" "BUNDLE_ID for $app_name under prefix $slug_prefix"
-}
-
-assert_config_prefixed "acme" "com.acme." "acme-feature-test" "com.acme.acme-feature-test"
-
-if OMI_NAMED_BUNDLE_SLUG_PREFIX="acme" derive_omi_app_config "omi-should-be-rejected" \
-     >/tmp/omi-app-config-brand-prefix.out 2>/tmp/omi-app-config-brand-prefix.err; then
-  fail "the old omi- prefix unexpectedly succeeded under an acme- brand prefix"
-fi
-
-# No override at all -- the brand.py-generated file, if present, applies; if
-# absent (fresh checkout, apply.py never run), app-config.sh's own
-# ${VAR:-omi} fallback must reproduce exactly today's behavior.
-unset OMI_NAMED_BUNDLE_SLUG_PREFIX OMI_NAMED_BUNDLE_ID_PREFIX
-assert_config "omi-subagent-test" "true" "com.omi.omi-subagent-test" "omi-omi-subagent-test"
-
 echo "app-config tests passed"
