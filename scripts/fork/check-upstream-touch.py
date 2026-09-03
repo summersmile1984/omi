@@ -111,18 +111,24 @@ def run_git(args: list[str]) -> str:
     return proc.stdout
 
 
-def parse_allowlist(path: Path) -> tuple[list[AllowEntry], list[str]]:
+def parse_allowlist(path: Path) -> tuple[list[AllowEntry], list[str], list[str]]:
     """Parse the allowlist without a YAML dependency.
 
-    The file is intentionally a flat, hand-written subset: a `forbidden_patterns`
-    list of scalars and an `allow` list of `- path:` records. Keeping the parser
-    here means the guard runs on a bare Python with no install step, the same
-    property the upstream check runner relies on.
+    The file is intentionally a flat, hand-written subset: `forbidden_patterns`
+    and `forbidden_exceptions` lists of scalars, and an `allow` list of
+    `- path:` records. Keeping the parser here means the guard runs on a bare
+    Python with no install step, the same property the upstream check runner
+    relies on.
+
+    `forbidden_exceptions` entries must be exact paths. A glob there would let a
+    single edit quietly reopen an entire never-modify class, which is the
+    opposite of what the section is for.
     """
     if not path.exists():
         raise RuntimeError(f"allowlist not found: {path}")
     entries: list[AllowEntry] = []
     extra_forbidden: list[str] = []
+    exceptions: list[str] = []
     section = None
     current: dict[str, str] = {}
 
@@ -146,6 +152,10 @@ def parse_allowlist(path: Path) -> tuple[list[AllowEntry], list[str]]:
             flush()
             section = "forbidden"
             continue
+        if line.startswith("forbidden_exceptions:"):
+            flush()
+            section = "exceptions"
+            continue
         if line.startswith("allow:"):
             flush()
             section = "allow"
@@ -157,6 +167,14 @@ def parse_allowlist(path: Path) -> tuple[list[AllowEntry], list[str]]:
         stripped = line.strip()
         if section == "forbidden" and stripped.startswith("- "):
             extra_forbidden.append(stripped[2:].strip().strip('"').strip("'"))
+        elif section == "exceptions" and stripped.startswith("- "):
+            value = stripped[2:].strip().strip('"').strip("'")
+            if any(ch in value for ch in "*?["):
+                raise RuntimeError(
+                    f"forbidden_exceptions must list exact paths, got the glob '{value}'. "
+                    f"A pattern here would reopen a whole never-modify class in one edit."
+                )
+            exceptions.append(value)
         elif section == "allow":
             if stripped.startswith("- path:"):
                 flush()
@@ -165,7 +183,7 @@ def parse_allowlist(path: Path) -> tuple[list[AllowEntry], list[str]]:
                 key, value = stripped.split(":", 1)
                 current[key.strip()] = value.strip().strip('"').strip("'")
     flush()
-    return entries, extra_forbidden
+    return entries, extra_forbidden, exceptions
 
 
 def matches(path: str, pattern: str) -> bool:
@@ -197,8 +215,9 @@ def added_lines(base: str, head: str, path: str) -> int:
 
 
 def evaluate(base: str, head: str, upstream_ref: str, allowlist_path: Path) -> Result:
-    entries, extra_forbidden = parse_allowlist(allowlist_path)
+    entries, extra_forbidden, exceptions = parse_allowlist(allowlist_path)
     allowed_by_path = {e.path: e for e in entries}
+    excepted = set(exceptions)
 
     changed = [p for p in run_git(["diff", "--name-only", f"{base}...{head}"]).splitlines() if p]
     upstream_files = set(run_git(["ls-tree", "-r", "--name-only", upstream_ref]).splitlines())
@@ -211,7 +230,10 @@ def evaluate(base: str, head: str, upstream_ref: str, allowlist_path: Path) -> R
             continue  # fork-owned path: always fine
         result.checked += 1
 
-        exempt = any(path.startswith(prefix) for prefix in FORBIDDEN_EXEMPT)
+        # An exception waives the never-modify rule for this one exact path and
+        # nothing else: the file still needs its own `allow:` entry and budget
+        # below, so opening the door takes two deliberate registrations.
+        exempt = path in excepted or any(path.startswith(prefix) for prefix in FORBIDDEN_EXEMPT)
         hit = None if exempt else next(((pat, why) for pat, why in forbidden_rules if matches(path, pat)), None)
         if hit is not None:
             result.violations.append(
@@ -237,7 +259,10 @@ def evaluate(base: str, head: str, upstream_ref: str, allowlist_path: Path) -> R
                 )
             )
             continue
-        result.allowed.append(f"{path} (+{n}/{entry.max_added_lines})")
+        # Name the exception in the output. A waived never-modify rule that only
+        # shows up by the check staying green is a rule nobody re-reads.
+        note = "  [forbidden_exceptions]" if path in excepted else ""
+        result.allowed.append(f"{path} (+{n}/{entry.max_added_lines}){note}")
 
     return result
 

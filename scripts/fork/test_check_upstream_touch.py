@@ -156,6 +156,66 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         self.assertEqual(v["kind"], "forbidden")
         self.assertIn("requirements-fork.txt", v["detail"] + v["remedy"])
 
+    def test_forbidden_exception_needs_an_allow_entry_too(self):
+        # Waiving the never-modify rule is not the same as being allowlisted.
+        # Both registrations are required, so one edit cannot open the door.
+        h = self.harness()
+        allow = h.root / "dev/unified-main/upstream-touch-allowlist.yaml"
+        allow.write_text(
+            ALLOWLIST + '\nforbidden_exceptions:\n  - "backend/pylock.toml"\n',
+            encoding="utf-8",
+        )
+        h.commit("backend/pylock.toml", "[lock]\nfork = true\n")
+        rc, out = h.run()
+        self.assertEqual(rc, 1)
+        [v] = out["violations"]
+        self.assertEqual(v["kind"], "not-allowlisted")
+
+    def test_forbidden_exception_plus_allow_entry_passes_and_is_named(self):
+        h = self.harness()
+        allow = h.root / "dev/unified-main/upstream-touch-allowlist.yaml"
+        allow.write_text(
+            ALLOWLIST
+            + "  - path: backend/pylock.toml\n    max_added_lines: 1\n    reason: upstream bug we cannot fix elsewhere\n"
+            + '\nforbidden_exceptions:\n  - "backend/pylock.toml"\n',
+            encoding="utf-8",
+        )
+        h.commit("backend/pylock.toml", "[lock]\nfork = true\n")
+        rc, out = h.run()
+        self.assertEqual(rc, 0, out)
+        # The waiver must be visible in the output, not merely implied by green.
+        self.assertTrue(any("forbidden_exceptions" in a for a in out["allowed"]), out["allowed"])
+
+    def test_forbidden_exception_budget_still_applies(self):
+        h = self.harness()
+        allow = h.root / "dev/unified-main/upstream-touch-allowlist.yaml"
+        allow.write_text(
+            ALLOWLIST
+            + "  - path: backend/pylock.toml\n    max_added_lines: 1\n    reason: upstream bug\n"
+            + '\nforbidden_exceptions:\n  - "backend/pylock.toml"\n',
+            encoding="utf-8",
+        )
+        h.commit("backend/pylock.toml", "[lock]\n" + "".join(f"x{i} = {i}\n" for i in range(5)))
+        rc, out = h.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual([v["kind"] for v in out["violations"]], ["over-budget"])
+
+    def test_glob_in_forbidden_exceptions_is_rejected(self):
+        # A pattern here would reopen a whole class; the parser must refuse it
+        # rather than quietly waiving more than the author intended.
+        h = self.harness()
+        allow = h.root / "dev/unified-main/upstream-touch-allowlist.yaml"
+        allow.write_text(ALLOWLIST + '\nforbidden_exceptions:\n  - "backend/**"\n', encoding="utf-8")
+        h.commit("backend/pylock.toml", "[lock]\nfork = true\n")
+        proc = subprocess.run(
+            [sys.executable, str(GUARD), "--base", "base", "--head", "HEAD",
+             "--upstream-ref", "refs/remotes/upstream/main",
+             "--allowlist", "dev/unified-main/upstream-touch-allowlist.yaml", "--json"],
+            cwd=h.root, capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("exact paths", proc.stderr)
+
     def test_missing_upstream_ref_skips_instead_of_passing_silently(self):
         h = self.harness()
         h.commit("backend/service.py", "VALUE = 2\n")
