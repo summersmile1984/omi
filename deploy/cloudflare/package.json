@@ -1,0 +1,58 @@
+{
+  "name": "omi-cloudflare-workers",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "validate:manifest": "node scripts/validate-manifests.mjs",
+    "verify:migrations": "node scripts/verify-d1-migrations.mjs",
+    "validate:backend-routes": "cd ../../backend && scripts/openapi_runner.sh scripts/export_openapi.py --surface cloudflare-route-inventory --check ../deploy/cloudflare/manifests/backend-routes.json",
+    "pretest": "npm run validate:manifest",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "backfill:d1": "node scripts/backfill-d1.mjs",
+    "benchmark:staging": "node scripts/benchmark-staging.mjs",
+    "smoke:staging": "node scripts/smoke-staging.mjs",
+    "smoke:production": "CLOUDFLARE_EDGE_URL=${CLOUDFLARE_EDGE_URL:-https://omi-cf-edge-production.summersmile1984.workers.dev} CLOUDFLARE_WEB_URL=${CLOUDFLARE_WEB_URL:-https://omi-web-app-production.summersmile1984.workers.dev} node scripts/smoke-staging.mjs",
+    "calendar:positive-probe": "node scripts/calendar-positive-probe.mjs",
+    "dlq:positive-probe": "node scripts/dlq-positive-probe.mjs",
+    "identity:import": "node scripts/import-firebase-identities.mjs",
+    "identity:dry-run": "node scripts/dry-run-firebase-identity-import.mjs",
+    "app-owner:attestation": "node scripts/app-owner-attestation.mjs",
+    "audio:reconcile": "node scripts/audio-reconcile.mjs",
+    "chat:reconcile": "node scripts/chat-history-reconcile.mjs",
+    "persona:reconcile": "node scripts/persona-app-history-reconcile.mjs",
+    "phone:reconcile": "node scripts/phone-history-reconcile.mjs",
+    "phone:export-verify": "node scripts/phone-history-export-verify.mjs",
+    "wrapped:export-verify": "node scripts/wrapped-history-export-verify.mjs",
+    "chat:export-verify": "node scripts/chat-history-export-verify.mjs",
+    "deploy:staging": "npm run validate:backend-routes && npm run validate:manifest && node scripts/deploy.mjs staging",
+    "rollback:staging": "node scripts/rollback-staging.mjs",
+    "deploy:production": "npm run validate:backend-routes && npm run validate:manifest && node scripts/deploy-production.mjs",
+    "rollback:production": "node scripts/rollback-production.mjs"
+  },
+  "dependencies": {
+    "@audio/encode-mp3": "1.2.2",
+    "@better-auth/mcp": "1.7.2",
+    "@modelcontextprotocol/server": "2.0.0",
+    "@noble/hashes": "2.4.0",
+    "@remix-run/form-data-parser": "0.17.5",
+    "better-auth": "1.7.2",
+    "hono": "4.13.5",
+    "opus-decoder": "0.7.12",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260827.1",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.127.0",
+    "yaml": "2.9.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "workerd@1.20260826.1": true
+  }
+}

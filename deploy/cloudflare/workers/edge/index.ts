@@ -1,0 +1,2434 @@
+import { Hono } from "hono";
+import type { Context } from "hono";
+import { cors } from "hono/cors";
+import { requestId, withRequestId } from "../shared/request-id";
+import {
+  createRealtimeBootstrap,
+  REALTIME_BOOTSTRAP_HEADER,
+  REALTIME_BOOTSTRAP_SIGNATURE_HEADER,
+} from "../shared/realtime-bootstrap";
+import { createRealtimeTicket } from "../shared/realtime-ticket";
+import { attachAuthContext, stripUntrustedHeaders, verifyBearer } from "./auth";
+import {
+  createPublicChatAssertion,
+  PUBLIC_CHAT_ASSERTION_HEADER,
+} from "../shared/public-chat-assertion";
+import {
+  activateByok,
+  deactivateByok,
+  parseByokActivationPayload,
+  validateByokHeaders,
+} from "./byok";
+import {
+  ACCOUNT_CUTOVER_CONTROL_PATH,
+  cloudflareProductTrafficDenial,
+} from "./cutover";
+import type { EdgeEnv, EdgeVariables } from "./env";
+import type { AuthAudience, AuthContext } from "../shared/auth-context";
+import {
+  handleMcpTransport,
+  mcpProtectedResourceMetadata,
+} from "./mcp-transport";
+import {
+  edgeRateLimitPolicyForRequest,
+  enforceEdgeRateLimit,
+  PUBLIC_SHARED_CHAT_GLOBAL_RATE_LIMIT,
+  PUBLIC_SHARED_CHAT_PER_IP_RATE_LIMIT,
+  STT_TRANSCRIBE_RATE_LIMIT,
+} from "./rate-limit";
+
+const app = new Hono<{ Bindings: EdgeEnv; Variables: EdgeVariables }>();
+const MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES = 5_000_000;
+const MAX_BYOK_ACTIVATION_BODY_BYTES = 8_192;
+const MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES = 128 * 1024;
+const MAX_REALTIME_SESSION_BODY_BYTES = 4_096;
+const OPENAI_APPS_CHALLENGE_TOKEN =
+  "ZsVB_wpc4R35_tHloCZCokY6H2fBkKyBJrz-4MtXjYE";
+
+async function authenticatedHeaders(
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+  identity: AuthContext,
+  audience: AuthAudience,
+  target: { method: string; url: string | URL } = c.req.raw,
+  options: { recoverInvalidByok?: boolean } = {},
+): Promise<Headers | Response> {
+  const headers = stripUntrustedHeaders(c.req.raw);
+  const validation = await validateByokHeaders(c.env, identity, headers, {
+    recoverInvalid: options.recoverInvalidByok,
+  });
+  if (validation.response) return validation.response;
+  await attachAuthContext(
+    headers,
+    validation.context,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    audience,
+    target,
+  );
+  return headers;
+}
+
+app.use("*", async (c, next) => {
+  const origins = (c.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!origins.length) return next();
+  return cors({
+    origin: origins.length === 1 ? origins[0] : origins,
+    credentials: true,
+  })(c, next);
+});
+
+app.get("/health", (c) =>
+  c.json({ status: "ok", service: "edge", version: "cf-01" }),
+);
+
+app.on(["GET", "HEAD"], "/v1/health", (c) => {
+  const headers = { "content-type": "application/json; charset=UTF-8" };
+  if (c.req.method === "HEAD") return new Response(null, { headers });
+  return new Response(JSON.stringify({ status: "ok" }), { headers });
+});
+
+app.get(
+  "/.well-known/apple-developer-domain-association.txt",
+  () =>
+    new Response("", {
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    }),
+);
+
+app.get(
+  "/.well-known/openai-apps-challenge",
+  () =>
+    new Response(OPENAI_APPS_CHALLENGE_TOKEN, {
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    }),
+);
+
+app.get("/ready", async (c) => {
+  const dependencies = [
+    ["auth", c.env.AUTH, "/ready"],
+    ["api-core", c.env.API_CORE, "/health"],
+    ["api-ai", c.env.API_AI, "/health"],
+    ["realtime", c.env.REALTIME, "/health"],
+    ["jobs", c.env.JOBS, "/ready"],
+  ] as const;
+  const statuses = Object.fromEntries(
+    await Promise.all(
+      dependencies.map(async ([name, service, path]) => {
+        try {
+          const response = await service.fetch(
+            new Request(`https://${name}.internal${path}`),
+          );
+          await response.arrayBuffer();
+          return [name, response.status] as const;
+        } catch {
+          return [name, 503] as const;
+        }
+      }),
+    ),
+  );
+  try {
+    const rateLimitId = c.env.RATE_LIMITS.idFromName("health");
+    const response = await c.env.RATE_LIMITS.get(rateLimitId).fetch(
+      new Request("https://rate-limit.internal/health"),
+    );
+    await response.arrayBuffer();
+    statuses["rate-limit"] = response.status;
+  } catch {
+    statuses["rate-limit"] = 503;
+  }
+  const ready = Object.values(statuses).every((status) => status === 200);
+  return c.json(
+    {
+      status: ready ? "ready" : "degraded",
+      service: "edge",
+      dependencies: statuses,
+    },
+    ready ? 200 : 503,
+  );
+});
+
+app.on(["GET", "HEAD"], "/.well-known/oauth-protected-resource", (c) => {
+  const metadata = mcpProtectedResourceMetadata(c.env);
+  if (!metadata) return c.json({ error: "mcp unavailable" }, 503);
+  if (c.req.method === "HEAD") {
+    return new Response(null, {
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      },
+    });
+  }
+  c.header("cache-control", "no-store");
+  return c.json(metadata);
+});
+app.on(
+  ["GET", "HEAD"],
+  "/.well-known/oauth-protected-resource/v1/mcp/sse",
+  (c) => {
+    const metadata = mcpProtectedResourceMetadata(c.env);
+    if (!metadata) return c.json({ error: "mcp unavailable" }, 503);
+    if (c.req.method === "HEAD") {
+      return new Response(null, {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        },
+      });
+    }
+    c.header("cache-control", "no-store");
+    return c.json(metadata);
+  },
+);
+
+app.on(
+  ["GET", "HEAD"],
+  "/.well-known/oauth-authorization-server",
+  async (c) => {
+    const id = requestId(c.req.raw);
+    const target = new URL(
+      "/api/auth/.well-known/oauth-authorization-server",
+      "https://auth.internal",
+    );
+    try {
+      const response = await c.env.AUTH.fetch(new Request(target));
+      if (c.req.method === "HEAD") {
+        await response.arrayBuffer();
+        return withRequestId(
+          new Response(null, {
+            status: response.status,
+            headers: response.headers,
+          }),
+          id,
+        );
+      }
+      return withRequestId(response, id);
+    } catch {
+      return withRequestId(
+        Response.json(
+          { error: "authorization_server_unavailable" },
+          { status: 503 },
+        ),
+        id,
+      );
+    }
+  },
+);
+
+// Keep the historical MCP OAuth paths as aliases for Better Auth's OAuth
+// provider. The public discovery document already advertises the canonical
+// `/api/auth/oauth2/*` endpoints; these aliases let older clients
+// upgrade without sending authorization codes or cookies to the legacy API.
+const proxyLegacyMcpOAuth = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+  endpoint: "authorize" | "token",
+) => {
+  const id = requestId(c.req.raw);
+  const target = new URL(
+    `/api/auth/oauth2/${endpoint}`,
+    "https://auth.internal",
+  );
+  target.search = new URL(c.req.url).search;
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  const init: RequestInit & { duplex?: "half" } = {
+    method: c.req.method,
+    headers,
+  };
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    init.body = c.req.raw.body;
+    init.duplex = "half";
+  }
+  try {
+    const response = await c.env.AUTH.fetch(new Request(target, init));
+    return withRequestId(response, id);
+  } catch {
+    return withRequestId(
+      Response.json(
+        { error: "authorization_server_unavailable" },
+        { status: 503 },
+      ),
+      id,
+    );
+  }
+};
+
+app.on(["GET", "POST"], "/authorize", (c) =>
+  proxyLegacyMcpOAuth(c, "authorize"),
+);
+app.post("/token", (c) => proxyLegacyMcpOAuth(c, "token"));
+
+app.get("/v1/mcp/sse/info", (c) =>
+  c.json({
+    transport: "streamable-http",
+    endpoint: c.env.MCP_RESOURCE_URL || null,
+    protocol_versions: ["2026-07-28", "2025-03-26"],
+    oauth: true,
+    api_key_compatibility: true,
+    migrated_tools: 22,
+    pending_tools: [],
+  }),
+);
+app.on(["GET", "POST", "DELETE"], "/v1/mcp/sse", (c) =>
+  handleMcpTransport(c.req.raw, c.env),
+);
+
+const proxyPublicCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers: stripUntrustedHeaders(c.req.raw) }),
+  );
+  return withRequestId(response, id);
+};
+
+const proxyPublicJobs = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const response = await c.env.JOBS.fetch(
+    new Request(c.req.raw, { headers: stripUntrustedHeaders(c.req.raw) }),
+  );
+  return withRequestId(response, id);
+};
+
+// Hume signs the exact request bytes. Preserve only the provider signature
+// envelope and content type; caller credentials and internal identity headers
+// must never cross this public webhook boundary.
+const proxyHumeWebhook = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const headers = new Headers();
+  for (const name of [
+    "content-type",
+    "x-hume-ai-webhook-signature",
+    "x-hume-ai-webhook-timestamp",
+  ]) {
+    const value = c.req.header(name);
+    if (value) headers.set(name, value);
+  }
+  const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+};
+
+const proxyMetricsCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  // /metrics uses an operational bearer secret rather than a Better Auth
+  // session. Forward only that explicit credential; cookies and all internal
+  // identity headers must never cross this public boundary.
+  const headers = new Headers();
+  const authorization = c.req.header("authorization");
+  if (authorization) headers.set("authorization", authorization);
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+async function publicSharedChatSubject(
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+): Promise<string | null> {
+  const clientIp = c.req.header("cf-connecting-ip")?.trim();
+  const secret = c.env.INTERNAL_ASSERTION_SECRET;
+  if (!clientIp || !secret) return null;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(clientIp),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+const proxyPublicSharedChat = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const subject = await publicSharedChatSubject(c);
+  if (!subject) {
+    return withRequestId(
+      Response.json(
+        { detail: "Public shared conversation chat unavailable" },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+  const rateIdentity = {
+    uid: `public-shared-chat:${subject}`,
+    authority: "internal" as const,
+    requestId: id,
+  };
+  const perIpDenial = await enforceEdgeRateLimit(
+    c.env,
+    rateIdentity,
+    PUBLIC_SHARED_CHAT_PER_IP_RATE_LIMIT,
+    id,
+    { failClosed: true },
+  );
+  if (perIpDenial) return withRequestId(perIpDenial, id);
+  const globalDenial = await enforceEdgeRateLimit(
+    c.env,
+    { ...rateIdentity, uid: "public-shared-chat:all" },
+    PUBLIC_SHARED_CHAT_GLOBAL_RATE_LIMIT,
+    id,
+    { failClosed: true },
+  );
+  if (globalDenial) return withRequestId(globalDenial, id);
+
+  const headers = stripUntrustedHeaders(c.req.raw);
+  const assertion = await createPublicChatAssertion(
+    subject,
+    id,
+    c.req.raw,
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!assertion) {
+    return withRequestId(
+      Response.json(
+        { detail: "Public shared conversation chat unavailable" },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+  headers.set(PUBLIC_CHAT_ASSERTION_HEADER, assertion);
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+// App integrations authenticate with an app-scoped API key, not a Better Auth
+// session. Preserve only that Authorization header while still stripping all
+// caller-controlled internal identity headers and cookies.
+const proxyIntegrationCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  headers.delete("cookie");
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+// Developer API routes use the dedicated omi_dev_ credential family. Keep the
+// raw Authorization header for API Core to verify against the D1 digest while
+// removing cookies and every caller-controlled internal identity assertion.
+// Valid key-shaped writes are rate-limited by an irreversible digest, never by
+// the raw credential.
+const proxyDeveloperCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const subject = await externalApiKeyRateLimitSubject(
+      c.req.raw.headers.get("authorization"),
+      "dev",
+    );
+    if (subject) {
+      const rateLimitDenial = await enforceEdgeRateLimit(
+        c.env,
+        { uid: `developer:${subject}`, authority: "internal", requestId: id },
+        policy,
+        id,
+      );
+      if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+    }
+  }
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  headers.delete("cookie");
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+async function externalApiKeyRateLimitSubject(
+  authorization: string | null,
+  family: "mcp" | "dev",
+): Promise<string | null> {
+  const pattern =
+    family === "mcp"
+      ? /^Bearer omi_mcp_([0-9a-f]{32})$/
+      : /^Bearer omi_dev_([0-9a-f]{32})$/;
+  const match = pattern.exec(authorization || "");
+  if (!match) return null;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(match[1]),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+// MCP REST tools authenticate with their own D1-backed key family. The Edge
+// strips cookies and caller identity assertions, keeps only Authorization, and
+// rate-limits valid key-shaped write traffic by an irreversible key digest.
+const proxyMcpCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const subject = await externalApiKeyRateLimitSubject(
+      c.req.raw.headers.get("authorization"),
+      "mcp",
+    );
+    if (subject) {
+      const rateLimitDenial = await enforceEdgeRateLimit(
+        c.env,
+        { uid: `mcp:${subject}`, authority: "internal", requestId: id },
+        policy,
+        id,
+      );
+      if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+    }
+  }
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  headers.delete("cookie");
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+const proxyLegacyBackend = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (!envLegacy(c.env)) {
+    return withRequestId(
+      Response.json({ error: "route not migrated" }, { status: 404 }),
+      id,
+    );
+  }
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  const legacy = new URL(c.req.url);
+  legacy.protocol = new URL(c.env.ORIGIN_BACKEND_URL).protocol;
+  legacy.host = new URL(c.env.ORIGIN_BACKEND_URL).host;
+  const response = await fetch(
+    new Request(legacy, {
+      method: c.req.method,
+      headers,
+      body: c.req.raw.body,
+    }),
+  );
+  return withRequestId(response, id);
+};
+
+// Firebase provider exchange and legacy app-consent OAuth are not Better Auth
+// contracts. The native-auth transaction seam is hosted by Auth and the app
+// consent transaction by Jobs; each has an independent staging owner gate.
+const proxyExactNativeAuth = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const target = new URL(c.req.url);
+  target.protocol = "https:";
+  target.host = "auth.internal";
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  const init: RequestInit & { duplex?: "half" } = {
+    method: c.req.method,
+    headers,
+  };
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    init.body = c.req.raw.body;
+    init.duplex = "half";
+  }
+  try {
+    const response = await c.env.AUTH.fetch(new Request(target, init));
+    return withRequestId(response, id);
+  } catch {
+    return withRequestId(
+      Response.json(
+        { error: "auth_unavailable" },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+};
+
+// The legacy app-consent page is intentionally public: it bootstraps Firebase
+// sign-in in the browser and posts the resulting ID token to /token. Jobs
+// performs the provider verification before touching the D1 install state.
+const proxyExactLegacyAppOauth = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const headers = stripUntrustedHeaders(c.req.raw, {
+    preserveClientAuth: true,
+  });
+  try {
+    const response = await c.env.JOBS.fetch(
+      new Request(c.req.raw, { headers }),
+    );
+    return withRequestId(response, id);
+  } catch {
+    return withRequestId(
+      Response.json(
+        { error: "auth_unavailable" },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+};
+
+const legacyAuthOAuthStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.AUTH_OAUTH_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "auth_oauth_unavailable",
+        detail:
+          "Legacy Firebase and app-consent OAuth are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
+const legacyExactAppOauthStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.AUTH_EXACT_OAUTH_STAGING_ENABLED === "true") {
+    return proxyExactLegacyAppOauth(c);
+  }
+  return legacyAuthOAuthStagingBoundary(c);
+};
+
+// Keep the app-consent OAuth contract on its existing boundary.  Enabling the
+// exact native-auth staging owner must not accidentally route `/v1/oauth/*`
+// into the Auth Worker, whose transaction authority is intentionally limited
+// to `/v1/auth/*`.
+const legacyExactNativeAuthStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.AUTH_EXACT_NATIVE_STAGING_ENABLED === "true") {
+    return proxyExactNativeAuth(c);
+  }
+  return legacyAuthOAuthStagingBoundary(c);
+};
+
+// The phone surface is a coupled Twilio/Firestore/Redis contract. Until the
+// caller-ID verification state, quota reservation, TwiML signature validation,
+// and Twilio credential lifecycle all have Cloudflare authorities, isolated
+// staging must not send phone credentials or call instructions to legacy. The
+// switch remains opt-in so non-staging deployments preserve the legacy route.
+const legacyPhoneTwilioStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.PHONE_TWILIO_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "phone_twilio_unavailable",
+        detail:
+          "Legacy Twilio phone verification and calling are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
+// The desktop Gemini proxy is more than a provider HTTP forward: it owns the
+// legacy Firebase-authenticated user boundary, Redis burst/daily quotas,
+// request-local Gemini BYOK keys, Vertex ADC/PT routing and Gemini-specific
+// stream/usage/error semantics. The API-AI worker's fixed-host proxy cannot
+// claim those contracts, and Workers AI is not wire-compatible with the
+// Gemini model/action paths. In isolated staging, stop this path before it
+// can forward credentials or prompts to the legacy backend. The switch stays
+// opt-in so non-staging deployments preserve the legacy route.
+const legacyGeminiProxyStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.GEMINI_PROXY_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "gemini_proxy_unavailable",
+        detail:
+          "Legacy Gemini proxy provider and desktop compatibility are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
+// AI Studio Gemini is now available behind the API-AI Python Worker.  Keep an
+// explicit switch so a deployment without GEMINI_API_KEY can fail closed at
+// the provider boundary rather than accidentally forwarding to legacy.
+async function cloudflareGeminiProxyBoundary(
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+): Promise<Response> {
+  if (c.env.GEMINI_PROXY_CLOUDFLARE_ENABLED === "true") {
+    return proxyAuthenticatedAI(c);
+  }
+  return legacyGeminiProxyStagingBoundary(c);
+}
+
+// The desktop completion and Chat-first materialization endpoints still carry
+// the legacy provider/session contract. Their released callers use Firebase
+// continuity and Firestore-backed materialization, neither of which is
+// represented by the Cloudflare chat D1 projection. In isolated staging,
+// reject these paths before any credential or prompt reaches legacy. The
+// switch remains opt-in so non-staging deployments preserve the existing
+// compatibility route until a complete replacement is ready.
+const legacyChatCompatibilityStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.CHAT_COMPATIBILITY_CLOUDFLARE_ENABLED === "true")
+    return proxyAuthenticatedJobs(c);
+  const id = requestId(c.req.raw);
+  if (c.env.CHAT_COMPAT_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "chat_compatibility_unavailable",
+        detail:
+          "Legacy chat completion and prompt materialization are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
+// The canonical Jobs handler can serve the old upload response shape, but the
+// downstream Cloudflare chat-session reader and historical Firestore file
+// backfill must be complete before these aliases can become the route owner.
+// Keep the edge switch explicit: disabled means the existing legacy forwarding
+// behavior, enabled means authenticated Jobs forwarding for staging proof.
+const legacyChatFilesStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.LEGACY_CHAT_FILES_STAGING_ENABLED === "true")
+    return proxyAuthenticatedJobs(c);
+  return proxyLegacyBackend(c);
+};
+
+// Staged tasks and task-intelligence writes still depend on the legacy
+// Firestore candidate store, account-generation/device snapshots, Redis
+// quotas, and an LLM evaluation/promotion transaction. Cloudflare currently
+// has no canonical candidate or recommendation projection, so isolated
+// staging must reject these paths before credentials, prompts, or task data
+// reach the legacy backend. The switch remains opt-in for non-staging
+// deployments until the full task authority and replay contract exists.
+const legacyTaskIntelligenceStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.TASK_INTELLIGENCE_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "task_intelligence_unavailable",
+        detail:
+          "Legacy staged-task and task-intelligence workflows are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
+// Persona PATCH/Twitter ownership, owner migration, and the remaining legacy
+// app mutation family still depend on Firestore app documents, Firebase
+// provider identity, public app cache invalidation, and provider side effects.
+// Exact MCP app routes have their own opt-in Jobs owner below; this boundary
+// still protects the routes that have no Cloudflare authority. In isolated
+// staging, stop these paths before credentials or provider state can reach
+// legacy. The switch remains opt-in so non-staging deployments preserve the
+// existing compatibility forwarding behavior.
+const legacyPersonaAppsStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  if (c.env.PERSONA_APPS_STAGING_FAIL_CLOSED !== "true") {
+    return proxyLegacyBackend(c);
+  }
+  return withRequestId(
+    Response.json(
+      {
+        error: "persona_apps_unavailable",
+        detail:
+          "Legacy Persona and app/MCP mutation routes are unavailable on Cloudflare staging.",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    ),
+    id,
+  );
+};
+
+// The exact MCP app routes now have a Cloudflare Jobs adapter that reuses the
+// encrypted D1/provider authority of the namespaced seam. Keep the opt-in
+// independent from the remaining Persona/Twitter/migrate-owner legacy group:
+// when the adapter is unavailable, Jobs returns an explicit no-store error and
+// the request never falls through to Firestore-backed legacy code.
+const legacyMcpAppsStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.MCP_APP_EXACT_LEGACY_STAGING_ENABLED === "true") {
+    return proxyAuthenticatedJobs(c);
+  }
+  return legacyPersonaAppsStagingBoundary(c);
+};
+
+const legacyMcpCallbackStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.MCP_APP_EXACT_LEGACY_STAGING_ENABLED === "true") {
+    return proxyPublicJobs(c);
+  }
+  return legacyPersonaAppsStagingBoundary(c);
+};
+
+// The legacy owner-migration payload carries a Firebase anonymous source
+// token.  Once explicitly enabled, send it to the Jobs adapter so the token
+// can only reach Auth's anonymous-identity bridge; otherwise retain the
+// existing Persona/apps fail-closed/legacy behavior.
+const legacyAppOwnerMigrationStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED === "true") {
+    return proxyAuthenticatedJobs(c);
+  }
+  return legacyPersonaAppsStagingBoundary(c);
+};
+
+const legacyTwitterOwnershipStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED === "true") {
+    return proxyAuthenticatedJobs(c);
+  }
+  return legacyPersonaAppsStagingBoundary(c);
+};
+
+const proxyPublicFirmware = proxyPublicCore;
+
+// The cloud Agent VM was retired, but released desktop clients still call
+// these endpoints during startup and shutdown. Keep the unauthenticated
+// tombstone contract at the edge so they never fall through to legacy (or
+// trigger Better Auth's 401 sign-out behavior).
+const AGENT_VM_RETIRED =
+  "The cloud Agent VM has been retired and can no longer be provisioned.";
+
+app.post("/v2/agent/provision", () =>
+  Response.json({ detail: AGENT_VM_RETIRED }, { status: 410 }),
+);
+app.post("/v2/agent/vm/stop-self", () =>
+  Response.json({ detail: AGENT_VM_RETIRED }, { status: 410 }),
+);
+app.get(
+  "/v2/agent/status",
+  () =>
+    new Response("null", {
+      status: 200,
+      headers: { "content-type": "application/json; charset=UTF-8" },
+    }),
+);
+
+app.get("/v2/firmware/stable", proxyPublicFirmware);
+app.get("/v2/firmware/latest", proxyPublicFirmware);
+app.get("/v2/firmware/version", proxyPublicFirmware);
+app.get("/", proxyPublicCore);
+app.get("/appcast.xml", proxyPublicCore);
+app.get("/updates/latest", proxyPublicCore);
+app.get("/download", proxyPublicCore);
+app.get("/v2/desktop/appcast.xml", proxyPublicCore);
+app.get("/v2/desktop/download/latest", proxyPublicCore);
+app.get("/v2/desktop/download/beta", proxyPublicCore);
+app.get("/v2/desktop/download/windows", proxyPublicCore);
+app.get("/v2/desktop/update-feed/windows", proxyPublicCore);
+app.get("/v2/desktop/artifacts/:releaseId/:assetName", proxyPublicJobs);
+app.get("/v2/desktop/previews/:slug", proxyPublicCore);
+app.get("/v2/desktop/previews/:slug/:source_sha", proxyPublicCore);
+app.delete("/v2/desktop/previews/:slug", proxyPublicCore);
+app.post("/v2/desktop/previews/publish", proxyPublicCore);
+app.get("/v2/desktop/releases/:releaseId", proxyPublicCore);
+app.post("/v2/desktop/releases", proxyPublicCore);
+app.post("/updates/releases", proxyPublicCore);
+app.patch("/updates/releases/promote", proxyPublicCore);
+app.post("/v2/desktop/beta/candidates/reserve", proxyPublicCore);
+app.post("/v2/desktop/beta/promote-candidate", proxyPublicCore);
+app.put("/v2/desktop/beta/admission", proxyPublicCore);
+app.post("/v2/desktop/beta/breakglass", proxyPublicCore);
+app.post("/v2/desktop/channels/promote", proxyPublicCore);
+app.post("/v2/desktop/clear-cache", proxyPublicCore);
+app.get("/v2/desktop/update-policy", proxyPublicCore);
+app.get("/metrics", proxyMetricsCore);
+app.get("/v1/announcements/changelogs", proxyPublicCore);
+app.get("/v1/announcements/features", proxyPublicCore);
+app.get("/v1/announcements/general", proxyPublicCore);
+app.get("/v1/announcements/all", proxyPublicCore);
+app.get("/v1/announcements/:announcementId", proxyPublicCore);
+app.get("/v1/trends", proxyPublicCore);
+app.post("/v1/announcements", proxyPublicCore);
+app.put("/v1/announcements/:announcementId", proxyPublicCore);
+app.delete("/v1/announcements/:announcementId", proxyPublicCore);
+app.get("/v1/app-categories", proxyPublicCore);
+app.get("/v1/app/proactive-notification-scopes", proxyPublicCore);
+app.get("/v1/app-capabilities", proxyPublicCore);
+app.get("/v1/app/payment-plans", proxyPublicCore);
+app.get("/v1/approved-apps", proxyPublicCore);
+app.get("/v1/apps/:appId/logo/:version", proxyPublicJobs);
+app.get("/v1/app/thumbnails/:thumbnailFile", proxyPublicJobs);
+app.get("/v1/x/oauth/callback", proxyPublicJobs);
+app.get("/v2/integrations/todoist/callback", proxyPublicJobs);
+app.get("/v2/integrations/asana/callback", proxyPublicJobs);
+app.get("/v2/integrations/google-tasks/callback", proxyPublicJobs);
+app.get("/v2/integrations/clickup/callback", proxyPublicJobs);
+app.get("/v2/integrations/google-calendar/callback", proxyPublicJobs);
+app.get("/v2/integrations/google_calendar/callback", proxyPublicJobs);
+app.get("/v2/integrations/:app_key/callback", proxyPublicJobs);
+app.get("/v1/apps/:appId/reviews", proxyPublicCore);
+app.post("/v1/conversations/shared/chat", proxyPublicSharedChat);
+app.post("/v1/apps/tester", proxyPublicJobs);
+app.post("/v1/apps/tester/access", proxyPublicJobs);
+app.delete("/v1/apps/tester/access", proxyPublicJobs);
+app.get("/v1/apps/public/unapproved", proxyPublicJobs);
+app.patch("/v1/apps/:appId/popular", proxyPublicJobs);
+app.post("/v1/apps/:appId/approve", proxyPublicJobs);
+app.post("/v1/apps/:appId/reject", proxyPublicJobs);
+app.get("/v1/summary-app-ids", proxyPublicJobs);
+app.post("/v1/summary-app-ids/:appId", proxyPublicJobs);
+app.delete("/v1/summary-app-ids/:appId", proxyPublicJobs);
+app.post("/v1/integrations/notification", proxyIntegrationCore);
+app.post("/v1/notification", proxyPublicJobs);
+app.post("/v1/agents/hume/callback", proxyHumeWebhook);
+app.post("/v1/proxy/gemini", cloudflareGeminiProxyBoundary);
+app.post("/v1/proxy/gemini/*", cloudflareGeminiProxyBoundary);
+app.post("/v1/proxy/gemini-stream", cloudflareGeminiProxyBoundary);
+app.post("/v1/proxy/gemini-stream/*", cloudflareGeminiProxyBoundary);
+app.get(
+  "/v1/personas/twitter/verify-ownership",
+  legacyTwitterOwnershipStagingBoundary,
+);
+app.post("/v1/apps/mcp", legacyMcpAppsStagingBoundary);
+app.get("/v1/apps/mcp/callback", legacyMcpCallbackStagingBoundary);
+app.post("/v1/apps/:app_id/mcp/refresh", legacyMcpAppsStagingBoundary);
+app.post(
+  "/v1/apps/migrate-owner",
+  legacyAppOwnerMigrationStagingBoundary,
+);
+app.get("/v1/auth/authorize", legacyExactNativeAuthStagingBoundary);
+app.get("/v1/auth/callback/google", legacyExactNativeAuthStagingBoundary);
+app.post("/v1/auth/callback/apple", legacyExactNativeAuthStagingBoundary);
+app.post("/v1/auth/token", legacyExactNativeAuthStagingBoundary);
+app.get("/v1/oauth/authorize", legacyExactAppOauthStagingBoundary);
+app.post("/v1/oauth/token", legacyExactAppOauthStagingBoundary);
+app.get("/v1/phone/numbers", proxyAuthenticatedPhone);
+app.delete("/v1/phone/numbers/:phoneNumberId", proxyAuthenticatedPhone);
+app.post("/v1/phone/numbers/verify", proxyAuthenticatedPhone);
+app.post("/v1/phone/numbers/verify/check", proxyAuthenticatedPhone);
+app.post("/v1/phone/token", proxyAuthenticatedPhone);
+// Twilio authenticates this webhook with X-Twilio-Signature; it is not a
+// Better Auth request and therefore must retain the provider signature/body.
+app.post("/v1/phone/twiml", proxyPublicJobs);
+app.post("/v2/integrations/:app_id/user/conversations", proxyIntegrationCore);
+app.post("/v2/integrations/:app_id/user/memories", proxyIntegrationCore);
+app.get("/v2/integrations/:app_id/memories", proxyIntegrationCore);
+app.get("/v2/integrations/:app_id/conversations", proxyIntegrationCore);
+app.post("/v2/integrations/:app_id/search/conversations", proxyIntegrationCore);
+app.post("/v2/integrations/:app_id/notification", proxyIntegrationCore);
+app.get("/v2/integrations/:app_id/tasks", proxyIntegrationCore);
+app.get("/v1/dev/user/memories/vector/search", proxyDeveloperCore);
+app.get("/v1/dev/user/memories", proxyDeveloperCore);
+app.post("/v1/dev/user/memories/batch", proxyDeveloperCore);
+app.post("/v1/dev/user/memories", proxyDeveloperCore);
+app.patch("/v1/dev/user/memories/:memory_id", proxyDeveloperCore);
+app.delete("/v1/dev/user/memories/:memory_id", proxyDeveloperCore);
+app.get("/v1/dev/user/action-items", proxyDeveloperCore);
+app.post("/v1/dev/user/action-items/batch", proxyDeveloperCore);
+app.post("/v1/dev/user/action-items", proxyDeveloperCore);
+app.patch("/v1/dev/user/action-items/:action_item_id", proxyDeveloperCore);
+app.delete("/v1/dev/user/action-items/:action_item_id", proxyDeveloperCore);
+app.get("/v1/dev/user/folders", proxyDeveloperCore);
+app.get("/v1/dev/user/conversations", proxyDeveloperCore);
+app.post("/v1/dev/user/conversations/from-segments", proxyDeveloperCore);
+app.post("/v1/dev/user/conversations", proxyDeveloperCore);
+app.get("/v1/dev/user/conversations/:conversationId", proxyDeveloperCore);
+app.patch("/v1/dev/user/conversations/:conversation_id", proxyDeveloperCore);
+app.delete("/v1/dev/user/conversations/:conversation_id", proxyDeveloperCore);
+app.get("/v1/dev/user/goals", proxyDeveloperCore);
+app.post("/v1/dev/user/goals", proxyDeveloperCore);
+app.get("/v1/dev/user/goals/:goal_id/history", proxyDeveloperCore);
+app.patch("/v1/dev/user/goals/:goal_id/progress", proxyDeveloperCore);
+app.get("/v1/dev/user/goals/:goalId", proxyDeveloperCore);
+app.patch("/v1/dev/user/goals/:goal_id", proxyDeveloperCore);
+app.delete("/v1/dev/user/goals/:goal_id", proxyDeveloperCore);
+app.post("/v1/mcp/memories", proxyMcpCore);
+app.delete("/v1/mcp/memories/:memory_id", proxyMcpCore);
+app.patch("/v1/mcp/memories/:memory_id", proxyMcpCore);
+app.get("/v1/mcp/profile", proxyMcpCore);
+app.get("/v1/mcp/memories/search", proxyMcpCore);
+app.get("/v1/mcp/memories", proxyMcpCore);
+app.get("/v1/mcp/x-posts/search", proxyMcpCore);
+app.get("/v1/mcp/x-posts", proxyMcpCore);
+app.get("/v1/mcp/conversations", proxyMcpCore);
+app.get("/v1/mcp/conversations/search", proxyMcpCore);
+app.get("/v1/mcp/conversations/:conversation_id", proxyMcpCore);
+app.get("/v1/mcp/action-items/search", proxyMcpCore);
+app.get("/v1/mcp/action-items", proxyMcpCore);
+app.post("/v1/mcp/action-items", proxyMcpCore);
+app.post("/v1/mcp/action-items/:action_item_id/complete", proxyMcpCore);
+app.patch("/v1/mcp/action-items/:action_item_id", proxyMcpCore);
+app.delete("/v1/mcp/action-items/:action_item_id", proxyMcpCore);
+app.get("/v1/mcp/goals", proxyMcpCore);
+app.get("/v1/mcp/chat", proxyMcpCore);
+app.get("/v1/mcp/people", proxyMcpCore);
+app.get("/v1/mcp/screen-activity", proxyMcpCore);
+app.get("/v1/mcp/daily-summaries", proxyMcpCore);
+app.get("/v1/payments/success", proxyPublicCore);
+app.get("/v1/payments/cancel", proxyPublicCore);
+app.get("/v1/payments/portal-return", proxyPublicCore);
+app.post("/v1/stripe/webhook", proxyPublicJobs);
+app.post("/v1/stripe/connect/webhook", proxyPublicJobs);
+app.post("/v1/webhooks/sentry", proxyPublicCore);
+app.post("/v1/webhooks/sentry/poll", proxyPublicCore);
+app.get("/v1/stripe/supported-countries", proxyPublicJobs);
+app.get("/v1/stripe/refresh/:accountId", proxyPublicJobs);
+app.get("/v1/stripe/return/:accountId", proxyPublicJobs);
+app.get("/v1/action-items/shared/:token", proxyPublicCore);
+app.get("/v2/messages/shared/:token", proxyPublicCore);
+app.get("/v1/daily-summaries/:summaryId/shared", proxyPublicCore);
+app.get("/v3/speech-profile/audio", proxyPublicCore);
+app.get("/v1/fair-use/case/:case_ref/status", proxyPublicCore);
+app.get("/v1/admin/fair-use/flagged", proxyPublicCore);
+app.get("/v1/admin/fair-use/user/:uid", proxyPublicCore);
+app.post(
+  "/v1/admin/fair-use/user/:uid/resolve-event/:event_id",
+  proxyPublicCore,
+);
+app.post("/v1/admin/fair-use/user/:uid/reset", proxyPublicCore);
+app.post("/v1/admin/fair-use/user/:uid/set-stage", proxyPublicCore);
+app.get("/v1/admin/fair-use/case/:case_ref", proxyPublicCore);
+app.get("/memory/admin/users/:uid/non-active-route-report", proxyPublicCore);
+app.post("/memory/admin/users/:uid/short-term-lifecycle/run", proxyPublicJobs);
+
+app.all("/api/auth/*", async (c) => {
+  const id = requestId(c.req.raw);
+  const response = await c.env.AUTH.fetch(
+    new Request(c.req.raw, {
+      headers: stripUntrustedHeaders(c.req.raw, { preserveClientAuth: true }),
+    }),
+  );
+  return withRequestId(response, id);
+});
+
+app.all("/v2/voice-message/transcribe-stream", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "realtime",
+    c.req.raw,
+  );
+  const response = await c.env.REALTIME.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+});
+
+app.all("/v4/listen", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "realtime",
+    c.req.raw,
+  );
+  const response = await c.env.REALTIME.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+});
+
+app.all("/v4/web/listen", async (c) => {
+  const id = requestId(c.req.raw);
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
+    return c.json({ error: "websocket upgrade required" }, 426);
+  }
+  const bootstrap = await createRealtimeBootstrap(
+    id,
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!bootstrap) return c.json({ error: "realtime unavailable" }, 503);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  headers.delete("authorization");
+  headers.set(REALTIME_BOOTSTRAP_HEADER, bootstrap.encoded);
+  headers.set(REALTIME_BOOTSTRAP_SIGNATURE_HEADER, bootstrap.signature);
+  const response = await c.env.REALTIME.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+});
+
+app.post("/v1/realtime/web-ticket", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const ticket = await createRealtimeTicket(
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!ticket) return c.json({ error: "realtime unavailable" }, 503);
+  c.header("cache-control", "no-store");
+  return c.json({ ticket, expires_in: 30 });
+});
+
+app.all("/v1/omni/relay", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "realtime",
+    c.req.raw,
+  );
+  const response = await c.env.REALTIME.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+});
+
+const proxyAuthenticatedJobs = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(
+      c.env,
+      auth,
+      policy,
+      id,
+      {
+        failClosed: true,
+      },
+    );
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const headers = await authenticatedHeaders(c, auth, "jobs");
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+};
+
+async function proxyAuthenticatedPhone(
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+): Promise<Response> {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(
+      c.env,
+      auth,
+      policy,
+      id,
+      {
+        failClosed: true,
+      },
+    );
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const headers = await authenticatedHeaders(c, auth, "jobs");
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+}
+
+// Privacy deletion must remain reachable while ordinary product traffic is
+// fenced. Jobs validates that the account is fully Cloudflare-owned before it
+// persists the deletion intent, so this route intentionally skips the normal
+// account-cutover denial after authenticating the caller.
+const proxyAuthenticatedAccountDeletion = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "jobs",
+    c.req.raw,
+  );
+  const response = await c.env.JOBS.fetch(new Request(c.req.raw, { headers }));
+  return withRequestId(response, id);
+};
+
+const proxyAuthenticatedAsyncTranscription = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const rateLimitDenial = await enforceEdgeRateLimit(
+    c.env,
+    auth,
+    STT_TRANSCRIBE_RATE_LIMIT,
+    id,
+  );
+  if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  const headers = new Headers();
+  for (const name of ["content-type", "content-length", "idempotency-key"]) {
+    const value = c.req.header(name);
+    if (value) headers.set(name, value);
+  }
+  const target = new URL("/v1/cf/transcription-jobs", c.req.url);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "jobs",
+    { method: "POST", url: target },
+  );
+  const declaredLength = Number(c.req.header("content-length"));
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_ASYNC_TRANSCRIPTION_AUDIO_BYTES
+  ) {
+    return c.json({ error: "audio body too large" }, 413);
+  }
+  const response = await c.env.JOBS.fetch(
+    new Request(target, {
+      method: "POST",
+      headers,
+      body: c.req.raw.body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" }),
+  );
+  return withRequestId(response, id);
+};
+
+const proxyAuthenticatedAsyncTranscriptionStatus = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const headers = new Headers();
+  const jobId = encodeURIComponent(c.req.param("jobId") || "");
+  const target = new URL(`/v1/cf/transcription-jobs/${jobId}`, c.req.url);
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "jobs",
+    { method: "GET", url: target },
+  );
+  const response = await c.env.JOBS.fetch(
+    new Request(target, { method: "GET", headers }),
+  );
+  return withRequestId(response, id);
+};
+
+app.all("/v1/cf/jobs", proxyAuthenticatedJobs);
+app.get("/v1/cf/jobs/:jobId", proxyAuthenticatedJobs);
+// Operator-only DLQ replay is signed and authenticated inside Jobs.  The Edge
+// proxy deliberately remains public-auth passthrough so it can preserve the
+// admin key, idempotency key, timestamp, and request signature headers.
+app.post("/internal/cf/jobs/dlq/replay", proxyPublicJobs);
+// Historical desktop manifest promotion is an operator-only Jobs boundary;
+// Jobs records the reviewed plan and calls API Core for contract validation.
+app.post("/internal/desktop-release-history/reviews", proxyPublicJobs);
+app.post(
+  "/internal/desktop-release-history/reviews/:review_id/apply",
+  proxyPublicJobs,
+);
+app.post(
+  "/internal/desktop-release-history/reviews/:review_id/artifacts/apply",
+  proxyPublicJobs,
+);
+app.post("/internal/windows-release-history/reviews", proxyPublicJobs);
+app.post(
+  "/internal/windows-release-history/reviews/:review_id/apply",
+  proxyPublicJobs,
+);
+app.post(
+  "/internal/windows-release-history/reviews/:review_id/artifacts/apply",
+  proxyPublicJobs,
+);
+// Hume task ownership is operator-attested only. This route never accepts a
+// provider callback or caller identity; Jobs validates the reviewed D1
+// projection and its account-generation/deletion fences.
+app.post("/internal/hume-task-projections/apply", proxyPublicJobs);
+// Staging-only data-protection preparation.  Jobs enforces the admin key and
+// explicit gate; this boundary never claims ownership of the legacy /v1
+// migration routes or mutates canonical source rows.
+app.post("/internal/data-protection/migrations", proxyPublicJobs);
+app.get("/internal/data-protection/migrations/:runId", proxyPublicJobs);
+// Namespaced external MCP App OAuth staging seam. This is intentionally
+// separate from Better Auth's client-to-Omi MCP OAuth and from legacy
+// /v1/apps/mcp; Jobs enforces its explicit staging gate and D1 authority.
+app.post("/v2/cf/apps/mcp/authorize", proxyAuthenticatedJobs);
+app.post("/v2/cf/apps/mcp/discover", proxyAuthenticatedJobs);
+app.post("/v2/cf/apps/mcp/refresh", proxyAuthenticatedJobs);
+app.post("/v2/cf/apps/mcp/tools/:appId/call", proxyAuthenticatedJobs);
+app.post("/v2/cf/apps/mcp/install", proxyAuthenticatedJobs);
+app.get("/v2/cf/apps/mcp/callback", proxyPublicJobs);
+// Dormant Persona/app migration seams. Jobs keeps both feature-gated until
+// Firebase identity and historical Firestore projections are imported; Edge
+// wiring makes the namespaced contracts reachable without changing exact
+// legacy ownership.
+app.get(
+  "/v2/cf/personas/twitter/verify-ownership",
+  proxyAuthenticatedJobs,
+);
+app.post("/v2/cf/apps/migrate-owner", proxyAuthenticatedJobs);
+app.post(
+  "/v2/cf/apps/migrate-owner/identity-projection",
+  proxyAuthenticatedJobs,
+);
+// Reviewed app/memory projection attestation is an admin-key-only Jobs seam;
+// it intentionally does not accept a Better Auth or Firebase credential.
+app.post(
+  "/v2/cf/apps/migrate-owner/data-projection",
+  proxyPublicJobs,
+);
+app.get("/v2/cf/apps/migrate-owner/:jobId", proxyAuthenticatedJobs);
+// External app-consent OAuth is a Better Auth + App D1 namespaced seam. Keep
+// legacy /v1/oauth/* on its independent boundary until provider replay parity.
+app.get("/v2/cf/oauth/authorize", proxyAuthenticatedJobs);
+app.post("/v2/cf/oauth/token", proxyAuthenticatedJobs);
+app.post("/v1/payments/checkout-session", proxyAuthenticatedJobs);
+app.post("/v1/payments/customer-portal", proxyAuthenticatedJobs);
+app.post("/v1/payments/upgrade-subscription", proxyAuthenticatedJobs);
+app.delete("/v1/payments/subscription", proxyAuthenticatedJobs);
+app.post("/v1/stripe/connect-accounts", proxyAuthenticatedJobs);
+app.get("/v1/stripe/onboarded", proxyAuthenticatedJobs);
+app.post("/v1/stripe/refresh/:accountId", proxyAuthenticatedJobs);
+app.post("/v1/paypal/payment-details", proxyAuthenticatedJobs);
+app.get("/v1/paypal/payment-details", proxyAuthenticatedJobs);
+app.get("/v1/payment-methods/status", proxyAuthenticatedJobs);
+app.post("/v1/payment-methods/default", proxyAuthenticatedJobs);
+app.get("/v1/x/oauth-url", proxyAuthenticatedJobs);
+app.get("/v1/x/connection-status", proxyAuthenticatedJobs);
+app.get("/v1/x/posts", proxyAuthenticatedJobs);
+app.post("/v1/x/sync", proxyAuthenticatedJobs);
+app.post("/v1/x/disconnect", proxyAuthenticatedJobs);
+app.get("/v1/task-integrations", proxyAuthenticatedJobs);
+app.get("/v1/task-integrations/default", proxyAuthenticatedJobs);
+app.put("/v1/task-integrations/default", proxyAuthenticatedJobs);
+app.get("/v1/task-integrations/asana/workspaces", proxyAuthenticatedJobs);
+app.get(
+  "/v1/task-integrations/asana/projects/:workspace_gid",
+  proxyAuthenticatedJobs,
+);
+app.get("/v1/task-integrations/clickup/teams", proxyAuthenticatedJobs);
+app.get(
+  "/v1/task-integrations/clickup/spaces/:team_id",
+  proxyAuthenticatedJobs,
+);
+app.get(
+  "/v1/task-integrations/clickup/lists/:space_id",
+  proxyAuthenticatedJobs,
+);
+app.get("/v1/task-integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
+app.post("/v1/task-integrations/:app_key/tasks", proxyAuthenticatedJobs);
+app.put("/v1/task-integrations/:app_key", proxyAuthenticatedJobs);
+app.delete("/v1/task-integrations/:app_key", proxyAuthenticatedJobs);
+app.get("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
+app.put("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
+app.delete("/v1/integrations/google_calendar", proxyAuthenticatedJobs);
+app.get("/v1/integrations/google_calendar/oauth-url", proxyAuthenticatedJobs);
+app.post("/v1/app/thumbnails", proxyAuthenticatedJobs);
+app.post("/v1/personas", proxyAuthenticatedJobs);
+app.patch("/v1/personas/:personaId", proxyAuthenticatedJobs);
+app.get("/v1/integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
+app.get("/v1/calendar/google/events", proxyAuthenticatedJobs);
+app.get("/v1/personas/twitter/profile", proxyAuthenticatedJobs);
+app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
+app.post(
+  "/v1/users/account-deletion-wipes/run",
+  proxyAuthenticatedAccountDeletion,
+);
+
+const proxyAuthenticatedCore = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  if (c.req.path !== ACCOUNT_CUTOVER_CONTROL_PATH) {
+    const denial = await cloudflareProductTrafficDenial(
+      c.req.raw,
+      c.env,
+      auth,
+      id,
+    );
+    if (denial) return withRequestId(denial, id);
+  }
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const headers = await authenticatedHeaders(c, auth, "api-core", c.req.raw, {
+    recoverInvalidByok: c.req.path === "/v1/users/me/subscription",
+  });
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+app.get("/v1/personas", proxyAuthenticatedCore);
+app.get("/v2/cf/apps/mcp/tools", proxyAuthenticatedCore);
+app.post("/v1/user/persona", proxyAuthenticatedCore);
+app.get("/v1/personas/twitter/initial-message", proxyAuthenticatedCore);
+app.get("/v1/personas/:personaId", proxyPublicCore);
+app.delete("/v1/personas/:personaId", proxyPublicCore);
+
+const proxyConversationAudioDownload = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  // The core Worker verifies the HMAC token and its uid/conversation/audio
+  // binding. Tokenless fallback downloads retain the normal Better Auth path.
+  if (c.req.query("token")) return proxyPublicCore(c);
+  return proxyAuthenticatedCore(c);
+};
+
+const proxyAuthenticatedAuthProfile = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  const target = new URL(c.req.url);
+  target.protocol = "https:";
+  target.host = "auth.internal";
+  target.pathname = "/internal/profile";
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "auth",
+    { method: "GET", url: target },
+  );
+  const response = await c.env.AUTH.fetch(
+    new Request(target, { method: "GET", headers }),
+  );
+  return withRequestId(response, id);
+};
+
+const proxyAuthenticatedMcpGrants = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return withRequestId(c.json({ error: "unauthorized" }, 401), id);
+  const headers = stripUntrustedHeaders(c.req.raw);
+  const target = new URL("/internal/mcp/grants", "https://auth.internal");
+  const grantId = c.req.param("grantId");
+  if (grantId) target.pathname += `/${encodeURIComponent(grantId)}`;
+  await attachAuthContext(
+    headers,
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+    "auth",
+    { method: c.req.method, url: target },
+  );
+  const response = await c.env.AUTH.fetch(
+    new Request(target, { method: c.req.method, headers }),
+  );
+  return withRequestId(response, id);
+};
+
+const proxyAuthenticatedAI = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const headers = await authenticatedHeaders(c, auth, "api-ai");
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.API_AI.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+type ChatAttachmentRoutingResult = {
+  body: ArrayBuffer;
+  hasAttachments: boolean;
+};
+
+async function inspectChatAttachmentBody(
+  request: Request,
+): Promise<ChatAttachmentRoutingResult | null> {
+  if (
+    !(request.headers.get("content-type") || "")
+      .toLowerCase()
+      .includes("application/json")
+  ) {
+    return { body: new ArrayBuffer(0), hasAttachments: false };
+  }
+  const declared = Number(request.headers.get("content-length") || "0");
+  if (
+    Number.isFinite(declared) &&
+    declared > MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES
+  )
+    return null;
+  const body = request.clone().body;
+  if (!body) return { body: new ArrayBuffer(0), hasAttachments: false };
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MAX_CHAT_ATTACHMENT_ROUTING_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(next.value);
+    }
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
+  } catch {
+    return { body: bytes.buffer, hasAttachments: false };
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    return { body: bytes.buffer, hasAttachments: false };
+  }
+  const payload = decoded as Record<string, unknown>;
+  const fileIds = payload.file_ids;
+  const hasAttachments =
+    Array.isArray(fileIds) && fileIds.length > 0;
+  return { body: bytes.buffer, hasAttachments };
+}
+
+type ChatAttachmentEnvelope = "messages" | "openai";
+
+const proxyChatAttachmentToJobs = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+  inspected: ChatAttachmentRoutingResult,
+  envelope?: ChatAttachmentEnvelope,
+  appId?: string | null,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const target = new URL(
+    "/v2/cf/messages/attachments",
+    "https://jobs.internal",
+  );
+  if (envelope) target.searchParams.set("envelope", envelope);
+  if (appId) target.searchParams.set("app_id", appId);
+  const headers = await authenticatedHeaders(c, auth, "jobs", {
+    method: "POST",
+    url: target,
+  });
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.JOBS.fetch(
+    new Request(target, { method: "POST", headers, body: inspected.body }),
+  );
+  return withRequestId(response, id);
+};
+
+const proxyChatMessages = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const policy = edgeRateLimitPolicyForRequest(c.req.method, c.req.path);
+  if (policy) {
+    const rateLimitDenial = await enforceEdgeRateLimit(c.env, auth, policy, id);
+    if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
+  }
+  const url = new URL(c.req.url);
+  const appId = url.searchParams.get("app_id") || url.searchParams.get("plugin_id");
+  const inspected = await inspectChatAttachmentBody(c.req.raw);
+  if (inspected?.hasAttachments) {
+    const target = new URL(
+      "/v2/cf/messages/attachments",
+      "https://jobs.internal",
+    );
+    if (c.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED === "true" && !appId)
+      target.searchParams.set("envelope", "messages");
+    if (appId && appId !== "null") target.searchParams.set("app_id", appId);
+    const headers = await authenticatedHeaders(c, auth, "jobs", {
+      method: "POST",
+      url: target,
+    });
+    if (headers instanceof Response) return withRequestId(headers, id);
+    const response = await c.env.JOBS.fetch(new Request(target, { method: "POST", headers, body: inspected.body }));
+    return withRequestId(response, id);
+  }
+  const headers = await authenticatedHeaders(c, auth, "api-ai");
+  if (headers instanceof Response) return withRequestId(headers, id);
+  const response = await c.env.API_AI.fetch(
+    new Request(c.req.raw, { headers }),
+  );
+  return withRequestId(response, id);
+};
+
+// A bounded, explicit adapter for the attachment subset of the released
+// OpenAI-shaped completion route.  Text-only completions and all provider/tool
+// variants remain behind the legacy compatibility boundary.  Jobs owns the
+// envelope serialization only after its Assistants run is complete.
+const legacyChatCompletionsStagingBoundary = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  if (c.env.CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED !== "true")
+    return legacyChatCompatibilityStagingBoundary(c);
+  const url = new URL(c.req.url);
+  const appChatRequested = ["app_id", "plugin_id"].some((key) => {
+    const value = url.searchParams.get(key);
+    return value !== null && value !== "" && value !== "null";
+  });
+  if (appChatRequested) return legacyChatCompatibilityStagingBoundary(c);
+  const inspected = await inspectChatAttachmentBody(c.req.raw);
+  if (!inspected?.hasAttachments)
+    return legacyChatCompatibilityStagingBoundary(c);
+  return proxyChatAttachmentToJobs(c, inspected, "openai");
+};
+
+app.get("/v1/config/api-keys", proxyAuthenticatedCore);
+app.post("/v1/users/me/byok-active", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return withRequestId(c.json({ error: "unauthorized" }, 401), id);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const contentLength = Number(c.req.header("content-length"));
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_BYOK_ACTIVATION_BODY_BYTES
+  ) {
+    return withRequestId(
+      c.json({ detail: "Invalid BYOK activation payload" }, 400),
+      id,
+    );
+  }
+  let payload: unknown;
+  try {
+    const body = await c.req.arrayBuffer();
+    if (body.byteLength > MAX_BYOK_ACTIVATION_BODY_BYTES) throw new Error();
+    payload = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return withRequestId(
+      c.json({ detail: "Invalid BYOK activation payload" }, 400),
+      id,
+    );
+  }
+  const parsed = parseByokActivationPayload(payload);
+  if (parsed instanceof Response) return withRequestId(parsed, id);
+  const response = await activateByok(c.env, auth.uid, parsed.fingerprints);
+  response.headers.set("cache-control", "no-store");
+  return withRequestId(response, id);
+});
+app.delete("/v1/users/me/byok-active", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return withRequestId(c.json({ error: "unauthorized" }, 401), id);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+  const response = await deactivateByok(c.env, auth.uid);
+  response.headers.set("cache-control", "no-store");
+  return withRequestId(response, id);
+});
+app.get("/v1/users/me/usage", proxyAuthenticatedCore);
+app.get("/v1/users/me/subscription", proxyAuthenticatedCore);
+app.get("/v1/users/me/usage-quota", proxyAuthenticatedCore);
+app.get("/v1/users/me/paywall", proxyAuthenticatedCore);
+app.get("/v1/users/me/trial", proxyAuthenticatedCore);
+app.get("/v1/users/me/llm-usage", proxyAuthenticatedCore);
+app.post("/v1/users/me/llm-usage", proxyAuthenticatedCore);
+app.get("/v1/users/me/llm-usage/top-features", proxyAuthenticatedCore);
+app.get("/v1/users/me/llm-usage/total", proxyAuthenticatedCore);
+app.get("/v1/users/export", proxyAuthenticatedCore);
+app.get("/v1/payments/available-plans", proxyAuthenticatedCore);
+app.get("/v1/payments/overage-info", proxyAuthenticatedCore);
+app.get("/v1/fair-use/status", proxyAuthenticatedCore);
+app.get("/v2/messages", proxyAuthenticatedCore);
+app.delete("/v2/messages", proxyAuthenticatedCore);
+app.delete("/v1/messages", proxyAuthenticatedCore);
+app.post("/v1/messages/:messageId/report", proxyAuthenticatedCore);
+app.post("/v2/messages/:messageId/report", proxyAuthenticatedCore);
+app.patch("/v2/messages/:messageId/rating", proxyAuthenticatedCore);
+app.post("/v2/messages/share", proxyAuthenticatedCore);
+app.post("/v2/messages", proxyChatMessages);
+app.post("/v1/initial-message", proxyAuthenticatedAI);
+app.post("/v2/initial-message", proxyAuthenticatedAI);
+app.post("/v2/chat/initial-message", proxyAuthenticatedAI);
+app.post("/v2/chat/generate-title", proxyAuthenticatedAI);
+app.post("/v2/chat/generate-reply", proxyAuthenticatedAI);
+// Explicit Cloudflare text-only completion contract.  The released
+// /v2/chat/completions route remains behind its legacy compatibility boundary
+// until provider/tool/session wire parity is complete.
+app.post("/v2/cf/chat/completions", proxyAuthenticatedAI);
+app.post(
+  "/v1/chat/materialize-prompts",
+  legacyChatCompatibilityStagingBoundary,
+);
+app.post(
+  "/v2/chat/materialize-prompts",
+  legacyChatCompatibilityStagingBoundary,
+);
+app.post("/v2/chat/completions", legacyChatCompletionsStagingBoundary);
+app.post("/v1/files", legacyChatFilesStagingBoundary);
+app.post("/v2/files", legacyChatFilesStagingBoundary);
+app.post("/v2/audio-merge-jobs/run", proxyAuthenticatedJobs);
+app.get("/v1/wrapped/:year", proxyAuthenticatedJobs);
+app.post("/v1/wrapped/:year/generate", proxyAuthenticatedJobs);
+// Task-intelligence and staged-task requests are now authenticated at Edge
+// and owned by the D1/Workers-AI API Core boundary.  The old fail-closed
+// handler remains defined above for rollback diagnostics, but no request or
+// caller-supplied prompt is forwarded to the legacy backend.
+app.delete("/v1/staged-tasks", proxyAuthenticatedCore);
+app.delete("/v1/staged-tasks/:taskId", proxyAuthenticatedCore);
+app.get("/v1/staged-tasks", proxyAuthenticatedCore);
+app.patch("/v1/staged-tasks/batch-scores", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/promote", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/:taskId/promote", proxyAuthenticatedCore);
+app.post("/v1/task-intelligence/feedback", proxyAuthenticatedCore);
+app.post("/v1/task-intelligence/interventions", proxyAuthenticatedCore);
+app.post("/v1/task-intelligence/outcomes", proxyAuthenticatedCore);
+app.post("/v1/what-matters-now/evaluate", proxyAuthenticatedCore);
+app.put("/v1/task-intelligence/context-snapshot", proxyAuthenticatedCore);
+app.put("/v1/task-intelligence/open-loop-snapshot", proxyAuthenticatedCore);
+app.get("/v1/users/stats/chat-messages", proxyAuthenticatedCore);
+app.post("/v2/chat-sessions", proxyAuthenticatedCore);
+app.get("/v2/chat-sessions", proxyAuthenticatedCore);
+app.get("/v2/chat-sessions/:sessionId", proxyAuthenticatedCore);
+app.patch("/v2/chat-sessions/:sessionId", proxyAuthenticatedCore);
+app.delete("/v2/chat-sessions/:sessionId", proxyAuthenticatedCore);
+app.get("/v2/cf/chat-sessions/:sessionId/files", proxyAuthenticatedCore);
+app.post("/v2/cf/chat-sessions/:sessionId/files", proxyAuthenticatedCore);
+app.delete(
+  "/v2/cf/chat-sessions/:sessionId/files/:fileId",
+  proxyAuthenticatedCore,
+);
+app.post(
+  "/v2/cf/chat-sessions/:sessionId/assistant-runs",
+  proxyAuthenticatedJobs,
+);
+app.post("/v2/cf/messages/attachments", proxyAuthenticatedJobs);
+app.get(
+  "/v2/cf/chat-sessions/:sessionId/assistant-runs/:runId",
+  proxyAuthenticatedJobs,
+);
+app.delete("/v2/cf/chat-sessions/:sessionId/assistant", proxyAuthenticatedJobs);
+app.post("/v2/desktop/messages", proxyAuthenticatedCore);
+app.get("/v2/desktop/messages", proxyAuthenticatedCore);
+app.get("/v2/desktop/messages/reconcile", proxyAuthenticatedCore);
+app.delete("/v2/desktop/messages", proxyAuthenticatedCore);
+app.patch("/v2/desktop/messages/:messageId/rating", proxyAuthenticatedCore);
+app.get("/v1/apps/popular", proxyAuthenticatedCore);
+app.get("/v1/apps", proxyAuthenticatedCore);
+app.get("/v1/app/plans", proxyAuthenticatedCore);
+app.get("/v1/app/generate-prompts", proxyAuthenticatedAI);
+app.post("/v1/app/generate-description", proxyAuthenticatedAI);
+app.post("/v1/app/generate-description-emoji", proxyAuthenticatedAI);
+app.post("/v1/app/generate", proxyAuthenticatedAI);
+app.post("/v1/app/generate-icon", proxyAuthenticatedAI);
+app.get("/v1/apps/tester/check", proxyAuthenticatedCore);
+app.get("/v1/apps/:appId", proxyAuthenticatedCore);
+app.post("/v1/apps", proxyAuthenticatedJobs);
+app.patch("/v1/apps/:appId", proxyAuthenticatedJobs);
+app.patch("/v1/apps/:app_id/change-visibility", proxyAuthenticatedJobs);
+app.post("/v1/apps/:app_id/refresh-manifest", proxyAuthenticatedJobs);
+app.delete("/v1/apps/:appId", proxyAuthenticatedJobs);
+app.post("/v1/apps/:app_id/keys", proxyAuthenticatedJobs);
+app.get("/v1/apps/:app_id/keys", proxyAuthenticatedJobs);
+app.delete("/v1/apps/:app_id/keys/:key_id", proxyAuthenticatedJobs);
+app.post("/v1/mcp/keys", proxyAuthenticatedJobs);
+app.get("/v1/mcp/keys", proxyAuthenticatedJobs);
+app.delete("/v1/mcp/keys/:keyId", proxyAuthenticatedJobs);
+app.post("/v1/dev/keys", proxyAuthenticatedJobs);
+app.get("/v1/dev/keys", proxyAuthenticatedJobs);
+app.delete("/v1/dev/keys/:keyId", proxyAuthenticatedJobs);
+app.get("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
+app.delete("/v1/apps/:app_id/subscription", proxyAuthenticatedJobs);
+app.post("/v1/apps/review", proxyAuthenticatedCore);
+app.patch("/v1/apps/:appId/review", proxyAuthenticatedCore);
+app.patch("/v1/apps/:appId/review/reply", proxyAuthenticatedCore);
+app.get("/v2/apps", proxyPublicCore);
+app.get("/v2/apps/capability/:capability_id/grouped", proxyPublicCore);
+app.get("/v2/apps/search", proxyAuthenticatedCore);
+app.get("/v1/apps/enabled", proxyAuthenticatedCore);
+app.post("/v1/apps/enable", proxyAuthenticatedCore);
+app.post("/v1/apps/disable", proxyAuthenticatedCore);
+app.put("/v1/users/preferences/app", proxyAuthenticatedCore);
+app.post("/v2/realtime/session", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+  if (!auth) return c.json({ error: "unauthorized" }, 401);
+  const denial = await cloudflareProductTrafficDenial(
+    c.req.raw,
+    c.env,
+    auth,
+    id,
+  );
+  if (denial) return withRequestId(denial, id);
+
+  // The old endpoint accepted `openai`/`gemini` and minted a provider token.
+  // Cloudflare-native clients use the signed first-message ticket instead;
+  // reject those provider selectors rather than silently minting a token for
+  // an external AI service.
+  const declaredBodyLength = Number(c.req.header("content-length") || "");
+  if (
+    Number.isFinite(declaredBodyLength) &&
+    declaredBodyLength > MAX_REALTIME_SESSION_BODY_BYTES
+  ) {
+    return c.json({ error: "realtime_session_request_too_large" }, 413);
+  }
+  const rawBody = await c.req.text();
+  if (new TextEncoder().encode(rawBody).byteLength > MAX_REALTIME_SESSION_BODY_BYTES) {
+    return c.json({ error: "realtime_session_request_too_large" }, 413);
+  }
+  if (rawBody.trim()) {
+    let body: { provider?: unknown };
+    try {
+      body = JSON.parse(rawBody) as { provider?: unknown };
+    } catch {
+      return c.json({ error: "invalid_realtime_session_request" }, 400);
+    }
+    if (
+      body === null ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      (body.provider !== undefined &&
+        body.provider !== "workers-ai" &&
+        body.provider !== "cloudflare-workers-ai")
+    ) {
+      return c.json(
+        {
+          error: "external_realtime_disabled",
+          reason: "use the Cloudflare Workers AI realtime transport",
+        },
+        409,
+      );
+    }
+  }
+
+  const ticket = await createRealtimeTicket(
+    auth,
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!ticket) return c.json({ error: "realtime unavailable" }, 503);
+  const websocketUrl = new URL("/v4/web/listen", c.req.url);
+  websocketUrl.protocol = websocketUrl.protocol === "https:" ? "wss:" : "ws:";
+  c.header("cache-control", "no-store");
+  return c.json({
+    provider: "workers-ai",
+    token: ticket,
+    expires_in: 30,
+    websocket_url: websocketUrl.toString(),
+    transport: "cloudflare-realtime",
+  });
+});
+app.post("/v2/realtime/usage", proxyAuthenticatedAI);
+app.post("/v2/voice-message/transcribe", proxyAuthenticatedAI);
+app.post("/v2/voice-messages", proxyAuthenticatedAI);
+app.post("/v1/stt/transcribe-async", proxyAuthenticatedAsyncTranscription);
+app.get(
+  "/v1/stt/transcribe-async/:jobId",
+  proxyAuthenticatedAsyncTranscriptionStatus,
+);
+app.post("/v2/sync-capture-manifest", proxyAuthenticatedJobs);
+app.post("/v2/sync-jobs/run", proxyAuthenticatedJobs);
+app.post("/v1/conversation-finalization-jobs/run", proxyAuthenticatedJobs);
+app.post("/v1/sync-local-files", proxyAuthenticatedJobs);
+app.post("/v2/sync-local-files", proxyAuthenticatedJobs);
+app.get("/v2/sync-local-files/:jobId", proxyAuthenticatedJobs);
+app.post("/v1/import/limitless", proxyAuthenticatedJobs);
+app.get("/v1/import/jobs", proxyAuthenticatedCore);
+app.get("/v1/import/jobs/:jobId", proxyAuthenticatedCore);
+app.post("/v1/import/jobs/:jobId/cancel", proxyAuthenticatedCore);
+app.delete("/v1/import/jobs/:jobId", proxyAuthenticatedCore);
+app.post("/v1/cf/chat-files", proxyAuthenticatedJobs);
+app.get("/v1/cf/chat-files", proxyAuthenticatedJobs);
+app.delete("/v1/cf/chat-files/:fileId", proxyAuthenticatedJobs);
+app.post("/v2/cf/audio-merge-jobs/run", proxyAuthenticatedJobs);
+app.get("/v2/cf/audio-merge-jobs/:jobId", proxyAuthenticatedJobs);
+app.post("/v2/cf/audio-merge-jobs/legacy/run", proxyAuthenticatedJobs);
+app.get("/v2/cf/audio-merge-jobs/legacy/:jobId", proxyAuthenticatedJobs);
+app.post("/v1/sync/audio/:conversationId/precache", proxyAuthenticatedJobs);
+app.get("/v1/sync/audio/:conversationId/urls", proxyAuthenticatedCore);
+app.get("/v3/speech-profile", proxyAuthenticatedCore);
+app.get("/v4/speech-profile", proxyAuthenticatedCore);
+app.get("/v3/speech-profile/status", proxyAuthenticatedCore);
+app.post("/v3/upload-audio", proxyAuthenticatedCore);
+app.get("/v3/speech-profile/expand", proxyAuthenticatedCore);
+app.delete("/v3/speech-profile/expand", proxyAuthenticatedCore);
+app.get(
+  "/v1/sync/audio/:conversationId/:audioFileId",
+  proxyConversationAudioDownload,
+);
+app.post("/v1/embeddings-workers-ai", proxyAuthenticatedAI);
+app.post("/v1/stt/transcribe", proxyAuthenticatedAI);
+app.get("/v1/account/cutover/control", proxyAuthenticatedCore);
+app.get("/v1/candidates/control", proxyAuthenticatedCore);
+app.get("/v1/candidates", proxyAuthenticatedCore);
+app.get("/v1/what-matters-now", proxyAuthenticatedCore);
+app.get(
+  "/v1/task-intelligence/debug/evaluations/:evaluationId",
+  proxyAuthenticatedCore,
+);
+app.post("/v1/candidates", proxyAuthenticatedCore);
+app.post("/v1/candidates/migrate-staged", proxyAuthenticatedCore);
+app.post("/v1/candidates/integrations/drain", proxyAuthenticatedCore);
+app.get("/v1/candidates/:candidate_id", proxyAuthenticatedCore);
+app.post("/v1/candidates/:candidate_id/accept", proxyAuthenticatedCore);
+app.post("/v1/candidates/:candidate_id/reject", proxyAuthenticatedCore);
+app.post("/v1/candidates/:candidate_id/expire", proxyAuthenticatedCore);
+app.all("/v1/cf/probe", proxyAuthenticatedCore);
+app.all("/v1/cf/assets/*", proxyAuthenticatedCore);
+app.get("/v1/advice", proxyAuthenticatedCore);
+app.post("/v1/advice", proxyAuthenticatedCore);
+app.post("/v1/advice/mark-all-read", proxyAuthenticatedCore);
+app.patch("/v1/advice/:adviceId", proxyAuthenticatedCore);
+app.delete("/v1/advice/:adviceId", proxyAuthenticatedCore);
+app.get("/memory/search", proxyAuthenticatedCore);
+app.get("/memory/archive/search", proxyAuthenticatedCore);
+app.get("/memory/vector/search", proxyAuthenticatedCore);
+app.get("/v3/memories", proxyAuthenticatedCore);
+app.post("/v3/memories", proxyAuthenticatedCore);
+app.post("/v3/memories/batch", proxyAuthenticatedCore);
+app.get("/v3/memories/review-queue", proxyAuthenticatedCore);
+app.get("/v3/memories/review-queue/:reviewId", proxyAuthenticatedCore);
+app.post("/v3/memories/review-queue/:reviewId/resolve", proxyAuthenticatedCore);
+app.delete("/v3/memories", proxyAuthenticatedCore);
+app.delete("/v3/memories/batch", proxyAuthenticatedCore);
+app.delete("/v3/memories/:memoryId", proxyAuthenticatedCore);
+app.patch("/v3/memories/:memoryId", proxyAuthenticatedCore);
+app.patch("/v3/memories/:memoryId/visibility", proxyAuthenticatedCore);
+app.patch("/v3/memories/:memoryId/read", proxyAuthenticatedCore);
+app.patch("/v3/memories/:memoryId/baseline", proxyAuthenticatedCore);
+app.post("/v3/memories/:memoryId/review", proxyAuthenticatedCore);
+app.post("/v3/memory-imports/batch", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/shared", proxyPublicCore);
+app.get("/v1/conversations", proxyAuthenticatedCore);
+app.post("/v1/conversations", proxyAuthenticatedCore);
+app.post("/v1/conversations/from-segments", proxyAuthenticatedCore);
+app.post("/v1/conversations/search", proxyAuthenticatedCore);
+app.get("/v1/conversations/count", proxyAuthenticatedCore);
+app.post("/v1/conversations/merge", proxyAuthenticatedCore);
+app.post("/v1/conversations/:conversationId/finalize", proxyAuthenticatedCore);
+app.post("/v1/conversations/:conversationId/reprocess", proxyAuthenticatedCore);
+app.get(
+  "/v1/conversations/:conversationId/finalization",
+  proxyAuthenticatedCore,
+);
+app.get("/v1/conversations/:conversationId", proxyAuthenticatedCore);
+app.delete("/v1/conversations/:conversationId", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/photos", proxyAuthenticatedCore);
+app.get(
+  "/v1/conversations/:conversationId/transcripts",
+  proxyAuthenticatedCore,
+);
+app.get("/v1/conversations/:conversationId/analytics", proxyAuthenticatedCore);
+app.post(
+  "/v1/conversations/:conversationId/test-prompt",
+  proxyAuthenticatedCore,
+);
+app.get(
+  "/v1/conversations/:conversationId/suggested-apps",
+  proxyAuthenticatedCore,
+);
+app.get("/v1/conversations/:conversationId/recording", proxyAuthenticatedCore);
+app.patch("/v1/conversations/:conversationId/events", proxyAuthenticatedCore);
+app.patch("/v1/conversations/:conversationId/summary", proxyAuthenticatedCore);
+app.delete("/v1/joan/:memoryId/followup-question", proxyAuthenticatedCore);
+app.delete(
+  "/v1/conversations/:conversationId/calendar-event",
+  proxyAuthenticatedCore,
+);
+app.post(
+  "/v1/conversations/:conversationId/calendar-event",
+  proxyAuthenticatedJobs,
+);
+app.post(
+  "/v1/conversations/:conversationId/calendar-event/auto-link",
+  proxyAuthenticatedJobs,
+);
+app.post("/v1/tools/calendar-events", proxyAuthenticatedJobs);
+app.patch(
+  "/v1/conversations/:conversationId/segments/text",
+  proxyAuthenticatedCore,
+);
+app.patch(
+  "/v1/conversations/:conversationId/segments/:segmentIdx/assign",
+  proxyAuthenticatedCore,
+);
+app.patch(
+  "/v1/conversations/:conversationId/segments/assign-bulk",
+  proxyAuthenticatedCore,
+);
+app.patch(
+  "/v1/conversations/:conversationId/assign-speaker/:speakerId",
+  proxyAuthenticatedCore,
+);
+app.patch(
+  "/v1/conversations/:conversationId/visibility",
+  proxyAuthenticatedCore,
+);
+app.patch("/v1/conversations/:conversationId/title", proxyAuthenticatedCore);
+app.patch("/v1/conversations/:conversationId/starred", proxyAuthenticatedCore);
+app.get(
+  "/v1/conversations/:conversationId/action-items",
+  proxyAuthenticatedCore,
+);
+app.get(
+  "/v1/conversations/:conversationId/action-items/count",
+  proxyAuthenticatedCore,
+);
+app.patch(
+  "/v1/conversations/:conversationId/action-items",
+  proxyAuthenticatedCore,
+);
+app.delete(
+  "/v1/conversations/:conversationId/action-items",
+  proxyAuthenticatedCore,
+);
+app.patch(
+  "/v1/conversations/:conversationId/action-items/:actionItemIdx",
+  proxyAuthenticatedCore,
+);
+app.post("/v1/cf/conversations", proxyAuthenticatedCore);
+app.get("/v1/cf/conversations", proxyAuthenticatedCore);
+app.get("/v1/cf/conversations/count", proxyAuthenticatedCore);
+app.get("/v1/cf/conversations/:conversationId", proxyAuthenticatedCore);
+app.patch("/v1/cf/conversations/:conversationId/title", proxyAuthenticatedCore);
+app.patch(
+  "/v1/cf/conversations/:conversationId/starred",
+  proxyAuthenticatedCore,
+);
+app.all("/v1/users/transcription-preferences", proxyAuthenticatedCore);
+app.all("/v1/users/available-languages", proxyAuthenticatedCore);
+app.all("/v1/users/language", proxyAuthenticatedCore);
+app.all("/v1/users/onboarding", proxyAuthenticatedCore);
+app.get("/v1/users/store-recording-permission", proxyAuthenticatedCore);
+app.post("/v1/users/store-recording-permission", proxyAuthenticatedCore);
+app.delete("/v1/users/store-recording-permission", proxyAuthenticatedJobs);
+app.get("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
+app.post("/v1/users/private-cloud-sync", proxyAuthenticatedCore);
+app.get("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
+app.post("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
+app.post("/v1/users/fcm-token", proxyAuthenticatedCore);
+app.delete("/v1/users/fcm-token", proxyAuthenticatedCore);
+app.patch("/v1/users/geolocation", proxyAuthenticatedCore);
+app.get("/v1/announcements/pending", proxyAuthenticatedCore);
+app.post("/v1/announcements/:announcementId/dismiss", proxyAuthenticatedCore);
+app.get("/v1/action-items", proxyAuthenticatedCore);
+app.post("/v1/action-items", proxyAuthenticatedCore);
+app.get("/v1/action-items/ids", proxyAuthenticatedCore);
+app.get("/v1/action-items/search", proxyAuthenticatedCore);
+app.patch("/v1/action-items/batch", proxyAuthenticatedCore);
+app.post("/v1/action-items/batch", proxyAuthenticatedCore);
+app.post("/v1/action-items/batch-delete", proxyAuthenticatedCore);
+app.get("/v1/action-items/pending-sync", proxyAuthenticatedCore);
+app.patch("/v1/action-items/sync-batch", proxyAuthenticatedCore);
+app.post("/v1/action-items/share", proxyAuthenticatedCore);
+app.post("/v1/action-items/accept", proxyAuthenticatedCore);
+app.post(
+  "/v1/action-items/restore-legacy-conversation-items",
+  proxyAuthenticatedCore,
+);
+app.delete("/v1/import/limitless/conversations", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/migrate", proxyAuthenticatedCore);
+app.post("/v1/staged-tasks/migrate-conversation-items", proxyAuthenticatedCore);
+app.post("/v1/chat-first/blocks/validate", proxyAuthenticatedCore);
+app.post("/v1/chat/deferrals", proxyAuthenticatedCore);
+app.get("/v1/agent/tools", proxyAuthenticatedCore);
+app.post("/v1/agent/execute-tool", proxyAuthenticatedCore);
+app.get("/v1/tools/conversations", proxyAuthenticatedCore);
+app.post("/v1/tools/conversations/search", proxyAuthenticatedCore);
+app.post("/v1/tools/conversations/search-chunks", proxyAuthenticatedCore);
+app.get("/v1/tools/memories", proxyAuthenticatedCore);
+app.post("/v1/tools/memories/search", proxyAuthenticatedCore);
+app.get("/v1/tools/action-items", proxyAuthenticatedCore);
+app.post("/v1/tools/action-items", proxyAuthenticatedCore);
+app.patch("/v1/tools/action-items/:actionItemId", proxyAuthenticatedCore);
+app.get("/v1/knowledge-graph", proxyAuthenticatedCore);
+app.delete("/v1/knowledge-graph", proxyAuthenticatedCore);
+app.get("/v1/knowledge-graph/canonical", proxyAuthenticatedCore);
+app.post("/v1/knowledge-graph/extract", proxyAuthenticatedCore);
+app.post("/v1/knowledge-graph/rebuild", proxyAuthenticatedCore);
+app.put("/v1/integrations/apple-health/sync", proxyAuthenticatedCore);
+app.put("/v1/integrations/apple_health", proxyAuthenticatedCore);
+app.delete("/v1/integrations/apple_health", proxyAuthenticatedCore);
+// Keep provider-specific core routes ahead of the generic Calendar alias
+// boundary so Apple Health never gets proxied to Jobs.
+app.put("/v1/integrations/:app_key", proxyAuthenticatedJobs);
+app.delete("/v1/integrations/:app_key", proxyAuthenticatedJobs);
+app.post("/v1/memories/extract", proxyAuthenticatedCore);
+app.post("/v1/connectors/synthesize", proxyAuthenticatedCore);
+app.post("/v1/conversations/topic", proxyAuthenticatedCore);
+app.get("/v1/daily-score", proxyAuthenticatedCore);
+app.get("/v1/scores", proxyAuthenticatedCore);
+app.post("/v1/focus-sessions", proxyAuthenticatedCore);
+app.get("/v1/focus-sessions", proxyAuthenticatedCore);
+app.delete("/v1/focus-sessions/:sessionId", proxyAuthenticatedCore);
+app.get("/v1/focus-stats", proxyAuthenticatedCore);
+app.post("/v1/screen-activity/sync", proxyAuthenticatedCore);
+app.get("/v1/screen-activity", proxyAuthenticatedCore);
+app.get("/v1/screen-activity/summary", proxyAuthenticatedCore);
+app.get("/v1/crisp/unread", proxyAuthenticatedCore);
+app.get("/v1/integrations/:app_key", proxyAuthenticatedCore);
+app.get("/v1/calendar/onboarding/status", proxyAuthenticatedCore);
+app.post("/v1/calendar/onboarding/skip", proxyAuthenticatedCore);
+app.post("/v1/calendar/onboarding/reset", proxyAuthenticatedCore);
+app.post("/v1/calendar/meetings", proxyAuthenticatedCore);
+app.get("/v1/calendar/meetings", proxyAuthenticatedCore);
+app.get("/v1/calendar/meetings/:meetingId", proxyAuthenticatedCore);
+app.get("/v1/action-items/:actionItemId", proxyAuthenticatedCore);
+app.patch("/v1/action-items/:actionItemId", proxyAuthenticatedCore);
+app.patch("/v1/action-items/:actionItemId/completed", proxyAuthenticatedCore);
+app.delete("/v1/action-items/:actionItemId", proxyAuthenticatedCore);
+app.post("/v1/users/people", proxyAuthenticatedCore);
+app.get("/v1/users/people", proxyAuthenticatedCore);
+app.get("/v1/users/people/:personId", proxyAuthenticatedCore);
+app.patch("/v1/users/people/:personId/name", proxyAuthenticatedCore);
+app.delete("/v1/users/people/:personId", proxyAuthenticatedCore);
+app.delete(
+  "/v1/users/people/:personId/speech-samples/:sampleIndex",
+  proxyAuthenticatedCore,
+);
+app.get("/v1/goals", proxyAuthenticatedCore);
+app.post("/v1/goals", proxyAuthenticatedCore);
+app.get("/v1/goals/all", proxyAuthenticatedCore);
+app.get("/v1/goals/suggest", proxyAuthenticatedCore);
+app.get("/v1/goals/advice", proxyAuthenticatedCore);
+app.post("/v1/goals/extract-progress", proxyAuthenticatedCore);
+app.get("/v1/goals/canonical/list", proxyAuthenticatedCore);
+app.post("/v1/goals/canonical", proxyAuthenticatedCore);
+app.get("/v1/goals/:goalId/advice", proxyAuthenticatedCore);
+app.get("/v1/goals/:goalId/history", proxyAuthenticatedCore);
+app.post("/v1/goals/:goalId/progress-events", proxyAuthenticatedCore);
+app.get("/v1/goals/:goalId/progress-events", proxyAuthenticatedCore);
+app.post("/v1/work-intents", proxyAuthenticatedCore);
+app.post("/v1/workflow-migrations/task-goal-links", proxyAuthenticatedCore);
+app.get("/v1/workstreams/:workstreamId/events", proxyAuthenticatedCore);
+app.post("/v1/workstreams/:workstreamId/events", proxyAuthenticatedCore);
+app.get("/v1/workstreams/:workstreamId/artifacts", proxyAuthenticatedCore);
+app.post("/v1/workstreams/:workstreamId/artifacts", proxyAuthenticatedCore);
+app.get("/v1/workstreams/:workstreamId/checkpoints", proxyAuthenticatedCore);
+app.put(
+  "/v1/workstreams/:workstreamId/checkpoints/:runtimeId",
+  proxyAuthenticatedCore,
+);
+app.patch(
+  "/v1/workstreams/:workstreamId/artifacts/:artifactId/status",
+  proxyAuthenticatedCore,
+);
+app.get("/v1/workstreams/:workstreamId", proxyAuthenticatedCore);
+app.patch("/v1/workstreams/:workstreamId", proxyAuthenticatedCore);
+app.post("/v1/goals/:goalId/focus", proxyAuthenticatedCore);
+app.delete("/v1/goals/:goalId/focus", proxyAuthenticatedCore);
+app.post("/v1/goals/:goalId/lifecycle", proxyAuthenticatedCore);
+app.get("/v1/goals/:goalId/detail", proxyAuthenticatedCore);
+app.get("/v1/goals/:goalId", proxyAuthenticatedCore);
+app.patch("/v1/goals/:goalId", proxyAuthenticatedCore);
+app.patch("/v1/goals/:goalId/progress", proxyAuthenticatedCore);
+app.delete("/v1/goals/:goalId", proxyAuthenticatedCore);
+app.get("/v1/folders", proxyAuthenticatedCore);
+app.post("/v1/folders", proxyAuthenticatedCore);
+app.get("/v1/folders/:folderId/conversations", proxyAuthenticatedCore);
+app.post(
+  "/v1/folders/:folderId/conversations/bulk-move",
+  proxyAuthenticatedCore,
+);
+app.get("/v1/folders/:folderId", proxyAuthenticatedCore);
+app.patch("/v1/folders/:folderId", proxyAuthenticatedCore);
+app.delete("/v1/folders/:folderId", proxyAuthenticatedCore);
+app.post("/v1/folders/reorder", proxyAuthenticatedCore);
+app.patch("/v1/conversations/:conversationId/folder", proxyAuthenticatedCore);
+app.all("/v1/users/developer/webhook/*", proxyAuthenticatedCore);
+app.get("/v1/users/developer/webhooks/status", proxyAuthenticatedCore);
+app.get("/v1/users/analytics/memory_summary", proxyAuthenticatedCore);
+app.post("/v1/users/analytics/memory_summary", proxyAuthenticatedCore);
+app.post("/v1/users/analytics/chat_message", proxyAuthenticatedCore);
+app.get("/v1/users/notification-settings", proxyAuthenticatedCore);
+app.patch("/v1/users/notification-settings", proxyAuthenticatedCore);
+app.get("/v1/users/daily-summary-settings", proxyAuthenticatedCore);
+app.patch("/v1/users/daily-summary-settings", proxyAuthenticatedCore);
+app.get("/v1/users/daily-summaries", proxyAuthenticatedCore);
+app.get("/v1/users/daily-summaries/:summaryId", proxyAuthenticatedCore);
+app.patch(
+  "/v1/users/daily-summaries/:summaryId/visibility",
+  proxyAuthenticatedCore,
+);
+app.delete("/v1/users/daily-summaries/:summaryId", proxyAuthenticatedCore);
+app.post("/v1/users/daily-summary-settings/test", proxyAuthenticatedCore);
+app.post(
+  "/v1/users/daily-summaries/:summaryId/regenerate",
+  proxyAuthenticatedCore,
+);
+app.get("/v1/users/mentor-notification-settings", proxyAuthenticatedCore);
+app.patch("/v1/users/mentor-notification-settings", proxyAuthenticatedCore);
+app.get("/v1/users/assistant-settings", proxyAuthenticatedCore);
+app.patch("/v1/users/assistant-settings", proxyAuthenticatedCore);
+app.get("/v1/users/ai-profile", proxyAuthenticatedCore);
+app.patch("/v1/users/ai-profile", proxyAuthenticatedCore);
+app.post("/v1/users/ai-profile/synthesize", proxyAuthenticatedCore);
+app.get("/v1/users/profile", proxyAuthenticatedAuthProfile);
+app.get("/v1/users/migration/requests", proxyAuthenticatedCore);
+app.post("/v1/users/migration/requests", proxyAuthenticatedCore);
+app.post("/v1/users/migration/batch-requests", proxyAuthenticatedCore);
+app.post(
+  "/v1/users/migration/requests/data-protection-level/finalize",
+  proxyAuthenticatedCore,
+);
+app.get("/v1/mcp/oauth/grants", proxyAuthenticatedMcpGrants);
+app.delete("/v1/mcp/oauth/grants/:grantId", proxyAuthenticatedMcpGrants);
+app.get("/v1/users/location-context-consent", proxyAuthenticatedCore);
+app.put("/v1/users/location-context-consent", proxyAuthenticatedCore);
+app.post("/v1/tts/synthesize", proxyAuthenticatedAI);
+app.post("/v1/tts/synthesize-workers-ai", proxyAuthenticatedAI);
+app.post("/v2/tts/synthesize", proxyAuthenticatedAI);
+app.get("/v1/auto/model-pick", proxyAuthenticatedAI);
+app.post("/v1/stt/transcribe-workers-ai", proxyAuthenticatedAI);
+app.post("/v1/translate", proxyAuthenticatedAI);
+
+app.all("/*", async (c) => {
+  const id = requestId(c.req.raw);
+  const auth = await verifyBearer(c.req.raw, c.env, id);
+
+  if (
+    c.env.AI_COMPAT_STAGING_FAIL_CLOSED === "true" &&
+    c.req.path.startsWith("/v1/ai/")
+  ) {
+    if (!auth) return c.json({ error: "unauthorized" }, 401);
+    return withRequestId(
+      Response.json(
+        {
+          error: "external_ai_disabled",
+          detail:
+            "The generic external AI compatibility path is disabled on Cloudflare staging; use Workers AI routes.",
+        },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      ),
+      id,
+    );
+  }
+
+  if (
+    c.req.path.startsWith("/v1/ai/") ||
+    c.req.path.startsWith("/v1/embeddings") ||
+    c.req.path.startsWith("/v1/stt/")
+  ) {
+    const headers = stripUntrustedHeaders(c.req.raw);
+    if (auth) {
+      const denial = await cloudflareProductTrafficDenial(
+        c.req.raw,
+        c.env,
+        auth,
+        id,
+      );
+      if (denial) return withRequestId(denial, id);
+      await attachAuthContext(
+        headers,
+        auth,
+        c.env.INTERNAL_ASSERTION_SECRET,
+        "api-ai",
+        c.req.raw,
+      );
+    }
+    const response = await c.env.API_AI.fetch(
+      new Request(c.req.raw, { headers }),
+    );
+    return withRequestId(response, id);
+  }
+  if (envLegacy(c.env)) {
+    return proxyLegacyBackend(c);
+  }
+  if (auth) return c.json({ error: "route not migrated" }, 404);
+  return c.json({ error: "unauthorized" }, 401);
+});
+
+function envLegacy(
+  env: EdgeEnv,
+): env is EdgeEnv & { ORIGIN_BACKEND_URL: string } {
+  return (
+    typeof env.ORIGIN_BACKEND_URL === "string" &&
+    env.ORIGIN_BACKEND_URL.length > 0
+  );
+}
+
+export default app;

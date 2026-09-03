@@ -76,6 +76,12 @@ allow:
     upstream_pr: "pluggable auth provider"
     owner: S4
 
+  - path: desktop/macos/docs/desktop-updates.mdx
+    max_added_lines: 1
+    reason: 一句事实性说明——隔离的 Cloudflare staging 环境通过 API Core 把同一 /updates/releases 契约投影进 D1，不改变不可变清单或频道指针权威
+    upstream_pr: "note the isolated Cloudflare staging bridge in the desktop update-channel doc"
+    owner: M2
+
   - path: backend/testing/desktop_beta_admission/run.sh
     max_added_lines: 1
     reason: 上游 bug——该检查的 uv 依赖集缺 fastapi，导入链经 database.staged_tasks 必然到达；fork 无其它修法（详见 05-ci-matrix.md §7.1）

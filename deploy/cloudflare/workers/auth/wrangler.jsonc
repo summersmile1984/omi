@@ -1,0 +1,27 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "omi-cf-auth-staging",
+  "main": "index.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  // The Firebase custom-token bridge stays disabled unless the staging gate
+  // and secrets are explicitly supplied with `wrangler secret put`.  Do not
+  // put service-account JSON or the Firebase API key in this file.
+  "vars": {
+    "ALLOWED_ORIGINS": "https://omi-web-app-staging.summersmile1984.workers.dev",
+    "MCP_RESOURCE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev/v1/mcp/sse",
+    "MCP_ALLOW_UNAUTHENTICATED_DCR": "true",
+    "FIREBASE_CUSTOM_TOKEN_BRIDGE_STAGING_ENABLED": "false",
+    "FIREBASE_ANONYMOUS_IDENTITY_BRIDGE_STAGING_ENABLED": "false",
+    "LEGACY_AUTH_COMPAT_STAGING_ENABLED": "false",
+    "LEGACY_AUTH_EXACT_STAGING_ENABLED": "true",
+  },
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "omi-cf-auth-staging",
+      "migrations_dir": "../../migrations/auth",
+    },
+  ],
+}

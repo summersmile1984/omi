@@ -1,0 +1,42 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "omi-cf-api-ai-staging",
+  "main": "src/entry.py",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["python_workers"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "ai": {
+    "binding": "AI",
+  },
+  "d1_databases": [
+    {
+      "binding": "APP_DB",
+      "database_name": "omi-cf-app-staging",
+      "database_id": "995078e7-d4f2-4efd-ad81-22f85ccaf1c8",
+      "migrations_dir": "../../migrations/app",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RATE_LIMITS",
+        "class_name": "SharedRateLimitDurableObject",
+        "script_name": "omi-cf-rate-limit-staging",
+      },
+    ],
+  },
+  "vars": {
+    "WORKERS_AI_EMBEDDING_MODEL": "@cf/baai/bge-base-en-v1.5",
+    "WORKERS_AI_CHAT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "WORKERS_AI_CHAT_INPUT_USD_PER_MILLION": "0.051",
+    "WORKERS_AI_CHAT_OUTPUT_USD_PER_MILLION": "0.335",
+    "FREE_CHAT_QUESTIONS_PER_MONTH": "30",
+    "TRIAL_PAYWALL_ENABLED": "false",
+    "TRIAL_LENGTH_SECONDS": "259200",
+    "WORKERS_AI_ASR_MODEL": "@cf/openai/whisper-large-v3-turbo",
+    "WORKERS_AI_TRANSLATION_MODEL": "@cf/meta/m2m100-1.2b",
+    "WORKERS_AI_TTS_MODEL": "@cf/deepgram/aura-1",
+    "GEMINI_PROXY_ENABLED": "false",
+  },
+}

@@ -1,0 +1,1052 @@
+import base64
+import asyncio
+import hashlib
+import hmac
+import json
+import sys
+from urllib.parse import urlsplit
+from types import SimpleNamespace
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+
+import entry  # noqa: E402
+
+from entry import (
+    _provider_url,
+    embeddings_workers_ai,
+    transcribe,
+    transcribe_workers_ai,
+    translate_workers_ai,
+    tts_synthesize,
+    tts_synthesize_mobile,
+    tts_synthesize_workers_ai,
+    chat_messages,
+)  # noqa: E402
+
+
+class FakeRequest:
+    def __init__(self, env, headers, json_body=None, *, method="POST", url="https://api.test/v1/tts/synthesize"):
+        self.scope = {"env": env}
+        self.headers = headers
+        self.json_body = json_body or {"input": "hello"}
+        self.method = method
+        parsed_url = urlsplit(url)
+        self.url = type("Url", (), {"path": parsed_url.path, "query": parsed_url.query})()
+        self.query_params = {}
+
+    async def body(self):
+        return b"audio"
+
+    async def json(self):
+        return self.json_body
+
+
+class FakeD1:
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.values = []
+
+    def prepare(self, _sql):
+        return self
+
+    def bind(self, *values):
+        self.values.append(values)
+        return self
+
+    async def run(self):
+        if self.fail:
+            raise RuntimeError("simulated D1 failure")
+
+
+class FakeRateLimitStub:
+    def __init__(self, owner):
+        self.owner = owner
+
+    async def checkTts(self, char_count, profile="desktop"):
+        self.owner.calls.append((self.owner.current_name, char_count, profile))
+        if isinstance(self.owner.result, Exception):
+            raise self.owner.result
+        return self.owner.result
+
+    async def health(self):
+        self.owner.health_calls.append(self.owner.current_name)
+        return {"status": "ok", "service": "rate-limit"}
+
+
+class FakeRateLimits:
+    def __init__(self, status=0):
+        self.calls = []
+        self.health_calls = []
+        self.current_name = None
+        self.result = {"status": status, "retryAfter": 60}
+
+    def getByName(self, name):
+        self.current_name = name
+        return FakeRateLimitStub(self)
+
+
+def signed_context(secret: str) -> tuple[str, str]:
+    raw = json.dumps({"uid": "user-1"}, separators=(",", ":")).encode()
+    encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
+    return encoded, base64.urlsafe_b64encode(signature).decode().rstrip("=")
+
+
+def test_provider_url_normalizes_slashes():
+    assert _provider_url("https://asr.example.test/", "/v2/transcribe") == "https://asr.example.test/v2/transcribe"
+
+
+def test_health_checks_the_cross_worker_durable_object_binding():
+    limiter = FakeRateLimits()
+    response = asyncio.run(entry.health(FakeRequest(SimpleNamespace(RATE_LIMITS=limiter), {})))
+
+    assert response == {"status": "ok", "service": "api-ai", "version": "cf-04"}
+    assert limiter.health_calls == ["health:api-ai"]
+
+
+def test_health_fails_closed_without_the_rate_limit_binding():
+    response = asyncio.run(entry.health(FakeRequest(SimpleNamespace(), {})))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"status": "degraded", "dependency": "rate-limit"}
+
+
+def test_chat_messages_fails_closed_without_workers_ai_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v2/messages",
+    )
+
+    response = asyncio.run(chat_messages(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "error": "workers ai is not configured",
+        "reason": "provider_not_configured",
+    }
+
+
+def test_transcribe_fails_closed_when_provider_is_missing():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+    )
+
+    response = asyncio.run(transcribe(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "transcription provider is not configured"}
+
+
+def test_transcribe_uses_worker_fetch_for_provider(monkeypatch):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    database = FakeD1()
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            ASR_API_BASE_URL="https://asr.example.test",
+            ASR_API_KEY="key",
+            APP_DB=database,
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "multipart/form-data; boundary=test",
+            "content-length": "5",
+        },
+    )
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        async def json(self):
+            return {"text": "hello", "segments": [{"start": 0.25, "end": 1.5, "text": "hello"}]}
+
+    calls = {}
+
+    async def fake_fetch(url, **options):
+        calls["url"] = url
+        calls["options"] = options
+        return FakeResponse()
+
+    monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
+    response = asyncio.run(transcribe(request))
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "text": "hello",
+        "segments": [{"start": 0.25, "end": 1.5, "text": "hello"}],
+    }
+    assert calls["url"] == "https://asr.example.test/v2/transcribe"
+    assert calls["options"]["body"] == b"audio"
+    assert database.values[0][0:2] == ("user-1", "sync_fresh")
+    assert database.values[0][4] == 1_250
+
+
+def test_workers_ai_transcribe_uses_native_binding_and_normalizes_result():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            return {
+                "text": "hello",
+                "segments": [{"start": 0, "end": 1, "text": "hello"}],
+                "word_count": 1,
+                "vtt": "WEBVTT",
+            }
+
+    database = FakeD1()
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            APP_DB=database,
+            WORKERS_AI_ASR_MODEL="@cf/openai/whisper",
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "audio/wav",
+            "content-length": "5",
+        },
+    )
+
+    response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response == {
+        "text": "hello",
+        "segments": [{"start": 0, "end": 1, "text": "hello"}],
+        "detected_language": None,
+        "provider": "workers-ai",
+        "model": "@cf/openai/whisper",
+        "word_count": 1,
+        "vtt": "WEBVTT",
+    }
+    assert calls == {
+        "model": "@cf/openai/whisper",
+        "payload": {"audio": base64.b64encode(b"audio").decode("ascii")},
+    }
+    assert database.values[0][0:2] == ("user-1", "sync_fresh")
+    assert database.values[0][4] == 1_000
+
+
+def test_workers_ai_transcribe_fails_closed_when_usage_meter_is_unavailable():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class FakeAI:
+        async def run(self, _model, _payload):
+            return {"text": "hello", "segments": [{"start": 0, "end": 1, "text": "hello"}]}
+
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            APP_DB=FakeD1(fail=True),
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "audio/wav",
+        },
+    )
+
+    response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "transcription usage meter unavailable"}
+
+
+def test_workers_ai_transcribe_rejects_multipart_contract():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=object()),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "multipart/form-data; boundary=test",
+        },
+    )
+
+    response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response.status_code == 415
+    assert json.loads(response.body) == {"error": "workers ai transcription expects a raw audio body"}
+
+
+def test_workers_ai_transcribe_fails_closed_without_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "audio/wav",
+        },
+    )
+
+    response = asyncio.run(transcribe_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "workers ai is not configured"}
+
+
+def test_workers_ai_translation_preserves_nllb_contract_and_maps_language_names():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = []
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls.append((model, payload))
+            return {"translated_text": "你好"}
+
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            WORKERS_AI_TRANSLATION_MODEL="@cf/meta/m2m100-1.2b",
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {
+            "contents": ["hello"],
+            "source_language_code": "en-US",
+            "target_language_code": "zh-Hans",
+        },
+        url="https://api.test/v1/translate",
+    )
+
+    response = asyncio.run(translate_workers_ai(request))
+
+    assert response["translations"] == [{"translated_text": "你好", "detected_language_code": "en"}]
+    assert response["model"] == "@cf/meta/m2m100-1.2b"
+    assert response["latency_ms"] >= 0
+    assert calls == [
+        (
+            "@cf/meta/m2m100-1.2b",
+            {"text": "hello", "source_lang": "english", "target_lang": "chinese"},
+        )
+    ]
+
+
+def test_workers_ai_translation_rejects_unsupported_language():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=object()),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"contents": ["hello"], "target_language_code": "ko"},
+        url="https://api.test/v1/translate",
+    )
+
+    response = asyncio.run(translate_workers_ai(request))
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {"error": "unsupported target language"}
+
+
+def test_workers_ai_translation_fails_closed_without_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"contents": ["hello"], "target_language_code": "fr"},
+        url="https://api.test/v1/translate",
+    )
+
+    response = asyncio.run(translate_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "workers ai is not configured"}
+
+
+def test_embeddings_uses_workers_ai_without_external_provider_secret():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            return {"data": [[0.1, 0.2]]}
+
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            WORKERS_AI_EMBEDDING_MODEL="@cf/baai/bge-base-en-v1.5",
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"input": "hello"},
+        url="https://api.test/v1/embeddings",
+    )
+
+    response = asyncio.run(entry.embeddings(request))
+
+    assert response == {
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": [0.1, 0.2], "index": 0}],
+        "model": "@cf/baai/bge-base-en-v1.5",
+    }
+    assert calls == {"model": "@cf/baai/bge-base-en-v1.5", "payload": {"text": ["hello"]}}
+
+
+def test_workers_ai_embeddings_returns_openai_style_vectors():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            return {"data": [[0.1, 0.2], [0.3, 0.4]]}
+
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            WORKERS_AI_EMBEDDING_MODEL="@cf/baai/bge-base-en-v1.5",
+        ),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"input": ["hello", "world"]},
+        url="https://api.test/v1/embeddings-workers-ai",
+    )
+
+    response = asyncio.run(embeddings_workers_ai(request))
+
+    assert response == {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "embedding": [0.1, 0.2], "index": 0},
+            {"object": "embedding", "embedding": [0.3, 0.4], "index": 1},
+        ],
+        "model": "@cf/baai/bge-base-en-v1.5",
+    }
+    assert calls == {"model": "@cf/baai/bge-base-en-v1.5", "payload": {"text": ["hello", "world"]}}
+
+
+def test_workers_ai_embeddings_rejects_oversized_input():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=object()),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"input": "x" * 4_097},
+        url="https://api.test/v1/embeddings-workers-ai",
+    )
+
+    response = asyncio.run(embeddings_workers_ai(request))
+
+    assert response.status_code == 413
+    assert json.loads(response.body) == {"error": "embedding input is too large or empty"}
+
+
+def test_workers_ai_embeddings_fails_closed_without_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+        },
+        {"input": "hello"},
+        url="https://api.test/v1/embeddings-workers-ai",
+    )
+
+    response = asyncio.run(embeddings_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "workers ai is not configured"}
+
+
+def test_ai_proxy_maps_path_and_query_to_fixed_provider(monkeypatch):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI_API_BASE_URL="https://ai.example.test", AI_API_KEY="key"),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+            "content-type": "application/json",
+            "authorization": "Bearer client-token",
+        },
+        {"prompt": "hello"},
+        url="https://api.test/v1/ai/chat/completions?stream=false",
+    )
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        async def arrayBuffer(self):
+            return b'{"choices": []}'
+
+    calls = {}
+
+    async def fake_fetch(url, **options):
+        calls["url"] = url
+        calls["options"] = options
+        return FakeResponse()
+
+    monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
+    response = asyncio.run(entry.ai_proxy(request, "chat/completions"))
+
+    assert response.status_code == 200
+    assert response.body == b'{"choices": []}'
+    assert calls["url"] == "https://ai.example.test/chat/completions?stream=false"
+    assert calls["options"]["headers"] == {"authorization": "Bearer key", "content-type": "application/json"}
+    assert calls["options"]["body"] == b"audio"
+
+
+def test_ai_proxy_fails_closed_when_provider_is_missing():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        url="https://api.test/v1/ai/chat/completions",
+    )
+
+    response = asyncio.run(entry.ai_proxy(request, "chat/completions"))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "ai provider is not configured"}
+
+
+def test_tts_validates_contract_and_returns_workers_ai_audio():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits()
+    calls = {}
+
+    class FakeResponse:
+        async def bytes(self):
+            return b"ID3-mp3"
+
+    class FakeAI:
+        async def run(self, model, payload, options):
+            calls["model"] = model
+            calls["payload"] = payload
+            calls["options"] = options
+            return FakeResponse()
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), RATE_LIMITS=limiter),
+        {
+            "x-omi-auth-context": encoded,
+            "x-omi-internal-signature": signature,
+        },
+        {"text": " hello ", "voice_id": "sage", "instructions": "be warm"},
+    )
+
+    response = asyncio.run(tts_synthesize(request))
+
+    assert response.status_code == 200
+    assert response.media_type == "audio/mpeg"
+    assert response.body == b"ID3-mp3"
+    assert calls == {
+        "model": "@cf/deepgram/aura-1",
+        "payload": {"text": "hello", "speaker": "perseus", "encoding": "mp3"},
+        "options": {"returnRawResponse": True},
+    }
+    assert limiter.calls == [("tts:fine:user-1", 5, "desktop")]
+
+
+def test_tts_rejects_unsupported_voice_before_provider_call():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+        ),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "voice_id": "not-a-voice"},
+    )
+
+    response = asyncio.run(tts_synthesize(request))
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {"error": "voice_id is not supported"}
+
+
+def test_workers_ai_tts_uses_native_binding_and_returns_mp3():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeResponse:
+        async def bytes(self):
+            return b"ID3-mp3"
+
+    class FakeAI:
+        async def run(self, model, payload, options):
+            calls["model"] = model
+            calls["payload"] = payload
+            calls["options"] = options
+            return FakeResponse()
+
+    limiter = FakeRateLimits()
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            AI=FakeAI(),
+            WORKERS_AI_TTS_MODEL="@cf/deepgram/aura-1",
+            RATE_LIMITS=limiter,
+        ),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": " hello ", "speaker": "Luna"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 200
+    assert response.media_type == "audio/mpeg"
+    assert response.body == b"ID3-mp3"
+    assert calls == {
+        "model": "@cf/deepgram/aura-1",
+        "payload": {"text": "hello", "speaker": "luna", "encoding": "mp3"},
+        "options": {"returnRawResponse": True},
+    }
+    assert limiter.calls == [("tts:fine:user-1", 5, "desktop")]
+
+
+def test_workers_ai_tts_fails_closed_without_binding():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, RATE_LIMITS=FakeRateLimits()),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "workers ai is not configured"}
+
+
+def test_workers_ai_tts_rejects_unknown_speaker():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=object()),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "speaker": "not-a-speaker"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {"error": "unsupported speaker"}
+
+
+def test_workers_ai_tts_normalizes_model_failures_to_502():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class FakeAI:
+        async def run(self, model, payload, options):
+            raise Exception("provider-specific FFI error")
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), RATE_LIMITS=FakeRateLimits()),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 502
+    assert json.loads(response.body) == {"error": "workers ai tts failed"}
+
+
+def test_mobile_tts_preserves_contract_through_cloudflare_catalog():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = {}
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls["model"] = model
+            calls["payload"] = payload
+            encoded_audio = base64.b64encode(b"ID3-mobile").decode("ascii")
+            return {
+                "state": "Completed",
+                "result": {"audio": f"data:audio/mpeg;base64,{encoded_audio}"},
+            }
+
+    limiter = FakeRateLimits()
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), RATE_LIMITS=limiter),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {
+            "text": " hello ",
+            "voice_settings": {
+                "stability": 0.4,
+                "similarity_boost": 0.8,
+                "use_speaker_boost": True,
+            },
+        },
+        url="https://api.test/v2/tts/synthesize",
+    )
+
+    response = asyncio.run(tts_synthesize_mobile(request))
+
+    assert response.status_code == 200
+    assert response.media_type == "audio/mpeg"
+    assert response.body == b"ID3-mobile"
+    assert calls == {
+        "model": "elevenlabs/eleven-turbo-v2-5",
+        "payload": {
+            "text": "hello",
+            "voice_id": "BAMYoBHLZM7lJgJAmFz0",
+            "output_format": "mp3_44100_128",
+            "voice_settings": {
+                "stability": 0.4,
+                "similarity_boost": 0.8,
+                "use_speaker_boost": True,
+            },
+        },
+    }
+    assert limiter.calls == [("tts:fine:user-1", 5, "mobile")]
+
+
+def test_mobile_tts_rejects_invalid_provider_contract_before_model_call():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class UnexpectedAI:
+        async def run(self, *_args, **_kwargs):
+            raise AssertionError("model must not be called")
+
+    invalid_requests = [
+        ({"text": "hello", "voice_id": "../../history"}, {"detail": "invalid voice_id"}),
+        ({"text": "hello", "model_id": "unknown"}, {"detail": "unsupported model_id"}),
+        ({"text": "hello", "output_format": "wav"}, {"detail": "unsupported output_format"}),
+    ]
+    for body, expected in invalid_requests:
+        limiter = FakeRateLimits()
+        request = FakeRequest(
+            SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=UnexpectedAI(), RATE_LIMITS=limiter),
+            {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+            body,
+            url="https://api.test/v2/tts/synthesize",
+        )
+
+        response = asyncio.run(tts_synthesize_mobile(request))
+
+        assert response.status_code == 400
+        assert json.loads(response.body) == expected
+        assert limiter.calls == []
+
+
+def test_mobile_tts_normalizes_provider_failure_and_invalid_audio():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class FailingAI:
+        async def run(self, *_args, **_kwargs):
+            raise RuntimeError("provider-specific failure")
+
+    class InvalidAudioAI:
+        async def run(self, *_args, **_kwargs):
+            return {"state": "Completed", "result": {"audio": "https://untrusted.test/audio.mp3"}}
+
+    for ai, expected in (
+        (FailingAI(), {"detail": "TTS upstream unavailable"}),
+        (InvalidAudioAI(), {"detail": "TTS upstream returned invalid audio"}),
+    ):
+        request = FakeRequest(
+            SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=ai, RATE_LIMITS=FakeRateLimits()),
+            {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+            {"text": "hello"},
+            url="https://api.test/v2/tts/synthesize",
+        )
+
+        response = asyncio.run(tts_synthesize_mobile(request))
+
+        assert response.status_code == 502
+        assert json.loads(response.body) == expected
+
+
+def test_mobile_tts_returns_retry_after_before_model_call():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits(status=1)
+    limiter.result["retryAfter"] = 42.1
+
+    class UnexpectedAI:
+        async def run(self, *_args, **_kwargs):
+            raise AssertionError("model must not be called")
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=UnexpectedAI(), RATE_LIMITS=limiter),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v2/tts/synthesize",
+    )
+
+    response = asyncio.run(tts_synthesize_mobile(request))
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "43"
+    assert json.loads(response.body) == {"detail": "TTS burst rate limit exceeded"}
+    assert limiter.calls == [("tts:fine:user-1", 5, "mobile")]
+
+
+def test_mobile_tts_preserves_legacy_fail_open_when_limiter_is_unavailable(capsys):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+
+    class FakeAI:
+        async def run(self, *_args, **_kwargs):
+            encoded_audio = base64.b64encode(b"ID3-mobile").decode("ascii")
+            return {
+                "state": "Completed",
+                "result": {"audio": f"data:audio/mpeg;base64,{encoded_audio}"},
+            }
+
+    limiter = FakeRateLimits()
+    limiter.result = RuntimeError("simulated DO outage")
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=FakeAI(), RATE_LIMITS=limiter),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello"},
+        url="https://api.test/v2/tts/synthesize",
+    )
+
+    response = asyncio.run(tts_synthesize_mobile(request))
+
+    assert response.status_code == 200
+    log_lines = capsys.readouterr().out.splitlines()
+    assert any(
+        json.loads(line)
+        == {
+            "component": "other",
+            "event": "fallback",
+            "from": "restrict",
+            "outcome": "degraded",
+            "reason": "dependency_unavailable",
+            "to": "none",
+        }
+        for line in log_lines
+    )
+    assert all("user-1" not in line for line in log_lines)
+
+
+def test_tts_fine_limit_rejects_burst_before_provider_call(monkeypatch):
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits(status=1)
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            RATE_LIMITS=limiter,
+        ),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "voice_id": "sage"},
+    )
+
+    response = asyncio.run(tts_synthesize(request))
+
+    assert response.status_code == 429
+    assert json.loads(response.body) == {"detail": "TTS burst rate limit exceeded"}
+    assert limiter.calls == [("tts:fine:user-1", 5, "desktop")]
+
+
+def test_workers_ai_tts_fine_limit_rejects_daily_budget_before_model_call():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits(status=2)
+
+    class UnexpectedAI:
+        async def run(self, *_args, **_kwargs):
+            raise AssertionError("model must not be called")
+
+    request = FakeRequest(
+        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret, AI=UnexpectedAI(), RATE_LIMITS=limiter),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "speaker": "luna"},
+        url="https://api.test/v1/tts/synthesize-workers-ai",
+    )
+
+    response = asyncio.run(tts_synthesize_workers_ai(request))
+
+    assert response.status_code == 429
+    assert json.loads(response.body) == {"detail": "TTS daily character limit exceeded"}
+
+
+def test_tts_fine_limit_fails_closed_when_durable_object_is_unavailable():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    limiter = FakeRateLimits()
+    limiter.result = RuntimeError("simulated DO outage")
+    request = FakeRequest(
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            RATE_LIMITS=limiter,
+        ),
+        {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
+        {"text": "hello", "voice_id": "sage"},
+    )
+
+    response = asyncio.run(tts_synthesize(request))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"detail": "TTS rate limiting is unavailable"}
+
+
+class TranslationCacheDb:
+    """sqlite-backed APP_DB fake exercising the real 0151 cache schema."""
+
+    def __init__(self):
+        import sqlite3
+
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.row_factory = sqlite3.Row
+        migration = Path(__file__).parents[3] / "migrations/app/0151_translation_cache.sql"
+        self.connection.executescript(migration.read_text())
+
+    def prepare(self, sql):
+        db = self
+
+        class Statement:
+            def __init__(self, args=()):
+                self.args = args
+
+            def bind(self, *values):
+                return Statement(values)
+
+            async def all(self):
+                rows = db.connection.execute(sql, self.args).fetchall()
+                return {"results": [dict(row) for row in rows]}
+
+            async def run(self):
+                db.connection.execute(sql, self.args)
+                db.connection.commit()
+                return {"meta": {"changes": db.connection.total_changes}}
+
+            def execute(self):
+                db.connection.execute(sql, self.args)
+                return {"results": [], "meta": {"changes": 0}}
+
+        return Statement()
+
+    async def batch(self, statements):
+        results = [statement.execute() for statement in statements]
+        self.connection.commit()
+        return results
+
+
+def test_workers_ai_translation_caches_repeated_content():
+    secret = "test-secret"
+    encoded, signature = signed_context(secret)
+    calls = []
+
+    class FakeAI:
+        async def run(self, model, payload):
+            calls.append(payload["text"])
+            return {"translated_text": f"zh:{payload['text']}"}
+
+    database = TranslationCacheDb()
+    env = SimpleNamespace(
+        INTERNAL_ASSERTION_SECRET=secret,
+        AI=FakeAI(),
+        APP_DB=database,
+        WORKERS_AI_TRANSLATION_MODEL="@cf/meta/m2m100-1.2b",
+    )
+
+    def translate(contents):
+        request = FakeRequest(
+            env,
+            {
+                "x-omi-auth-context": encoded,
+                "x-omi-internal-signature": signature,
+                "content-type": "application/json",
+            },
+            {
+                "contents": contents,
+                "source_language_code": "en-US",
+                "target_language_code": "zh-Hans",
+            },
+            url="https://api.test/v1/translate",
+        )
+        return asyncio.run(translate_workers_ai(request))
+
+    first = translate(["hello", "world"])
+    assert [t["translated_text"] for t in first["translations"]] == ["zh:hello", "zh:world"]
+    assert calls == ["hello", "world"]
+
+    # The repeated segment is served from D1; only the new one reaches the AI.
+    second = translate(["hello", "fresh"])
+    assert [t["translated_text"] for t in second["translations"]] == ["zh:hello", "zh:fresh"]
+    assert second["translations"][0]["detected_language_code"] == "en"
+    assert calls == ["hello", "world", "fresh"]
+    assert (
+        database.connection.execute("SELECT COUNT(*) FROM cf_translation_cache").fetchone()[0]
+        == 3
+    )
+
+    # An expired row is a miss and traffic prunes it away.
+    database.connection.execute("UPDATE cf_translation_cache SET expires_at = 1 WHERE fingerprint IN "
+                                "(SELECT fingerprint FROM cf_translation_cache LIMIT 1)")
+    database.connection.commit()
+    translate(["hello", "world", "fresh"])
+    assert len(calls) >= 4
+    assert (
+        database.connection.execute("SELECT COUNT(*) FROM cf_translation_cache WHERE expires_at <= 1").fetchone()[0]
+        == 0
+    )
+
+    # A cache-less environment still translates (silent bypass).
+    env.APP_DB = None
+    bypass = translate(["hello"])
+    assert bypass["translations"][0]["translated_text"] == "zh:hello"

@@ -1,0 +1,1282 @@
+import { betterAuth } from "better-auth";
+import { createMcpProtectedRequestHandler, mcp } from "@better-auth/mcp";
+import { createAuthMiddleware } from "better-auth/api";
+import { createDpopReplayStore } from "better-auth/oauth2";
+import { bearer } from "better-auth/plugins/bearer";
+import { jwt } from "better-auth/plugins/jwt";
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import {
+  verifyRequestAuthContext,
+  type AuthContext,
+} from "../shared/auth-context";
+import { recordFallback } from "../shared/fallback";
+import type { AuthEnv } from "./env";
+import {
+  hashPassword,
+  upgradeMigratedFirebasePassword,
+  verifyPassword,
+} from "./firebase-migration-password";
+import {
+  exchangeFirebaseCustomToken,
+  FirebaseCustomTokenBridgeError,
+  issueFirebaseCustomToken,
+  verifyFirebaseIdToken,
+} from "./firebase-custom-token-bridge";
+import {
+  attestFirebaseAnonymousIdentity,
+  FirebaseAnonymousIdentityError,
+} from "./firebase-anonymous-identity";
+import { registerNativeAuthCompatibilityRoutes } from "./native-auth-compatibility";
+
+const app = new Hono<{ Bindings: AuthEnv }>();
+const AUTH_BASE_PATH = "/api/auth";
+const JWT_ROTATION_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
+const JWT_GRACE_PERIOD_SECONDS = 2 * 24 * 60 * 60;
+export const MCP_SCOPES = [
+  "action_items.read",
+  "action_items.write",
+  "chat.read",
+  "conversations.read",
+  "goals.read",
+  "memories.read",
+  "memories.write",
+  "people.read",
+  "screen_activity.read",
+] as const;
+const MCP_OAUTH_SCOPES = [...MCP_SCOPES, "offline_access"];
+const MCP_OAUTH_SCOPE_SET = new Set(MCP_OAUTH_SCOPES);
+const MCP_DATA_SCOPE_SET = new Set<string>(MCP_SCOPES);
+const MAX_MCP_VERIFY_BODY_BYTES = 4_096;
+const MAX_FIREBASE_BRIDGE_BODY_BYTES = 4_096;
+const MAX_FIREBASE_ANONYMOUS_BRIDGE_BODY_BYTES = 512;
+const MAX_FIREBASE_ID_TOKEN_BYTES = 8_192;
+
+// Keep the namespaced seam beside the Auth Worker while the exact legacy
+// `/v1/auth/*` registration remains independently gated. Neither surface is
+// enabled unless staging explicitly supplies its gate and provider secrets.
+registerNativeAuthCompatibilityRoutes(app);
+// The exact native-auth prefix is wired to the same Cloudflare transaction
+// authority, but remains independently gated until Edge enables the staging
+// owner and provider/identity replay has been verified.
+registerNativeAuthCompatibilityRoutes(app, {}, { surface: "legacy" });
+
+type SocialProviderId = "google" | "apple";
+
+type AuthIdentityResidual = {
+  users: number;
+  sessions: number;
+  accounts: number;
+  deletionVerifications: number;
+  oauthClients: number;
+  oauthAccessTokens: number;
+  oauthRefreshTokens: number;
+  oauthConsents: number;
+};
+
+function origins(env: AuthEnv): string[] {
+  return (env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function configuredSocialProviders(env: AuthEnv) {
+  const providers: {
+    google?: { clientId: string; clientSecret: string };
+    apple?: {
+      clientId: string;
+      clientSecret: string;
+      appBundleIdentifier?: string;
+    };
+  } = {};
+  if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
+    providers.google = {
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+    };
+  }
+  if (env.APPLE_CLIENT_ID && env.APPLE_CLIENT_SECRET) {
+    providers.apple = {
+      clientId: env.APPLE_CLIENT_ID,
+      clientSecret: env.APPLE_CLIENT_SECRET,
+      ...(env.APPLE_APP_BUNDLE_IDENTIFIER
+        ? { appBundleIdentifier: env.APPLE_APP_BUNDLE_IDENTIFIER }
+        : {}),
+    };
+  }
+  return providers;
+}
+
+function configuredSocialProviderIds(env: AuthEnv): SocialProviderId[] {
+  return Object.keys(configuredSocialProviders(env)) as SocialProviderId[];
+}
+
+function buildAuth(env: AuthEnv, requestUrl: string) {
+  const allowedOrigins = origins(env);
+  const requestOrigin = new URL(requestUrl).origin;
+  const configuredBaseURL = env.BETTER_AUTH_URL
+    ? new URL(env.BETTER_AUTH_URL).origin
+    : null;
+  const localFallback =
+    /^(https?:\/\/localhost(?::\d+)?|https?:\/\/127\.0\.0\.1(?::\d+)?)$/.test(
+      requestOrigin,
+    )
+      ? requestOrigin
+      : null;
+  const baseURL = configuredBaseURL || localFallback;
+  if (!baseURL)
+    throw new Error(
+      "BETTER_AUTH_URL must be configured outside local development",
+    );
+  const socialProviders = configuredSocialProviders(env);
+  const trustedProviders = Object.keys(socialProviders) as SocialProviderId[];
+  const resource = env.MCP_RESOURCE_URL || new URL("/v1/mcp/sse", baseURL).href;
+  const allowUnauthenticatedDcr = env.MCP_ALLOW_UNAUTHENTICATED_DCR === "true";
+  return betterAuth({
+    database: env.AUTH_DB,
+    secret: env.BETTER_AUTH_SECRET,
+    baseURL,
+    basePath: AUTH_BASE_PATH,
+    trustedOrigins: Array.from(new Set([baseURL, ...allowedOrigins])),
+    emailAndPassword: {
+      enabled: true,
+      password: {
+        hash: hashPassword,
+        verify: (credentials) => verifyPassword(credentials, env),
+      },
+    },
+    hooks: {
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== "/sign-in/email") return;
+        const userId = ctx.context.newSession?.user.id;
+        const password = ctx.body?.password;
+        if (!userId || typeof password !== "string") return;
+
+        try {
+          await upgradeMigratedFirebasePassword(
+            env.AUTH_DB,
+            userId,
+            password,
+            ctx.context.password.hash,
+          );
+        } catch {
+          // The password was already verified and the session already exists.
+          // Keep the migrated credential usable and retry on the next login.
+          recordFallback({
+            component: "other",
+            from: "d1",
+            to: "none",
+            reason: "dependency_unavailable",
+            outcome: "degraded",
+            requestId: ctx.headers?.get("x-request-id") || undefined,
+          });
+        }
+      }),
+    },
+    socialProviders,
+    user: {
+      // Public self-service deletion stays closed until Jobs has removed and
+      // residual-checked every product-data namespace for the uid.
+      deleteUser: { enabled: false },
+    },
+    account: {
+      encryptOAuthTokens: true,
+      storeStateStrategy: "database",
+      accountLinking: {
+        enabled: true,
+        disableImplicitLinking: true,
+        trustedProviders,
+        allowDifferentEmails: false,
+      },
+    },
+    rateLimit: {
+      enabled: true,
+      storage: "database",
+      window: 60,
+      max: 100,
+      customRules: {
+        "/get-session": (request) =>
+          env.INTERNAL_ASSERTION_SECRET &&
+          constantTimeEqual(
+            request.headers.get("x-internal-assertion-secret") || "",
+            env.INTERNAL_ASSERTION_SECRET,
+          )
+            ? false
+            : { window: 60, max: 100 },
+      },
+    },
+    advanced: {
+      ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
+      useSecureCookies: baseURL.startsWith("https://"),
+    },
+    plugins: [
+      bearer(),
+      jwt({
+        jwt: {
+          jwks: {
+            keyPairConfig: { alg: "ES256" },
+            rotationInterval: JWT_ROTATION_INTERVAL_SECONDS,
+            gracePeriod: JWT_GRACE_PERIOD_SECONDS,
+          },
+          expirationTime: "24h",
+        },
+      }),
+      mcp({
+        loginPage: "/login",
+        consentPage: "/mcp/consent",
+        resource,
+        scopes: MCP_OAUTH_SCOPES,
+        grantTypes: ["authorization_code", "refresh_token"],
+        accessTokenExpiresIn: 60 * 60,
+        refreshTokenExpiresIn: 30 * 24 * 60 * 60,
+        allowPublicClientPrelogin: true,
+        allowDynamicClientRegistration: allowUnauthenticatedDcr,
+        allowUnauthenticatedClientRegistration: allowUnauthenticatedDcr,
+        clientRegistrationRequirePKCE: true,
+      }),
+    ],
+  });
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  let difference = leftBytes.length ^ rightBytes.length;
+  const maxLength = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < maxLength; index++) {
+    difference |= (leftBytes[index] || 0) ^ (rightBytes[index] || 0);
+  }
+  return difference === 0;
+}
+
+function bearerToken(request: Request): string | null {
+  const authorization = request.headers.get("authorization");
+  if (!authorization) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  return match?.[1] || null;
+}
+
+function firebaseBearerToken(request: Request): string | null {
+  const value = bearerToken(request);
+  if (
+    !value ||
+    new TextEncoder().encode(value).byteLength > MAX_FIREBASE_ID_TOKEN_BYTES
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function payloadUid(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const uid = (payload as { uid?: unknown }).uid;
+  if (typeof uid === "string" && uid.length > 0) return uid;
+  const subject = (payload as { sub?: unknown }).sub;
+  return typeof subject === "string" && subject.length > 0 ? subject : null;
+}
+
+async function verifyFirebaseBearerContext(
+  request: Request,
+  env: AuthEnv,
+): Promise<AuthContext | null> {
+  const token = firebaseBearerToken(request);
+  if (!token || !env.FIREBASE_API_KEY) return null;
+  try {
+    const identity = await verifyFirebaseIdToken(env.AUTH_DB, token, env);
+    return {
+      uid: identity.betterAuthUserId,
+      authority: "firebase",
+      ...(identity.displayName ? { displayName: identity.displayName } : {}),
+      ...(identity.accountCreatedAt
+        ? { accountCreatedAt: identity.accountCreatedAt }
+        : {}),
+      requestId: request.headers.get("x-request-id") || "internal",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function verifiedMcpClaims(payload: unknown): {
+  uid: string;
+  scopes: string[];
+  tokenScopes: string[];
+  clientId: string;
+} | null {
+  if (!payload || typeof payload !== "object") return null;
+  const claims = payload as Record<string, unknown>;
+  const uid = claims.sub;
+  const clientId = claims.client_id;
+  const authorizedParty = claims.azp;
+  const rawScope = claims.scope;
+  if (
+    typeof uid !== "string" ||
+    uid.length === 0 ||
+    uid.length > 256 ||
+    typeof clientId !== "string" ||
+    clientId.length === 0 ||
+    clientId.length > 2_048 ||
+    (authorizedParty !== undefined && authorizedParty !== clientId) ||
+    typeof rawScope !== "string" ||
+    rawScope.length > 4_096
+  ) {
+    return null;
+  }
+  const granted = rawScope.split(/\s+/).filter(Boolean);
+  if (
+    granted.length > MCP_OAUTH_SCOPES.length ||
+    granted.length !== new Set(granted).size ||
+    granted.some((scope) => !MCP_OAUTH_SCOPE_SET.has(scope))
+  ) {
+    return null;
+  }
+  return {
+    uid,
+    clientId,
+    tokenScopes: granted,
+    scopes: granted.filter((scope) => MCP_DATA_SCOPE_SET.has(scope)),
+  };
+}
+
+type McpConsentRow = {
+  id?: unknown;
+  clientId?: unknown;
+  resources?: unknown;
+  scopes?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  lastUsedAt?: unknown;
+  clientName?: unknown;
+  clientUri?: unknown;
+  clientIcon?: unknown;
+};
+
+function oauthStringArray(value: unknown): string[] | null {
+  if (value === null || value === undefined) return [];
+  let decoded = value;
+  if (typeof value === "string") {
+    try {
+      decoded = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (
+    !Array.isArray(decoded) ||
+    decoded.some((entry) => typeof entry !== "string")
+  ) {
+    return null;
+  }
+  return decoded as string[];
+}
+
+function requiredOauthString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function oauthGrantId(value: string): string | null {
+  return value.length > 0 &&
+    value.length <= 512 &&
+    !/[\0-\x1f\x7f/]/.test(value)
+    ? value
+    : null;
+}
+
+function oauthTimestamp(value: unknown): string | null {
+  if (typeof value === "number" && value <= 0) return null;
+  return profileCreatedAt(value);
+}
+
+function oauthGrantFromRow(row: McpConsentRow): Record<string, unknown> {
+  const id = requiredOauthString(row.id);
+  const clientId = requiredOauthString(row.clientId);
+  const scopes = oauthStringArray(row.scopes);
+  const resources = oauthStringArray(row.resources);
+  if (!id || !clientId || !scopes || !resources) {
+    throw new Error("invalid OAuth consent row");
+  }
+  return {
+    id,
+    client_id: clientId,
+    client_name:
+      typeof row.clientName === "string" && row.clientName.trim()
+        ? row.clientName.trim().slice(0, 200)
+        : null,
+    client_uri: typeof row.clientUri === "string" ? row.clientUri : null,
+    logo_uri: typeof row.clientIcon === "string" ? row.clientIcon : null,
+    resource: resources[0] || null,
+    resources,
+    scopes,
+    status: "active",
+    created_at: oauthTimestamp(row.createdAt),
+    updated_at: oauthTimestamp(row.updatedAt),
+    last_used_at: oauthTimestamp(row.lastUsedAt),
+    revoked_at: null,
+  };
+}
+
+async function listMcpOauthGrants(
+  database: D1Database,
+  uid: string,
+): Promise<Record<string, unknown>[]> {
+  const result = await database
+    .prepare(
+      `SELECT consent.id,
+              consent.clientId,
+              consent.resources,
+              consent.scopes,
+              consent.createdAt,
+              consent.updatedAt,
+              client.name AS clientName,
+              client.uri AS clientUri,
+              client.icon AS clientIcon,
+              MAX(
+                COALESCE(
+                  (SELECT MAX(token.createdAt)
+                     FROM oauthAccessToken AS token
+                    WHERE token.userId = consent.userId
+                      AND token.clientId = consent.clientId),
+                  0
+                ),
+                COALESCE(
+                  (SELECT MAX(token.createdAt)
+                     FROM oauthRefreshToken AS token
+                    WHERE token.userId = consent.userId
+                      AND token.clientId = consent.clientId),
+                  0
+                )
+              ) AS lastUsedAt
+         FROM oauthConsent AS consent
+         LEFT JOIN oauthClient AS client
+           ON client.clientId = consent.clientId
+        WHERE consent.userId = ?
+        ORDER BY consent.updatedAt DESC, consent.createdAt DESC`,
+    )
+    .bind(uid)
+    .all<McpConsentRow>();
+  return result.results.map(oauthGrantFromRow);
+}
+
+async function activeMcpConsent(
+  database: D1Database,
+  uid: string,
+  clientId: string,
+  resource: string,
+  tokenScopes: string[],
+): Promise<boolean> {
+  const result = await database
+    .prepare(
+      `SELECT scopes, resources
+         FROM oauthConsent
+        WHERE userId = ? AND clientId = ?`,
+    )
+    .bind(uid, clientId)
+    .all<{ scopes?: unknown; resources?: unknown }>();
+  return result.results.some((row) => {
+    const scopes = oauthStringArray(row.scopes);
+    const resources = oauthStringArray(row.resources);
+    return Boolean(
+      scopes &&
+      resources &&
+      tokenScopes.every((scope) => scopes.includes(scope)) &&
+      resources.includes(resource),
+    );
+  });
+}
+
+async function revokeMcpOauthGrant(
+  database: D1Database,
+  uid: string,
+  grantId: string,
+): Promise<boolean> {
+  const consent = await database
+    .prepare("SELECT clientId FROM oauthConsent WHERE id = ? AND userId = ?")
+    .bind(grantId, uid)
+    .first<{ clientId?: unknown }>();
+  const clientId = requiredOauthString(consent?.clientId);
+  if (!clientId) return false;
+  await database.batch([
+    database
+      .prepare("DELETE FROM oauthAccessToken WHERE userId = ? AND clientId = ?")
+      .bind(uid, clientId),
+    database
+      .prepare(
+        "DELETE FROM oauthRefreshToken WHERE userId = ? AND clientId = ?",
+      )
+      .bind(uid, clientId),
+    database
+      .prepare("DELETE FROM oauthConsent WHERE id = ? AND userId = ?")
+      .bind(grantId, uid),
+  ]);
+  return true;
+}
+
+function profileCreatedAt(value: unknown): string | null {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  return null;
+}
+
+function authContextCreatedAt(value: unknown): number | undefined {
+  const normalized = profileCreatedAt(value);
+  if (!normalized) return undefined;
+  const milliseconds = Date.parse(normalized);
+  return Number.isFinite(milliseconds) && milliseconds > 0
+    ? Math.floor(milliseconds / 1000)
+    : undefined;
+}
+
+function lifecycleUid(value: string): string | null {
+  return value.length > 0 && value.length <= 256 && !value.includes("/")
+    ? value
+    : null;
+}
+
+function databaseCount(value: unknown): number {
+  const count = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error("invalid identity residual count");
+  }
+  return count;
+}
+
+async function authIdentityResidual(
+  database: D1Database,
+  uid: string,
+): Promise<AuthIdentityResidual> {
+  const row = await database
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM user WHERE id = ?) AS users,
+         (SELECT COUNT(*) FROM session WHERE userId = ?) AS sessions,
+         (SELECT COUNT(*) FROM account WHERE userId = ?) AS accounts,
+         (SELECT COUNT(*) FROM verification WHERE value = ?) AS deletionVerifications,
+         (SELECT COUNT(*) FROM oauthClient WHERE userId = ?) AS oauthClients,
+         (SELECT COUNT(*) FROM oauthAccessToken WHERE userId = ?) AS oauthAccessTokens,
+         (SELECT COUNT(*) FROM oauthRefreshToken WHERE userId = ?) AS oauthRefreshTokens,
+         (SELECT COUNT(*) FROM oauthConsent WHERE userId = ?) AS oauthConsents`,
+    )
+    .bind(uid, uid, uid, uid, uid, uid, uid, uid)
+    .first<Record<string, unknown>>();
+  if (!row) throw new Error("identity residual query returned no row");
+  return {
+    users: databaseCount(row.users),
+    sessions: databaseCount(row.sessions),
+    accounts: databaseCount(row.accounts),
+    deletionVerifications: databaseCount(row.deletionVerifications),
+    oauthClients: databaseCount(row.oauthClients),
+    oauthAccessTokens: databaseCount(row.oauthAccessTokens),
+    oauthRefreshTokens: databaseCount(row.oauthRefreshTokens),
+    oauthConsents: databaseCount(row.oauthConsents),
+  };
+}
+
+function identityResidualEmpty(residual: AuthIdentityResidual): boolean {
+  return Object.values(residual).every((count) => count === 0);
+}
+
+app.use(`${AUTH_BASE_PATH}/*`, async (c, next) => {
+  const allowed = origins(c.env);
+  return cors({
+    origin: (origin) => (allowed.includes(origin) ? origin : allowed[0] || ""),
+    credentials: true,
+  })(c, next);
+});
+
+app.get("/health", (c) =>
+  c.json({ status: "ok", service: "auth", version: "cf-04" }),
+);
+
+app.get("/ready", async (c) => {
+  try {
+    await c.env.AUTH_DB.prepare("SELECT 1").run();
+    await c.env.AUTH_DB.prepare("SELECT id FROM oauthResource LIMIT 1").run();
+    const findActiveKey = () =>
+      c.env.AUTH_DB.prepare(
+        `SELECT id FROM jwks
+         WHERE expiresAt IS NULL
+            OR (typeof(expiresAt) IN ('integer', 'real') AND expiresAt > ?)
+            OR (typeof(expiresAt) = 'text' AND datetime(expiresAt) > datetime('now'))
+         LIMIT 1`,
+      )
+        .bind(Date.now())
+        .first<{ id: string }>();
+    let activeKey = await findActiveKey();
+    if (!activeKey) {
+      const auth = buildAuth(c.env, c.req.url);
+      await auth.api.signJWT({
+        body: { payload: { sub: "jwks-readiness-bootstrap" } },
+        headers: c.req.raw.headers,
+      });
+      activeKey = await findActiveKey();
+    }
+    if (!activeKey)
+      return c.json(
+        { status: "not_ready", database: "ok", signing_key: "missing" },
+        503,
+      );
+    return c.json({ status: "ready", database: "ok", signing_key: "ok" });
+  } catch {
+    return c.json(
+      { status: "not_ready", database: "error", signing_key: "error" },
+      503,
+    );
+  }
+});
+
+app.get(`${AUTH_BASE_PATH}/omi-capabilities`, (c) =>
+  c.json({
+    social_providers: configuredSocialProviderIds(c.env),
+    explicit_account_linking: true,
+    implicit_account_linking: false,
+  }),
+);
+
+// This endpoint exists only for the non-release Flutter staging bridge. It
+// mints a normal Better Auth JWT after proving possession of a secret that is
+// never checked into the repository or exposed to production clients.
+app.post("/auth-issue", async (c) => {
+  const issuerSecret = c.env.AUTH_DEV_ISSUER_SECRET;
+  if (!issuerSecret) return c.json({ error: "not_found" }, 404);
+  const presented = bearerToken(c.req.raw);
+  if (!presented || !constantTimeEqual(presented, issuerSecret)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const uid =
+    typeof body === "object" && body !== null && "uid" in body
+      ? (body as { uid?: unknown }).uid
+      : null;
+  if (typeof uid !== "string" || uid.trim().length === 0 || uid.length > 256) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+
+  try {
+    const auth = buildAuth(c.env, c.req.url);
+    const result = await auth.api.signJWT({
+      body: { payload: { uid, sub: uid } },
+      headers: c.req.raw.headers,
+    });
+    return c.json({ ...result, uid });
+  } catch {
+    return c.json({ error: "issuer_unavailable" }, 502);
+  }
+});
+
+// Staging-only internal bridge for imported Firebase principals.  The exact
+// native-auth route is still independently gated and only issues a custom
+// token after this identity projection has admitted the Firebase principal.
+app.post("/internal/firebase/custom-token", async (c) => {
+  if (c.env.FIREBASE_CUSTOM_TOKEN_BRIDGE_STAGING_ENABLED !== "true") {
+    return c.json({ error: "not_found" }, 404);
+  }
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context || context.authority !== "internal") {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const declaredLength = Number(c.req.header("content-length") || "0");
+  if (
+    !Number.isFinite(declaredLength) ||
+    declaredLength < 0 ||
+    declaredLength > MAX_FIREBASE_BRIDGE_BODY_BYTES
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  let body: unknown;
+  try {
+    const raw = await c.req.text();
+    if (
+      new TextEncoder().encode(raw).byteLength > MAX_FIREBASE_BRIDGE_BODY_BYTES
+    ) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    body = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const requestBody = body as Record<string, unknown>;
+  const requestedUid = requestBody.uid;
+  if (requestedUid !== undefined && requestedUid !== context.uid) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const requestedGeneration = requestBody.account_generation;
+  if (
+    requestedGeneration !== undefined &&
+    (typeof requestedGeneration !== "number" ||
+      !Number.isSafeInteger(requestedGeneration) ||
+      requestedGeneration < 1)
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  if (
+    requestBody.exchange !== undefined &&
+    typeof requestBody.exchange !== "boolean"
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+
+  try {
+    const issued = await issueFirebaseCustomToken(
+      c.env.AUTH_DB,
+      context.uid,
+      c.env,
+      Math.floor(Date.now() / 1_000),
+      requestedGeneration as number | undefined,
+    );
+    const response: Record<string, unknown> = {
+      custom_token: issued.token,
+      firebase_uid: issued.firebaseUid,
+      account_generation: issued.accountGeneration,
+      issuance_id: issued.issuanceId,
+      expires_at: issued.expiresAt,
+    };
+    if (requestBody.exchange === true) {
+      const exchanged = await exchangeFirebaseCustomToken(issued.token, c.env);
+      Object.assign(response, {
+        id_token: exchanged.idToken,
+        refresh_token: exchanged.refreshToken,
+        expires_in: exchanged.expiresIn,
+        local_id: exchanged.localId,
+      });
+    }
+    c.header("cache-control", "no-store");
+    return c.json(response);
+  } catch (error) {
+    const code =
+      error instanceof FirebaseCustomTokenBridgeError
+        ? error.code
+        : "bridge_unavailable";
+    const status =
+      code === "identity_not_admitted" ||
+      code === "deletion_fence_active" ||
+      code === "account_generation_conflict"
+        ? 409
+        : 503;
+    return c.json({ error: code }, status);
+  }
+});
+
+// Internal-only projection bridge for an anonymous Firebase account that is
+// being linked to the authenticated Better Auth target. Identity Toolkit
+// validates the bearer token first; App D1 receives only keyed hashes.
+app.post("/internal/firebase/anonymous-identity", async (c) => {
+  if (
+    c.env.FIREBASE_ANONYMOUS_IDENTITY_BRIDGE_STAGING_ENABLED !== "true"
+  ) {
+    return c.json({ error: "not_found" }, 404);
+  }
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context || context.authority !== "internal") {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const token = firebaseBearerToken(c.req.raw);
+  if (!token) return c.json({ error: "source_identity_rejected" }, 403);
+  const declaredLength = Number(c.req.header("content-length") || "0");
+  if (
+    !Number.isFinite(declaredLength) ||
+    declaredLength < 0 ||
+    declaredLength > MAX_FIREBASE_ANONYMOUS_BRIDGE_BODY_BYTES
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  let body: unknown;
+  try {
+    const raw = await c.req.text();
+    if (
+      new TextEncoder().encode(raw).byteLength >
+      MAX_FIREBASE_ANONYMOUS_BRIDGE_BODY_BYTES
+    ) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    body = JSON.parse(raw);
+  } catch {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const expectedUid =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as { expected_source_uid?: unknown }).expected_source_uid
+      : null;
+  if (
+    typeof expectedUid !== "string" ||
+    !expectedUid ||
+    new TextEncoder().encode(expectedUid).byteLength > 256
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  try {
+    const attestation = await attestFirebaseAnonymousIdentity(
+      token,
+      expectedUid,
+      c.env,
+    );
+    c.header("cache-control", "no-store");
+    return c.json({
+      target_uid: context.uid,
+      source_ref: attestation.sourceRef,
+      source_uid_hash: attestation.sourceUidHash,
+      source_proof_hash: attestation.sourceProofHash,
+      source_credential_generation: attestation.sourceCredentialGeneration,
+      source_projection_revision: attestation.sourceProjectionRevision,
+      attested_at: attestation.attestedAt,
+      expires_at: attestation.expiresAt,
+    });
+  } catch (error) {
+    const code =
+      error instanceof FirebaseAnonymousIdentityError
+        ? error.code
+        : "bridge_unavailable";
+    return c.json(
+      { error: code },
+      code === "bridge_unavailable" ? 503 : 403,
+      { "cache-control": "no-store" },
+    );
+  }
+});
+
+app.post("/internal/verify", async (c) => {
+  const expected = c.env.INTERNAL_ASSERTION_SECRET;
+  const presentedSecret = c.req.header("x-internal-assertion-secret") || "";
+  if (!expected || !constantTimeEqual(presentedSecret, expected)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const authorization = c.req.header("authorization");
+  const cookie = c.req.header("cookie");
+  if (!authorization && !cookie) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const auth = buildAuth(c.env, c.req.url);
+    const token = bearerToken(c.req.raw);
+    const baseURL = c.env.BETTER_AUTH_URL || new URL(c.req.url).origin;
+    const sessionHeaders = new Headers({ origin: baseURL });
+    sessionHeaders.set("x-internal-assertion-secret", expected);
+    if (authorization) sessionHeaders.set("authorization", authorization);
+    if (cookie) sessionHeaders.set("cookie", cookie);
+    const sessionRequest = new Request(
+      new URL(`${AUTH_BASE_PATH}/get-session`, baseURL),
+      {
+        headers: sessionHeaders,
+      },
+    );
+    const response = await auth.handler(sessionRequest);
+    if (response.ok) {
+      const body = (await response.json()) as {
+        user?: { id?: string; name?: string; createdAt?: unknown };
+      } | null;
+      const sessionUid = body?.user?.id;
+      if (sessionUid) {
+        const result: AuthContext = {
+          uid: sessionUid,
+          authority: "better-auth",
+          displayName:
+            typeof body?.user?.name === "string" && body.user.name.trim()
+              ? body.user.name.trim().slice(0, 120)
+              : undefined,
+          accountCreatedAt: authContextCreatedAt(body?.user?.createdAt),
+          requestId: c.req.header("x-request-id") || "internal",
+        };
+        return c.json(result);
+      }
+    }
+
+    // A JWT issued by the server-only Better Auth plugin is not a database
+    // session, so `/get-session` correctly returns null for the dev bridge.
+    // Verify its signature and issuer instead of treating that valid token as
+    // anonymous traffic.
+    if (!token) return c.json({ error: "unauthorized" }, 401);
+    const verified = await auth.api.verifyJWT({
+      body: { token },
+      headers: c.req.raw.headers,
+    });
+    const uid = payloadUid(verified?.payload);
+    if (uid) {
+      let accountCreatedAt: number | undefined;
+      try {
+        const user = await c.env.AUTH_DB.prepare(
+          "SELECT createdAt FROM user WHERE id = ?",
+        )
+          .bind(uid)
+          .first<{ createdAt?: unknown }>();
+        accountCreatedAt = authContextCreatedAt(user?.createdAt);
+      } catch {
+        // Creation time is a fail-open trial input, never an auth prerequisite.
+      }
+      const result: AuthContext = {
+        uid,
+        authority: "better-auth",
+        accountCreatedAt,
+        requestId: c.req.header("x-request-id") || "internal",
+      };
+      return c.json(result);
+    }
+
+    // Firebase ID tokens are accepted only after Identity Toolkit verifies the
+    // credential and the completed D1 identity projection admits the Firebase
+    // principal. This preserves the legacy bearer boundary without trusting a
+    // caller-supplied uid or treating Better Auth JWTs as Firebase tokens.
+    const firebase = await verifyFirebaseBearerContext(c.req.raw, c.env);
+    if (firebase) return c.json(firebase);
+    return c.json({ error: "unauthorized" }, 401);
+  } catch {
+    const firebase = await verifyFirebaseBearerContext(c.req.raw, c.env);
+    if (firebase) return c.json(firebase);
+    return c.json({ error: "unauthorized" }, 401);
+  }
+});
+
+// Jobs uses this private endpoint when the legacy app-consent OAuth form
+// carries its Firebase credential in the body rather than the Authorization
+// header. The endpoint returns the same projection-backed identity context as
+// `/internal/verify`; the service binding and assertion secret keep it off the
+// public surface.
+app.post("/internal/verify-firebase", async (c) => {
+  const expected = c.env.INTERNAL_ASSERTION_SECRET;
+  const presentedSecret = c.req.header("x-internal-assertion-secret") || "";
+  if (!expected || !constantTimeEqual(presentedSecret, expected)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const token = firebaseBearerToken(c.req.raw);
+  if (!token) return c.json({ error: "unauthorized" }, 401);
+  const context = await verifyFirebaseBearerContext(c.req.raw, c.env);
+  return context ? c.json(context) : c.json({ error: "unauthorized" }, 401);
+});
+
+app.post("/internal/mcp/verify", async (c) => {
+  const expected = c.env.INTERNAL_ASSERTION_SECRET;
+  const presentedSecret = c.req.header("x-internal-assertion-secret") || "";
+  if (!expected || !constantTimeEqual(presentedSecret, expected)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const contentLength = Number(c.req.header("content-length") || "0");
+  if (
+    !Number.isFinite(contentLength) ||
+    contentLength < 0 ||
+    contentLength > MAX_MCP_VERIFY_BODY_BYTES
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+
+  let body: unknown;
+  try {
+    const raw = await c.req.text();
+    if (new TextEncoder().encode(raw).length > MAX_MCP_VERIFY_BODY_BYTES) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    body = JSON.parse(raw);
+  } catch {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const method =
+    body && typeof body === "object" && "method" in body
+      ? (body as { method?: unknown }).method
+      : null;
+  const url =
+    body && typeof body === "object" && "url" in body
+      ? (body as { url?: unknown }).url
+      : null;
+  const baseURL = c.env.BETTER_AUTH_URL || new URL(c.req.url).origin;
+  const resource =
+    c.env.MCP_RESOURCE_URL || new URL("/v1/mcp/sse", baseURL).href;
+  if (!["POST", "GET", "DELETE"].includes(String(method)) || url !== resource) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const authorization = c.req.header("authorization");
+  if (!authorization) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const publicHeaders = new Headers({ authorization });
+    const dpop = c.req.header("dpop");
+    if (dpop) publicHeaders.set("dpop", dpop);
+    const publicRequest = new Request(resource, {
+      method: String(method),
+      headers: publicHeaders,
+    });
+    const auth = buildAuth(c.env, c.req.url);
+    const { baseURL: issuer, internalAdapter } = await auth.$context;
+    if (!issuer) throw new Error("Better Auth issuer is unavailable");
+    const verify = createMcpProtectedRequestHandler(
+      {
+        issuer,
+        audience: resource,
+        challengeScopes: MCP_SCOPES,
+        // Better Auth's verifier accepts a function source internally. Keep
+        // JWKS resolution inside this Worker so Cloudflare never has to make a
+        // same-account public Worker fetch, which is rejected with error 1042.
+        jwksUrl: (async () => await auth.api.getJwks()) as unknown as string,
+        dpop: { replayStore: createDpopReplayStore(internalAdapter) },
+      },
+      async (_request, claims) => {
+        const identity = verifiedMcpClaims(claims);
+        if (!identity) {
+          return Response.json({ error: "invalid_token" }, { status: 401 });
+        }
+        if (
+          !(await activeMcpConsent(
+            c.env.AUTH_DB,
+            identity.uid,
+            identity.clientId,
+            resource,
+            identity.tokenScopes,
+          ))
+        ) {
+          return Response.json({ error: "invalid_token" }, { status: 401 });
+        }
+        return Response.json(
+          {
+            uid: identity.uid,
+            scopes: identity.scopes,
+            clientId: identity.clientId,
+          },
+          { headers: { "cache-control": "no-store" } },
+        );
+      },
+    );
+    return await verify(publicRequest);
+  } catch {
+    return c.json({ error: "authorization_unavailable" }, 503);
+  }
+});
+
+app.get("/internal/mcp/grants", async (c) => {
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const grants = await listMcpOauthGrants(c.env.AUTH_DB, context.uid);
+    c.header("cache-control", "no-store");
+    return c.json({ grants });
+  } catch {
+    return c.json({ error: "oauth_grants_unavailable" }, 503);
+  }
+});
+
+app.delete("/internal/mcp/grants/:grantId", async (c) => {
+  const grantId = oauthGrantId(c.req.param("grantId"));
+  if (!grantId) return c.json({ error: "invalid_request" }, 400);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const revoked = await revokeMcpOauthGrant(
+      c.env.AUTH_DB,
+      context.uid,
+      grantId,
+    );
+    if (!revoked) return c.json({ detail: "OAuth grant not found" }, 404);
+    return c.body(null, 204);
+  } catch {
+    return c.json({ error: "oauth_grants_unavailable" }, 503);
+  }
+});
+
+// The Edge has already authenticated the caller and forwards a signed context.
+// Keep the identity read beside Better Auth's D1 tables instead of giving the
+// Python API worker a write-capable binding to the auth database.
+app.get("/internal/profile", async (c) => {
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+
+  try {
+    const row = await c.env.AUTH_DB.prepare(
+      "SELECT id, name, email, createdAt FROM user WHERE id = ?",
+    )
+      .bind(context.uid)
+      .first<{
+        id?: unknown;
+        name?: unknown;
+        email?: unknown;
+        createdAt?: unknown;
+      }>();
+    if (!row) return c.json({ detail: "User not found" }, 410);
+
+    const uid =
+      typeof row.id === "string" && row.id.length > 0 ? row.id : context.uid;
+    return c.json({
+      uid,
+      email: typeof row.email === "string" ? row.email : null,
+      name: typeof row.name === "string" ? row.name : null,
+      created_at: profileCreatedAt(row.createdAt),
+    });
+  } catch {
+    return c.json({ error: "profile_unavailable" }, 503);
+  }
+});
+
+// Product-data deletion is orchestrated by the Jobs Worker. These private
+// endpoints give that workflow an idempotent Auth-D1 boundary without enabling
+// Better Auth's public /delete-user route before the wider residual workflow is
+// ready. Every request is bound to the caller's uid, method, path, and the Auth
+// service audience by the signed internal context.
+app.get("/internal/users/:uid/residual", async (c) => {
+  const uid = lifecycleUid(c.req.param("uid"));
+  if (!uid) return c.json({ error: "invalid_request" }, 400);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  if (context.uid !== uid) return c.json({ error: "forbidden" }, 403);
+
+  try {
+    const residual = await authIdentityResidual(c.env.AUTH_DB, uid);
+    return c.json({ uid, empty: identityResidualEmpty(residual), residual });
+  } catch {
+    return c.json({ error: "identity_lifecycle_unavailable" }, 503);
+  }
+});
+
+app.get("/internal/users/:uid", async (c) => {
+  const uid = lifecycleUid(c.req.param("uid"));
+  if (!uid) return c.json({ error: "invalid_request" }, 400);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  if (context.uid !== uid) return c.json({ error: "forbidden" }, 403);
+
+  try {
+    const row = await c.env.AUTH_DB.prepare(
+      "SELECT id, name, email, createdAt FROM user WHERE id = ?",
+    )
+      .bind(uid)
+      .first<{
+        id?: unknown;
+        name?: unknown;
+        email?: unknown;
+        createdAt?: unknown;
+      }>();
+    const residual = await authIdentityResidual(c.env.AUTH_DB, uid);
+    if (!row) {
+      return c.json({ detail: "User not found", uid, residual }, 404);
+    }
+    return c.json({
+      uid,
+      email: typeof row.email === "string" ? row.email : null,
+      name: typeof row.name === "string" ? row.name : null,
+      created_at: profileCreatedAt(row.createdAt),
+      residual,
+    });
+  } catch {
+    return c.json({ error: "identity_lifecycle_unavailable" }, 503);
+  }
+});
+
+app.delete("/internal/users/:uid", async (c) => {
+  const uid = lifecycleUid(c.req.param("uid"));
+  if (!uid) return c.json({ error: "invalid_request" }, 400);
+  const context = await verifyRequestAuthContext(
+    c.req.raw,
+    "auth",
+    c.env.INTERNAL_ASSERTION_SECRET,
+  );
+  if (!context) return c.json({ error: "unauthorized" }, 401);
+  if (context.uid !== uid) return c.json({ error: "forbidden" }, 403);
+
+  try {
+    const deletionStartedAt = Math.floor(Date.now() / 1_000);
+    // Activate the Auth-D1 fence before touching Better Auth rows.  Keeping
+    // the existing generation on conflict prevents an old Firebase token
+    // issuance from being reused for a later account incarnation.
+    await c.env.AUTH_DB.prepare(
+      `INSERT INTO cf_auth_deletion_fences
+         (uid, generation, status, startedAt, completedAt)
+       VALUES (?, 1, 'deleting', ?, NULL)
+       ON CONFLICT(uid) DO UPDATE SET status = 'deleting',
+         startedAt = excluded.startedAt, completedAt = NULL`,
+    )
+      .bind(uid, deletionStartedAt)
+      .run();
+    const before = await authIdentityResidual(c.env.AUTH_DB, uid);
+    await c.env.AUTH_DB.batch([
+      c.env.AUTH_DB.prepare(
+        "DELETE FROM cf_firebase_bridge_issuances WHERE betterAuthUserId = ?",
+      ).bind(uid),
+      c.env.AUTH_DB.prepare(
+        "DELETE FROM cf_firebase_identity_projection WHERE betterAuthUserId = ?",
+      ).bind(uid),
+      c.env.AUTH_DB.prepare("DELETE FROM verification WHERE value = ?").bind(
+        uid,
+      ),
+      c.env.AUTH_DB.prepare(
+        "DELETE FROM oauthAccessToken WHERE userId = ?",
+      ).bind(uid),
+      c.env.AUTH_DB.prepare(
+        "DELETE FROM oauthRefreshToken WHERE userId = ?",
+      ).bind(uid),
+      c.env.AUTH_DB.prepare("DELETE FROM oauthConsent WHERE userId = ?").bind(
+        uid,
+      ),
+      c.env.AUTH_DB.prepare("DELETE FROM oauthClient WHERE userId = ?").bind(
+        uid,
+      ),
+      c.env.AUTH_DB.prepare("DELETE FROM session WHERE userId = ?").bind(uid),
+      c.env.AUTH_DB.prepare("DELETE FROM account WHERE userId = ?").bind(uid),
+      c.env.AUTH_DB.prepare("DELETE FROM user WHERE id = ?").bind(uid),
+    ]);
+    const residual = await authIdentityResidual(c.env.AUTH_DB, uid);
+    if (!identityResidualEmpty(residual)) {
+      return c.json({ error: "identity_residual", uid, residual }, 503);
+    }
+    await c.env.AUTH_DB.prepare(
+      `UPDATE cf_auth_deletion_fences
+          SET status = 'deleted', completedAt = ?
+        WHERE uid = ?`,
+    )
+      .bind(Math.floor(Date.now() / 1_000), uid)
+      .run();
+    return c.json({
+      uid,
+      status: identityResidualEmpty(before) ? "already_absent" : "deleted",
+      before,
+      residual,
+    });
+  } catch {
+    return c.json({ error: "identity_lifecycle_unavailable" }, 503);
+  }
+});
+
+app.on(
+  ["GET", "POST", "PUT", "PATCH", "DELETE"],
+  `${AUTH_BASE_PATH}/*`,
+  (c) => {
+    const auth = buildAuth(c.env, c.req.url);
+    return auth.handler(c.req.raw);
+  },
+);
+
+export default app;

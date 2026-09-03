@@ -1,0 +1,2140 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Omi 独立 Cloudflare Production 的完整架构、数据流、鉴权边界、异步生命周期、发布回滚与验证证据。"
+    />
+    <title>Omi · Cloudflare Production 详细架构文档</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink-950: #10191c;
+        --ink-900: #172428;
+        --ink-800: #26373c;
+        --ink-700: #41545a;
+        --ink-600: #5e7075;
+        --ink-500: #7b898d;
+        --paper: #f7f4ee;
+        --paper-strong: #fffdf9;
+        --line: #dcd6cb;
+        --line-strong: #c8c0b2;
+        --orange: #f48120;
+        --orange-deep: #cb5e08;
+        --orange-pale: #fff0df;
+        --teal: #087f79;
+        --teal-deep: #05605c;
+        --teal-pale: #e4f4f1;
+        --blue: #315f84;
+        --blue-pale: #e9f0f5;
+        --red: #b9362f;
+        --red-pale: #fae8e5;
+        --green: #2b7250;
+        --green-pale: #e8f3eb;
+        --shadow-sm: 0 1px 2px rgb(16 25 28 / 6%), 0 6px 18px rgb(16 25 28 / 4%);
+        --shadow-lg: 0 24px 70px rgb(16 25 28 / 16%);
+        --radius-sm: 8px;
+        --radius-md: 14px;
+        --radius-lg: 22px;
+        --content: 1180px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 24px;
+        max-width: 100%;
+        overflow-x: hidden;
+        overflow-x: clip;
+      }
+
+      body {
+        margin: 0;
+        max-width: 100%;
+        overflow-x: hidden;
+        overflow-x: clip;
+        color: var(--ink-800);
+        background:
+          linear-gradient(rgb(24 38 42 / 3%) 1px, transparent 1px),
+          linear-gradient(90deg, rgb(24 38 42 / 3%) 1px, transparent 1px),
+          var(--paper);
+        background-size: 32px 32px;
+        font-family: "Avenir Next", Avenir, "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 16px;
+        line-height: 1.72;
+        text-rendering: optimizeLegibility;
+      }
+
+      a {
+        color: var(--teal-deep);
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+      }
+
+      a:hover {
+        color: var(--orange-deep);
+      }
+
+      a:focus-visible,
+      button:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid rgb(244 129 32 / 35%);
+        outline-offset: 3px;
+      }
+
+      code,
+      pre,
+      .mono {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      code {
+        padding: 0.12em 0.34em;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: #fffaf1;
+        color: var(--ink-900);
+        font-size: 0.88em;
+        overflow-wrap: anywhere;
+      }
+
+      pre {
+        margin: 1rem 0 0;
+        padding: 1rem 1.1rem;
+        overflow-x: auto;
+        border: 1px solid #314146;
+        border-radius: var(--radius-sm);
+        color: #ecf6f4;
+        background: var(--ink-950);
+        font-size: 0.82rem;
+        line-height: 1.65;
+      }
+
+      pre code {
+        padding: 0;
+        border: 0;
+        color: inherit;
+        background: transparent;
+      }
+
+      .progress {
+        position: fixed;
+        z-index: 100;
+        inset: 0 auto auto 0;
+        width: 0;
+        height: 4px;
+        background: var(--orange);
+        box-shadow: 0 0 14px rgb(244 129 32 / 55%);
+      }
+
+      .masthead {
+        position: relative;
+        overflow: hidden;
+        color: #f8fbfa;
+        background:
+          radial-gradient(circle at 84% 25%, rgb(244 129 32 / 22%), transparent 28%),
+          linear-gradient(120deg, #10191c 0%, #182a2f 72%, #20353a 100%);
+        border-bottom: 5px solid var(--orange);
+      }
+
+      .masthead::after {
+        position: absolute;
+        inset: 0;
+        content: "";
+        pointer-events: none;
+        opacity: 0.13;
+        background-image:
+          linear-gradient(rgb(255 255 255 / 18%) 1px, transparent 1px),
+          linear-gradient(90deg, rgb(255 255 255 / 18%) 1px, transparent 1px);
+        background-size: 42px 42px;
+        mask-image: linear-gradient(90deg, transparent, #000 42%, #000);
+      }
+
+      .masthead__inner {
+        position: relative;
+        z-index: 1;
+        width: min(calc(100% - 40px), 1460px);
+        margin: 0 auto;
+        padding: 68px 0 56px;
+      }
+
+      .eyebrow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 0 18px;
+        color: #f6b170;
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 38px;
+        height: 2px;
+        content: "";
+        background: var(--orange);
+      }
+
+      h1,
+      h2,
+      h3,
+      h4 {
+        color: var(--ink-950);
+        line-height: 1.2;
+        letter-spacing: -0.025em;
+      }
+
+      h1 {
+        max-width: 980px;
+        margin: 0;
+        color: #fff;
+        font-size: clamp(2.5rem, 6vw, 5.8rem);
+        font-weight: 760;
+        line-height: 0.98;
+        letter-spacing: -0.055em;
+      }
+
+      .masthead__lede {
+        max-width: 920px;
+        margin: 26px 0 0;
+        color: #c9d6d8;
+        font-size: clamp(1rem, 2vw, 1.28rem);
+      }
+
+      .badge-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 30px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 11px;
+        border: 1px solid rgb(255 255 255 / 20%);
+        border-radius: 999px;
+        color: #eaf2f2;
+        background: rgb(255 255 255 / 7%);
+        font-size: 0.78rem;
+        font-weight: 700;
+      }
+
+      .badge::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        content: "";
+        background: var(--orange);
+        box-shadow: 0 0 0 4px rgb(244 129 32 / 18%);
+      }
+
+      .page-shell {
+        display: grid;
+        grid-template-columns: 248px minmax(0, var(--content));
+        gap: 52px;
+        width: min(calc(100% - 40px), 1480px);
+        margin: 0 auto;
+        padding: 38px 0 84px;
+      }
+
+      .sidebar {
+        align-self: start;
+        position: sticky;
+        top: 20px;
+        max-height: calc(100vh - 40px);
+        overflow-y: auto;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: rgb(255 253 249 / 88%);
+        box-shadow: var(--shadow-sm);
+        backdrop-filter: blur(12px);
+      }
+
+      .sidebar__label {
+        margin: 0 0 11px;
+        color: var(--ink-600);
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .toc {
+        display: grid;
+        gap: 2px;
+      }
+
+      .toc a {
+        position: relative;
+        display: block;
+        padding: 7px 10px 7px 14px;
+        border-radius: 6px;
+        color: var(--ink-600);
+        font-size: 0.82rem;
+        font-weight: 650;
+        text-decoration: none;
+      }
+
+      .toc a::before {
+        position: absolute;
+        inset: 50% auto auto 0;
+        width: 4px;
+        height: 0;
+        border-radius: 4px;
+        content: "";
+        background: var(--orange);
+        transform: translateY(-50%);
+        transition: height 160ms ease;
+      }
+
+      .toc a:hover,
+      .toc a.is-active {
+        color: var(--ink-950);
+        background: var(--orange-pale);
+      }
+
+      .toc a.is-active::before {
+        height: 18px;
+      }
+
+      .sidebar__meta {
+        margin-top: 18px;
+        padding-top: 15px;
+        border-top: 1px solid var(--line);
+        color: var(--ink-600);
+        font-size: 0.72rem;
+        line-height: 1.55;
+      }
+
+      main {
+        min-width: 0;
+      }
+
+      section {
+        scroll-margin-top: 22px;
+        margin-bottom: 72px;
+      }
+
+      .section-kicker {
+        margin: 0 0 8px;
+        color: var(--orange-deep);
+        font-size: 0.72rem;
+        font-weight: 850;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h2 {
+        margin: 0 0 16px;
+        font-size: clamp(1.9rem, 3.5vw, 3.2rem);
+      }
+
+      h3 {
+        margin: 1.8rem 0 0.7rem;
+        font-size: 1.22rem;
+      }
+
+      h4 {
+        margin: 0 0 0.5rem;
+        font-size: 0.98rem;
+      }
+
+      .section-lede {
+        max-width: 880px;
+        margin: 0 0 24px;
+        color: var(--ink-600);
+        font-size: 1.04rem;
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin: 26px 0;
+      }
+
+      .metric {
+        min-height: 132px;
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-top: 4px solid var(--orange);
+        border-radius: var(--radius-md);
+        background: var(--paper-strong);
+        box-shadow: var(--shadow-sm);
+      }
+
+      .metric__value {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--ink-950);
+        font-size: 2rem;
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .metric__label {
+        color: var(--ink-600);
+        font-size: 0.78rem;
+        font-weight: 700;
+      }
+
+      .callout {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 14px;
+        margin: 24px 0;
+        padding: 18px 20px;
+        border: 1px solid #f3c28e;
+        border-left: 5px solid var(--orange);
+        border-radius: var(--radius-sm);
+        background: var(--orange-pale);
+      }
+
+      .callout--teal {
+        border-color: #9acbc6;
+        border-left-color: var(--teal);
+        background: var(--teal-pale);
+      }
+
+      .callout--red {
+        border-color: #e2aaa4;
+        border-left-color: var(--red);
+        background: var(--red-pale);
+      }
+
+      .callout__mark {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        color: #fff;
+        background: var(--orange-deep);
+        font-size: 0.78rem;
+        font-weight: 900;
+      }
+
+      .callout--teal .callout__mark {
+        background: var(--teal);
+      }
+
+      .callout--red .callout__mark {
+        background: var(--red);
+      }
+
+      .callout p {
+        margin: 0;
+      }
+
+      .diagram {
+        margin: 30px 0;
+        overflow: hidden;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        background: var(--paper-strong);
+        box-shadow: var(--shadow-lg);
+      }
+
+      .diagram__toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-600);
+        background: #f4f0e9;
+        font-size: 0.76rem;
+        font-weight: 760;
+      }
+
+      .diagram__toolbar span:first-child {
+        color: var(--ink-900);
+      }
+
+      .diagram__button {
+        appearance: none;
+        padding: 6px 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        color: var(--ink-800);
+        background: var(--paper-strong);
+        cursor: zoom-in;
+        font: inherit;
+        font-weight: 760;
+      }
+
+      .diagram__button:hover {
+        border-color: var(--orange);
+        color: var(--orange-deep);
+      }
+
+      .diagram img {
+        display: block;
+        width: 100%;
+        height: auto;
+        background: #fff;
+      }
+
+      figcaption {
+        padding: 14px 18px 17px;
+        border-top: 1px solid var(--line);
+        color: var(--ink-600);
+        font-size: 0.78rem;
+      }
+
+      .two-col,
+      .three-col {
+        display: grid;
+        gap: 16px;
+      }
+
+      .two-col {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .three-col {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .panel {
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--paper-strong);
+        box-shadow: var(--shadow-sm);
+      }
+
+      .panel--dark {
+        border-color: #304247;
+        color: #cedadb;
+        background: var(--ink-900);
+      }
+
+      .panel--dark h3,
+      .panel--dark h4 {
+        color: #fff;
+      }
+
+      .panel--dark code {
+        border-color: #4a5a5e;
+        color: #fff2df;
+        background: #223238;
+      }
+
+      .panel p:last-child,
+      .panel ul:last-child {
+        margin-bottom: 0;
+      }
+
+      .mini-label {
+        display: inline-flex;
+        margin-bottom: 10px;
+        padding: 3px 7px;
+        border-radius: 4px;
+        color: var(--teal-deep);
+        background: var(--teal-pale);
+        font-size: 0.64rem;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .mini-label--orange {
+        color: var(--orange-deep);
+        background: var(--orange-pale);
+      }
+
+      .mini-label--red {
+        color: var(--red);
+        background: var(--red-pale);
+      }
+
+      .clean-list {
+        margin: 0.7rem 0 0;
+        padding-left: 1.15rem;
+      }
+
+      .clean-list li + li {
+        margin-top: 0.45rem;
+      }
+
+      .table-wrap {
+        margin: 22px 0;
+        max-width: 100%;
+        overflow-x: auto;
+        overscroll-behavior-inline: contain;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--paper-strong);
+        box-shadow: var(--shadow-sm);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.82rem;
+      }
+
+      th,
+      td {
+        padding: 13px 14px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+        text-align: left;
+      }
+
+      th {
+        color: var(--ink-900);
+        background: #f0ece4;
+        font-size: 0.7rem;
+        font-weight: 850;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      tbody tr:hover td {
+        background: #fffbf3;
+      }
+
+      .owner {
+        display: inline-block;
+        padding: 2px 7px;
+        border: 1px solid #acd4cf;
+        border-radius: 999px;
+        color: var(--teal-deep);
+        background: var(--teal-pale);
+        font-size: 0.67rem;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 26px;
+        margin: 24px 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: flow;
+      }
+
+      .flow li {
+        position: relative;
+        min-height: 150px;
+        padding: 48px 16px 17px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--paper-strong);
+        box-shadow: var(--shadow-sm);
+        counter-increment: flow;
+      }
+
+      .flow li::before {
+        position: absolute;
+        top: 14px;
+        left: 15px;
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        content: counter(flow);
+        color: #fff;
+        background: var(--orange-deep);
+        font-size: 0.72rem;
+        font-weight: 900;
+      }
+
+      .flow li:not(:last-child)::after {
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        right: -27px;
+        width: 26px;
+        height: 2px;
+        content: "";
+        background: var(--orange);
+      }
+
+      .flow strong {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--ink-950);
+        font-size: 0.9rem;
+      }
+
+      .flow span {
+        display: block;
+        color: var(--ink-600);
+        font-size: 0.76rem;
+        line-height: 1.55;
+      }
+
+      .resource-group {
+        margin: 18px 0;
+        padding: 18px 20px 14px;
+        border: 1px solid var(--line);
+        border-left: 4px solid var(--teal);
+        border-radius: var(--radius-sm);
+        background: var(--paper-strong);
+      }
+
+      .resource-group h4 {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .resource-group h4 span {
+        color: var(--ink-500);
+        font-size: 0.68rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .resource-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin: 10px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .resource-list code {
+        display: block;
+        font-size: 0.74rem;
+      }
+
+      .timeline {
+        position: relative;
+        margin: 28px 0 0;
+        padding: 0 0 0 28px;
+        list-style: none;
+      }
+
+      .timeline::before {
+        position: absolute;
+        inset: 7px auto 7px 8px;
+        width: 2px;
+        content: "";
+        background: var(--line-strong);
+      }
+
+      .timeline li {
+        position: relative;
+        padding: 0 0 22px 16px;
+      }
+
+      .timeline li::before {
+        position: absolute;
+        top: 5px;
+        left: -26px;
+        width: 12px;
+        height: 12px;
+        border: 3px solid var(--paper);
+        border-radius: 50%;
+        content: "";
+        background: var(--orange);
+        box-shadow: 0 0 0 1px var(--orange);
+      }
+
+      .timeline strong {
+        display: block;
+        color: var(--ink-950);
+      }
+
+      .timeline p {
+        margin: 4px 0 0;
+        color: var(--ink-600);
+        font-size: 0.86rem;
+      }
+
+      details {
+        margin: 14px 0;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--paper-strong);
+      }
+
+      summary {
+        padding: 13px 16px;
+        color: var(--ink-900);
+        cursor: pointer;
+        font-size: 0.84rem;
+        font-weight: 800;
+      }
+
+      details[open] summary {
+        border-bottom: 1px solid var(--line);
+        background: #f4f0e9;
+      }
+
+      .details-body {
+        padding: 5px 16px 16px;
+      }
+
+      .evidence-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin: 22px 0;
+      }
+
+      .evidence {
+        padding: 17px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--paper-strong);
+      }
+
+      .evidence__result {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        color: var(--green);
+        font-size: 0.74rem;
+        font-weight: 850;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .evidence__result::before {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        content: "";
+        background: var(--green);
+        box-shadow: 0 0 0 4px var(--green-pale);
+      }
+
+      .evidence strong {
+        display: block;
+        color: var(--ink-950);
+        font-size: 1.1rem;
+      }
+
+      .evidence p {
+        margin: 4px 0 0;
+        color: var(--ink-600);
+        font-size: 0.76rem;
+      }
+
+      .glossary {
+        display: grid;
+        grid-template-columns: 180px 1fr;
+        margin: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .glossary dt,
+      .glossary dd {
+        margin: 0;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .glossary dt {
+        color: var(--ink-950);
+        font-weight: 800;
+      }
+
+      .glossary dd {
+        color: var(--ink-600);
+      }
+
+      .doc-footer {
+        margin-top: 60px;
+        padding-top: 24px;
+        border-top: 1px solid var(--line-strong);
+        color: var(--ink-600);
+        font-size: 0.78rem;
+      }
+
+      dialog {
+        width: min(94vw, 1640px);
+        max-width: none;
+        max-height: 94vh;
+        padding: 0;
+        overflow: hidden;
+        border: 1px solid #45575c;
+        border-radius: var(--radius-md);
+        background: var(--paper-strong);
+        box-shadow: 0 30px 90px rgb(0 0 0 / 42%);
+      }
+
+      dialog::backdrop {
+        background: rgb(8 15 17 / 78%);
+        backdrop-filter: blur(5px);
+      }
+
+      .lightbox__bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-700);
+        background: #f4f0e9;
+        font-size: 0.78rem;
+        font-weight: 760;
+      }
+
+      .lightbox__close {
+        appearance: none;
+        padding: 6px 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        color: var(--ink-900);
+        background: var(--paper-strong);
+        cursor: pointer;
+        font: inherit;
+      }
+
+      .lightbox img {
+        display: block;
+        width: 100%;
+        max-height: calc(94vh - 48px);
+        object-fit: contain;
+        background: #fff;
+      }
+
+      @media (max-width: 1120px) {
+        .page-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          position: static;
+          max-height: none;
+        }
+
+        .toc {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .sidebar__meta {
+          display: none;
+        }
+
+        .metric-grid,
+        .evidence-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 760px) {
+        body {
+          font-size: 15px;
+          background-size: 24px 24px;
+        }
+
+        .masthead__inner,
+        .page-shell {
+          width: min(calc(100% - 24px), 1480px);
+        }
+
+        .masthead__inner {
+          padding: 46px 0 42px;
+        }
+
+        .page-shell {
+          gap: 28px;
+          padding-top: 20px;
+        }
+
+        .toc {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .two-col,
+        .three-col,
+        .metric-grid,
+        .evidence-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .flow {
+          grid-template-columns: 1fr;
+          gap: 14px;
+        }
+
+        .flow li {
+          min-height: auto;
+        }
+
+        .flow li:not(:last-child)::after {
+          inset: auto auto -15px 27px;
+          width: 2px;
+          height: 14px;
+        }
+
+        .glossary {
+          grid-template-columns: 1fr;
+        }
+
+        .glossary dt {
+          padding-bottom: 0;
+          border-bottom: 0;
+        }
+
+        .glossary dd {
+          padding-top: 4px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          transition-duration: 0.01ms !important;
+        }
+      }
+
+      @media print {
+        @page {
+          size: A4 landscape;
+          margin: 12mm;
+        }
+
+        body {
+          color: #000;
+          background: #fff;
+          font-size: 10pt;
+        }
+
+        .progress,
+        .sidebar,
+        .diagram__button,
+        dialog {
+          display: none !important;
+        }
+
+        .masthead {
+          color: #000;
+          background: #fff;
+          border-bottom: 3px solid var(--orange);
+        }
+
+        .masthead__inner {
+          width: 100%;
+          padding: 20px 0;
+        }
+
+        h1,
+        .masthead__lede,
+        .badge {
+          color: #000;
+        }
+
+        .badge {
+          border-color: #999;
+          background: #fff;
+        }
+
+        .page-shell {
+          display: block;
+          width: 100%;
+          padding: 18px 0;
+        }
+
+        section {
+          margin-bottom: 36px;
+        }
+
+        .diagram,
+        .panel,
+        .metric,
+        .table-wrap,
+        details {
+          break-inside: avoid;
+          box-shadow: none;
+        }
+
+        details:not([open]) > *:not(summary) {
+          display: block;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="progress" aria-hidden="true"></div>
+
+    <header class="masthead">
+      <div class="masthead__inner">
+        <p class="eyebrow">Architecture dossier · 2026-09-01</p>
+        <h1>Cloudflare Production<br />详细架构文档</h1>
+        <p class="masthead__lede">
+          Omi 的 Cloudflare 版本是一个独立、Cloudflare-only 的生产运行面：它拥有自己的 Workers、D1、R2、Queues、
+          Vectorize 与 Durable Objects，不和 legacy Google/Firebase 生产环境合流，也没有切换官方域名。
+        </p>
+        <div class="badge-row" aria-label="文档状态">
+          <span class="badge">Independent production</span>
+          <span class="badge">Cloudflare-native accounts</span>
+          <span class="badge">Workers AI canonical path</span>
+          <span class="badge">No official DNS cutover</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="page-shell">
+      <aside class="sidebar" aria-label="文档目录">
+        <p class="sidebar__label">Contents</p>
+        <nav class="toc">
+          <a href="#executive">01 · 结论与状态</a>
+          <a href="#boundaries">02 · 架构边界</a>
+          <a href="#modules">03 · 模块组成</a>
+          <a href="#request-flow">04 · 请求与鉴权</a>
+          <a href="#data-plane">05 · 数据平面</a>
+          <a href="#async-plane">06 · 异步与删除</a>
+          <a href="#ai-realtime">07 · AI 与实时</a>
+          <a href="#isolation">08 · 环境隔离</a>
+          <a href="#release">09 · 发布与回滚</a>
+          <a href="#security">10 · 安全边界</a>
+          <a href="#verification">11 · 生产证据</a>
+          <a href="#limits">12 · 限制与后续</a>
+          <a href="#appendix">13 · 附录</a>
+        </nav>
+        <div class="sidebar__meta">
+          <strong>文档口径</strong><br />
+          分支：<code>codex/cloudflare-adaptation</code><br />
+          运行环境：Cloudflare Production<br />
+          数据起点：空数据集<br />
+          更新时间：2026-09-01
+        </div>
+      </aside>
+
+      <main>
+        <section id="executive">
+          <p class="section-kicker">01 · Executive state</p>
+          <h2>结论与当前状态</h2>
+          <p class="section-lede">
+            当前版本已经真正部署到 Cloudflare，并完成生产级鉴权、Workers AI、浏览器、性能、迁移与删号残留验证。
+            它不是 legacy backend 的代理壳，也不是 staging 与生产资源的复用组合。
+          </p>
+
+          <div class="metric-grid" aria-label="生产资源概览">
+            <article class="metric">
+              <span class="metric__value">8</span>
+              <span class="metric__label">Active Workers · 包含 Web 与 Edge</span>
+            </article>
+            <article class="metric">
+              <span class="metric__value">2</span>
+              <span class="metric__label">D1 authorities · Auth / App</span>
+            </article>
+            <article class="metric">
+              <span class="metric__value">5</span>
+              <span class="metric__label">R2 buckets · 文件与受隔离数据</span>
+            </article>
+            <article class="metric">
+              <span class="metric__value">4 + 5</span>
+              <span class="metric__label">Queues + Vectorize indexes</span>
+            </article>
+          </div>
+
+          <div class="callout">
+            <span class="callout__mark" aria-hidden="true">!</span>
+            <p>
+              <strong>最重要的边界：</strong>Cloudflare Production 只承载新创建的 Cloudflare-native 账号。
+              既有 Firebase 身份、Firestore/GCS 历史数据和官方域名流量没有被自动导入、重分类或切换。
+            </p>
+          </div>
+
+          <figure class="diagram">
+            <div class="diagram__toolbar">
+              <span>Figure 01 · 总体运行拓扑</span>
+              <button class="diagram__button" type="button" data-image="06-production-overview-gpt-image.png">
+                放大查看
+              </button>
+            </div>
+            <img
+              src="06-production-overview-gpt-image.png"
+              alt="Omi Cloudflare Production 总体架构：客户端经 Web Worker 或 Edge Gateway 进入 Auth、Rate Limit、API Core、API AI、Realtime、Jobs 与数据层。"
+              width="1672"
+              height="941"
+            />
+            <figcaption>
+              总体视图强调运行时依赖；正文中的表格与流程定义是模块职责和箭头语义的权威解释。
+            </figcaption>
+          </figure>
+
+          <div class="two-col">
+            <article class="panel">
+              <span class="mini-label">Public origins</span>
+              <h3>公开入口</h3>
+              <p>
+                Edge：
+                <a href="https://omi-cf-edge-production.summersmile1984.workers.dev"
+                  >omi-cf-edge-production…workers.dev</a
+                >
+              </p>
+              <p>
+                Web：
+                <a href="https://omi-web-app-production.summersmile1984.workers.dev"
+                  >omi-web-app-production…workers.dev</a
+                >
+              </p>
+            </article>
+            <article class="panel panel--dark">
+              <span class="mini-label mini-label--orange">Source boundary</span>
+              <h3>独立适配分支</h3>
+              <p>
+                Cloudflare 适配由 <code>codex/cloudflare-adaptation</code> 单独维护。生产发布不依赖把另一个适配分支合并进来，
+                也不修改 legacy serving plane。
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section id="boundaries">
+          <p class="section-kicker">02 · Scope &amp; invariants</p>
+          <h2>架构边界</h2>
+          <p class="section-lede">
+            这套架构的目标是“在 Cloudflare 上独立成立”，而不是在一个请求里同时依赖 Cloudflare 与 Google 数据权威。
+          </p>
+
+          <div class="three-col">
+            <article class="panel">
+              <span class="mini-label">In scope</span>
+              <h3>当前承载</h3>
+              <ul class="clean-list">
+                <li>Better Auth 新账号与会话。</li>
+                <li>Web、移动端、桌面端和设备 API。</li>
+                <li>D1/R2 上的业务数据与文件。</li>
+                <li>Workers AI 的聊天、Embedding、ASR、TTS、翻译。</li>
+                <li>Queues/Jobs 异步任务和 Vectorize 投影。</li>
+              </ul>
+            </article>
+            <article class="panel">
+              <span class="mini-label mini-label--orange">Explicitly separate</span>
+              <h3>明确隔离</h3>
+              <ul class="clean-list">
+                <li><code>api.omi.me</code> 与 <code>app.omi.me</code> 保持不变。</li>
+                <li>Production 不复用 staging 的资源或 secrets。</li>
+                <li>不复制 Firebase 身份或 Firestore/GCS 历史。</li>
+                <li>不把 legacy Redis、Cloud Tasks 当隐式后备。</li>
+              </ul>
+            </article>
+            <article class="panel">
+              <span class="mini-label mini-label--red">Fail closed</span>
+              <h3>失败策略</h3>
+              <ul class="clean-list">
+                <li>鉴权、账户归属或内部签名不完整时拒绝请求。</li>
+                <li>未配置的外部 AI 兼容路径返回显式错误。</li>
+                <li>投影不可用时不伪装成权威数据。</li>
+                <li>删号 fence 优先于正常读写和 cutover 状态。</li>
+              </ul>
+            </article>
+          </div>
+
+          <div class="callout callout--teal">
+            <span class="callout__mark" aria-hidden="true">✓</span>
+            <p>
+              <strong>权威性原则：</strong>D1 保存身份/业务元数据与状态；R2 保存对象字节；Vectorize 只保存可重建候选索引；
+              Jobs 只能推进或修复状态，不能创造一个与 D1 并列的业务真相。
+            </p>
+          </div>
+        </section>
+
+        <section id="modules">
+          <p class="section-kicker">03 · Runtime inventory</p>
+          <h2>模块组成与职责</h2>
+          <p class="section-lede">
+            服务按信任边界和工作负载拆分。Edge 是入口控制面；业务同步 API、AI 推理、实时连接和后台任务分别拥有独立 Worker。
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>模块</th>
+                  <th>运行时 / 资源</th>
+                  <th>核心职责</th>
+                  <th>主要输入</th>
+                  <th>主要输出 / 依赖</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="owner">Web Worker</span></td>
+                  <td>Cloudflare Worker</td>
+                  <td>Web 静态/服务端入口、登录页面、同源 API 代理。</td>
+                  <td>浏览器 HTTPS。</td>
+                  <td>通过 Service Binding 调用 Auth 与 Edge。</td>
+                </tr>
+                <tr>
+                  <td><span class="owner">Edge Gateway</span></td>
+                  <td>Cloudflare Worker</td>
+                  <td>公开 API、CORS、Bearer 校验编排、账户 cutover、限流、路由与安全头。</td>
+                  <td>Web、App、Desktop、Device/API 请求。</td>
+                  <td>Auth、Rate Limit DO、Core、AI、Realtime、Jobs。</td>
+                </tr>
+                <tr>
+                  <td><span class="owner">Auth</span></td>
+                  <td>Hono + Better Auth + Auth D1</td>
+                  <td>注册、登录、session/JWT 验证、OAuth 身份面和最终身份删除。</td>
+                  <td>Web 登录、Edge bearer 验证、Jobs 删除终结。</td>
+                  <td>签名身份结果；Auth D1。</td>
+                </tr>
+                <tr>
+                  <td><span class="owner">Rate Limit</span></td>
+                  <td>Durable Object</td>
+                  <td>窗口限流、配额预留/释放、并发与幂等保护。</td>
+                  <td>Edge/API AI 的 uid、route、policy。</td>
+                  <td>allow / deny、retry metadata。</td>
+                </tr>
+                <tr>
+                  <td><span class="owner">API Core</span></td>
+                  <td>Python Worker / ASGI</td>
+                  <td>会话、记忆、任务、设置、用量、文件元数据和第一方工具 API。</td>
+                  <td>Edge 签名 uid/context。</td>
+                  <td>App D1、R2、Vectorize candidates、Queue outbox。</td>
+                </tr>
+                <tr>
+                  <td><span class="owner">API AI</span></td>
+                  <td>Python Worker + Workers AI</td>
+                  <td>聊天、Embedding、ASR、TTS、翻译、结构化推理与用量结算。</td>
+                  <td>受限 prompt、音频/附件引用、签名 uid。</td>
+                  <td>Workers AI、App D1、R2、Rate Limit DO。</td>
+                </tr>
+                <tr>
+                  <td><span class="owner">Realtime</span></td>
+                  <td>Worker + Durable Object</td>
+                  <td>WebSocket 生命周期、会话顺序、音频流和短期实时状态。</td>
+                  <td>Edge 签发的短期票据与客户端流。</td>
+                  <td>Workers AI ASR/TTS；会话结果。</td>
+                </tr>
+                <tr>
+                  <td><span class="owner">Jobs</span></td>
+                  <td>Worker + Queues + Cron</td>
+                  <td>投影、文件清理、同步、外部连接器、重试、DLQ 和账号删除。</td>
+                  <td>Queue 消息、Cron、内部受保护任务。</td>
+                  <td>D1/R2/Vectorize、Auth、可选外部 Provider。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>模块之间的硬边界</h3>
+          <div class="two-col">
+            <article class="panel">
+              <h4>Edge 独占的能力</h4>
+              <ul class="clean-list">
+                <li>接受公开网络请求。</li>
+                <li>剥离伪造的内部身份和 BYOK 头。</li>
+                <li>生成签名的内部身份上下文。</li>
+                <li>在进入业务 Worker 前执行限流与 owner 路由。</li>
+              </ul>
+            </article>
+            <article class="panel">
+              <h4>业务 Worker 不应做的事</h4>
+              <ul class="clean-list">
+                <li>不信任调用者自带 uid/internal headers。</li>
+                <li>不直接访问 Firebase、Firestore 或 Redis。</li>
+                <li>不把 Vectorize 结果直接当业务记录返回。</li>
+                <li>不在不可用时静默回退 legacy backend。</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="request-flow">
+          <p class="section-kicker">04 · Synchronous path</p>
+          <h2>请求、鉴权与路由链路</h2>
+          <p class="section-lede">
+            所有公开业务请求最终都经过 Edge。Web 页面可以先进入 Web Worker，但 Web Worker 只通过 Service Binding 进入 Auth/Edge，
+            不绕过统一信任边界。
+          </p>
+
+          <figure class="diagram">
+            <div class="diagram__toolbar">
+              <span>Figure 02 · 请求序列与信任边界</span>
+              <button class="diagram__button" type="button" data-image="07-request-auth-route-gpt-image.png">
+                放大查看
+              </button>
+            </div>
+            <img
+              src="07-request-auth-route-gpt-image.png"
+              alt="请求从 Client 经 Web Worker 和 Edge，验证 Better Auth bearer，通过账户 cutover、头清洗、内部签名、Rate Limit 后路由到目标 Worker。"
+              width="1672"
+              height="941"
+              loading="lazy"
+            />
+            <figcaption>图中 allow 返回后才执行 route-by-manifest；Rate Limit DO 位于目标业务 Worker 之前。</figcaption>
+          </figure>
+
+          <ol class="flow" aria-label="请求流程第一阶段">
+            <li>
+              <strong>接入与归一化</strong>
+              <span>HTTPS/WebSocket 进入 Web Worker 或 Edge；生成 request id，校验 CORS、method 与 body 边界。</span>
+            </li>
+            <li>
+              <strong>身份验证</strong>
+              <span>Edge 调用 Auth 验证 bearer；浏览器 cookie 只在受控 Web/Auth 边界使用。</span>
+            </li>
+            <li>
+              <strong>账户归属</strong>
+              <span>读取 <code>isolated-production-v1</code> cutover；new 账号允许，缺失/损坏状态 fail closed。</span>
+            </li>
+            <li>
+              <strong>建立内部信任</strong>
+              <span>Edge 清除不可信头，再用共享 secret 签发 request-bound uid/context。</span>
+            </li>
+          </ol>
+          <ol class="flow" aria-label="请求流程第二阶段">
+            <li>
+              <strong>策略与限流</strong>
+              <span>按 uid、route、plan 与 feature 向 Rate Limit DO 请求原子 allow/deny。</span>
+            </li>
+            <li>
+              <strong>Manifest 路由</strong>
+              <span>路由表选出唯一 owner：Core、AI、Realtime 或 Jobs；不存在模糊双 owner。</span>
+            </li>
+            <li>
+              <strong>业务执行</strong>
+              <span>目标 Worker 只使用签名上下文，访问绑定的 D1/R2/AI/Vectorize/Queue。</span>
+            </li>
+            <li>
+              <strong>安全响应</strong>
+              <span>结果经 Edge/Web 返回；错误不泄漏 secret、provider body 或内部资源标识。</span>
+            </li>
+          </ol>
+
+          <h3>典型路由族</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>请求类型</th>
+                  <th>Owner</th>
+                  <th>关键后端</th>
+                  <th>响应模型</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Conversations / Memories / Tasks / Settings</td>
+                  <td>API Core</td>
+                  <td>App D1、R2、Vectorize hydrate</td>
+                  <td>JSON / 分页 / 签名 cursor</td>
+                </tr>
+                <tr>
+                  <td>Chat / Embedding / ASR / TTS / Translation</td>
+                  <td>API AI</td>
+                  <td>Workers AI、D1 usage、R2 attachment</td>
+                  <td>JSON、SSE 或音频 bytes</td>
+                </tr>
+                <tr>
+                  <td>Realtime session / WebSocket</td>
+                  <td>Realtime DO</td>
+                  <td>短期 ticket、Workers AI</td>
+                  <td>WebSocket frames</td>
+                </tr>
+                <tr>
+                  <td>Integrations / Deletion / Internal processors</td>
+                  <td>Jobs</td>
+                  <td>Queues、D1、R2、Auth、外部 API</td>
+                  <td>receipt / queued / bounded status</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="data-plane">
+          <p class="section-kicker">05 · Authority &amp; projection</p>
+          <h2>数据平面与一致性模型</h2>
+          <p class="section-lede">
+            数据不是平均分散在多个产品里：D1、R2、Vectorize 各自承担不同类型的权威性，读取必须回到正确的 authority。
+          </p>
+
+          <figure class="diagram">
+            <div class="diagram__toolbar">
+              <span>Figure 03 · 数据与异步生命周期</span>
+              <button class="diagram__button" type="button" data-image="08-data-async-lifecycle-gpt-image.png">
+                放大查看
+              </button>
+            </div>
+            <img
+              src="08-data-async-lifecycle-gpt-image.png"
+              alt="D1 是权威状态，R2 保存 blob，Vectorize 是可重建搜索投影，Queues 和 Jobs 负责异步更新与 DLQ。"
+              width="1672"
+              height="941"
+              loading="lazy"
+            />
+            <figcaption>
+              搜索必须经过 Vectorize 候选 → projection state 映射 → D1 uid-scoped hydrate，不能直接把向量 metadata 当业务结果。
+            </figcaption>
+          </figure>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>存储 / 原语</th>
+                  <th>权威程度</th>
+                  <th>保存内容</th>
+                  <th>一致性 / 恢复策略</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Auth D1</strong></td>
+                  <td>身份权威</td>
+                  <td>User、Session、Account、Better Auth/OAuth 元数据。</td>
+                  <td>由 Auth 独占；删号最终阶段撤销身份。</td>
+                </tr>
+                <tr>
+                  <td><strong>App D1</strong></td>
+                  <td>业务权威</td>
+                  <td>会话、记忆、任务、设置、用量、outbox、cutover、删除 intent。</td>
+                  <td>事务/批次写入；幂等 receipt；account generation 与 deletion fence。</td>
+                </tr>
+                <tr>
+                  <td><strong>R2</strong></td>
+                  <td>对象字节权威</td>
+                  <td>资产、聊天文件、录音、声纹样本、桌面更新包。</td>
+                  <td>D1 保存逻辑指针和清理任务；对象 key 必须 uid/account 隔离。</td>
+                </tr>
+                <tr>
+                  <td><strong>Vectorize</strong></td>
+                  <td>可重建投影</td>
+                  <td>对话、记忆、action item、transcript chunk、X post 候选向量。</td>
+                  <td>D1 outbox + Queue hint + Cron repair；返回前必须 D1 hydrate。</td>
+                </tr>
+                <tr>
+                  <td><strong>Durable Objects</strong></td>
+                  <td>短期协调权威</td>
+                  <td>限流窗口、实时连接顺序和会话状态。</td>
+                  <td>按 key 串行；不替代持久业务 D1。</td>
+                </tr>
+                <tr>
+                  <td><strong>Queues / DLQ</strong></td>
+                  <td>传递与恢复</td>
+                  <td>有界 job envelope、投影 hint、同步任务、失败消息。</td>
+                  <td>消息可重复；consumer 必须幂等；终态写回 D1。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>写入与搜索的关键顺序</h3>
+          <div class="two-col">
+            <article class="panel">
+              <span class="mini-label">Write path</span>
+              <h4>业务写入</h4>
+              <ol class="clean-list">
+                <li>验证 uid、generation 与 deletion fence。</li>
+                <li>在同一 D1 batch 写 domain row、receipt 和 vector outbox。</li>
+                <li>提交成功后发布 Queue hint；发布失败由 Cron 扫描 outbox 修复。</li>
+                <li>Jobs 更新 Vectorize，并回写 projection state。</li>
+              </ol>
+            </article>
+            <article class="panel">
+              <span class="mini-label">Search path</span>
+              <h4>语义搜索</h4>
+              <ol class="clean-list">
+                <li>Workers AI 生成 1024 维多语言查询向量。</li>
+                <li>在 tenant-namespaced Vectorize 中获取候选 ID。</li>
+                <li>通过 D1 projection state 验证候选。</li>
+                <li>用 uid + id 回到 D1 hydrate、过滤并返回。</li>
+              </ol>
+            </article>
+          </div>
+        </section>
+
+        <section id="async-plane">
+          <p class="section-kicker">06 · Jobs, queues &amp; deletion</p>
+          <h2>异步任务、失败恢复与删号</h2>
+          <p class="section-lede">
+            Jobs Worker 是异步执行 owner。Queue 只负责可靠传递；每个可重试操作都要用 D1 lease、幂等键或内容 hash 保证重复消费安全。
+          </p>
+
+          <div class="resource-group">
+            <h4>Jobs Queue <span>general async lane</span></h4>
+            <p>承载会话终结、Vectorize 投影、文件清理、账号删除、外部连接器和受保护内部处理器。</p>
+          </div>
+          <div class="resource-group">
+            <h4>Sync Fresh / Backfill <span>separate capacity lanes</span></h4>
+            <p>新数据同步与有界回填使用不同 Queue，避免历史任务挤占在线新数据处理能力。</p>
+          </div>
+          <div class="resource-group" style="border-left-color: var(--red)">
+            <h4>Jobs DLQ <span>bounded failure evidence</span></h4>
+            <p>重试耗尽后保留有界消息证据；replay 需要 admin/HMAC、内容绑定幂等键且只能重放已捕获消息。</p>
+          </div>
+
+          <h3>账户删除生命周期</h3>
+          <ol class="flow" aria-label="账户删除第一阶段">
+            <li>
+              <strong>Fence account</strong>
+              <span>写入 durable deletion intent，产品和 legacy 写入立即被账户级 fence 禁止。</span>
+            </li>
+            <li>
+              <strong>Quiesce</strong>
+              <span>等待租约、Queue 与并发 writer 收敛，迟到消息因 generation/fence 被拒绝。</span>
+            </li>
+            <li>
+              <strong>Purge state</strong>
+              <span>分批清理 App D1 中的业务行、outbox、receipt、cutover 与删除 intent。</span>
+            </li>
+            <li>
+              <strong>Purge blobs</strong>
+              <span>按 uid/account prefix 清理所有 R2 bucket，并验证无残留对象。</span>
+            </li>
+          </ol>
+          <ol class="flow" aria-label="账户删除第二阶段">
+            <li>
+              <strong>Purge vectors</strong>
+              <span>删除登记的 Vectorize IDs 和 projection state，避免搜索候选残留。</span>
+            </li>
+            <li>
+              <strong>Revoke identity</strong>
+              <span>Jobs 通过受保护 Auth binding 删除 user/session/account，旧 bearer 失效。</span>
+            </li>
+            <li>
+              <strong>Residual scans</strong>
+              <span>业务与身份两侧分别扫描；任何非白名单残留都使流程失败。</span>
+            </li>
+            <li>
+              <strong>Short tombstone</strong>
+              <span>只保留短期删除 tombstone，阻止迟到任务重新打开账号。</span>
+            </li>
+          </ol>
+
+          <div class="callout callout--red">
+            <span class="callout__mark" aria-hidden="true">×</span>
+            <p>
+              DLQ 不是业务补偿数据库，也不会直接调用外部 Provider。它保存失败消息；受保护 replay 把已捕获 envelope 重新送回原 consumer。
+            </p>
+          </div>
+        </section>
+
+        <section id="ai-realtime">
+          <p class="section-kicker">07 · Native inference</p>
+          <h2>Workers AI 与实时平面</h2>
+          <p class="section-lede">
+            目标生产面的生成式 AI canonical path 直接绑定 Workers AI。OpenAI/Gemini/BYOK/Assistants 代码只作为显式关闭的兼容边界存在。
+          </p>
+
+          <div class="three-col">
+            <article class="panel">
+              <span class="mini-label">API AI</span>
+              <h3>请求/响应推理</h3>
+              <ul class="clean-list">
+                <li>Chat 与结构化生成。</li>
+                <li>BGE-M3 / 1024-d embeddings。</li>
+                <li>音频 ASR、TTS 与翻译。</li>
+                <li>D1 usage/quota 预留与结算。</li>
+              </ul>
+            </article>
+            <article class="panel">
+              <span class="mini-label">Realtime DO</span>
+              <h3>长连接与顺序</h3>
+              <ul class="clean-list">
+                <li>短期 ticket 建立会话。</li>
+                <li>WebSocket 生命周期与 reconnect。</li>
+                <li>音频帧顺序和短期状态。</li>
+                <li>直接调用 Workers AI 实时能力。</li>
+              </ul>
+            </article>
+            <article class="panel">
+              <span class="mini-label mini-label--red">Disabled boundary</span>
+              <h3>外部 AI Provider</h3>
+              <ul class="clean-list">
+                <li>Production 不配置 OpenAI/Gemini secret。</li>
+                <li>显式选择外部 provider 时 fail closed。</li>
+                <li>不能作为 Workers AI 不可用时的隐式 fallback。</li>
+                <li>业务 SaaS REST integrations 与 AI provider 分离。</li>
+              </ul>
+            </article>
+          </div>
+
+          <h3>可选业务集成</h3>
+          <p>
+            Google Calendar、Stripe、Twilio、Todoist、Asana、Google Tasks、ClickUp 和社交 OAuth 等由 Jobs 通过各自 HTTPS API 调用。
+            令牌在 D1 中加密保存，OAuth state 只保存 hash，并使用 provider-scoped disconnect generation fence。
+            未配置相应凭据时，只影响该 provider 的入口，不影响 Workers AI 主路径。
+          </p>
+        </section>
+
+        <section id="isolation">
+          <p class="section-kicker">08 · Environment separation</p>
+          <h2>生产、Staging 与 Legacy 隔离</h2>
+          <p class="section-lede">
+            三个环境没有运行时数据箭头。Cloudflare Production 的命名、数据库、对象存储、队列、索引、DO namespace 与 secrets 均为专属资源。
+          </p>
+
+          <figure class="diagram">
+            <div class="diagram__toolbar">
+              <span>Figure 04 · 生产隔离、发布与回滚</span>
+              <button class="diagram__button" type="button" data-image="09-production-isolation-release-gpt-image.png">
+                放大查看
+              </button>
+            </div>
+            <img
+              src="09-production-isolation-release-gpt-image.png"
+              alt="Legacy Google Production、Cloudflare Staging 与 Cloudflare Production 完全隔离；下方显示发布与回滚顺序。"
+              width="1672"
+              height="941"
+              loading="lazy"
+            />
+            <figcaption>隔离是资源级和控制面级的，不只是 Worker 名称不同。</figcaption>
+          </figure>
+
+          <div class="three-col">
+            <article class="panel">
+              <span class="mini-label">Legacy</span>
+              <h3>Google Production</h3>
+              <p><code>api.omi.me</code>、<code>app.omi.me</code> 与 Firebase/GCP 保持原状。</p>
+            </article>
+            <article class="panel">
+              <span class="mini-label mini-label--orange">Pre-production</span>
+              <h3>Cloudflare Staging</h3>
+              <p>独立 staging Workers、D1、R2、Queues、Vectorize，用于迁移验证与 live probes。</p>
+            </article>
+            <article class="panel panel--dark">
+              <span class="mini-label mini-label--orange">Current target</span>
+              <h3>Cloudflare Production</h3>
+              <p>只使用 <code>*-production</code> 资源与独立 secrets，通过 <code>workers.dev</code> 公开。</p>
+            </article>
+          </div>
+
+          <h3>生产资源清单</h3>
+          <div class="resource-group">
+            <h4>Workers <span>8 active versions</span></h4>
+            <ul class="resource-list">
+              <li><code>omi-cf-auth-production</code></li>
+              <li><code>omi-cf-rate-limit-production</code></li>
+              <li><code>omi-cf-api-core-production</code></li>
+              <li><code>omi-cf-api-ai-production</code></li>
+              <li><code>omi-cf-realtime-production</code></li>
+              <li><code>omi-cf-jobs-production</code></li>
+              <li><code>omi-cf-edge-production</code></li>
+              <li><code>omi-web-app-production</code></li>
+            </ul>
+          </div>
+          <div class="resource-group">
+            <h4>D1 <span>2 authorities</span></h4>
+            <ul class="resource-list">
+              <li><code>omi-cf-auth-production</code></li>
+              <li><code>omi-cf-app-production</code></li>
+            </ul>
+          </div>
+          <div class="resource-group">
+            <h4>R2 <span>5 buckets</span></h4>
+            <ul class="resource-list">
+              <li><code>omi-cf-production</code></li>
+              <li><code>omi-cf-chat-files-production</code></li>
+              <li><code>omi-cf-conversation-recordings-production</code></li>
+              <li><code>omi-cf-speech-profiles-production</code></li>
+              <li><code>omi-cf-desktop-updates-production</code></li>
+            </ul>
+          </div>
+          <div class="resource-group">
+            <h4>Queues <span>4 lanes</span></h4>
+            <ul class="resource-list">
+              <li><code>omi-cf-jobs-production</code></li>
+              <li><code>omi-cf-jobs-dlq-production</code></li>
+              <li><code>omi-cf-sync-fresh-production</code></li>
+              <li><code>omi-cf-sync-backfill-production</code></li>
+            </ul>
+          </div>
+          <div class="resource-group">
+            <h4>Vectorize <span>5 rebuildable indexes</span></h4>
+            <ul class="resource-list">
+              <li><code>omi-cf-conversations-production-v1</code></li>
+              <li><code>omi-cf-memories-production-v1</code></li>
+              <li><code>omi-cf-action-items-production-v1</code></li>
+              <li><code>omi-cf-transcript-chunks-production-v1</code></li>
+              <li><code>omi-cf-x-posts-production-v1</code></li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="release">
+          <p class="section-kicker">09 · Release control</p>
+          <h2>生产发布与回滚</h2>
+          <p class="section-lede">
+            发布脚本把验证、资源创建、迁移、依赖顺序、健康检查和故障恢复组成一个封闭流程。Edge 永远在依赖 Worker 之后发布。
+          </p>
+
+          <ol class="timeline">
+            <li>
+              <strong>1 · Exact operator confirmation</strong>
+              <p>必须提供精确确认字符串；不会从 staging 命令误触生产。</p>
+            </li>
+            <li>
+              <strong>2 · Full qualification</strong>
+              <p>执行 Cloudflare TypeScript、API Core、API AI、Web 测试与 manifest/config 校验。</p>
+            </li>
+            <li>
+              <strong>3 · Resource convergence</strong>
+              <p>只创建缺失的 production D1/R2/Queue/Vectorize；禁止匹配到 staging IDs 或 bindings。</p>
+            </li>
+            <li>
+              <strong>4 · D1 migrations</strong>
+              <p>先应用 Auth 与 App migration，再验证无 pending 项。</p>
+            </li>
+            <li>
+              <strong>5 · Dependency-order deployment</strong>
+              <p>Auth → Rate Limit → API Core → API AI → Realtime → Jobs → Edge。</p>
+            </li>
+            <li>
+              <strong>6 · Edge readiness</strong>
+              <p>Edge 及全部内部 service bindings 返回 200 后才继续。</p>
+            </li>
+            <li>
+              <strong>7 · Web build and deployment</strong>
+              <p>以 production Edge/Auth origin 构建 Web Worker，发布后验证 Web readiness。</p>
+            </li>
+          </ol>
+
+          <div class="two-col">
+            <article class="panel panel--dark">
+              <span class="mini-label mini-label--orange">Deploy</span>
+              <h3>发布命令</h3>
+              <pre><code>CLOUDFLARE_PRODUCTION_CONFIRM=deploy-independent-cloudflare-production \
+  npm run deploy:production</code></pre>
+            </article>
+            <article class="panel panel--dark">
+              <span class="mini-label mini-label--red">Rollback</span>
+              <h3>手动回滚</h3>
+              <pre><code>CLOUDFLARE_PRODUCTION_CONFIRM=deploy-independent-cloudflare-production \
+  npm run rollback:production -- \
+  .wrangler/releases/production-before-&lt;timestamp&gt;.json</code></pre>
+            </article>
+          </div>
+
+          <h3>回滚语义</h3>
+          <div class="two-col">
+            <article class="panel">
+              <h4>首次发布失败</h4>
+              <p>只删除本次创建的 Worker；Jobs 删除前先移除 Queue consumers，避免悬挂消费者阻止清理。</p>
+            </article>
+            <article class="panel">
+              <h4>更新发布失败</h4>
+              <p>按依赖逆序恢复 snapshot 中的 previous active versions。D1 migration 与对象资源不通过 Worker version rollback 逆转。</p>
+            </article>
+          </div>
+
+          <div class="callout">
+            <span class="callout__mark" aria-hidden="true">i</span>
+            <p>
+              每次发布前快照保存在 mode-0600 的 <code>.wrangler/releases/production-before-*.json</code>；
+              operator secrets 保存在 ignored、mode-0600 的本地文件，发布日志不打印 secret。
+            </p>
+          </div>
+        </section>
+
+        <section id="security">
+          <p class="section-kicker">10 · Security posture</p>
+          <h2>安全与租户隔离</h2>
+          <p class="section-lede">
+            安全模型围绕“公开输入不可信、内部断言可验证、数据按 uid/account 隔离、删除优先”设计。
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>边界</th>
+                  <th>控制</th>
+                  <th>阻止的问题</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Public → Edge</td>
+                  <td>CORS、body size、method、route manifest、request id。</td>
+                  <td>未分类路由、超大输入、跨 origin 滥用。</td>
+                </tr>
+                <tr>
+                  <td>Edge → Auth</td>
+                  <td>Bearer/session 验证、cutover generation、删除 fence。</td>
+                  <td>伪造身份、已删除账号复活、错误 authority。</td>
+                </tr>
+                <tr>
+                  <td>Edge → Workers</td>
+                  <td>剥离客户端 internal headers；HMAC 签名 request-bound context。</td>
+                  <td>caller 自报 uid/plan/BYOK 绕过授权。</td>
+                </tr>
+                <tr>
+                  <td>Worker → Data</td>
+                  <td>uid predicate、tenant namespace、generation/fence、bounded keys。</td>
+                  <td>跨账号读取、对象路径穿越、陈旧任务写入。</td>
+                </tr>
+                <tr>
+                  <td>Jobs → Provider</td>
+                  <td>加密 token、hashed OAuth state、redirect allowlist、超时和内容上限。</td>
+                  <td>token 泄漏、SSRF、无限响应、provider 身份混淆。</td>
+                </tr>
+                <tr>
+                  <td>Logs / evidence</td>
+                  <td>敏感字段清洗、只记录 digest/ID/status，不记录 raw secret/token。</td>
+                  <td>PII、OAuth token、API key 进入日志和发布证据。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout callout--teal">
+            <span class="callout__mark" aria-hidden="true">✓</span>
+            <p>
+              R2 object key、Vectorize namespace、D1 query 和 Queue job identity 都绑定 uid/account；删号 residual scan 同时覆盖这些面。
+            </p>
+          </div>
+        </section>
+
+        <section id="verification">
+          <p class="section-kicker">11 · Live evidence</p>
+          <h2>生产验证证据</h2>
+          <p class="section-lede">
+            以下是 2026-09-01 独立生产发布的实际结果，不是架构目标或仅本地测试结论。
+          </p>
+
+          <div class="evidence-grid">
+            <article class="evidence">
+              <span class="evidence__result">Passed</span>
+              <strong>755</strong>
+              <p>Cloudflare tests / 102 files</p>
+            </article>
+            <article class="evidence">
+              <span class="evidence__result">Passed</span>
+              <strong>389 + 117</strong>
+              <p>API Core + API AI tests</p>
+            </article>
+            <article class="evidence">
+              <span class="evidence__result">Passed</span>
+              <strong>47</strong>
+              <p>Web tests / 12 files</p>
+            </article>
+            <article class="evidence">
+              <span class="evidence__result">Ready</span>
+              <strong>HTTP 200</strong>
+              <p>Edge、Web 与内部依赖 readiness</p>
+            </article>
+            <article class="evidence">
+              <span class="evidence__result">Within budget</span>
+              <strong>1,847.97 ms</strong>
+              <p>六端点暖路径最大 p95；预算 4,000 ms</p>
+            </article>
+            <article class="evidence">
+              <span class="evidence__result">Clean</span>
+              <strong>0 residual</strong>
+              <p>预期短期 tombstone 之外的账号残留</p>
+            </article>
+          </div>
+
+          <div class="two-col">
+            <article class="panel">
+              <h3>数据库</h3>
+              <ul class="clean-list">
+                <li>Auth D1：10 个 migration，0 pending。</li>
+                <li>App D1：150 个 migration，0 pending。</li>
+                <li>一次性账号删号后 user/session/account 与业务残留均为 0。</li>
+                <li>旧 bearer 返回 401，浏览器回到 <code>/login</code>。</li>
+              </ul>
+            </article>
+            <article class="panel">
+              <h3>真实用户路径</h3>
+              <ul class="clean-list">
+                <li>生产 Web Worker 完成注册/登录。</li>
+                <li>Conversations、Memories、Apps、Tasks 页面正常渲染。</li>
+                <li>187 个 CDP 事件中无 console exception、failed request 或 HTTP 4xx/5xx。</li>
+                <li>Authenticated smoke 包含一次真实 Workers AI chat。</li>
+              </ul>
+            </article>
+          </div>
+
+          <details>
+            <summary>查看 8 个生产 Worker 的 active version</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Worker</th>
+                      <th>Active version</th>
+                      <th>Traffic</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>Auth</td><td class="mono">502fa91c-b92a-4d2e-a0ec-a735d7d10e03</td><td>100%</td></tr>
+                    <tr><td>Rate Limit</td><td class="mono">abdf358c-874c-4801-a00a-a4b08ba708cc</td><td>100%</td></tr>
+                    <tr><td>API Core</td><td class="mono">fd80438f-8fd9-4a1a-a118-acbc0db3d832</td><td>100%</td></tr>
+                    <tr><td>API AI</td><td class="mono">bb938ec8-75bf-44b4-a2f2-4c4dd62d3867</td><td>100%</td></tr>
+                    <tr><td>Realtime</td><td class="mono">569055c6-bc88-43a2-9f08-a1e1f72b8531</td><td>100%</td></tr>
+                    <tr><td>Jobs</td><td class="mono">63d79cb4-8a31-4a9a-8798-87bb448c7bab</td><td>100%</td></tr>
+                    <tr><td>Edge</td><td class="mono">d25adeca-01f0-43eb-a81e-a9ec5a0e1f6c</td><td>100%</td></tr>
+                    <tr><td>Web</td><td class="mono">d5321b10-92a6-457a-9be3-ac54db1598ae</td><td>100%</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+        </section>
+
+        <section id="limits">
+          <p class="section-kicker">12 · Non-goals &amp; next gates</p>
+          <h2>已知限制与后续发布门槛</h2>
+          <p class="section-lede">
+            当前交付已经能独立运行，但“Cloudflare 生产可用”不等于“旧生产已迁走”。以下能力需要独立批准和证据。
+          </p>
+
+          <div class="two-col">
+            <article class="panel">
+              <span class="mini-label mini-label--red">Not included</span>
+              <h3>本期没有做</h3>
+              <ul class="clean-list">
+                <li>官方 <code>api.omi.me</code> / <code>app.omi.me</code> DNS cutover。</li>
+                <li>Firebase legacy token 连续性。</li>
+                <li>Firestore/GCS 历史生产数据回填。</li>
+                <li>旧客户端逐字节 wire compatibility。</li>
+                <li>legacy Google 资源下线或数据删除。</li>
+              </ul>
+            </article>
+            <article class="panel">
+              <span class="mini-label mini-label--orange">Separate gates</span>
+              <h3>需要后续验证</h3>
+              <ul class="clean-list">
+                <li>Google/Apple OAuth、Calendar、Stripe、Twilio 等真实 provider 凭据。</li>
+                <li>生产域名 rollout、on-call、监控告警与成本预算。</li>
+                <li>历史账号导入的 snapshot/checksum/replay/rollback 证据。</li>
+                <li>ASR 多语言质量、长音频、区域延迟与成本基线。</li>
+                <li>legacy cleanup 前的双向 residual scan 与回退窗口。</li>
+              </ul>
+            </article>
+          </div>
+
+          <div class="callout callout--red">
+            <span class="callout__mark" aria-hidden="true">!</span>
+            <p>
+              任何既有生产账号迁移都必须作为新的 <code>INV-DATA-1</code> + <code>INV-CUTOVER-1</code> ceremony 处理；
+              不能因为这套独立生产已上线，就把 legacy 主体默认标记为 Cloudflare-owned。
+            </p>
+          </div>
+        </section>
+
+        <section id="appendix">
+          <p class="section-kicker">13 · Reference</p>
+          <h2>附录</h2>
+
+          <h3>术语</h3>
+          <dl class="glossary">
+            <dt>Authority</dt>
+            <dd>决定业务真相的唯一持久化 owner；例如 App D1 决定会话是否存在。</dd>
+            <dt>Projection</dt>
+            <dd>从 authority 派生、可丢弃重建的数据结构；例如 Vectorize search index。</dd>
+            <dt>Hydrate</dt>
+            <dd>根据候选 ID 回到 D1 读取并验证当前 uid、状态和字段。</dd>
+            <dt>Cutover</dt>
+            <dd>账户级 authority 归属状态；当前独立生产的新账号使用 <code>isolated-production-v1</code>。</dd>
+            <dt>Deletion fence</dt>
+            <dd>删号期间优先于正常状态的写入禁令，防止迟到请求或 Queue 消息恢复数据。</dd>
+            <dt>Service Binding</dt>
+            <dd>Cloudflare Worker 间内部调用，不需要把内部 Worker 暴露为公开 origin。</dd>
+          </dl>
+
+          <h3>权威文档</h3>
+          <ul class="clean-list">
+            <li><a href="README.md">Cloudflare 架构与完成度审计</a></li>
+            <li><a href="../../deploy/cloudflare/README.md">Cloudflare 部署与操作手册</a></li>
+            <li><a href="../../deploy/cloudflare/python/api-core/ARCHITECTURE.md">API Core Worker 架构</a></li>
+            <li><a href="../../dev/cloudflare-adaptation-plan.md">Cloudflare 适配计划</a></li>
+          </ul>
+
+          <footer class="doc-footer">
+            本文档基于 2026-09-01 的独立 Cloudflare Production 实际部署与验证证据生成。图像用于快速理解，正文定义用于工程判断。
+          </footer>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="lightbox" aria-label="架构图放大查看">
+      <div class="lightbox__bar">
+        <span class="lightbox__title">架构图</span>
+        <button class="lightbox__close" type="button">关闭</button>
+      </div>
+      <img src="" alt="" />
+    </dialog>
+
+    <script>
+      (() => {
+        const progress = document.querySelector(".progress");
+        const tocLinks = [...document.querySelectorAll(".toc a")];
+        const sections = tocLinks
+          .map((link) => document.querySelector(link.getAttribute("href")))
+          .filter(Boolean);
+        const lightbox = document.querySelector(".lightbox");
+        const lightboxImage = lightbox.querySelector("img");
+        const lightboxTitle = lightbox.querySelector(".lightbox__title");
+
+        const updateProgress = () => {
+          const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+          const ratio = scrollable > 0 ? window.scrollY / scrollable : 0;
+          progress.style.width = `${Math.min(100, Math.max(0, ratio * 100))}%`;
+        };
+
+        const observer = new IntersectionObserver(
+          (entries) => {
+            const visible = entries
+              .filter((entry) => entry.isIntersecting)
+              .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+            if (!visible) return;
+            tocLinks.forEach((link) => {
+              const active = link.getAttribute("href") === `#${visible.target.id}`;
+              link.classList.toggle("is-active", active);
+              if (active) link.setAttribute("aria-current", "location");
+              else link.removeAttribute("aria-current");
+            });
+          },
+          { rootMargin: "-12% 0px -70% 0px", threshold: [0, 0.1, 0.3] },
+        );
+
+        sections.forEach((section) => observer.observe(section));
+        window.addEventListener("scroll", updateProgress, { passive: true });
+        window.addEventListener("resize", updateProgress, { passive: true });
+        updateProgress();
+
+        document.querySelectorAll("[data-image]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const figure = button.closest("figure");
+            const source = button.dataset.image;
+            const image = figure.querySelector("img");
+            lightboxImage.src = source;
+            lightboxImage.alt = image.alt;
+            lightboxTitle.textContent = figure.querySelector(".diagram__toolbar span").textContent;
+            lightbox.showModal();
+          });
+        });
+
+        lightbox.querySelector(".lightbox__close").addEventListener("click", () => lightbox.close());
+        lightbox.addEventListener("click", (event) => {
+          if (event.target === lightbox) lightbox.close();
+        });
+      })();
+    </script>
+  </body>
+</html>

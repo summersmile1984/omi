@@ -1,0 +1,127 @@
+version: 1
+source: backend/utils/other/storage.py
+policy:
+  dual_write_allowed: false
+  cutover_sequence: copy-checksum-freeze-delta-switch-verify
+  deletion_requires_residual_scan: true
+namespaces:
+  - id: speech-profiles
+    legacy_env: BUCKET_SPEECH_PROFILES
+    target_binding: SPEECH_PROFILES
+    target_bucket_pattern: omi-cf-speech-profiles-{environment}
+    object_patterns:
+      [
+        "{uid}/speech_profile.wav",
+        "{uid}/additional_profile_recordings/{file}",
+        "{uid}/people_profiles/{person_id}/{file}",
+      ]
+    data_classification: biometric-sensitive
+    lifecycle: account-lifetime
+    migration_state: staging-owned
+  - id: postprocessing-audio
+    legacy_env: BUCKET_POSTPROCESSING
+    target_binding: POSTPROCESSING_AUDIO
+    target_bucket_pattern: omi-cf-postprocessing-audio-{environment}
+    object_patterns: ["{path}", "sdcard/{path}"]
+    data_classification: customer-audio
+    lifecycle: short-lived
+    migration_state: inventory-only
+  - id: conversation-recordings
+    # Worker-owned surfaces: has_recording probe, playback fallback for the
+    # canonical uid/id.wav object, per-conversation cascade purge, and the
+    # per-uid recording/account deletion flows. Legacy byte copy remains the
+    # documented Super Slurper runbook before the state can advance.
+    legacy_env: BUCKET_MEMORIES_RECORDINGS
+    target_binding: CONVERSATION_RECORDINGS
+    target_bucket_pattern: omi-cf-conversation-recordings-{environment}
+    object_patterns: ["{uid}/{conversation_id}.wav"]
+    data_classification: customer-audio
+    lifecycle: account-lifetime
+    migration_state: copying
+  - id: private-cloud-sync
+    legacy_env: BUCKET_PRIVATE_CLOUD_SYNC
+    target_binding: ASSETS
+    target_bucket_pattern: omi-cf-{environment}
+    target_key_prefixes:
+      ["chunks/", "merged/", "playback/", "sync-playback/", "imports/"]
+    object_patterns:
+      [
+        "chunks/{uid}/{conversation_id}/{timestamp}.{extension}",
+        "merged/{uid}/{conversation_id}/{audio_file_id}.wav",
+        "playback/{uid}/{conversation_id}/{audio_file_id}.mp3",
+        "playback/{uid}/{conversation_id}/{audio_file_id}.unavailable",
+        "sync-playback/{uid}/{conversation_id}/{audio_file_id}.wav",
+        "imports/{uid}/{job_id}.zip",
+      ]
+    data_classification: encrypted-or-customer-audio
+    lifecycle: prefix-specific
+    migration_state: copying
+  - id: temporal-sync
+    # Substituted, not ported: the Worker plane stages sync uploads under the
+    # shared ASSETS bucket's cf-sync/ prefix (sync-local-files.ts) with a
+    # one-day R2 lifecycle rule instead of a dedicated staging bucket.
+    legacy_env: BUCKET_TEMPORAL_SYNC_LOCAL
+    target_binding: ASSETS
+    target_bucket_pattern: omi-cf-{environment}
+    target_key_prefixes: ["cf-sync/"]
+    object_patterns: ["cf-sync/{uid}/{job_id}/{ordinal}"]
+    data_classification: customer-audio
+    lifecycle: one-day
+    migration_state: staging-owned
+  - id: app-logos
+    # Substituted: Worker-owned logos are versioned, uid-scoped keys under the
+    # shared ASSETS bucket (app-logo.ts); legacy {app_id}.png history import
+    # remains a separate persona-app-history executor step.
+    legacy_env: BUCKET_PLUGINS_LOGOS
+    target_binding: ASSETS
+    target_bucket_pattern: omi-cf-{environment}
+    target_key_prefixes: ["cf-app-logos/"]
+    object_patterns: ["cf-app-logos/{owner_uid}/{app_id}/{version}"]
+    data_classification: public-product-asset
+    lifecycle: permanent
+    migration_state: staging-owned
+  - id: app-thumbnails
+    # Substituted: Worker-owned thumbnails live under the shared ASSETS bucket
+    # (app-thumbnail.ts); keys are not uid-scoped, so account-deletion residual
+    # scans intentionally exclude this prefix.
+    legacy_env: BUCKET_APP_THUMBNAILS
+    target_binding: ASSETS
+    target_bucket_pattern: omi-cf-{environment}
+    target_key_prefixes: ["cf-app-thumbnails/"]
+    object_patterns: ["cf-app-thumbnails/{thumbnail_id}.jpg"]
+    data_classification: public-product-asset
+    lifecycle: permanent
+    migration_state: staging-owned
+  - id: chat-files
+    legacy_env: BUCKET_CHAT_FILES
+    target_binding: CHAT_FILES
+    target_bucket_pattern: omi-cf-chat-files-{environment}
+    object_patterns: ["{uid}/{file_name}"]
+    data_classification: customer-content
+    lifecycle: account-lifetime
+    migration_state: staging-owned
+  - id: desktop-updates
+    legacy_env: BUCKET_DESKTOP_UPDATES
+    target_binding: DESKTOP_UPDATES
+    target_bucket_pattern: omi-cf-desktop-updates-{environment}
+    object_patterns: ["{release_path}"]
+    data_classification: public-release-artifact
+    lifecycle: permanent
+    migration_state: copying
+  - id: screen-frames
+    # Added to upstream after this branch's fork point
+    # (backend/utils/screen_frames/{writer,approval}.py). The writer module's
+    # own header says the required IAM split -- a service account scoped to
+    # this bucket only -- "is infrastructure that must exist before this code
+    # is trusted with real traffic, not something a PR can create," so this
+    # is genuinely blocked rather than merely unscheduled. Retention is
+    # caller-supplied per approval (writer.py's `retention` parameter), not a
+    # fixed value, hence prefix-specific rather than a single lifecycle.
+    legacy_env: BUCKET_SCREEN_FRAMES
+    target_binding: SCREEN_FRAMES
+    target_bucket_pattern: omi-cf-screen-frames-{environment}
+    object_patterns:
+      ["{uid}/{conversation_id}/{frame_id}.jpg", "{uid}/{conversation_id}/{frame_id}_thumb.jpg"]
+    data_classification: customer-content
+    lifecycle: prefix-specific
+    migration_state: blocked

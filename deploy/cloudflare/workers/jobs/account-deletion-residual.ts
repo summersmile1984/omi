@@ -1,0 +1,464 @@
+import type { JobsEnv } from "./env";
+
+type IdentityColumn =
+  | "uid"
+  | "owner_uid"
+  | "source_uid"
+  | "target_uid"
+  | "recipient_uid"
+  | "reviewer_uid"
+  | "sender_uid"
+  | "uid_hint"
+  | "mapped_uid";
+
+type D1IdentitySurface = Readonly<{
+  table: string;
+  column: IdentityColumn;
+}>;
+
+/**
+ * Every App-D1 surface that can retain a Better Auth/Firebase uid.
+ *
+ * Keep this explicit: account deletion is an authority boundary, so a table
+ * must never become deletable merely because its name happens to match a
+ * heuristic. The schema-coverage test fails whenever a migration introduces a
+ * new identity-bearing table/column without adding it here.
+ */
+export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
+  { table: "cf_account_cutover", column: "uid" },
+  { table: "cf_action_items", column: "uid" },
+  { table: "cf_advice", column: "uid" },
+  { table: "cf_announcement_dismissals", column: "uid" },
+  { table: "cf_app_catalog", column: "owner_uid" },
+  { table: "cf_app_owner_migration_sources", column: "source_uid" },
+  { table: "cf_app_owner_migration_sources", column: "target_uid" },
+  { table: "cf_app_owner_migration_jobs", column: "source_uid" },
+  { table: "cf_app_owner_migration_jobs", column: "target_uid" },
+  { table: "cf_mcp_app_connections", column: "owner_uid" },
+  { table: "cf_mcp_app_discoveries", column: "owner_uid" },
+  { table: "cf_mcp_app_oauth_transactions", column: "owner_uid" },
+  { table: "cf_external_app_oauth_transactions", column: "uid" },
+  { table: "cf_app_payment_links", column: "owner_uid" },
+  { table: "cf_app_reviews", column: "reviewer_uid" },
+  { table: "cf_app_subscriptions", column: "uid" },
+  { table: "cf_app_tester_access", column: "uid" },
+  { table: "cf_app_testers", column: "uid" },
+  { table: "cf_asset_cleanup_tasks", column: "uid" },
+  { table: "cf_asset_objects", column: "uid" },
+  { table: "cf_asset_multipart_uploads", column: "uid" },
+  { table: "cf_asset_multipart_parts", column: "uid" },
+  { table: "cf_calendar_meetings", column: "uid" },
+  { table: "cf_apple_health", column: "uid" },
+  { table: "cf_chat_messages", column: "uid" },
+  { table: "cf_chat_first_intents", column: "uid" },
+  { table: "cf_chat_first_deferrals", column: "uid" },
+  { table: "cf_chat_quota_events", column: "uid" },
+  { table: "cf_chat_sessions", column: "uid" },
+  { table: "cf_chat_session_files", column: "uid" },
+  { table: "cf_chat_assistant_sessions", column: "uid" },
+  { table: "cf_chat_assistant_runs", column: "uid" },
+  { table: "cf_chat_assistant_message_projections", column: "uid" },
+  { table: "cf_chat_shares", column: "sender_uid" },
+  { table: "cf_conversations", column: "uid" },
+  { table: "cf_conversation_finalization_jobs", column: "uid" },
+  { table: "cf_conversation_merge_jobs", column: "uid" },
+  { table: "cf_conversations_fts", column: "uid" },
+  { table: "cf_shared_conversation_index", column: "uid" },
+  { table: "cf_daily_summaries", column: "uid" },
+  { table: "cf_developer_api_keys", column: "uid" },
+  { table: "cf_developer_webhook_outbox", column: "uid" },
+  { table: "cf_fair_use_events", column: "uid" },
+  { table: "cf_fair_use_notification_outbox", column: "uid" },
+  { table: "cf_fair_use_states", column: "uid" },
+  { table: "cf_fair_use_usage_sources", column: "uid" },
+  { table: "cf_focus_sessions", column: "uid" },
+  { table: "cf_folders", column: "uid" },
+  { table: "cf_goal_mutations", column: "uid" },
+  { table: "cf_goal_progress_events", column: "uid" },
+  { table: "cf_goal_progress_history", column: "uid" },
+  { table: "cf_goals", column: "uid" },
+  { table: "cf_google_calendar_integrations", column: "uid" },
+  { table: "cf_google_calendar_oauth_states", column: "uid" },
+  { table: "cf_integration_hourly_usage", column: "uid" },
+  { table: "cf_user_notification_daily_usage", column: "uid" },
+  { table: "cf_integration_webhook_outbox", column: "uid" },
+  { table: "cf_jobs", column: "uid" },
+  { table: "cf_queue_dlq_messages", column: "uid" },
+  { table: "cf_import_jobs", column: "uid" },
+  { table: "cf_chat_files", column: "uid" },
+  { table: "cf_chat_file_import_ledger", column: "uid" },
+  { table: "cf_chat_file_history_review_batches", column: "uid" },
+  { table: "cf_chat_file_history_review_items", column: "uid" },
+  { table: "cf_chat_file_history_applies", column: "uid" },
+  { table: "cf_chat_history_import_ledger", column: "uid" },
+  { table: "cf_chat_history_apply_receipts", column: "uid" },
+  { table: "cf_audio_merge_jobs", column: "uid" },
+  { table: "cf_audio_merge_legacy_jobs", column: "uid" },
+  { table: "cf_audio_chunk_import_ledger", column: "uid" },
+  { table: "cf_phone_numbers", column: "uid" },
+  { table: "cf_phone_number_import_ledger", column: "uid" },
+  { table: "cf_phone_number_import_review_items", column: "uid" },
+  { table: "cf_phone_number_import_applies", column: "uid" },
+  { table: "cf_phone_verifications", column: "uid" },
+  { table: "cf_phone_call_usage", column: "uid" },
+  { table: "cf_phone_call_attempts", column: "uid" },
+  { table: "cf_wrapped_jobs", column: "uid" },
+  { table: "cf_wrapped_history_review_items", column: "uid" },
+  { table: "cf_wrapped_history_applies", column: "uid" },
+  { table: "cf_gemini_quota_windows", column: "uid" },
+  { table: "cf_gemini_usage_receipts", column: "uid" },
+  { table: "cf_task_candidates", column: "uid" },
+  { table: "cf_task_interventions", column: "uid" },
+  { table: "cf_task_feedback", column: "uid" },
+  { table: "cf_task_outcomes", column: "uid" },
+  { table: "cf_task_context_snapshots", column: "uid" },
+  { table: "cf_task_open_loop_snapshots", column: "uid" },
+  { table: "cf_task_intelligence_jobs", column: "uid" },
+  { table: "cf_task_llm_receipts", column: "uid" },
+  { table: "cf_task_evaluations", column: "uid" },
+  { table: "cf_llm_usage_daily", column: "uid" },
+  { table: "cf_memories", column: "uid" },
+  { table: "cf_memory_import_artifacts", column: "uid" },
+  { table: "cf_memory_import_runs", column: "uid" },
+  { table: "cf_memory_archive_items", column: "uid" },
+  { table: "cf_memory_archive_review_batches", column: "uid" },
+  { table: "cf_memory_archive_review_items", column: "uid" },
+  { table: "cf_memory_archive_applies", column: "uid" },
+  { table: "cf_persona_app_history_review_batches", column: "uid" },
+  { table: "cf_persona_app_history_review_items", column: "uid" },
+  { table: "cf_persona_app_history_applies", column: "uid" },
+  { table: "cf_memory_non_active_routes", column: "uid" },
+  { table: "cf_memory_short_term_lifecycle_control", column: "uid" },
+  { table: "cf_memory_short_term_lifecycle_runs", column: "uid" },
+  { table: "cf_memory_short_term_lifecycle_transitions", column: "uid" },
+  { table: "cf_hume_task_projections", column: "uid" },
+  { table: "cf_hume_webhook_results", column: "mapped_uid" },
+  { table: "cf_data_protection_migration_control", column: "uid" },
+  { table: "cf_data_protection_migration_runs", column: "uid" },
+  { table: "cf_memory_control", column: "uid" },
+  { table: "cf_memory_review_queue", column: "uid" },
+  { table: "cf_mcp_api_keys", column: "uid" },
+  { table: "cf_notification_outbox", column: "uid" },
+  { table: "cf_people", column: "uid" },
+  { table: "cf_realtime_sessions", column: "uid" },
+  { table: "cf_realtime_usage", column: "uid" },
+  { table: "cf_recording_deletion_intents", column: "uid" },
+  { table: "cf_screen_activity", column: "uid" },
+  { table: "cf_creator_payment_profiles", column: "uid" },
+  { table: "cf_stripe_connect_events", column: "uid_hint" },
+  { table: "cf_stripe_customers", column: "uid" },
+  { table: "cf_stripe_webhook_events", column: "uid_hint" },
+  { table: "cf_sync_capture_claims", column: "uid" },
+  { table: "cf_sync_content_ledger", column: "uid" },
+  { table: "cf_sync_job_files", column: "uid" },
+  { table: "cf_sync_jobs", column: "uid" },
+  { table: "cf_sync_playback_objects", column: "uid" },
+  { table: "cf_task_share_acceptances", column: "recipient_uid" },
+  { table: "cf_task_shares", column: "sender_uid" },
+  { table: "cf_task_integration_defaults", column: "uid" },
+  { table: "cf_task_integration_oauth_states", column: "uid" },
+  { table: "cf_task_integration_fences", column: "uid" },
+  { table: "cf_task_integrations", column: "uid" },
+  { table: "cf_usage_sources", column: "uid" },
+  { table: "cf_user_ai_profiles", column: "uid" },
+  { table: "cf_user_app_preferences", column: "uid" },
+  { table: "cf_user_assistant_settings", column: "uid" },
+  { table: "cf_user_byok_enrollments", column: "uid" },
+  { table: "cf_user_calendar_onboarding", column: "uid" },
+  { table: "cf_user_developer_webhooks", column: "uid" },
+  { table: "cf_user_enabled_apps", column: "uid" },
+  { table: "cf_user_fcm_tokens", column: "uid" },
+  { table: "cf_user_feedback", column: "uid" },
+  { table: "cf_user_geolocation", column: "uid" },
+  { table: "cf_user_location_context_consent", column: "uid" },
+  { table: "cf_user_notification_preferences", column: "uid" },
+  { table: "cf_user_notification_settings", column: "uid" },
+  { table: "cf_user_onboarding", column: "uid" },
+  { table: "cf_user_privacy_settings", column: "uid" },
+  { table: "cf_user_subscriptions", column: "uid" },
+  { table: "cf_user_training_data_opt_in", column: "uid" },
+  { table: "cf_user_transcription_preferences", column: "uid" },
+  { table: "cf_vector_projection_outbox", column: "uid" },
+  { table: "cf_vector_projection_state", column: "uid" },
+  { table: "cf_worker_probe", column: "uid" },
+  { table: "cf_workstream_artifacts", column: "uid" },
+  { table: "cf_workstream_checkpoints", column: "uid" },
+  { table: "cf_workstream_events", column: "uid" },
+  { table: "cf_workstream_mutations", column: "uid" },
+  { table: "cf_workstreams", column: "uid" },
+  { table: "cf_x_connections", column: "uid" },
+  { table: "cf_x_oauth_states", column: "uid" },
+  { table: "cf_x_oauth_fences", column: "uid" },
+  { table: "cf_x_posts", column: "uid" },
+  { table: "cf_twitter_ownership_transactions", column: "uid" },
+  { table: "cf_twitter_ownership_claims", column: "uid" },
+] satisfies readonly D1IdentitySurface[]);
+
+/**
+ * Minimal control-plane rows intentionally retained while product residuals
+ * are being driven to zero. They are transferred from the live intent to the
+ * short-lived JWT tombstone only after Auth deletion succeeds.
+ */
+export const ACCOUNT_DELETION_CONTROL_D1_SURFACES = Object.freeze([
+  { table: "cf_account_deletion_intents", column: "uid" },
+  { table: "cf_account_deletion_tombstones", column: "uid" },
+] satisfies readonly D1IdentitySurface[]);
+
+const PURGE_PRIORITY = Object.freeze([
+  "cf_task_share_acceptances.recipient_uid",
+  "cf_task_shares.sender_uid",
+  "cf_chat_shares.sender_uid",
+  "cf_app_reviews.reviewer_uid",
+  "cf_app_tester_access.uid",
+  "cf_app_testers.uid",
+  "cf_app_owner_migration_jobs.source_uid",
+  "cf_app_owner_migration_jobs.target_uid",
+  "cf_app_owner_migration_sources.source_uid",
+  "cf_app_owner_migration_sources.target_uid",
+  "cf_mcp_app_oauth_transactions.owner_uid",
+  "cf_mcp_app_discoveries.owner_uid",
+  "cf_mcp_app_connections.owner_uid",
+  "cf_app_catalog.owner_uid",
+  "cf_developer_webhook_outbox.uid",
+  "cf_integration_hourly_usage.uid",
+  "cf_integration_webhook_outbox.uid",
+  "cf_notification_outbox.uid",
+  "cf_fair_use_notification_outbox.uid",
+  "cf_fair_use_events.uid",
+  "cf_task_integration_oauth_states.uid",
+  "cf_task_integration_defaults.uid",
+  "cf_task_integration_fences.uid",
+  "cf_task_integrations.uid",
+  "cf_google_calendar_oauth_states.uid",
+  "cf_google_calendar_integrations.uid",
+  "cf_apple_health.uid",
+  "cf_memory_import_artifacts.uid",
+  "cf_memory_import_runs.uid",
+  "cf_memory_non_active_routes.uid",
+  "cf_memory_short_term_lifecycle_transitions.uid",
+  "cf_memory_short_term_lifecycle_runs.uid",
+  "cf_memory_short_term_lifecycle_control.uid",
+  "cf_hume_webhook_results.mapped_uid",
+  "cf_hume_task_projections.uid",
+  "cf_data_protection_migration_runs.uid",
+  "cf_data_protection_migration_control.uid",
+  "cf_import_jobs.uid",
+  "cf_chat_assistant_runs.uid",
+  "cf_chat_assistant_sessions.uid",
+  "cf_chat_assistant_message_projections.uid",
+  "cf_chat_first_intents.uid",
+  "cf_chat_session_files.uid",
+  "cf_chat_files.uid",
+  "cf_chat_file_import_ledger.uid",
+  "cf_chat_file_history_review_batches.uid",
+  "cf_chat_file_history_review_items.uid",
+  "cf_chat_file_history_applies.uid",
+  "cf_chat_history_import_ledger.uid",
+  "cf_chat_history_apply_receipts.uid",
+  "cf_memory_archive_review_batches.uid",
+  "cf_memory_archive_review_items.uid",
+  "cf_memory_archive_applies.uid",
+  // Review children reference the batch; purge them before the parent so
+  // D1 foreign-key enforcement cannot strand an account-deletion intent.
+  "cf_persona_app_history_applies.uid",
+  "cf_persona_app_history_review_items.uid",
+  "cf_persona_app_history_review_batches.uid",
+  "cf_audio_merge_jobs.uid",
+  "cf_audio_merge_legacy_jobs.uid",
+  "cf_audio_chunk_import_ledger.uid",
+  "cf_phone_numbers.uid",
+  "cf_phone_number_import_ledger.uid",
+  "cf_phone_number_import_review_items.uid",
+  "cf_phone_number_import_applies.uid",
+  "cf_phone_verifications.uid",
+  "cf_phone_call_usage.uid",
+  "cf_phone_call_attempts.uid",
+  "cf_wrapped_jobs.uid",
+  "cf_wrapped_history_review_items.uid",
+  "cf_wrapped_history_applies.uid",
+  "cf_gemini_usage_receipts.uid",
+  "cf_gemini_quota_windows.uid",
+  "cf_task_candidates.uid",
+  "cf_task_interventions.uid",
+  "cf_task_feedback.uid",
+  "cf_task_outcomes.uid",
+  "cf_task_context_snapshots.uid",
+  "cf_task_open_loop_snapshots.uid",
+  "cf_task_intelligence_jobs.uid",
+  "cf_task_llm_receipts.uid",
+  "cf_task_evaluations.uid",
+  "cf_x_oauth_states.uid",
+  "cf_x_oauth_fences.uid",
+  "cf_x_connections.uid",
+  "cf_twitter_ownership_transactions.uid",
+  "cf_twitter_ownership_claims.uid",
+  "cf_sync_job_files.uid",
+  "cf_sync_jobs.uid",
+  "cf_conversation_finalization_jobs.uid",
+  "cf_conversation_merge_jobs.uid",
+] as const);
+
+const PURGE_PRIORITY_SET = new Set<string>(PURGE_PRIORITY);
+
+const PURGE_ORDER = Object.freeze([
+  ...PURGE_PRIORITY,
+  ...ACCOUNT_DELETION_D1_SURFACES.map(
+    ({ table, column }) => `${table}.${column}`,
+  ).filter((key) => !PURGE_PRIORITY_SET.has(key)),
+]);
+
+export const ACCOUNT_DELETION_D1_PURGE_SURFACES = Object.freeze(
+  PURGE_ORDER.map((key) => {
+    const surface = ACCOUNT_DELETION_D1_SURFACES.find(
+      ({ table, column }) => `${table}.${column}` === key,
+    );
+    if (!surface) throw new Error(`unknown account deletion surface ${key}`);
+    return surface;
+  }),
+);
+
+/** User-scoped object families currently stored in the shared ASSETS bucket. */
+export const ACCOUNT_DELETION_R2_PREFIX_PATTERNS = Object.freeze([
+  "cf-app-logos/{uid}/",
+  "cf-assets/{uid}/",
+  "cf-transcriptions/{uid}/",
+  "cf-sync/{uid}/",
+  "imports/{uid}/",
+  "sync-playback/{uid}/",
+  "playback/{uid}/",
+  "merged/{uid}/",
+  "chunks/{uid}/",
+] as const);
+
+export const ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS =
+  Object.freeze(["{uid}/"] as const);
+
+/** Private chat-file objects live in the dedicated CHAT_FILES bucket. */
+export const ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS = Object.freeze([
+  "{uid}/",
+] as const);
+
+export const ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS = Object.freeze([
+  "{uid}/",
+] as const);
+
+export type AccountProductResidual = Readonly<{
+  uid: string;
+  empty: boolean;
+  d1: Readonly<Record<string, number>>;
+  r2: Readonly<Record<string, number>>;
+}>;
+
+export function validAccountDeletionUid(value: string): boolean {
+  return value.length > 0 && value.length <= 256 && !value.includes("/");
+}
+
+function databaseCount(value: unknown): number {
+  const count = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error("invalid product residual count");
+  }
+  return count;
+}
+
+function residualKey(surface: D1IdentitySurface): string {
+  return `${surface.table}.${surface.column}`;
+}
+
+function r2Prefix(pattern: string, uid: string): string {
+  return pattern.replace("{uid}", uid);
+}
+
+export async function readAccountProductResidual(
+  env: Pick<
+    JobsEnv,
+    | "APP_DB"
+    | "ASSETS"
+    | "CHAT_FILES"
+    | "CONVERSATION_RECORDINGS"
+    | "SPEECH_PROFILES"
+  >,
+  uid: string,
+): Promise<AccountProductResidual> {
+  if (!validAccountDeletionUid(uid)) {
+    throw new Error("invalid account deletion uid");
+  }
+
+  const statements = ACCOUNT_DELETION_D1_SURFACES.map((surface) =>
+    env.APP_DB.prepare(
+      `SELECT COUNT(*) AS count FROM ${surface.table} WHERE ${surface.column} = ?`,
+    ).bind(uid),
+  );
+  const [d1Results, r2Results] = await Promise.all([
+    env.APP_DB.batch<{ count?: unknown }>(statements),
+    Promise.all([
+      ...ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map(async (pattern) => {
+        const prefix = r2Prefix(pattern, uid);
+        const listed = await env.ASSETS.list({ prefix, limit: 1 });
+        return [prefix, listed.objects.length > 0 ? 1 : 0] as const;
+      }),
+      ...(env.CHAT_FILES
+        ? ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS.map(async (pattern) => {
+            const prefix = r2Prefix(pattern, uid);
+            const listed = await env.CHAT_FILES!.list({ prefix, limit: 1 });
+            return [
+              `chat-files:${prefix}`,
+              listed.objects.length > 0 ? 1 : 0,
+            ] as const;
+          })
+        : []),
+      ...ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS.map(
+        async (pattern) => {
+          const prefix = r2Prefix(pattern, uid);
+          const listed = await env.CONVERSATION_RECORDINGS.list({
+            prefix,
+            limit: 1,
+          });
+          return [
+            `conversation-recordings:${prefix}`,
+            listed.objects.length > 0 ? 1 : 0,
+          ] as const;
+        },
+      ),
+      ...ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.map(
+        async (pattern) => {
+          const prefix = r2Prefix(pattern, uid);
+          const listed = await env.SPEECH_PROFILES.list({
+            prefix,
+            limit: 1,
+          });
+          return [
+            `speech-profiles:${prefix}`,
+            listed.objects.length > 0 ? 1 : 0,
+          ] as const;
+        },
+      ),
+    ]),
+  ]);
+
+  if (d1Results.length !== ACCOUNT_DELETION_D1_SURFACES.length) {
+    throw new Error("product residual batch is incomplete");
+  }
+  const d1: Record<string, number> = {};
+  for (const [index, result] of d1Results.entries()) {
+    if (!result.success || !Array.isArray(result.results)) {
+      throw new Error("product residual query failed");
+    }
+    if (result.results.length !== 1) {
+      throw new Error("product residual query returned invalid rows");
+    }
+    d1[residualKey(ACCOUNT_DELETION_D1_SURFACES[index])] = databaseCount(
+      result.results[0]?.count,
+    );
+  }
+  const r2 = Object.fromEntries(r2Results);
+  const empty =
+    Object.values(d1).every((count) => count === 0) &&
+    Object.values(r2).every((count) => count === 0);
+  return Object.freeze({
+    uid,
+    empty,
+    d1: Object.freeze(d1),
+    r2: Object.freeze(r2),
+  });
+}
