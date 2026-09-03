@@ -89,6 +89,7 @@ describe("edge gateway", () => {
     const coreRequests: Request[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
+      ACCOUNT_ACTIVATION_FENCE_ENABLED: "true",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
           return Response.json({ uid: "user-1", authority: "better-auth" });
@@ -1449,6 +1450,7 @@ describe("edge gateway", () => {
     const coreRequests: Request[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
+      ACCOUNT_ACTIVATION_FENCE_ENABLED: "true",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
           return Response.json({ uid: "user-1", authority: "better-auth" });
@@ -5580,6 +5582,7 @@ describe("edge gateway", () => {
     const coreRequests: Request[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
+      ACCOUNT_ACTIVATION_FENCE_ENABLED: "true",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
           return Response.json({ uid: "user-1", authority: "better-auth" });
@@ -5625,6 +5628,7 @@ describe("edge gateway", () => {
     const coreRequests: Request[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
+      ACCOUNT_ACTIVATION_FENCE_ENABLED: "true",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
           return Response.json({ uid: "user-1", authority: "better-auth" });
@@ -5677,6 +5681,7 @@ describe("edge gateway", () => {
     let memoryCalls = 0;
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
+      ACCOUNT_ACTIVATION_FENCE_ENABLED: "true",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
           return Response.json({ uid: "user-1", authority: "better-auth" });

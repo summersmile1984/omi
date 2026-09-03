@@ -40,6 +40,10 @@
     "RATE_LIMIT_BOOST": "1.0",
     "RATE_LIMIT_SHADOW_MODE": "false",
     "AUTH_OAUTH_STAGING_FAIL_CLOSED": "true",
+    // Preserves this existing staging deployment's behavior (unconditional
+    // fence, matching pre-M2 code) now that off-by-default is the new-brand
+    // default in code. A fresh brand's wrangler.jsonc should omit this key.
+    "ACCOUNT_ACTIVATION_FENCE_ENABLED": "true",
     "AUTH_EXACT_NATIVE_STAGING_ENABLED": "true",
     "AUTH_EXACT_OAUTH_STAGING_ENABLED": "true",
     "PHONE_TWILIO_STAGING_FAIL_CLOSED": "true",

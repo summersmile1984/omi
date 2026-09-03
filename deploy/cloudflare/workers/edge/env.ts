@@ -23,6 +23,14 @@ export type EdgeEnv = {
   AUTH_EXACT_NATIVE_STAGING_ENABLED?: string;
   /** Explicit opt-in for the exact Firebase app-consent OAuth routes in Jobs. */
   AUTH_EXACT_OAUTH_STAGING_ENABLED?: string;
+  /**
+   * Gates cloudflareProductTrafficDenial (the 409 account-activation fence).
+   * Off by default -- unset or any value other than "true" -- so a new brand
+   * with no omi_cloud->cloudflare migration in flight serves traffic
+   * normally. This is migration-tool state (deploy/profiles/cloudflare.yaml:
+   * account_activation_fence), never a client-visible product contract.
+   */
+  ACCOUNT_ACTIVATION_FENCE_ENABLED?: string;
   /** Staging-only deny switch for legacy Twilio phone-call paths. */
   PHONE_TWILIO_STAGING_FAIL_CLOSED?: string;
   /** Staging-only deny switch for the legacy Gemini desktop proxy paths. */

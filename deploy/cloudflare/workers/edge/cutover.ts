@@ -17,6 +17,12 @@ export async function cloudflareProductTrafficDenial(
   auth: AuthContext,
   requestId: string,
 ): Promise<Response | null> {
+  // Off by default: no omi_cloud->cloudflare account migration in flight for
+  // this brand. Short-circuits before the api-core round-trip so the common
+  // case (fence disabled) costs nothing extra.
+  if (env.ACCOUNT_ACTIVATION_FENCE_ENABLED !== "true") {
+    return null;
+  }
   const target = new URL(
     ACCOUNT_CUTOVER_CONTROL_PATH,
     "https://api-core.internal",
