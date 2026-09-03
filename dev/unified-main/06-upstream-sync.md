@@ -10,7 +10,7 @@
 | `web/admin/app/api/omi/stats/{k-factor/posthog,profitability,viral-metrics}/route.ts`、`web/admin/grafana/build_dashboards.py`、`web/admin/grafana/dashboards/omi-tv.json`、`web/admin/lib/__tests__/platform-scope-routes.test.ts` | fork 提交 `c27893743e`/`a8d062cf45`/`93fae0b4eb` "style(admin): format …" 用不同版本的 prettier 重排上游文件 | **回退这三个提交的内容**（恢复为上游版本）；钉住格式化工具版本与上游 `.pre-commit-config.yaml` 一致；pre-commit 钩子只对 fork 自有路径格式化（见 §4） |
 | `.github/guardrail-pulse-history.jsonl` | fork 与上游的 `guardrail-baseline-pulse.yml` 机器人各自每周追加同一文件 | 在 fork 的 GitHub Actions 界面**禁用** `guardrail-baseline-pulse.yml`；同步时该文件一律取上游版本（`git checkout --theirs`） |
 | `.gitignore` | fork 追加了本地代理工具目录（`.codex/.loopx/...`，提交 `19e82722f4`） | 移到 `.git/info/exclude`（不入库）或 `dev/.gitignore`；根 `.gitignore` 恢复上游版本 |
-| `backend/AGENTS.md` | fork 在上游文件里加了 shim 说明 | 改为一行指针 `> Fork 规则见 backend/AGENTS.fork.md`；正文移入新文件 |
+| `backend/AGENTS.md` | fork 在上游文件里加了 shim 说明 | **取上游、不加指针**；正文移入 `backend/AGENTS.fork.md`（指针方案 2026-09-03 实测失败，预算无余量，见 §7 与 `00-upstream-touch-policy.md` §4 第 9 条） |
 | `backend/config/stt_provider_policy.py`、`backend/utils/stt/streaming.py` | fork 加了 MiMo/MOSS/SenseVoice provider（`cc80aefad5`、`5c1dcd346f`、`ba3adaf967`） | provider 实现迁到 `backend/fork/stt/`，由 `backend/fork/main.py` 的补丁注册表在导入时注入到上游的 provider 表；**上游文件恢复原样（零改动）**；同时向上游提"provider 注册表"PR |
 | `backend/utils/cloud_tasks.py` | fork 插入 `QUEUE_BACKEND=redis` 分发（`83e627b428`） | 同上：`backend/fork/patches/queue.py` 在导入时替换 `utils.cloud_tasks` 的派发函数，实现在 `backend/fork/cloud_tasks_redis.py`；上游文件零改动 |
 | `backend/tests/unit/test_conversation_notes_v2.py` | fork 改了上游测试以适配 shim | 不改上游测试；shim 差异用 fork 自有测试文件覆盖（`backend/tests/unit/fork/`） |
@@ -58,13 +58,13 @@ gh pr create --title "sync: upstream/main $(date +%F)" --body-file dev/unified-m
 | 客户端接缝 | `auth_service.dart`、`auth_provider.dart`、`api.ts`、`DesktopBackendEnvironment.swift` | 手工：上游改动优先落地，fork 的 profile 分支重新套上；跑 profile 契约测试 |
 | 品牌注入点 | `flavorizr.yaml`、`Info.plist` 模板、`brand.py` 调用处 | 取上游后重跑 `apply.py`，用 `check.py` 找新泄漏 |
 | fork 自有路径 | `deploy/**`、`brand/**`、`backend/firestore_pg/**`、`auth-server/**`、`dev/**`、`*.fork.md` | 上游不会触碰，理论上无冲突；若冲突说明路径命名撞车，改 fork 路径 |
-| 文档/AGENTS | `AGENTS.md`、`backend/AGENTS.md`、`PRODUCT.md` | 取上游 + 保留一行指针到 `*.fork.md` |
+| 文档/AGENTS | `AGENTS.md`、`backend/AGENTS.md`、`PRODUCT.md` | **一律取上游**（`git checkout --theirs`）；fork 内容只存在于 `*.fork.md`，上游文件不加任何指针 |
 
 ## 4. "不修改上游文件"清单（fork 纪律，进 `AGENTS.fork.md` 并由检查脚本守卫）
 
 1. **锁文件与依赖清单**：`backend/pylock*.toml`、`backend/requirements.txt`、`backend/pusher/requirements.txt`、`app/pubspec.lock`、`web/*/package-lock.json` → fork 依赖走 `backend/requirements-fork.txt`（`deploy/self-host/Dockerfile` 在上游镜像层之上 `pip install -r`）、`app/pubspec_overrides.yaml`（Dart 官方机制）、Web 用独立 `deploy/*/package.json`。
 2. **机器人写入文件**：`.github/guardrail-pulse-history.jsonl`、`desktop/macos/CHANGELOG.json` 自动更新、`community-plugin-stats.json` → fork 禁用相应工作流，同步取上游。
-3. **AGENTS/PRODUCT/规则文档**：只允许加一行指针，正文进 `AGENTS.fork.md`、`backend/AGENTS.fork.md`、`app/AGENTS.fork.md`、`desktop/macos/AGENTS.fork.md`。`check_agents_md_lean.py` 只检查上游文件名，fork 文件不受预算限制（但保持精简）。
+3. **AGENTS/PRODUCT/规则文档**：上游文件**零改动、不加指针**（预算无余量）；正文进 `AGENTS.fork.md`、`backend/AGENTS.fork.md`、`app/AGENTS.fork.md`、`desktop/macos/AGENTS.fork.md`。`check_agents_md_lean.py` 按精确文件名 `AGENTS.md` 发现，fork 文件对它不可见、不受预算限制。
 4. **检查清单**：`.github/checks-manifest.yaml` 不改；fork 检查写在 `.github/checks-manifest.fork.yaml`，运行器改为加载两个文件（一次性小改，可回推上游；见 `05-ci-matrix.md`）。
 5. **CI 工作流**：上游 `gcp_*.yml`、`desktop_*release*.yml`、`mobile_internal_build.yml`、`publish_omi_cli.yml` **不删不改**，在 GitHub Actions 界面禁用；fork 工作流用新文件名 `fork-*.yml`。
 6. **格式化**：`.pre-commit-config.yaml` 与上游一致；fork 钩子只对 `deploy/ brand/ backend/firestore_pg/ auth-server/ dev/ backend/utils/*_fork*` 等 fork 路径格式化。任何"style: format upstream files"提交禁止合入 `main`（检查脚本：若一次提交只改变空白/格式且触及非 fork 路径 → 失败）。
