@@ -163,7 +163,7 @@ describe("edge gateway", () => {
   it("fails closed for legacy Firebase and app-consent OAuth paths in staging", async () => {
     const env = {
       AUTH_OAUTH_STAGING_FAIL_CLOSED: "true",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      ORIGIN_BACKEND_URL: "https://legacy.example.test",
     };
     const legacyFetch = vi
       .spyOn(globalThis, "fetch")
@@ -226,7 +226,7 @@ describe("edge gateway", () => {
           302,
         );
       }),
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      ORIGIN_BACKEND_URL: "https://legacy.example.test",
     };
     const legacyFetch = vi
       .spyOn(globalThis, "fetch")
@@ -289,7 +289,7 @@ describe("edge gateway", () => {
         await request.arrayBuffer();
         return Response.json({ owner: "jobs", ok: true });
       }),
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      ORIGIN_BACKEND_URL: "https://legacy.example.test",
     };
     const legacyFetch = vi
       .spyOn(globalThis, "fetch")
@@ -801,7 +801,7 @@ describe("edge gateway", () => {
   it("fails closed for legacy Gemini proxy paths in staging", async () => {
     const env = {
       GEMINI_PROXY_STAGING_FAIL_CLOSED: "true",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      ORIGIN_BACKEND_URL: "https://legacy.example.test",
     };
     const legacyFetch = vi
       .spyOn(globalThis, "fetch")
@@ -947,7 +947,7 @@ describe("edge gateway", () => {
   it("fails closed for legacy chat compatibility paths in staging", async () => {
     const env = {
       CHAT_COMPAT_STAGING_FAIL_CLOSED: "true",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      ORIGIN_BACKEND_URL: "https://legacy.example.test",
     };
     const legacyFetch = vi
       .spyOn(globalThis, "fetch")
@@ -1125,7 +1125,7 @@ describe("edge gateway", () => {
   it("fails closed for legacy Persona and app/MCP mutation paths in staging", async () => {
     const env = {
       PERSONA_APPS_STAGING_FAIL_CLOSED: "true",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      ORIGIN_BACKEND_URL: "https://legacy.example.test",
     };
     const legacyFetch = vi
       .spyOn(globalThis, "fetch")
@@ -6305,7 +6305,7 @@ describe("edge gateway", () => {
     let legacyPath = "";
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      ORIGIN_BACKEND_URL: "https://legacy.example.test",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
           return Response.json({ uid: "user-1", authority: "better-auth" });
@@ -6341,7 +6341,7 @@ describe("edge gateway", () => {
     let jobsRequest: Request | undefined;
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
-      LEGACY_BACKEND_URL: "https://legacy.example.test",
+      ORIGIN_BACKEND_URL: "https://legacy.example.test",
       AUTH: service((request) => {
         if (request.url.endsWith("/internal/verify")) {
           return Response.json({ uid: "user-1", authority: "better-auth" });

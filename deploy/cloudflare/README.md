@@ -1223,7 +1223,7 @@ calls, and chat-row writes are intentionally outside this route.
 
 Only routes explicitly listed as migrated are sent to the partial Worker
 implementations. Authenticated routes that are not yet migrated use
-`LEGACY_BACKEND_URL` when configured; staging without that binding returns
+`ORIGIN_BACKEND_URL` when configured; staging without that binding returns
 `404 route not migrated` instead of silently treating the partial Worker as the
 owner.
 

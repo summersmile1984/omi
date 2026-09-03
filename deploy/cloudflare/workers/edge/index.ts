@@ -531,8 +531,8 @@ const proxyLegacyBackend = async (
     preserveClientAuth: true,
   });
   const legacy = new URL(c.req.url);
-  legacy.protocol = new URL(c.env.LEGACY_BACKEND_URL).protocol;
-  legacy.host = new URL(c.env.LEGACY_BACKEND_URL).host;
+  legacy.protocol = new URL(c.env.ORIGIN_BACKEND_URL).protocol;
+  legacy.host = new URL(c.env.ORIGIN_BACKEND_URL).host;
   const response = await fetch(
     new Request(legacy, {
       method: c.req.method,
@@ -2424,10 +2424,10 @@ app.all("/*", async (c) => {
 
 function envLegacy(
   env: EdgeEnv,
-): env is EdgeEnv & { LEGACY_BACKEND_URL: string } {
+): env is EdgeEnv & { ORIGIN_BACKEND_URL: string } {
   return (
-    typeof env.LEGACY_BACKEND_URL === "string" &&
-    env.LEGACY_BACKEND_URL.length > 0
+    typeof env.ORIGIN_BACKEND_URL === "string" &&
+    env.ORIGIN_BACKEND_URL.length > 0
   );
 }
 
