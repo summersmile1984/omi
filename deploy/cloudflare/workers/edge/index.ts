@@ -236,6 +236,11 @@ const proxyLegacyMcpOAuth = async (
   const init: RequestInit & { duplex?: "half" } = {
     method: c.req.method,
     headers,
+    // Edge is a reverse proxy for this surface: an OAuth authorize response is
+    // a 302 the *client* must follow (browser or desktop loopback flow).
+    // Following it here would fetch the provider's HTML page with a
+    // non-browser request and return the provider's error to the caller.
+    redirect: "manual",
   };
   if (c.req.method !== "GET" && c.req.method !== "HEAD") {
     init.body = c.req.raw.body;
@@ -559,6 +564,11 @@ const proxyExactNativeAuth = async (
   const init: RequestInit & { duplex?: "half" } = {
     method: c.req.method,
     headers,
+    // Edge is a reverse proxy for this surface: an OAuth authorize response is
+    // a 302 the *client* must follow (browser or desktop loopback flow).
+    // Following it here would fetch the provider's HTML page with a
+    // non-browser request and return the provider's error to the caller.
+    redirect: "manual",
   };
   if (c.req.method !== "GET" && c.req.method !== "HEAD") {
     init.body = c.req.raw.body;

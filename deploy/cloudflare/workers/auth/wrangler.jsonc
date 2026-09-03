@@ -16,6 +16,11 @@
     "FIREBASE_ANONYMOUS_IDENTITY_BRIDGE_STAGING_ENABLED": "false",
     "LEGACY_AUTH_COMPAT_STAGING_ENABLED": "false",
     "LEGACY_AUTH_EXACT_STAGING_ENABLED": "true",
+    // Public origin the native (desktop) OAuth compatibility flow uses to
+    // build its provider callback URL: {base}/v1/auth/callback/{provider}.
+    // It must be the Edge origin, because Edge owns the public /v1/auth/*
+    // routes and forwards them to this Worker.
+    "NATIVE_AUTH_PUBLIC_BASE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev",
   },
   "d1_databases": [
     {

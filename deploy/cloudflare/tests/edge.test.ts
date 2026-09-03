@@ -249,6 +249,11 @@ describe("edge gateway", () => {
       expect(response.status).toBe(302);
       expect(forwarded).toHaveLength(1);
       expect(new URL(forwarded[0].url).pathname).toBe("/v1/auth/authorize");
+      // The provider redirect belongs to the client (browser or desktop
+      // loopback listener). If Edge followed it, the runtime would fetch the
+      // provider's authorize page with a non-browser request and hand the
+      // caller the provider's error instead of the 302.
+      expect(forwarded[0].redirect).toBe("manual");
       expect(forwarded[0].headers.get("authorization")).toBe(
         "Bearer native-session",
       );
@@ -2028,6 +2033,13 @@ describe("edge gateway", () => {
     expect(requests[0].request.headers.get("x-omi-auth-context")).toBeNull();
     expect(requests[1].body).toBe("client_id=client-1&selected=true");
     expect(requests[2].body).toBe("grant_type=authorization_code&code=opaque");
+    // The MCP consent redirect is the client's to follow, exactly like the
+    // native auth surface; Edge proxies it instead of resolving it.
+    expect(requests.map(({ request }) => request.redirect)).toEqual([
+      "manual",
+      "manual",
+      "manual",
+    ]);
   });
 
   it("keeps MCP grant management beside Better Auth and outside product cutover", async () => {
