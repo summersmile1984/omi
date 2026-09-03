@@ -2,7 +2,12 @@
 
 > 规模假设：2 名工程师（一人偏客户端/Swift/Flutter，一人偏后端/CI/Workers），品牌与合规事项由产品/法务并行推进。工时为实现 + 自测 + PR 评审，单位为人日。所有 PR 目标分支 `main`，regular merge，不 squash。
 
-## 1. 决策登记（开工前签字，写进 `dev/unified-main/decisions.md`）
+## 1. 决策登记
+
+**待签清单在 [`decisions.md`](decisions.md)** —— 那里按“阻塞什么、改主意的代价”分组，并附签字栏。
+下表是同一批决策的一览；两处不一致时以 `decisions.md` 为准。
+
+D10、D11 已由 [PR #3](https://github.com/summersmile1984/omi/pull/3) 落地并由 `fork-upstream-touch` 强制，无需再签。
 
 | ID | 决策 | 推荐 | 影响的 PR |
 |---|---|---|---|
