@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/summersmile1984/omi/brand/_schema/manifest.schema.json",
+  "title": "Omi fork brand manifest",
+  "description": "One brand's complete identity: display strings, domains, platform identifiers, device/firmware identity, and the two-sided (client+backend) API contract group. dev/unified-main/04-brand-layer.md is the design record; this schema is the enforced shape. apply.py renders every generated file from a manifest that validates against this schema; check.py scans for values from a DIFFERENT brand's lexicon leaking into a brand's own generated output.",
+  "type": "object",
+  "required": ["schema_version", "brand", "domains", "identifiers", "theme", "assets", "device", "distribution", "analytics", "plans", "marketplace", "mcp", "api"],
+  "additionalProperties": false,
+  "$defs": {
+    "https_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "https_url_or_empty": {
+      "type": "string",
+      "pattern": "^(https://.*)?$"
+    },
+    "secret_ref": {
+      "type": "string",
+      "description": "A live credential must never be a literal in the manifest -- only a reference to where the real value lives.",
+      "pattern": "^(env|secret):[A-Za-z0-9_./-]+$"
+    },
+    "secret_ref_or_empty": {
+      "type": "string",
+      "pattern": "^((env|secret):[A-Za-z0-9_./-]+)?$"
+    },
+    "reverse_domain_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9-]*)+$"
+    },
+    "brand_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    }
+  },
+  "properties": {
+    "schema_version": { "const": 1 },
+    "brand": {
+      "type": "object",
+      "required": ["id", "display_name", "short_name", "legal_entity", "support_email", "ai_persona_name", "copyright_holder"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/brand_id", "description": "Directory name and generated-file suffix. Never changes after first apply -- it is baked into generated identifiers." },
+        "display_name": { "type": "string", "minLength": 1 },
+        "short_name": { "type": "string", "minLength": 1, "description": "Used where space is constrained: watchOS complication, widget, PWA short_name." },
+        "legal_entity": { "type": "string", "minLength": 1 },
+        "support_email": { "type": "string", "format": "email" },
+        "ai_persona_name": { "type": "string", "minLength": 1, "description": "The {product_name} the AI refers to itself as in system prompts." },
+        "copyright_holder": { "type": "string", "minLength": 1, "description": "Stands alongside the original MIT notice, never replaces it." }
+      }
+    },
+    "domains": {
+      "type": "object",
+      "required": ["api_base", "web_app", "share_base", "docs", "help", "feedback", "privacy", "terms", "status", "community"],
+      "additionalProperties": false,
+      "properties": {
+        "api_base": { "$ref": "#/$defs/https_url" },
+        "web_app": { "$ref": "#/$defs/https_url" },
+        "share_base": { "$ref": "#/$defs/https_url" },
+        "docs": { "$ref": "#/$defs/https_url" },
+        "help": { "$ref": "#/$defs/https_url" },
+        "feedback": { "$ref": "#/$defs/https_url" },
+        "privacy": { "$ref": "#/$defs/https_url" },
+        "terms": { "$ref": "#/$defs/https_url" },
+        "status": { "$ref": "#/$defs/https_url" },
+        "community": { "$ref": "#/$defs/https_url_or_empty", "description": "Empty hides the community entry point instead of pointing at another brand's server." }
+      }
+    },
+    "identifiers": {
+      "type": "object",
+      "required": [
+        "ios_bundle_id", "ios_bundle_id_dev", "android_application_id", "android_application_id_dev",
+        "app_group", "associated_domains", "url_scheme",
+        "macos_bundle_id", "macos_bundle_id_beta", "macos_bundle_id_dev", "macos_named_bundle_prefix", "macos_binary_name",
+        "windows_app_id", "windows_product_name",
+        "apple_team_id", "app_store_id", "keychain_service_prefix"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ios_bundle_id": { "$ref": "#/$defs/reverse_domain_id" },
+        "ios_bundle_id_dev": { "$ref": "#/$defs/reverse_domain_id" },
+        "android_application_id": { "$ref": "#/$defs/reverse_domain_id" },
+        "android_application_id_dev": { "$ref": "#/$defs/reverse_domain_id" },
+        "app_group": { "type": "string", "pattern": "^group\\.[a-z][a-z0-9.-]*$" },
+        "associated_domains": { "type": "array", "items": { "type": "string", "pattern": "^applinks:" }, "minItems": 1 },
+        "url_scheme": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Production scheme; apply.py derives -dev and -beta variants." },
+        "macos_bundle_id": { "$ref": "#/$defs/reverse_domain_id" },
+        "macos_bundle_id_beta": { "$ref": "#/$defs/reverse_domain_id" },
+        "macos_bundle_id_dev": { "$ref": "#/$defs/reverse_domain_id" },
+        "macos_named_bundle_prefix": { "type": "string", "pattern": "^[a-z][a-z0-9.]*\\.$" },
+        "macos_binary_name": { "type": "string", "minLength": 1 },
+        "windows_app_id": { "$ref": "#/$defs/reverse_domain_id" },
+        "windows_product_name": { "type": "string", "minLength": 1 },
+        "apple_team_id": { "type": "string", "pattern": "^[A-Z0-9]{10}$" },
+        "app_store_id": { "type": "string", "pattern": "^[0-9]*$" },
+        "keychain_service_prefix": { "type": "string", "minLength": 1 }
+      }
+    },
+    "theme": {
+      "type": "object",
+      "required": ["accent", "forbidden_hue_families", "fonts"],
+      "additionalProperties": false,
+      "properties": {
+        "accent": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "forbidden_hue_families": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Feeds check_brand_ui's ratchet config. INV-UI-1 always forbids purple regardless of this list -- see docs/product/invariants/brand-ui.md."
+        },
+        "fonts": {
+          "type": "object",
+          "required": ["sans", "mono", "license"],
+          "additionalProperties": false,
+          "properties": {
+            "sans": { "type": "string" },
+            "mono": { "type": "string" },
+            "license": { "type": "string", "enum": ["OFL-1.1", "Apache-2.0", "MIT", "self-owned"] }
+          }
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "required": ["icon_master", "logo_light", "logo_dark", "splash"],
+      "additionalProperties": false,
+      "properties": {
+        "icon_master": { "type": "string" },
+        "logo_light": { "type": "string" },
+        "logo_dark": { "type": "string" },
+        "splash": { "type": "string" }
+      }
+    },
+    "device": {
+      "type": "object",
+      "required": [
+        "ble_name", "ble_name_devkit", "dis_manufacturer", "dis_model_cv1",
+        "firmware_release_prefix", "service_uuid_base", "nfc_pair_url", "mcuboot_signing_key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ble_name": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "ble_name_devkit": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "dis_manufacturer": { "type": "string", "minLength": 1 },
+        "dis_model_cv1": { "type": "string", "minLength": 1 },
+        "firmware_release_prefix": { "type": "string", "pattern": "^[A-Za-z0-9_]+$" },
+        "service_uuid_base": {
+          "type": "string",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?$",
+          "description": "Empty keeps upstream's 19b10000-e8f2-537e-4f6c-d104768a1214 for BLE interop. A non-empty value must differ from upstream's in its final segment."
+        },
+        "nfc_pair_url": { "$ref": "#/$defs/https_url" },
+        "mcuboot_signing_key": { "$ref": "#/$defs/secret_ref", "description": "Never a path -- a committed signing key is a supply-chain incident, not a config typo." }
+      }
+    },
+    "distribution": {
+      "type": "object",
+      "required": ["sparkle_feed_url", "sparkle_public_ed_key", "github_releases_repo", "macos_artifacts", "windows_artifact"],
+      "additionalProperties": false,
+      "properties": {
+        "sparkle_feed_url": { "$ref": "#/$defs/https_url" },
+        "sparkle_public_ed_key": { "type": "string", "minLength": 1 },
+        "github_releases_repo": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$" },
+        "macos_artifacts": {
+          "type": "object",
+          "required": ["zip", "dmg", "beta_zip", "beta_dmg"],
+          "additionalProperties": false,
+          "properties": {
+            "zip": { "type": "string" },
+            "dmg": { "type": "string" },
+            "beta_zip": { "type": "string" },
+            "beta_dmg": { "type": "string" }
+          }
+        },
+        "windows_artifact": { "type": "string" }
+      }
+    },
+    "analytics": {
+      "type": "object",
+      "required": ["posthog", "sentry_dsn"],
+      "additionalProperties": false,
+      "properties": {
+        "posthog": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["host", "key"],
+              "additionalProperties": false,
+              "properties": {
+                "host": { "$ref": "#/$defs/https_url" },
+                "key": { "$ref": "#/$defs/secret_ref" }
+              }
+            }
+          ],
+          "description": "null disables analytics for this brand instead of silently sending events to the upstream project."
+        },
+        "sentry_dsn": { "$ref": "#/$defs/secret_ref_or_empty" }
+      }
+    },
+    "plans": {
+      "type": "object",
+      "required": ["display_names"],
+      "additionalProperties": false,
+      "properties": {
+        "display_names": {
+          "type": "object",
+          "required": ["basic", "plus", "unlimited", "operator", "architect"],
+          "additionalProperties": false,
+          "description": "Display strings only -- the underlying plan enum values are a billing contract and never change per brand.",
+          "properties": {
+            "basic": { "type": "string" },
+            "plus": { "type": "string" },
+            "unlimited": { "type": "string" },
+            "operator": { "type": "string" },
+            "architect": { "type": "string" }
+          }
+        }
+      }
+    },
+    "marketplace": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "false hides the Apps/Personas marketplace entry points; only built-in integrations remain reachable." }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "required": ["package_name", "server_name"],
+      "additionalProperties": false,
+      "properties": {
+        "package_name": { "type": "string", "minLength": 1 },
+        "server_name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "api": {
+      "type": "object",
+      "required": ["key_prefix", "header_prefix"],
+      "additionalProperties": false,
+      "description": "Part of the two-sided contract group (04-brand-layer.md §5): client and backend must ship the same value in the same release window.",
+      "properties": {
+        "key_prefix": { "type": "string", "pattern": "^[a-z0-9]+_$" },
+        "header_prefix": { "type": "string", "pattern": "^X-[A-Z][A-Za-z0-9]*-$" }
+      }
+    }
+  }
+}

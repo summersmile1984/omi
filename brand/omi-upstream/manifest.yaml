@@ -1,0 +1,135 @@
+# Upstream's own brand identity, recorded as a manifest -- not a template for a
+# real fork brand. Its purpose is regression: `apply.py --brand omi-upstream`
+# must produce zero diff against the upstream-equivalent generated output, so
+# a change to a template can be checked against known-good values instead of
+# only against a brand nobody can independently verify.
+#
+# Every value below is upstream's real, current one, sourced from
+# `git show upstream/main:<path>` at commit 14f0de999968617a200219bbc4cf96c14781946b
+# (2026-09-03). Citations are inline. Where upstream itself is internally
+# inconsistent (it is, in a few places -- pre-rebrand identifiers, several
+# different Discord invite links), the comment says so; this file records
+# what upstream ships, not a cleaned-up version of it.
+
+schema_version: 1
+
+brand:
+  id: omi
+  display_name: "Omi"
+  short_name: "Omi"                     # no distinct short-name field exists upstream; display_name is already short
+  legal_entity: "Based Hardware INC"    # Apple Developer ID cert; desktop/macos/docs/local-code-signing.md, codemagic.yaml
+  support_email: help@omi.me            # docs/onboarding/*.mdx
+  ai_persona_name: "Omi"                # backend/utils/llm/chat.py:825,922 -- hardcoded literal, no {product_name} variable exists upstream
+  copyright_holder: "Based Hardware Contributors"   # LICENSE:3
+
+domains:
+  api_base: https://api.omi.me/                        # app/lib/env/env.dart, backend/.env.prod.template
+  web_app: https://app.omi.me
+  share_base: https://h.omi.me                          # backend/utils/share_links.py DEFAULT_SHARE_BASE_URL
+  docs: https://docs.omi.me/
+  help: https://help.omi.me
+  feedback: https://feedback.omi.me/
+  privacy: https://www.omi.me/pages/privacy
+  terms: https://www.omi.me/pages/terms-of-service
+  status: https://status.omi.me                          # only a bare hostname appears in-repo; https assumed per schema
+  # Upstream is internally inconsistent here: discord.omi.me is the vanity
+  # redirect used in README badges, but app/web/backend code links four
+  # DIFFERENT literal invite codes directly (8MP3b9ymvx most common, plus
+  # TdRNp5U7cy, omi, ZutWMTJnwA). Recording the vanity domain since this
+  # field is under `domains`, not an invite-code field.
+  community: https://discord.omi.me
+
+identifiers:
+  # Pre-rebrand identifiers upstream still ships today -- "friend", not "omi".
+  # Recorded as-is; a fork brand's own manifest would use its own values here,
+  # not copy these.
+  ios_bundle_id: com.friend-app-with-wearable.ios12              # app/ios/Flutter/Base.xcconfig, flavorizr.yaml
+  ios_bundle_id_dev: com.friend-app-with-wearable.ios12.development
+  android_application_id: com.friend.ios                          # app/android/app/build.gradle
+  android_application_id_dev: com.friend.ios.dev
+  app_group: group.com.friend-app-with-wearable.ios12              # app/ios/Runner/Runner.entitlements
+  associated_domains: ["applinks:h.omi.me", "applinks:try.omi.me"]
+  url_scheme: omi                                                   # app/ios/Flutter/Base.xcconfig AUTH_CALLBACK_SCHEME
+  macos_bundle_id: com.omi.computer-macos                            # desktop/macos/Desktop/Sources/AppBuild.swift
+  macos_bundle_id_beta: com.omi.computer-macos.beta
+  macos_bundle_id_dev: com.omi.desktop-dev
+  macos_named_bundle_prefix: "com.omi."                              # desktop/macos/scripts/app-config.sh
+  macos_binary_name: "Omi Computer"                                  # desktop/macos/run.sh BINARY_NAME
+  windows_app_id: com.omiwindows.app                                 # desktop/windows/electron-builder.config.mjs
+  windows_product_name: "Omi for Windows"
+  apple_team_id: "9536L8KLMP"          # shared iOS+macOS signing team; project.pbxproj, codemagic.yaml
+  app_store_id: "6502156163"           # app/lib/services/app_review_service.dart
+  keychain_service_prefix: "com.omi."  # desktop/macos/Desktop/Sources/DesktopKeychainStore.swift
+
+theme:
+  accent: "#000000"                    # upstream ships no single documented brand accent hex; placeholder, not enforced until B8
+  forbidden_hue_families: ["purple"]   # matches INV-UI-1, which this manifest does not override
+  fonts:
+    sans: "Inter"
+    mono: "SF Mono"
+    license: "self-owned"   # observed defaults, not independently verified against a licensing doc; refine in B8
+
+assets:
+  icon_master: assets/icon-master.png    # placeholders: omi-upstream never runs apply.py --only flutter|desktop|... in B0 (no generator reads these paths yet)
+  logo_light: assets/logo-light.svg
+  logo_dark: assets/logo-dark.svg
+  splash: assets/splash.png
+
+device:
+  ble_name: "Omi"                                          # omi/firmware/omi/omi.conf CONFIG_BT_DEVICE_NAME
+  ble_name_devkit: "Omi DevKit 2"                            # omi/firmware/devkit/prj_xiao_ble_sense_devkitv2-adafruit.conf
+  dis_manufacturer: "Based Hardware"                          # omi/firmware/omi/omi.conf CONFIG_BT_DIS_MANUF
+  dis_model_cv1: "Omi CV 1"                                    # omi/firmware/omi/omi.conf CONFIG_BT_DIS_MODEL
+  firmware_release_prefix: "Omi_CV1_v"                          # .github/workflows/firmware_release.yml
+  service_uuid_base: "19b10000-e8f2-537e-4f6c-d104768a1214"      # transport.c BT_UUID_128_ENCODE -- recorded literally here since this manifest IS upstream, not a brand deferring to it (other brands leave this empty for the same BLE interop, per the schema comment)
+  # Stale pre-rebrand domain baked into the firmware's NFC pairing record
+  # (omi/firmware/omi/src/lib/core/nfc.c:94) -- "friend.based.com", not
+  # omi.me. Recorded faithfully: this is what upstream's firmware ships
+  # today, dead branding and all.
+  nfc_pair_url: "https://friend.based.com/pair?id=%s"
+  # Upstream's real MCUboot signing key is a *committed plaintext PEM* at
+  # omi/firmware/bootloader/mcuboot/root-rsa-2048.pem -- not a secret
+  # reference at all. The schema forbids recording a raw path here on
+  # purpose (that's the whole point of the secret_ref pattern), so this
+  # placeholder documents the gap rather than the real value: any fork brand
+  # MUST generate its own key before B7 lands, never reuse upstream's.
+  mcuboot_signing_key: "env:UPSTREAM_KEY_IS_COMMITTED_IN_TREE_DO_NOT_REUSE"
+
+distribution:
+  sparkle_feed_url: https://api.omi.me/v2/desktop/appcast.xml   # not independently verified against a live endpoint; matches domains.api_base convention
+  sparkle_public_ed_key: "UNVERIFIED_PLACEHOLDER"                 # live signing key, not committed in any source file found; refine in B1 with the real CI secret name
+  github_releases_repo: BasedHardware/omi
+  macos_artifacts:
+    zip: "Omi.zip"
+    dmg: "omi.dmg"
+    beta_zip: "Omi.Beta.zip"
+    beta_dmg: "omi-beta.dmg"
+  windows_artifact: "Omi-Setup-${version}.exe"
+
+analytics:
+  # Known to exist upstream (plaintext keys in source, per prior fork
+  # research) but the exact host/project were not re-verified for this
+  # manifest -- refine in B4/B6 rather than block B0 on it.
+  posthog:
+    host: https://us.i.posthog.com
+    key: "env:UNVERIFIED_PLACEHOLDER"
+  sentry_dsn: "env:UNVERIFIED_PLACEHOLDER"
+
+plans:
+  display_names:
+    basic: "Basic"
+    plus: "Plus"
+    unlimited: "Unlimited"
+    operator: "Operator"
+    architect: "Architect"
+
+marketplace:
+  enabled: true
+
+mcp:
+  package_name: mcp-server-omi     # PyPI, not npm -- mcp/pyproject.toml. The design doc's own example ("memweft-mcp") does not require an npm package; this field is ecosystem-neutral.
+  server_name: mcp-omi              # mcp/src/mcp_server_omi/server.py Server("mcp-omi")
+
+api:
+  key_prefix: "omi_"      # root shared by both real prefixes upstream issues: omi_dev_ (backend/utils/dev_api_keys.py) and omi_mcp_ (backend/utils/mcp_api_keys.py)
+  header_prefix: "X-Omi-"   # pervasive across backend/routers/

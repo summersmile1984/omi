@@ -1,0 +1,68 @@
+# Per-file/glob exemptions from check.py's leak scan. A match against
+# lexicon.yaml is a real leak unless it is named here with a reason -- see
+# lexicon.yaml's own `known_exemptions_policy` note. Never silence a match by
+# adding a code-level skip in check.py itself; every exemption is visible
+# here, in one place, with a reason a reviewer can judge.
+#
+# Format: `exemptions` is a mapping from glob to {words, reason}. `words`
+# restricts the exemption to specific lexicon words/phrases matched in that
+# file; omit it to exempt the file from the whole scan (only justified for
+# files that are ABOUT the brand system itself, never for real product
+# surfaces). One entry per glob -- scripts/brand/yaml_lite.py is a
+# bare-Python reader that only handles nested mappings, not YAML's list-of-
+# multi-key-mappings shape, so this file is intentionally dict-shaped rather
+# than the list-of-objects shape a schema like this would otherwise use.
+
+schema_version: 1
+
+exemptions:
+  "app/lib/services/devices/connectors/friend_pendant_connection.dart":
+    words: ["Friend"]
+    reason: "Friend Pendant is a real third-party BLE wearable this app's connector code supports, not upstream's own pre-rebrand name leaking. Full file exempted for this one word because the identifier appears in class/variable names throughout, not just user-visible strings."
+
+  "desktop/macos/Desktop/Sources/Bluetooth/Connections/FriendPendantConnection.swift":
+    words: ["Friend"]
+    reason: "Same third-party device connector, macOS side."
+
+  "app/lib/l10n/*.arb":
+    words: ["Friend"]
+    reason: "The Friend Pendant connector's user-facing strings live in every locale's ARB file (device picker copy, connection guide). Omi in these same files is NOT exempted -- that is real B3 scope, not this entry."
+
+  "app/lib/backend/schema/bt_device/bt_device.dart":
+    words: ["Friend"]
+    reason: "Device-type enum entry for the third-party pendant, not a leak."
+
+  "app/lib/widgets/connection_guide_sheet.dart":
+    words: ["Friend"]
+    reason: "References the third-party pendant in device-pairing UI copy."
+
+  "app/lib/utils/device.dart":
+    words: ["Friend"]
+    reason: "Device-type helpers covering the third-party pendant."
+
+  "desktop/macos/Desktop/Sources/Audio/BleAudioService.swift":
+    words: ["Friend"]
+    reason: "Third-party pendant audio codec branch, not a leak."
+
+  "desktop/macos/Desktop/Sources/Audio/BleAudioProcessor.swift":
+    words: ["Friend"]
+    reason: "Third-party pendant audio codec branch, not a leak."
+
+  "desktop/macos/Desktop/Sources/Audio/AudioCodecDecoder.swift":
+    words: ["Friend"]
+    reason: "Third-party pendant audio codec branch, not a leak."
+
+  "desktop/macos/Desktop/Sources/Bluetooth/DeviceType.swift":
+    words: ["Friend"]
+    reason: "Device-type enum entry for the third-party pendant."
+
+  "desktop/macos/Desktop/Sources/Bluetooth/DeviceUUIDs.swift":
+    words: ["Friend"]
+    reason: "Third-party pendant's advertised BLE service UUID constant."
+
+  "desktop/macos/Desktop/Sources/Bluetooth/BtDevice.swift":
+    words: ["Friend"]
+    reason: "Device-type helpers covering the third-party pendant."
+
+  "desktop/macos/CHANGELOG.json":
+    reason: "Bot-written release history (check-upstream-touch.py's own T2 list treats this file the same way): historical entries legitimately mention past product names and are not something a brand rewrite should touch retroactively."
