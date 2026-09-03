@@ -32,3 +32,15 @@ checks:
     triggers: ["backend/fork/**", "backend/utils/other/storage.py", "backend/utils/cloud_tasks.py", "deploy/profiles/**"]
     lanes: ["local", "ci"]
     reason: "the fork patches upstream symbols instead of editing them, so an upstream rename must fail here by name rather than leave a self-hosted deployment calling a cloud it cannot reach"
+
+  - id: fork-brand-tooling-tests
+    command: ["python3", "scripts/brand/test_brand_tooling.py"]
+    triggers: ["brand/**", "scripts/brand/**"]
+    lanes: ["local", "ci"]
+    reason: "apply.py/check.py are the enforcement path for the trademark boundary between brands; a bug here is a leak or a false negative, not a cosmetic failure"
+
+  - id: fork-brand-upstream-clean
+    command: ["python3", "scripts/brand/check.py", "--brand", "omi-upstream"]
+    triggers: ["brand/**", "scripts/brand/**"]
+    lanes: ["local", "ci"]
+    reason: "apply.py --brand omi-upstream must stay a zero-diff no-op as generators land in B1-B7 -- this is the regression guarantee the design doc's B0 acceptance criteria names"

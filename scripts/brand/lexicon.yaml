@@ -1,0 +1,67 @@
+# Upstream's brand vocabulary. check.py scans a brand's user-visible
+# generated output for these words -- if a *non-upstream* brand's build
+# still says "Omi" or ships an omi.me URL, that's a trademark leak, not a
+# style nit, per the MIT-license-does-not-cover-trademark point in
+# omi-white-label-strategy.md.
+#
+# `omi-upstream` itself is exempt from this list (see check.py --brand
+# omi-upstream, which skips the leak scan entirely -- upstream saying "Omi"
+# is not a leak, it's the truth).
+#
+# Two lists: `words` are checked as whole-word matches (case-insensitive,
+# word-boundary), `domains` and `identifiers` are checked as substring
+# matches (a domain or bundle-id fragment showing up anywhere is already a
+# leak, word boundaries don't apply the same way).
+
+schema_version: 1
+
+words:
+  - Omi
+  - "Based Hardware"
+  - BasedHardware
+  - Friend            # the pre-rebrand product name; still ships in real
+                       # upstream identifiers (see brand/omi-upstream/manifest.yaml's
+                       # ios_bundle_id) -- a fork brand's own build must not
+                       # carry it forward either
+  - "Friend Pendant"   # a real third-party competitor device name that
+                       # legitimately appears in comparison copy; listed here
+                       # so it is caught by default and must be explicitly
+                       # allow-listed per file in brand/_allow.yaml rather
+                       # than silently exempted everywhere
+
+domains:
+  - omi.me
+  - omiapi.com
+  - basedhardware.com
+  - based.com          # covers the stale friend.based.com NFC pairing URL too
+  - discord.omi.me
+
+identifiers:
+  - com.omi.
+  - com.friend-app-with-wearable
+  - com.friend.ios
+  - group.com.friend-app-with-wearable
+  - com.omiwindows.app
+  - mcp-server-omi
+  - mcp-omi
+
+# Upstream service identifiers that must never appear in a non-upstream
+# brand's build output or committed source at all -- not a word-boundary
+# scan, a plain substring check, because a leaked key or project id is a
+# credential-boundary problem (04-brand-layer.md §6 face 3), not a copy
+# problem. Values here are project/environment IDENTIFIERS, never secrets:
+# check.py's face-3 scan is only as good as this list, so entries must stay
+# public-safe (a leaked PostHog *key* would never belong in this file).
+service_identifiers:
+  - firebase.omi.me
+  - a.run.app                 # Cloud Run default hostnames; a brand on Cloudflare or self-hosted should never ship one
+
+# Allowed even though they match the lists above -- see brand/_allow.yaml
+# for the per-file, per-reason exemption format check.py actually reads.
+# This section only documents the *policy*: an entry belongs in
+# brand/_allow.yaml, never as a silent code-level skip in check.py itself.
+known_exemptions_policy: |
+  A match is a real leak unless brand/_allow.yaml names the exact file
+  (or a glob) and a one-line reason. Historical changelog entries, competitor
+  names in comparison copy, and this lexicon file itself are the expected
+  shape of an exemption -- not "check.py doesn't look there."

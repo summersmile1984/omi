@@ -1,0 +1,197 @@
+"""Behavioral tests for the brand manifest tooling (schema_validate, apply, check).
+
+Each test either exercises the real production module against a throwaway
+manifest/repo fixture, or runs apply.py/check.py as a subprocess against a
+throwaway repo -- the same "exercise the real path, not source text" approach
+scripts/fork/test_check_upstream_touch.py uses for the zero-touch guard.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+BRAND_SCRIPTS = Path(__file__).resolve().parent
+REPO_ROOT = BRAND_SCRIPTS.parents[1]
+
+sys.path.insert(0, str(BRAND_SCRIPTS))
+from schema_validate import validate  # noqa: E402
+
+MINIMAL_SCHEMA = {
+    "type": "object",
+    "required": ["name", "count"],
+    "additionalProperties": False,
+    "$defs": {"positive": {"type": "string", "pattern": "^[a-z]+$"}},
+    "properties": {
+        "name": {"$ref": "#/$defs/positive"},
+        "count": {"type": "string", "enum": ["one", "many"]},
+        "tags": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    },
+}
+
+
+class SchemaValidateTests(unittest.TestCase):
+    def test_valid_document_produces_no_errors(self):
+        self.assertEqual(validate({"name": "abc", "count": "one"}, MINIMAL_SCHEMA), [])
+
+    def test_missing_required_key_is_reported(self):
+        errors = validate({"name": "abc"}, MINIMAL_SCHEMA)
+        self.assertTrue(any("count" in e for e in errors))
+
+    def test_pattern_mismatch_is_reported(self):
+        errors = validate({"name": "ABC", "count": "one"}, MINIMAL_SCHEMA)
+        self.assertTrue(any("name" in e for e in errors))
+
+    def test_enum_mismatch_is_reported(self):
+        errors = validate({"name": "abc", "count": "several"}, MINIMAL_SCHEMA)
+        self.assertTrue(any("count" in e for e in errors))
+
+    def test_unknown_key_is_reported_when_additional_properties_false(self):
+        errors = validate({"name": "abc", "count": "one", "extra": 1}, MINIMAL_SCHEMA)
+        self.assertTrue(any("extra" in e for e in errors))
+
+    def test_array_min_items_enforced(self):
+        errors = validate({"name": "abc", "count": "one", "tags": []}, MINIMAL_SCHEMA)
+        self.assertTrue(any("tags" in e for e in errors))
+
+    def test_ref_resolution_reaches_the_referenced_def(self):
+        # "name" is defined purely via $ref -- if resolution were broken this
+        # would either crash or silently accept anything.
+        errors = validate({"name": "123", "count": "one"}, MINIMAL_SCHEMA)
+        self.assertTrue(any("name" in e for e in errors))
+
+
+class RepoFixture:
+    """A throwaway repo with the real brand/ + scripts/brand/ tooling copied in,
+    plus a synthetic omi-upstream manifest small enough to assert against
+    directly, and one representative file per scanned surface."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main"],
+            cwd=root,
+            check=True,
+            env={"GIT_CONFIG_NOSYSTEM": "1", "HOME": str(root)},
+        )
+        (root / "brand/_schema").mkdir(parents=True)
+        (root / "brand/omi-upstream").mkdir(parents=True)
+        (root / "scripts/brand").mkdir(parents=True)
+        (root / "app/lib/l10n").mkdir(parents=True)
+        (root / "desktop/macos/Desktop/Sources").mkdir(parents=True)
+
+        schema_src = (BRAND_SCRIPTS.parent.parent / "brand/_schema/manifest.schema.json").read_text()
+        (root / "brand/_schema/manifest.schema.json").write_text(schema_src)
+
+        manifest_src = (BRAND_SCRIPTS.parent.parent / "brand/omi-upstream/manifest.yaml").read_text()
+        (root / "brand/omi-upstream/manifest.yaml").write_text(manifest_src)
+
+        for name in ("apply.py", "check.py", "schema_validate.py", "lexicon.yaml"):
+            (root / "scripts/brand" / name).write_text((BRAND_SCRIPTS / name).read_text())
+
+        (root / "brand/_allow.yaml").write_text(
+            "schema_version: 1\nexemptions:\n"
+            "  - glob: \"app/lib/l10n/allowed.arb\"\n"
+            "    words: [\"Omi\"]\n"
+            "    reason: \"test fixture: deliberately exempted file\"\n"
+        )
+
+        (root / "app/lib/l10n/leaky.arb").write_text('{\n  "greeting": "Welcome to Omi"\n}\n')
+        (root / "app/lib/l10n/allowed.arb").write_text('{\n  "greeting": "Welcome to Omi"\n}\n')
+        (root / "desktop/macos/Desktop/Sources/Hello.swift").write_text(
+            'struct Hello: View {\n  var body: some View {\n    Text("Powered by Omi")\n  }\n}\n'
+        )
+
+    def run_check(self, brand: str, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self.root / "scripts/brand/check.py"), "--brand", brand, "--json", *extra],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+
+    def run_apply(self, brand: str, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self.root / "scripts/brand/apply.py"), "--brand", brand, *extra],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+
+
+class BrandToolingTests(unittest.TestCase):
+    def fixture(self) -> RepoFixture:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return RepoFixture(Path(tmp.name))
+
+    def test_apply_on_the_real_omi_upstream_manifest_is_clean(self):
+        # The actual acceptance test B0 is built to satisfy, run against the
+        # actual shipped manifest -- not a synthetic one.
+        proc = subprocess.run(
+            [sys.executable, str(BRAND_SCRIPTS / "apply.py"), "--brand", "omi-upstream", "--check-clean"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_apply_rejects_an_unknown_brand(self):
+        fx = self.fixture()
+        proc = fx.run_apply("does-not-exist")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("no manifest at", proc.stdout + proc.stderr)
+
+    def test_apply_rejects_an_unknown_only_category(self):
+        fx = self.fixture()
+        proc = fx.run_apply("omi-upstream", "--only", "not-a-real-category")
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_check_finds_the_leak_and_respects_the_exemption(self):
+        fx = self.fixture()
+        proc = fx.run_check("a-real-fork-brand")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        # leaky.arb's "Omi" must be counted; allowed.arb's identical "Omi"
+        # must not be, because it is named in brand/_allow.yaml.
+        self.assertEqual(payload["lexicon_matches"], 2)  # leaky.arb + Hello.swift, not allowed.arb
+
+    def test_check_on_omi_upstream_reports_a_self_check_count_not_a_failure(self):
+        fx = self.fixture()
+        proc = fx.run_check("omi-upstream")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["self_check"])
+        self.assertGreater(payload["lexicon_matches"], 0)
+
+    def test_check_without_exemption_would_have_failed(self):
+        # Proves the exemption in the previous test is load-bearing: remove
+        # it and the same fixture must report one more leak.
+        fx = self.fixture()
+        (fx.root / "brand/_allow.yaml").write_text("schema_version: 1\nexemptions: []\n")
+        proc = fx.run_check("a-real-fork-brand")
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["lexicon_matches"], 3)
+
+    def test_baseline_ratchet_rejects_an_increase(self):
+        fx = self.fixture()
+        baseline = fx.root / "baseline.txt"
+        first = fx.run_check("a-real-fork-brand", "--baseline", str(baseline))
+        self.assertEqual(first.returncode, 0)
+        self.assertEqual(baseline.read_text().strip(), "2")
+
+        # A brand out of nowhere growing its leak count must fail, even
+        # though check.py's own default (no --baseline) mode already fails
+        # on any nonzero count -- --baseline is for CI ratcheting.
+        (fx.root / "app/lib/l10n/leaky2.arb").write_text('{"x": "Another Omi mention"}\n')
+        second = fx.run_check("a-real-fork-brand", "--baseline", str(baseline))
+        self.assertEqual(second.returncode, 1)
+        self.assertEqual(baseline.read_text().strip(), "2")  # unchanged on failure
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
